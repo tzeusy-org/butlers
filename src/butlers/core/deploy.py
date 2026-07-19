@@ -542,14 +542,26 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
         except DeployError as exc:
             migration_head = await _best_effort_migration_head(pool)
             await record_deployment(
-                pool, git_sha=git_sha, migration_head=migration_head, result="failed"
+                pool,
+                git_sha=git_sha,
+                migration_head=migration_head,
+                result="failed",
+                source="deploy",
+                serving_mode="image",
+                serving_worktree=None,
             )
             logger.error("butlers deploy failed at phase=%s: %s", exc.phase, exc)
             raise
 
         migration_head = await _best_effort_migration_head(pool)
         await record_deployment(
-            pool, git_sha=git_sha, migration_head=migration_head, result="success"
+            pool,
+            git_sha=git_sha,
+            migration_head=migration_head,
+            result="success",
+            source="deploy",
+            serving_mode="image",
+            serving_worktree=None,
         )
         return DeployResult(
             git_sha=git_sha,

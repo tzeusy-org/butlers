@@ -36,6 +36,13 @@ class TestRecordDeploymentBoot:
             patch(
                 "butlers.core.deployments.read_migration_head", AsyncMock(return_value="core_163")
             ),
+            patch(
+                "butlers.core.deployments.detect_boot_serving_provenance",
+                return_value=MagicMock(
+                    serving_mode="hotreload-worktree",
+                    serving_worktree=".worktrees/frozen-checkout",
+                ),
+            ),
             patch("butlers.core.deployments.record_deployment", AsyncMock()) as mock_record,
         ):
             await _record_deployment_boot([daemon], configured_count=1)
@@ -45,18 +52,27 @@ class TestRecordDeploymentBoot:
         assert kwargs["git_sha"] == "abc1234"
         assert kwargs["migration_head"] == "core_163"
         assert kwargs["result"] == "success"
+        assert kwargs["source"] == "boot"
+        assert kwargs["serving_mode"] == "hotreload-worktree"
+        assert kwargs["serving_worktree"] == ".worktrees/frozen-checkout"
 
     async def test_records_failed_when_fewer_daemons_started_than_configured(self):
         daemon = _make_daemon()
         with (
             patch("butlers.core.deployments.resolve_git_sha", return_value="abc1234"),
             patch("butlers.core.deployments.read_migration_head", AsyncMock(return_value=None)),
+            patch(
+                "butlers.core.deployments.detect_boot_serving_provenance",
+                return_value=MagicMock(serving_mode="image", serving_worktree=None),
+            ),
             patch("butlers.core.deployments.record_deployment", AsyncMock()) as mock_record,
         ):
             # Only 1 of 3 configured butlers actually started.
             await _record_deployment_boot([daemon], configured_count=3)
 
         assert mock_record.await_args.kwargs["result"] == "failed"
+        assert mock_record.await_args.kwargs["source"] == "boot"
+        assert mock_record.await_args.kwargs["serving_mode"] == "image"
 
     async def test_skips_when_primary_daemon_has_no_pool(self):
         daemon = _make_daemon(has_pool=False)

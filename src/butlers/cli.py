@@ -629,7 +629,12 @@ async def _record_deployment_boot(daemons: list, *, configured_count: int) -> No
     fails startup: a ledger-write failure is logged and swallowed, matching
     the ``_ensure_owner_entity`` bootstrap convention.
     """
-    from butlers.core.deployments import read_migration_head, record_deployment, resolve_git_sha
+    from butlers.core.deployments import (
+        detect_boot_serving_provenance,
+        read_migration_head,
+        record_deployment,
+        resolve_git_sha,
+    )
 
     primary = daemons[0]
     if primary.db is None or primary.db.pool is None:
@@ -640,11 +645,15 @@ async def _record_deployment_boot(daemons: list, *, configured_count: int) -> No
     try:
         migration_head = await read_migration_head(primary.db.pool, schema)
         result = "success" if len(daemons) == configured_count else "failed"
+        serving = detect_boot_serving_provenance()
         await record_deployment(
             primary.db.pool,
             git_sha=resolve_git_sha(),
             migration_head=migration_head,
             result=result,
+            source="boot",
+            serving_mode=serving.serving_mode,
+            serving_worktree=serving.serving_worktree,
         )
     except Exception:
         logger.warning("Failed to record deployment ledger row (best-effort)", exc_info=True)

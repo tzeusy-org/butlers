@@ -1,23 +1,23 @@
-"""The deployments ledger — one row per ``butlers up`` process boot.
+"""The deployments ledger and serving provenance.
 
 bu-9r3hd.2 (epic bu-9r3hd "Deploy spine"). See
 ``alembic/versions/core/core_163_deployments_ledger.py`` for the table and
 its design rationale, and ``butlers.cli._start_all`` for the single call site
 that records a boot (once per process, not once per butler daemon).
 
-This module is deliberately narrow: it records "a boot happened, from this
-git SHA, against this migration head, with this coarse result" and reads it
-back. It is NOT the drift sentinel (bu-9r3hd.1 compares this against the
-live per-schema Alembic state on an hourly cadence) and it is NOT the
-one-command deploy verb (bu-9r3hd.3 adds a build/migrate/verify-health
-pipeline that will eventually call ``record_deployment`` with a real
-success/failure verdict instead of "did every configured daemon start").
+This module is deliberately narrow: it records a boot or deploy, the baked
+git SHA, its migration head, and the serving provenance that explains what is
+actually running. It is NOT the drift sentinel (bu-9r3hd.1 compares this
+against the live per-schema Alembic state on an hourly cadence).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import asyncpg
@@ -27,8 +27,97 @@ from butlers.migrations import get_chain_revision_ids
 logger = logging.getLogger(__name__)
 
 VALID_RESULTS = frozenset({"success", "failed"})
+VALID_DEPLOYMENT_SOURCES = frozenset({"boot", "deploy"})
+VALID_SERVING_MODES = frozenset({"image", "hotreload-worktree"})
 
 _UNKNOWN_GIT_SHA = "unknown"
+_DEFAULT_SOURCE_ROOT = Path("/app/src")
+_DEFAULT_MOUNTINFO_PATH = Path("/proc/self/mountinfo")
+_MOUNTINFO_ESCAPE = re.compile(r"\\([0-7]{3})")
+
+
+@dataclass(frozen=True)
+class ServingProvenance:
+    """Serving-mode evidence recorded alongside a process boot.
+
+    ``serving_mode`` stays ``None`` when runtime inspection cannot honestly
+    distinguish a baked image from some other mounted source. A linked
+    worktree is deliberately represented by its stable, non-host-specific
+    ``.worktrees/<name>`` suffix rather than an absolute host path.
+    """
+
+    serving_mode: str | None
+    serving_worktree: str | None
+
+
+def _decode_mountinfo_path(value: str) -> str:
+    """Decode Linux mountinfo's octal path escapes without shell parsing."""
+
+    return _MOUNTINFO_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), value)
+
+
+def _worktree_label(mount_root: str) -> str | None:
+    """Extract ``.worktrees/<name>`` from a bind-mount source path."""
+
+    parts = PurePosixPath(mount_root).parts
+    for index, part in enumerate(parts[:-1]):
+        if part == ".worktrees":
+            return f".worktrees/{parts[index + 1]}"
+    return None
+
+
+def detect_boot_serving_provenance(
+    *,
+    source_root: Path = _DEFAULT_SOURCE_ROOT,
+    mountinfo_path: Path = _DEFAULT_MOUNTINFO_PATH,
+) -> ServingProvenance:
+    """Detect a source bind mount without trusting ambient compose profile.
+
+    A hotreload service bind-mounts the host checkout's ``src`` directory at
+    ``/app/src``. Linux exposes that fact in ``/proc/self/mountinfo``: an
+    exact mount at the source root carries the host-side path in field four.
+    We only classify it as ``hotreload-worktree`` when that host path includes
+    a linked ``.worktrees/<name>`` checkout. A different source mount is not
+    silently labelled ``image``; it remains unknown until a future serving
+    mode models it explicitly. This keeps the dashboard from granting image
+    authority to a mounted tree it cannot identify.
+    """
+
+    try:
+        mountinfo_lines = mountinfo_path.read_text().splitlines()
+    except OSError:
+        logger.debug("deployments: mountinfo unavailable; serving mode is unknown")
+        return ServingProvenance(serving_mode=None, serving_worktree=None)
+
+    source_root_text = str(source_root)
+    for line in mountinfo_lines:
+        pre_separator, separator, _post_separator = line.partition(" - ")
+        if not separator:
+            continue
+        fields = pre_separator.split()
+        # mount ID, parent ID, major:minor, root, mount point, options, ...
+        if len(fields) < 5 or _decode_mountinfo_path(fields[4]) != source_root_text:
+            continue
+
+        worktree = _worktree_label(_decode_mountinfo_path(fields[3]))
+        if worktree is not None:
+            return ServingProvenance(
+                serving_mode="hotreload-worktree",
+                serving_worktree=worktree,
+            )
+
+        logger.info(
+            "deployments: source root %s is bind-mounted but not a linked worktree; "
+            "recording serving mode as unknown",
+            source_root,
+        )
+        return ServingProvenance(serving_mode=None, serving_worktree=None)
+
+    if source_root.is_dir():
+        return ServingProvenance(serving_mode="image", serving_worktree=None)
+
+    logger.debug("deployments: source root %s is absent; serving mode is unknown", source_root)
+    return ServingProvenance(serving_mode=None, serving_worktree=None)
 
 
 def resolve_git_sha() -> str:
@@ -172,27 +261,67 @@ async def record_deployment(
     git_sha: str,
     migration_head: str | None,
     result: str,
+    source: str,
+    serving_mode: str | None,
+    serving_worktree: str | None,
 ) -> str:
-    """Insert one deployment-ledger row and return its id.
+    """Insert one deployment-ledger row with provenance and return its id.
 
-    Records the boot as already finished (``started_at`` == ``finished_at``
-    == now) — this slice records a boot in one shot rather than a phased
-    start/verify/finish pipeline. bu-9r3hd.3's `butlers deploy` verb will
-    eventually own real phase timing once it exists.
+    Records a boot or deploy as already finished (``started_at`` ==
+    ``finished_at`` == now). ``source`` and ``serving_mode`` are required at
+    every current writer, while the database deliberately permits null values
+    in old rows that predate this provenance contract.
     """
     if result not in VALID_RESULTS:
         raise ValueError(
             f"record_deployment: result must be one of {sorted(VALID_RESULTS)}, got {result!r}"
         )
+    if source not in VALID_DEPLOYMENT_SOURCES:
+        raise ValueError(
+            "record_deployment: source must be one of "
+            f"{sorted(VALID_DEPLOYMENT_SOURCES)}, got {source!r}"
+        )
+    if serving_mode is not None and serving_mode not in VALID_SERVING_MODES:
+        raise ValueError(
+            "record_deployment: serving_mode must be one of "
+            f"{sorted(VALID_SERVING_MODES)} or None, got {serving_mode!r}"
+        )
+    if serving_worktree is not None:
+        if serving_mode != "hotreload-worktree":
+            raise ValueError(
+                "record_deployment: serving_worktree requires serving_mode='hotreload-worktree'"
+            )
+        if not re.fullmatch(r"\.worktrees/[^/]+", serving_worktree):
+            raise ValueError(
+                "record_deployment: serving_worktree must be '.worktrees/<name>', "
+                f"got {serving_worktree!r}"
+            )
+    if source == "deploy" and (serving_mode != "image" or serving_worktree is not None):
+        raise ValueError(
+            "record_deployment: deploy source must record image serving with no worktree"
+        )
+
     row_id = await pool.fetchval(
         """
-        INSERT INTO public.deployments (git_sha, migration_head, started_at, finished_at, result)
-        VALUES ($1, $2, now(), now(), $3)
+        INSERT INTO public.deployments (
+            git_sha,
+            migration_head,
+            started_at,
+            finished_at,
+            result,
+            source,
+            serving_mode,
+            serving_worktree
+        )
+        VALUES ($1, $2, now(), now(), $3, $4, $5, $6)
         RETURNING id
         """,
         git_sha,
         migration_head,
         result,
+        source,
+        serving_mode,
+        serving_worktree,
     )
     return str(row_id)
 
@@ -201,7 +330,16 @@ async def get_current_deployment(pool: asyncpg.Pool) -> dict[str, Any] | None:
     """Return the most recent deployment row, or None if the ledger is empty."""
     row = await pool.fetchrow(
         """
-        SELECT id, git_sha, migration_head, started_at, finished_at, result
+        SELECT
+            id,
+            git_sha,
+            migration_head,
+            started_at,
+            finished_at,
+            result,
+            source,
+            serving_mode,
+            serving_worktree
         FROM public.deployments
         ORDER BY started_at DESC
         LIMIT 1
@@ -214,7 +352,16 @@ async def list_recent_deployments(pool: asyncpg.Pool, limit: int = 10) -> list[d
     """Return up to `limit` most recent deployment rows, newest first."""
     rows = await pool.fetch(
         """
-        SELECT id, git_sha, migration_head, started_at, finished_at, result
+        SELECT
+            id,
+            git_sha,
+            migration_head,
+            started_at,
+            finished_at,
+            result,
+            source,
+            serving_mode,
+            serving_worktree
         FROM public.deployments
         ORDER BY started_at DESC
         LIMIT $1

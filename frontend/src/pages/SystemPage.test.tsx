@@ -303,6 +303,9 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
           started_at: "2026-06-17T10:00:00Z",
           finished_at: "2026-06-17T10:00:00Z",
           result: "success",
+          source: "deploy",
+          serving_mode: "image",
+          serving_worktree: null,
         },
         recent: [],
         commits_behind_main: 0,
@@ -818,6 +821,39 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("last deploy failed");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces a bind-mounted worktree boot as a red problem", () => {
+    setAllSuccess();
+    vi.mocked(useDeploymentFacts).mockReturnValue({
+      data: {
+        data: {
+          current: {
+            id: "11111111-1111-1111-1111-111111111111",
+            git_sha: "abc1234",
+            migration_head: "core_163",
+            started_at: "2026-06-17T10:00:00Z",
+            finished_at: "2026-06-17T10:00:00Z",
+            result: "success",
+            source: "boot",
+            serving_mode: "hotreload-worktree",
+            serving_worktree: ".worktrees/frozen-checkout",
+          },
+          recent: [],
+          commits_behind_main: 0,
+          commits_behind_available: true,
+        },
+        meta: {},
+      },
+      isPending: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("boot from bind-mounted worktree .worktrees/frozen-checkout (hotreload)");
+    expect(html).toContain("--red-text");
     expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
   });
 

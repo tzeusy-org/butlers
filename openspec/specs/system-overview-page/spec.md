@@ -89,6 +89,13 @@ record of when, or whether, any deploy actually took effect).
   - `finished_at: string | null` -- ISO 8601 UTC timestamp; in v1 this always equals
     `started_at` (see below)
   - `result: "success" | "failed"`
+  - `source: "boot" | "deploy" | null` -- identifies whether the row came from a
+    `butlers up` process boot or the `butlers deploy` pipeline; `null` means the row
+    predates provenance tracking and MUST remain an honest unknown
+  - `serving_mode: "image" | "hotreload-worktree" | null` -- the runtime serving
+    mode recorded with the row; `null` means inspection could not classify it
+  - `serving_worktree: string | null` -- the stable `.worktrees/<name>` label for a
+    detected linked-worktree bind mount, never a host-specific absolute path
 - **AND** the response wraps in the standard `ApiResponse<DeploymentFacts>` envelope
 
 #### Scenario: One ledger row per process boot, not per butler
@@ -101,6 +108,36 @@ record of when, or whether, any deploy actually took effect).
   successfully, `"failed"` otherwise
 - **AND** the write is best-effort: a ledger-write failure is logged and does not
   block or fail startup (mirrors the `_ensure_owner_entity` bootstrap convention)
+
+#### Scenario: Deployment source and serving mode are recorded honestly
+
+- **WHEN** `butlers deploy` completes or fails after it has begun its pipeline
+- **THEN** its ledger row has `source="deploy"`, `serving_mode="image"`, and
+  `serving_worktree=null`, because the deploy command explicitly builds and recreates
+  the profile-less baked-image service set
+- **AND WHEN** `butlers up` records a process boot whose `/app/src` bind mount resolves
+  to a linked `.worktrees/<name>` checkout in Linux mount metadata
+- **THEN** its row has `source="boot"`, `serving_mode="hotreload-worktree"`, and the
+  stable `.worktrees/<name>` label in `serving_worktree`
+- **AND WHEN** a boot's source is absent or is a bind mount that cannot be identified as
+  a linked worktree
+- **THEN** `serving_mode` and `serving_worktree` are `null`, never a fabricated
+  `"image"` classification
+- **AND** rows written before this capability keep all three provenance fields `null`
+  rather than being backfilled with a guess
+
+#### Scenario: Bind-mounted worktree serving is unmistakable on the System page
+
+- **WHEN** the current deployment record has `source="boot"`,
+  `serving_mode="hotreload-worktree"`, and
+  `serving_worktree=".worktrees/<name>"`
+- **THEN** the Deployment tile renders the exact textual clause
+  `boot from bind-mounted worktree .worktrees/<name> (hotreload)` using the semantic
+  red-text token
+- **AND** the System verdict banner repeats that clause as a red problem even when the
+  baked image SHA is current and the commits-behind comparison is zero
+- **AND** the clause is conveyed in text as well as color, so it remains clear to
+  assistive technology and non-color perception
 
 #### Scenario: git_sha is threaded from the Docker build
 

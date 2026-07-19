@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import asyncpg
 import pytest
 
 from butlers.core.deployments import (
+    VALID_DEPLOYMENT_SOURCES,
     VALID_RESULTS,
+    VALID_SERVING_MODES,
+    ServingProvenance,
+    detect_boot_serving_provenance,
     get_current_deployment,
     list_recent_deployments,
     read_migration_head,
@@ -38,6 +43,58 @@ class TestResolveGitSha:
     def test_falls_back_to_unknown_when_empty(self, monkeypatch):
         monkeypatch.setenv("GIT_SHA", "")
         assert resolve_git_sha() == "unknown"
+
+
+class TestDetectBootServingProvenance:
+    def test_reports_bind_mounted_worktree_from_mountinfo(self, tmp_path):
+        mountinfo = tmp_path / "mountinfo"
+        mountinfo.write_text(
+            "421 319 0:45 /home/tze/gt/butlers/.worktrees/frozen-checkout/src "
+            "/app/src rw,relatime - ext4 /dev/sda rw\n"
+        )
+
+        provenance = detect_boot_serving_provenance(
+            source_root=Path("/app/src"), mountinfo_path=mountinfo
+        )
+
+        assert provenance == ServingProvenance(
+            serving_mode="hotreload-worktree",
+            serving_worktree=".worktrees/frozen-checkout",
+        )
+
+    def test_reports_image_when_source_root_is_not_a_mount(self, tmp_path):
+        source_root = tmp_path / "image-src"
+        source_root.mkdir()
+        mountinfo = tmp_path / "mountinfo"
+        mountinfo.write_text("24 1 0:22 / / rw,relatime - overlay overlay rw\n")
+
+        provenance = detect_boot_serving_provenance(
+            source_root=source_root, mountinfo_path=mountinfo
+        )
+
+        assert provenance == ServingProvenance(serving_mode="image", serving_worktree=None)
+
+    def test_does_not_fabricate_image_when_a_source_mount_is_not_a_worktree(self, tmp_path):
+        mountinfo = tmp_path / "mountinfo"
+        mountinfo.write_text(
+            "421 319 0:45 /home/tze/gt/butlers/src /app/src rw,relatime - ext4 /dev/sda rw\n"
+        )
+
+        provenance = detect_boot_serving_provenance(
+            source_root=Path("/app/src"), mountinfo_path=mountinfo
+        )
+
+        assert provenance == ServingProvenance(serving_mode=None, serving_worktree=None)
+
+    def test_reports_unknown_when_runtime_source_root_is_absent(self, tmp_path):
+        mountinfo = tmp_path / "mountinfo"
+        mountinfo.write_text("")
+
+        provenance = detect_boot_serving_provenance(
+            source_root=tmp_path / "missing-src", mountinfo_path=mountinfo
+        )
+
+        assert provenance == ServingProvenance(serving_mode=None, serving_worktree=None)
 
 
 class TestReadMigrationHead:
@@ -197,7 +254,55 @@ class TestRecordDeployment:
         pool = AsyncMock()
         with pytest.raises(ValueError):
             await record_deployment(
-                pool, git_sha="abc1234", migration_head="core_163", result="in_progress"
+                pool,
+                git_sha="abc1234",
+                migration_head="core_163",
+                result="in_progress",
+                source="boot",
+                serving_mode="image",
+                serving_worktree=None,
+            )
+        pool.fetchval.assert_not_awaited()
+
+    async def test_rejects_invalid_source(self):
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="source"):
+            await record_deployment(
+                pool,
+                git_sha="abc1234",
+                migration_head="core_163",
+                result="success",
+                source="manual",
+                serving_mode="image",
+                serving_worktree=None,
+            )
+        pool.fetchval.assert_not_awaited()
+
+    async def test_rejects_invalid_serving_mode(self):
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="serving_mode"):
+            await record_deployment(
+                pool,
+                git_sha="abc1234",
+                migration_head="core_163",
+                result="success",
+                source="boot",
+                serving_mode="container",
+                serving_worktree=None,
+            )
+        pool.fetchval.assert_not_awaited()
+
+    async def test_rejects_worktree_name_without_worktree_mode(self):
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="serving_worktree"):
+            await record_deployment(
+                pool,
+                git_sha="abc1234",
+                migration_head="core_163",
+                result="success",
+                source="deploy",
+                serving_mode="image",
+                serving_worktree=".worktrees/frozen-checkout",
             )
         pool.fetchval.assert_not_awaited()
 
@@ -207,19 +312,40 @@ class TestRecordDeployment:
         pool.fetchval = AsyncMock(return_value=row_id)
 
         result = await record_deployment(
-            pool, git_sha="abc1234", migration_head="core_163", result="success"
+            pool,
+            git_sha="abc1234",
+            migration_head="core_163",
+            result="success",
+            source="boot",
+            serving_mode="hotreload-worktree",
+            serving_worktree=".worktrees/frozen-checkout",
         )
         assert result == str(row_id)
 
         pool.fetchval.assert_awaited_once()
         query, *params = pool.fetchval.await_args.args
         assert "INSERT INTO public.deployments" in query
-        assert params == ["abc1234", "core_163", "success"]
+        assert params == [
+            "abc1234",
+            "core_163",
+            "success",
+            "boot",
+            "hotreload-worktree",
+            ".worktrees/frozen-checkout",
+        ]
 
     async def test_allows_null_migration_head(self):
         pool = AsyncMock()
         pool.fetchval = AsyncMock(return_value=uuid.uuid4())
-        await record_deployment(pool, git_sha="abc1234", migration_head=None, result="failed")
+        await record_deployment(
+            pool,
+            git_sha="abc1234",
+            migration_head=None,
+            result="failed",
+            source="boot",
+            serving_mode=None,
+            serving_worktree=None,
+        )
         _query, *params = pool.fetchval.await_args.args
         assert params[1] is None
 
@@ -228,11 +354,21 @@ class TestRecordDeployment:
         pool.fetchval = AsyncMock(side_effect=Exception("connection reset"))
         with pytest.raises(Exception, match="connection reset"):
             await record_deployment(
-                pool, git_sha="abc1234", migration_head="core_163", result="success"
+                pool,
+                git_sha="abc1234",
+                migration_head="core_163",
+                result="success",
+                source="deploy",
+                serving_mode="image",
+                serving_worktree=None,
             )
 
     def test_valid_results_matches_migration_check_constraint(self):
         assert VALID_RESULTS == {"success", "failed"}
+
+    def test_valid_provenance_vocabularies_match_migration_check_constraints(self):
+        assert VALID_DEPLOYMENT_SOURCES == {"boot", "deploy"}
+        assert VALID_SERVING_MODES == {"image", "hotreload-worktree"}
 
 
 class TestGetCurrentDeployment:

@@ -29,6 +29,7 @@ interface Problem {
   key: string;
   text: string;
   href?: string;
+  tone?: "red";
 }
 
 function formatUptime(seconds: number): string {
@@ -48,6 +49,18 @@ function formatBackupRecency(lastBackupAt: string | null): string {
   if (hours < 1) return "backed up <1h ago";
   if (hours < 48) return `backed up ${hours}h ago`;
   return `backed up ${Math.floor(hours / 24)}d ago`;
+}
+
+function bindMountedWorktreeTruth(current: {
+  source: string | null;
+  serving_mode: string | null;
+  serving_worktree: string | null;
+}): string | null {
+  if (current.serving_mode !== "hotreload-worktree") return null;
+
+  const actor = current.source === "boot" ? "boot" : "serving";
+  const worktree = current.serving_worktree ? ` ${current.serving_worktree}` : "";
+  return `${actor} from bind-mounted worktree${worktree} (hotreload)`;
 }
 
 export function SystemVerdictBanner() {
@@ -197,9 +210,16 @@ export function SystemVerdictBanner() {
   // origin/main with nothing on /system saying so -- deploy failures and
   // "N commits behind" both need to be as loud as migration drift.
   const deploymentData = deployments.data?.data;
+  const worktreeTruth = deploymentData?.current
+    ? bindMountedWorktreeTruth(deploymentData.current)
+    : null;
+  if (worktreeTruth) {
+    problems.push({ key: "bind-mounted-worktree", text: worktreeTruth, tone: "red" });
+  }
   if (deploymentData?.current?.result === "failed") {
     problems.push({ key: "deploy-failed", text: "last deploy failed" });
-  } else if (deploymentData && !deploymentData.commits_behind_available) {
+  }
+  if (deploymentData && !deploymentData.commits_behind_available) {
     problems.push({ key: "commits-behind-unavailable", text: "commits-behind-origin/main check unavailable" });
   } else if (deploymentData && (deploymentData.commits_behind_main ?? 0) > 0) {
     const n = deploymentData.commits_behind_main as number;
@@ -242,13 +262,18 @@ export function SystemVerdictBanner() {
       <ul className="flex flex-col gap-1 text-sm">
         {problems.map((p) =>
           p.href ? (
-            <li key={p.key}>
+            <li key={p.key} className={p.tone === "red" ? "text-[var(--red-text)] font-medium" : undefined}>
               <Link to={p.href} className="text-inherit hover:underline">
                 {p.text}
               </Link>
             </li>
           ) : (
-            <li key={p.key}>{p.text}</li>
+            <li
+              key={p.key}
+              className={p.tone === "red" ? "text-[var(--red-text)] font-medium" : undefined}
+            >
+              {p.text}
+            </li>
           ),
         )}
       </ul>

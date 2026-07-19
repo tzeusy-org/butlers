@@ -719,6 +719,13 @@ fast smoke-tier framing and the latest-revision round-trip guard.
   session-scoped `postgres_container` fixture rather than introducing a parallel
   provisioning path
 
+#### Scenario: Post-merge migration-chain integrity gate
+- **WHEN** a push to `main` changes a path under `alembic/versions/**`
+- **THEN** the `Migration Chain Integrity (main)` workflow checks out the pushed
+  merged SHA and runs `tests/config/test_migration_chain_head.py`
+- **AND** the GitHub Actions check fails loudly if the merged tree has duplicate
+  revisions or more than one Alembic head
+
 ### Requirement: Daemon Lifecycle Smoke Test
 The project SHALL prove that a butler daemon completes its lifecycle initialization
 to the "accepting connections" signal and then shuts down cleanly, releasing all

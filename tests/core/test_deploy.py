@@ -375,7 +375,13 @@ class TestRunDeploy:
         assert result.git_sha == "deadbeef"
         assert result.migration_head == "core_163"
         record_mock.assert_awaited_once_with(
-            pool, git_sha="deadbeef", migration_head="core_163", result="success"
+            pool,
+            git_sha="deadbeef",
+            migration_head="core_163",
+            result="success",
+            source="deploy",
+            serving_mode="image",
+            serving_worktree=None,
         )
         # Injected pool must not be closed by run_deploy.
         pool.close.assert_not_awaited()
@@ -399,7 +405,13 @@ class TestRunDeploy:
         # Every phase up to and including the failing one ran; nothing after it did.
         assert calls[-1] == fail_at
         record_mock.assert_awaited_once_with(
-            pool, git_sha="deadbeef", migration_head=None, result="failed"
+            pool,
+            git_sha="deadbeef",
+            migration_head=None,
+            result="failed",
+            source="deploy",
+            serving_mode="image",
+            serving_worktree=None,
         )
 
     async def test_migration_head_read_failure_does_not_block_the_ledger_write(self, monkeypatch):
@@ -417,7 +429,13 @@ class TestRunDeploy:
 
         assert result.migration_head is None
         record_mock.assert_awaited_once_with(
-            pool, git_sha="deadbeef", migration_head=None, result="success"
+            pool,
+            git_sha="deadbeef",
+            migration_head=None,
+            result="success",
+            source="deploy",
+            serving_mode="image",
+            serving_worktree=None,
         )
 
     async def test_no_injected_pool_creates_and_closes_its_own(self, monkeypatch):
@@ -494,7 +512,13 @@ class TestRunDeploy:
 
         assert result.overrides == ("deploy root /wt is a linked git worktree",)
         record_mock.assert_awaited_once_with(
-            pool, git_sha="deadbeef", migration_head="core_163", result="success"
+            pool,
+            git_sha="deadbeef",
+            migration_head="core_163",
+            result="success",
+            source="deploy",
+            serving_mode="image",
+            serving_worktree=None,
         )
 
 
