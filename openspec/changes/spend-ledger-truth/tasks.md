@@ -20,4 +20,4 @@
 
 - [x] 4.1 Run targeted pricing, routing, Spend API, and Spend page tests; fix all failures.
 - [x] 4.2 Validate the OpenSpec change strictly and run the required lint/type/build quality gates for changed Python and frontend surfaces.
-- [ ] 4.3 Rebase on fresh `origin/main`, re-run focused verification, commit scoped changes, push the worker branch, and open a PR.
+- [x] 4.3 Rebase on fresh `origin/main`, re-run focused verification, commit scoped changes, push the worker branch, and open a PR.
