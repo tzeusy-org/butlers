@@ -16,7 +16,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from butlers.config import ButlerType
-from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
+from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
 from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
@@ -942,10 +942,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "notify() failed to defer notification; delivering immediately"
                             )
 
-            # Approvals-policy quiet-hours gate: suppress owner-default pages.
-            # It remains after delivery-preference deferral: the former drops
-            # owner-default pages, while the latter preserves authorised sends for
-            # a later flush.
+            # Approval-policy and context-bus gates apply only to routine,
+            # implicit-owner notifications.  They intentionally remain after
+            # delivery-preference deferral so the latter retains its existing
+            # per-butler behaviour unchanged.
             if (
                 _notify_pool is not None
                 and entity_id is None
@@ -955,91 +955,168 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             ):
                 from datetime import UTC as _PUTC
                 from datetime import datetime as _pdatetime
-                from zoneinfo import ZoneInfo as _PZoneInfo
 
                 from butlers.core.approvals_policy import (
                     get_approvals_policy_quiet_hours,
-                    should_suppress_by_policy,
+                    policy_quiet_hours_deliver_at,
+                )
+                from butlers.core.temporal.delivery_db import (
+                    insert_deferred_notification as _insert_deferred_notification,
                 )
 
+                _deferred_at = _pdatetime.now(_PUTC)
                 try:
                     _policy = await get_approvals_policy_quiet_hours(_notify_pool)
                 except Exception:
                     logger.debug(
-                        "notify() failed to fetch approvals_policy; delivering immediately",
+                        "notify() failed to fetch approvals_policy; failing open",
                         exc_info=True,
                     )
                     _policy = None
 
-                _quiet_hours_suppress = False
-                _policy_tz_name = "UTC"
+                _policy_deliver_at = None
                 if _policy is not None:
-                    _policy_tz_name = _policy.get("timezone", "UTC")
                     try:
-                        _policy_tz = _PZoneInfo(_policy_tz_name)
+                        _policy_deliver_at = policy_quiet_hours_deliver_at(
+                            _policy, now=_deferred_at
+                        )
                     except Exception:
-                        _policy_tz = _PZoneInfo("UTC")
-                    _policy_now_local = _pdatetime.now(_PUTC).astimezone(_policy_tz)
-                    _policy_current_hour = _policy_now_local.hour
-                    _quiet_hours_suppress = should_suppress_by_policy(
-                        _policy, current_hour=_policy_current_hour
-                    )
+                        logger.debug(
+                            "notify() could not calculate approvals-policy delivery time; "
+                            "failing open",
+                            exc_info=True,
+                        )
 
-                if _quiet_hours_suppress:
+                try:
+                    _context_suppression = await get_suppressing_context(_notify_pool)
+                except Exception:
+                    logger.debug(
+                        "notify() failed to fetch suppressing context; failing open",
+                        exc_info=True,
+                    )
+                    _context_suppression = None
+
+                _context_deliver_at = (
+                    _context_suppression.expires_at if _context_suppression is not None else None
+                )
+                _defer_candidates = [
+                    candidate
+                    for candidate in (_policy_deliver_at, _context_deliver_at)
+                    if candidate is not None
+                ]
+                if _defer_candidates:
+                    # When both guards are active, retain the notification until
+                    # both clear rather than letting an earlier policy boundary
+                    # violate a still-active DND/sleeping signal.
+                    _deliver_at = max(_defer_candidates)
+                    _reason_parts = []
+                    if _policy_deliver_at is not None:
+                        _reason_parts.append("policy_quiet_hours")
+                    if _context_suppression is not None:
+                        _reason_parts.append(f"context_bus:{_context_suppression.signal_type}")
+                    _defer_reason = "+".join(_reason_parts)
+
+                    try:
+                        _notif_id = await _insert_deferred_notification(
+                            _notify_pool,
+                            butler_name=butler_name,
+                            channel=channel,
+                            message=delivery_message,
+                            priority=priority,
+                            envelope=notify_request,
+                            deliver_at=_deliver_at,
+                            deferred_at=_deferred_at,
+                        )
+                    except Exception as _defer_exc:
+                        # Once a routine owner-default notification has been
+                        # classified for a durable hold, an unavailable queue is
+                        # retryable.  Do not turn a failed persistence boundary
+                        # into immediate delivery or destructive suppression.
+                        logger.exception(
+                            "notify() could not persist owner-default deferred notification "
+                            "(reason=%s channel=%s butler=%s)",
+                            _defer_reason,
+                            channel,
+                            butler_name,
+                        )
+                        try:
+                            await record_attention_event(
+                                _notify_pool,
+                                origin_butler=butler_name,
+                                source="notify",
+                                outcome="failed",
+                                channel=channel,
+                                intent=intent,
+                                priority=priority,
+                                reason=(f"deferred_persistence_error:{type(_defer_exc).__name__}"),
+                            )
+                        except Exception:
+                            logger.warning(
+                                "notify() could not record deferred persistence failure",
+                                exc_info=True,
+                            )
+                        return {
+                            "status": "error",
+                            "error": {
+                                "code": "deferred_notification_persistence_failed",
+                                "message": (
+                                    "The notification could not be queued for deferred delivery; "
+                                    "retry the notify call."
+                                ),
+                                "retryable": True,
+                            },
+                            "retryable": True,
+                        }
+
                     logger.info(
-                        "notify() suppressed owner page during quiet hours "
-                        "(policy tz=%s hour=%d quiet=%s-%s channel=%s butler=%s)",
-                        _policy_tz_name,
-                        _policy_current_hour,
-                        _policy.get("quiet_start_hour"),
-                        _policy.get("quiet_end_hour"),
+                        "notify() deferred routine owner-default notification %s "
+                        "(reason=%s deliver_at=%s channel=%s butler=%s)",
+                        _notif_id,
+                        _defer_reason,
+                        _deliver_at.isoformat(),
                         channel,
                         butler_name,
                     )
-                    await record_attention_event(
-                        _notify_pool,
-                        origin_butler=butler_name,
-                        source="notify",
-                        outcome="suppressed",
-                        channel=channel,
-                        intent=intent,
-                        priority=priority,
-                        reason="quiet_hours",
-                    )
-                    return {
-                        "status": "suppressed_quiet_hours",
-                        "channel": channel,
-                        "quiet_start_hour": _policy.get("quiet_start_hour"),
-                        "quiet_end_hour": _policy.get("quiet_end_hour"),
-                        "timezone": _policy_tz_name,
-                    }
+                    try:
+                        await record_attention_event(
+                            _notify_pool,
+                            origin_butler=butler_name,
+                            source="notify",
+                            outcome="deferred",
+                            channel=channel,
+                            intent=intent,
+                            priority=priority,
+                            reason=_defer_reason,
+                            notification_ref=_notif_id,
+                        )
+                    except Exception:
+                        # The queue is already durable; ledger observability must
+                        # never undo the caller-visible deferred result.
+                        logger.warning(
+                            "notify() deferred notification %s but could not record its ledger row",
+                            _notif_id,
+                            exc_info=True,
+                        )
 
-                # Context-bus gating is only reached when policy quiet hours did
-                # not suppress the owner-default notification.
-                _context_signal = await get_suppressing_context_signal(_notify_pool)
-                if _context_signal is not None:
-                    logger.info(
-                        "notify() suppressed owner page: context bus signal %r active "
-                        "(channel=%s butler=%s)",
-                        _context_signal,
-                        channel,
-                        butler_name,
-                    )
-                    await record_attention_event(
-                        _notify_pool,
-                        origin_butler=butler_name,
-                        source="notify",
-                        outcome="suppressed",
-                        channel=channel,
-                        intent=intent,
-                        priority=priority,
-                        reason=f"context_bus:{_context_signal}",
-                    )
-                    return {
-                        "status": "suppressed_context_bus",
+                    _deferred_result: dict[str, Any] = {
+                        "status": "deferred",
+                        "notification_id": _notif_id,
+                        "deliver_at": _deliver_at.isoformat(),
                         "channel": channel,
-                        "context_signal": _context_signal,
+                        "priority": priority,
+                        "reason": _defer_reason,
                     }
+                    if _policy_deliver_at is not None and _policy is not None:
+                        _deferred_result.update(
+                            {
+                                "quiet_start_hour": _policy.get("quiet_start_hour"),
+                                "quiet_end_hour": _policy.get("quiet_end_hour"),
+                                "timezone": _policy.get("timezone", "UTC"),
+                            }
+                        )
+                    if _context_suppression is not None:
+                        _deferred_result["context_signal"] = _context_suppression.signal_type
+                    return _deferred_result
 
             if client is None and butler_name != "switchboard":
                 return {

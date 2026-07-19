@@ -52,49 +52,71 @@ Before constructing the notification envelope, the `notify()` tool SHALL check t
 - **AND** the current time is 21:00 local
 - **THEN** the email-specific quiet hours apply and the notification is deferred
 
-### Requirement: Owner-Default-Page Suppression (Drop, Not Defer)
-The notify tool SHALL also consult the `approvals_policy` quiet-hours window
-and the context bus for notifications destined for the owner via the default
-resolution path (no `entity_id` and no explicit `recipient`, intent `send` or
-`insight`, priority not `high`) — distinct from the `delivery_preferences`
-quiet-hours gate above, which defers to `deferred_notifications`. When either
-check suppresses, the notification is **dropped**: it is recorded as an
-attention event and returned to the caller as suppressed, but it is NOT queued
-for later delivery and NOT retried. This is a separate mechanism from, and
-evaluated after, the `delivery_preferences` defer gate (which is checked
-first; if that gate already deferred the notification, this gate is not
-reached).
+### Requirement: Owner-Default-Page Deferred Delivery
+After the earlier `delivery_preferences` gate, `notify()` SHALL durably defer
+an eligible routine owner-default notification when the `approvals_policy`
+quiet-hours window or an active suppressing context applies. Eligibility is
+exactly: no `entity_id`, no explicit `recipient`, intent `send` or `insight`,
+priority other than `high`, and an available notification pool. The originating
+butler's `deferred_notifications` table SHALL store the full resolved
+`notify.v1` envelope; message content SHALL NOT be copied into
+`public.attention_ledger`.
 
-#### Scenario: Approvals-policy quiet hours drops the notification
+The approvals-policy check SHALL run before the context check. A policy hold
+uses the first whole local hour after the existing inclusive quiet-window end as
+its UTC `deliver_at`. A context-only hold uses the latest expiry among all
+active `dnd`/`sleeping` suppressors as its UTC `deliver_at`. When both holds
+apply, the later anchor SHALL win so the envelope cannot flush while either
+hold remains active. A queued result SHALL return `status="deferred"` with its
+`notification_id`, `deliver_at`, `channel`, and `priority`.
+
+The earlier `delivery_preferences` mechanism SHALL remain first and unchanged.
+High-priority, explicitly targeted, and other-intent notifications SHALL retain
+their existing behavior. Policy/context read failures SHALL retain the existing
+fail-open immediate path.
+
+#### Scenario: Approvals-policy quiet hours parks the full envelope
 - **WHEN** `notify(message="Heads up", priority="medium")` is called with no
   `entity_id` and no `recipient`
 - **AND** the current time falls inside the `approvals_policy` quiet-hours
   window
-- **THEN** the tool returns `{"status": "suppressed_quiet_hours", ...}` without
-  writing to `deferred_notifications`
-- **AND** an attention event is recorded with `outcome="suppressed"`,
-  `reason="quiet_hours"`
+- **THEN** the fully resolved `notify.v1` envelope is inserted into the
+  originating butler's `deferred_notifications` table with `status="pending"`
+  and a policy-derived UTC `deliver_at`
+- **AND** the tool returns `{"status": "deferred", "notification_id": "<uuid>",
+  "deliver_at": "<ISO timestamp>", ...}` without calling Switchboard
 
-#### Scenario: Context bus signal drops the notification
-- **WHEN** `notify(message="Heads up", priority="medium")` is called with no
-  `entity_id` and no `recipient`
-- **AND** a suppressing context-bus signal (e.g. do-not-disturb, sleeping) is
-  currently active
-- **THEN** the tool returns `{"status": "suppressed_context_bus", ...}`
-- **AND** an attention event is recorded with `outcome="suppressed"`,
-  `reason="context_bus:<signal>"`
+#### Scenario: Context hold parks until every active suppressor expires
+- **WHEN** an eligible `notify()` call is outside approvals-policy quiet hours
+- **AND** both a DND signal and a sleeping signal are active with different
+  expiry times
+- **THEN** the tool stores the full envelope with `deliver_at` equal to the
+  later expiry and a deterministic `context_bus:dnd` reason
+- **AND** the tool returns `status="deferred"` without immediate delivery
+
+#### Scenario: Concurrent policy and context holds use the later anchor
+- **WHEN** approvals-policy quiet hours and an active DND/sleeping signal both
+  select a durable hold
+- **THEN** the context bus is consulted after the policy check
+- **AND** the row's `deliver_at` is the later of the policy and context anchors
+- **AND** the ledger reason records both active hold reasons
 
 #### Scenario: High priority and targeted notifications are exempt
 - **WHEN** `notify(..., priority="high")` is called, OR `entity_id` or
-  `recipient` is provided
-- **THEN** neither the approvals-policy quiet-hours check nor the context-bus
-  check runs, and this requirement does not apply
+  `recipient` is provided, OR intent is neither `send` nor `insight`
+- **THEN** this requirement does not apply and the existing delivery path is
+  preserved
 
-#### Scenario: Context-bus check is skipped when quiet hours already suppressed
-- **WHEN** approvals-policy quiet hours already suppress the notification
-- **THEN** the context-bus signal (`public.user_context`, RFC 0009) is not
-  queried — this is a deterministic check (no LLM in the read path) and
-  avoids a redundant DB round-trip on an already-decided path
+#### Scenario: Deferred persistence failure is retryable and never sends
+- **WHEN** an eligible policy or context hold is selected but inserting the
+  deferred row fails
+- **THEN** `notify()` returns `status="error"` with `retryable=true`
+- **AND** it does not call Switchboard or return a suppressed status
+
+#### Scenario: Ledger failure after queueing preserves the hold
+- **WHEN** the deferred row is inserted successfully but its ledger write fails
+- **THEN** the queued row remains pending and `notify()` still returns the
+  deferred result
 
 ### Requirement: Attention Ledger Recording at the notify() Boundary
 Every terminal decision the `notify()` owner-default quiet-hours gate makes SHALL be recorded to `public.attention_ledger` with a closed outcome vocabulary (`delivered`, `coalesced`, `deferred`, `suppressed`, `failed`) and a machine-readable `reason`. A ledger-write failure MUST NOT block or fail the notification it describes (best-effort, fail-open).
@@ -117,15 +139,25 @@ Every terminal decision the `notify()` owner-default quiet-hours gate makes SHAL
 - **THEN** there is nothing safe to enqueue, so the row is stamped honestly as `reason="unexpected_error:<ExceptionType>"` with `notification_ref` null — never a half-built or mis-addressed envelope
 - **AND** the retry's `deliver_at` honors any resolved quiet-hours deferral so the retry is not redelivered inside quiet hours (the flush path gates purely on `deliver_at`), and the debounce marker is NOT advanced on the retry path (only a confirmed direct delivery advances it)
 
-#### Scenario: Quiet-hours suppression is recorded
-- **WHEN** `notify()`'s owner-default path is suppressed by `public.approvals_policy` quiet hours
-- **THEN** a `public.attention_ledger` row is written with `outcome="suppressed"` and `reason="quiet_hours"`
-- **AND** the notify() call still returns `{"status": "suppressed_quiet_hours", ...}` to the caller unchanged
+#### Scenario: Owner-default policy deferral is linked in the ledger
+- **WHEN** `notify()` parks an eligible owner-default call because of
+  `public.approvals_policy` quiet hours
+- **THEN** it writes `outcome="deferred"`, `reason="policy_quiet_hours"`, and
+  the inserted deferred row id as `notification_ref`
 
-#### Scenario: Context-bus suppression is recorded
-- **WHEN** `notify()`'s owner-default path is suppressed because an active `dnd` or `sleeping` context-bus signal is present (and quiet hours did not already suppress)
-- **THEN** a `public.attention_ledger` row is written with `outcome="suppressed"` and `reason="context_bus:<signal_type>"`
-- **AND** the notify() call returns `{"status": "suppressed_context_bus", "channel": ..., "context_signal": "<signal_type>"}`
+#### Scenario: Owner-default context deferral is linked in the ledger
+- **WHEN** `notify()` parks an eligible owner-default call because of an active
+  suppressing context signal
+- **THEN** it writes `outcome="deferred"`,
+  `reason="context_bus:<signal_type>"`, and the inserted deferred row id as
+  `notification_ref`
+
+#### Scenario: Deferred persistence failure is recorded as failed
+- **WHEN** policy or context parking is selected but the deferred-row INSERT
+  fails
+- **THEN** the tool makes a best-effort `outcome="failed"` ledger record with a
+  `deferred_persistence_error:<ExceptionType>` reason
+- **AND** the ledger attempt cannot convert the result into immediate delivery
 
 #### Scenario: Delivery-preferences defer is recorded
 - **WHEN** any notify-boundary caller (the `notify()` tool itself, or a process-boundary-forced consumer composing the same primitives) defers a notification via the per-butler `delivery_preferences` quiet-hours mechanism

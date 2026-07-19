@@ -80,6 +80,20 @@ class TestApprovalPushDeferralTime:
         assert approval_push_deliver_at(policy, now=now) is None
 
 
+class TestOwnerDefaultNotifyDeferralTime:
+    """Routine implicit-owner notifications share inclusive quiet-hour timing."""
+
+    def test_returns_first_whole_hour_after_inclusive_quiet_end(self):
+        from butlers.core.approvals_policy import policy_quiet_hours_deliver_at
+
+        now = datetime(2026, 7, 18, 23, 30, tzinfo=UTC)
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
+
+        assert policy_quiet_hours_deliver_at(policy, now=now) == datetime(
+            2026, 7, 19, 8, 0, tzinfo=UTC
+        )
+
+
 # ---------------------------------------------------------------------------
 # §8.6.2 — should_suppress_by_policy
 # ---------------------------------------------------------------------------

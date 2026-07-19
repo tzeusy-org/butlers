@@ -335,12 +335,24 @@ The dashboard SHALL expose `GET/PUT /api/approvals/policy` to manage notificatio
 - **WHEN** `PUT /api/approvals/policy` is called with the same shape
 - **THEN** the singleton row is updated and `audit.append("approvals.policy")` is invoked.
 
-#### Scenario: Quiet hours suppress paging
+#### Scenario: Quiet hours defer a routine owner-default notification
 
-- **WHEN** the notification dispatcher is about to page the owner for a new approval via the owner-default path (no explicit `entity_id` or `recipient`), with intent `send` or `insight` and priority not `high`
-- **THEN** if the current hour in `timezone` falls within the inclusive window `[quiet_start_hour, quiet_end_hour]`, the page is suppressed (dropped silently, returning status `suppressed_quiet_hours`); it is NOT deferred or re-presented later
-- **AND** high-priority pages and pages with an explicit `entity_id`/`recipient` are always delivered immediately
-- **AND** the approval is still created and visible in the dashboard immediately.
+- **WHEN** the notification dispatcher handles a routine implicit-owner `send`
+  or `insight` call with priority other than `high`
+- **AND** the current local hour is within the inclusive policy window
+- **THEN** it parks the full envelope in the originating schema's
+  `deferred_notifications` table for the first whole hour after quiet hours
+- **AND** it returns the established `deferred` result rather than silently
+  dropping the page
+- **AND** high-priority and explicit-target notifications retain their existing
+  immediate behavior
+
+#### Scenario: Approval-request pushes retain their dedicated behavior
+
+- **WHEN** an approval gate emits an `approval_request` push during quiet hours
+- **THEN** its existing decision-loop deferral behavior and pending-action
+  expiry semantics remain unchanged
+- **AND** it is not reclassified as a routine `send` or `insight` hold
 
 ### Requirement: Approvals Live Stream
 

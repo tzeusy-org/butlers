@@ -26,5 +26,13 @@ move 15/15).
 - [x] 3.2 Unit tests for the deterministic classifiers/helpers.
 - [x] 3.3 Integration tests: each producer round-trips `public.user_context`;
       closed-loop check that the notify gate's `get_suppressing_context_signal`
-      now sees a live `sleeping` signal (the `suppressed_context_bus` branch is
-      reachable).
+      now sees a live `sleeping` signal (the durable context-deferred branch is
+      reachable and preserves the envelope).
+
+## Reconciliation
+
+The originally completed producer work made the context gate reachable while
+the then-current notify contract still destructively discarded routine content.
+The subsequent `park-owner-default-notifications` change replaces that direct
+notify outcome with durable deferral. This change is intentionally not archived
+until its delta is synced with the corrected wording below.

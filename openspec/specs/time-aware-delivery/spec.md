@@ -57,7 +57,19 @@ The `notify()` tool SHALL accept an optional `priority` parameter (enum: `high`,
 - **THEN** an error response is returned listing valid priority values
 
 ### Requirement: Deferred Notification Storage
-Deferred notifications are stored in a `deferred_notifications` table with fields: `id` (UUID), `butler_name`, `channel`, `message`, `priority`, `envelope` (JSONB -- full notify.v1 envelope), `deferred_at` (timestamp), `deliver_at` (timestamp -- computed from `batch_delivery_time` in user timezone), `status` (enum: `pending`, `delivered`, `expired`, `cancelled`), `delivered_at` (timestamp, nullable).
+The system SHALL store deferred notifications in a `deferred_notifications`
+table with fields: `id` (UUID), `butler_name`, `channel`, `message`,
+`priority`, `envelope` (JSONB -- full notify.v1 envelope), `deferred_at`
+(timestamp), `deliver_at` (timestamp -- computed from `batch_delivery_time` in
+user timezone), `status` (enum: `pending`, `delivered`, `expired`,
+`cancelled`), and `delivered_at` (timestamp, nullable).
+
+The storage-and-flush mechanism SHALL also accept eligible routine
+owner-default approvals-policy/context holds without a source-specific schema
+field. That admission path supplies its own authoritative `deliver_at`: the
+policy anchor or latest active suppressor expiry. Each successful direct
+owner-default hold retains one row per call; it SHALL NOT invent generic content
+deduplication beyond the scheduler's existing delivery behavior.
 
 This table's storage-and-flush mechanism is also reused (bu-hmdqz.3) to retry a genuinely *failed* delivery attempt, not just to batch a quiet-hours defer: a caller running outside every butler daemon's own container (e.g. `butlers.jobs.secrets_lifecycle`, scheduled inside `dashboard-api`) that hits a transport error MAY insert a retry envelope directly into a target butler's `deferred_notifications` table (via `insert_deferred_notification`) so that butler's OWN scheduler tick flushes and redelivers it in-process. This is an ordinary `deliver_at`-scheduled row like any other -- no schema or flush-pass distinction from a quiet-hours defer -- but the attention-ledger row describing the original attempt is recorded with `outcome="failed"` (see the Notify Contract spec's Attention Ledger requirement), not `outcome="deferred"`, since the retry is an explicit caller action rather than the standard quiet-hours hold.
 
@@ -72,6 +84,19 @@ A caller that re-derives the same transition on a recurring scan MUST dedup its 
 #### Scenario: Deferred notification persisted
 - **WHEN** a medium-priority notification is deferred during quiet hours
 - **THEN** a row is inserted into `deferred_notifications` with `status='pending'` and `deliver_at` computed as the next occurrence of `batch_delivery_time` in the user's timezone
+
+#### Scenario: Owner-default policy hold is persisted without a new schema
+- **WHEN** the direct owner-default notify gate selects approvals-policy quiet
+  hours
+- **THEN** a pending row stores the full resolved envelope and the policy-derived
+  UTC `deliver_at`
+- **AND** the row uses no new column or public content store
+
+#### Scenario: Owner-default context hold uses the supplied wake anchor
+- **WHEN** the direct owner-default notify gate selects an active suppressing
+  context
+- **THEN** a pending row stores the full resolved envelope with the latest
+  active suppressor expiry as `deliver_at`
 
 #### Scenario: Daemon restart preserves deferred notifications
 - **WHEN** the daemon restarts after a deferred notification was stored

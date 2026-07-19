@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -352,8 +353,16 @@ async def count_attention_events_since(
 _SUPPRESSING_CONTEXT_SIGNALS = ("dnd", "sleeping")
 
 
-async def get_suppressing_context_signal(pool: asyncpg.Pool | None) -> str | None:
-    """Return the first active dnd/sleeping context-bus signal, else None.
+@dataclass(frozen=True)
+class SuppressingContext:
+    """A currently active context hold for a routine owner-default notify()."""
+
+    signal_type: str
+    expires_at: datetime
+
+
+async def get_suppressing_context(pool: asyncpg.Pool | None) -> SuppressingContext | None:
+    """Return the active context hold and its latest suppressor expiry.
 
     Deterministic, non-LLM read of ``public.user_context`` via the existing
     context-bus module (``butlers.context_bus.get_active_context``). Fails
@@ -369,16 +378,32 @@ async def get_suppressing_context_signal(pool: asyncpg.Pool | None) -> str | Non
         signals = await get_active_context(pool)
     except Exception:
         logger.debug(
-            "get_suppressing_context_signal: context bus unavailable; failing open",
+            "get_suppressing_context: context bus unavailable; failing open",
             exc_info=True,
         )
         return None
 
-    active_types = {s.signal_type for s in signals}
+    suppressing = [
+        signal for signal in signals if signal.signal_type in _SUPPRESSING_CONTEXT_SIGNALS
+    ]
+    if not suppressing:
+        return None
+
+    # Keep the existing DND-over-sleeping reason precedence while ensuring a
+    # flush cannot run until *every* active suppressor has expired.
     for candidate in _SUPPRESSING_CONTEXT_SIGNALS:
-        if candidate in active_types:
-            return candidate
-    return None
+        if any(signal.signal_type == candidate for signal in suppressing):
+            return SuppressingContext(
+                signal_type=candidate,
+                expires_at=max(signal.expires_at for signal in suppressing),
+            )
+    return None  # pragma: no cover - ``suppressing`` is filtered above.
+
+
+async def get_suppressing_context_signal(pool: asyncpg.Pool | None) -> str | None:
+    """Return the suppressing signal type, preserving the legacy read API."""
+    suppression = await get_suppressing_context(pool)
+    return suppression.signal_type if suppression is not None else None
 
 
 async def check_owner_notify_suppression(

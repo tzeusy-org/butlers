@@ -2,9 +2,9 @@
 
 Covers the governance layer added on top of the existing approvals_policy
 quiet-hours gate:
-  - every suppression decision (quiet hours, context bus) is recorded to
-    ``public.attention_ledger`` with a machine-readable reason instead of
-    vanishing without a trace
+  - routine implicit-owner decisions held by quiet hours or context bus are
+    durably deferred, with a full ``notify.v1`` envelope and a ledger row,
+    instead of vanishing without a trace
   - context-bus dnd/sleeping signals are consulted deterministically,
     alongside (not instead of) the existing hour-based quiet-hours policy
   - priority="high" always fails open — bypasses both quiet hours and the
@@ -78,7 +78,7 @@ def _make_fetchrow_side_effect(*, approvals_policy_row: dict | None):
 
     - ``runtime_config`` queries → a valid runtime_config row (daemon boot).
     - ``contact_info`` + ``is_primary`` queries → is_primary=True (email guard).
-    - ``approvals_policy`` queries → *approvals_policy_row* (the quiet-hours gate).
+    - ``approvals_policy`` queries → *approvals_policy_row* (the owner-default gate).
     - ``delivery_preferences`` queries → None (per-butler defer path not configured;
       this test suite targets the owner-level approvals_policy + context-bus gate).
     - everything else → None.
@@ -286,7 +286,9 @@ def _client_raising(exc: BaseException) -> Any:
 
 
 class TestQuietHoursLedgerRecording:
-    async def test_quiet_hours_suppresses_and_records_ledger(self, butler_dir: Path) -> None:
+    async def test_quiet_hours_defers_full_envelope_and_records_ledger(
+        self, butler_dir: Path
+    ) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -305,8 +307,39 @@ class TestQuietHoursLedgerRecording:
                 _evidence=[],
             )
 
-        assert result["status"] == "suppressed_quiet_hours"
+        assert result["status"] == "deferred"
+        assert result["notification_id"]
+        assert result["reason"] == "policy_quiet_hours"
         daemon.switchboard_client.call_tool.assert_not_awaited()
+
+        deferred_calls = [
+            call.args
+            for call in mock_pool.fetchval.await_args_list
+            if call.args and "INSERT INTO deferred_notifications" in call.args[0]
+        ]
+        assert len(deferred_calls) == 1
+        (_, deferred_butler, deferred_channel, deferred_message, _priority, envelope, *_rest) = (
+            deferred_calls[0]
+        )
+        assert deferred_butler == "test-butler"
+        assert deferred_channel == "telegram"
+        assert deferred_message == "Weekly report"
+        assert envelope == {
+            "schema_version": "notify.v1",
+            "origin_butler": "test-butler",
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": "Weekly report",
+                "recipient": "123456789",
+            },
+            "decision_dossier": {
+                "why": "The owner needs the scheduled weekly report.",
+                "evidence": [],
+                "blast_radius": None,
+                "reversibility": None,
+            },
+        }
 
         ledger_calls = _ledger_insert_calls(mock_pool)
         assert len(ledger_calls) == 1
@@ -328,8 +361,8 @@ class TestQuietHoursLedgerRecording:
         ) = ledger_calls[0]
         assert origin_butler == "test-butler"
         assert source == "notify"
-        assert outcome == "suppressed"
-        assert reason == "quiet_hours"
+        assert outcome == "deferred"
+        assert reason == "policy_quiet_hours"
 
     async def test_non_owner_without_dossier_retries_without_persistence_or_ledger(
         self, butler_dir: Path
@@ -378,7 +411,9 @@ class TestQuietHoursLedgerRecording:
         ]
         assert approval_persistence == []
 
-    async def test_context_bus_dnd_suppresses_when_no_quiet_hours(self, butler_dir: Path) -> None:
+    async def test_context_bus_dnd_defers_until_signal_expiry_when_no_quiet_hours(
+        self, butler_dir: Path
+    ) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -400,16 +435,135 @@ class TestQuietHoursLedgerRecording:
         ):
             result = await notify_fn(channel="telegram", message="Weekly report")
 
-        assert result["status"] == "suppressed_context_bus"
+        assert result["status"] == "deferred"
         assert result["context_signal"] == "dnd"
+        assert result["reason"] == "context_bus:dnd"
+        assert result["deliver_at"] == dnd_signal.expires_at.isoformat()
         daemon.switchboard_client.call_tool.assert_not_awaited()
+
+        deferred_calls = [
+            call.args
+            for call in mock_pool.fetchval.await_args_list
+            if call.args and "INSERT INTO deferred_notifications" in call.args[0]
+        ]
+        assert len(deferred_calls) == 1
+        assert deferred_calls[0][5]["schema_version"] == "notify.v1"
+        assert deferred_calls[0][6] == dnd_signal.expires_at
 
         ledger_calls = _ledger_insert_calls(mock_pool)
         assert len(ledger_calls) == 1
         outcome = ledger_calls[0][8]
         reason = ledger_calls[0][9]
-        assert outcome == "suppressed"
+        assert outcome == "deferred"
         assert reason == "context_bus:dnd"
+
+    async def test_policy_and_context_holds_use_the_later_delivery_anchor(
+        self, butler_dir: Path
+    ) -> None:
+        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+        dnd_signal = ContextEntry(
+            signal_type="dnd",
+            value=None,
+            set_by_butler="general",
+            set_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(days=2),
+            confidence=1.0,
+        )
+
+        with (
+            _configured_owner_default_recipient(daemon),
+            patch(
+                "butlers.context_bus.get_active_context", new=AsyncMock(return_value=[dnd_signal])
+            ),
+        ):
+            result = await notify_fn(channel="telegram", message="Weekly report")
+
+        assert result["status"] == "deferred"
+        assert result["deliver_at"] == dnd_signal.expires_at.isoformat()
+        assert result["reason"] == "policy_quiet_hours+context_bus:dnd"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+
+    async def test_deferred_persistence_failure_returns_retryable_error_without_delivery(
+        self, butler_dir: Path
+    ) -> None:
+        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+
+        async def _fetchval(query: str, *_args: Any, **_kwargs: Any) -> str:
+            if "INSERT INTO deferred_notifications" in query:
+                raise RuntimeError("database unavailable")
+            return str(uuid.uuid4())
+
+        mock_pool.fetchval = AsyncMock(side_effect=_fetchval)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+
+        with (
+            _configured_owner_default_recipient(daemon),
+            patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+        ):
+            result = await notify_fn(channel="telegram", message="Weekly report")
+
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+        assert result["error"]["code"] == "deferred_notification_persistence_failed"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        ledger_calls = _ledger_insert_calls(mock_pool)
+        assert len(ledger_calls) == 1
+        assert ledger_calls[0][8] == "failed"
+        assert ledger_calls[0][9] == "deferred_persistence_error:RuntimeError"
+
+    async def test_ledger_failure_after_queue_preserves_deferred_result(
+        self, butler_dir: Path
+    ) -> None:
+        """Queue durability wins over best-effort ledger observability."""
+        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+        ledger_failure = AsyncMock(side_effect=RuntimeError("ledger unavailable"))
+
+        with (
+            _configured_owner_default_recipient(daemon),
+            patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+            patch("butlers.core_tools._notifications.record_attention_event", new=ledger_failure),
+        ):
+            result = await notify_fn(channel="telegram", message="Weekly report")
+
+        assert result["status"] == "deferred"
+        ledger_failure.assert_awaited_once()
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        assert (
+            len(
+                [
+                    call
+                    for call in mock_pool.fetchval.await_args_list
+                    if "INSERT INTO deferred_notifications" in call.args[0]
+                ]
+            )
+            == 1
+        )
+
+    async def test_context_lookup_failure_fails_open(self, butler_dir: Path) -> None:
+        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+
+        with (
+            _configured_owner_default_recipient(daemon),
+            patch(
+                "butlers.context_bus.get_active_context",
+                new=AsyncMock(side_effect=RuntimeError("context unavailable")),
+            ),
+        ):
+            result = await notify_fn(channel="telegram", message="Weekly report")
+
+        assert result["status"] == "ok"
+        daemon.switchboard_client.call_tool.assert_awaited_once()
 
     async def test_high_priority_bypasses_quiet_hours_and_context_bus(
         self, butler_dir: Path
