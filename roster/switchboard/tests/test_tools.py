@@ -1322,6 +1322,37 @@ async def test_log_notification_creates_entry(pool_with_notifications):
     assert row["error"] is None
 
 
+async def test_log_notification_persists_metadata_as_jsonb_object(pool_with_notifications):
+    """The production writer binds structured metadata through the JSONB codec once."""
+    from butlers.tools.switchboard import log_notification
+
+    metadata = {
+        "kind": "medication_reminder",
+        "delivery": {"priority": "high", "attempt": 1},
+        "labels": ["owner", "time-sensitive"],
+    }
+    notif_id = await log_notification(
+        pool_with_notifications,
+        source_butler="health",
+        channel="telegram",
+        recipient="123456",
+        message="Time for your medication!",
+        metadata=metadata,
+    )
+
+    row = await pool_with_notifications.fetchrow(
+        "SELECT metadata, jsonb_typeof(metadata) AS metadata_kind "
+        "FROM switchboard.notifications WHERE id = $1",
+        notif_id,
+    )
+
+    assert row is not None
+    assert row["metadata_kind"] == "object", (
+        "notifications.metadata was double-encoded into a JSONB string instead of an object"
+    )
+    assert row["metadata"] == metadata
+
+
 async def test_log_notification_with_error(pool_with_notifications):
     """log_notification stores error messages for failed deliveries."""
     from butlers.tools.switchboard import log_notification

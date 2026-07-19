@@ -61,19 +61,25 @@ async def log_notification(
     # butler delivery path (e.g. secrets_lifecycle running against a
     # public-only search_path pool), so a bare `notifications` reference must
     # not depend on the caller's search_path including the switchboard schema.
+    # Normalize non-JSON-native values in memory, then bind the resulting
+    # mapping directly. The registered asyncpg JSONB codec serializes that
+    # mapping once; passing json.dumps(...) here would double-encode it as a
+    # JSONB string instead of an object.
+    safe_metadata: dict[str, Any] = json.loads(json.dumps(metadata or {}, default=str))
+
     row = await pool.fetchrow(
         """
         INSERT INTO switchboard.notifications
             (source_butler, channel, recipient, message, metadata, status, error,
              session_id, trace_id)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id
         """,
         source_butler,
         channel,
         recipient,
         message,
-        json.dumps(metadata or {}),
+        safe_metadata,
         status,
         error,
         session_id,
