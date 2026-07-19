@@ -116,9 +116,10 @@ def is_tool_absent_error(exc: BaseException) -> bool:
     write proxies should render it as ``409`` and read/fan-out proxies as a
     graceful degraded payload -- never a ``500``. Any *other* ``ToolError`` (a
     tool that IS registered but raised for its own reason) is a genuine failure
-    and must still surface as a ``5xx``; callers must re-raise it. Mirrors
-    ``spend.py::_is_tool_absent_error`` and the classify-before-flagging rule in
-    ``memory.py::_is_missing_memory_schema_error``.
+    and must still surface as a ``5xx``; callers must re-raise it. The spend
+    router has its own staffer-specific absence classification; this helper is
+    separate. ``memory.py::_is_missing_memory_schema_error`` applies the same
+    classify-before-flagging principle for its own domain.
     """
     return isinstance(exc, ToolError) and str(exc).startswith("Unknown tool:")
 

@@ -331,7 +331,10 @@ async def test_cost_summary_denied_registered_tool_marked_unavailable(app):
     ``unavailable_butlers``.
     """
     configs = [ButlerConnectionInfo(name="finance", port=41100)]
-    mgr = _mock_mgr({"finance": ToolError("Unknown tool: 'sessions_summary'")})
+    denied_client = MagicMock()
+    denied_client.call_tool = AsyncMock(side_effect=ToolError("Unknown tool: 'sessions_summary'"))
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock(return_value=denied_client)
     _wire(app, mgr, configs, _flat_pricing())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -340,6 +343,7 @@ async def test_cost_summary_denied_registered_tool_marked_unavailable(app):
 
     assert resp.status_code == 200
     assert resp.json()["data"]["unavailable_butlers"] == ["finance"]
+    denied_client.call_tool.assert_awaited_once_with("sessions_summary", {"period": "today"})
 
 
 async def test_cost_summary_tool_absent_not_marked_unavailable(app):
