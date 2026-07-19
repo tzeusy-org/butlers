@@ -65,9 +65,20 @@ def test_upgrade_guards_optional_legacy_schema_and_preserves_canonical_precedenc
 
 def test_downgrade_restores_legacy_shape_from_canonical_policy() -> None:
     sql = "\n".join(_sqls("downgrade"))
+    normalized_sql = " ".join(sql.split())
     assert "ADD COLUMN IF NOT EXISTS quiet_start INTEGER" in sql
     assert "ADD COLUMN IF NOT EXISTS quiet_end INTEGER" in sql
     assert "ADD COLUMN IF NOT EXISTS quiet_timezone TEXT" in sql
+    assert "DROP CONSTRAINT IF EXISTS chk_insight_settings_quiet_start" in sql
+    assert "DROP CONSTRAINT IF EXISTS chk_insight_settings_quiet_end" in sql
+    assert (
+        "ADD CONSTRAINT chk_insight_settings_quiet_start "
+        "CHECK (quiet_start IS NULL OR quiet_start BETWEEN 0 AND 23)"
+    ) in normalized_sql
+    assert (
+        "ADD CONSTRAINT chk_insight_settings_quiet_end "
+        "CHECK (quiet_end IS NULL OR quiet_end BETWEEN 0 AND 23)"
+    ) in normalized_sql
     assert "quiet_start = EXCLUDED.quiet_start" in sql
     assert "quiet_end = EXCLUDED.quiet_end" in sql
     assert "quiet_timezone = EXCLUDED.quiet_timezone" in sql
@@ -231,6 +242,7 @@ def test_core_chain_replay_skips_retired_legacy_insight_seed(postgres_container)
 def test_downgrade_restores_legacy_values_from_canonical_policy(postgres_container) -> None:
     """An older broker regains its three fields populated from the canonical row."""
     from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import IntegrityError
 
     from alembic import command
     from butlers.migrations import _build_alembic_config
@@ -253,7 +265,7 @@ def test_downgrade_restores_legacy_values_from_canonical_policy(postgres_contain
     config = _build_alembic_config(db_url, chains=["core"])
     command.downgrade(config, "core@core_176")
 
-    engine = create_engine(db_url)
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             row = conn.execute(
@@ -263,5 +275,38 @@ def test_downgrade_restores_legacy_values_from_canonical_policy(postgres_contain
                 )
             ).one()
             assert tuple(row) == (23, 8, "Asia/Singapore")
+
+            constraints = dict(
+                conn.execute(
+                    text(
+                        "SELECT conname, pg_get_constraintdef(oid, true) "
+                        "FROM pg_constraint "
+                        "WHERE conrelid = 'public.insight_settings'::regclass "
+                        "AND conname IN ("
+                        "'chk_insight_settings_quiet_start', "
+                        "'chk_insight_settings_quiet_end'"
+                        ")"
+                    )
+                ).all()
+            )
+            assert set(constraints) == {
+                "chk_insight_settings_quiet_start",
+                "chk_insight_settings_quiet_end",
+            }
+            assert "quiet_start IS NULL" in constraints["chk_insight_settings_quiet_start"]
+            assert "quiet_end IS NULL" in constraints["chk_insight_settings_quiet_end"]
+
+            for column, invalid_value in (("quiet_start", 24), ("quiet_end", -1)):
+                with pytest.raises(IntegrityError):
+                    conn.execute(
+                        text(f"UPDATE public.insight_settings SET {column}=:value WHERE id=1"),
+                        {"value": invalid_value},
+                    )
+
+            conn.execute(
+                text(
+                    "UPDATE public.insight_settings SET quiet_start=NULL, quiet_end=NULL WHERE id=1"
+                )
+            )
     finally:
         engine.dispose()

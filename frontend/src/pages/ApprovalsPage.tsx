@@ -925,6 +925,10 @@ function policyDraftValidationError(draft: ApprovalsPolicy): string | null {
     return "Hours must be whole numbers from 0 through 23.";
   }
 
+  if (typeof draft.timezone !== "string" || draft.timezone.trim() === "") {
+    return "Enter a valid IANA timezone, such as Asia/Singapore or UTC.";
+  }
+
   try {
     // The API remains authoritative, but this catches ordinary typos before a
     // failed request. Intl implements the browser's IANA timezone registry.

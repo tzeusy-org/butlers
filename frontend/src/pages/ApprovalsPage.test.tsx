@@ -406,6 +406,41 @@ describe("ApprovalsPage — load-more", () => {
     );
   });
 
+  it.each([
+    ["a missing timezone", undefined],
+    ["a blank timezone", "   "],
+  ])("rejects %s locally before a browser-local fallback", async (_label, timezone) => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(
+      makeApiResponse({
+        quiet_start_hour: 22,
+        quiet_end_hour: 7,
+        timezone,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("22:00") === true);
+    await act(async () => {
+      findButton(container, "Edit")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      findButton(container, "Save")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(updateApprovalsPolicy).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Enter a valid IANA timezone, such as Asia/Singapore or UTC.",
+    );
+  });
+
   it("never renders 'No pending approvals.' when the queue fetch fails (bu-86c4c.2 -- truth amnesty)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       Promise.reject(new Error("queue unreachable")) as AnyMock,

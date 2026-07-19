@@ -183,7 +183,13 @@ def downgrade() -> None:
                     ALTER TABLE public.insight_settings
                         ADD COLUMN IF NOT EXISTS quiet_start INTEGER,
                         ADD COLUMN IF NOT EXISTS quiet_end INTEGER,
-                        ADD COLUMN IF NOT EXISTS quiet_timezone TEXT
+                        ADD COLUMN IF NOT EXISTS quiet_timezone TEXT,
+                        DROP CONSTRAINT IF EXISTS chk_insight_settings_quiet_start,
+                        DROP CONSTRAINT IF EXISTS chk_insight_settings_quiet_end,
+                        ADD CONSTRAINT chk_insight_settings_quiet_start
+                            CHECK (quiet_start IS NULL OR quiet_start BETWEEN 0 AND 23),
+                        ADD CONSTRAINT chk_insight_settings_quiet_end
+                            CHECK (quiet_end IS NULL OR quiet_end BETWEEN 0 AND 23)
                 ';
 
                 canonical_ready := to_regclass('public.approvals_policy') IS NOT NULL
