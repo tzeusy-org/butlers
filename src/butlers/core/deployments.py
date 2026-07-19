@@ -286,11 +286,19 @@ async def record_deployment(
             "record_deployment: serving_mode must be one of "
             f"{sorted(VALID_SERVING_MODES)} or None, got {serving_mode!r}"
         )
-    if serving_worktree is not None:
-        if serving_mode != "hotreload-worktree":
+    if serving_mode == "hotreload-worktree":
+        if source != "boot":
+            raise ValueError("record_deployment: hotreload-worktree requires source='boot'")
+        if serving_worktree is None:
             raise ValueError(
-                "record_deployment: serving_worktree requires serving_mode='hotreload-worktree'"
+                "record_deployment: hotreload-worktree requires "
+                "serving_worktree='.worktrees/<name>'"
             )
+    elif serving_worktree is not None:
+        raise ValueError(
+            "record_deployment: serving_worktree requires serving_mode='hotreload-worktree'"
+        )
+    if serving_worktree is not None:
         if not re.fullmatch(r"\.worktrees/[^/]+", serving_worktree):
             raise ValueError(
                 "record_deployment: serving_worktree must be '.worktrees/<name>', "

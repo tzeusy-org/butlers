@@ -306,6 +306,21 @@ class TestRecordDeployment:
             )
         pool.fetchval.assert_not_awaited()
 
+    async def test_rejects_hotreload_worktree_without_canonical_label(self):
+        """A hotreload boot is only honest when its linked checkout is known."""
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="serving_worktree"):
+            await record_deployment(
+                pool,
+                git_sha="abc1234",
+                migration_head="core_176",
+                result="success",
+                source="boot",
+                serving_mode="hotreload-worktree",
+                serving_worktree=None,
+            )
+        pool.fetchval.assert_not_awaited()
+
     async def test_insert_returns_row_id(self):
         row_id = uuid.uuid4()
         pool = AsyncMock()

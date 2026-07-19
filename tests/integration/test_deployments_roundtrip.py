@@ -117,6 +117,27 @@ async def test_provenance_constraints_reject_bogus_values(pool: asyncpg.Pool) ->
         )
 
 
+@pytest.mark.parametrize(
+    ("source", "serving_worktree"),
+    [("boot", None), (None, ".worktrees/frozen-checkout")],
+)
+async def test_hotreload_provenance_requires_boot_source_and_worktree_label(
+    pool: asyncpg.Pool, source: str | None, serving_worktree: str | None
+) -> None:
+    """core_176 must not admit an unexplained or unattributed worktree boot."""
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            """
+            INSERT INTO public.deployments (
+                git_sha, result, source, serving_mode, serving_worktree
+            )
+            VALUES ('abc1234', 'success', $1, 'hotreload-worktree', $2)
+            """,
+            source,
+            serving_worktree,
+        )
+
+
 async def test_git_sha_is_required(pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.NotNullViolationError):
         await pool.execute("INSERT INTO public.deployments (result) VALUES ('success')")

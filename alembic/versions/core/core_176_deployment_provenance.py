@@ -69,10 +69,15 @@ def upgrade() -> None:
                 ALTER TABLE public.deployments
                     ADD CONSTRAINT chk_deployments_serving_worktree
                     CHECK (
-                        serving_worktree IS NULL
-                        OR (
+                        (
                             serving_mode IS NOT DISTINCT FROM 'hotreload-worktree'
+                            AND source IS NOT DISTINCT FROM 'boot'
+                            AND serving_worktree IS NOT NULL
                             AND serving_worktree ~ '^\\.worktrees/[^/]+$'
+                        )
+                        OR (
+                            serving_mode IS DISTINCT FROM 'hotreload-worktree'
+                            AND serving_worktree IS NULL
                         )
                     );
             END IF;
