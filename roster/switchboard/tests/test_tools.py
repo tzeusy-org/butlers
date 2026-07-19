@@ -1353,6 +1353,33 @@ async def test_log_notification_persists_metadata_as_jsonb_object(pool_with_noti
     assert row["metadata"] == metadata
 
 
+@pytest.mark.parametrize("metadata", [None, {}], ids=["none", "empty-dict"])
+async def test_log_notification_persists_empty_metadata_as_jsonb_object(
+    pool_with_notifications, metadata: dict[str, Any] | None
+):
+    """None and empty metadata bind as empty JSONB objects."""
+    from butlers.tools.switchboard import log_notification
+
+    notif_id = await log_notification(
+        pool_with_notifications,
+        source_butler="health",
+        channel="telegram",
+        recipient="123456",
+        message="Time for your medication!",
+        metadata=metadata,
+    )
+
+    row = await pool_with_notifications.fetchrow(
+        "SELECT metadata, jsonb_typeof(metadata) AS metadata_kind "
+        "FROM switchboard.notifications WHERE id = $1",
+        notif_id,
+    )
+
+    assert row is not None
+    assert row["metadata_kind"] == "object"
+    assert row["metadata"] == {}
+
+
 async def test_log_notification_with_error(pool_with_notifications):
     """log_notification stores error messages for failed deliveries."""
     from butlers.tools.switchboard import log_notification

@@ -65,7 +65,9 @@ async def log_notification(
     # mapping directly. The registered asyncpg JSONB codec serializes that
     # mapping once; passing json.dumps(...) here would double-encode it as a
     # JSONB string instead of an object.
-    safe_metadata: dict[str, Any] = json.loads(json.dumps(metadata or {}, default=str))
+    safe_metadata: dict[str, Any] = (
+        json.loads(json.dumps(metadata, default=str)) if metadata else {}
+    )
 
     row = await pool.fetchrow(
         """
