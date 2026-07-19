@@ -3993,39 +3993,6 @@ async def _verify_credential_capabilities(
 
 _OWNER_ACTOR = "owner"
 
-# Credential lifecycle actions are emitted by the three credential audit
-# helpers below. Keep the outcome mapping at that common append boundary so a
-# newly added credential surface cannot silently reintroduce Outcome=Unknown.
-_CREDENTIAL_SUCCESS_AUDIT_ACTIONS = frozenset(
-    {
-        "attempted",
-        "connected",
-        "disconnected",
-        "overrode",
-        "revoked",
-        "rotated",
-        "set",
-        "verified",
-        "warned",
-    }
-)
-
-
-def _credential_audit_outcome(action: str, error: str | None) -> tuple[str | None, str | None]:
-    """Return the explicit outcome for a known credential lifecycle action.
-
-    ``failed`` is the audit action consumed by the issues failure spine. Its
-    error is supplied by the probe caller (falling back to the already-safe
-    audit note only for compatibility with future callers). Other known
-    lifecycle actions are successful state transitions; unknown actions retain
-    the generic append helper's backwards-compatible ``None`` outcome.
-    """
-    if action == "failed":
-        return "error", error
-    if action in _CREDENTIAL_SUCCESS_AUDIT_ACTIONS:
-        return "success", None
-    return None, None
-
 
 async def _write_credential_audit(
     pool: Any,
@@ -4041,7 +4008,7 @@ async def _write_credential_audit(
     operation (fire-and-forget pattern consistent with audit_emit.py).
     """
     target = normalize_credential_key("user", provider)
-    result, audit_error = _credential_audit_outcome(action, error or note)
+    result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
     try:
         await audit_router.append(
             pool,
@@ -4807,7 +4774,7 @@ async def _write_system_audit(
     Silently swallows errors (fire-and-forget, consistent with user audit helper).
     """
     target = normalize_credential_key("system", key)
-    result, audit_error = _credential_audit_outcome(action, error or note)
+    result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
     try:
         await audit_router.append(
             pool,
@@ -5563,7 +5530,7 @@ async def _write_cli_audit(
     operation (fire-and-forget pattern consistent with audit_emit.py).
     """
     target = normalize_credential_key("cli", credential_id)
-    result, audit_error = _credential_audit_outcome(action, error or note)
+    result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
     try:
         await audit_router.append(
             pool,

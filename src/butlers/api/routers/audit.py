@@ -53,6 +53,36 @@ _CREDENTIAL_LIFECYCLE_ACTIONS_SQL = """
     'revoked', 'rotated', 'set', 'verified', 'warned'
 """
 
+_CREDENTIAL_SUCCESS_AUDIT_ACTIONS = frozenset(
+    {
+        "attempted",
+        "connected",
+        "disconnected",
+        "overrode",
+        "revoked",
+        "rotated",
+        "set",
+        "verified",
+        "warned",
+    }
+)
+
+
+def credential_lifecycle_outcome(action: str, error: str | None) -> tuple[str | None, str | None]:
+    """Return the explicit outcome for a known credential lifecycle action.
+
+    ``failed`` is the audit action consumed by the Issues failure spine. Its
+    error must be a caller-supplied safe diagnostic. Other known lifecycle
+    actions are successful state transitions; unknown actions preserve the
+    generic append helper's backwards-compatible ``None`` outcome.
+    """
+    if action == "failed":
+        return "error", error
+    if action in _CREDENTIAL_SUCCESS_AUDIT_ACTIONS:
+        return "success", None
+    return None, None
+
+
 _PRIVILEGED_CONSEQUENCE_SQL = f"""
 (
     action LIKE 'approval.%'
