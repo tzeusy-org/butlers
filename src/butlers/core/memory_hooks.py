@@ -22,10 +22,11 @@ interface; modules own the implementation.
 
 Thread safety
 -------------
-Best-effort session hooks remain module-level registrations.  Durable
-maintenance runtimes are keyed by butler identity and selected through a
-``ContextVar`` bound for each scheduler dispatch, so concurrent daemons cannot
-cross-resolve their pools or Spawners.
+Best-effort session hooks and durable maintenance runtimes are keyed by butler
+identity.  Session callers provide that identity directly; maintenance callers
+bind it through a ``ContextVar`` for each scheduler dispatch.  Neither path can
+cross-resolve another daemon's pool or Spawner when multiple daemons share a
+process.
 """
 
 from __future__ import annotations
@@ -47,17 +48,23 @@ logger = logging.getLogger(__name__)
 #: Registered by modules.memory on startup.
 _memory_forget_hook: Callable[..., Coroutine[Any, Any, dict[str, Any]]] | None = None
 
-#: ``async (pool, butler_name, prompt, *, token_budget) -> str | None``
-#: Registered by modules.memory on startup.
-_memory_context_hook: Callable[..., Coroutine[Any, Any, str | None]] | None = None
-
-#: ``async (pool, butler_name, session_output, session_id) -> bool``
-#: Registered by modules.memory on startup.
-_memory_store_episode_hook: Callable[..., Coroutine[Any, Any, bool]] | None = None
-
 #: ``async (pool, query, *, limit, mode) -> list[dict]``
 #: Registered by modules.memory on startup.
 _catalog_search_hook: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]] | None = None
+
+
+@dataclass(frozen=True)
+class MemorySessionRuntime:
+    """One started memory module's best-effort session hooks.
+
+    Context and episode storage share one runtime because both callbacks capture
+    the same module-owned memory pool.  Keeping them together makes startup
+    replacement atomic and lets shutdown remove only the lifecycle instance it
+    registered.
+    """
+
+    context: Callable[..., Coroutine[Any, Any, str | None]]
+    store_episode: Callable[..., Coroutine[Any, Any, bool]]
 
 
 @dataclass(frozen=True)
@@ -84,6 +91,7 @@ class _MemoryMaintenanceDispatch:
 # Maintenance is intentionally not a single process-global hook.  Multiple
 # daemons run in one process during development/tests, and each can own a
 # different memory schema and embedding lifecycle (notably chronicler_mem).
+_memory_session_runtimes: dict[str, MemorySessionRuntime] = {}
 _memory_maintenance_runtimes: dict[str, MemoryMaintenanceRuntime] = {}
 _memory_maintenance_dispatch: ContextVar[_MemoryMaintenanceDispatch | None] = ContextVar(
     "memory_maintenance_dispatch",
@@ -109,30 +117,52 @@ def register_memory_forget(
     _memory_forget_hook = fn
 
 
-def register_memory_context(
-    fn: Callable[..., Coroutine[Any, Any, str | None]],
-) -> None:
-    """Register the memory-context fetcher from ``modules.memory``.
+def _normalize_memory_session_owner(butler_name: str) -> str:
+    """Return a registry key for a started memory module's daemon identity."""
+    if not isinstance(butler_name, str) or not butler_name.strip():
+        raise ValueError("memory session runtime requires a non-empty butler name")
+    return butler_name.strip()
 
-    Args:
-        fn: Async callable with signature
-            ``(pool, butler_name, prompt, *, token_budget) -> str | None``.
+
+def register_memory_session_runtime(
+    butler_name: str,
+    *,
+    context: Callable[..., Coroutine[Any, Any, str | None]],
+    store_episode: Callable[..., Coroutine[Any, Any, bool]],
+) -> MemorySessionRuntime:
+    """Register one daemon's started memory session runtime.
+
+    Session callers already supply ``butler_name`` to the core stubs, so the
+    registry uses that explicit owner instead of a process-global last-started
+    callback.  The returned runtime is an opaque lifecycle token for
+    :func:`unregister_memory_session_runtime`.
     """
-    global _memory_context_hook
-    _memory_context_hook = fn
+    owner = _normalize_memory_session_owner(butler_name)
+    runtime = MemorySessionRuntime(context=context, store_episode=store_episode)
+    _memory_session_runtimes[owner] = runtime
+    return runtime
 
 
-def register_memory_store_episode(
-    fn: Callable[..., Coroutine[Any, Any, bool]],
+def unregister_memory_session_runtime(
+    butler_name: str,
+    runtime: MemorySessionRuntime,
 ) -> None:
-    """Register the memory episode-store from ``modules.memory``.
+    """Remove *runtime* only when it remains that owner's registration.
 
-    Args:
-        fn: Async callable with signature
-            ``(pool, butler_name, session_output, session_id) -> bool``.
+    A module can be replaced before its older instance finishes shutdown.
+    Identity comparison protects the newer runtime rather than clearing the
+    owner's session hooks altogether.
     """
-    global _memory_store_episode_hook
-    _memory_store_episode_hook = fn
+    owner = _normalize_memory_session_owner(butler_name)
+    if _memory_session_runtimes.get(owner) is runtime:
+        del _memory_session_runtimes[owner]
+
+
+def _resolve_memory_session_runtime(butler_name: str) -> MemorySessionRuntime | None:
+    """Return the active runtime for a session owner, if it has one."""
+    if not isinstance(butler_name, str):
+        return None
+    return _memory_session_runtimes.get(butler_name.strip())
 
 
 def register_catalog_search(
@@ -242,11 +272,18 @@ async def fetch_memory_context(
 ) -> str | None:
     """Fetch memory context for a butler session.  Returns None if not loaded.
 
-    Delegates to the hook registered by ``modules.memory``.
+    Delegates to the invoking butler's runtime registered by ``modules.memory``.
+    A missing owner returns the existing best-effort ``None`` default rather
+    than borrowing another butler's runtime.
     """
-    if _memory_context_hook is None:
+    runtime = _resolve_memory_session_runtime(butler_name)
+    if runtime is None:
+        logger.debug(
+            "memory context runtime not registered for butler %r; skipping",
+            butler_name,
+        )
         return None
-    return await _memory_context_hook(pool, butler_name, prompt, token_budget=token_budget)
+    return await runtime.context(pool, butler_name, prompt, token_budget=token_budget)
 
 
 async def store_session_episode(
@@ -257,11 +294,18 @@ async def store_session_episode(
 ) -> bool:
     """Store a session episode.  Returns False if the memory module is not loaded.
 
-    Delegates to the hook registered by ``modules.memory``.
+    Delegates to the invoking butler's runtime registered by ``modules.memory``.
+    A missing owner returns the existing best-effort ``False`` default rather
+    than storing through another butler's runtime.
     """
-    if _memory_store_episode_hook is None:
+    runtime = _resolve_memory_session_runtime(butler_name)
+    if runtime is None:
+        logger.debug(
+            "memory episode runtime not registered for butler %r; skipping",
+            butler_name,
+        )
         return False
-    return await _memory_store_episode_hook(pool, butler_name, session_output, session_id)
+    return await runtime.store_episode(pool, butler_name, session_output, session_id)
 
 
 async def search_memory_catalog(

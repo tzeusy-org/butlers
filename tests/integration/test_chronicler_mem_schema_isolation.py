@@ -24,6 +24,7 @@ from __future__ import annotations
 import shutil
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import urlparse
 
 import asyncpg
@@ -366,3 +367,128 @@ async def test_scheduled_consolidation_uses_chronicler_memory_runtime(
     finally:
         await module.on_shutdown()
         await domain_db.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_session_hooks_keep_chronicler_private_pool_when_other_daemons_start(
+    isolated_db_url: str,
+    monkeypatch,
+) -> None:
+    """General and Travel startup cannot redirect Chronicler session memory.
+
+    The Chronicler module owns a real ``chronicler_mem`` pool in this test.
+    General and Travel use lightweight started modules so their later startup
+    order reproduces the former process-global last-registration failure.
+    """
+    from butlers.core.memory_hooks import fetch_memory_context, store_session_episode
+
+    parsed = urlparse(isolated_db_url)
+    domain_db = Database(
+        db_name=parsed.path.lstrip("/"),
+        schema="chronicler",
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        user=parsed.username or "postgres",
+        password=parsed.password or "postgres",
+        min_pool_size=1,
+        max_pool_size=3,
+        strict_role_enforcement=False,
+    )
+    await domain_db.connect()
+
+    chronicler = MemoryModule()
+    general = MemoryModule()
+    travel = MemoryModule()
+    general_domain_pool = object()
+    travel_domain_pool = object()
+    general_memory_pool = object()
+    travel_memory_pool = object()
+    context_calls: list[tuple[str, str]] = []
+    store_calls: list[tuple[str, str]] = []
+
+    for module, memory_pool in (
+        (general, general_memory_pool),
+        (travel, travel_memory_pool),
+    ):
+        monkeypatch.setattr(module, "_ensure_memory_schema_pool", AsyncMock())
+        monkeypatch.setattr(module, "_get_pool", lambda pool=memory_pool: pool)
+        monkeypatch.setattr(module, "_register_default_maintenance_schedules", AsyncMock())
+        module._get_embedding_engine = MagicMock(return_value=MagicMock())
+
+    monkeypatch.setattr(chronicler, "_register_default_maintenance_schedules", AsyncMock())
+    chronicler._get_embedding_engine = MagicMock(return_value=MagicMock())
+
+    pool_labels = {
+        id(general_memory_pool): "general",
+        id(travel_memory_pool): "travel",
+    }
+
+    async def _memory_context(pool, _engine, _prompt, butler_name, **_kwargs):
+        label = pool_labels[id(pool)]
+        context_calls.append((label, butler_name))
+        return f"{label} context"
+
+    async def _store_episode(pool, _content, butler_name, **_kwargs):
+        label = pool_labels[id(pool)]
+        store_calls.append((label, butler_name))
+        return {"id": "episode-id"}
+
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.context.memory_context",
+        _memory_context,
+    )
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.writing.memory_store_episode",
+        _store_episode,
+    )
+
+    started: list[MemoryModule] = []
+    try:
+        await chronicler.on_startup(
+            MemoryModuleConfig(memory_schema="chronicler_mem"),
+            domain_db,
+        )
+        started.append(chronicler)
+        chronicler_memory_pool = chronicler._get_pool()
+        assert await chronicler_memory_pool.fetchval("SELECT current_schema()") == "chronicler_mem"
+        pool_labels[id(chronicler_memory_pool)] = "chronicler_mem"
+
+        await general.on_startup(
+            config=None,
+            db=SimpleNamespace(schema="general", pool=general_domain_pool),
+        )
+        started.append(general)
+        await travel.on_startup(
+            config=None,
+            db=SimpleNamespace(schema="travel", pool=travel_domain_pool),
+        )
+        started.append(travel)
+
+        for owner, domain_pool, expected_context in (
+            ("general", general_domain_pool, "general context"),
+            ("travel", travel_domain_pool, "travel context"),
+            ("chronicler", domain_db.pool, "chronicler_mem context"),
+        ):
+            assert (
+                await fetch_memory_context(domain_pool, owner, f"{owner} prompt")
+                == expected_context
+            )
+            assert await store_session_episode(domain_pool, owner, f"{owner} output") is True
+
+        assert await fetch_memory_context(object(), "stopped", "prompt") is None
+        assert await store_session_episode(object(), "stopped", "output") is False
+    finally:
+        for module in reversed(started):
+            await module.on_shutdown()
+        await domain_db.close()
+
+    assert context_calls == [
+        ("general", "general"),
+        ("travel", "travel"),
+        ("chronicler_mem", "chronicler"),
+    ]
+    assert store_calls == [
+        ("general", "general"),
+        ("travel", "travel"),
+        ("chronicler_mem", "chronicler"),
+    ]

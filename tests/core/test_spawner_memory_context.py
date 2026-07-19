@@ -42,9 +42,8 @@ class TestFetchMemoryContext:
             time.sleep(0.25)
             return object()
 
-        # The new dependency-inversion path goes through core.memory_hooks._memory_context_hook.
-        # Register a hook that exercises the embedding-engine-in-thread pattern (delegating to
-        # the patched module internals) to verify the slow engine call doesn't block the loop.
+        # Register this owner-specific hook so the test still exercises the
+        # dependency-inversion path without relying on a process-global slot.
         import butlers.core.memory_hooks as _hooks
 
         context_mock = AsyncMock(return_value="# Memory Context\n")
@@ -75,8 +74,14 @@ class TestFetchMemoryContext:
                     return result
                 return None
 
-            orig = _hooks._memory_context_hook
-            _hooks._memory_context_hook = _context_hook
+            async def _unused_store(*_args, **_kwargs):
+                return False
+
+            runtime = _hooks.register_memory_session_runtime(
+                "my-butler",
+                context=_context_hook,
+                store_episode=_unused_store,
+            )
             try:
                 fetch_task = asyncio.create_task(
                     fetch_memory_context(AsyncMock(), "my-butler", "hello")
@@ -85,7 +90,7 @@ class TestFetchMemoryContext:
                 marker_elapsed = time.monotonic() - marker_started_at
                 result = await fetch_task
             finally:
-                _hooks._memory_context_hook = orig
+                _hooks.unregister_memory_session_runtime("my-butler", runtime)
 
         assert marker_elapsed < 0.15
         assert result == "# Memory Context\n"
@@ -96,17 +101,22 @@ class TestFetchMemoryContext:
         """None on RuntimeError; None when pool=None; None for whitespace; None for missing table (no traceback)."""
         import butlers.core.memory_hooks as _hooks
 
-        orig = _hooks._memory_context_hook
+        async def _unused_store(*_args, **_kwargs):
+            return False
 
         # RuntimeError → None (hook raises, spawner catches)
         async def _raise_runtime(pool, butler_name, prompt, *, token_budget=3000):
             raise RuntimeError("boom")
 
-        _hooks._memory_context_hook = _raise_runtime
+        runtime = _hooks.register_memory_session_runtime(
+            "my-butler",
+            context=_raise_runtime,
+            store_episode=_unused_store,
+        )
         try:
             assert await fetch_memory_context(AsyncMock(), "my-butler", "hello") is None
         finally:
-            _hooks._memory_context_hook = orig
+            _hooks.unregister_memory_session_runtime("my-butler", runtime)
 
         # pool=None → None (guard before hook call)
         assert await fetch_memory_context(None, "my-butler", "hello") is None
@@ -115,22 +125,30 @@ class TestFetchMemoryContext:
         async def _return_whitespace(pool, butler_name, prompt, *, token_budget=3000):
             return None  # hook returns None for whitespace (handled inside hook)
 
-        _hooks._memory_context_hook = _return_whitespace
+        runtime = _hooks.register_memory_session_runtime(
+            "my-butler",
+            context=_return_whitespace,
+            store_episode=_unused_store,
+        )
         try:
             assert await fetch_memory_context(AsyncMock(), "my-butler", "hello") is None
         finally:
-            _hooks._memory_context_hook = orig
+            _hooks.unregister_memory_session_runtime("my-butler", runtime)
 
         # Missing table → None without traceback
         async def _raise_table(pool, butler_name, prompt, *, token_budget=3000):
             raise asyncpg.UndefinedTableError('relation "facts" does not exist')
 
-        _hooks._memory_context_hook = _raise_table
+        runtime = _hooks.register_memory_session_runtime(
+            "my-butler",
+            context=_raise_table,
+            store_episode=_unused_store,
+        )
         try:
             with caplog.at_level(logging.WARNING, logger="butlers.core.spawner"):
                 result = await fetch_memory_context(AsyncMock(), "my-butler", "hello")
         finally:
-            _hooks._memory_context_hook = orig
+            _hooks.unregister_memory_session_runtime("my-butler", runtime)
         assert result is None
         record = next(r for r in caplog.records if "memory tables are missing" in r.getMessage())
         assert record.exc_info is None

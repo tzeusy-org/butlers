@@ -39,7 +39,7 @@ class TestStoreSessionEpisode:
         # end-to-end path without importing modules directly from spawner.
         writing_mock = AsyncMock(return_value={"id": "abc"})
         with patch("butlers.modules.memory.tools.writing.memory_store_episode", writing_mock):
-            # Wire the hook so store_session_episode's delegate can reach it
+            # Wire the owner runtime so store_session_episode's delegate can reach it.
             import butlers.core.memory_hooks as _hooks
 
             async def _store_hook(pool, butler_name, session_output, session_id=None):
@@ -51,12 +51,18 @@ class TestStoreSessionEpisode:
                 )
                 return True
 
-            orig = _hooks._memory_store_episode_hook
-            _hooks._memory_store_episode_hook = _store_hook
+            async def _unused_context(*_args, **_kwargs):
+                return None
+
+            runtime = _hooks.register_memory_session_runtime(
+                "my-butler",
+                context=_unused_context,
+                store_episode=_store_hook,
+            )
             try:
                 result = await store_session_episode(pool, "my-butler", "session output text")
             finally:
-                _hooks._memory_store_episode_hook = orig
+                _hooks.unregister_memory_session_runtime("my-butler", runtime)
 
         assert result is True
 
@@ -70,12 +76,18 @@ class TestStoreSessionEpisode:
         async def _raise_runtime(pool, butler_name, session_output, session_id=None):
             raise RuntimeError("boom")
 
-        orig = _hooks._memory_store_episode_hook
-        _hooks._memory_store_episode_hook = _raise_runtime
+        async def _unused_context(*_args, **_kwargs):
+            return None
+
+        runtime = _hooks.register_memory_session_runtime(
+            "my-butler",
+            context=_unused_context,
+            store_episode=_raise_runtime,
+        )
         try:
             assert await store_session_episode(AsyncMock(), "my-butler", "session output") is False
         finally:
-            _hooks._memory_store_episode_hook = orig
+            _hooks.unregister_memory_session_runtime("my-butler", runtime)
 
         # pool=None → False (guard before hook call)
         assert await store_session_episode(None, "my-butler", "session output") is False
@@ -84,12 +96,16 @@ class TestStoreSessionEpisode:
         async def _raise_table(pool, butler_name, session_output, session_id=None):
             raise asyncpg.UndefinedTableError('relation "episodes" does not exist')
 
-        _hooks._memory_store_episode_hook = _raise_table
+        runtime = _hooks.register_memory_session_runtime(
+            "my-butler",
+            context=_unused_context,
+            store_episode=_raise_table,
+        )
         try:
             with caplog.at_level(logging.WARNING, logger="butlers.core.spawner"):
                 result = await store_session_episode(AsyncMock(), "my-butler", "session output")
         finally:
-            _hooks._memory_store_episode_hook = orig
+            _hooks.unregister_memory_session_runtime("my-butler", runtime)
         assert result is False
         record = next(r for r in caplog.records if "memory tables are missing" in r.getMessage())
         assert record.exc_info is None

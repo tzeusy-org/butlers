@@ -922,6 +922,9 @@ migrate.
 - `src/butlers/core/spawner.py::_compose_system_prompt` is the canonical composition path: runtime receives raw `CLAUDE.md` system prompt when memory context is unavailable, and appends memory context as a double-newline suffix when available.
 - `tests/core/test_core_spawner.py::TestFullFlow` should patch `fetch_memory_context` for deterministic assertions so local memory module/tool availability cannot change expected `system_prompt` text.
 
+### Memory session hook ownership contract
+- `core.memory_hooks` context and episode-store dispatch must use a paired runtime keyed by the invoking butler/schema, never a last-started process-global closure; registration/unregistration is identity-safe so replacing or stopping one daemon cannot remove another daemon's active memory runtime (including Chronicler's `chronicler_mem` pool).
+
 ### Sessions summary contract
 - `src/butlers/daemon.py` core MCP registration should include `sessions_summary`; dashboard cost fan-out relies on declared tool metadata and will log `"Tool 'sessions_summary' not listed"` warnings if not advertised.
 - `src/butlers/core/sessions.py::sessions_summary` response payload should include `period`, and unsupported periods must raise `ValueError` with an `"Invalid period ..."` message.

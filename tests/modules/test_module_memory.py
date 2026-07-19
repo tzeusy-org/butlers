@@ -150,6 +150,105 @@ class TestLifecycle:
             if chronicler_started:
                 await chronicler.on_shutdown()
 
+    async def test_started_modules_route_session_hooks_to_each_owner_pool(
+        self, monkeypatch
+    ) -> None:
+        """Session hooks keep General, Travel, and Chronicler memory isolated.
+
+        Chronicler deliberately uses a private ``chronicler_mem`` pool.  A
+        single-process daemon harness must not let the last module started
+        redirect General or Travel session work into that private schema.
+        """
+        from butlers.core.memory_hooks import fetch_memory_context, store_session_episode
+
+        general = MemoryModule()
+        travel = MemoryModule()
+        chronicler = MemoryModule()
+        general_domain_pool = object()
+        travel_domain_pool = object()
+        chronicler_domain_pool = object()
+        general_memory_pool = object()
+        travel_memory_pool = object()
+        chronicler_memory_pool = object()
+        modules = [
+            (general, "general", general_domain_pool, general_memory_pool, None),
+            (travel, "travel", travel_domain_pool, travel_memory_pool, None),
+            (
+                chronicler,
+                "chronicler",
+                chronicler_domain_pool,
+                chronicler_memory_pool,
+                MemoryModuleConfig(memory_schema="chronicler_mem"),
+            ),
+        ]
+        labels = {
+            id(general_memory_pool): "general",
+            id(travel_memory_pool): "travel",
+            id(chronicler_memory_pool): "chronicler_mem",
+        }
+        context_calls: list[tuple[str, str]] = []
+        store_calls: list[tuple[str, str]] = []
+
+        for module, _owner, _domain_pool, memory_pool, _config in modules:
+            monkeypatch.setattr(module, "_ensure_memory_schema_pool", AsyncMock())
+            monkeypatch.setattr(module, "_get_pool", lambda pool=memory_pool: pool)
+            monkeypatch.setattr(
+                module,
+                "_register_default_maintenance_schedules",
+                AsyncMock(),
+            )
+            module._get_embedding_engine = MagicMock(return_value=MagicMock())
+
+        async def _memory_context(pool, _engine, _prompt, butler_name, **_kwargs):
+            context_calls.append((labels[id(pool)], butler_name))
+            return f"{labels[id(pool)]} context"
+
+        async def _store_episode(pool, _content, butler_name, **_kwargs):
+            store_calls.append((labels[id(pool)], butler_name))
+            return {"id": "episode-id"}
+
+        monkeypatch.setattr(
+            "butlers.modules.memory.tools.context.memory_context",
+            _memory_context,
+        )
+        monkeypatch.setattr(
+            "butlers.modules.memory.tools.writing.memory_store_episode",
+            _store_episode,
+        )
+
+        started: list[MemoryModule] = []
+        try:
+            for module, owner, domain_pool, _memory_pool, config in modules:
+                await module.on_startup(
+                    config=config,
+                    db=SimpleNamespace(schema=owner, pool=domain_pool),
+                )
+                started.append(module)
+
+            for _module, owner, domain_pool, memory_pool, _config in modules:
+                assert (
+                    await fetch_memory_context(domain_pool, owner, f"{owner} prompt")
+                    == f"{labels[id(memory_pool)]} context"
+                )
+                assert await store_session_episode(domain_pool, owner, f"{owner} output") is True
+
+            assert await fetch_memory_context(object(), "stopped", "prompt") is None
+            assert await store_session_episode(object(), "stopped", "output") is False
+        finally:
+            for module in reversed(started):
+                await module.on_shutdown()
+
+        assert context_calls == [
+            ("general", "general"),
+            ("travel", "travel"),
+            ("chronicler_mem", "chronicler"),
+        ]
+        assert store_calls == [
+            ("general", "general"),
+            ("travel", "travel"),
+            ("chronicler_mem", "chronicler"),
+        ]
+
     def test_get_pool_raises_when_uninitialised(self):
         mod = MemoryModule()
         with pytest.raises(RuntimeError, match="not initialised"):
@@ -176,35 +275,43 @@ class TestLifecycle:
         daemon_pool = MagicMock(name="daemon_pool")
         memory_pool = MagicMock(name="memory_pool")
         fake_db.pool = daemon_pool
+        fake_db.schema = "general"
 
         captured_hook: dict[str, Any] = {}
 
-        def _fake_register_memory_context(fn):
-            captured_hook["hook"] = fn
+        def _fake_register_session_runtime(owner, *, context, store_episode):
+            captured_hook["owner"] = owner
+            captured_hook["context"] = context
+            captured_hook["store_episode"] = store_episode
+            return MagicMock(name="session_runtime")
 
         monkeypatch.setattr(
-            "butlers.core.memory_hooks.register_memory_context",
-            _fake_register_memory_context,
+            "butlers.core.memory_hooks.register_memory_session_runtime",
+            _fake_register_session_runtime,
         )
         monkeypatch.setattr("butlers.core.memory_hooks.register_memory_forget", lambda fn: None)
+        monkeypatch.setattr("butlers.core.memory_hooks.register_catalog_search", lambda fn: None)
         monkeypatch.setattr(
-            "butlers.core.memory_hooks.register_memory_store_episode", lambda fn: None
+            "butlers.core.memory_hooks.register_memory_maintenance_runtime",
+            lambda *args, **kwargs: MagicMock(),
         )
+        monkeypatch.setattr(mod, "_register_default_maintenance_schedules", AsyncMock())
 
         await mod.on_startup(config=None, db=fake_db)
-        assert "hook" in captured_hook
+        assert captured_hook["owner"] == "general"
 
         mod._get_embedding_engine = MagicMock(return_value=MagicMock())
         monkeypatch.setattr(mod, "_get_pool", lambda: memory_pool)
         context_mock = AsyncMock(return_value="# Memory Context\n")
         monkeypatch.setattr("butlers.modules.memory.tools.context.memory_context", context_mock)
 
-        result = await captured_hook["hook"](daemon_pool, "general", "prompt")
+        result = await captured_hook["context"](daemon_pool, "general", "prompt")
 
         assert result == "# Memory Context\n"
         assert context_mock.call_args.args[0] is memory_pool
         _, kwargs = context_mock.call_args
         assert kwargs.get("include_fleet_knowledge") is True
+        await mod.on_shutdown()
 
     async def test_on_startup_episode_hook_uses_private_memory_pool(self, monkeypatch) -> None:
         """Completed session episodes use the configured module pool, not the daemon pool."""
@@ -217,7 +324,6 @@ class TestLifecycle:
         monkeypatch.setattr(mod, "_ensure_memory_schema_pool", AsyncMock())
         monkeypatch.setattr(mod, "_get_pool", lambda: private_memory_pool)
         monkeypatch.setattr(mod, "_register_default_maintenance_schedules", AsyncMock())
-        monkeypatch.setattr("butlers.core.memory_hooks.register_memory_context", lambda fn: None)
         monkeypatch.setattr("butlers.core.memory_hooks.register_memory_forget", lambda fn: None)
         monkeypatch.setattr("butlers.core.memory_hooks.register_catalog_search", lambda fn: None)
         monkeypatch.setattr(
@@ -225,12 +331,15 @@ class TestLifecycle:
             lambda *args, **kwargs: MagicMock(),
         )
 
-        def _register_episode_hook(fn):
-            captured_hook["hook"] = fn
+        def _register_session_runtime(owner, *, context, store_episode):
+            captured_hook["owner"] = owner
+            captured_hook["context"] = context
+            captured_hook["store_episode"] = store_episode
+            return MagicMock(name="session_runtime")
 
         monkeypatch.setattr(
-            "butlers.core.memory_hooks.register_memory_store_episode",
-            _register_episode_hook,
+            "butlers.core.memory_hooks.register_memory_session_runtime",
+            _register_session_runtime,
         )
         episode_store = AsyncMock(return_value={"id": "episode-id"})
         monkeypatch.setattr(
@@ -244,7 +353,7 @@ class TestLifecycle:
         )
 
         assert (
-            await captured_hook["hook"](
+            await captured_hook["store_episode"](
                 domain_pool,
                 "chronicler",
                 "completed session output",
@@ -258,6 +367,8 @@ class TestLifecycle:
             "chronicler",
             session_id="session-id",
         )
+        assert captured_hook["owner"] == "chronicler"
+        await mod.on_shutdown()
 
     async def test_consolidation_hook_uses_module_pool_and_configured_engine(
         self, monkeypatch
