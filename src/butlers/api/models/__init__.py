@@ -387,6 +387,27 @@ class MCPToolCallResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class UnpricedModelUsage(BaseModel):
+    """Executed-model ledger usage excluded from a priced subtotal."""
+
+    model: str
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    cache_creation_tokens: int
+
+
+class SpendDivergence(BaseModel):
+    """Material token-total disagreement between session and ledger evidence."""
+
+    date: str
+    butler: str
+    ledger_tokens: int
+    session_tokens: int
+    difference_ratio: float
+
+
 class SpendSummary(BaseModel):
     """Aggregate spend summary across all butlers."""
 
@@ -397,6 +418,14 @@ class SpendSummary(BaseModel):
     total_output_tokens: int
     by_butler: dict[str, float] = Field(default_factory=dict)
     by_model: dict[str, float] = Field(default_factory=dict)
+    unpriced_models: list[UnpricedModelUsage] = Field(default_factory=list)
+    divergences: list[SpendDivergence] = Field(default_factory=list)
+    divergence_source_error: bool = False
+    historical_attribution_note: str | None = None
+    # A ledger read failure is distinct from a genuine zero-spend range. The
+    # response keeps compatibility totals at zero but callers must display a
+    # degraded state instead of treating them as an all-clear.
+    source_error: bool = False
     # Butlers whose cost data could not be fetched (both the DB path and the
     # live MCP fallback failed) -- their contribution is a fabricated $0.00
     # zero-tuple internally, so totals above are a partial sum, never a
@@ -413,6 +442,7 @@ class DailySpend(BaseModel):
     input_tokens: int
     output_tokens: int
     by_butler: dict[str, float] = Field(default_factory=dict)
+    unpriced_models: list[UnpricedModelUsage] = Field(default_factory=list)
 
 
 class TopSession(BaseModel):

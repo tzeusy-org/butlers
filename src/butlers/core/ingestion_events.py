@@ -1083,11 +1083,10 @@ def _compute_session_cost_usd(
                 cached_input_tokens=cached_tok,
                 cache_creation_tokens=cache_write_tok,
             )
-            if session_cost != 0.0:
+            if session_cost is not None:
                 return session_cost
-            # estimate_session_cost returns 0.0 for unknown models — fall
-            # through to JSONB fallback so stored cost_usd is not lost.
-            # Mirrors the precedence used by ingestion_event_rollup.
+            # Missing pricing is distinct from an explicit zero-rate model;
+            # fall through to a legacy stored cost only when one exists.
         # Pricing is available but we have no model/tokens — fall through to
         # JSONB fallback rather than returning 0.0, which would mask a real
         # stored value.
@@ -1380,7 +1379,7 @@ def ingestion_event_rollup(
         entry["output_tokens"] += out_tok
 
         # Compute cost: prefer pricing-based estimation, fall back to stored cost
-        session_cost = 0.0
+        session_cost: float | None = None
         if pricing is not None:
             model = session.get("model") or ""
             cached_tok = session.get("cached_input_tokens") or 0
@@ -1394,7 +1393,7 @@ def ingestion_event_rollup(
                     cached_input_tokens=cached_tok,
                     cache_creation_tokens=cache_write_tok,
                 )
-        if session_cost == 0.0:
+        if session_cost is None:
             # Legacy fallback: read from cost JSONB column
             cost = session.get("cost")
             if isinstance(cost, dict):
@@ -1404,8 +1403,9 @@ def ingestion_event_rollup(
                         session_cost = float(usd)
                     except (TypeError, ValueError):
                         pass
-        total_cost += session_cost
-        entry["cost"] += session_cost
+        if session_cost is not None:
+            total_cost += session_cost
+            entry["cost"] += session_cost
 
     return {
         "request_id": request_id,
@@ -1584,9 +1584,7 @@ async def ingestion_window_rollup(
                             cached_tok = int(row.get("cached_input_tokens") or 0)
                             cache_write_tok = int(row.get("cache_creation_tokens") or 0)
                             if model and (in_tok or out_tok or cached_tok or cache_write_tok):
-                                if total_cost is None:
-                                    total_cost = 0.0
-                                total_cost += estimate_session_cost(
+                                estimated_cost = estimate_session_cost(
                                     pricing,
                                     model,
                                     in_tok,
@@ -1594,11 +1592,10 @@ async def ingestion_window_rollup(
                                     cached_input_tokens=cached_tok,
                                     cache_creation_tokens=cache_write_tok,
                                 )
-                # Pricing present but all sessions have unknown/empty model or zero tokens:
-                # initialise to 0.0 so callers can distinguish "pricing unavailable" (None)
-                # from "sessions exist but zero chargeable tokens" (0.0).
-                if pricing is not None and session_count > 0 and total_cost is None:
-                    total_cost = 0.0
+                                if estimated_cost is not None:
+                                    if total_cost is None:
+                                        total_cost = 0.0
+                                    total_cost += estimated_cost
             except Exception:
                 logger.debug("ingestion_window_rollup: session fan-out failed", exc_info=True)
 

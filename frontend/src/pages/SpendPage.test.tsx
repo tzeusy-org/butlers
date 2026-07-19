@@ -317,6 +317,62 @@ describe("SpendPage — posture", () => {
     expect(daysCell.textContent).toContain(String(DAYS_IN_MONTH))
   })
 
+  it("names unpriced ledger usage and makes the monthly-ceiling blind spot explicit", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/forecast") {
+        return Promise.resolve({
+          data: {
+            ...MOCK_FORECAST.data,
+            ceiling_usd: 10,
+            unpriced_models: [
+              {
+                model: "unpriced-codex",
+                calls: 1988,
+                input_tokens: 100,
+                output_tokens: 50,
+                cached_input_tokens: 0,
+                cache_creation_tokens: 0,
+              },
+            ],
+            ceiling_blind_to_unpriced_models: 1,
+            divergences: [
+              {
+                date: "2026-05-17",
+                butler: "general",
+                ledger_tokens: 100,
+                session_tokens: 80,
+                difference_ratio: 0.2,
+              },
+            ],
+            historical_attribution_note: "Legacy labels use requested models.",
+          },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    expect((await screen.findByTestId("kpi-mtd")).textContent).toContain(
+      "excludes 1,988 unpriced calls",
+    )
+    expect(screen.getByTestId("kpi-ceiling").textContent).toContain(
+      "blind to 1 unpriced model",
+    )
+    expect((await screen.findByTestId("forecast-unpriced")).textContent).toContain(
+      "unpriced-codex",
+    )
+    expect(screen.getByTestId("forecast-divergence").textContent).toContain(
+      "ledger/session token drift",
+    )
+    expect(screen.getByTestId("forecast-historical-attribution").textContent).toContain(
+      "Legacy labels",
+    )
+  })
+
   it("ceiling-update flow submits PUT and re-renders with the new ceiling", async () => {
     let ceilingSet = false
     apiFetchMock.mockImplementation((path: string, init?: RequestInit) => {
@@ -515,6 +571,48 @@ describe("SpendPage — what changed", () => {
     expect(JSON.parse(chart.getAttribute("data-unavailable") ?? "[]")).toEqual([])
   })
 
+  it("footnotes unpriced daily ledger usage rather than rendering it as free", async () => {
+    setHooks()
+    mockUseDailySpend.mockReturnValue({
+      data: {
+        data: DAILY_DATA,
+        meta: {
+          unpriced_models: [
+            {
+              model: "unpriced-codex",
+              calls: 3,
+              input_tokens: 100,
+              output_tokens: 50,
+              cached_input_tokens: 0,
+              cache_creation_tokens: 0,
+            },
+          ],
+          divergences: [
+            {
+              date: "2026-05-17",
+              butler: "general",
+              ledger_tokens: 100,
+              session_tokens: 80,
+              difference_ratio: 0.2,
+            },
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    expect((await screen.findByTestId("daily-spend-unpriced")).textContent).toContain(
+      "excludes 3 unpriced calls",
+    )
+    expect(screen.getByTestId("daily-spend-divergence").textContent).toContain(
+      "ledger/session token drift",
+    )
+  })
+
   it("ranks movers by delta vs the prior window, marking new butlers honestly", async () => {
     setHooks({
       currentByButler: { general: 1.0, memory: 0.5 },
@@ -617,6 +715,46 @@ describe("SpendPage — spend breakdown", () => {
       ).toBe(true)
     })
     expect(await screen.findByText("classification")).toBeTruthy()
+  })
+
+  it("renders absent model pricing as —/unpriced and keeps subscription zeroes distinct", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/breakdown?by=model") {
+        return Promise.resolve({
+          data: {
+            by: "model",
+            breakdown: { "gpt-5.6-luna": 0 },
+            billing_classes: { "gpt-5.6-luna": "subscription" },
+            unpriced_models: [
+              {
+                model: "unpriced-codex",
+                calls: 3,
+                input_tokens: 100,
+                output_tokens: 50,
+                cached_input_tokens: 0,
+                cache_creation_tokens: 0,
+              },
+            ],
+          },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "model" }))
+    })
+
+    expect(await screen.findByText("gpt-5.6-luna")).toBeTruthy()
+    expect(screen.getByText(/subscription/)).toBeTruthy()
+    expect(screen.getByText("—/unpriced")).toBeTruthy()
+    expect((await screen.findByTestId("breakdown-unpriced")).textContent).toContain(
+      "unpriced-codex",
+    )
   })
 
   it("gates the empty state when butlers drop out of the butler breakdown fan-out (bu-jad4j.3)", async () => {

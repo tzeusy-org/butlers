@@ -1,4 +1,6 @@
 // ---------------------------------------------------------------------------
+
+import type { SpendDivergence, UnpricedModelUsage } from "@/api/types"
 // Shared GET /api/spend/forecast response shape.
 //
 // Extracted from SpendPage.tsx so SpendVerdictOpener (components/costs/
@@ -27,7 +29,14 @@ export interface ForecastData {
   // Optional (rather than required) so older cached responses/fixtures that
   // predate this field don't fail a strict type check.
   ceiling_source_error?: boolean
-  // Butlers dropped from the per-day fan-out powering the chart's solid
-  // actuals series -- independent of ceiling_source_error.
+  /** Executed models excluded from the priced subtotal because pricing is absent. */
+  unpriced_models?: UnpricedModelUsage[]
+  /** Count of models whose current-month ledger usage the ceiling cannot price. */
+  ceiling_blind_to_unpriced_models?: number
+  divergences?: SpendDivergence[]
+  divergence_source_error?: boolean
+  historical_attribution_note?: string | null
+  // Retained for older cached responses. Ledger daily actuals no longer omit
+  // per-butler fan-out sources, so current responses use source/deadman fields.
   unavailable_butlers?: string[]
 }

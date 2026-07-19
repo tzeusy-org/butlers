@@ -573,7 +573,7 @@ async def _fetch_board_cost_today(pool: object, pricing: PricingConfig) -> float
         data = await asyncio.wait_for(sessions_summary(pool, "today"), timeout=_STATUS_TIMEOUT_S)
         total_cost = 0.0
         for model_id, stats in data.get("by_model", {}).items():
-            total_cost += estimate_session_cost(
+            cost = estimate_session_cost(
                 pricing,
                 model_id,
                 stats.get("input_tokens", 0),
@@ -582,6 +582,9 @@ async def _fetch_board_cost_today(pool: object, pricing: PricingConfig) -> float
                 cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                 context_tokens=stats.get("context_tokens"),
             )
+            if cost is None:
+                return None
+            total_cost += cost
         return total_cost
     except Exception:
         return None

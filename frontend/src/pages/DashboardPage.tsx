@@ -509,11 +509,13 @@ export default function DashboardPage() {
             totalCostUsd={costData?.total_cost_usd ?? 0}
             topButler={topButler}
             topButlerCost={topButlerCost}
+            unpricedModels={costData?.unpriced_models}
             isLoading={costQuery.isLoading}
             dailyCosts={
               dailySpendQuery.isError ? undefined : dailySpendQuery.data?.data
             }
             dailyCostsError={dailySpendQuery.isError}
+            dailyUnpricedModels={dailySpendQuery.isError ? undefined : dailySpendQuery.data?.meta?.unpriced_models}
           />
         </div>
         <TopSessionsTable

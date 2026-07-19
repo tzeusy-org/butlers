@@ -21,6 +21,7 @@ import logging
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ _DEFAULT_PATH = Path(__file__).resolve().parents[3] / "pricing.toml"
 
 class PricingError(Exception):
     """Raised when pricing configuration is missing or malformed."""
+
+
+BillingClass = Literal["metered", "subscription", "local"]
+_BILLING_CLASSES = frozenset({"metered", "subscription", "local"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +52,10 @@ class ModelPricing:
     output_price_per_token: float
     cached_input_price_per_token: float | None = None
     cache_creation_price_per_token: float | None = None
+    # A known zero marginal rate is materially different from an absent entry:
+    # subscription/local usage is priced at $0, while an unknown model is
+    # unpriced and must remain visible as such.
+    billing_class: BillingClass = "metered"
 
     @property
     def effective_cached_input_price(self) -> float:
@@ -101,6 +110,7 @@ class TieredModelPricing:
     """Context-tiered pricing for a model with variable rates by context size."""
 
     tiers: tuple[PricingTier, ...]  # sorted ascending by context_threshold
+    billing_class: BillingClass = "metered"
 
     def tier_for_context(self, context_tokens: int) -> PricingTier:
         """Return the tier applicable for the given context size.
@@ -140,6 +150,11 @@ class PricingConfig:
     def get_model_pricing(self, model_id: str) -> ModelPricing | TieredModelPricing | None:
         """Return pricing for *model_id*, or ``None`` if unknown."""
         return self._models.get(model_id)
+
+    def billing_class_for(self, model_id: str) -> BillingClass | None:
+        """Return the declared billing class, or ``None`` for an unknown model."""
+        pricing = self._models.get(model_id)
+        return pricing.billing_class if pricing is not None else None
 
     def estimate_cost(
         self,
@@ -193,6 +208,17 @@ class PricingConfig:
         )
 
 
+def _billing_class(values: dict, model_id: str) -> BillingClass:
+    """Parse and validate a model's declared marginal-cost classification."""
+    raw = values.get("billing_class", "metered")
+    if not isinstance(raw, str) or raw not in _BILLING_CLASSES:
+        allowed = ", ".join(sorted(_BILLING_CLASSES))
+        raise PricingError(
+            f"Model '{model_id}': billing_class must be one of {allowed}; got {raw!r}"
+        )
+    return cast(BillingClass, raw)
+
+
 def _parse_tiered_model(model_id: str, values: dict) -> TieredModelPricing:
     """Parse a tiered pricing entry from TOML data."""
     tiers_data = values["tiers"]
@@ -225,7 +251,10 @@ def _parse_tiered_model(model_id: str, values: dict) -> TieredModelPricing:
             raise PricingError(f"Invalid value in tier {i} for model '{model_id}': {exc}") from exc
 
     parsed.sort(key=lambda t: t.context_threshold)
-    return TieredModelPricing(tiers=tuple(parsed))
+    return TieredModelPricing(
+        tiers=tuple(parsed),
+        billing_class=_billing_class(values, model_id),
+    )
 
 
 def _optional_price(values: dict, key: str) -> float | None:
@@ -244,6 +273,7 @@ def _parse_flat_model(model_id: str, values: dict) -> ModelPricing:
             cache_creation_price_per_token=_optional_price(
                 values, "cache_creation_price_per_token"
             ),
+            billing_class=_billing_class(values, model_id),
         )
     except KeyError as exc:
         raise PricingError(f"Missing required field {exc} for model '{model_id}'") from exc
@@ -312,8 +342,13 @@ def estimate_session_cost(
     cached_input_tokens: int = 0,
     cache_creation_tokens: int = 0,
     context_tokens: int | None = None,
-) -> float:
-    """Estimate cost for a session, returning 0.0 for unknown models."""
+) -> float | None:
+    """Estimate cost for a session, preserving absent pricing as ``None``.
+
+    A declared zero-rate model is a real numeric ``0.0``. A missing model
+    entry is not a free model and must remain ``None`` so callers can expose
+    unpriced usage instead of fabricating a calm zero-dollar reading.
+    """
     cost = config.estimate_cost(
         model_id,
         input_tokens,
@@ -326,9 +361,9 @@ def estimate_session_cost(
         if model_id and model_id not in _warned_models:
             _warned_models.add(model_id)
             logger.warning(
-                "No pricing entry for model %r — cost will be reported as $0. "
-                "Add it to pricing.toml to fix.",
+                "No pricing entry for model %r — cost is unpriced. "
+                "Add an explicit pricing.toml entry or billing class.",
                 model_id,
             )
-        return 0.0
+        return None
     return cost

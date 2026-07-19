@@ -3,12 +3,17 @@ import { Link } from "react-router";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { formatCostUsd } from "@/lib/format-cost";
-import type { DailySpend } from "@/api/types";
+import type { DailySpend, UnpricedModelUsage } from "@/api/types";
 
 interface CostWidgetProps {
   totalCostUsd: number;
   topButler: string | null;
   topButlerCost: number;
+  /**
+   * Executed models omitted from the priced subtotal. When present, the
+   * widget must not promote that subtotal as a truthful fleet total.
+   */
+  unpricedModels?: UnpricedModelUsage[];
   isLoading?: boolean;
   /**
    * Real daily cost series for the trailing 7 days (from GET /api/spend/daily).
@@ -19,16 +24,24 @@ interface CostWidgetProps {
   dailyCosts?: DailySpend[];
   /** True when the daily-cost source failed to load. */
   dailyCostsError?: boolean;
+  /** Unpriced coverage in the daily series, independent from today's summary. */
+  dailyUnpricedModels?: UnpricedModelUsage[];
 }
 
 export default function CostWidget({
   totalCostUsd,
   topButler,
   topButlerCost,
+  unpricedModels = [],
   isLoading,
   dailyCosts,
   dailyCostsError = false,
+  dailyUnpricedModels = [],
 }: CostWidgetProps) {
+  const unpricedCalls = unpricedModels.reduce((total, model) => total + model.calls, 0);
+  const dailyUnpricedCalls = dailyUnpricedModels.reduce((total, model) => total + model.calls, 0);
+  const hasUnpricedModels = unpricedModels.length > 0;
+
   if (isLoading) {
     return (
       <Card>
@@ -51,12 +64,22 @@ export default function CostWidget({
         </Button>
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{formatCostUsd(totalCostUsd)}</div>
-        {topButler && (
+        {hasUnpricedModels ? (
+          <p className="text-2xl font-bold" data-testid="cost-widget-unpriced">
+            —/unpriced
+          </p>
+        ) : (
+          <div className="text-2xl font-bold">{formatCostUsd(totalCostUsd)}</div>
+        )}
+        {hasUnpricedModels ? (
+          <p className="mt-1 text-xs text-muted-foreground">
+            {unpricedCalls.toLocaleString()} unpriced {unpricedCalls === 1 ? "call" : "calls"} excluded
+          </p>
+        ) : topButler ? (
           <p className="mt-1 text-xs text-muted-foreground">
             Top: {topButler} ({formatCostUsd(topButlerCost)})
           </p>
-        )}
+        ) : null}
         {dailyCostsError ? (
           <p className="mt-3 text-xs text-muted-foreground" data-testid="cost-widget-trend-unavailable">
             7-day trend unavailable
@@ -83,6 +106,11 @@ export default function CostWidget({
             7-day trend unavailable
           </p>
         )}
+        {!dailyCostsError && dailyCosts && dailyCosts.length > 0 && dailyUnpricedCalls > 0 ? (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="cost-widget-trend-unpriced">
+            7-day trend excludes {dailyUnpricedCalls.toLocaleString()} unpriced {dailyUnpricedCalls === 1 ? "call" : "calls"}
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );

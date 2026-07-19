@@ -66,7 +66,7 @@ import { cn } from "@/lib/utils"
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry"
 import { computeMovers, type Mover } from "@/lib/spend-movers"
 import type { ForecastData, ForecastDay } from "@/lib/spend-forecast"
-import type { ComplexityTier } from "@/api/types"
+import type { ComplexityTier, SpendDivergence, UnpricedModelUsage } from "@/api/types"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,6 +97,13 @@ interface BreakdownData {
   // breakdown undercounts, so an empty result must not read as a genuine "$0 month"
   // and a populated result must footnote the missing butlers.
   unavailable_butlers?: string[]
+  /** Executed models excluded from the priced subtotal because no price exists. */
+  unpriced_models?: UnpricedModelUsage[]
+  /** Declared marginal-cost class for model rows, including subscription zeroes. */
+  billing_classes?: Record<string, "metered" | "subscription" | "local">
+  divergences?: SpendDivergence[]
+  divergence_source_error?: boolean
+  historical_attribution_note?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +181,14 @@ function fmtUsdPrecise(n: number): string {
   return `$${n.toFixed(4)}`
 }
 
+function unpricedCallCount(models: readonly UnpricedModelUsage[] | undefined): number {
+  return (models ?? []).reduce((total, model) => total + model.calls, 0)
+}
+
+function unpricedModelNames(models: readonly UnpricedModelUsage[] | undefined): string {
+  return (models ?? []).map((model) => model.model).join(", ")
+}
+
 // ---------------------------------------------------------------------------
 // Posture — KPI Strip. Hairline-divided, no card chrome. Mega numerals are
 // weight 500, tabular. State colour appears only when state demands
@@ -214,6 +229,8 @@ function KpiCell({ label, value, sub, tone = "fg", testId }: KpiCellProps) {
 
 function KpiStrip({ forecast }: { forecast: ForecastData }) {
   const daysRemaining = forecast.days_in_month - forecast.days_elapsed
+  const unpricedCalls = unpricedCallCount(forecast.unpriced_models)
+  const blindModels = forecast.ceiling_blind_to_unpriced_models ?? 0
   const pct =
     forecast.ceiling_usd != null && forecast.ceiling_usd > 0
       ? Math.min(100, Math.round((forecast.mtd_usd / forecast.ceiling_usd) * 100))
@@ -230,7 +247,11 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
         testId="kpi-mtd"
         label="MTD Spend"
         value={formatCostUsd(forecast.mtd_usd)}
-        sub={`${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`}
+        sub={
+          unpricedCalls > 0
+            ? `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed · excludes ${unpricedCalls.toLocaleString()} unpriced calls`
+            : `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`
+        }
       />
       <KpiCell
         testId="kpi-projected-eom"
@@ -243,7 +264,13 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
         testId="kpi-ceiling"
         label="Monthly Ceiling"
         value={forecast.ceiling_usd != null ? formatCostUsd(forecast.ceiling_usd) : "—"}
-        sub={pct != null ? `${pct}% used` : undefined}
+        sub={
+          blindModels > 0
+            ? `blind to ${blindModels} unpriced model${blindModels === 1 ? "" : "s"}`
+            : pct != null
+              ? `${pct}% used`
+              : undefined
+        }
       />
       <KpiCell
         testId="kpi-days-in-month"
@@ -565,13 +592,15 @@ function MoversStrip({
 
 interface BreakdownBarProps {
   label: string
-  value: number
+  value: number | null
   maxValue: number
   href?: string
+  billingClass?: "metered" | "subscription" | "local"
 }
 
-function BreakdownBar({ label, value, maxValue, href }: BreakdownBarProps) {
-  const pct = maxValue > 0 ? (value / maxValue) * 100 : 0
+function BreakdownBar({ label, value, maxValue, href, billingClass }: BreakdownBarProps) {
+  const isUnpriced = value === null
+  const pct = !isUnpriced && maxValue > 0 ? (value / maxValue) * 100 : 0
   const labelEl = href ? (
     <Link to={href} className="w-40 truncate text-muted-foreground font-mono text-xs hover:underline">
       {label}
@@ -588,7 +617,11 @@ function BreakdownBar({ label, value, maxValue, href }: BreakdownBarProps) {
           style={{ width: `${pct.toFixed(1)}%` }}
         />
       </div>
-      <span className="w-20 text-right tabular-nums text-xs">{fmtUsdPrecise(value)}</span>
+      <span className="w-36 text-right tabular-nums text-xs">
+        {isUnpriced ? "—/unpriced" : fmtUsdPrecise(value)}
+        {billingClass === "subscription" && " · subscription"}
+        {billingClass === "local" && " · local"}
+      </span>
     </div>
   )
 }
@@ -611,10 +644,18 @@ function BreakdownSection() {
 
   const entries = useMemo(() => {
     const breakdown = data?.data?.breakdown ?? {}
-    return Object.entries(breakdown).sort(([, a], [, b]) => b - a)
-  }, [data])
-  const maxValue = entries[0]?.[1] ?? 0
-  const sourceError = by === "purpose" && data?.data?.source_error === true
+    const priced = Object.entries(breakdown).map(([label, value]) => ({ label, value }))
+    const unpriced =
+      by === "model"
+        ? (data?.data?.unpriced_models ?? [])
+            .filter((model) => !(model.model in breakdown))
+            .map((model) => ({ label: model.model, value: null }))
+        : []
+    return [...priced.sort((a, b) => b.value - a.value), ...unpriced]
+  }, [by, data])
+  const maxValue = Math.max(0, ...entries.map((entry) => entry.value ?? 0))
+  const sourceError = data?.data?.source_error === true
+  const divergenceCount = data?.data?.divergences?.length ?? 0
   // butler/model/feature dimensions name any butler dropped from the fan-out in
   // `unavailable_butlers` (purpose uses `source_error` above instead). When
   // non-empty the breakdown undercounts, so an empty result is an outage — not a
@@ -658,7 +699,10 @@ function BreakdownSection() {
             onRetry={() => void refetch()}
           />
         ) : sourceError ? (
-          <SourceDegradedNote label="Purpose breakdown" detail="spend source unavailable" />
+          <SourceDegradedNote
+            label={by === "purpose" ? "Purpose breakdown" : "Spend breakdown"}
+            detail="ledger source unavailable"
+          />
         ) : entries.length === 0 && unavailableButlers.length > 0 ? (
           // Empty because butlers dropped out of the fan-out, not a genuine $0
           // month — name them rather than the calm "nothing recorded" line
@@ -675,15 +719,44 @@ function BreakdownSection() {
           </p>
         ) : (
           <div className="space-y-2">
-            {entries.map(([label, value]) => (
+            {entries.map(({ label, value }) => (
               <BreakdownBar
                 key={label}
                 label={label}
                 value={value}
                 maxValue={maxValue}
                 href={by === "butler" ? `/butlers/${label}?tab=spend` : undefined}
+                billingClass={data?.data?.billing_classes?.[label]}
               />
             ))}
+            {(data?.data?.unpriced_models?.length ?? 0) > 0 && (
+              <SourceDegradedNote
+                label="Spend breakdown"
+                detail={`excludes ${unpricedCallCount(data?.data?.unpriced_models).toLocaleString()} unpriced calls (${unpricedModelNames(data?.data?.unpriced_models)})`}
+                testId="breakdown-unpriced"
+              />
+            )}
+            {divergenceCount > 0 && (
+              <SourceDegradedNote
+                label="Spend breakdown"
+                detail={`ledger/session token drift in ${divergenceCount} day-butler bucket${divergenceCount === 1 ? "" : "s"}`}
+                testId="breakdown-divergence"
+              />
+            )}
+            {data?.data?.divergence_source_error && (
+              <SourceDegradedNote
+                label="Spend breakdown"
+                detail="session-to-ledger comparison unavailable"
+                testId="breakdown-divergence-source-error"
+              />
+            )}
+            {data?.data?.historical_attribution_note && (
+              <SourceDegradedNote
+                label="Historical attribution"
+                detail={data.data.historical_attribution_note}
+                testId="breakdown-historical-attribution"
+              />
+            )}
             {unavailableButlers.length > 0 && (
               // Populated but partial: some butlers are absent from the bars.
               <SpendUnavailableFootnote
@@ -1641,6 +1714,8 @@ export default function SpendPage() {
   // Butlers dropped from GET /api/spend/daily's fan-out — passed to the stacked
   // chart so vanished butlers are footnoted, not silently absent (bu-jad4j.3).
   const dailyUnavailableButlers = dailyResponse?.meta?.unavailable_butlers ?? []
+  const dailyUnpricedModels = dailyResponse?.meta?.unpriced_models ?? []
+  const dailyDivergences = dailyResponse?.meta?.divergences ?? []
 
   // Movers — current window vs the immediately preceding window of equal
   // length (e.g. "last 7 days" vs "the 7 days before that").
@@ -1788,6 +1863,38 @@ export default function SpendPage() {
                 testId="forecast-unavailable-butlers"
               />
             )}
+            {liveForecast && (liveForecast.ceiling_blind_to_unpriced_models ?? 0) > 0 && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Monthly ceiling"
+                detail={`blind to ${liveForecast.ceiling_blind_to_unpriced_models} unpriced model${liveForecast.ceiling_blind_to_unpriced_models === 1 ? "" : "s"}: ${unpricedModelNames(liveForecast.unpriced_models)}`}
+                testId="forecast-unpriced"
+              />
+            )}
+            {liveForecast && liveForecast.divergences && liveForecast.divergences.length > 0 && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Forecast attribution"
+                detail={`ledger/session token drift in ${liveForecast.divergences.length} day-butler bucket${liveForecast.divergences.length === 1 ? "" : "s"}`}
+                testId="forecast-divergence"
+              />
+            )}
+            {liveForecast?.divergence_source_error && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Forecast attribution"
+                detail="session-to-ledger comparison unavailable"
+                testId="forecast-divergence-source-error"
+              />
+            )}
+            {liveForecast?.historical_attribution_note && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Historical attribution"
+                detail={liveForecast.historical_attribution_note}
+                testId="forecast-historical-attribution"
+              />
+            )}
           </div>
         </section>
 
@@ -1819,6 +1926,38 @@ export default function SpendPage() {
               isError={dailyError}
               unavailableButlers={dailyUnavailableButlers}
             />
+            {dailyUnpricedModels.length > 0 && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Daily Spend"
+                detail={`excludes ${unpricedCallCount(dailyUnpricedModels).toLocaleString()} unpriced calls (${unpricedModelNames(dailyUnpricedModels)})`}
+                testId="daily-spend-unpriced"
+              />
+            )}
+            {dailyDivergences.length > 0 && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Daily Spend"
+                detail={`ledger/session token drift in ${dailyDivergences.length} day-butler bucket${dailyDivergences.length === 1 ? "" : "s"}`}
+                testId="daily-spend-divergence"
+              />
+            )}
+            {dailyResponse?.meta?.divergence_source_error && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Daily Spend"
+                detail="session-to-ledger comparison unavailable"
+                testId="daily-spend-divergence-source-error"
+              />
+            )}
+            {dailyResponse?.meta?.historical_attribution_note && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Historical attribution"
+                detail={dailyResponse.meta.historical_attribution_note}
+                testId="daily-spend-historical-attribution"
+              />
+            )}
           </div>
         </section>
 

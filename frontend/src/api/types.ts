@@ -613,6 +613,25 @@ export interface TimelineParams {
 // Spend
 // ---------------------------------------------------------------------------
 
+/** Executed-model ledger usage excluded because the model has no price entry. */
+export interface UnpricedModelUsage {
+  model: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cache_creation_tokens: number;
+}
+
+/** Material token disagreement between sessions and the executed ledger. */
+export interface SpendDivergence {
+  date: string;
+  butler: string;
+  ledger_tokens: number;
+  session_tokens: number;
+  difference_ratio: number;
+}
+
 /** Aggregate spend summary across all butlers. */
 export interface SpendSummary {
   total_cost_usd: number;
@@ -621,6 +640,12 @@ export interface SpendSummary {
   total_output_tokens: number;
   by_butler: Record<string, number>;
   by_model: Record<string, number>;
+  /** Models excluded from dollar subtotals; never silently folded into $0. */
+  unpriced_models?: UnpricedModelUsage[];
+  divergences?: SpendDivergence[];
+  divergence_source_error?: boolean;
+  historical_attribution_note?: string | null;
+  source_error?: boolean;
   /** Butlers whose cost data could not be fetched -- totals above are a partial sum, never a confident fleet-wide total when non-empty. */
   unavailable_butlers?: string[];
 }
@@ -640,6 +665,7 @@ export interface DailySpend {
    * unreachable). Sums to `cost_usd`.
    */
   by_butler?: Record<string, number>;
+  unpriced_models?: UnpricedModelUsage[];
 }
 
 /** A session ranked by cost. */
@@ -654,20 +680,20 @@ export interface TopSession {
 }
 
 /**
- * Metadata for the spend fan-out endpoints (GET /api/spend/daily,
- * /api/spend/top-sessions, /api/spend/by-schedule). Extends the base bag with
- * the degraded-envelope flag the backend emits when a butler's cost source
- * fails and is dropped from the fan-out (spend.py ->
- * `ApiMeta(unavailable_butlers=...)`). Mirrors the fleet-wide degraded
- * convention (see CLAUDE.md API Conventions). Absent or empty means every
- * butler answered; a non-empty list means the series/totals/ranking undercount
- * — a failed butler silently vanishes — and must NOT read as a complete
- * all-clear. This is the single shared meta type for every spend fan-out
- * surface (bu-zseqx unified the former ScheduleCostsMeta into it).
+ * Metadata shared by spend evidence and ledger aggregate endpoints. Historical
+ * evidence routes may name butlers dropped from a fan-out; ledger aggregate
+ * routes instead surface `source_error` and structured unpriced/divergence
+ * evidence. Either form must never read as a complete all-clear.
  */
 export interface SpendFanoutMeta extends ApiMeta {
-  /** Names of butlers whose cost source failed and were dropped from the fan-out. */
+  /** Names of butlers whose legacy evidence source failed and was omitted. */
   unavailable_butlers?: string[];
+  /** Ledger-first daily attribution truthfulness metadata. */
+  unpriced_models?: UnpricedModelUsage[];
+  divergences?: SpendDivergence[];
+  divergence_source_error?: boolean;
+  historical_attribution_note?: string | null;
+  source_error?: boolean;
 }
 
 /** GET /api/spend/daily response: per-day series + degraded-butler meta. */

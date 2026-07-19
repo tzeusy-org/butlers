@@ -853,7 +853,7 @@ async def test_ingestion_window_rollup_cost_null_no_sessions() -> None:
 
 
 async def test_ingestion_window_rollup_cost_skips_unknown_model() -> None:
-    """Sessions with a model not in the pricing catalog contribute $0; cost still populated."""
+    """Known prices still produce a subtotal when another model is unpriced."""
     from butlers.core.ingestion_events import ingestion_window_rollup
 
     pricing = _make_pricing("known-model", price_per_token=1e-6)
@@ -869,17 +869,15 @@ async def test_ingestion_window_rollup_cost_skips_unknown_model() -> None:
     result = await ingestion_window_rollup(pool, db=db, pricing=pricing)
 
     assert result["sessions"] == 2
-    # Only known-model contributes cost; unknown model → 0
+    # Only known-model contributes the numerical subtotal; unknown usage is
+    # not fabricated as a zero-priced session.
     # known-model: 1000 * 1e-6 + 500 * 2e-6 = 0.001 + 0.001 = 0.002
     assert result["cost"] is not None
     assert abs(result["cost"] - 0.002) < 1e-9
 
 
-async def test_ingestion_window_rollup_cost_zero_all_unknown_models() -> None:
-    """When pricing is present and sessions exist but all models are unknown, cost is 0.0 not None.
-
-    None means "pricing unavailable"; 0.0 means "sessions found, nothing chargeable".
-    """
+async def test_ingestion_window_rollup_cost_null_all_unknown_models() -> None:
+    """All-unpriced session usage must not be rendered as a calm zero."""
     from butlers.core.ingestion_events import ingestion_window_rollup
 
     pricing = _make_pricing("known-model", price_per_token=1e-6)
@@ -894,8 +892,7 @@ async def test_ingestion_window_rollup_cost_zero_all_unknown_models() -> None:
     result = await ingestion_window_rollup(pool, db=db, pricing=pricing)
 
     assert result["sessions"] == 2
-    # Pricing was available and sessions existed, so cost must not be None
-    assert result["cost"] == 0.0
+    assert result["cost"] is None
 
 
 async def test_ingestion_window_rollup_cost_null_when_db_none() -> None:
