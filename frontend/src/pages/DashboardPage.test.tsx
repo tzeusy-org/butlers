@@ -807,6 +807,32 @@ describe("DashboardPage -- OperationsNowList", () => {
     });
   });
 
+  it("normalizes non-minute notification bounds to the visible filter precision", () => {
+    vi.setSystemTime(new Date("2026-05-14T12:00:37.456Z"));
+    vi.mocked(useNotificationStats).mockReturnValue({
+      data: {
+        data: { total: 5, sent: 4, failed: 1, by_channel: {}, by_butler: {} },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+
+    // NotificationsPage's datetime-local controls deliberately show minutes.
+    // The Dashboard request and predicate-carrying door must therefore use the
+    // same minute-aligned closed interval instead of serializing hidden seconds.
+    expect(useNotificationStats).toHaveBeenCalledWith({
+      since: "2026-05-13T12:00:00.000Z",
+      until: "2026-05-14T12:00:00.000Z",
+    });
+    expect(html).toContain(
+      'href="/notifications?status=terminal_failed&amp;since=2026-05-13T12%3A00%3A00.000Z&amp;until=2026-05-14T12%3A00%3A00.000Z"',
+    );
+  });
+
   it("rolls the notification window while the dashboard remains mounted", () => {
     const container = document.createElement("div");
     const root = createRoot(container);

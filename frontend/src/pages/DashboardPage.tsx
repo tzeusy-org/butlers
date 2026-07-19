@@ -141,10 +141,15 @@ export default function DashboardPage() {
   // all-time incident ledger. Recompute the boundary on a modest wall-clock
   // tick so a stale failure ages out without waiting for another page event.
   const overviewNowMs = useTickingNow(60_000);
+  // The Notifications destination deliberately exposes minute-resolution
+  // datetime-local controls. Capture this closed window at that same
+  // precision so the stats query, predicate-carrying link, and visible
+  // destination filters all describe one interval.
+  const notificationWindowEndMs = Math.floor(overviewNowMs / 60_000) * 60_000;
   const notificationSince = new Date(
-    overviewNowMs - 24 * 60 * 60 * 1000,
+    notificationWindowEndMs - 24 * 60 * 60 * 1000,
   ).toISOString();
-  const notificationUntil = new Date(overviewNowMs).toISOString();
+  const notificationUntil = new Date(notificationWindowEndMs).toISOString();
   const notificationStatsQuery = useNotificationStats({
     since: notificationSince,
     until: notificationUntil,

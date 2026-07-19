@@ -147,16 +147,17 @@ table.
 
 #### Scenario: Notification pressure is time-bounded
 
-- **WHEN** the Overview requests `GET /api/notifications/stats` with
-  `since = now - 24 hours` and `until = now`, captured once for the render, and the
-  bounded response has `failed` greater than zero
+- **WHEN** the Overview requests `GET /api/notifications/stats` with a closed
+  minute-aligned interval captured once for the render (`until` is the current
+  minute boundary and `since = until - 24 hours`), and the bounded response has
+  `failed` greater than zero
 - **THEN** the list renders a medium-severity notification row naming the failed count in
   the last 24 hours
 - **AND** its link preserves the `terminal_failed` status filter and both boundaries of
   that same closed interval, so it resolves the exact terminal-failure set counted by
   `NotificationStats.failed` rather than including attempts later superseded by a retry
-- **AND** the Notifications destination renders that exact boundary in its visible local
-  date-time filter rather than silently applying an undisclosed filter
+- **AND** the Notifications destination renders that same minute-aligned boundary in its
+  visible local date-time filter rather than silently applying an undisclosed filter
 - **WHEN** the bounded response has `failed = 0` while all-time failures exist
 - **THEN** the list renders no normal notification-pressure row
 
