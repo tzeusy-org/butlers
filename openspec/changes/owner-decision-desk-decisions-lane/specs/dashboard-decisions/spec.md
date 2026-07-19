@@ -103,9 +103,9 @@ degraded note instead of the calm "No decisions waiting." empty state.
 
 ### Requirement: Export As-Of Plaque
 
-When `GET /api/decisions`'s `meta.export_as_of` is known, the `/decisions`
-page SHALL render a plaque naming the beads export's age next to the verdict
-opener, regardless of whether `decisions_available` is `true` or `false` --
+The `/decisions` page SHALL render a plaque naming the beads export's age next
+to the verdict opener whenever `GET /api/decisions`'s `meta.export_as_of` is
+known, regardless of whether `decisions_available` is `true` or `false` --
 the underlying single-file bind-mount tolerates up to 14 days of staleness
 before `decisions_available` flips off, so a slowly-aging-but-still-available
 export MUST NOT render as calm current data. Past a shorter warning
