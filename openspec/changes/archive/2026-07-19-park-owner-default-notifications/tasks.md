@@ -22,7 +22,7 @@
 
 - [x] 3.1 Reconcile the completed `context-bus-producers` artifacts so no
   future sync restores destructive suppression semantics.
-- [ ] 3.2 Update RFC 0011, outbound-flow topology, and the OpenSpec deltas;
+- [x] 3.2 Update RFC 0011, outbound-flow topology, and the OpenSpec deltas;
   sync the completed new change into canonical specs and archive only this new
   change.
 
@@ -30,5 +30,5 @@
 
 - [x] 4.1 Run focused unit, daemon, and scheduler integration tests plus the
   required lint/format and OpenSpec validation checks.
-- [ ] 4.2 Run the project-defined final quality gate, inspect the scoped diff,
+- [x] 4.2 Run the project-defined final quality gate, inspect the scoped diff,
   commit, push the worker branch, and open a PR against `main`.
