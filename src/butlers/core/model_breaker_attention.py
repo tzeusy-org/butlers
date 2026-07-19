@@ -48,14 +48,13 @@ import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import asyncpg
 
 from butlers.api.routers import audit as audit_router
 from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
-    should_suppress_by_policy,
+    is_policy_quiet_now,
 )
 from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
 from butlers.credential_store import resolve_owner_telegram_recipient
@@ -130,15 +129,8 @@ async def _check_suppression(pool: asyncpg.Pool) -> str | None:
         logger.debug("model_breaker_attention: quiet-hours policy lookup failed", exc_info=True)
         policy = None
 
-    if policy is not None:
-        tz_name = policy.get("timezone", "UTC")
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz = ZoneInfo("UTC")
-        now_local = datetime.now(UTC).astimezone(tz)
-        if should_suppress_by_policy(policy, current_hour=now_local.hour):
-            return "quiet_hours"
+    if is_policy_quiet_now(policy, now=datetime.now(UTC)):
+        return "quiet_hours"
 
     context_signal = await get_suppressing_context_signal(pool)
     if context_signal is not None:

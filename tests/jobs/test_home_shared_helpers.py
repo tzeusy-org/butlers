@@ -258,7 +258,7 @@ async def test_send_notify_suppressed_by_quiet_hours():
             new_callable=AsyncMock,
             return_value={"timezone": "UTC", "quiet_start_hour": 0, "quiet_end_hour": 23},
         ),
-        patch("butlers.core.attention_ledger.should_suppress_by_policy", return_value=True),
+        patch("butlers.core.attention_ledger.is_policy_quiet_now", return_value=True),
         patch(
             "butlers.jobs.home.resolve_owner_telegram_recipient", new_callable=AsyncMock
         ) as mock_resolve,

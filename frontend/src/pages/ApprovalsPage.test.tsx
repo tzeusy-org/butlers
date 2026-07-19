@@ -103,6 +103,7 @@ import {
   retryApproval,
   revokeApprovalRule,
   createApprovalRuleFromAction,
+  updateApprovalsPolicy,
 } from "@/api/index.ts";
 import { toast } from "sonner";
 
@@ -315,6 +316,129 @@ describe("ApprovalsPage — load-more", () => {
 
     expect(container.textContent).toContain("No pending approvals");
     expect(findButton(container, "Load more")).toBeUndefined();
+  });
+
+  it("labels the shared policy and rejects an incomplete quiet-hour pair locally", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Edit") !== undefined);
+
+    expect(container.textContent).toContain("Owner Attention Policy");
+    expect(container.textContent).toContain(
+      "Suppress routine owner attention during these hours",
+    );
+
+    await act(async () => {
+      findButton(container, "Edit")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    const start = container.querySelector<HTMLInputElement>(
+      "#approvals-quiet-start-hour",
+    );
+    expect(start).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(start, "22");
+      start?.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+
+    await act(async () => {
+      findButton(container, "Save")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(updateApprovalsPolicy).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Set both start and end hours, or leave both blank.",
+    );
+  });
+
+  it("rejects an invalid IANA timezone locally", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Edit") !== undefined);
+    await act(async () => {
+      findButton(container, "Edit")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    const setInput = async (selector: string, value: string) => {
+      const input = container.querySelector<HTMLInputElement>(selector);
+      expect(input).not.toBeNull();
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value",
+        )?.set;
+        setter?.call(input, value);
+        input?.dispatchEvent(new Event("input", { bubbles: true }));
+        await flush();
+      });
+    };
+
+    await setInput("#approvals-quiet-start-hour", "22");
+    await setInput("#approvals-quiet-end-hour", "7");
+    await setInput("#approvals-quiet-timezone", "Mars/Olympus");
+
+    await act(async () => {
+      findButton(container, "Save")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(updateApprovalsPolicy).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Enter a valid IANA timezone, such as Asia/Singapore or UTC.",
+    );
+  });
+
+  it.each([
+    ["a missing timezone", undefined],
+    ["a blank timezone", "   "],
+  ])("rejects %s locally before a browser-local fallback", async (_label, timezone) => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(
+      makeApiResponse({
+        quiet_start_hour: 22,
+        quiet_end_hour: 7,
+        timezone,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("22:00") === true);
+    await act(async () => {
+      findButton(container, "Edit")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      findButton(container, "Save")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(updateApprovalsPolicy).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Enter a valid IANA timezone, such as Asia/Singapore or UTC.",
+    );
   });
 
   it("never renders 'No pending approvals.' when the queue fetch fails (bu-86c4c.2 -- truth amnesty)", async () => {

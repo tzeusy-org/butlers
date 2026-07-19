@@ -534,13 +534,22 @@ class TestBrokerChannelSelectionInNotifyMetadata:
                     return_value={
                         "verbosity": "normal",  # budget=3
                         "custom_budget": None,
-                        "quiet_start": None,
-                        "quiet_end": None,
-                        "quiet_timezone": None,
                     }
                 ),
             ),
-            patch("butlers.tools.switchboard.insight.broker._is_quiet_hours", return_value=False),
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_approvals_policy_quiet_hours",
+                new=AsyncMock(
+                    return_value={
+                        "quiet_start_hour": None,
+                        "quiet_end_hour": None,
+                        "timezone": "UTC",
+                    }
+                ),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.is_policy_quiet_now", return_value=False
+            ),
             patch(
                 "butlers.tools.switchboard.insight.broker.expire_candidates",
                 new=AsyncMock(return_value=0),

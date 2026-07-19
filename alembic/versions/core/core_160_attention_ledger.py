@@ -155,16 +155,38 @@ def upgrade() -> None:
           AND quiet_end_hour IS NULL
     """)
 
+    # Later core migrations consolidate the legacy insight window into
+    # approvals_policy.  Core migrations are also replayed against a fresh
+    # schema-local alembic version table, so this historical seed must tolerate
+    # a shared public table whose legacy columns were already retired.
     op.execute(f"""
-        UPDATE public.insight_settings
-        SET quiet_start = {_DEFAULT_QUIET_START_HOUR},
-            quiet_end = {_DEFAULT_QUIET_END_HOUR},
-            quiet_timezone = '{_DEFAULT_QUIET_TIMEZONE}',
-            updated_at = now()
-        WHERE id = 1
-          AND quiet_start IS NULL
-          AND quiet_end IS NULL
-          AND quiet_timezone IS NULL
+        DO $seed_legacy_insight_quiet_hours$
+        BEGIN
+            IF to_regclass('public.insight_settings') IS NOT NULL
+               AND (
+                    SELECT count(*)
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'insight_settings'
+                      AND column_name IN (
+                          'quiet_start', 'quiet_end', 'quiet_timezone'
+                        )
+               ) = 3
+            THEN
+                EXECUTE $update_legacy_insight_quiet_hours$
+                    UPDATE public.insight_settings
+                    SET quiet_start = {_DEFAULT_QUIET_START_HOUR},
+                        quiet_end = {_DEFAULT_QUIET_END_HOUR},
+                        quiet_timezone = '{_DEFAULT_QUIET_TIMEZONE}',
+                        updated_at = now()
+                    WHERE id = 1
+                      AND quiet_start IS NULL
+                      AND quiet_end IS NULL
+                      AND quiet_timezone IS NULL
+                $update_legacy_insight_quiet_hours$;
+            END IF;
+        END
+        $seed_legacy_insight_quiet_hours$;
     """)
 
 

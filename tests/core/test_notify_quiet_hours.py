@@ -1,8 +1,8 @@
 """Tests for §8.6 quiet-hours notification dispatch via approvals_policy.
 
 Covers:
-- §8.6.1 is_in_policy_quiet_hours: same-day and overnight windows
-- §8.6.2 should_suppress_by_policy: policy=None always sends; NULL hours always send
+- §8.6.1 is_in_policy_quiet_hours: end-exclusive same-day and overnight windows
+- §8.6.2 shared timezone-aware policy evaluation: policy=None always sends; NULL hours always send
 - §8.6.3 send outside quiet hours — assert send called (not suppressed)
 - §8.6.4 send inside quiet hours — assert send NOT called (suppressed)
 - §8.6.5 timezone handling (Asia/Singapore overnight window)
@@ -35,10 +35,11 @@ class TestIsInPolicyQuietHours:
 
     def test_same_day_range_inside(self):
         """Hour within a same-day range is inside quiet hours."""
-        # 08-12: hours 8,9,10,11,12 are quiet
+        # [08, 12): hours 8,9,10,11 are quiet; 12:00 is active.
         assert self.fn(current_hour=8, quiet_start=8, quiet_end=12) is True
         assert self.fn(current_hour=10, quiet_start=8, quiet_end=12) is True
-        assert self.fn(current_hour=12, quiet_start=8, quiet_end=12) is True
+        assert self.fn(current_hour=11, quiet_start=8, quiet_end=12) is True
+        assert self.fn(current_hour=12, quiet_start=8, quiet_end=12) is False
 
     def test_same_day_range_outside(self):
         """Hour outside a same-day range is active."""
@@ -46,30 +47,35 @@ class TestIsInPolicyQuietHours:
         assert self.fn(current_hour=13, quiet_start=8, quiet_end=12) is False
 
     def test_overnight_range_inside(self):
-        """Hours within an overnight range (22-07) are quiet."""
-        for h in (22, 23, 0, 1, 3, 6, 7):
+        """Hours within an overnight [22, 07) range are quiet."""
+        for h in (22, 23, 0, 1, 3, 6):
             assert self.fn(current_hour=h, quiet_start=22, quiet_end=7) is True, f"hour={h}"
 
     def test_overnight_range_outside(self):
-        """Hours outside an overnight range (22-07) are active."""
-        for h in (8, 12, 14, 21):
+        """Hours outside an overnight [22, 07) range are active."""
+        for h in (7, 8, 12, 14, 21):
             assert self.fn(current_hour=h, quiet_start=22, quiet_end=7) is False, f"hour={h}"
 
     def test_midnight_boundary_overnight(self):
         """Boundary condition: exactly at midnight (0) in overnight range."""
         assert self.fn(current_hour=0, quiet_start=22, quiet_end=7) is True
 
+    def test_equal_endpoints_disable_the_window(self):
+        """[start, start) is empty rather than a full-day silent policy."""
+        for hour in range(24):
+            assert self.fn(current_hour=hour, quiet_start=8, quiet_end=8) is False
+
 
 class TestApprovalPushDeferralTime:
     """Approval-request quiet hours defer a push; they never alter action expiry."""
 
-    def test_returns_the_first_active_hour_after_an_overnight_window(self):
+    def test_returns_the_exact_end_of_an_overnight_window(self):
         from butlers.core.approvals_policy import approval_push_deliver_at
 
         now = datetime(2026, 7, 18, 15, 30, tzinfo=UTC)  # 23:30 in Singapore
         policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "Asia/Singapore"}
 
-        assert approval_push_deliver_at(policy, now=now) == datetime(2026, 7, 19, 0, 0, tzinfo=UTC)
+        assert approval_push_deliver_at(policy, now=now) == datetime(2026, 7, 18, 23, 0, tzinfo=UTC)
 
     def test_returns_none_when_the_policy_is_not_quiet(self):
         from butlers.core.approvals_policy import approval_push_deliver_at
@@ -81,16 +87,16 @@ class TestApprovalPushDeferralTime:
 
 
 class TestOwnerDefaultNotifyDeferralTime:
-    """Routine implicit-owner notifications share inclusive quiet-hour timing."""
+    """Routine implicit-owner notifications share end-exclusive quiet-hour timing."""
 
-    def test_returns_first_whole_hour_after_inclusive_quiet_end(self):
+    def test_returns_exact_quiet_end(self):
         from butlers.core.approvals_policy import policy_quiet_hours_deliver_at
 
         now = datetime(2026, 7, 18, 23, 30, tzinfo=UTC)
         policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
 
         assert policy_quiet_hours_deliver_at(policy, now=now) == datetime(
-            2026, 7, 19, 8, 0, tzinfo=UTC
+            2026, 7, 19, 7, 0, tzinfo=UTC
         )
 
 
@@ -149,12 +155,12 @@ class TestTimezoneHandling:
     """Verify that timezone conversion is applied correctly.
 
     Scenario: policy timezone = Asia/Singapore (UTC+8).
-    - UTC 03:00 = SGT 11:00 → NOT in quiet window (22:00-08:00 SGT)
+    - UTC 03:00 = SGT 11:00 → NOT in quiet window [22:00,08:00 SGT)
     - UTC 17:00 = SGT 01:00 (next day) → IN quiet window
     """
 
     def test_sgt_outside_quiet_hours(self):
-        """UTC 03:00 = SGT 11:00 → not in quiet (22-08 SGT)."""
+        """UTC 03:00 = SGT 11:00 → not in quiet [22,08) SGT."""
         from zoneinfo import ZoneInfo
 
         from butlers.core.approvals_policy import should_suppress_by_policy
@@ -168,7 +174,7 @@ class TestTimezoneHandling:
         assert should_suppress_by_policy(policy, current_hour=local_hour) is False
 
     def test_sgt_inside_quiet_hours(self):
-        """UTC 17:00 = SGT 01:00 → inside quiet (22-08 SGT)."""
+        """UTC 17:00 = SGT 01:00 → inside quiet [22,08) SGT."""
         from zoneinfo import ZoneInfo
 
         from butlers.core.approvals_policy import should_suppress_by_policy
@@ -179,6 +185,23 @@ class TestTimezoneHandling:
         local_hour = utc_time.astimezone(tz).hour  # 01
         assert local_hour == 1
         assert should_suppress_by_policy(policy, current_hour=local_hour) is True
+
+
+class TestTimezoneAwarePolicyPredicate:
+    """Direct readers use one helper rather than each converting the timezone."""
+
+    def test_exact_end_is_not_quiet(self):
+        from butlers.core.approvals_policy import is_policy_quiet_now
+
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
+        assert is_policy_quiet_now(policy, now=datetime(2026, 7, 19, 7, 0, tzinfo=UTC)) is False
+
+    def test_invalid_persisted_timezone_fails_open(self, caplog):
+        from butlers.core.approvals_policy import is_policy_quiet_now
+
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "Mars/Olympus"}
+        assert is_policy_quiet_now(policy, now=datetime(2026, 7, 19, 1, 0, tzinfo=UTC)) is False
+        assert "invalid timezone" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +248,8 @@ class TestGetApprovalsPolicy:
         result = await get_approvals_policy_quiet_hours(mock_pool)
         assert result is None
 
-    async def test_defaults_timezone_null_to_utc(self):
-        """timezone column NULL → defaults to 'UTC' in returned dict."""
+    async def test_preserves_missing_timezone_for_fail_open_evaluation(self):
+        """A partial persisted policy is not silently reinterpreted as UTC."""
         from butlers.core.approvals_policy import get_approvals_policy_quiet_hours
 
         mock_pool = AsyncMock()
@@ -239,7 +262,7 @@ class TestGetApprovalsPolicy:
         )
         result = await get_approvals_policy_quiet_hours(mock_pool)
         assert result is not None
-        assert result["timezone"] == "UTC"
+        assert result["timezone"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -222,7 +222,7 @@ async def test_quiet_hours_defers_push_without_changing_pending_action_expiry(
     assert deferred["priority"] == "high"
     assert deferred["status"] == "pending"
     assert deferred["deferred_at"] == now
-    assert deferred["deliver_at"] == datetime(2026, 7, 19, 0, 0, tzinfo=UTC)
+    assert deferred["deliver_at"] == datetime(2026, 7, 18, 23, 0, tzinfo=UTC)
     assert deferred["envelope"]["delivery"]["intent"] == "approval_request"
 
     stored_expiry = await approval_push_pool.fetchval(

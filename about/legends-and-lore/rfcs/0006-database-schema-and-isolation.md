@@ -171,7 +171,7 @@ applied by the `core_065` migration. All other `public` tables are read-only for
 | `insight_candidates` | INSERT, UPDATE, DELETE | insight broker |
 | `insight_cooldowns` | INSERT, DELETE | insight broker |
 | `insight_engagement` | INSERT, UPDATE, DELETE | insight engagement tracking |
-| `insight_settings` | INSERT, UPDATE | insight delivery settings |
+| `insight_settings` | INSERT, UPDATE | insight verbosity and budget settings |
 | `model_dispatch_attempts` | SELECT, INSERT | failover provenance (core_104 migration) |
 
 Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
@@ -179,6 +179,12 @@ explicit grants) are SELECT-only for butler roles. When a new public table is ad
 need write access, a subsequent core migration must add the targeted `GRANT` statements and this
 matrix must be updated. The authoritative runtime specification is in
 `openspec/specs/database-security/spec.md`.
+
+`public.approvals_policy` is the single dashboard-managed Owner Attention Policy
+authority. It is evaluated as an end-exclusive IANA-timezone interval and is
+not a per-butler `delivery_preferences` replacement. The insight broker reads
+it for routine suppression; `insight_settings` deliberately has no independent
+quiet-hours fields.
 
 ### Multi-Chain Alembic Migrations
 

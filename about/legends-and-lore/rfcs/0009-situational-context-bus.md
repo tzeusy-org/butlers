@@ -252,6 +252,15 @@ Typical integration patterns:
 
 A butler is NOT required to check context. It is an opt-in enhancement. Butlers that do not check context continue to work exactly as they do today.
 
+### Owner Attention Policy Sleep Producer
+
+The deterministic health `sleeping` producer derives its membership and TTL
+from the shared `public.approvals_policy` Owner Attention Policy. Its interval
+is `[quiet_start_hour, quiet_end_hour)` in the stored IANA timezone, and its
+`expires_at` is the exact configured end converted to UTC. Missing, incomplete,
+or invalid persisted policy data fails open: the producer does not invent a
+timezone or a replacement wake time and clears/avoids its derived signal.
+
 ### Context Preamble for LLM Sessions
 
 When a butler spawns an LLM session, it MAY prepend a context summary to the prompt:
@@ -309,6 +318,9 @@ def downgrade() -> None:
 - **RFC 0004:** Context preamble complements the identity preamble. Both are prepended to routed messages when available.
 - **RFC 0006:** The `public.user_context` table follows the existing public schema pattern. All butlers read it via their `search_path`. Write access is enforced at the application level, not the database level, consistent with the current public schema access model.
 - **RFC 0007:** The dashboard can expose a context timeline view showing active and historical signals.
+- **Owner Attention Policy:** The deterministic health sleep producer uses the
+  shared exact-end policy anchor; this is a read/TTL projection, not a new
+  context clock, cron, or wake/catch-up path.
 
 ## Alternatives Considered
 

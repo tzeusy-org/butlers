@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -82,3 +84,52 @@ def test_approval_request_deferred_rows_are_not_coalesced() -> None:
     groups = _group_due_deferred_notifications([first, second])
 
     assert groups == [[first], [second]]
+
+
+@pytest.mark.asyncio
+async def test_due_owner_attention_hold_is_not_re_gated_after_policy_changes() -> None:
+    """The stored UTC decision, not today's policy, controls due-row dispatch."""
+    from butlers.core.scheduler import _tick_deferred_notification_pass
+
+    notification_id = uuid.uuid4()
+    envelope = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "send",
+            "channel": "telegram",
+            "message": "Stored owner-attention hold",
+            "recipient": "owner-recipient",
+        },
+    }
+    pool = AsyncMock()
+    pool.fetchval.return_value = True
+    pool.fetch.return_value = [
+        {
+            "id": notification_id,
+            "butler_name": "health",
+            "channel": "telegram",
+            "message": "Stored owner-attention hold",
+            "priority": "medium",
+            "envelope": envelope,
+        }
+    ]
+    notify_fn = AsyncMock()
+    policy_lookup = AsyncMock(side_effect=AssertionError("scheduler must not re-gate"))
+
+    with (
+        patch(
+            "butlers.core.approvals_policy.get_approvals_policy_quiet_hours",
+            policy_lookup,
+        ),
+        patch("butlers.core.attention_ledger.record_attention_event", AsyncMock()),
+    ):
+        delivered = await _tick_deferred_notification_pass(
+            pool,
+            datetime(2026, 7, 19, 7, 0, tzinfo=UTC),
+            notify_fn=notify_fn,
+        )
+
+    assert delivered == 1
+    policy_lookup.assert_not_awaited()
+    notify_fn.assert_awaited_once_with(envelope)

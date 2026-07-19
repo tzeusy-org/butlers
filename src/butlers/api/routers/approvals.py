@@ -49,6 +49,7 @@ from butlers.api.models.approval import (
     ApprovalRuleCreateRequest,
     ApprovalRuleFromActionRequest,
     ApprovalsPolicy,
+    ApprovalsPolicyUpdate,
     ApprovalSummary,
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
@@ -1878,10 +1879,10 @@ async def get_approvals_policy(
 
 @router.put("/policy")
 async def update_approvals_policy(
-    request: ApprovalsPolicy = Body(...),
+    request: ApprovalsPolicyUpdate = Body(...),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalsPolicy]:
-    """Update the quiet-hours policy singleton — PUT /api/approvals/policy."""
+    """Update the Owner Attention Policy singleton — PUT /api/approvals/policy."""
     pool = await _find_approvals_pool(db_mgr, "pending_actions")
     if pool is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")

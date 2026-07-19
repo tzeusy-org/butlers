@@ -76,8 +76,9 @@ Anti-spam is control-plane-appropriate (approval requests are time-sensitive, so
 they do not share the insight broker's daily budget; they borrow its shape):
 
 - **One push per action** (dedup key = `action_id`), edits/retries never re-push.
-- **Quiet hours** follow the existing approvals quiet-hours policy
-  (`core/approvals_policy.py`): pushes are deferred, not dropped; the pending
+- **Quiet hours** follow the global Owner Attention Policy
+  (`core/approvals_policy.py`) as an end-exclusive `[start, end)` interval:
+  pushes are deferred to the exact configured end, not dropped; the pending
   queue and expiry clock are unaffected.
 - **Burst collapse**: when more than 3 actions park within a 10-minute window,
   subsequent pushes collapse into a single digest message ("N actions awaiting

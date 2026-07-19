@@ -976,6 +976,21 @@ async def test_policy_round_trip(app):
         assert updated["quiet_start_hour"] == 23
         assert updated["timezone"] == "UTC"
 
+        # The stable payload shape accepts disabled hours only as a complete
+        # pair. A partial persisted policy would otherwise be ambiguous and
+        # fail-open at runtime.
+        partial_resp = await client.put(
+            "/api/approvals/policy",
+            json={"quiet_start_hour": 23, "quiet_end_hour": None, "timezone": "UTC"},
+        )
+        assert partial_resp.status_code == 422
+
+        invalid_zone_resp = await client.put(
+            "/api/approvals/policy",
+            json={"quiet_start_hour": 23, "quiet_end_hour": 8, "timezone": "Mars/Olympus"},
+        )
+        assert invalid_zone_resp.status_code == 422
+
 
 async def test_approve_audits_action(app):
     """POST /api/approvals/{id}/approve calls audit.append('approval.approve', ...)."""

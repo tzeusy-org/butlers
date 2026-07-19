@@ -67,7 +67,8 @@ user timezone), `status` (enum: `pending`, `delivered`, `expired`,
 The storage-and-flush mechanism SHALL also accept eligible routine
 owner-default approvals-policy/context holds without a source-specific schema
 field. That admission path supplies its own authoritative `deliver_at`: the
-policy anchor or latest active suppressor expiry. Each successful direct
+Owner Attention Policy's exact end-exclusive anchor or latest active suppressor
+expiry. Each successful direct
 owner-default hold retains one row per call; it SHALL NOT invent generic content
 deduplication beyond the scheduler's existing delivery behavior.
 
@@ -91,6 +92,13 @@ A caller that re-derives the same transition on a recurring scan MUST dedup its 
 - **THEN** a pending row stores the full resolved envelope and the policy-derived
   UTC `deliver_at`
 - **AND** the row uses no new column or public content store
+
+#### Scenario: Stored Owner Attention Policy holds are not re-gated
+- **WHEN** a routine owner-default notification was stored with a
+  policy-derived UTC `deliver_at`
+- **AND** the Owner Attention Policy changes before that timestamp becomes due
+- **THEN** the scheduler uses the stored envelope and stored `deliver_at`
+- **AND** it does not invoke a fresh policy gate or recalculate the anchor
 
 #### Scenario: Owner-default context hold uses the supplied wake anchor
 - **WHEN** the direct owner-default notify gate selects an active suppressing

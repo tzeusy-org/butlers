@@ -130,6 +130,7 @@ async def test_check_suppression_quiet_hours():
             "butlers.core.fleet_halt_attention.get_suppressing_context_signal",
             new=AsyncMock(return_value=None),
         ),
+        patch("butlers.core.fleet_halt_attention.is_policy_quiet_now", return_value=True),
     ):
         reason = await _check_suppression(pool)
     assert reason == "quiet_hours"

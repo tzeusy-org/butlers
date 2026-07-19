@@ -154,16 +154,34 @@ The system SHALL track user engagement with delivered insights and automatically
 - **AND** the user MUST explicitly change their verbosity setting to restore the original budget
 
 ### Requirement: Quiet Hours Suppression
-The user SHALL be able to configure quiet hours during which no insights are delivered. Accumulated candidates are NOT burst-delivered after quiet hours end.
+The system SHALL use the global Owner Attention Policy in
+`public.approvals_policy` to configure quiet hours during which routine insights
+are not delivered. The policy is evaluated in its IANA timezone as the
+end-exclusive interval `[quiet_start_hour, quiet_end_hour)`. Accumulated
+candidates are NOT burst-delivered after quiet hours end.
 
-#### Scenario: Quiet hours configuration
-- **WHEN** the user configures quiet hours
-- **THEN** the setting SHALL be stored in `public.insight_settings` as `quiet_start` (INTEGER, hour 0-23), `quiet_end` (INTEGER, hour 0-23), and `quiet_timezone` (TEXT, IANA timezone)
+`public.insight_settings` SHALL retain only insight verbosity and budget
+controls; it SHALL NOT be a second quiet-hours authority. Missing, incomplete,
+invalid, or unreadable policy data SHALL fail open for the regular delivery
+cycle after logging the diagnostic condition.
+
+#### Scenario: Canonical quiet-hours configuration
+- **WHEN** the owner configures quiet hours through the Owner Attention Policy
+- **THEN** the setting SHALL be stored in `public.approvals_policy` as
+  `quiet_start_hour` (INTEGER, hour 0-23), `quiet_end_hour` (INTEGER, hour
+  0-23), and `timezone` (TEXT, IANA timezone)
+- **AND** no broker-private quiet-hours setting is read at runtime
 
 #### Scenario: Delivery suppression during quiet hours
-- **WHEN** the delivery cycle runs and the current time falls within the user's quiet hours (in the user's configured timezone)
+- **WHEN** the regular delivery cycle runs and the current time falls within
+  the Owner Attention Policy interval
 - **THEN** the delivery cycle SHALL skip delivery entirely
 - **AND** pending candidates SHALL remain for the next non-quiet delivery cycle
+
+#### Scenario: Exact quiet end resumes routine delivery
+- **WHEN** the regular delivery cycle runs at exactly `quiet_end_hour` in the
+  policy timezone
+- **THEN** the policy does not suppress routine candidates on that boundary
 
 #### Scenario: No burst after quiet hours
 - **WHEN** the delivery cycle runs after quiet hours have ended
@@ -171,12 +189,18 @@ The user SHALL be able to configure quiet hours during which no insights are del
 - **THEN** the daily budget SHALL still apply — at most B insights are delivered
 - **AND** candidates that exceed the budget remain pending for the next day (they do not get a "bonus" delivery slot)
 
-#### Scenario: No quiet hours configured
-- **WHEN** no quiet hours are configured in `public.insight_settings`
+#### Scenario: No usable policy configured
+- **WHEN** `public.approvals_policy` has no complete usable quiet window
 - **THEN** delivery SHALL proceed at the scheduled delivery cycle time without time-based suppression
 
 ### Requirement: Priority-Urgent Bypass of Quiet Hours and the Context Bus
-Neither the hour-based quiet-hours check (`public.insight_settings`) nor a context-bus `dnd`/`sleeping` signal SHALL suppress a candidate whose `priority` is at or above `URGENT_PRIORITY_THRESHOLD` (90 — RFC 0011's "time-critical" floor). When at least one such candidate is pending during what would otherwise be a fully-suppressed cycle, the delivery cycle proceeds for urgent candidates only; candidates below the threshold remain `status='pending'`, untouched, for a later non-suppressed cycle.
+Neither the global Owner Attention Policy nor a context-bus `dnd`/`sleeping`
+signal SHALL suppress a candidate whose `priority` is at or above
+`URGENT_PRIORITY_THRESHOLD` (90 — RFC 0011's "time-critical" floor). When at
+least one such candidate is pending during what would otherwise be a
+fully-suppressed cycle, the delivery cycle proceeds for urgent candidates only;
+candidates below the threshold remain `status='pending'`, untouched, for a
+later non-suppressed cycle.
 
 #### Scenario: Urgent candidate delivered during quiet hours, routine candidate untouched
 - **WHEN** the delivery cycle runs during active quiet hours
@@ -195,26 +219,28 @@ Neither the hour-based quiet-hours check (`public.insight_settings`) nor a conte
 - **THEN** the expiry step (marking `expires_at`-past candidates as `expired`) still runs unconditionally before the suppression check
 
 ### Requirement: Context-Bus Gating of the Delivery Cycle
-The delivery cycle SHALL consult the situational context bus (`public.user_context`) for an active `dnd` or `sleeping` signal, deterministically, as an additional suppression input alongside the existing hour-based quiet-hours check defined in `public.insight_settings`.
+The delivery cycle SHALL consult the situational context bus
+(`public.user_context`) for an active `dnd` or `sleeping` signal,
+deterministically, as an additional suppression input alongside the global
+Owner Attention Policy.
 
 #### Scenario: dnd signal suppresses when no quiet hours are configured
-- **WHEN** `public.insight_settings.quiet_start`/`quiet_end` are NULL (quiet hours not configured or not active)
+- **WHEN** `public.approvals_policy.quiet_start_hour`/`quiet_end_hour` are NULL
+  (quiet hours not configured or not active)
 - **AND** `public.user_context` has an active `dnd` signal
 - **AND** no pending candidate is priority>=90
 - **THEN** the cycle is suppressed exactly as if quiet hours were active, with `reason="context_bus:dnd"`
 
-### Requirement: Seeded Owner-Level Quiet Hours
-`public.insight_settings` SHALL be seeded with a sane owner-level quiet-hours default (23:00-08:00 Asia/Singapore) on migration, applied only when the row is currently unconfigured (`quiet_start`, `quiet_end`, and `quiet_timezone` all NULL). An owner who has already configured quiet hours before this migration runs MUST NOT have their configuration overwritten.
+### Requirement: Owner Attention Policy Is the Only Quiet-Hours Authority
+`public.insight_settings` SHALL not contain `quiet_start`, `quiet_end`, or
+`quiet_timezone` columns. A guarded core migration SHALL preserve a complete,
+valid legacy insight window only when `public.approvals_policy` is incomplete;
+a complete canonical Owner Attention Policy wins conflicts.
 
-#### Scenario: Fresh install gets seeded defaults
-- **WHEN** a database has never had `insight_settings.quiet_start`/`quiet_end`/`quiet_timezone` configured
-- **AND** the seed migration runs
-- **THEN** `quiet_start=23`, `quiet_end=8`, `quiet_timezone='Asia/Singapore'`
-
-#### Scenario: Existing configuration is preserved
-- **WHEN** `insight_settings` already has a non-NULL `quiet_start`/`quiet_end`/`quiet_timezone` (owner-configured)
-- **AND** the seed migration (or a re-run of its guarded UPDATE) executes
-- **THEN** the existing values are unchanged
+#### Scenario: Legacy insight fields are removed after guarded migration
+- **WHEN** the owner-attention consolidation migration completes
+- **THEN** `public.insight_settings` has no quiet-hours fields
+- **AND** the broker uses only `public.approvals_policy` at runtime
 
 ### Requirement: Attention Ledger Recording of Delivered/Coalesced/Failed Candidates
 Every candidate the delivery cycle attempts to deliver SHALL be recorded to `public.attention_ledger`. A single-candidate delivery is recorded with `outcome="delivered"`; when multiple candidates are folded into one digest message (`deliver_count > 1`), each candidate in the digest is recorded with `outcome="coalesced"` — distinguishing "sent alone" from "sent as part of a composed batch" for later dashboard/audit use.
@@ -335,7 +361,14 @@ The insight broker SHALL be implemented as a Switchboard module (`module-insight
 
 #### Scenario: Delivery cycle execution order
 - **WHEN** the `insight-delivery-cycle` job runs
-- **THEN** it SHALL execute these steps in order: (1) check quiet hours — if active, skip and return, (2) expire candidates past `expires_at`, (3) filter candidates with active cooldowns, (4) deduplicate by `dedup_key` (keep highest priority), (5) compute effective budget (apply adaptive reduction), (6) select top-B candidates by priority, (7) deliver via `notify` (digest for B>1, standalone for B=1), (8) record cooldowns for delivered candidates, (9) record engagement tracking rows, (10) clean up old rows (candidates older than 30 days, cooldowns older than 30 days past expiry)
+- **THEN** it SHALL execute these steps in order: (1) check the Owner
+  Attention Policy — if active, skip and return, (2) expire candidates past
+  `expires_at`, (3) filter candidates with active cooldowns, (4) deduplicate
+  by `dedup_key` (keep highest priority), (5) compute effective budget (apply
+  adaptive reduction), (6) select top-B candidates by priority, (7) deliver
+  via `notify` (digest for B>1, standalone for B=1), (8) record cooldowns for
+  delivered candidates, (9) record engagement tracking rows, (10) clean up old
+  rows (candidates older than 30 days, cooldowns older than 30 days past expiry)
 
 #### Scenario: Delivery cycle scheduling
 - **WHEN** the Switchboard butler's `butler.toml` configures the `insight-delivery-cycle`
@@ -359,7 +392,9 @@ User insight preferences SHALL be stored in a dedicated `public.insight_settings
 
 #### Scenario: Settings schema
 - **WHEN** the `public.insight_settings` table is created
-- **THEN** it SHALL include: `id` (INTEGER, primary key, default 1), `verbosity` (TEXT, default `'minimal'`), `custom_budget` (INTEGER, nullable), `quiet_start` (INTEGER, nullable, hour 0-23), `quiet_end` (INTEGER, nullable, hour 0-23), `quiet_timezone` (TEXT, nullable, IANA timezone), `updated_at` (TIMESTAMPTZ, auto-updated)
+- **THEN** it SHALL include: `id` (INTEGER, primary key, default 1),
+  `verbosity` (TEXT, default `'minimal'`), `custom_budget` (INTEGER,
+  nullable), and `updated_at` (TIMESTAMPTZ, auto-updated)
 
 #### Scenario: Default row
 - **WHEN** the insight system initializes and no settings row exists

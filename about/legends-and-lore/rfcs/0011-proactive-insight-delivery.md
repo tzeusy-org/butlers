@@ -507,3 +507,40 @@ producer, cron, wake/catch-up, morning digest, or scheduler redesign is added.
 Policy/context lookup failures remain fail-open. Existing approval-request
 quiet-hours behavior, including `approval_push_deliver_at` and pending-action
 expiry semantics, is unchanged.
+
+### Amendment 6 (2026-07-19) — Consolidated Owner Attention Policy
+
+Applied per `bu-s182c` via
+`openspec/changes/consolidate-owner-attention-policy`.
+
+**Summary:** Amendment 1 deliberately seeded two sibling quiet-hours stores,
+and Amendment 5 used an inclusive policy-end anchor for routine durable holds.
+That left direct owner-attention readers with divergent boundaries and the
+insight broker with a second authority. This amendment consolidates the
+authority into `public.approvals_policy` without broadening proactive egress.
+
+**Changes made:**
+
+- **One global authority.** `public.approvals_policy` is the Owner Attention
+  Policy for routine direct owner-default notification holds, approval-request
+  pushes, the insight broker's regular cycle, and the derived health sleeping
+  context. It is evaluated in its stored IANA timezone as the end-exclusive
+  interval `[quiet_start_hour, quiet_end_hour)`, and every defer/sleep anchor
+  uses the exact configured local end converted to UTC.
+- **Guarded legacy migration.** A complete canonical policy wins a conflict.
+  Only when the canonical pair is incomplete may a complete, in-range legacy
+  insight hour pair be copied; a nonblank legacy timezone is preserved
+  literally, including malformed values, so runtime can fail open rather than
+  silently reinterpret user data. The migration then removes
+  `insight_settings.quiet_start`, `quiet_end`, and `quiet_timezone`; runtime
+  performs no dual read. `insight_settings` retains verbosity and budget only.
+- **Stable control surface.** The existing `/api/approvals/policy` shape stays
+  stable, but writes now require a complete hour pair and a recognized IANA
+  timezone. The dashboard calls it Owner Attention Policy.
+
+**Non-goals and compatibility:** This amendment adds no broker catch-up, wake,
+cron, digest, secret, retention, or delivery-preferences redesign. A durable
+row keeps its stored UTC `deliver_at`; the scheduler does not re-gate it when
+the policy later changes. Missing, incomplete, invalid, or unreadable policy
+data fails open for routine paths, while approval pending-action expiry remains
+independent of push timing.

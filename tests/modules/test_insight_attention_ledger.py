@@ -50,6 +50,31 @@ async def insight_pool(provisioned_postgres_pool):
         yield pool
 
 
+async def _set_owner_attention_policy(
+    pool, *, quiet_start_hour: int | None, quiet_end_hour: int | None
+):
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS public.approvals_policy (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            quiet_start_hour INTEGER,
+            quiet_end_hour INTEGER,
+            timezone TEXT NOT NULL DEFAULT 'UTC'
+        )
+    """)
+    await pool.execute(
+        """
+        INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
+        VALUES (1, $1, $2, 'UTC')
+        ON CONFLICT (id) DO UPDATE
+            SET quiet_start_hour = EXCLUDED.quiet_start_hour,
+                quiet_end_hour = EXCLUDED.quiet_end_hour,
+                timezone = EXCLUDED.timezone
+        """,
+        quiet_start_hour,
+        quiet_end_hour,
+    )
+
+
 async def _insert_candidate(pool, *, dedup_key: str, priority: int, origin_butler: str = "health"):
     # Seed created_at from the Python clock rather than the PG DEFAULT now().
     # delivery_cycle's retention purge (broker._purge_old_insight_data) computes
@@ -82,12 +107,13 @@ class TestUrgentBypassesQuietHours:
     async def test_urgent_delivered_routine_stays_pending(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        # Quiet hours: entire day (0-23), so _is_quiet_hours is always True.
+        # Canonical policy covers the fixed noon test instant.
         await insight_pool.execute("""
-            INSERT INTO insight_settings (id, verbosity, quiet_start, quiet_end)
-            VALUES (1, 'normal', 0, 23)
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=0, quiet_end=23
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
+        await _set_owner_attention_policy(insight_pool, quiet_start_hour=0, quiet_end_hour=23)
         await _insert_candidate(insight_pool, dedup_key="health:routine:1:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:1:2026", priority=95)
 
@@ -115,10 +141,11 @@ class TestUrgentBypassesQuietHours:
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
         await insight_pool.execute("""
-            INSERT INTO insight_settings (id, verbosity, quiet_start, quiet_end)
-            VALUES (1, 'normal', 0, 23)
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=0, quiet_end=23
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
+        await _set_owner_attention_policy(insight_pool, quiet_start_hour=0, quiet_end_hour=23)
         await _insert_candidate(insight_pool, dedup_key="health:routine:2:2026", priority=70)
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
@@ -145,7 +172,7 @@ class TestContextBusGating:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:3:2026", priority=70)
 
@@ -166,7 +193,7 @@ class TestContextBusGating:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:4:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:4:2026", priority=92)
@@ -195,7 +222,7 @@ class TestContextBusGating:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:5:2026", priority=70)
 
@@ -227,7 +254,7 @@ class TestUrgentOnlySubCycle:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:u1:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u1:2026", priority=95)
@@ -253,19 +280,25 @@ class TestUrgentOnlySubCycle:
         isn't just bypassed after being computed, it is never queried."""
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        # Quiet hours: entire day (0-23), so a non-urgent_only cycle would be
-        # suppressed unless an urgent candidate is pending.
+        # urgent_only must skip both canonical-policy and context reads, rather
+        # than calculating and then ignoring their answers.
         await insight_pool.execute("""
-            INSERT INTO insight_settings (id, verbosity, quiet_start, quiet_end)
-            VALUES (1, 'normal', 0, 23)
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=0, quiet_end=23
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u2:2026", priority=91)
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        with patch(
-            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
-            new=AsyncMock(side_effect=AssertionError("context bus must not be queried")),
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_approvals_policy_quiet_hours",
+                new=AsyncMock(side_effect=AssertionError("policy must not be queried")),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                new=AsyncMock(side_effect=AssertionError("context bus must not be queried")),
+            ),
         ):
             result = await delivery_cycle(insight_pool, notify_fn=notify_mock, urgent_only=True)
 
@@ -285,7 +318,7 @@ class TestUrgentOnlySubCycle:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'minimal')
-            ON CONFLICT (id) DO UPDATE SET verbosity='minimal', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='minimal'
         """)
         for i in range(3):
             await _insert_candidate(
@@ -309,7 +342,7 @@ class TestUrgentOnlySubCycle:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'off')
-            ON CONFLICT (id) DO UPDATE SET verbosity='off', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='off'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u4:2026", priority=95)
 
@@ -333,7 +366,7 @@ class TestUrgentOnlySubCycle:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'off')
-            ON CONFLICT (id) DO UPDATE SET verbosity='off', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='off'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u4b:2026", priority=95)
         await _insert_candidate(insight_pool, dedup_key="health:routine:u4b:2026", priority=70)
@@ -360,7 +393,7 @@ class TestUrgentOnlySubCycle:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:u5:2026", priority=70)
 
@@ -383,7 +416,7 @@ class TestUrgentOnlySubCycle:
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u6:2026", priority=95)
 
@@ -454,7 +487,7 @@ class TestFailedDeliveryLedgerRecording:
         await pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=NULL, quiet_end=NULL
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
 
     async def test_notify_error_return_records_failed_ledger_row(self, insight_pool):
