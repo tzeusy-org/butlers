@@ -206,11 +206,11 @@ The Timeline page (`/timeline`) SHALL merge events from all butlers into a singl
 - **AND** there is no manual toggle or interval picker — the prior `AutoRefreshToggle`/`useAutoRefresh` mechanism retired
 
 #### Scenario: Human-readable event summary derivation
-- **WHEN** a session's stored prompt is machine text — a message fenced in `<routed_message>` or `<user_message>` tags (possibly inside a REQUEST CONTEXT / guidance envelope or a wrapper sentence), a `"Please use the /<skill> skill ..."` skill-dispatch preamble, or a QA-canary system prompt — the backend derives the row's `summary` (`_derive_session_summary`) rather than dumping the raw prompt
-- **THEN** a fenced message body is unwrapped to its inner human text (e.g. `<user_message>Came online</user_message>` → "Came online")
-- **AND** a skill-dispatch preamble is collapsed to a humanized trigger label derived from the skill slug (e.g. `/message-triage` → "Message triage")
-- **AND** a QA-canary session is labelled by its system-prompt sentinel (e.g. "You are a QA investigation agent for the butler system." → "QA patrol investigation"), never by dumping the system prompt
-- **AND** a plain human prompt with no envelope passes through unchanged, and when no readable text survives the summary falls back to a trigger-source label
+- **WHEN** Timeline projects a session row, it SHALL derive the row's `summary` from its structured `trigger_source` before inspecting stored prompt text
+- **THEN** `schedule:<task-name>` and `deadline:<task-name>` sources render bounded, humanized labels (for example, `schedule:daily_digest` → "Scheduled: daily digest" and `deadline:passport-renewal` → "Deadline: passport renewal")
+- **AND** recognised exact sources, including heartbeat and classification sources, render their safe source label without interpreting prompt text
+- **AND** only a session whose `trigger_source` is exactly `route` and whose prompt contains one complete, non-empty `<routed_message>` or `<user_message>` fence MAY render that fence's bounded inner text
+- **AND** malformed, unknown, null, legacy, context-envelope, chat-envelope, and system-prompt cases SHALL use a generic safe label rather than dumping prompt text
 
 #### Scenario: Failed-delivery row honesty
 - **WHEN** a notification event has `data.status === "failed"` (a bounced delivery, e.g. a repeatedly-failing owner alert)

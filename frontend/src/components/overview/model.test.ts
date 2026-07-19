@@ -7,6 +7,7 @@ import type {
   Issue,
   NotificationStats,
   QaSummary,
+  TimelineEvent,
 } from "@/api/types";
 import { deriveOverviewTriageModel } from "./model";
 
@@ -989,6 +990,28 @@ describe("deriveOverviewTriageModel", () => {
     });
     // Should NOT emit any activity rows
     expect(model.nowRows.some((row) => row.kind === "activity")).toBe(false);
+  });
+
+  it("uses the Timeline-provided safe summary in the Now activity row", () => {
+    const timelineEvent: TimelineEvent = {
+      id: "session-consolidation",
+      type: "session",
+      butler: "memory",
+      timestamp: "2026-05-14T11:59:00.000Z",
+      summary: "Scheduled: consolidation",
+      is_heartbeat: false,
+      data: { trigger_source: "schedule:consolidation" },
+    };
+
+    const model = deriveOverviewTriageModel({ timeline: [timelineEvent] });
+
+    expect(model.nowRows).toContainEqual({
+      id: "now:activity:session-consolidation",
+      kind: "activity",
+      label: "Scheduled: consolidation",
+      detail: "memory · session",
+      href: "/timeline",
+    });
   });
 
   it("emits a named error row and sets butlersError when butlersError is true", () => {
