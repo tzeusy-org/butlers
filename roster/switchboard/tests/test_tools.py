@@ -1353,6 +1353,40 @@ async def test_log_notification_persists_metadata_as_jsonb_object(pool_with_noti
     assert row["metadata"] == metadata
 
 
+async def test_log_notification_normalizes_non_json_metadata_as_jsonb_object(
+    pool_with_notifications,
+):
+    """The real writer uses its JSON-safe string normalization before JSONB binding."""
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from butlers.tools.switchboard import log_notification
+
+    delivery_id = UUID("a194df7e-9f8d-4b45-a4f7-a4bc795bd767")
+    scheduled_for = datetime(2026, 7, 19, 8, 30, tzinfo=UTC)
+    notif_id = await log_notification(
+        pool_with_notifications,
+        source_butler="health",
+        channel="telegram",
+        recipient="123456",
+        message="Time for your medication!",
+        metadata={"delivery_id": delivery_id, "scheduled_for": scheduled_for},
+    )
+
+    row = await pool_with_notifications.fetchrow(
+        "SELECT metadata, jsonb_typeof(metadata) AS metadata_kind "
+        "FROM switchboard.notifications WHERE id = $1",
+        notif_id,
+    )
+
+    assert row is not None
+    assert row["metadata_kind"] == "object"
+    assert row["metadata"] == {
+        "delivery_id": str(delivery_id),
+        "scheduled_for": str(scheduled_for),
+    }
+
+
 @pytest.mark.parametrize("metadata", [None, {}], ids=["none", "empty-dict"])
 async def test_log_notification_persists_empty_metadata_as_jsonb_object(
     pool_with_notifications, metadata: dict[str, Any] | None
