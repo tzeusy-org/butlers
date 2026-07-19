@@ -14,12 +14,12 @@ import re
 _SUMMARY_MAX_LEN = 120
 _ROUTE_TRIGGER_SOURCE = "route"
 
-_FENCE_TAGS = ("routed_message", "user_message")
-_FENCE_RE = re.compile(
-    r"<(?P<tag>" + "|".join(_FENCE_TAGS) + r")>"
-    r"(?P<body>(?:(?!<(?P=tag)>).)*?)"
-    r"</(?P=tag)>",
-    re.DOTALL,
+_FENCE_TAG_PATTERN = r"routed_message|user_message"
+_FENCE_START_RE = re.compile(
+    rf"</?(?P<tag>{_FENCE_TAG_PATTERN})",
+)
+_FENCE_TOKEN_RE = re.compile(
+    rf"<(?P<closing>/)?(?P<tag>{_FENCE_TAG_PATTERN})>",
 )
 
 # These exact labels cover the persisted trigger-source vocabulary plus
@@ -67,17 +67,60 @@ def _prefixed_task_label(trigger_source: str, *, prefix: str, fallback: str) -> 
     return f"{prefix}: {task_label}"
 
 
+def _terminal_route_fence_body(prompt: str) -> str | None:
+    """Return one unambiguous, complete terminal routed payload, if present.
+
+    The persisted prompt is a context prefix followed by the routed payload.
+    To prevent context from becoming display authority, the complete prompt may
+    contain exactly one allowlisted fence pair: a matching opening/closing pair
+    whose close is terminal apart from whitespace. Any extra, nested,
+    mismatched, tag-like malformed, or partial allowed fence is ambiguous and
+    therefore rejected.
+    """
+    tokens: list[tuple[int, int, bool, str]] = []
+    for possible_start in _FENCE_START_RE.finditer(prompt):
+        # A doubled opening angle bracket is malformed fence syntax, not a
+        # valid payload boundary.
+        if possible_start.start() > 0 and prompt[possible_start.start() - 1] == "<":
+            return None
+
+        token_end = prompt.find(">", possible_start.end())
+        if token_end < 0:
+            return None
+
+        token = prompt[possible_start.start() : token_end + 1]
+        token_match = _FENCE_TOKEN_RE.fullmatch(token)
+        if token_match is None:
+            return None
+        tokens.append(
+            (
+                possible_start.start(),
+                token_end + 1,
+                token_match.group("closing") is not None,
+                token_match.group("tag"),
+            )
+        )
+
+    if len(tokens) != 2:
+        return None
+
+    opening, closing = tokens
+    if opening[2] or not closing[2] or opening[3] != closing[3]:
+        return None
+    if prompt[closing[1] :].strip():
+        return None
+
+    body = prompt[opening[1] : closing[0]].strip()
+    return body or None
+
+
 def _summary_from_route_fence(prompt: str | None) -> str:
-    """Extract only an allowlisted, complete routed-message body."""
+    """Extract only an allowlisted, complete terminal routed-message body."""
     if not isinstance(prompt, str):
         return _EXACT_TRIGGER_LABELS[_ROUTE_TRIGGER_SOURCE]
 
-    match = _FENCE_RE.search(prompt)
-    if match is None:
-        return _EXACT_TRIGGER_LABELS[_ROUTE_TRIGGER_SOURCE]
-
-    body = match.group("body").strip()
-    if not body:
+    body = _terminal_route_fence_body(prompt)
+    if body is None:
         return _EXACT_TRIGGER_LABELS[_ROUTE_TRIGGER_SOURCE]
     return _truncate(body)
 

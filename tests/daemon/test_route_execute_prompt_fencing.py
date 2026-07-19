@@ -17,7 +17,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.api.session_presentation import derive_session_summary
+from butlers.core_tools._routing import _build_route_runtime_context, _wrap_routed_message
 from butlers.daemon import ButlerDaemon
+from butlers.routing_guidance import (
+    _build_route_runtime_context as _build_recovery_route_runtime_context,
+)
+from butlers.routing_guidance import _wrap_routed_message as _wrap_recovery_routed_message
 
 pytestmark = pytest.mark.unit
 
@@ -179,6 +185,38 @@ def _route_request_context(
     }
 
 
+@pytest.mark.parametrize(
+    ("source_channel", "build_context", "wrap_payload"),
+    (
+        ("email", _build_route_runtime_context, _wrap_routed_message),
+        ("telegram_user_client", _build_route_runtime_context, _wrap_routed_message),
+        ("email", _build_recovery_route_runtime_context, _wrap_recovery_routed_message),
+        (
+            "telegram_user_client",
+            _build_recovery_route_runtime_context,
+            _wrap_recovery_routed_message,
+        ),
+    ),
+    ids=("primary-email", "primary-passive", "recovery-email", "recovery-passive"),
+)
+def test_generated_route_context_keeps_the_payload_fence_unambiguous(
+    source_channel: str, build_context, wrap_payload
+) -> None:
+    """Primary and recovery context guidance cannot compete with the payload fence."""
+    context = build_context(
+        route_context={"request_id": "018f6f4e-5b3b-7b2d-9c2f-fe0cefe0ce01"},
+        source_channel=source_channel,
+        conversation_history=None,
+        input_context=None,
+    )
+
+    assert context is not None
+    assert "<routed_message>" not in context
+    assert "<user_message>" not in context
+    persisted_prompt = f"{context}\n\n{wrap_payload('Terminal payload')}"
+    assert derive_session_summary(persisted_prompt, trigger_source="route") == "Terminal payload"
+
+
 class TestRouteExecutePromptFencing:
     """Verify routed prompts are structurally fenced with XML tags."""
 
@@ -216,6 +254,10 @@ class TestRouteExecutePromptFencing:
         assert context_arg is not None
         assert "CONTENT SAFETY" in context_arg
         assert "/routed-message-safety" in context_arg
+        # Persisted context precedes the terminal payload fence. It must not
+        # include a parseable fence token of its own, or the dashboard's
+        # fail-closed presentation validator would correctly reject the row.
+        assert "<routed_message>" not in context_arg
 
     async def test_interactive_channel_fencing(self, tmp_path: Path) -> None:
         """Interactive (telegram): prompt XML-fenced; NO CONTENT SAFETY preamble."""
