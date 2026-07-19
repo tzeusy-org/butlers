@@ -142,7 +142,13 @@ describe("NotificationsPage", () => {
   it("renders notification rows when list returns data", () => {
     setStatsState({
       data: {
-        data: { total: 2, sent: 1, failed: 1, by_channel: { telegram: 1, email: 1 }, by_butler: {} },
+        data: {
+          total: 2,
+          sent: 1,
+          failed: 1,
+          by_channel: { telegram: 1, email: 1 },
+          by_butler: {},
+        },
         meta: {},
       },
     });
@@ -184,7 +190,14 @@ describe("NotificationsPage", () => {
     // stream. An empty page here is NOT a truthful "no notifications" result.
     setStatsState({
       data: {
-        data: { total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {}, source_available: false },
+        data: {
+          total: 0,
+          sent: 0,
+          failed: 0,
+          by_channel: {},
+          by_butler: {},
+          source_available: false,
+        },
         meta: {},
       },
     });
@@ -197,7 +210,9 @@ describe("NotificationsPage", () => {
     });
 
     const html = renderPage();
-    expect(html).toContain('data-testid="notification-feed-source-unavailable"');
+    expect(html).toContain(
+      'data-testid="notification-feed-source-unavailable"',
+    );
     expect(html).not.toContain("No notifications found");
     // Stats tiles em-dash rather than fabricating a green 0.0%.
     expect(html).toContain('data-testid="stat-value-failure-rate"');
@@ -207,7 +222,13 @@ describe("NotificationsPage", () => {
   it("shows stats summary counts from stats endpoint", () => {
     setStatsState({
       data: {
-        data: { total: 34, sent: 29, failed: 5, by_channel: { telegram: 34 }, by_butler: {} },
+        data: {
+          total: 34,
+          sent: 29,
+          failed: 5,
+          by_channel: { telegram: 34 },
+          by_butler: {},
+        },
         meta: {},
       },
     });
@@ -225,6 +246,27 @@ describe("NotificationsPage", () => {
     expect(html).toContain("5");
   });
 
+  it("requests the verdict with one exact closed 24-hour interval", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T00:37:00.000Z"));
+    try {
+      setStatsState({ data: undefined });
+      setNotificationsState({ data: undefined });
+
+      renderPage();
+
+      const verdictArgs = vi
+        .mocked(useNotificationStats)
+        .mock.calls.find(([params]) => params !== undefined)?.[0];
+      expect(verdictArgs).toEqual({
+        since: "2026-07-18T00:37:00.000Z",
+        until: "2026-07-19T00:37:00.000Z",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders loading skeleton when notifications are loading", () => {
     setStatsState({ isLoading: false, data: undefined });
     setNotificationsState({ isLoading: true });
@@ -234,11 +276,12 @@ describe("NotificationsPage", () => {
     expect(html).not.toContain("No notifications found");
   });
 
-  it("exposes Read and Retried in the status filter options", () => {
-    // The status filter must surface read/retried so those rows are not hidden
+  it("exposes terminal failures, Read, and Retried in the status filter options", () => {
+    // The status filter must surface terminal failures/read/retried so those rows are not hidden
     // (bu-5gf99). Assert against the exported options directly — the Radix
     // <Select> portals its items, so closed-state SSR markup omits them.
     const values = STATUS_OPTIONS.map((o) => o.value);
+    expect(values).toContain("terminal_failed");
     expect(values).toContain("read");
     expect(values).toContain("retried");
     expect(values).toContain("sent");
@@ -277,6 +320,33 @@ describe("NotificationsPage", () => {
 
     const callArgs = vi.mocked(useNotifications).mock.calls[0][0];
     expect(callArgs?.status).toBe("failed");
+  });
+
+  it("renders an exact dashboard window in the visible datetime filters", () => {
+    const since = "2026-07-18T00:37:00.000Z";
+    const until = "2026-07-19T00:37:00.000Z";
+    setStatsState({ data: undefined });
+    setNotificationsState({ data: undefined });
+
+    const html = renderPage(
+      `/notifications?status=failed&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`,
+    );
+    const callArgs = vi.mocked(useNotifications).mock.calls[0][0];
+    const localDateTime = (timestamp: string) =>
+      new Date(
+        new Date(timestamp).getTime() -
+          new Date(timestamp).getTimezoneOffset() * 60_000,
+      )
+        .toISOString()
+        .slice(0, 16);
+
+    // The dashboard's exact ISO boundaries must remain both queryable and
+    // visible; a type=date control silently renders those values blank.
+    expect(callArgs?.since).toBe(since);
+    expect(callArgs?.until).toBe(until);
+    expect(html).toContain('type="datetime-local"');
+    expect(html).toContain(`value="${localDateTime(since)}"`);
+    expect(html).toContain(`value="${localDateTime(until)}"`);
   });
 
   it("omits page from params when ?page= is absent", () => {
@@ -324,7 +394,10 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
       isPending: false,
     } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
     setStatsState({
-      data: { data: { total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} }, meta: {} },
+      data: {
+        data: { total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} },
+        meta: {},
+      },
     });
     setNotificationsState({
       data: {
@@ -358,14 +431,18 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
   }
 
   function press(key: string) {
-    window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+    );
   }
 
   it("j selects the first notification row, moving focus onto it", () => {
     renderLive();
     act(() => press("j"));
 
-    const rows = container!.querySelectorAll('[data-testid="notification-row"]');
+    const rows = container!.querySelectorAll(
+      '[data-testid="notification-row"]',
+    );
     expect(rows.length).toBe(2);
     const first = rows[0] as HTMLElement;
     expect(first.getAttribute("data-notification-id")).toBe(
@@ -384,7 +461,10 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
     act(() => press("j")); // select NOTIFICATION_1 (sent, actionable)
     act(() => press("a"));
 
-    expect(markReadMutate).toHaveBeenCalledWith(NOTIFICATION_1.id, expect.anything());
+    expect(markReadMutate).toHaveBeenCalledWith(
+      NOTIFICATION_1.id,
+      expect.anything(),
+    );
   });
 
   it("renders the footer hint strip advertising the exact bound keys", () => {
@@ -398,10 +478,17 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
 
   it("renders no footer hint strip when there are no notifications", () => {
     setNotificationsState({
-      data: { data: [], meta: { total: 0, offset: 0, limit: 20, has_more: false } },
+      data: {
+        data: [],
+        meta: { total: 0, offset: 0, limit: 20, has_more: false },
+      },
     });
     renderLive();
-    expect(container!.querySelector('[aria-label="Keyboard shortcuts for this list"]')).toBeNull();
+    expect(
+      container!.querySelector(
+        '[aria-label="Keyboard shortcuts for this list"]',
+      ),
+    ).toBeNull();
   });
 
   it("skips the mark-read act key for an already-read row (mirrors the feed's own gating)", () => {
@@ -445,7 +532,10 @@ describe("NotificationsPage — debounced filter feedback", () => {
       isPending: false,
     } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
     setStatsState({
-      data: { data: { total: 1, sent: 1, failed: 0, by_channel: {}, by_butler: {} }, meta: {} },
+      data: {
+        data: { total: 1, sent: 1, failed: 0, by_channel: {}, by_butler: {} },
+        meta: {},
+      },
     });
     setNotificationsState({
       data: {
@@ -484,20 +574,26 @@ describe("NotificationsPage — debounced filter feedback", () => {
     vi.useFakeTimers();
     try {
       renderLive();
-      const input = container!.querySelector<HTMLInputElement>("#filter-butler");
+      const input =
+        container!.querySelector<HTMLInputElement>("#filter-butler");
       expect(input).not.toBeNull();
 
       fireEvent.change(input!, { target: { value: "relationship" } });
 
-      expect(container!.querySelector('[data-testid="location-search"]')?.textContent).toContain(
-        "butler=relationship",
-      );
-      expect(container!.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+      expect(
+        container!.querySelector('[data-testid="location-search"]')
+          ?.textContent,
+      ).toContain("butler=relationship");
+      expect(
+        container!.querySelector("[aria-busy]")?.getAttribute("aria-busy"),
+      ).toBe("true");
 
       act(() => {
         vi.advanceTimersByTime(299);
       });
-      expect(container!.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+      expect(
+        container!.querySelector("[aria-busy]")?.getAttribute("aria-busy"),
+      ).toBe("true");
     } finally {
       vi.useRealTimers();
     }

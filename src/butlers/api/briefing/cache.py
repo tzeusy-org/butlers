@@ -54,6 +54,9 @@ class BriefingCache:
         self._max_size = max_size
         # OrderedDict preserves insertion order for LRU eviction.
         self._store: OrderedDict[Any, _CacheEntry] = OrderedDict()
+        # Invalidation generation fences an in-flight cache miss from writing
+        # a briefing composed against state that was invalidated mid-request.
+        self._generation = 0
 
     def get(self, owner_id: Any) -> dict | None:
         """Return the cached Briefing dict for owner_id, or None on miss/expiry."""
@@ -86,9 +89,28 @@ class BriefingCache:
 
         self._store[owner_id] = _CacheEntry(briefing=briefing, expires_at=expires_at)
 
+    def capture_generation(self) -> int:
+        """Return the generation a long-running cache fill started against."""
+        return self._generation
+
+    def set_if_generation(self, owner_id: Any, briefing: dict, *, generation: int) -> bool:
+        """Cache *briefing* only when no invalidation has happened since *generation*.
+
+        Cache mutations contain no await points, so the comparison and the
+        following ``set`` are atomic within the process event loop.  A caller
+        that began composition before a successful state mutation therefore
+        returns its response normally but cannot restore stale state for the
+        next reader.
+        """
+        if generation != self._generation:
+            return False
+        self.set(owner_id, briefing)
+        return True
+
     def invalidate(self, owner_id: Any) -> None:
         """Remove the cached entry for owner_id (no-op if not present)."""
         self._store.pop(owner_id, None)
+        self._generation += 1
 
     def invalidate_all(self) -> None:
         """Remove all cached entries.
@@ -99,6 +121,7 @@ class BriefingCache:
         entry belongs to the same owner.
         """
         self._store.clear()
+        self._generation += 1
 
 
 # ---------------------------------------------------------------------------

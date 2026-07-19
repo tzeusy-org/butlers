@@ -243,9 +243,8 @@ async def test_notification_stats_omits_window_predicate_by_default(app):
     assert all("created_at <=" not in call.args[0] for call in fetch_calls)
 
 
-async def test_notification_stats_by_butler_is_scoped_to_failed_status(app):
-    """by_butler groups FAILED notifications only (bu-y0v0c) -- unlike
-    by_channel, which spans every status."""
+async def test_notification_stats_by_butler_is_scoped_to_terminal_failures(app):
+    """by_butler breaks down the same terminal failures as ``failed``."""
     mock_db, pool = _make_available_db()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
@@ -258,6 +257,8 @@ async def test_notification_stats_by_butler_is_scoped_to_failed_status(app):
     fetch_calls = pool.fetch.call_args_list
     by_butler_call = next(c for c in fetch_calls if "source_butler" in c.args[0])
     assert "status = 'failed'" in by_butler_call.args[0]
+    assert "AND NOT (" in by_butler_call.args[0]
+    assert "EXISTS" in by_butler_call.args[0]
     by_channel_call = next(
         c for c in fetch_calls if "channel" in c.args[0] and "source_butler" not in c.args[0]
     )

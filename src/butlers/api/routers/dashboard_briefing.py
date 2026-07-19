@@ -31,16 +31,16 @@ dashboard page renders, not a second, independently-drifting one:
       page's attention list use -- replaces the former bespoke
       butler_registry liveness CASE).
     - audit-derived issues: the shared audit-group CTE also used by the
-      Issues page (unchanged from the prior implementation).
+      Issues page, bounded to groups last observed in the last 12 hours.
     - pending approvals: the same all-pools ``pending_actions`` fan-out
       settings_console.py uses.
     - failed notifications: GET /api/notifications/stats's ``failed`` count
-      (the same terminal-failure definition and all-time window the
-      Overview page's useNotificationStats() reads) -- replaces the former
-      feed that counted every SENT notification as attention.
-    - QA: the same circuit-breaker-tripped / last-patrol-failed / dispatched /
-      novel-findings priority frontend/src/components/overview/model.ts::
-      summarizeQaState uses.
+      in a closed 24-hour interval, using the same terminal-failure definition
+      and bounded window as the Overview page.
+    - QA: the same circuit-breaker-tripped / recent-last-patrol-failed /
+      active-investigation priority frontend/src/components/overview/model.ts::
+      summarizeQaState uses. Completed dispatches and novel findings remain
+      time-bounded activity, not briefing-classification inputs.
 
 A source that cannot be read is tracked via DegradedSources and surfaces as
 the "degraded" state_class instead of silently composing "quiet"
@@ -56,8 +56,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -253,7 +254,7 @@ async def _fetch_dashboard_state(
         butler liveness from GET /api/butlers/board (the canonical verdict)
         pending approvals across all butler pools
         failed-notification count (GET /api/notifications/stats)
-        QA state (last patrol, 24h novel/dispatched counts)
+        QA state (circuit breaker, recent failed patrol, active investigations)
 
     The public API still returns the six-field Briefing object. This richer
     state is intentionally internal so the local runtime has enough context to
@@ -289,7 +290,7 @@ async def _fetch_dashboard_state(
         _fetch_audit_issues(pool),
         _fetch_board_state(configs, mgr, db, pricing),
         _fetch_approvals_state(db),
-        _fetch_notifications_state(db),
+        _fetch_notifications_state(db, now=now),
         _fetch_qa_state(db),
         return_exceptions=False,
     )
@@ -303,6 +304,7 @@ async def _fetch_dashboard_state(
     attention_items: list[dict] = []
 
     if failed_notifications > 0:
+        notification_since, notification_until = _notification_window(now)
         attention_items.append(
             {
                 "severity": "medium",
@@ -310,9 +312,16 @@ async def _fetch_dashboard_state(
                 "butler": None,
                 "description": (
                     f"{failed_notifications} failed notification"
-                    f"{'' if failed_notifications == 1 else 's'}"
+                    f"{'' if failed_notifications == 1 else 's'} in the last 24 hours"
                 ),
-                "link": "/notifications?status=failed",
+                "link": "/notifications?"
+                + urlencode(
+                    {
+                        "status": "failed",
+                        "since": notification_since.isoformat(),
+                        "until": notification_until.isoformat(),
+                    }
+                ),
                 "occurrences": failed_notifications,
                 "source": "notification",
             }
@@ -368,7 +377,10 @@ async def _fetch_audit_issues(pool: Any) -> tuple[list, list, bool]:
     try:
         rows = await pool.fetch(
             build_audit_group_query(
-                where_extra="\n                  AND created_at >= NOW() - INTERVAL '24 hours'",
+                where_extra=(
+                    "\n                  AND created_at >= NOW() - INTERVAL '12 hours'"
+                    "\n                  AND created_at <= NOW()"
+                ),
                 limit=20,
             )
         )
@@ -503,18 +515,35 @@ async def _fetch_approvals_state(db: DatabaseManager) -> tuple[int, bool]:
     return total, degraded
 
 
-async def _fetch_notifications_state(db: DatabaseManager) -> tuple[int, bool]:
+def _notification_window(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """Return the closed 24-hour notification interval ending at one instant."""
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    return current - timedelta(hours=24), current
+
+
+async def _fetch_notifications_state(
+    db: DatabaseManager,
+    *,
+    now: datetime | None = None,
+) -> tuple[int, bool]:
     """Return (failed_count, degraded).
 
     Calls GET /api/notifications/stats's handler directly so the briefing
-    uses the exact same terminal-failure definition and all-time window the
-    Overview page's useNotificationStats() reads -- replaces the former feed
-    that counted every SENT (not just failed) notification as attention.
+    uses the exact same terminal-failure definition and 24-hour window the
+    Overview page's bounded notification query reads -- replaces the former
+    all-time delivery-pressure signal.
     """
     try:
         from butlers.api.routers.notifications import notification_stats
 
-        response = await notification_stats(since=None, until=None, db=db)
+        since, until = _notification_window(now)
+        response = await notification_stats(
+            since=since,
+            until=until,
+            db=db,
+        )
     except Exception as exc:
         logger.warning("Could not fetch notification stats for briefing: %s", exc)
         return 0, True
@@ -544,9 +573,9 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
     frontend/src/components/overview/model.ts::summarizeQaState reads to
     decide whether QA needs an attention row: the circuit-breaker tripped
     state (checked FIRST, mirroring summarizeQaState -- bu-y2xqi), the last
-    non-running patrol's failure state, and the current 24h window's
-    novel/dispatched counts. ``None`` when the QA tables are not provisioned
-    (legitimately absent, not degraded).
+    non-running patrol's recent failure state, and active investigation count.
+    ``None`` when the QA tables are not provisioned (legitimately absent, not
+    degraded).
     """
     try:
         pool = db.credential_shared_pool()
@@ -559,17 +588,10 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
             SELECT status, error_detail
             FROM public.qa_patrols
             WHERE status != 'running'
+              AND started_at >= NOW() - INTERVAL '24 hours'
+              AND started_at <= NOW()
             ORDER BY started_at DESC
             LIMIT 1
-            """
-        )
-        stats_24h = await pool.fetchrow(
-            """
-            SELECT
-                COALESCE(SUM(novel_count), 0) AS novel_findings,
-                COALESCE(SUM(dispatched_count), 0) AS dispatched_investigations
-            FROM public.qa_patrols
-            WHERE started_at >= NOW() - INTERVAL '24 hours'
             """
         )
     except Exception as exc:
@@ -578,6 +600,24 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
         logger.warning("Could not fetch QA state for briefing: %s", exc)
         return None, True
 
+    # Active cases are a distinct source table.  Its failure must mark QA
+    # degraded without discarding a successful patrol signal above.
+    degraded = False
+    active_cases_now = 0
+    try:
+        active_cases_now = await pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM public.healing_attempts
+            WHERE qa_patrol_id IS NOT NULL
+              AND status IN ('dispatch_pending', 'investigating', 'pr_open')
+            """
+        )
+    except Exception as exc:
+        if not _is_missing_relation_error(exc, "healing_attempts"):
+            logger.warning("Could not fetch active QA cases for briefing: %s", exc)
+            degraded = True
+
     # Circuit breaker: reuse qa.py's canonical computation (the SAME
     # launched-attempt + latest-reset filter GET /api/qa/summary and the
     # dispatch-admission gate use) rather than reimplementing it here. This
@@ -585,7 +625,6 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
     # its own failure degrades the QA source without discarding the
     # patrol-derived signal already fetched -- mirrors the
     # per-pool-failure-but-keep-going pattern in _fetch_approvals_state.
-    degraded = False
     circuit_breaker_tripped = False
     circuit_breaker_consecutive_failures = 0
     try:
@@ -616,10 +655,7 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
                 last_patrol is not None
                 and (last_patrol["status"] == "failed" or last_patrol["error_detail"])
             ),
-            "novel_findings": int(stats_24h["novel_findings"]) if stats_24h else 0,
-            "dispatched_investigations": (
-                int(stats_24h["dispatched_investigations"]) if stats_24h else 0
-            ),
+            "active_cases_now": int(active_cases_now or 0),
         },
         degraded,
     )
@@ -629,12 +665,11 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
     """Return an attention item for QA state, or None.
 
     Mirrors frontend/src/components/overview/model.ts::summarizeQaState's
-    priority order exactly (circuit-breaker tripped > failed patrol >
-    dispatched investigations > novel findings), so the briefing and the
-    attention list agree on when QA needs a look. A tripped breaker means the
-    QA staffer has stopped dispatching entirely after repeated consecutive
-    failures -- more severe than a single failed patrol run, so it is checked
-    FIRST (bu-y2xqi).
+    priority order exactly (circuit-breaker tripped > recent failed patrol >
+    active investigations), so the briefing and the attention list agree on
+    when QA needs a look. A tripped breaker means the QA staffer has stopped
+    dispatching entirely after repeated consecutive failures -- more severe
+    than a single failed patrol run, so it is checked FIRST (bu-y2xqi).
     """
     if qa_state is None:
         return None
@@ -669,25 +704,13 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
             "source": "qa",
         }
 
-    if qa_state["dispatched_investigations"] > 0:
-        n = qa_state["dispatched_investigations"]
+    if qa_state.get("active_cases_now", 0) > 0:
+        n = qa_state["active_cases_now"]
         return {
             "severity": "medium",
             "type": "qa",
             "butler": "qa",
-            "description": f"{n} QA investigation{'' if n == 1 else 's'} dispatched",
-            "link": "/qa",
-            "occurrences": n,
-            "source": "qa",
-        }
-
-    if qa_state["novel_findings"] > 0:
-        n = qa_state["novel_findings"]
-        return {
-            "severity": "medium",
-            "type": "qa",
-            "butler": "qa",
-            "description": f"{n} novel QA finding{'' if n == 1 else 's'}",
+            "description": f"{n} active QA investigation{'' if n == 1 else 's'}",
             "link": "/qa",
             "occurrences": n,
             "source": "qa",
@@ -721,8 +744,10 @@ async def _compose_briefing(
     cache: BriefingCache,
     owner_id: Any,
     pool: Any,
+    *,
+    cache_generation: int | None = None,
 ) -> dict:
-    """Compose a fresh Briefing dict and populate the cache.
+    """Compose a fresh Briefing dict and populate the cache when still current.
 
     Pipeline:
         1. Classify state -> state_class.
@@ -731,7 +756,7 @@ async def _compose_briefing(
         4. Run voice lint on LLM response.
         5. Fall back to templated paragraph on any failure.
         6. Record wall-clock generated_at once, regardless of source.
-        7. Store in cache.
+        7. Store in cache only when no state invalidation occurred mid-fill.
     """
     now = state["now"]
 
@@ -808,8 +833,14 @@ async def _compose_briefing(
         "generated_at": generated_at,
     }
 
-    # Step 7: cache.
-    cache.set(owner_id, briefing_dict)
+    # Step 7: cache.  A long composition can overlap a successful state
+    # mutation (for example a QA breaker reset).  The request still returns
+    # its coherent pre-mutation snapshot, but it must not restore that stale
+    # snapshot for the next reader.
+    if cache_generation is None:
+        cache.set(owner_id, briefing_dict)
+    else:
+        cache.set_if_generation(owner_id, briefing_dict, generation=cache_generation)
     return briefing_dict
 
 
@@ -854,11 +885,21 @@ async def get_dashboard_briefing(
         briefing_cache_hits_total.inc()
         return ApiResponse(data=Briefing(**cached))
 
+    # Capture before asynchronous composition so any state mutation that
+    # invalidates the cache while this request is in flight fences the write.
+    cache_generation = cache.capture_generation()
+
     # Compose a fresh briefing.
     now = await _owner_local_now(settings_pool)
     state = await _fetch_dashboard_state(
         sw_pool, now, db=db, configs=configs, mgr=mgr, pricing=pricing
     )
 
-    briefing_dict = await _compose_briefing(state, cache, owner_id, sw_pool)
+    briefing_dict = await _compose_briefing(
+        state,
+        cache,
+        owner_id,
+        sw_pool,
+        cache_generation=cache_generation,
+    )
     return ApiResponse(data=Briefing(**briefing_dict))

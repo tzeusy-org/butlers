@@ -14,7 +14,12 @@
  */
 import { describe, expect, it } from "vitest";
 
-import type { BoardRow, NotificationStats, QaSummary } from "@/api/types";
+import type {
+  BoardRow,
+  Issue,
+  NotificationStats,
+  QaSummary,
+} from "@/api/types";
 import scenarios from "./__fixtures__/attention-contract-scenarios.json";
 import { deriveOverviewTriageModel, type OverviewSeverity } from "./model";
 
@@ -32,7 +37,9 @@ const SEVERITY_RANK: Record<OverviewSeverity, number> = {
   info: 4,
 };
 
-function boardRow(overrides: Partial<BoardRow> & Pick<BoardRow, "name" | "activity">): BoardRow {
+function boardRow(
+  overrides: Partial<BoardRow> & Pick<BoardRow, "name" | "activity">,
+): BoardRow {
   return {
     type: "butler",
     description: null,
@@ -61,7 +68,9 @@ function boardRow(overrides: Partial<BoardRow> & Pick<BoardRow, "name" | "activi
   };
 }
 
-function notificationStats(overrides: Partial<NotificationStats> = {}): NotificationStats {
+function notificationStats(
+  overrides: Partial<NotificationStats> = {},
+): NotificationStats {
   return {
     total: 0,
     sent: 0,
@@ -136,10 +145,22 @@ interface ContractScenario {
   approvals_pending: number;
   failed_notifications: number;
   notifications_source_available: boolean;
+  issues?: Array<
+    Pick<
+      Issue,
+      | "severity"
+      | "type"
+      | "butler"
+      | "description"
+      | "first_seen_at"
+      | "last_seen_at"
+    >
+  >;
   qa: {
     last_patrol_failed: boolean;
     novel_findings: number;
     dispatched_investigations: number;
+    active_cases_now?: number;
     circuit_breaker_tripped?: boolean;
     circuit_breaker_consecutive_failures?: number;
   } | null;
@@ -152,6 +173,8 @@ interface ContractScenario {
     requires_degraded_signal?: boolean;
     requires_notification_source_row?: boolean;
     requires_butlers_source_row?: boolean;
+    hidden_old_issue_groups?: number;
+    requires_qa_activity?: boolean;
   };
 }
 
@@ -191,7 +214,8 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
           ? qaSummary({
               circuit_breaker: {
                 tripped: scenario.qa.circuit_breaker_tripped ?? false,
-                consecutive_failures: scenario.qa.circuit_breaker_consecutive_failures ?? 0,
+                consecutive_failures:
+                  scenario.qa.circuit_breaker_consecutive_failures ?? 0,
               },
               last_patrol: {
                 id: "patrol-contract-1",
@@ -209,12 +233,21 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
                 patrols_completed: 1,
                 total_findings: scenario.qa.novel_findings,
                 novel_findings: scenario.qa.novel_findings,
-                dispatched_investigations: scenario.qa.dispatched_investigations,
+                dispatched_investigations:
+                  scenario.qa.dispatched_investigations,
                 prs_opened: 0,
+              },
+              kpis: {
+                ...qaSummary().kpis,
+                active_cases_now: scenario.qa.active_cases_now ?? 0,
               },
             })
           : null,
-        issues: [],
+        issues: (scenario.issues ?? []).map((issue, index) => ({
+          ...issue,
+          link: "/issues",
+          issue_key: `contract:${scenario.name}:${index}`,
+        })),
       },
       { now: NOW },
     );
@@ -235,9 +268,10 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
       ).toBeLessThanOrEqual(bounds.max_attention_rows);
     }
     if (bounds.min_top_severity_rank !== undefined) {
-      expect(rows.length, `scenario ${scenario.name}: expected at least one row`).toBeGreaterThan(
-        0,
-      );
+      expect(
+        rows.length,
+        `scenario ${scenario.name}: expected at least one row`,
+      ).toBeGreaterThan(0);
       const topRank = Math.min(...rows.map((r) => SEVERITY_RANK[r.severity]));
       expect(
         topRank,
@@ -261,7 +295,9 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
       // source-error attention row, OR one of the top-level *Error flags
       // that another surface (KPI strip, Operations index) reads.
       const hasDegradedSignal =
-        rows.some((r) => r.isSourceError) || model.butlersError || model.issuesError;
+        rows.some((r) => r.isSourceError) ||
+        model.butlersError ||
+        model.issuesError;
       expect(
         hasDegradedSignal,
         `scenario ${scenario.name}: backend classifies "degraded" but the Overview model ` +
@@ -286,6 +322,18 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
       expect(
         rows.some((r) => r.kind === "runtime" && r.isSourceError),
         `scenario ${scenario.name}: expected a butlers/board source-error row in attentionRows`,
+      ).toBe(true);
+    }
+    if (bounds.hidden_old_issue_groups !== undefined) {
+      expect(model.hiddenOldIssueGroups).toBe(bounds.hidden_old_issue_groups);
+    }
+    if (bounds.requires_qa_activity) {
+      expect(
+        model.nowRows.some(
+          (row) =>
+            row.kind === "qa" && row.label.includes("in the last 24 hours"),
+        ),
+        `scenario ${scenario.name}: expected a time-bounded QA activity row`,
       ).toBe(true);
     }
   });

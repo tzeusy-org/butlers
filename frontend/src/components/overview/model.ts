@@ -53,6 +53,10 @@ export interface OverviewDerivationInput {
    */
   approvals?: ApprovalSummary[] | null;
   notificationStats?: NotificationStats | null;
+  /** ISO start timestamp used to scope notificationStats to its 24-hour window. */
+  notificationSince?: string;
+  /** ISO end timestamp used to keep the notification drill-down window closed. */
+  notificationUntil?: string;
   notificationStatsError?: boolean;
   qaSummary?: QaSummary | null;
   qaSummaryError?: boolean;
@@ -90,12 +94,7 @@ export interface OverviewRuntimeKpis {
 }
 
 export type OverviewRuntimeState =
-  | "healthy"
-  | "active"
-  | "stale"
-  | "degraded"
-  | "offline"
-  | "unknown";
+  "healthy" | "active" | "stale" | "degraded" | "offline" | "unknown";
 
 export interface OverviewButlerIndexRow {
   name: string;
@@ -167,7 +166,8 @@ export interface OverviewTriageModel {
   issuesError: boolean;
 }
 
-const DEFAULT_RECENT_ISSUE_HOURS = 24;
+const DEFAULT_RECENT_ISSUE_HOURS = 12;
+const QA_PATROL_FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_RECENT_ISSUE_ROWS = 5;
 const DEFAULT_MAX_TIMELINE_ROWS = 2;
 const DEFAULT_MAX_ATTENTION_APPROVAL_ROWS = 3;
@@ -193,13 +193,17 @@ export function deriveOverviewTriageModel(
   options: OverviewDerivationOptions = {},
 ): OverviewTriageModel {
   const now = options.now ?? new Date();
-  const recentIssueHours = options.recentIssueHours ?? DEFAULT_RECENT_ISSUE_HOURS;
-  const maxRecentIssueRows = options.maxRecentIssueRows ?? DEFAULT_MAX_RECENT_ISSUE_ROWS;
+  const recentIssueHours =
+    options.recentIssueHours ?? DEFAULT_RECENT_ISSUE_HOURS;
+  const maxRecentIssueRows =
+    options.maxRecentIssueRows ?? DEFAULT_MAX_RECENT_ISSUE_ROWS;
   const maxTimelineRows = options.maxTimelineRows ?? DEFAULT_MAX_TIMELINE_ROWS;
   const maxAttentionApprovalRows =
     options.maxAttentionApprovalRows ?? DEFAULT_MAX_ATTENTION_APPROVAL_ROWS;
 
-  const butlerRows = (input.boardRows ?? []).filter((row) => row.type === "butler");
+  const butlerRows = (input.boardRows ?? []).filter(
+    (row) => row.type === "butler",
+  );
   const operationsRows = butlerRows.map(deriveButlerIndexRow);
 
   const issueBuckets = bucketIssues(input.issues ?? [], now, recentIssueHours);
@@ -211,20 +215,38 @@ export function deriveOverviewTriageModel(
     input.approvalMetrics,
     maxAttentionApprovalRows,
   );
-  const notificationRows = notificationAttentionRows(input.notificationStats);
-  const notificationSourceRows = notificationSourceErrorRows(input.notificationStats);
-  const qaRows = qaAttentionRows(input.qaSummary);
+  const notificationRows = notificationAttentionRows(
+    input.notificationStats,
+    input.notificationSince,
+    input.notificationUntil,
+  );
+  const notificationSourceRows = notificationSourceErrorRows(
+    input.notificationStats,
+  );
+  const qaRows = qaAttentionRows(input.qaSummary, now);
   const fleetHaltRows = fleetHaltAttentionRows(input.fleetHalt);
-  const currentHighIssues = issueBuckets.currentHigh.slice(0, maxRecentIssueRows);
-  const remainingIssueSlots = Math.max(maxRecentIssueRows - currentHighIssues.length, 0);
+  const currentHighIssues = issueBuckets.currentHigh.slice(
+    0,
+    maxRecentIssueRows,
+  );
+  const remainingIssueSlots = Math.max(
+    maxRecentIssueRows - currentHighIssues.length,
+    0,
+  );
   const recentIssues = issueBuckets.recent.slice(0, remainingIssueSlots);
   const hiddenCurrentIssueGroups =
     Math.max(issueBuckets.currentHigh.length - currentHighIssues.length, 0) +
     Math.max(issueBuckets.recent.length - recentIssues.length, 0);
 
-  const currentHighIssueRows = currentHighIssues.map((issue) => issueAttentionRow(issue, now));
-  const recentIssueRows = recentIssues.map((issue) => issueAttentionRow(issue, now));
-  const hiddenOldIssueGroups = options.includeOldIssueRows ? 0 : issueBuckets.old.length;
+  const currentHighIssueRows = currentHighIssues.map((issue) =>
+    issueAttentionRow(issue, now),
+  );
+  const recentIssueRows = recentIssues.map((issue) =>
+    issueAttentionRow(issue, now),
+  );
+  const hiddenOldIssueGroups = options.includeOldIssueRows
+    ? 0
+    : issueBuckets.old.length;
   const hiddenIssueGroups = hiddenOldIssueGroups + hiddenCurrentIssueGroups;
 
   const issuesSourceErrorRows: OverviewAttentionRow[] = input.issuesError
@@ -241,7 +263,9 @@ export function deriveOverviewTriageModel(
       ]
     : [];
 
-  const butlersSourceErrorRows = butlersSourceErrorAttentionRows(input.butlersError ?? false);
+  const butlersSourceErrorRows = butlersSourceErrorAttentionRows(
+    input.butlersError ?? false,
+  );
 
   // Severity-first, stable across kinds (bu-gcz9e.3): an offline butler or a
   // tripped QA circuit breaker must never rank below a lower-severity issue
@@ -262,7 +286,10 @@ export function deriveOverviewTriageModel(
     ...notificationSourceRows,
     ...qaRows,
     ...recentIssueRows,
-  ].sort((a, b) => OVERVIEW_SEVERITY_RANK[a.severity] - OVERVIEW_SEVERITY_RANK[b.severity]);
+  ].sort(
+    (a, b) =>
+      OVERVIEW_SEVERITY_RANK[a.severity] - OVERVIEW_SEVERITY_RANK[b.severity],
+  );
 
   if (hiddenIssueGroups > 0) {
     const onlyOldGroups = hiddenCurrentIssueGroups === 0;
@@ -287,7 +314,7 @@ export function deriveOverviewTriageModel(
     );
   }
 
-  const nowRows = deriveNowRows(input, maxTimelineRows);
+  const nowRows = deriveNowRows(input, maxTimelineRows, now);
 
   return {
     kpis: {
@@ -296,8 +323,12 @@ export function deriveOverviewTriageModel(
       // flag (the inverse of needsAttention below) -- the KPI and the
       // attention list are derived from the identical per-row classification,
       // so they can never disagree about which butlers are fine (bu-qvnce.4).
-      healthyButlers: operationsRows.filter((row) => !row.needsAttention).length,
-      sessions24h: butlerRows.reduce((sum, row) => sum + (row.sessions_24h ?? 0), 0),
+      healthyButlers: operationsRows.filter((row) => !row.needsAttention)
+        .length,
+      sessions24h: butlerRows.reduce(
+        (sum, row) => sum + (row.sessions_24h ?? 0),
+        0,
+      ),
       pendingApprovals: input.approvalMetrics?.total_pending ?? 0,
     },
     attentionRows,
@@ -310,7 +341,9 @@ export function deriveOverviewTriageModel(
 }
 
 /** Maps the board's canonical activity verb onto the Overview's own runtime-state vocabulary. */
-function runtimeStateForActivity(activity: BoardRow["activity"]): OverviewRuntimeState {
+function runtimeStateForActivity(
+  activity: BoardRow["activity"],
+): OverviewRuntimeState {
   switch (activity) {
     case "running":
       return "active";
@@ -373,12 +406,21 @@ function bucketIssues(
   return { currentHigh, recent, old };
 }
 
-function issueIsRecent(issue: Issue, now: Date, recentIssueHours: number): boolean {
-  const timestamp = issue.last_seen_at ?? issue.first_seen_at;
-  if (!timestamp) return true;
+function issueIsRecent(
+  issue: Issue,
+  now: Date,
+  recentIssueHours: number,
+): boolean {
+  // A group is current only when the source can prove it was seen recently.
+  // Falling back to first_seen_at (or treating an absent/malformed timestamp
+  // as current) lets permanently historical issue groups keep the Overview
+  // urgent forever.
+  const timestamp = issue.last_seen_at;
+  if (!timestamp) return false;
   const seenAt = Date.parse(timestamp);
-  if (Number.isNaN(seenAt)) return true;
-  return now.getTime() - seenAt <= recentIssueHours * 60 * 60 * 1000;
+  if (Number.isNaN(seenAt)) return false;
+  const ageMs = now.getTime() - seenAt;
+  return ageMs >= 0 && ageMs <= recentIssueHours * 60 * 60 * 1000;
 }
 
 function isHighIssue(issue: Issue): boolean {
@@ -387,7 +429,8 @@ function isHighIssue(issue: Issue): boolean {
 }
 
 function compareIssues(a: Issue, b: Issue): number {
-  const severityDelta = issueSeverityRank(a.severity) - issueSeverityRank(b.severity);
+  const severityDelta =
+    issueSeverityRank(a.severity) - issueSeverityRank(b.severity);
   if (severityDelta !== 0) return severityDelta;
   const timeA = issueSortTimestamp(a);
   const timeB = issueSortTimestamp(b);
@@ -419,7 +462,9 @@ function issueSortTimestamp(issue: Issue): string {
 }
 
 function issueAttentionRow(issue: Issue, now: Date): OverviewAttentionRow {
-  const affectedButlers = humanButlerNames(issue.butlers?.length ? issue.butlers : [issue.butler]);
+  const affectedButlers = humanButlerNames(
+    issue.butlers?.length ? issue.butlers : [issue.butler],
+  );
   const details = [affectedButlers];
   if (issue.error_message) details.push(issue.error_message);
   if ((issue.occurrences ?? 0) > 1) {
@@ -441,7 +486,9 @@ function issueAttentionRow(issue: Issue, now: Date): OverviewAttentionRow {
   };
 }
 
-function runtimeAttentionRow(row: OverviewButlerIndexRow): OverviewAttentionRow {
+function runtimeAttentionRow(
+  row: OverviewButlerIndexRow,
+): OverviewAttentionRow {
   const title =
     row.runtimeState === "stale"
       ? `${row.name} heartbeat is stale`
@@ -454,7 +501,10 @@ function runtimeAttentionRow(row: OverviewButlerIndexRow): OverviewAttentionRow 
   return {
     id: `runtime:${row.name}:${row.runtimeState}`,
     kind: "runtime",
-    severity: row.runtimeState === "offline" || row.runtimeState === "degraded" ? "high" : "medium",
+    severity:
+      row.runtimeState === "offline" || row.runtimeState === "degraded"
+        ? "high"
+        : "medium",
     title,
     detail,
     // Deep-link to the affected butler, not the generic /system page
@@ -531,6 +581,8 @@ function approvalAttentionRows(
 
 function notificationAttentionRows(
   stats: NotificationStats | null | undefined,
+  notificationSince: string | undefined,
+  notificationUntil: string | undefined,
 ): OverviewAttentionRow[] {
   const failed = stats?.failed ?? 0;
   if (failed <= 0) return [];
@@ -539,15 +591,25 @@ function notificationAttentionRows(
       id: "notifications:failed",
       kind: "notification",
       severity: "medium",
-      title: `${failed} failed notification${failed === 1 ? "" : "s"}`,
-      detail: "Delivery pressure needs review.",
-      // Predicate-carrying door (bu-qvnce.13): the row names failed
-      // notifications specifically -- the link lands on the pre-filtered
-      // view, not the unfiltered stream.
-      href: "/notifications?status=failed",
+      title: `${failed} failed notification${failed === 1 ? "" : "s"} in the last 24 hours`,
+      detail: "Delivery pressure in the last 24 hours needs review.",
+      // Predicate-carrying door (bu-qvnce.13): stats counts terminal failures,
+      // so the link uses the same lifecycle predicate and bounded window, not
+      // the raw failed-attempt or all-time stream.
+      href: failedNotificationsHref(notificationSince, notificationUntil),
       count: failed,
     },
   ];
+}
+
+function failedNotificationsHref(
+  notificationSince: string | undefined,
+  notificationUntil: string | undefined,
+): string {
+  const params = new URLSearchParams({ status: "terminal_failed" });
+  if (notificationSince) params.set("since", notificationSince);
+  if (notificationUntil) params.set("until", notificationUntil);
+  return `/notifications?${params.toString()}`;
 }
 
 /**
@@ -570,7 +632,8 @@ function notificationSourceErrorRows(
       kind: "notification",
       severity: "high",
       title: "Notifications feed unavailable",
-      detail: "The notifications source was unreachable -- failed-delivery counts may be stale.",
+      detail:
+        "The notifications source was unreachable -- failed-delivery counts may be stale.",
       href: "/notifications",
       isSourceError: true,
     },
@@ -650,7 +713,9 @@ function formatSinceTimestamp(iso: string): string {
  * state directly beneath a headline saying the picture might be incomplete.
  * The bu-gcz9e.2 cross-surface consistency test caught this gap.
  */
-function butlersSourceErrorAttentionRows(butlersError: boolean): OverviewAttentionRow[] {
+function butlersSourceErrorAttentionRows(
+  butlersError: boolean,
+): OverviewAttentionRow[] {
   if (!butlersError) return [];
   return [
     {
@@ -665,9 +730,12 @@ function butlersSourceErrorAttentionRows(butlersError: boolean): OverviewAttenti
   ];
 }
 
-function qaAttentionRows(summary: QaSummary | null | undefined): OverviewAttentionRow[] {
+function qaAttentionRows(
+  summary: QaSummary | null | undefined,
+  now: Date,
+): OverviewAttentionRow[] {
   if (!summary) return [];
-  const qaState = summarizeQaState(summary);
+  const qaState = summarizeQaState(summary, now);
   if (!qaState) return [];
   return [
     {
@@ -682,7 +750,11 @@ function qaAttentionRows(summary: QaSummary | null | undefined): OverviewAttenti
   ];
 }
 
-function deriveNowRows(input: OverviewDerivationInput, maxTimelineRows: number): OverviewNowRow[] {
+function deriveNowRows(
+  input: OverviewDerivationInput,
+  maxTimelineRows: number,
+  now: Date,
+): OverviewNowRow[] {
   const rows: OverviewNowRow[] = [];
 
   if (input.butlersError) {
@@ -716,7 +788,7 @@ function deriveNowRows(input: OverviewDerivationInput, maxTimelineRows: number):
       href: "/qa",
     });
   } else {
-    const qaState = summarizeQaState(input.qaSummary);
+    const qaState = summarizeQaState(input.qaSummary, now);
     if (qaState) {
       rows.push({
         id: "now:qa",
@@ -726,6 +798,18 @@ function deriveNowRows(input: OverviewDerivationInput, maxTimelineRows: number):
         href: "/qa",
         count: qaState.count,
       });
+    } else {
+      const qaActivity = summarizeQaActivity(input.qaSummary);
+      if (qaActivity) {
+        rows.push({
+          id: "now:qa",
+          kind: "qa",
+          label: qaActivity.title,
+          detail: qaActivity.detail,
+          href: "/qa",
+          count: qaActivity.count,
+        });
+      }
     }
   }
 
@@ -745,10 +829,13 @@ function deriveNowRows(input: OverviewDerivationInput, maxTimelineRows: number):
         kind: "notification",
         label: `${failedNotifications} failed notification${
           failedNotifications === 1 ? "" : "s"
-        }`,
-        detail: "Delivery failures are present.",
+        } in the last 24 hours`,
+        detail: "Delivery failures occurred in the last 24 hours.",
         // Predicate-carrying door (bu-qvnce.13): see notificationAttentionRows.
-        href: "/notifications?status=failed",
+        href: failedNotificationsHref(
+          input.notificationSince,
+          input.notificationUntil,
+        ),
         count: failedNotifications,
       });
     }
@@ -781,7 +868,13 @@ function deriveNowRows(input: OverviewDerivationInput, maxTimelineRows: number):
 
 function summarizeQaState(
   summary: QaSummary | null | undefined,
-): { title: string; detail: string; severity: OverviewSeverity; count?: number } | null {
+  now: Date,
+): {
+  title: string;
+  detail: string;
+  severity: OverviewSeverity;
+  count?: number;
+} | null {
   if (!summary) return null;
 
   // Circuit-breaker tripped takes precedence over every other QA state --
@@ -800,33 +893,59 @@ function summarizeQaState(
     };
   }
 
-  if (summary.last_patrol?.status === "failed" || summary.last_patrol?.error_detail) {
+  if (hasRecentQaPatrolFailure(summary, now)) {
     return {
       title: "QA patrol failed",
-      detail: summary.last_patrol.error_detail ?? "Last patrol ended in a failed state.",
+      detail:
+        summary.last_patrol?.error_detail ??
+        "Last patrol ended in a failed state.",
       severity: "high",
     };
   }
 
-  if (summary.stats_24h.dispatched_investigations > 0) {
+  const activeCases = summary.kpis.active_cases_now;
+  if (activeCases > 0) {
     return {
-      title: `${summary.stats_24h.dispatched_investigations} QA investigation${
-        summary.stats_24h.dispatched_investigations === 1 ? "" : "s"
-      } dispatched`,
-      detail: "QA has active follow-up work.",
+      title: `${activeCases} active QA investigation${activeCases === 1 ? "" : "s"}`,
+      detail: "QA has active investigation work.",
       severity: "medium",
-      count: summary.stats_24h.dispatched_investigations,
+      count: activeCases,
+    };
+  }
+
+  return null;
+}
+
+function hasRecentQaPatrolFailure(summary: QaSummary, now: Date): boolean {
+  const patrol = summary.last_patrol;
+  if (!patrol || (patrol.status !== "failed" && !patrol.error_detail))
+    return false;
+  const startedAt = Date.parse(patrol.started_at);
+  if (Number.isNaN(startedAt)) return false;
+  const ageMs = now.getTime() - startedAt;
+  return ageMs >= 0 && ageMs <= QA_PATROL_FAILURE_WINDOW_MS;
+}
+
+function summarizeQaActivity(
+  summary: QaSummary | null | undefined,
+): { title: string; detail: string; count: number } | null {
+  if (!summary) return null;
+
+  if (summary.stats_24h.dispatched_investigations > 0) {
+    const dispatched = summary.stats_24h.dispatched_investigations;
+    return {
+      title: `${dispatched} QA investigation${dispatched === 1 ? "" : "s"} dispatched in the last 24 hours`,
+      detail: "Dispatched in the last 24 hours.",
+      count: dispatched,
     };
   }
 
   if (summary.stats_24h.novel_findings > 0) {
+    const findings = summary.stats_24h.novel_findings;
     return {
-      title: `${summary.stats_24h.novel_findings} novel QA finding${
-        summary.stats_24h.novel_findings === 1 ? "" : "s"
-      }`,
-      detail: "New QA findings need review.",
-      severity: "medium",
-      count: summary.stats_24h.novel_findings,
+      title: `${findings} novel QA finding${findings === 1 ? "" : "s"} in the last 24 hours`,
+      detail: "Recorded in the last 24 hours.",
+      count: findings,
     };
   }
 
@@ -856,7 +975,10 @@ function issueRecencyDetail(issue: Issue, now: Date): string | null {
   if (!timestamp) return null;
   const parsed = new Date(timestamp);
   if (Number.isNaN(parsed.getTime())) return null;
-  const diffSeconds = Math.max(0, Math.floor((now.getTime() - parsed.getTime()) / 1000));
+  const diffSeconds = Math.max(
+    0,
+    Math.floor((now.getTime() - parsed.getTime()) / 1000),
+  );
   const prefix = issue.last_seen_at ? "last seen" : "first seen";
   if (diffSeconds < 60) return `${prefix} just now`;
   return `${prefix} ${formatDuration(diffSeconds)} ago`;
@@ -876,6 +998,7 @@ function humanButlerNames(names: string[]): string {
   const uniqueNames = [...new Set(names.filter(Boolean))];
   if (uniqueNames.length === 0) return "Unknown butler";
   if (uniqueNames.length === 1) return uniqueNames[0];
-  if (uniqueNames.length === 2) return `${uniqueNames[0]} and ${uniqueNames[1]}`;
+  if (uniqueNames.length === 2)
+    return `${uniqueNames[0]} and ${uniqueNames[1]}`;
   return `${uniqueNames.slice(0, -1).join(", ")}, and ${uniqueNames[uniqueNames.length - 1]}`;
 }

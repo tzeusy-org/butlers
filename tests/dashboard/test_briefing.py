@@ -21,9 +21,10 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -49,6 +50,7 @@ from butlers.api.routers.dashboard_briefing import (
     _owner_local_now,
     _qa_attention_item,
     get_cache,
+    get_dashboard_briefing,
 )
 from butlers.core.model_routing import Complexity
 
@@ -568,16 +570,30 @@ class TestFetchApprovalsState:
 
 
 class TestFetchNotificationsState:
-    async def test_returns_failed_count_from_notification_stats(self):
-        response = SimpleNamespace(data=SimpleNamespace(failed=7, source_available=True))
+    async def test_excludes_all_time_failures_outside_the_exact_24_hour_window(self):
+        """The briefing's cutoff is a precise request boundary, not a hint.
+
+        The stub deliberately returns the old all-time total if the caller
+        forgets ``since``.  That makes this a regression for the exact failure
+        mode that kept historical delivery pressure in the briefing.
+        """
+        now = datetime(2026, 7, 19, 0, 37, tzinfo=UTC)
+
+        async def _notification_stats(*, since, until, db):
+            failed = 0 if (since, until) == (now - timedelta(hours=24), now) else 87
+            return SimpleNamespace(data=SimpleNamespace(failed=failed, source_available=True))
 
         with patch(
             "butlers.api.routers.notifications.notification_stats",
-            new=AsyncMock(return_value=response),
-        ):
-            failed, degraded = await _fetch_notifications_state(MagicMock())
+            new=AsyncMock(side_effect=_notification_stats),
+        ) as notification_stats:
+            failed, degraded = await _fetch_notifications_state(MagicMock(), now=now)
 
-        assert failed == 7
+        notification_stats.assert_awaited_once()
+        since = notification_stats.await_args.kwargs["since"]
+        assert since == now - timedelta(hours=24)
+        assert notification_stats.await_args.kwargs["until"] == now
+        assert failed == 0
         assert degraded is False
 
     async def test_source_unavailable_is_degraded(self):
@@ -660,17 +676,15 @@ class TestFetchQaState:
         assert qa_state is None
         assert degraded is True
 
-    async def test_success_path_reads_last_patrol_and_24h_stats(self):
+    async def test_success_path_reads_last_patrol_and_active_case_count(self):
         db = MagicMock()
         pool = AsyncMock()
 
-        async def _fetchrow(sql, *args):
-            if "novel_count" in sql:
-                return _make_record({"novel_findings": 2, "dispatched_investigations": 1})
-            return _make_record({"status": "failed", "error_detail": "timeout"})
-
-        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetchrow = AsyncMock(
+            return_value=_make_record({"status": "failed", "error_detail": "timeout"})
+        )
         pool.fetch = AsyncMock(return_value=[])
+        pool.fetchval = AsyncMock(return_value=2)
         db.credential_shared_pool.return_value = pool
 
         qa_state, degraded = await _fetch_qa_state(db)
@@ -680,9 +694,12 @@ class TestFetchQaState:
             "circuit_breaker_tripped": False,
             "circuit_breaker_consecutive_failures": 0,
             "last_patrol_failed": True,
-            "novel_findings": 2,
-            "dispatched_investigations": 1,
+            "active_cases_now": 2,
         }
+        assert (
+            "started_at >= NOW() - INTERVAL '24 hours'" in pool.fetchrow.await_args_list[0].args[0]
+        )
+        assert "started_at <= NOW()" in pool.fetchrow.await_args_list[0].args[0]
 
     async def test_circuit_breaker_tripped_feeds_qa_state(self):
         """bu-y2xqi: a tripped breaker with no failed patrol / novel signal
@@ -690,13 +707,11 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
 
-        async def _fetchrow(sql, *args):
-            if "novel_count" in sql:
-                return _make_record({"novel_findings": 0, "dispatched_investigations": 0})
-            return _make_record({"status": "completed", "error_detail": None})
-
-        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetchrow = AsyncMock(
+            return_value=_make_record({"status": "completed", "error_detail": None})
+        )
         pool.fetch = AsyncMock(return_value=[_make_record({"status": "failed"}) for _ in range(5)])
+        pool.fetchval = AsyncMock(return_value=0)
         db.credential_shared_pool.return_value = pool
 
         qa_state, degraded = await _fetch_qa_state(db)
@@ -706,21 +721,18 @@ class TestFetchQaState:
             "circuit_breaker_tripped": True,
             "circuit_breaker_consecutive_failures": 5,
             "last_patrol_failed": False,
-            "novel_findings": 0,
-            "dispatched_investigations": 0,
+            "active_cases_now": 0,
         }
 
     async def test_circuit_breaker_untripped_feeds_qa_state(self):
         db = MagicMock()
         pool = AsyncMock()
 
-        async def _fetchrow(sql, *args):
-            if "novel_count" in sql:
-                return _make_record({"novel_findings": 0, "dispatched_investigations": 0})
-            return _make_record({"status": "completed", "error_detail": None})
-
-        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetchrow = AsyncMock(
+            return_value=_make_record({"status": "completed", "error_detail": None})
+        )
         pool.fetch = AsyncMock(return_value=[_make_record({"status": "failed"}) for _ in range(2)])
+        pool.fetchval = AsyncMock(return_value=0)
         db.credential_shared_pool.return_value = pool
 
         qa_state, degraded = await _fetch_qa_state(db)
@@ -735,13 +747,11 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
 
-        async def _fetchrow(sql, *args):
-            if "novel_count" in sql:
-                return _make_record({"novel_findings": 3, "dispatched_investigations": 0})
-            return _make_record({"status": "completed", "error_detail": None})
-
-        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetchrow = AsyncMock(
+            return_value=_make_record({"status": "completed", "error_detail": None})
+        )
         pool.fetch = AsyncMock(side_effect=RuntimeError("connection dropped"))
+        pool.fetchval = AsyncMock(return_value=0)
         db.credential_shared_pool.return_value = pool
 
         qa_state, degraded = await _fetch_qa_state(db)
@@ -751,8 +761,7 @@ class TestFetchQaState:
             "circuit_breaker_tripped": False,
             "circuit_breaker_consecutive_failures": 0,
             "last_patrol_failed": False,
-            "novel_findings": 3,
-            "dispatched_investigations": 0,
+            "active_cases_now": 0,
         }
 
     async def test_circuit_breaker_missing_table_is_legitimately_absent(self):
@@ -760,21 +769,44 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
 
-        async def _fetchrow(sql, *args):
-            if "novel_count" in sql:
-                return _make_record({"novel_findings": 0, "dispatched_investigations": 0})
-            return _make_record({"status": "completed", "error_detail": None})
-
-        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetchrow = AsyncMock(
+            return_value=_make_record({"status": "completed", "error_detail": None})
+        )
         pool.fetch = AsyncMock(
             side_effect=RuntimeError('relation "healing_attempts" does not exist')
         )
+        pool.fetchval = AsyncMock(return_value=0)
         db.credential_shared_pool.return_value = pool
 
         qa_state, degraded = await _fetch_qa_state(db)
 
         assert degraded is False
         assert qa_state["circuit_breaker_tripped"] is False
+
+    async def test_active_case_query_failure_keeps_a_successful_patrol_signal(self):
+        """A partial QA source outage must not turn a failed patrol into a quiet state."""
+        db = MagicMock()
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value=_make_record({"status": "failed", "error_detail": "timeout"})
+        )
+        pool.fetchval = AsyncMock(side_effect=RuntimeError("healing attempts unavailable"))
+        pool.fetch = AsyncMock(return_value=[])
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert degraded is True
+        assert qa_state == {
+            "circuit_breaker_tripped": False,
+            "circuit_breaker_consecutive_failures": 0,
+            "last_patrol_failed": True,
+            "active_cases_now": 0,
+        }
+        # The breaker query remains independently attempted after the
+        # active-case query fails, rather than returning before it can add a
+        # stronger signal.
+        pool.fetch.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -791,6 +823,7 @@ class TestQaAttentionItem:
             "last_patrol_failed": False,
             "novel_findings": 0,
             "dispatched_investigations": 0,
+            "active_cases_now": 0,
         }
         assert _qa_attention_item(state) is None
 
@@ -804,27 +837,35 @@ class TestQaAttentionItem:
         assert item["severity"] == "high"
         assert item["description"] == "QA patrol failed"
 
-    def test_dispatched_investigations_wins_over_novel_findings(self):
+    def test_completed_dispatches_are_activity_not_attention(self):
         state = {
             "last_patrol_failed": False,
             "novel_findings": 3,
             "dispatched_investigations": 2,
+            "active_cases_now": 0,
         }
-        item = _qa_attention_item(state)
-        assert item["severity"] == "medium"
-        assert "dispatched" in item["description"]
-        assert item["occurrences"] == 2
+        assert _qa_attention_item(state) is None
 
-    def test_novel_findings_only(self):
+    def test_novel_findings_without_active_case_are_not_attention(self):
         state = {
             "last_patrol_failed": False,
             "novel_findings": 1,
             "dispatched_investigations": 0,
+            "active_cases_now": 0,
+        }
+        assert _qa_attention_item(state) is None
+
+    def test_active_cases_surface_as_attention(self):
+        state = {
+            "last_patrol_failed": False,
+            "novel_findings": 0,
+            "dispatched_investigations": 0,
+            "active_cases_now": 2,
         }
         item = _qa_attention_item(state)
         assert item["severity"] == "medium"
-        assert "novel QA finding" in item["description"]
-        assert item["occurrences"] == 1
+        assert item["description"] == "2 active QA investigations"
+        assert item["occurrences"] == 2
 
     def test_circuit_breaker_tripped_wins_over_everything(self):
         """bu-y2xqi: mirrors model.ts::summarizeQaState checking
@@ -835,6 +876,7 @@ class TestQaAttentionItem:
             "last_patrol_failed": True,
             "novel_findings": 5,
             "dispatched_investigations": 5,
+            "active_cases_now": 2,
         }
         item = _qa_attention_item(state)
         assert item["severity"] == "high"
@@ -849,6 +891,7 @@ class TestQaAttentionItem:
             "last_patrol_failed": False,
             "novel_findings": 0,
             "dispatched_investigations": 0,
+            "active_cases_now": 0,
         }
         item = _qa_attention_item(state)
         assert "1 consecutive failure)" in item["description"]
@@ -860,6 +903,7 @@ class TestQaAttentionItem:
             "last_patrol_failed": True,
             "novel_findings": 0,
             "dispatched_investigations": 0,
+            "active_cases_now": 0,
         }
         item = _qa_attention_item(state)
         assert item["description"] == "QA patrol failed"
@@ -871,6 +915,7 @@ class TestQaAttentionItem:
             "last_patrol_failed": False,
             "novel_findings": 0,
             "dispatched_investigations": 0,
+            "active_cases_now": 0,
         }
         assert _qa_attention_item(state) is None
 
@@ -905,6 +950,59 @@ class TestFetchAuditIssues:
         assert len(audit_issues) == 1
         assert len(attention_items) == 1
         assert attention_items[0]["severity"] == "high"
+
+    async def test_excludes_a_group_last_seen_more_than_twelve_hours_ago(self):
+        fresh = _make_record(
+            {
+                "error_summary": "Fresh runtime error",
+                "first_seen_at": datetime(2026, 5, 13, 12, 0, tzinfo=UTC),
+                "last_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
+                "occurrences": 1,
+                "butlers": ["general"],
+                "has_schedule": False,
+                "schedule_names": [],
+            }
+        )
+        historical = _make_record(
+            {
+                "error_summary": "Historical model error",
+                "first_seen_at": datetime(2026, 5, 12, 12, 0, tzinfo=UTC),
+                "last_seen_at": datetime(2026, 5, 12, 23, 0, tzinfo=UTC),
+                "occurrences": 18,
+                "butlers": ["chronicler"],
+                "has_schedule": False,
+                "schedule_names": [],
+            }
+        )
+        future = _make_record(
+            {
+                "error_summary": "Future clock-skewed error",
+                "first_seen_at": datetime(2026, 5, 14, 16, 0, tzinfo=UTC),
+                "last_seen_at": datetime(2026, 5, 14, 16, 0, tzinfo=UTC),
+                "occurrences": 1,
+                "butlers": ["general"],
+                "has_schedule": False,
+                "schedule_names": [],
+            }
+        )
+
+        async def fetch(query: str):
+            return (
+                [fresh]
+                if "INTERVAL '12 hours'" in query and "created_at <= NOW()" in query
+                else [fresh, historical, future]
+            )
+
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=fetch)
+
+        audit_issues, attention_items, degraded = await _fetch_audit_issues(pool)
+
+        assert degraded is False
+        assert [item["description"] for item in audit_issues] == ["Fresh runtime error (general)"]
+        assert [item["description"] for item in attention_items] == [
+            "Fresh runtime error (general)"
+        ]
 
     async def test_failure_is_degraded(self):
         pool = AsyncMock()
@@ -982,6 +1080,12 @@ class TestFetchDashboardState:
         assert item["severity"] == "medium"
         assert item["type"] == "notification"
         assert "3 failed notifications" in item["description"]
+        window = parse_qs(urlparse(item["link"]).query)
+        assert window == {
+            "status": ["failed"],
+            "since": [(now - timedelta(hours=24)).isoformat()],
+            "until": [now.isoformat()],
+        }
 
     async def test_approvals_pending_produces_one_medium_item(self):
         now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
@@ -1547,6 +1651,88 @@ class TestCacheTTL:
         assert data1["generated_at"] != data2["generated_at"]
         # LLM should have been called twice (once per composition).
         assert call_count == 2
+
+    async def test_inflight_briefing_fill_cannot_repopulate_after_invalidation(self):
+        """An invalidation during composition fences the stale cache write.
+
+        A reset can arrive after the request's cache miss but before its
+        expensive composition returns.  The in-flight response may finish,
+        but it must not reinsert the pre-reset state for the next caller.
+        """
+        pool = _make_owner_pool()
+        cache = BriefingCache(ttl_seconds=300)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = pool
+        mock_db.credential_shared_pool.return_value = pool
+        composition_started = asyncio.Event()
+        allow_composition = asyncio.Event()
+        now = datetime(2026, 7, 19, 0, 37, tzinfo=UTC)
+
+        async def _slow_state(*args, **kwargs):
+            composition_started.set()
+            await allow_composition.wait()
+            return {
+                "now": now,
+                "attention_items": [
+                    {
+                        "severity": "high",
+                        "type": "qa",
+                        "description": "Pre-reset QA breaker state",
+                    }
+                ],
+                "butler_statuses": [],
+                "degraded_sources": [],
+            }
+
+        with (
+            patch(
+                "butlers.api.routers.dashboard_briefing._owner_local_now",
+                new=AsyncMock(return_value=now),
+            ),
+            patch(
+                "butlers.api.routers.dashboard_briefing._fetch_dashboard_state",
+                new=AsyncMock(side_effect=_slow_state),
+            ),
+            patch(
+                "butlers.api.routers.dashboard_briefing.elaborate_llm",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            request = asyncio.create_task(
+                get_dashboard_briefing(
+                    db=mock_db,
+                    cache=cache,
+                    configs=[],
+                    mgr=MagicMock(),
+                    pricing=MagicMock(),
+                )
+            )
+            composition_wait = asyncio.create_task(composition_started.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {request, composition_wait},
+                    timeout=5.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if request in done:
+                    await request
+                assert composition_wait in done, (
+                    "Briefing composition did not start within five seconds"
+                )
+
+                # Mirrors the committed reset's cache invalidation between
+                # cache-miss and cache-fill.
+                cache.invalidate_all()
+                allow_composition.set()
+                response = await request
+            finally:
+                for task in (request, composition_wait):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(request, composition_wait, return_exceptions=True)
+
+        assert response.data.state_class == "urgent"
+        assert cache.get("owner-uuid-1234") is None
 
 
 # ---------------------------------------------------------------------------

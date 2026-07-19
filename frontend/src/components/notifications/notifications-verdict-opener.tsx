@@ -6,7 +6,7 @@
 // notifications in the last 24h; M from <butler>" -- via the shared
 // DispatchVerdict primitive. by_butler on that response was fetched but
 // discarded entirely (notification-stats-bar.tsx:90-99 only ever rendered
-// by_channel); it is now scoped to FAILED notifications specifically (see
+// by_channel); it is now scoped to terminal failures specifically (see
 // NotificationStats.by_butler's doc comment) so this clause reads as a true
 // breakdown of the failures already being reported, not an unrelated
 // all-status count sitting next to them.
@@ -24,14 +24,28 @@ import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-ve
  * DEFAULT_RECENT_ISSUE_HOURS convention for "recent" windows). */
 export const NOTIFICATIONS_VERDICT_WINDOW_HOURS = 24;
 
-function buildClauses(stats: NotificationStats): VerdictClause[] {
+function terminalFailuresHref({
+  butler,
+  since,
+  until,
+}: {
+  butler?: string;
+  since: string;
+  until: string;
+}): string {
+  const params = new URLSearchParams({ status: "terminal_failed", since, until });
+  if (butler) params.set("butler", butler);
+  return `/notifications?${params.toString()}`;
+}
+
+function buildClauses(stats: NotificationStats, since: string, until: string): VerdictClause[] {
   const clauses: VerdictClause[] = [];
 
   if (stats.failed > 0) {
     clauses.push({
       key: "failed",
       text: `${stats.failed} failed notification${stats.failed === 1 ? "" : "s"} in the last ${NOTIFICATIONS_VERDICT_WINDOW_HOURS}h`,
-      href: "/notifications?status=failed",
+      href: terminalFailuresHref({ since, until }),
     });
 
     const topButler = Object.entries(stats.by_butler).sort(([, a], [, b]) => b - a)[0];
@@ -40,7 +54,7 @@ function buildClauses(stats: NotificationStats): VerdictClause[] {
       clauses.push({
         key: "top-butler",
         text: `${count} from ${butler}`,
-        href: `/notifications?status=failed&butler=${encodeURIComponent(butler)}`,
+        href: terminalFailuresHref({ butler, since, until }),
       });
     }
   }
@@ -54,24 +68,28 @@ function buildAllClear(stats: NotificationStats): string {
 }
 
 export interface NotificationsVerdictOpenerProps {
-  /** GET /api/notifications/stats?since=<24h ago> */
+  /** Exact closed interval passed to GET /api/notifications/stats. */
   stats: NotificationStats | undefined;
   isLoading: boolean;
   /** react-query isError -- a genuine request failure (network/5xx). */
   isError: boolean;
+  since: string;
+  until: string;
 }
 
 export function NotificationsVerdictOpener({
   stats,
   isLoading,
   isError,
+  since,
+  until,
 }: NotificationsVerdictOpenerProps) {
   // source_available === false means the Switchboard pool was unreachable --
   // a 200 with all-zero counts, not a truthful "nothing failed" (classify-
   // before-flagging: contrast with a genuinely empty notifications table,
   // which is a legitimate all-clear).
   const sourceUnavailable = stats?.source_available === false;
-  const clauses = stats && !sourceUnavailable ? buildClauses(stats) : [];
+  const clauses = stats && !sourceUnavailable ? buildClauses(stats, since, until) : [];
 
   return (
     <DispatchVerdict

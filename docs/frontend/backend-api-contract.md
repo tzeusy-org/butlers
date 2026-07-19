@@ -78,7 +78,9 @@ Required query support:
 - `limit`
 - `butler` (cross-butler endpoint)
 - `channel`
-- `status`
+- `status`, including computed `retried` and `terminal_failed`; `terminal_failed`
+  means a failed attempt with no later matching sent retry and matches the
+  `NotificationStats.failed` count
 - `since`
 - `until`
 

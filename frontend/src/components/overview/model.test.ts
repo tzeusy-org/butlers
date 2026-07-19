@@ -65,7 +65,9 @@ function issue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
-function approvalMetrics(overrides: Partial<ApprovalMetrics> = {}): ApprovalMetrics {
+function approvalMetrics(
+  overrides: Partial<ApprovalMetrics> = {},
+): ApprovalMetrics {
   return {
     total_pending: 0,
     total_approved_today: 0,
@@ -97,7 +99,9 @@ function approvalSummary(
   };
 }
 
-function notificationStats(overrides: Partial<NotificationStats> = {}): NotificationStats {
+function notificationStats(
+  overrides: Partial<NotificationStats> = {},
+): NotificationStats {
   return {
     total: 0,
     sent: 0,
@@ -194,7 +198,9 @@ describe("deriveOverviewTriageModel", () => {
         ],
         approvalMetrics: approvalMetrics({ total_pending: 2 }),
         notificationStats: notificationStats({ failed: 3 }),
-        qaSummary: qaSummary({ stats_24h: { ...qaSummary().stats_24h, novel_findings: 1 } }),
+        qaSummary: qaSummary({
+          kpis: { ...qaSummary().kpis, active_cases_now: 1 },
+        }),
       },
       { now: NOW },
     );
@@ -304,19 +310,115 @@ describe("deriveOverviewTriageModel", () => {
       href: "/issues",
       count: 1,
     });
-    expect(model.attentionRows.find((row) => row.title === "Old high issue")).toBeUndefined();
+    expect(
+      model.attentionRows.find((row) => row.title === "Old high issue"),
+    ).toBeUndefined();
+  });
+
+  it("treats an issue group last seen more than twelve hours ago as historical by default", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({
+            severity: "high",
+            description: "Historical model-not-found error",
+            first_seen_at: "2026-05-13T20:00:00.000Z",
+            last_seen_at: "2026-05-13T21:00:00.000Z",
+          }),
+        ],
+      },
+      { now: NOW },
+    );
+
+    expect(
+      model.attentionRows.find(
+        (row) => row.title === "Historical model-not-found error",
+      ),
+    ).toBeUndefined();
+    expect(model.hiddenOldIssueGroups).toBe(1);
+    expect(model.attentionRows).toContainEqual(
+      expect.objectContaining({
+        title: "1 older issue group",
+        kind: "old-issues-summary",
+      }),
+    );
+  });
+
+  it("treats a future-dated issue group as historical rather than current attention", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({
+            severity: "high",
+            description: "Future clock-skewed issue",
+            last_seen_at: "2026-05-14T12:10:00.000Z",
+          }),
+        ],
+      },
+      { now: NOW },
+    );
+
+    expect(
+      model.attentionRows.find(
+        (row) => row.title === "Future clock-skewed issue",
+      ),
+    ).toBeUndefined();
+    expect(model.hiddenOldIssueGroups).toBe(1);
+  });
+
+  it.each([
+    ["at the twelve-hour start", "2026-05-14T00:00:00.000Z", true],
+    ["at now", "2026-05-14T12:00:00.000Z", true],
+    ["one millisecond before the start", "2026-05-13T23:59:59.999Z", false],
+    ["one millisecond after now", "2026-05-14T12:00:00.001Z", false],
+  ])("uses a closed twelve-hour issue window %s", (_label, lastSeenAt, isCurrent) => {
+    const description = "Issue-boundary sentinel";
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({
+            severity: "high",
+            description,
+            last_seen_at: lastSeenAt,
+          }),
+        ],
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows.some((row) => row.title === description)).toBe(
+      isCurrent,
+    );
   });
 
   it("caps visible issue groups and summarizes hidden groups behind the issues link", () => {
     const model = deriveOverviewTriageModel(
       {
         issues: [
-          issue({ description: "Issue 1", last_seen_at: "2026-05-14T11:50:00.000Z" }),
-          issue({ description: "Issue 2", last_seen_at: "2026-05-14T11:40:00.000Z" }),
-          issue({ description: "Issue 3", last_seen_at: "2026-05-14T11:30:00.000Z" }),
-          issue({ description: "Issue 4", last_seen_at: "2026-05-14T11:20:00.000Z" }),
-          issue({ description: "Issue 5", last_seen_at: "2026-05-14T11:10:00.000Z" }),
-          issue({ description: "Old issue", last_seen_at: "2026-05-12T11:00:00.000Z" }),
+          issue({
+            description: "Issue 1",
+            last_seen_at: "2026-05-14T11:50:00.000Z",
+          }),
+          issue({
+            description: "Issue 2",
+            last_seen_at: "2026-05-14T11:40:00.000Z",
+          }),
+          issue({
+            description: "Issue 3",
+            last_seen_at: "2026-05-14T11:30:00.000Z",
+          }),
+          issue({
+            description: "Issue 4",
+            last_seen_at: "2026-05-14T11:20:00.000Z",
+          }),
+          issue({
+            description: "Issue 5",
+            last_seen_at: "2026-05-14T11:10:00.000Z",
+          }),
+          issue({
+            description: "Old issue",
+            last_seen_at: "2026-05-12T11:00:00.000Z",
+          }),
         ],
       },
       { now: NOW, maxRecentIssueRows: 3 },
@@ -328,8 +430,12 @@ describe("deriveOverviewTriageModel", () => {
       "Issue 3",
       "3 more issue groups",
     ]);
-    expect(model.attentionRows.find((row) => row.title === "Issue 4")).toBeUndefined();
-    expect(model.attentionRows.find((row) => row.title === "Old issue")).toBeUndefined();
+    expect(
+      model.attentionRows.find((row) => row.title === "Issue 4"),
+    ).toBeUndefined();
+    expect(
+      model.attentionRows.find((row) => row.title === "Old issue"),
+    ).toBeUndefined();
     expect(model.attentionRows.at(-1)).toMatchObject({
       kind: "old-issues-summary",
       href: "/issues",
@@ -363,11 +469,26 @@ describe("deriveOverviewTriageModel", () => {
     const model = deriveOverviewTriageModel(
       {
         issues: [
-          issue({ description: "Issue 1", last_seen_at: "2026-05-14T11:50:00.000Z" }),
-          issue({ description: "Issue 2", last_seen_at: "2026-05-14T11:40:00.000Z" }),
-          issue({ description: "Issue 3", last_seen_at: "2026-05-14T11:30:00.000Z" }),
-          issue({ description: "Issue 4", last_seen_at: "2026-05-14T11:20:00.000Z" }),
-          issue({ description: "Old issue", last_seen_at: "2026-05-12T11:00:00.000Z" }),
+          issue({
+            description: "Issue 1",
+            last_seen_at: "2026-05-14T11:50:00.000Z",
+          }),
+          issue({
+            description: "Issue 2",
+            last_seen_at: "2026-05-14T11:40:00.000Z",
+          }),
+          issue({
+            description: "Issue 3",
+            last_seen_at: "2026-05-14T11:30:00.000Z",
+          }),
+          issue({
+            description: "Issue 4",
+            last_seen_at: "2026-05-14T11:20:00.000Z",
+          }),
+          issue({
+            description: "Old issue",
+            last_seen_at: "2026-05-12T11:00:00.000Z",
+          }),
         ],
       },
       { now: NOW, includeOldIssueRows: true, maxRecentIssueRows: 2 },
@@ -387,7 +508,7 @@ describe("deriveOverviewTriageModel", () => {
     });
   });
 
-  it("uses first-seen recency when last-seen is missing", () => {
+  it("keeps an issue with no last-seen timestamp in historical detail only", () => {
     const model = deriveOverviewTriageModel(
       {
         issues: [
@@ -399,14 +520,16 @@ describe("deriveOverviewTriageModel", () => {
       },
       {
         now: NOW,
+        includeOldIssueRows: true,
       },
     );
 
     expect(model.attentionRows[0]?.detail).toContain("first seen 2h ago");
     expect(model.attentionRows[0]?.lastSeenAt).toBeNull();
+    expect(model.hiddenOldIssueGroups).toBe(0);
   });
 
-  it("keeps issue rows current when timestamps are missing", () => {
+  it("does not treat issue rows with missing timestamps as current", () => {
     const model = deriveOverviewTriageModel(
       {
         issues: [
@@ -420,14 +543,14 @@ describe("deriveOverviewTriageModel", () => {
       { now: NOW },
     );
 
-    expect(model.attentionRows).toHaveLength(1);
-    expect(model.attentionRows[0]).toMatchObject({
-      kind: "issue",
-      title: "General issue",
-      count: undefined,
-    });
-    expect(model.attentionRows[0]?.detail).not.toContain("seen");
-    expect(model.hiddenOldIssueGroups).toBe(0);
+    expect(model.attentionRows).toEqual([
+      expect.objectContaining({
+        kind: "old-issues-summary",
+        title: "1 older issue group",
+        count: 1,
+      }),
+    ]);
+    expect(model.hiddenOldIssueGroups).toBe(1);
   });
 
   it("renders multiple-butler issue group metadata", () => {
@@ -462,18 +585,26 @@ describe("deriveOverviewTriageModel", () => {
       approvalMetrics: approvalMetrics({ total_pending: 0 }),
     });
     expect(zeroModel.kpis.pendingApprovals).toBe(0);
-    expect(zeroModel.attentionRows.some((row) => row.kind === "approval")).toBe(false);
-    expect(zeroModel.nowRows.some((row) => row.kind === "approval")).toBe(false);
+    expect(zeroModel.attentionRows.some((row) => row.kind === "approval")).toBe(
+      false,
+    );
+    expect(zeroModel.nowRows.some((row) => row.kind === "approval")).toBe(
+      false,
+    );
 
     const pendingModel = deriveOverviewTriageModel({
       approvalMetrics: approvalMetrics({ total_pending: 4 }),
     });
     expect(pendingModel.kpis.pendingApprovals).toBe(4);
-    expect(pendingModel.attentionRows.find((row) => row.kind === "approval")).toMatchObject({
+    expect(
+      pendingModel.attentionRows.find((row) => row.kind === "approval"),
+    ).toMatchObject({
       title: "4 pending approvals",
       href: "/approvals",
     });
-    expect(pendingModel.nowRows.find((row) => row.kind === "approval")).toMatchObject({
+    expect(
+      pendingModel.nowRows.find((row) => row.kind === "approval"),
+    ).toMatchObject({
       label: "4 pending approvals",
     });
   });
@@ -506,7 +637,9 @@ describe("deriveOverviewTriageModel", () => {
         needsAttention: true,
       }),
     ]);
-    expect(model.attentionRows.find((row) => row.kind === "runtime")).toMatchObject({
+    expect(
+      model.attentionRows.find((row) => row.kind === "runtime"),
+    ).toMatchObject({
       title: "health heartbeat is stale",
       detail: "Last heartbeat 20m ago",
       // bu-86c4c.4 -- drill-down sweep: a heartbeat row names exactly one
@@ -564,46 +697,67 @@ describe("deriveOverviewTriageModel", () => {
     });
   });
 
-  it("derives notification failure pressure", () => {
+  it("derives time-bounded notification failure pressure and preserves its window in the drill-down", () => {
+    const notificationSince = "2026-05-13T12:00:00.000Z";
+    const notificationUntil = "2026-05-14T12:00:00.000Z";
     const model = deriveOverviewTriageModel({
       notificationStats: notificationStats({ total: 9, sent: 7, failed: 2 }),
+      notificationSince,
+      notificationUntil,
     });
 
-    expect(model.attentionRows.find((row) => row.kind === "notification")).toMatchObject({
-      title: "2 failed notifications",
-      href: "/notifications?status=failed",
+    expect(
+      model.attentionRows.find((row) => row.kind === "notification"),
+    ).toMatchObject({
+      title: "2 failed notifications in the last 24 hours",
+      detail: "Delivery pressure in the last 24 hours needs review.",
+      href: `/notifications?status=terminal_failed&since=${encodeURIComponent(notificationSince)}&until=${encodeURIComponent(notificationUntil)}`,
       count: 2,
     });
-    expect(model.nowRows.find((row) => row.kind === "notification")).toMatchObject({
-      label: "2 failed notifications",
+    expect(
+      model.nowRows.find((row) => row.kind === "notification"),
+    ).toMatchObject({
+      label: "2 failed notifications in the last 24 hours",
+      detail: "Delivery failures occurred in the last 24 hours.",
+      href: `/notifications?status=terminal_failed&since=${encodeURIComponent(notificationSince)}&until=${encodeURIComponent(notificationUntil)}`,
     });
   });
 
   it("keeps QA clean states quiet and surfaces QA error states", () => {
-    const cleanModel = deriveOverviewTriageModel({
-      qaSummary: qaSummary(),
-    });
-    expect(cleanModel.attentionRows.some((row) => row.kind === "qa")).toBe(false);
+    const cleanModel = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary(),
+      },
+      { now: NOW },
+    );
+    expect(cleanModel.attentionRows.some((row) => row.kind === "qa")).toBe(
+      false,
+    );
     expect(cleanModel.nowRows.some((row) => row.kind === "qa")).toBe(false);
 
-    const errorModel = deriveOverviewTriageModel({
-      qaSummary: qaSummary({
-        last_patrol: {
-          id: "patrol-1",
-          started_at: "2026-05-14T11:00:00.000Z",
-          completed_at: "2026-05-14T11:01:00.000Z",
-          status: "failed",
-          findings_count: 0,
-          novel_count: 0,
-          dispatched_count: 0,
-          log_lookback_minutes: 60,
-          sources_polled: ["sessions"],
-          error_detail: "log scanner failed",
-        },
-      }),
-    });
+    const errorModel = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary({
+          last_patrol: {
+            id: "patrol-1",
+            started_at: "2026-05-14T11:00:00.000Z",
+            completed_at: "2026-05-14T11:01:00.000Z",
+            status: "failed",
+            findings_count: 0,
+            novel_count: 0,
+            dispatched_count: 0,
+            log_lookback_minutes: 60,
+            sources_polled: ["sessions"],
+            error_detail: "log scanner failed",
+          },
+        }),
+      },
+      { now: NOW },
+    );
 
-    expect(errorModel.attentionRows.find((row) => row.kind === "qa")).toMatchObject({
+    expect(
+      errorModel.attentionRows.find((row) => row.kind === "qa"),
+    ).toMatchObject({
       severity: "high",
       title: "QA patrol failed",
       detail: "log scanner failed",
@@ -611,6 +765,150 @@ describe("deriveOverviewTriageModel", () => {
     expect(errorModel.nowRows.find((row) => row.kind === "qa")).toMatchObject({
       label: "QA patrol failed",
     });
+  });
+
+  it("surfaces active QA investigations as attention", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary({
+          kpis: { ...qaSummary().kpis, active_cases_now: 2 },
+        }),
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows.find((row) => row.kind === "qa")).toMatchObject({
+      severity: "medium",
+      title: "2 active QA investigations",
+      detail: "QA has active investigation work.",
+      count: 2,
+    });
+    expect(model.nowRows.find((row) => row.kind === "qa")).toMatchObject({
+      label: "2 active QA investigations",
+    });
+  });
+
+  it("keeps completed QA dispatches out of attention and labels them as time-bounded activity", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary({
+          stats_24h: { ...qaSummary().stats_24h, dispatched_investigations: 1 },
+          kpis: { ...qaSummary().kpis, active_cases_now: 0 },
+        }),
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows.some((row) => row.kind === "qa")).toBe(false);
+    expect(model.nowRows.find((row) => row.kind === "qa")).toMatchObject({
+      label: "1 QA investigation dispatched in the last 24 hours",
+      detail: "Dispatched in the last 24 hours.",
+      count: 1,
+    });
+  });
+
+  it("keeps novel QA findings out of attention and labels them as time-bounded activity", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary({
+          stats_24h: {
+            ...qaSummary().stats_24h,
+            novel_findings: 1,
+            dispatched_investigations: 0,
+          },
+          kpis: { ...qaSummary().kpis, active_cases_now: 0 },
+        }),
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows.some((row) => row.kind === "qa")).toBe(false);
+    expect(model.nowRows.find((row) => row.kind === "qa")).toMatchObject({
+      label: "1 novel QA finding in the last 24 hours",
+      detail: "Recorded in the last 24 hours.",
+      count: 1,
+    });
+  });
+
+  it("does not surface a failed QA patrol that is older than one day", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary({
+          last_patrol: {
+            id: "historical-patrol",
+            started_at: "2026-05-13T10:00:00.000Z",
+            completed_at: "2026-05-13T10:01:00.000Z",
+            status: "failed",
+            findings_count: 0,
+            novel_count: 0,
+            dispatched_count: 0,
+            log_lookback_minutes: 60,
+            sources_polled: ["sessions"],
+            error_detail: "historical scanner failure",
+          },
+        }),
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows.some((row) => row.kind === "qa")).toBe(false);
+    expect(model.nowRows.some((row) => row.kind === "qa")).toBe(false);
+  });
+
+  it("does not surface a future-dated failed QA patrol as current attention", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary({
+          last_patrol: {
+            id: "future-patrol",
+            started_at: "2026-05-14T12:10:00.000Z",
+            completed_at: "2026-05-14T12:11:00.000Z",
+            status: "failed",
+            findings_count: 0,
+            novel_count: 0,
+            dispatched_count: 0,
+            log_lookback_minutes: 60,
+            sources_polled: ["sessions"],
+            error_detail: "clock-skewed scanner failure",
+          },
+        }),
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows.some((row) => row.kind === "qa")).toBe(false);
+    expect(model.nowRows.some((row) => row.kind === "qa")).toBe(false);
+  });
+
+  it.each([
+    ["at the twenty-four-hour start", "2026-05-13T12:00:00.000Z", true],
+    ["at now", "2026-05-14T12:00:00.000Z", true],
+    ["one millisecond before the start", "2026-05-13T11:59:59.999Z", false],
+    ["one millisecond after now", "2026-05-14T12:00:00.001Z", false],
+  ])("uses a closed twenty-four-hour QA patrol window %s", (_label, startedAt, isCurrent) => {
+    const model = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary({
+          last_patrol: {
+            id: "patrol-boundary",
+            started_at: startedAt,
+            completed_at: startedAt,
+            status: "failed",
+            findings_count: 0,
+            novel_count: 0,
+            dispatched_count: 0,
+            log_lookback_minutes: 60,
+            sources_polled: ["sessions"],
+            error_detail: "boundary sentinel",
+          },
+        }),
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows.some((row) => row.kind === "qa")).toBe(
+      isCurrent,
+    );
   });
 
   it("uses current butlers only for promoted runtime KPIs", () => {
@@ -642,7 +940,9 @@ describe("deriveOverviewTriageModel", () => {
       notificationStatsError: true,
     });
 
-    const errorRow = model.nowRows.find((row) => row.id === "now:notifications:error");
+    const errorRow = model.nowRows.find(
+      (row) => row.id === "now:notifications:error",
+    );
     expect(errorRow).toBeDefined();
     expect(errorRow).toMatchObject({
       kind: "error",
@@ -650,7 +950,9 @@ describe("deriveOverviewTriageModel", () => {
       href: "/notifications",
     });
     // Should NOT emit a normal notification row
-    expect(model.nowRows.some((row) => row.id === "now:notifications")).toBe(false);
+    expect(model.nowRows.some((row) => row.id === "now:notifications")).toBe(
+      false,
+    );
   });
 
   it("emits a named error row for QA when qaSummaryError is true", () => {
@@ -676,7 +978,9 @@ describe("deriveOverviewTriageModel", () => {
       timelineError: true,
     });
 
-    const errorRow = model.nowRows.find((row) => row.id === "now:activity:error");
+    const errorRow = model.nowRows.find(
+      (row) => row.id === "now:activity:error",
+    );
     expect(errorRow).toBeDefined();
     expect(errorRow).toMatchObject({
       kind: "error",
@@ -693,7 +997,9 @@ describe("deriveOverviewTriageModel", () => {
       butlersError: true,
     });
 
-    const errorRow = model.nowRows.find((row) => row.id === "now:butlers:error");
+    const errorRow = model.nowRows.find(
+      (row) => row.id === "now:butlers:error",
+    );
     expect(errorRow).toBeDefined();
     expect(errorRow).toMatchObject({
       kind: "error",
@@ -706,7 +1012,9 @@ describe("deriveOverviewTriageModel", () => {
   it("leaves butlersError false and emits no butler error row by default", () => {
     const model = deriveOverviewTriageModel({ boardRows: [] });
     expect(model.butlersError).toBe(false);
-    expect(model.nowRows.some((row) => row.id === "now:butlers:error")).toBe(false);
+    expect(model.nowRows.some((row) => row.id === "now:butlers:error")).toBe(
+      false,
+    );
   });
 
   it("emits a named source-error attention row when butlersError is true (bu-gcz9e.2)", () => {
@@ -719,7 +1027,9 @@ describe("deriveOverviewTriageModel", () => {
       butlersError: true,
     });
 
-    const errorRow = model.attentionRows.find((row) => row.id === "runtime:source-error");
+    const errorRow = model.attentionRows.find(
+      (row) => row.id === "runtime:source-error",
+    );
     expect(errorRow).toBeDefined();
     expect(errorRow).toMatchObject({
       kind: "runtime",
@@ -735,7 +1045,9 @@ describe("deriveOverviewTriageModel", () => {
 
   it("emits no butlers source-error attention row by default", () => {
     const model = deriveOverviewTriageModel({ boardRows: [] });
-    expect(model.attentionRows.some((row) => row.id === "runtime:source-error")).toBe(false);
+    expect(
+      model.attentionRows.some((row) => row.id === "runtime:source-error"),
+    ).toBe(false);
   });
 
   it("emits a named source-error attention row and sets issuesError when issuesError is true (bu-86c4c.2)", () => {
@@ -747,7 +1059,9 @@ describe("deriveOverviewTriageModel", () => {
       issuesError: true,
     });
 
-    const errorRow = model.attentionRows.find((row) => row.id === "issues:source-error");
+    const errorRow = model.attentionRows.find(
+      (row) => row.id === "issues:source-error",
+    );
     expect(errorRow).toBeDefined();
     expect(errorRow).toMatchObject({
       kind: "issue",
@@ -765,7 +1079,9 @@ describe("deriveOverviewTriageModel", () => {
   it("leaves issuesError false and emits no issues error row by default", () => {
     const model = deriveOverviewTriageModel({ issues: [] });
     expect(model.issuesError).toBe(false);
-    expect(model.attentionRows.some((row) => row.id === "issues:source-error")).toBe(false);
+    expect(
+      model.attentionRows.some((row) => row.id === "issues:source-error"),
+    ).toBe(false);
   });
 
   it("does not emit error rows when error flags are false", () => {
@@ -788,8 +1104,12 @@ describe("deriveOverviewTriageModel", () => {
       notificationStatsError: true,
     });
 
-    expect(model.nowRows.find((row) => row.id === "now:notifications:error")).toBeDefined();
-    expect(model.nowRows.some((row) => row.id === "now:notifications")).toBe(false);
+    expect(
+      model.nowRows.find((row) => row.id === "now:notifications:error"),
+    ).toBeDefined();
+    expect(model.nowRows.some((row) => row.id === "now:notifications")).toBe(
+      false,
+    );
   });
 });
 
@@ -854,14 +1174,20 @@ describe("deriveOverviewTriageModel — KPI/attention-list coherence (bu-qvnce.4
 describe("deriveOverviewTriageModel — per-item approval attention rows (bu-86c4c.14)", () => {
   it("renders one actionable row per pending approval, carrying its id", () => {
     const model = deriveOverviewTriageModel({
-      approvals: [approvalSummary("a1", { tool_name: "send_email" }), approvalSummary("a2")],
+      approvals: [
+        approvalSummary("a1", { tool_name: "send_email" }),
+        approvalSummary("a2"),
+      ],
       approvalMetrics: approvalMetrics({ total_pending: 2 }),
     });
 
     const rows = model.attentionRows.filter((row) => row.kind === "approval");
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.approvalId).sort()).toEqual(["a1", "a2"]);
-    expect(rows[0]).toMatchObject({ title: "send email", href: "/approvals/a1" });
+    expect(rows[0]).toMatchObject({
+      title: "send email",
+      href: "/approvals/a1",
+    });
   });
 
   it("ranks the soonest-to-expire approval first", () => {
@@ -879,7 +1205,9 @@ describe("deriveOverviewTriageModel — per-item approval attention rows (bu-86c
   });
 
   it("caps actionable rows and collapses the remainder into a 'more' row with no approvalId", () => {
-    const approvals = Array.from({ length: 5 }, (_, i) => approvalSummary(`a${i}`));
+    const approvals = Array.from({ length: 5 }, (_, i) =>
+      approvalSummary(`a${i}`),
+    );
     const model = deriveOverviewTriageModel(
       { approvals, approvalMetrics: approvalMetrics({ total_pending: 5 }) },
       { maxAttentionApprovalRows: 2 },
@@ -889,7 +1217,10 @@ describe("deriveOverviewTriageModel — per-item approval attention rows (bu-86c
     expect(rows).toHaveLength(3); // 2 actionable + 1 "more"
     expect(rows.filter((r) => r.approvalId).length).toBe(2);
     const more = rows.find((r) => !r.approvalId);
-    expect(more).toMatchObject({ title: "3 more pending approvals", href: "/approvals" });
+    expect(more).toMatchObject({
+      title: "3 more pending approvals",
+      href: "/approvals",
+    });
   });
 
   it("falls back to the aggregate count row when no detail list is provided", () => {
@@ -900,7 +1231,10 @@ describe("deriveOverviewTriageModel — per-item approval attention rows (bu-86c
     const rows = model.attentionRows.filter((row) => row.kind === "approval");
     expect(rows).toHaveLength(1);
     expect(rows[0].approvalId).toBeUndefined();
-    expect(rows[0]).toMatchObject({ title: "4 pending approvals", href: "/approvals" });
+    expect(rows[0]).toMatchObject({
+      title: "4 pending approvals",
+      href: "/approvals",
+    });
   });
 
   it("falls back to the aggregate count row when the detail list is empty but metrics still report pending", () => {
@@ -942,8 +1276,14 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
     // Without a real cross-kind severity sort, "issue" rows are concatenated
     // before "qa" rows and the high-severity issue would rank first despite
     // the QA breaker being more severe (critical > high).
-    expect(model.attentionRows[0]).toMatchObject({ kind: "qa", severity: "critical" });
-    expect(model.attentionRows[1]).toMatchObject({ kind: "issue", severity: "high" });
+    expect(model.attentionRows[0]).toMatchObject({
+      kind: "qa",
+      severity: "critical",
+    });
+    expect(model.attentionRows[1]).toMatchObject({
+      kind: "issue",
+      severity: "high",
+    });
   });
 
   it("keeps a stable, deterministic order for same-severity rows across kinds (no shuffling between calls)", () => {
@@ -995,7 +1335,9 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
 
   it("does not surface a QA breaker row when the breaker is not tripped", () => {
     const model = deriveOverviewTriageModel({
-      qaSummary: qaSummary({ circuit_breaker: { tripped: false, consecutive_failures: 0 } }),
+      qaSummary: qaSummary({
+        circuit_breaker: { tripped: false, consecutive_failures: 0 },
+      }),
     });
 
     expect(model.attentionRows.some((row) => row.kind === "qa")).toBe(false);
@@ -1003,10 +1345,15 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
 
   it("surfaces a degraded attention row when notifications source_available is false", () => {
     const model = deriveOverviewTriageModel({
-      notificationStats: notificationStats({ failed: 0, source_available: false }),
+      notificationStats: notificationStats({
+        failed: 0,
+        source_available: false,
+      }),
     });
 
-    const row = model.attentionRows.find((r) => r.id === "notifications:source-error");
+    const row = model.attentionRows.find(
+      (r) => r.id === "notifications:source-error",
+    );
     expect(row).toBeDefined();
     expect(row).toMatchObject({
       kind: "notification",
@@ -1017,22 +1364,31 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
     });
     // A real "0 failed" count must not additionally render as a calm
     // "0 failed notifications" row alongside the degraded row.
-    expect(model.attentionRows.some((r) => r.id === "notifications:failed")).toBe(false);
+    expect(
+      model.attentionRows.some((r) => r.id === "notifications:failed"),
+    ).toBe(false);
   });
 
   it("does not surface a notifications degraded row when source_available is true or absent", () => {
     const availableModel = deriveOverviewTriageModel({
-      notificationStats: notificationStats({ failed: 0, source_available: true }),
+      notificationStats: notificationStats({
+        failed: 0,
+        source_available: true,
+      }),
     });
     expect(
-      availableModel.attentionRows.some((r) => r.id === "notifications:source-error"),
+      availableModel.attentionRows.some(
+        (r) => r.id === "notifications:source-error",
+      ),
     ).toBe(false);
 
     const absentModel = deriveOverviewTriageModel({
       notificationStats: notificationStats({ failed: 0 }),
     });
     expect(
-      absentModel.attentionRows.some((r) => r.id === "notifications:source-error"),
+      absentModel.attentionRows.some(
+        (r) => r.id === "notifications:source-error",
+      ),
     ).toBe(false);
   });
 });
@@ -1070,22 +1426,40 @@ describe("deriveOverviewTriageModel — fleet-halt attention row (bu-7o89u.3)", 
 
   it("renders no row when the fleet halt is not active", () => {
     const model = deriveOverviewTriageModel({
-      fleetHalt: { active: false, deniedToday: 0, deniedTotal: 0, since: null, isSourceError: false },
+      fleetHalt: {
+        active: false,
+        deniedToday: 0,
+        deniedTotal: 0,
+        since: null,
+        isSourceError: false,
+      },
     });
-    expect(model.attentionRows.some((r) => r.id === "fleet-halt:ceiling")).toBe(false);
+    expect(model.attentionRows.some((r) => r.id === "fleet-halt:ceiling")).toBe(
+      false,
+    );
   });
 
   it("renders no row when fleetHalt is absent", () => {
     const model = deriveOverviewTriageModel({});
-    expect(model.attentionRows.some((r) => r.id.startsWith("fleet-halt:"))).toBe(false);
+    expect(
+      model.attentionRows.some((r) => r.id.startsWith("fleet-halt:")),
+    ).toBe(false);
   });
 
   it("surfaces a degraded source-error row instead of silently reading as 'no halt' when the fetch fails", () => {
     const model = deriveOverviewTriageModel({
-      fleetHalt: { active: false, deniedToday: 0, deniedTotal: 0, since: null, isSourceError: true },
+      fleetHalt: {
+        active: false,
+        deniedToday: 0,
+        deniedTotal: 0,
+        since: null,
+        isSourceError: true,
+      },
     });
 
-    const row = model.attentionRows.find((r) => r.id === "fleet-halt:source-error");
+    const row = model.attentionRows.find(
+      (r) => r.id === "fleet-halt:source-error",
+    );
     expect(row).toBeDefined();
     expect(row).toMatchObject({
       kind: "runtime",
@@ -1094,7 +1468,9 @@ describe("deriveOverviewTriageModel — fleet-halt attention row (bu-7o89u.3)", 
       href: "/spend",
       isSourceError: true,
     });
-    expect(model.attentionRows.some((r) => r.id === "fleet-halt:ceiling")).toBe(false);
+    expect(model.attentionRows.some((r) => r.id === "fleet-halt:ceiling")).toBe(
+      false,
+    );
   });
 
   it("ranks the fleet-halt critical row above a same-batch high-severity issue row (severity-first ordering)", () => {

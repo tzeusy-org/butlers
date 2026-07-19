@@ -41,8 +41,12 @@ const FREE_TEXT_DEBOUNCE_MS = 300;
 /** Module-level so Date.now() is not called directly during render (the
  * react-hooks/purity ESLint rule flags impure calls inline in a component/
  * hook body, even inside a useMemo factory). */
-function cutoffIsoForWindow(hours: number): string {
-  return new Date(Date.now() - hours * 3_600_000).toISOString();
+function closedWindowForHours(hours: number): { since: string; until: string } {
+  const until = new Date(Date.now());
+  return {
+    since: new Date(until.getTime() - hours * 3_600_000).toISOString(),
+    until: until.toISOString(),
+  };
 }
 
 const CHANNEL_OPTIONS = [
@@ -51,12 +55,13 @@ const CHANNEL_OPTIONS = [
   { value: "email", label: "Email" },
 ] as const;
 
-// Exported for tests: the status filter must surface read/retried so those rows
-// are not hidden from the review-the-stream view (bu-5gf99).
+// Exported for tests: the status filter must surface terminal failures/read/
+// retried so the dashboard's count predicate and review stream stay explicit.
 export const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
   { value: "sent", label: "Sent" },
   { value: "failed", label: "Failed" },
+  { value: "terminal_failed", label: "Terminal failures" },
   { value: "pending", label: "Pending" },
   { value: "read", label: "Read" },
   { value: "retried", label: "Retried" },
@@ -108,6 +113,28 @@ function applyFilters(sp: URLSearchParams, f: FilterState): void {
   set("until", f.until, "");
 }
 
+/** Translate URL/API timestamps into the browser's local datetime input form. */
+function dateTimeLocalValue(timestamp: string): string {
+  if (!timestamp) return "";
+  // Keep existing date-only deep links on their literal calendar day instead
+  // of shifting them backward/forward when interpreted as UTC.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(timestamp)) return `${timestamp}T00:00`;
+
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const localTime = new Date(
+    parsed.getTime() - parsed.getTimezoneOffset() * 60_000,
+  );
+  return localTime.toISOString().slice(0, 16);
+}
+
+/** Serialize a local datetime-control change as the API's unambiguous ISO timestamp. */
+function queryTimestamp(value: string): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+}
+
 // ---------------------------------------------------------------------------
 // NotificationsPage
 // ---------------------------------------------------------------------------
@@ -141,19 +168,19 @@ export default function NotificationsPage() {
   const { data: statsResponse, isLoading: statsLoading } =
     useNotificationStats();
   // Verdict opener's own windowed stats (bu-y0v0c, JARVIS pursuit move 9
-  // slice 3) -- a separate query, keyed on its own since/until, so it caches
-  // independently of the all-time stats bar above. The cutoff is memoized
-  // once per mount so the query key stays stable across renders (a fresh
-  // Date.now() every render would key-thrash the query cache).
-  const verdictSinceIso = useMemo(
-    () => cutoffIsoForWindow(NOTIFICATIONS_VERDICT_WINDOW_HOURS),
+  // slice 3) -- a separate query, keyed on its own closed interval, so it
+  // caches independently of the all-time stats bar above. The interval is
+  // memoized once per mount so its predicate-carrying doors name the exact
+  // set counted by this response instead of re-evaluating "last 24h" on click.
+  const verdictWindow = useMemo(
+    () => closedWindowForHours(NOTIFICATIONS_VERDICT_WINDOW_HOURS),
     [],
   );
   const {
     data: verdictStatsResponse,
     isLoading: verdictStatsLoading,
     isError: verdictStatsError,
-  } = useNotificationStats({ since: verdictSinceIso });
+  } = useNotificationStats(verdictWindow);
   const {
     data: notificationsResponse,
     isLoading: notificationsLoading,
@@ -169,12 +196,16 @@ export default function NotificationsPage() {
   const markRead = markReadMutation.mutate;
   const acknowledgeAll = ackAllMutation.mutate;
 
-  const notifications = useMemo(() => notificationsResponse?.data ?? [], [notificationsResponse]);
+  const notifications = useMemo(
+    () => notificationsResponse?.data ?? [],
+    [notificationsResponse],
+  );
   const meta = notificationsResponse?.meta;
   const total = meta?.total ?? 0;
   // has_more is a computed property on the backend; derive it client-side as a
   // fallback in case the backend serialization omits it.
-  const hasMore = meta?.has_more ?? (total > 0 && page * PAGE_SIZE + PAGE_SIZE < total);
+  const hasMore =
+    meta?.has_more ?? (total > 0 && page * PAGE_SIZE + PAGE_SIZE < total);
 
   // Pagination helpers
   const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
@@ -250,16 +281,29 @@ export default function NotificationsPage() {
   // former hand-rolled version of this exact pattern). Selection is
   // ephemeral component state, not URL-backed (bu-qvnce.13's filters/page own
   // the URL; a row cursor is not shareable state the way a filter is).
-  const [selectedNotificationId, setSelectedNotificationId] = useState<string | null>(null);
-  const notificationIds = useMemo(() => notifications.map((n) => n.id), [notifications]);
+  const [selectedNotificationId, setSelectedNotificationId] = useState<
+    string | null
+  >(null);
+  const notificationIds = useMemo(
+    () => notifications.map((n) => n.id),
+    [notifications],
+  );
   const notificationVerbs = useMemo<ListTriageVerb[]>(() => {
-    const notification = notifications.find((n) => n.id === selectedNotificationId);
+    const notification = notifications.find(
+      (n) => n.id === selectedNotificationId,
+    );
     if (!notification) return [];
     // Mirrors NotificationFeed's own gating: an already-read row has nothing
     // left to triage, so no act key is offered for it.
     const displayStatus = notification.effective_status ?? notification.status;
     if (displayStatus === "read") return [];
-    return [{ key: "a", description: "Mark read", handler: () => handleMarkRead(notification.id) }];
+    return [
+      {
+        key: "a",
+        description: "Mark read",
+        handler: () => handleMarkRead(notification.id),
+      },
+    ];
   }, [notifications, selectedNotificationId, handleMarkRead]);
   const { hints: notificationTriageHints } = useListTriage({
     ids: notificationIds,
@@ -272,9 +316,13 @@ export default function NotificationsPage() {
   // ApprovalsPage's identical rail-focus effect.
   useEffect(() => {
     if (!selectedNotificationId) return;
-    const nodes = document.querySelectorAll<HTMLElement>('[data-testid="notification-row"]');
+    const nodes = document.querySelectorAll<HTMLElement>(
+      '[data-testid="notification-row"]',
+    );
     for (const node of nodes) {
-      if (node.getAttribute("data-notification-id") === selectedNotificationId) {
+      if (
+        node.getAttribute("data-notification-id") === selectedNotificationId
+      ) {
         node.focus({ preventScroll: true });
         break;
       }
@@ -312,6 +360,8 @@ export default function NotificationsPage() {
           stats={verdictStatsResponse?.data}
           isLoading={verdictStatsLoading}
           isError={verdictStatsError}
+          since={verdictWindow.since}
+          until={verdictWindow.until}
         />
       </div>
 
@@ -346,14 +396,20 @@ export default function NotificationsPage() {
 
             {/* Channel dropdown */}
             <div className="space-y-1">
-              <label htmlFor="notifications-channel-filter" className="text-muted-foreground text-xs font-medium">
+              <label
+                htmlFor="notifications-channel-filter"
+                className="text-muted-foreground text-xs font-medium"
+              >
                 Channel
               </label>
               <Select
                 value={filters.channel}
                 onValueChange={(v) => handleFilterChange("channel", v)}
               >
-                <SelectTrigger id="notifications-channel-filter" className="w-40">
+                <SelectTrigger
+                  id="notifications-channel-filter"
+                  className="w-40"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -368,14 +424,20 @@ export default function NotificationsPage() {
 
             {/* Status dropdown */}
             <div className="space-y-1">
-              <label htmlFor="notifications-status-filter" className="text-muted-foreground text-xs font-medium">
+              <label
+                htmlFor="notifications-status-filter"
+                className="text-muted-foreground text-xs font-medium"
+              >
                 Status
               </label>
               <Select
                 value={filters.status}
                 onValueChange={(v) => handleFilterChange("status", v)}
               >
-                <SelectTrigger id="notifications-status-filter" className="w-40">
+                <SelectTrigger
+                  id="notifications-status-filter"
+                  className="w-40"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -388,47 +450,47 @@ export default function NotificationsPage() {
               </Select>
             </div>
 
-            {/* Since date */}
+            {/* Since date and time */}
             <div className="space-y-1">
               <label
                 htmlFor="filter-since"
                 className="text-muted-foreground text-xs font-medium"
               >
-                Since
+                Since (local time)
               </label>
               <Input
                 id="filter-since"
-                type="date"
-                value={filters.since}
-                onChange={(e) => handleFilterChange("since", e.target.value)}
-                className="w-40"
+                type="datetime-local"
+                value={dateTimeLocalValue(filters.since)}
+                onChange={(e) =>
+                  handleFilterChange("since", queryTimestamp(e.target.value))
+                }
+                className="w-52"
               />
             </div>
 
-            {/* Until date */}
+            {/* Until date and time */}
             <div className="space-y-1">
               <label
                 htmlFor="filter-until"
                 className="text-muted-foreground text-xs font-medium"
               >
-                Until
+                Until (local time)
               </label>
               <Input
                 id="filter-until"
-                type="date"
-                value={filters.until}
-                onChange={(e) => handleFilterChange("until", e.target.value)}
-                className="w-40"
+                type="datetime-local"
+                value={dateTimeLocalValue(filters.until)}
+                onChange={(e) =>
+                  handleFilterChange("until", queryTimestamp(e.target.value))
+                }
+                className="w-52"
               />
             </div>
 
             {/* Clear filters */}
             {hasActiveFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleClearFilters}
-              >
+              <Button variant="ghost" size="sm" onClick={handleClearFilters}>
                 Clear filters
               </Button>
             )}
@@ -455,7 +517,9 @@ export default function NotificationsPage() {
                 onDismiss={handleDismiss}
                 pendingAckIds={pendingAckIds}
                 selectedId={selectedNotificationId}
-                sourceUnavailable={notificationsResponse?.source_available === false}
+                sourceUnavailable={
+                  notificationsResponse?.source_available === false
+                }
               />
             </FetchingDim>
           )}

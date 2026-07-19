@@ -1,5 +1,5 @@
 {
-  "description": "bu-gcz9e.2 cross-surface attention contract: each scenario describes ONE raw dashboard-state fixture (board rows, approvals, notifications, QA) that drives BOTH the backend briefing classification (tests/dashboard/test_briefing_attention_contract.py, exercising src/butlers/api/briefing/classify.py + dashboard_briefing.py's real composition helpers) and the frontend attention-row derivation (frontend/src/components/overview/model.contract.test.ts, exercising deriveOverviewTriageModel). A future change that lets one surface drift from the other (e.g. the headline calling a state 'busy' while the attention list renders 'Nothing waiting.') fails one of those two test files.",
+  "description": "bu-gcz9e.2 cross-surface attention contract: each scenario describes ONE raw dashboard-state fixture (board rows, approvals, notifications, issue history, QA) that drives BOTH the backend briefing classification (tests/dashboard/test_briefing_attention_contract.py, exercising src/butlers/api/briefing/classify.py + dashboard_briefing.py's real composition helpers) and the frontend attention-row derivation (frontend/src/components/overview/model.contract.test.ts, exercising deriveOverviewTriageModel). A future change that lets one surface drift from the other (e.g. the headline calling a state 'busy' while the attention list renders 'Nothing waiting.') fails one of those two test files.",
   "severity_rank_note": "Frontend OverviewSeverity ranks critical < high < medium < low < info (most to least severe). Backend attention-item severity only has high/medium/low. min_top_severity_rank / max_severity_rank below are expressed in frontend vocabulary and interpreted against the frontend attentionRows produced for the same scenario.",
   "degraded_signal_note": "requires_degraded_signal accepts ANY of the fleet degraded-source convention's shapes (an attentionRows isSourceError row, or a top-level *Error flag another surface like the KPI strip reads) per butlers/CLAUDE.md. requires_butlers_source_row / requires_notification_source_row are the STRICTER form used where the bug this bead pins is specifically 'the Needs-attention list itself renders Nothing waiting.' -- they require an actual isSourceError row of that kind in attentionRows, not just the top-level flag.",
   "scenarios": [
@@ -85,13 +85,77 @@
       }
     },
     {
+      "name": "quiet-historical-audit-and-completed-qa-work",
+      "board_rows": [],
+      "board_source_error": false,
+      "approvals_pending": 0,
+      "failed_notifications": 0,
+      "notifications_source_available": true,
+      "historical_audit_group": {
+        "error_summary": "Historical model-not-found error",
+        "first_seen_at": "2026-07-11T20:00:00.000Z",
+        "last_seen_at": "2026-07-11T21:00:00.000Z",
+        "occurrences": 18,
+        "butlers": ["chronicler"],
+        "has_schedule": false,
+        "schedule_names": []
+      },
+      "issues": [
+        {
+          "severity": "high",
+          "type": "runtime",
+          "butler": "chronicler",
+          "description": "Historical model-not-found error",
+          "first_seen_at": "2026-07-11T20:00:00.000Z",
+          "last_seen_at": "2026-07-11T21:00:00.000Z"
+        }
+      ],
+      "qa": {
+        "last_patrol_failed": false,
+        "novel_findings": 0,
+        "dispatched_investigations": 1,
+        "active_cases_now": 0
+      },
+      "expect": {
+        "backend_state_class": "quiet",
+        "min_attention_rows": 0,
+        "max_attention_rows": 1,
+        "hidden_old_issue_groups": 1,
+        "requires_qa_activity": true
+      }
+    },
+    {
+      "name": "mild-active-qa-investigation",
+      "board_rows": [],
+      "board_source_error": false,
+      "approvals_pending": 0,
+      "failed_notifications": 0,
+      "notifications_source_available": true,
+      "qa": {
+        "last_patrol_failed": false,
+        "novel_findings": 0,
+        "dispatched_investigations": 0,
+        "active_cases_now": 2
+      },
+      "expect": {
+        "backend_state_class": "mild",
+        "min_attention_rows": 1,
+        "max_attention_rows": 1,
+        "max_severity_rank": "medium"
+      }
+    },
+    {
       "name": "urgent-qa-patrol-failed",
       "board_rows": [],
       "board_source_error": false,
       "approvals_pending": 0,
       "failed_notifications": 0,
       "notifications_source_available": true,
-      "qa": { "last_patrol_failed": true, "novel_findings": 0, "dispatched_investigations": 0 },
+      "qa": {
+        "last_patrol_failed": true,
+        "novel_findings": 0,
+        "dispatched_investigations": 0
+      },
       "expect": {
         "backend_state_class": "urgent",
         "min_attention_rows": 1,

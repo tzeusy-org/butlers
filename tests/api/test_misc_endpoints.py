@@ -232,6 +232,31 @@ async def test_notifications_retried_filter_matches_computed_status_not_raw_colu
     assert "retried" not in data_args
 
 
+async def test_notifications_terminal_failed_filter_excludes_retried_attempts():
+    """The dashboard's terminal-failure door uses the stats predicate.
+
+    A retried attempt is still stored as ``status='failed'``, so a raw failed
+    filter cannot be the destination for the dashboard's terminal-failure
+    count.  The special filter must use the inverse of the same later-send
+    predicate used by the stats query.
+    """
+    from tests.api.conftest import build_notifications_app
+
+    app, pool, _db = build_notifications_app(rows=[], total=0)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/notifications", params={"status": "terminal_failed"})
+    assert resp.status_code == 200
+
+    data_sql, *data_args = pool.fetch.call_args.args
+    assert "status = 'failed'" in data_sql
+    assert "AND NOT (" in data_sql
+    assert "EXISTS" in data_sql
+    assert "status = 'terminal_failed'" not in data_sql
+    assert "terminal_failed" not in data_args
+
+
 async def test_notifications_status_filter_still_binds_non_retried_values():
     from tests.api.conftest import build_notifications_app
 

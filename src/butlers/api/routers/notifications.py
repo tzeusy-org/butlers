@@ -135,10 +135,9 @@ def _empty_notification_stats(*, source_available: bool = True) -> ApiResponse[N
 
 # "retried" is not a stored status -- it's a failed notification that a later
 # sent notification (same session/channel/message) superseded. Shared between
-# the WHERE-clause filter and the SELECT effective_status CASE so a
-# "?status=retried" filter always matches what effective_status reports as
-# retried (bu-qvnce.2 -- the filter used to compare status = 'retried', which
-# can never match since the column never stores that value).
+# the WHERE-clause filters and the SELECT effective_status CASE so special
+# ``retried`` and ``terminal_failed`` filters match the computed lifecycle,
+# not an impossible stored status value.
 _RETRIED_EXISTS_SQL = (
     "session_id IS NOT NULL AND EXISTS ("
     "SELECT 1 FROM notifications n2 "
@@ -183,6 +182,8 @@ async def _query_notifications(
 
     if status == "retried":
         conditions.append(f"status = 'failed' AND {_RETRIED_EXISTS_SQL}")
+    elif status == "terminal_failed":
+        conditions.append(f"status = 'failed' AND NOT ({_RETRIED_EXISTS_SQL})")
     elif status is not None:
         conditions.append(f"status = ${idx}")
         args.append(status)
@@ -266,14 +267,19 @@ async def list_notifications(
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     butler: str | None = Query(None, description="Filter by source butler name"),
     channel: str | None = Query(None, description="Filter by delivery channel"),
-    status: str | None = Query(None, description="Filter by status (sent/failed/pending)"),
+    status: str | None = Query(
+        None,
+        description="Filter by status (sent/failed/pending/read/retried/terminal_failed)",
+    ),
     since: datetime | None = Query(None, description="Only notifications created after this time"),
     until: datetime | None = Query(None, description="Only notifications created before this time"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> NotificationListResponse:
     """Return paginated notification history from the Switchboard database.
 
-    Supports filtering by butler, channel, status, and date range.
+    Supports filtering by butler, channel, status, and date range. The
+    ``terminal_failed`` status excludes failed attempts that a later matching
+    delivery successfully retried.
     Results are ordered by ``created_at DESC`` (newest first).
     """
     pool = _get_switchboard_pool(db)
@@ -311,7 +317,10 @@ async def list_butler_notifications(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     channel: str | None = Query(None, description="Filter by delivery channel"),
-    status: str | None = Query(None, description="Filter by status (sent/failed/pending)"),
+    status: str | None = Query(
+        None,
+        description="Filter by status (sent/failed/pending/read/retried/terminal_failed)",
+    ),
     since: datetime | None = Query(None, description="Only notifications created after this time"),
     until: datetime | None = Query(None, description="Only notifications created before this time"),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -458,13 +467,13 @@ async def notification_stats(
             *window_args,
         )
 
-        # by_butler is scoped to FAILED notifications only (unlike by_channel
-        # above, which spans every status) -- it powers the notifications
-        # verdict opener's "M from <butler>" clause, which is only meaningful
-        # as a breakdown of the failures already being reported (bu-y0v0c).
+        # by_butler is scoped to terminal failures only (unlike by_channel
+        # above, which spans every status) so it remains a true breakdown of
+        # the ``failed`` count shown by the notifications verdict opener.
         butler_rows = await pool.fetch(
             f"SELECT source_butler, count(*) AS cnt FROM notifications "
-            f"WHERE status = 'failed'{window_and} GROUP BY source_butler",
+            f"WHERE status = 'failed'{window_and} "
+            f"AND NOT ({_RETRIED_EXISTS_SQL}) GROUP BY source_butler",
             *window_args,
         )
     except Exception as exc:

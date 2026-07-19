@@ -29,7 +29,7 @@
  *   usePendingApprovalsFlat() -- individual pending approvals for the inline
  *                                approve/deny/defer rows below (falls back to
  *                                the useApprovalMetrics aggregate row on error)
- *   useNotificationStats()  -- OperationsNowList notification pressure row
+ *   useNotificationStats({ since: now - 24h, until: now }) -- closed, time-bounded notification pressure row
  *   useQaSummary()          -- OperationsNowList QA state row
  *   useTimeline()           -- OperationsNowList recent activity rows
  *
@@ -52,9 +52,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlersBoard } from "@/hooks/use-butlers";
-import { useSpendSummary, useTopSessions, useDailySpend } from "@/hooks/use-spend";
+import {
+  useSpendSummary,
+  useTopSessions,
+  useDailySpend,
+} from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
-import { useApprovalMetrics, usePendingApprovalsFlat } from "@/hooks/use-approvals";
+import {
+  useApprovalMetrics,
+  usePendingApprovalsFlat,
+} from "@/hooks/use-approvals";
 import {
   useApprovalDecisionMutations,
   UNDO_WINDOW_MS,
@@ -62,6 +69,7 @@ import {
 } from "@/hooks/use-approval-decisions.ts";
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
+import { useTickingNow } from "@/hooks/use-ticking-now";
 import { useTimeline } from "@/hooks/use-timeline";
 import { useFleetHaltStatus } from "@/hooks/use-fleet-halt";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
@@ -70,7 +78,10 @@ import CostWidget from "@/components/costs/CostWidget";
 import TopSessionsTable from "@/components/costs/TopSessionsTable";
 
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
-import { AttentionList, type AttentionListItem } from "@/components/overview/AttentionList";
+import {
+  AttentionList,
+  type AttentionListItem,
+} from "@/components/overview/AttentionList";
 import { BriefingStatus } from "@/components/overview/BriefingStatus";
 import { ButlerIndex } from "@/components/overview/ButlerIndex";
 import { DateEyebrow } from "@/components/overview/DateEyebrow";
@@ -115,12 +126,29 @@ export default function DashboardPage() {
   // /approvals' keyboard triage uses (bu-qvnce.4) -- a decision made from the
   // dashboard's one-click attention list is just as undoable as one made on
   // the full Trust Console, instead of firing irreversibly on click.
-  const { approveMut, denyMut, deferMut, scheduledDecisions, scheduleDecision, cancelDecision } =
-    useApprovalDecisionMutations({ undoWindow: true });
+  const {
+    approveMut,
+    denyMut,
+    deferMut,
+    scheduledDecisions,
+    scheduleDecision,
+    cancelDecision,
+  } = useApprovalDecisionMutations({ undoWindow: true });
   const approve = approveMut.mutate;
   const deny = denyMut.mutate;
   const defer = deferMut.mutate;
-  const notificationStatsQuery = useNotificationStats();
+  // The dashboard's notification count is operational pressure, not an
+  // all-time incident ledger. Recompute the boundary on a modest wall-clock
+  // tick so a stale failure ages out without waiting for another page event.
+  const overviewNowMs = useTickingNow(60_000);
+  const notificationSince = new Date(
+    overviewNowMs - 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const notificationUntil = new Date(overviewNowMs).toISOString();
+  const notificationStatsQuery = useNotificationStats({
+    since: notificationSince,
+    until: notificationUntil,
+  });
   const qaSummaryQuery = useQaSummary();
   const timelineQuery = useTimeline({ limit: 5 });
   // Monthly spend-ceiling fleet-halt state (bu-7o89u.3): the drawer itself
@@ -145,27 +173,36 @@ export default function DashboardPage() {
   const timeline = timelineQuery.data?.data;
   const model = useMemo(
     () =>
-      deriveOverviewTriageModel({
-        boardRows: boardQuery.isError ? [] : (boardData?.rows ?? []),
-        butlersError: boardQuery.isError,
-        issues: issuesQuery.isError ? [] : (issuesData ?? []),
-        issuesError: issuesQuery.isError,
-        approvalMetrics: approvalMetricsQuery.isError ? null : approvalMetrics,
-        approvals: pendingApprovalsQuery.isError ? null : approvals,
-        notificationStats: notificationStatsQuery.isError ? null : notificationStats,
-        notificationStatsError: notificationStatsQuery.isError,
-        qaSummary: qaSummaryQuery.isError ? null : qaSummary,
-        qaSummaryError: qaSummaryQuery.isError,
-        timeline: timelineQuery.isError ? [] : (timeline ?? []),
-        timelineError: timelineQuery.isError,
-        fleetHalt: {
-          active: fleetHalt.active,
-          deniedToday: fleetHalt.deniedToday,
-          deniedTotal: fleetHalt.deniedTotal,
-          since: fleetHalt.since,
-          isSourceError: fleetHalt.isError,
+      deriveOverviewTriageModel(
+        {
+          boardRows: boardQuery.isError ? [] : (boardData?.rows ?? []),
+          butlersError: boardQuery.isError,
+          issues: issuesQuery.isError ? [] : (issuesData ?? []),
+          issuesError: issuesQuery.isError,
+          approvalMetrics: approvalMetricsQuery.isError
+            ? null
+            : approvalMetrics,
+          approvals: pendingApprovalsQuery.isError ? null : approvals,
+          notificationStats: notificationStatsQuery.isError
+            ? null
+            : notificationStats,
+          notificationSince,
+          notificationUntil,
+          notificationStatsError: notificationStatsQuery.isError,
+          qaSummary: qaSummaryQuery.isError ? null : qaSummary,
+          qaSummaryError: qaSummaryQuery.isError,
+          timeline: timelineQuery.isError ? [] : (timeline ?? []),
+          timelineError: timelineQuery.isError,
+          fleetHalt: {
+            active: fleetHalt.active,
+            deniedToday: fleetHalt.deniedToday,
+            deniedTotal: fleetHalt.deniedTotal,
+            since: fleetHalt.since,
+            isSourceError: fleetHalt.isError,
+          },
         },
-      }),
+        { now: new Date(overviewNowMs) },
+      ),
     [
       approvals,
       approvalMetrics,
@@ -181,6 +218,9 @@ export default function DashboardPage() {
       issuesQuery.isError,
       notificationStats,
       notificationStatsQuery.isError,
+      notificationSince,
+      notificationUntil,
+      overviewNowMs,
       pendingApprovalsQuery.isError,
       qaSummary,
       qaSummaryQuery.isError,
@@ -197,10 +237,15 @@ export default function DashboardPage() {
   // distinct surface from the per-butler subtitles in ButlerIndex, so no
   // aggregate cost figure is double-rendered.
   const costData = costQuery.isError ? null : costQuery.data?.data;
-  const [topButler, topButlerCost] = Object.entries(costData?.by_butler ?? {}).reduce<
-    [string | null, number]
-  >((best, [name, cost]) => (cost > best[1] ? [name, cost] : best), [null, 0]);
-  const topSessions = topSessionsQuery.isError ? [] : (topSessionsQuery.data?.data ?? []);
+  const [topButler, topButlerCost] = Object.entries(
+    costData?.by_butler ?? {},
+  ).reduce<[string | null, number]>(
+    (best, [name, cost]) => (cost > best[1] ? [name, cost] : best),
+    [null, 0],
+  );
+  const topSessions = topSessionsQuery.isError
+    ? []
+    : (topSessionsQuery.data?.data ?? []);
 
   // Wire live approve/deny/defer handlers onto the individually-actionable
   // approval rows model.ts produced (rows carrying `approvalId`) -- the
@@ -223,10 +268,14 @@ export default function DashboardPage() {
     [deny, scheduleDecision],
   );
   const deferAttention = useCallback(
-    (id: string) => scheduleDecision(id, "defer", () => defer({ id, hours: 24 })),
+    (id: string) =>
+      scheduleDecision(id, "defer", () => defer({ id, hours: 24 })),
     [defer, scheduleDecision],
   );
-  const undoAttentionDecision = useCallback((id: string) => cancelDecision(id), [cancelDecision]);
+  const undoAttentionDecision = useCallback(
+    (id: string) => cancelDecision(id),
+    [cancelDecision],
+  );
 
   const attentionRows: AttentionListItem[] = useMemo(
     () =>
@@ -273,18 +322,44 @@ export default function DashboardPage() {
   // ephemeral component state, not URL-backed -- unlike /approvals there is
   // no per-row URL here to select via routing, and this list is a "what
   // needs a look" preview rather than the full triage queue.
-  const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
-  const attentionIds = useMemo(() => attentionRows.map((row) => row.id), [attentionRows]);
+  const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(
+    null,
+  );
+  const attentionIds = useMemo(
+    () => attentionRows.map((row) => row.id),
+    [attentionRows],
+  );
   const attentionVerbs = useMemo<ListTriageVerb[]>(() => {
     const row = attentionRows.find((r) => r.id === selectedAttentionId);
     if (!row) return [];
     if (row.onUndoDecision) {
-      return [{ key: "u", description: "Undo scheduled decision", handler: row.onUndoDecision }];
+      return [
+        {
+          key: "u",
+          description: "Undo scheduled decision",
+          handler: row.onUndoDecision,
+        },
+      ];
     }
     const verbs: ListTriageVerb[] = [];
-    if (row.onApprove) verbs.push({ key: "a", description: "Approve selected", handler: row.onApprove });
-    if (row.onDeny) verbs.push({ key: "d", description: "Deny selected", handler: row.onDeny });
-    if (row.onDefer) verbs.push({ key: "x", description: "Defer selected", handler: row.onDefer });
+    if (row.onApprove)
+      verbs.push({
+        key: "a",
+        description: "Approve selected",
+        handler: row.onApprove,
+      });
+    if (row.onDeny)
+      verbs.push({
+        key: "d",
+        description: "Deny selected",
+        handler: row.onDeny,
+      });
+    if (row.onDefer)
+      verbs.push({
+        key: "x",
+        description: "Defer selected",
+        handler: row.onDefer,
+      });
     return verbs;
   }, [attentionRows, selectedAttentionId]);
   const { hints: attentionHints } = useListTriage({
@@ -299,7 +374,9 @@ export default function DashboardPage() {
   // focus-visible ring visibly tracks j/k roving focus.
   useEffect(() => {
     if (!selectedAttentionId) return;
-    const nodes = document.querySelectorAll<HTMLElement>('[data-testid="attention-item"]');
+    const nodes = document.querySelectorAll<HTMLElement>(
+      '[data-testid="attention-item"]',
+    );
     for (const node of nodes) {
       if (node.getAttribute("data-item-id") === selectedAttentionId) {
         node.focus({ preventScroll: true });
@@ -330,9 +407,7 @@ export default function DashboardPage() {
        * The lg breakpoint aligns with the sidebar transition so the combined
        * content width stays within the 1280px Page frame.
        */}
-      <div
-        className="grid gap-8 items-start lg:gap-14 lg:grid-cols-[1.4fr_1fr]"
-      >
+      <div className="grid gap-8 items-start lg:gap-14 lg:grid-cols-[1.4fr_1fr]">
         {/* Left column: narrative */}
         <div
           style={{ display: "flex", flexDirection: "column", gap: "28px" }}
@@ -346,7 +421,9 @@ export default function DashboardPage() {
                 generatedAt={briefing?.generated_at}
                 isFetching={briefingFetching}
                 isError={briefingError}
-                onRefetch={() => { void refetchBriefing(); }}
+                onRefetch={() => {
+                  void refetchBriefing();
+                }}
               />
             }
           />
@@ -358,7 +435,10 @@ export default function DashboardPage() {
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
           <Section eyebrow="Needs attention">
-            <AttentionList items={attentionRows} selectedId={selectedAttentionId} />
+            <AttentionList
+              items={attentionRows}
+              selectedId={selectedAttentionId}
+            />
             {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
                 EXACT j/k/a/d/x/u bindings useListTriage just registered. */}
             <ListTriageFooterHint bindings={attentionHints} />
@@ -368,7 +448,9 @@ export default function DashboardPage() {
             kpis={model.kpis}
             isLoading={boardQuery.isLoading}
             isError={model.butlersError}
-            pendingApprovalsAvailable={!approvalMetricsQuery.isError && approvalMetricsQuery.data != null}
+            pendingApprovalsAvailable={
+              !approvalMetricsQuery.isError && approvalMetricsQuery.data != null
+            }
           />
         </div>
 
@@ -377,7 +459,10 @@ export default function DashboardPage() {
           style={{ display: "flex", flexDirection: "column", gap: "32px" }}
           aria-label="Operations and now"
         >
-          <ButlerIndex butlers={model.operationsRows} butlersError={model.butlersError} />
+          <ButlerIndex
+            butlers={model.operationsRows}
+            butlersError={model.butlersError}
+          />
           <OperationsNowList rows={model.nowRows} />
         </div>
       </div>
@@ -389,7 +474,12 @@ export default function DashboardPage() {
        * the most-expensive-sessions table.
        */}
       <div
-        style={{ marginTop: "40px", display: "flex", flexDirection: "column", gap: "24px" }}
+        style={{
+          marginTop: "40px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "24px",
+        }}
         aria-label="Cost"
       >
         <div className="grid items-start gap-6 lg:grid-cols-2">
@@ -398,11 +488,16 @@ export default function DashboardPage() {
             topButler={topButler}
             topButlerCost={topButlerCost}
             isLoading={costQuery.isLoading}
-            dailyCosts={dailySpendQuery.isError ? undefined : dailySpendQuery.data?.data}
+            dailyCosts={
+              dailySpendQuery.isError ? undefined : dailySpendQuery.data?.data
+            }
             dailyCostsError={dailySpendQuery.isError}
           />
         </div>
-        <TopSessionsTable sessions={topSessions} isLoading={topSessionsQuery.isLoading} />
+        <TopSessionsTable
+          sessions={topSessions}
+          isLoading={topSessionsQuery.isLoading}
+        />
       </div>
     </Page>
   );

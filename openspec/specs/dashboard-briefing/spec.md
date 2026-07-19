@@ -28,7 +28,13 @@ The endpoint `GET /api/dashboard/briefing` SHALL return a JSON object with exact
 
 ### Requirement: Attention Item Sources
 
-The endpoint SHALL populate `state.attention_items` from five sources before classification: butler liveness, grouped error entries from the `dashboard_audit_log` table, pending approvals, failed notifications, and QA state. Each source is fetched independently and concurrently; a failure in one source MUST NOT prevent the others from contributing.
+The endpoint SHALL populate `state.attention_items` from five sources before classification:
+butler liveness, grouped error entries from the `dashboard_audit_log` table, pending
+approvals, failed notifications, and QA state. An attention item SHALL represent either a
+live state or a time-bounded recent failure; historical aggregates SHALL remain outside
+`state.attention_items` and SHALL NOT affect briefing classification, headline, or
+elaboration. Each source is fetched independently and concurrently; a failure in one
+source MUST NOT prevent the others from contributing.
 
 #### Scenario: Board-derived attention items (butler liveness)
 
@@ -44,13 +50,23 @@ The endpoint SHALL populate `state.attention_items` from five sources before cla
 
 #### Scenario: Audit-derived attention items
 
-- **WHEN** the `dashboard_audit_log` table contains error-result rows within the last 7 days
-- **THEN** those errors are grouped by their first-line error summary and appended to `state.attention_items`
-- **AND** a grouped entry receives `severity = "high"` when **any** row in the group originated from a scheduled session (`trigger_source` starts with `"schedule:"`)
-- **AND** a grouped entry receives `severity = "medium"` when none of the rows in the group were schedule-triggered
+- **WHEN** a grouped `dashboard_audit_log` error has a parseable `last_seen_at` in the
+  closed interval `[now - 12 hours, now]`
+- **THEN** it is appended to `state.attention_items` using its first-line error summary
+- **AND** it receives `severity = "high"` when any row in the group originated from a
+  scheduled session (`trigger_source` starts with `"schedule:"`)
+- **AND** it receives `severity = "medium"` when none of the rows in the group were
+  schedule-triggered
 - **AND** `source` is `"audit_log"`
+- **WHEN** a grouped audit error was last seen more than 12 hours ago, or lacks a
+  parseable `last_seen_at`
+- **THEN** it is historical context and SHALL NOT be appended to
+  `state.attention_items`
 
-This means a recurring scheduled-task failure raises `state_class` to `"urgent"` even if no other source is reporting anything; this is intentional. Ad-hoc errors that do not originate from a schedule are surfaced as `"medium"` so they contribute to `"busy"` or `"mild"` without forcing `"urgent"`.
+This means a recurring scheduled-task failure raises `state_class` to `"urgent"` only
+while it is within the current operational horizon. Ad-hoc errors that do not originate
+from a schedule are surfaced as `"medium"` while current, so they contribute to
+`"busy"` or `"mild"` without forcing `"urgent"`.
 
 #### Scenario: Approvals-derived attention item
 
@@ -60,26 +76,45 @@ This means a recurring scheduled-task failure raises `state_class` to `"urgent"`
 
 #### Scenario: Notification-derived attention item
 
-- **WHEN** `GET /api/notifications/stats`'s all-time `failed` count is greater than zero
-- **THEN** a single attention item is added with `severity = "medium"` naming the failed count
+- **WHEN** briefing composition requests `GET /api/notifications/stats` with
+  `since = now - 24 hours` and `until = now`, captured once for the composition, and that
+  bounded response has `failed` greater than zero
+- **THEN** a single attention item is added with `severity = "medium"` naming the failed
+  count in the last 24 hours
 - **AND** `source` is `"notification"`
+- **WHEN** the same bounded response has `failed = 0` while an all-time notification
+  total is greater than zero
+- **THEN** no notification attention item is added
 
-This replaces every SENT notification counting individually toward attention; only failed deliveries are a genuine attention-worthy signal, matching the Overview page's `useNotificationStats()`-derived attention row.
+Only recent failed deliveries are a genuine attention-worthy signal. Lifetime delivery
+totals remain available on the Notifications page and SHALL NOT affect briefing state.
 
 #### Scenario: QA-derived attention item
 
 - **WHEN** `GET /api/qa/summary`'s circuit breaker (computed from `public.healing_attempts` the same way `qa.py`'s `/api/qa/circuit-breaker` and dispatch-admission gate do) is tripped
-- **THEN** a single attention item is added with `severity = "high"` and `source = "qa"` naming the tripped breaker and its consecutive-failure count, and no further QA checks are considered -- checked BEFORE the failed-patrol check below (a tripped breaker means QA has stopped dispatching entirely, a more severe state than one failed patrol run, matching the `dashboard-overview` spec's "A tripped QA circuit breaker surfaces as an attention row" precedence)
-- **WHEN** the breaker is not tripped, and the most recent non-running QA patrol has `status = "failed"` or a non-null `error_detail`
-- **THEN** a single attention item is added with `severity = "high"` and `source = "qa"`, and no further QA checks are considered
-- **WHEN** neither of the above is true, and one or more QA investigations were dispatched in the last 24 hours
-- **THEN** a single attention item is added with `severity = "medium"` and `source = "qa"` naming the dispatched count
-- **WHEN** none of the above is true, and one or more novel QA findings occurred in the last 24 hours
-- **THEN** a single attention item is added with `severity = "medium"` and `source = "qa"` naming the novel-finding count
+- **THEN** a single attention item is added with `severity = "high"` and `source =
+  "qa"` naming the tripped breaker and its consecutive-failure count
+- **AND** no further QA checks are considered because a tripped breaker means the QA
+  staffer has stopped dispatching entirely
+- **WHEN** the breaker is not tripped, and the most recent non-running QA patrol failed
+  or has non-null `error_detail` in the closed interval `[now - 24 hours, now]`
+- **THEN** a single attention item is added with `severity = "high"` and `source =
+  "qa"`, and no further QA checks are considered
+- **WHEN** neither higher-precedence state applies and
+  `GET /api/qa/summary` reports `kpis.active_cases_now` greater than zero
+- **THEN** a single attention item is added with `severity = "medium"` and `source =
+  "qa"` naming the active investigation count
+- **WHEN** neither higher-precedence state applies and only
+  `stats_24h.dispatched_investigations` or `stats_24h.novel_findings` is greater than
+  zero
+- **THEN** no QA attention item is added because completed dispatches and findings are
+  time-bounded activity rather than active failure state
 - **WHEN** the QA tables are not provisioned on this deployment (undefined relation)
 - **THEN** QA is treated as legitimately absent, contributing no attention item and no degraded source
 - **WHEN** the `public.qa_patrols` query succeeds but the circuit-breaker query against `public.healing_attempts` fails for a reason other than the table being un-provisioned
-- **THEN** the QA source is recorded in `state.degraded_sources`, but the patrol-derived signal (failed patrol / dispatched / novel findings) already fetched still contributes normally -- one query's failure does not discard another query's successful result
+- **THEN** the QA source is recorded in `state.degraded_sources`, but the patrol-derived
+  signal already fetched still contributes normally -- one query's failure does not
+  discard another query's successful result
 
 #### Scenario: Attention item source fetch failure
 
@@ -230,6 +265,17 @@ The endpoint SHALL cache the Briefing per owner contact for 5 minutes.
 - **AND** the cache is repopulated
 - **AND** `generated_at` reflects the new generation time
 
+#### Scenario: Successful QA breaker reset invalidates cached briefings
+
+- **WHEN** `POST /api/qa/circuit-breaker/reset` successfully commits its reset marker
+- **THEN** the in-process briefing cache is invalidated before the route returns success
+- **AND** the next owner briefing request composes current state without waiting for the
+  five-minute TTL
+- **AND** a briefing composition that began before the reset cannot repopulate the cache
+  after that invalidation, even if its own response completes later
+- **WHEN** the reset request finds no tripped breaker or the reset marker write fails
+- **THEN** cached briefings remain intact
+
 ### Requirement: Owner-Only Access
 
 The endpoint SHALL be accessible only to the owner contact.
@@ -265,4 +311,3 @@ The endpoint SHALL never raise to the caller. Failures internal to the briefing 
 - **AND** an internal error metric is emitted
 
 A classifier exception is itself a swallowed failure and must not compose `"quiet"` any more than a swallowed source-fetch failure may.
-

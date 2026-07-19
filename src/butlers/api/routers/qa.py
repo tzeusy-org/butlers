@@ -54,6 +54,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     MCPClientManager,
@@ -3324,6 +3325,7 @@ async def get_circuit_breaker_status(
 @router.post("/circuit-breaker/reset", response_model=ApiResponse[CircuitBreakerResetResponse])
 async def reset_circuit_breaker(
     db: DatabaseManager = Depends(_get_db_manager),
+    cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[CircuitBreakerResetResponse]:
     """Reset the QA circuit breaker by recording an auditable reset marker.
 
@@ -3362,6 +3364,11 @@ async def reset_circuit_breaker(
         """,
         "Manual reset via QA dashboard",
     )
+
+    # The cached briefing can otherwise retain the pre-reset urgent verdict for
+    # up to its full TTL. The cache is single-process and owner-scoped, but
+    # this route has no owner identity beyond the singleton dashboard context.
+    cache.invalidate_all()
 
     logger.info("QA circuit breaker reset via dashboard (breaker_resets recorded)")
 

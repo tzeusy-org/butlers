@@ -402,6 +402,7 @@ export interface NotificationParams {
   limit?: number;
   butler?: string;
   channel?: string;
+  /** Stored status plus computed `retried` or terminal `terminal_failed`. */
   status?: string;
   since?: string;
   until?: string;

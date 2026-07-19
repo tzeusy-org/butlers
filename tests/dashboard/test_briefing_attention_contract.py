@@ -14,8 +14,8 @@ them drift apart fails a test, not a support ticket.
 Fixture format: each named scenario in
 ``frontend/src/components/overview/__fixtures__/attention-contract-scenarios.json``
 describes ONE raw dashboard-state fixture (board rows, approvals pending
-count, failed-notification count + source availability, QA state). This test
-feeds that SAME fixture through the real backend composition pipeline
+count, bounded failed-notification count + source availability, an optional
+historical audit group, and QA state). This test feeds that SAME fixture through the real backend composition pipeline
 (``_map_board_rows`` for board rows, then ``_fetch_dashboard_state`` for the
 full five-source composition, then ``classify``) and asserts
 ``state_class == expect.backend_state_class``.
@@ -79,15 +79,24 @@ def _board_row(name: str, activity: str) -> SimpleNamespace:
     )
 
 
-def _make_pool() -> AsyncMock:
-    """A switchboard pool that answers the owner-assertion/audit queries
-    with empty results -- this contract intentionally excludes the
-    audit-derived source (already covered by TestAuditDerivedAttentionItems
-    in test_briefing.py); every scenario here supplies zero audit rows.
+def _make_pool(scenario: dict) -> AsyncMock:
+    """Build the audit source for one shared scenario.
+
+    The historical-audit scenario returns its raw group only when the query
+    does *not* contain the selected 12-hour cutoff.  That makes this shared
+    contract catch a backend regression back to a wider/all-time window,
+    instead of merely hard-coding an already-filtered empty result.
     """
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetch = AsyncMock(return_value=[])
+
+    async def _fetch(sql: str, *args):
+        historical = scenario.get("historical_audit_group")
+        if historical is not None and "INTERVAL '12 hours'" not in sql:
+            return [historical]
+        return []
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
     pool.fetchval = AsyncMock(return_value=0)
     return pool
 
@@ -110,7 +119,7 @@ async def _classify_scenario(scenario: dict) -> str:
     qa = (scenario["qa"], False)
 
     now = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
-    pool = _make_pool()
+    pool = _make_pool(scenario)
 
     with (
         patch(

@@ -85,18 +85,25 @@ consumes it.
 
 ### Requirement: Needs Attention List
 
-The home page SHALL render a `Needs attention` list composed from several
-sources: `GET /api/issues`, the canonical butler liveness verdict, pending
-approvals, notification delivery pressure, and QA staffer state. The list is
-a rule-separated attention surface, not a card grid or table.
+The home page SHALL render a `Needs attention` list composed from current state from
+`GET /api/issues`, the canonical butler liveness verdict, pending approvals, bounded
+notification delivery pressure, and active QA staffer state. A row SHALL represent either
+live state or a time-bounded recent failure; older issue and notification records remain
+available as history and SHALL NOT make the list or briefing imply that the system is
+currently unhealthy. The list is a rule-separated attention surface, not a card grid or
+table.
 
-#### Scenario: Attention rows are derived from active issues
+#### Scenario: Attention rows are derived from current issues
 
-- **WHEN** `GET /api/issues` returns one or more `Issue` objects
-- **THEN** each row shows severity mark, issue description, butler/source detail,
+- **WHEN** `GET /api/issues` returns one or more `Issue` objects whose parseable
+  `last_seen_at` falls in the closed interval `[now - 12 hours, now]`
+- **THEN** each current row shows severity mark, issue description, butler/source detail,
   optional error context, and a link when `link` is present
-- **AND** within a severity tier, older unresolved issues sort before newer
-  issues when `first_seen_at` exists
+- **AND** within a severity tier, older unresolved current issues sort before newer issues
+  when `first_seen_at` exists
+- **WHEN** an issue has `last_seen_at` older than 12 hours or no parseable `last_seen_at`
+- **THEN** it SHALL NOT render as a current attention row
+- **AND** it remains eligible for the older-history rollup
 
 #### Scenario: Attention rows are severity-first and stable across kinds
 
@@ -127,6 +134,31 @@ a rule-separated attention surface, not a card grid or table.
 - **AND** this row takes precedence over a same-summary "last patrol failed"
   row (a tripped breaker means the QA staffer has stopped dispatching
   entirely, a more severe state than one failed patrol run)
+
+#### Scenario: Active QA investigations surface as attention
+
+- **WHEN** no QA breaker or recent failed patrol has higher precedence and
+  `GET /api/qa/summary` reports `kpis.active_cases_now` greater than zero
+- **THEN** the attention list renders a medium-severity row naming the active QA
+  investigation count and linking to `/qa`
+- **WHEN** only `stats_24h.dispatched_investigations` or `stats_24h.novel_findings` is
+  greater than zero
+- **THEN** the list does not render a QA attention row solely for that completed activity
+
+#### Scenario: Notification pressure is time-bounded
+
+- **WHEN** the Overview requests `GET /api/notifications/stats` with
+  `since = now - 24 hours` and `until = now`, captured once for the render, and the
+  bounded response has `failed` greater than zero
+- **THEN** the list renders a medium-severity notification row naming the failed count in
+  the last 24 hours
+- **AND** its link preserves the `terminal_failed` status filter and both boundaries of
+  that same closed interval, so it resolves the exact terminal-failure set counted by
+  `NotificationStats.failed` rather than including attempts later superseded by a retry
+- **AND** the Notifications destination renders that exact boundary in its visible local
+  date-time filter rather than silently applying an undisclosed filter
+- **WHEN** the bounded response has `failed = 0` while all-time failures exist
+- **THEN** the list renders no normal notification-pressure row
 
 #### Scenario: An unreachable notifications source surfaces as a degraded row
 
@@ -163,11 +195,13 @@ a rule-separated attention surface, not a card grid or table.
   (`dashboard-briefing` spec's Degraded class scenario) -- bu-gcz9e.2's
   cross-surface consistency test pins this bound from a shared fixture
 
-#### Scenario: Stale issues are summarized
+#### Scenario: Historical issues are summarized
 
-- **WHEN** an unresolved issue has `first_seen_at` older than 24 hours
-- **THEN** the row detail exposes that it is old/stale using a human-readable age
-  calculated relative to the owner's configured timezone
+- **WHEN** an unresolved issue's `last_seen_at` is older than 12 hours or is not
+  parseable
+- **THEN** the row is represented only by older-history detail or an aggregate rollup
+- **AND** its age is calculated from `last_seen_at` relative to the owner's configured
+  timezone
 - **AND** repeated old issues with the same `type` and `description` MAY collapse
   into one summarized row when `occurrences` or `butlers` indicates multiplicity
 - **AND** the summary MUST name the affected butlers with human-readable names,
@@ -178,7 +212,7 @@ a rule-separated attention surface, not a card grid or table.
 - **WHEN** issues are loading
 - **THEN** the list renders stable loading rows or an equivalent skeleton
 
-- **WHEN** `GET /api/issues` succeeds with an empty array
+- **WHEN** all loaded sources report no current attention rows
 - **THEN** the list renders the serif Voice empty state `Nothing waiting.`
 - **AND** it does not render an empty table, blank card, or celebratory graphic
 
@@ -258,18 +292,21 @@ active domain butlers. The section is a scan list, not a chart.
 
 ### Requirement: Now List
 
-The home page SHALL render a right-column `Now` section for immediate
-operational items. In the first implementation this section is sourced from
-existing endpoints and does not require a new endpoint.
+The home page SHALL render a right-column `Now` section for immediate operational items.
+In the first implementation this section is sourced from existing endpoints and does not
+require a new endpoint. `Now` MAY show time-bounded completed activity, but that activity
+SHALL NOT be treated as an active `Needs attention` signal or a briefing-classification
+input.
 
 The acceptable first-source set is:
 
 - `GET /api/approvals/metrics` for pending approval count;
-- `GET /api/qa/summary` for QA patrol, finding, and dispatched-investigation
-  pressure;
+- `GET /api/qa/summary` for active QA cases and time-bounded patrol/finding/dispatch
+  activity;
 - `GET /api/qa/investigations` when the row needs active investigation or PR
   detail beyond the summary counts;
-- `GET /api/notifications/stats` for failed notification pressure;
+- `GET /api/notifications/stats` with the closed 24-hour `since` and `until` boundaries
+  for failed notification pressure;
 - `GET /api/timeline` for recent activity, or `GET /api/sessions` when the
   implementation only needs recent completed sessions.
 
@@ -279,20 +316,27 @@ The acceptable first-source set is:
 - **THEN** `Now` renders one immediate item naming the pending approval count
 - **AND** the item is labelled as an approval item
 
-#### Scenario: QA pressure appears in Now
+#### Scenario: QA state and activity appear in Now
 
-- **WHEN** `GET /api/qa/summary` reports novel findings, dispatched
-  investigations, an active patrol failure, or another current QA alert
-- **THEN** `Now` renders an immediate item naming the QA state in human-readable
-  terms
+- **WHEN** `GET /api/qa/summary` reports an active QA case, a recent patrol failure, or
+  another current QA alert
+- **THEN** `Now` renders an immediate item naming the QA state in human-readable terms
 - **AND** if active investigation or PR detail is needed, the page MAY read
   `GET /api/qa/investigations` instead of introducing a new endpoint
+- **WHEN** only `stats_24h.dispatched_investigations` or `stats_24h.novel_findings` is
+  greater than zero
+- **THEN** `Now` MAY render a compact activity item that names the count and its
+  `last 24 hours` boundary
+- **AND** it SHALL NOT label that completed activity as active follow-up work or failure
 
 #### Scenario: Failed notification pressure appears in Now
 
-- **WHEN** `GET /api/notifications/stats` returns `failed` greater than zero
-- **THEN** `Now` renders an immediate item naming the failed notification count
-- **AND** the item is labelled as a notification item
+- **WHEN** `GET /api/notifications/stats?since=<now-24h>&until=<now>` returns `failed`
+  greater than zero
+- **THEN** `Now` renders an immediate item naming the failed notification count in the
+  last 24 hours
+- **AND** the item is labelled as a notification item and links to the same
+  `terminal_failed` window predicate
 
 #### Scenario: Recent activity appears in Now
 

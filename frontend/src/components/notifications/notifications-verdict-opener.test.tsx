@@ -36,10 +36,20 @@ function stats(overrides: Partial<NotificationStats> = {}): NotificationStats {
   };
 }
 
+const VERDICT_WINDOW = {
+  since: "2026-07-18T00:37:00.000Z",
+  until: "2026-07-19T00:37:00.000Z",
+};
+
 describe("NotificationsVerdictOpener -- all clear", () => {
   it("renders the calm line when nothing failed", () => {
     const html = render(
-      <NotificationsVerdictOpener stats={stats()} isLoading={false} isError={false} />,
+      <NotificationsVerdictOpener
+        stats={stats()}
+        isLoading={false}
+        isError={false}
+        {...VERDICT_WINDOW}
+      />,
     );
     expect(html).toContain('data-testid="notifications-verdict-all-clear"');
     expect(html).toContain(
@@ -53,6 +63,7 @@ describe("NotificationsVerdictOpener -- all clear", () => {
         stats={stats({ sent: 42 })}
         isLoading={false}
         isError={false}
+        {...VERDICT_WINDOW}
       />,
     );
     expect(html).toContain("(42 sent).");
@@ -66,15 +77,20 @@ describe("NotificationsVerdictOpener -- clauses", () => {
         stats={stats({ failed: 5, by_butler: { finance: 3, chronicler: 2 } })}
         isLoading={false}
         isError={false}
+        {...VERDICT_WINDOW}
       />,
     );
     expect(html).toContain('data-testid="notifications-verdict-clauses"');
     expect(html).toContain(
       `5 failed notifications in the last ${NOTIFICATIONS_VERDICT_WINDOW_HOURS}h`,
     );
-    expect(html).toContain('href="/notifications?status=failed"');
+    expect(html).toContain(
+      'href="/notifications?status=terminal_failed&amp;since=2026-07-18T00%3A37%3A00.000Z&amp;until=2026-07-19T00%3A37%3A00.000Z"',
+    );
     expect(html).toContain("3 from finance");
-    expect(html).toContain('href="/notifications?status=failed&amp;butler=finance"');
+    expect(html).toContain(
+      'href="/notifications?status=terminal_failed&amp;since=2026-07-18T00%3A37%3A00.000Z&amp;until=2026-07-19T00%3A37%3A00.000Z&amp;butler=finance"',
+    );
   });
 
   it("pluralizes correctly for a single failure", () => {
@@ -83,6 +99,7 @@ describe("NotificationsVerdictOpener -- clauses", () => {
         stats={stats({ failed: 1, by_butler: { finance: 1 } })}
         isLoading={false}
         isError={false}
+        {...VERDICT_WINDOW}
       />,
     );
     expect(html).toContain(
@@ -96,6 +113,7 @@ describe("NotificationsVerdictOpener -- clauses", () => {
         stats={stats({ failed: 2, by_butler: {} })}
         isLoading={false}
         isError={false}
+        {...VERDICT_WINDOW}
       />,
     );
     expect(html).toContain("2 failed notifications");
@@ -106,14 +124,24 @@ describe("NotificationsVerdictOpener -- clauses", () => {
 describe("NotificationsVerdictOpener -- isError-suppression contract", () => {
   it("renders the skeleton while loading", () => {
     const html = render(
-      <NotificationsVerdictOpener stats={undefined} isLoading isError={false} />,
+      <NotificationsVerdictOpener
+        stats={undefined}
+        isLoading
+        isError={false}
+        {...VERDICT_WINDOW}
+      />,
     );
     expect(html).toContain('data-testid="notifications-verdict-skeleton"');
   });
 
   it("names the errored source and never renders the all-clear alongside it", () => {
     const html = render(
-      <NotificationsVerdictOpener stats={undefined} isLoading={false} isError />,
+      <NotificationsVerdictOpener
+        stats={undefined}
+        isLoading={false}
+        isError
+        {...VERDICT_WINDOW}
+      />,
     );
     expect(html).toContain('data-testid="notifications-verdict-clauses"');
     expect(html).toContain("notification stats unavailable");
@@ -126,6 +154,7 @@ describe("NotificationsVerdictOpener -- isError-suppression contract", () => {
         stats={stats({ source_available: false })}
         isLoading={false}
         isError={false}
+        {...VERDICT_WINDOW}
       />,
     );
     expect(html).toContain('data-testid="notifications-verdict-clauses"');

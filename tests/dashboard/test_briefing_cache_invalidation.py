@@ -24,10 +24,10 @@ import httpx
 import pytest
 
 from butlers.api.app import create_app
-from butlers.api.briefing.cache import BriefingCache
+from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.notifications import _get_db_manager as _notif_get_db
-from butlers.api.routers.notifications import get_cache
+from butlers.api.routers.qa import _get_db_manager as _qa_get_db
 
 pytestmark = pytest.mark.unit
 
@@ -65,6 +65,22 @@ class TestBriefingCacheInvalidateAll:
         result = cache.get("owner-a")
         assert result is not None
         assert result["state_class"] == "urgent"
+
+    def test_invalidate_all_rejects_an_inflight_pre_invalidation_cache_fill(self):
+        """A fill that began before invalidation cannot restore stale state."""
+        cache = BriefingCache(ttl_seconds=300)
+        generation = cache.capture_generation()
+
+        cache.invalidate_all()
+
+        cached = cache.set_if_generation(
+            "owner-a",
+            {"state_class": "urgent"},
+            generation=generation,
+        )
+
+        assert cached is False
+        assert cache.get("owner-a") is None
 
 
 # ---------------------------------------------------------------------------
@@ -247,3 +263,75 @@ class TestAuditMiddlewareInvalidatesOnError:
         assert resp.status_code == 200
         # Cache must NOT be cleared for a successful response.
         assert cache.get(owner_id) is not None
+
+
+# ---------------------------------------------------------------------------
+# (c) QA circuit-breaker reset — successful reset invalidates cached briefing
+# ---------------------------------------------------------------------------
+
+
+class TestQaCircuitBreakerResetInvalidatesBriefingCache:
+    def _make_app(self, pool: AsyncMock, cache: BriefingCache) -> object:
+        app = create_app(api_key="")
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = pool
+        app.dependency_overrides[_qa_get_db] = lambda: mock_db
+        app.dependency_overrides[get_cache] = lambda: cache
+        return app
+
+    async def test_successful_reset_invalidates_cached_briefings(self):
+        """A committed reset must make the next briefing recompute immediately."""
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[{"status": "failed"} for _ in range(5)])
+        pool.execute = AsyncMock()
+
+        cache = BriefingCache(ttl_seconds=300)
+        cache.set("owner", {"state_class": "urgent"})
+        app = self._make_app(pool, cache)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/qa/circuit-breaker/reset")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["reset"] is True
+        assert cache.get("owner") is None
+
+    async def test_noop_reset_preserves_cached_briefings(self):
+        """A reset request without a tripped breaker must not evict cache entries."""
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[{"status": "failed"} for _ in range(4)])
+        pool.execute = AsyncMock()
+
+        cache = BriefingCache(ttl_seconds=300)
+        cache.set("owner", {"state_class": "quiet"})
+        app = self._make_app(pool, cache)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/qa/circuit-breaker/reset")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["reset"] is False
+        assert cache.get("owner") is not None
+
+    async def test_failed_reset_marker_write_preserves_cached_briefings(self):
+        """A failed write must not make the UI look reset before it actually is."""
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[{"status": "failed"} for _ in range(5)])
+        pool.execute = AsyncMock(side_effect=RuntimeError("breaker reset write failed"))
+
+        cache = BriefingCache(ttl_seconds=300)
+        cache.set("owner", {"state_class": "urgent"})
+        app = self._make_app(pool, cache)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as client:
+            response = await client.post("/api/qa/circuit-breaker/reset")
+
+        assert response.status_code == 500
+        assert cache.get("owner") is not None

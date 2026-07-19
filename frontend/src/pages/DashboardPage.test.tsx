@@ -55,9 +55,16 @@ vi.mock("@/hooks/use-fleet-halt", () => ({ useFleetHaltStatus: vi.fn() }));
 
 import { useBriefing } from "@/hooks/use-briefing";
 import { useButlersBoard } from "@/hooks/use-butlers";
-import { useSpendSummary, useTopSessions, useDailySpend } from "@/hooks/use-spend";
+import {
+  useSpendSummary,
+  useTopSessions,
+  useDailySpend,
+} from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
-import { useApprovalMetrics, usePendingApprovalsFlat } from "@/hooks/use-approvals";
+import {
+  useApprovalMetrics,
+  usePendingApprovalsFlat,
+} from "@/hooks/use-approvals";
 import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions.ts";
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
@@ -72,7 +79,9 @@ import type { BoardRow } from "@/api/types";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
  * A GET /api/butlers/board row -- the canonical, cadence-aware liveness
@@ -163,11 +172,20 @@ function makeBriefing(
   };
 }
 
-function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.") {
-  vi.mocked(useBriefing).mockReturnValue(makeBriefing(stateClass, "llm", headline) as AnyMock);
+function setDefaultData(
+  stateClass = "quiet",
+  headline = "Everything is in hand.",
+) {
+  vi.mocked(useBriefing).mockReturnValue(
+    makeBriefing(stateClass, "llm", headline) as AnyMock,
+  );
   vi.mocked(useButlersBoard).mockReturnValue({
     data: {
-      data: { rows: defaultBoardRows(), aggregates: {}, generated_at: "2026-05-14T12:00:00.000Z" },
+      data: {
+        rows: defaultBoardRows(),
+        aggregates: {},
+        generated_at: "2026-05-14T12:00:00.000Z",
+      },
       meta: {},
     },
     isLoading: false,
@@ -182,7 +200,7 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
         total_sessions: 5,
         total_input_tokens: 1000,
         total_output_tokens: 500,
-        by_butler: { general: 0.30, health: 0.12 },
+        by_butler: { general: 0.3, health: 0.12 },
         by_model: {},
       },
       meta: {},
@@ -245,7 +263,10 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
     cancelDecision: vi.fn(),
   } as AnyMock);
   vi.mocked(useNotificationStats).mockReturnValue({
-    data: { data: { total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {} }, meta: {} },
+    data: {
+      data: { total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {} },
+      meta: {},
+    },
     isLoading: false,
     isError: false,
     error: null,
@@ -265,8 +286,20 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
   vi.mocked(useDailySpend).mockReturnValue({
     data: {
       data: [
-        { date: "2026-05-08", cost_usd: 0.31, sessions: 4, input_tokens: 1000, output_tokens: 500 },
-        { date: "2026-05-09", cost_usd: 0.42, sessions: 5, input_tokens: 1000, output_tokens: 500 },
+        {
+          date: "2026-05-08",
+          cost_usd: 0.31,
+          sessions: 4,
+          input_tokens: 1000,
+          output_tokens: 500,
+        },
+        {
+          date: "2026-05-09",
+          cost_usd: 0.42,
+          sessions: 5,
+          input_tokens: 1000,
+          output_tokens: 500,
+        },
       ],
       meta: {},
     },
@@ -435,7 +468,10 @@ describe("DashboardPage -- state_class variants", () => {
     { stateClass: "quiet", headline: "Everything is in hand." },
     { stateClass: "mild", headline: "Things are quiet, with 1 exception." },
     { stateClass: "busy", headline: "Things are busy with 5 items waiting." },
-    { stateClass: "degraded-quiet", headline: "Quiet, but 1 butler is degraded." },
+    {
+      stateClass: "degraded-quiet",
+      headline: "Quiet, but 1 butler is degraded.",
+    },
     {
       stateClass: "degraded",
       headline: "One source could not be reached, so this may be incomplete.",
@@ -474,7 +510,11 @@ describe("DashboardPage -- AttentionList", () => {
       data: {
         data: {
           rows: [
-            boardRow({ name: "general", activity: "running", active_session_count: 1 }),
+            boardRow({
+              name: "general",
+              activity: "running",
+              active_session_count: 1,
+            }),
             boardRow({ name: "health", activity: "idle" }),
           ],
           aggregates: {},
@@ -717,8 +757,14 @@ describe("DashboardPage -- loading state", () => {
 
 describe("DashboardPage -- OperationsNowList", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T12:00:00.000Z"));
     vi.resetAllMocks();
     setDefaultData();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("renders 'Nothing scheduled.' when no now signals are active", () => {
@@ -749,10 +795,92 @@ describe("DashboardPage -- OperationsNowList", () => {
       error: null,
     } as AnyMock);
     const html = renderPage();
-    expect(html).toContain("1 failed notification");
-    // Predicate-carrying door (bu-qvnce.13): lands pre-filtered, not on the
-    // unfiltered stream.
-    expect(html).toContain('href="/notifications?status=failed"');
+    expect(html).toContain("1 failed notification in the last 24 hours");
+    // Predicate-carrying door: retains both failed status and the 24-hour
+    // window that produced this count, rather than opening an all-time feed.
+    expect(html).toContain(
+      'href="/notifications?status=terminal_failed&amp;since=2026-05-13T12%3A00%3A00.000Z&amp;until=2026-05-14T12%3A00%3A00.000Z"',
+    );
+    expect(useNotificationStats).toHaveBeenCalledWith({
+      since: "2026-05-13T12:00:00.000Z",
+      until: "2026-05-14T12:00:00.000Z",
+    });
+  });
+
+  it("rolls the notification window while the dashboard remains mounted", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const queryClient = new QueryClient();
+    document.body.appendChild(container);
+
+    try {
+      act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter>
+              <DashboardPage />
+            </MemoryRouter>
+          </QueryClientProvider>,
+        );
+      });
+      expect(useNotificationStats).toHaveBeenLastCalledWith({
+        since: "2026-05-13T12:00:00.000Z",
+        until: "2026-05-14T12:00:00.000Z",
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(useNotificationStats).toHaveBeenLastCalledWith({
+        since: "2026-05-13T12:01:00.000Z",
+        until: "2026-05-14T12:01:00.000Z",
+      });
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it("renders a completed QA dispatch as last-24-hours activity, not active follow-up", () => {
+    vi.mocked(useQaSummary).mockReturnValue({
+      data: {
+        data: {
+          circuit_breaker: { tripped: false, consecutive_failures: 0 },
+          last_patrol: {
+            id: "p-dispatched",
+            started_at: "2026-05-14T11:00:00.000Z",
+            completed_at: "2026-05-14T11:01:00.000Z",
+            status: "completed",
+            findings_count: 1,
+            novel_count: 0,
+            dispatched_count: 1,
+            log_lookback_minutes: 60,
+            sources_polled: [],
+            error_detail: null,
+          },
+          stats_24h: {
+            patrols_completed: 1,
+            total_findings: 1,
+            novel_findings: 0,
+            dispatched_investigations: 1,
+            prs_opened: 0,
+          },
+          kpis: { active_cases_now: 0 },
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain(
+      "1 QA investigation dispatched in the last 24 hours",
+    );
+    expect(html).not.toContain("QA has active follow-up work.");
   });
 
   it("renders QA row when patrol fails", () => {
@@ -799,7 +927,12 @@ describe("DashboardPage -- OperationsNowList", () => {
           active_breakdown: { awaiting_ci: 0, escalated_open_cases: 0 },
           active_sources: [],
           circuit_breaker: { tripped: false, consecutive_failures: 0 },
-          credentials_status: { gh_token_present: null, git_author_name_present: null, git_author_email_present: null, provisioning_hint: null },
+          credentials_status: {
+            gh_token_present: null,
+            git_author_name_present: null,
+            git_author_email_present: null,
+            provisioning_hint: null,
+          },
           port: null,
           model: null,
           patrol_interval_minutes: null,
@@ -970,7 +1103,15 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
     vi.mocked(usePendingApprovalsFlat).mockReturnValue({
       data: {
         data: [
-          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+          {
+            id: "a1",
+            butler: "general",
+            tool_name: "send_email",
+            status: "pending",
+            created_at: "2026-05-14T10:00:00Z",
+            expires_at: null,
+            why: null,
+          },
         ],
         meta: {},
       },
@@ -991,7 +1132,11 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
     const denyMutate = vi.fn();
     const deferMutate = vi.fn();
     vi.mocked(useApprovalDecisionMutations).mockReturnValue({
-      approveMut: { mutate: approveMutate, isPending: false, variables: undefined },
+      approveMut: {
+        mutate: approveMutate,
+        isPending: false,
+        variables: undefined,
+      },
       denyMut: { mutate: denyMutate, isPending: false, variables: undefined },
       deferMut: { mutate: deferMutate, isPending: false, variables: undefined },
       scheduledDecisions: new Map(),
@@ -1004,7 +1149,15 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
     vi.mocked(usePendingApprovalsFlat).mockReturnValue({
       data: {
         data: [
-          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+          {
+            id: "a1",
+            butler: "general",
+            tool_name: "send_email",
+            status: "pending",
+            created_at: "2026-05-14T10:00:00Z",
+            expires_at: null,
+            why: null,
+          },
         ],
         meta: {},
       },
@@ -1097,7 +1250,9 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
   }
 
   function press(key: string) {
-    window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+    );
   }
 
   /** Only healthy butler rows (bu-qvnce.4's own "Nothing waiting" fixture)
@@ -1108,7 +1263,11 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
       data: {
         data: {
           rows: [
-            boardRow({ name: "general", activity: "running", active_session_count: 1 }),
+            boardRow({
+              name: "general",
+              activity: "running",
+              active_session_count: 1,
+            }),
             boardRow({ name: "health", activity: "idle" }),
           ],
           aggregates: {},
@@ -1126,7 +1285,15 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
     vi.mocked(usePendingApprovalsFlat).mockReturnValue({
       data: {
         data: [
-          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+          {
+            id: "a1",
+            butler: "general",
+            tool_name: "send_email",
+            status: "pending",
+            created_at: "2026-05-14T10:00:00Z",
+            expires_at: null,
+            why: null,
+          },
         ],
         meta: {},
       },
@@ -1141,13 +1308,19 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
     const rows = container!.querySelectorAll('[data-testid="attention-item"]');
     expect(rows.length).toBeGreaterThan(0);
     const first = rows[0] as HTMLElement;
-    expect(first.getAttribute("data-item-id")).toBe(document.activeElement?.getAttribute("data-item-id"));
+    expect(first.getAttribute("data-item-id")).toBe(
+      document.activeElement?.getAttribute("data-item-id"),
+    );
   });
 
   it("a approves the selected row via the shared decision mutation", () => {
     const approveMutate = vi.fn();
     vi.mocked(useApprovalDecisionMutations).mockReturnValue({
-      approveMut: { mutate: approveMutate, isPending: false, variables: undefined },
+      approveMut: {
+        mutate: approveMutate,
+        isPending: false,
+        variables: undefined,
+      },
       denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       scheduledDecisions: new Map(),
@@ -1161,7 +1334,15 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
     vi.mocked(usePendingApprovalsFlat).mockReturnValue({
       data: {
         data: [
-          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+          {
+            id: "a1",
+            butler: "general",
+            tool_name: "send_email",
+            status: "pending",
+            created_at: "2026-05-14T10:00:00Z",
+            expires_at: null,
+            why: null,
+          },
         ],
         meta: {},
       },
@@ -1182,7 +1363,15 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
     vi.mocked(usePendingApprovalsFlat).mockReturnValue({
       data: {
         data: [
-          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+          {
+            id: "a1",
+            butler: "general",
+            tool_name: "send_email",
+            status: "pending",
+            created_at: "2026-05-14T10:00:00Z",
+            expires_at: null,
+            why: null,
+          },
         ],
         meta: {},
       },
@@ -1202,7 +1391,11 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
   it("renders no footer hint strip when the attention list is empty", () => {
     useOnlyHealthyBoardRows();
     renderLive();
-    expect(container!.querySelector('[aria-label="Keyboard shortcuts for this list"]')).toBeNull();
+    expect(
+      container!.querySelector(
+        '[aria-label="Keyboard shortcuts for this list"]',
+      ),
+    ).toBeNull();
   });
 
   it("keeps its shortcut registration stable across an unrelated parent render", () => {
@@ -1316,7 +1509,11 @@ describe("DashboardPage -- shared undo-window contract (bu-qvnce.4)", () => {
     const approveMutate = vi.fn();
     const scheduleDecision = vi.fn();
     vi.mocked(useApprovalDecisionMutations).mockReturnValue({
-      approveMut: { mutate: approveMutate, isPending: false, variables: undefined },
+      approveMut: {
+        mutate: approveMutate,
+        isPending: false,
+        variables: undefined,
+      },
       denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       scheduledDecisions: new Map(),
@@ -1329,7 +1526,11 @@ describe("DashboardPage -- shared undo-window contract (bu-qvnce.4)", () => {
       findButton("Approve")!.click();
     });
 
-    expect(scheduleDecision).toHaveBeenCalledWith("a1", "approve", expect.any(Function));
+    expect(scheduleDecision).toHaveBeenCalledWith(
+      "a1",
+      "approve",
+      expect.any(Function),
+    );
     // The mutation itself must NOT fire on click -- only scheduleDecision's
     // own timer (verified in use-approval-decisions.test.tsx) invokes it.
     expect(approveMutate).not.toHaveBeenCalled();
