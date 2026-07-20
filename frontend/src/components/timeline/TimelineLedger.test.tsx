@@ -35,6 +35,19 @@ function makeEvent(id: string, timestamp: string, overrides: Partial<TimelineEve
   };
 }
 
+type MaintenanceTimelineEvent = TimelineEvent & { machine_class: "maintenance" };
+
+function makeMaintenanceEvent(
+  id: string,
+  timestamp: string,
+  overrides: Partial<TimelineEvent> = {},
+): MaintenanceTimelineEvent {
+  return {
+    ...makeEvent(id, timestamp, { data: { success: true }, ...overrides }),
+    machine_class: "maintenance",
+  };
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -128,6 +141,135 @@ describe("TimelineLedger — heartbeat collapsing", () => {
     renderLedger({ events });
     const group = container.querySelector('[data-testid="heartbeat-group-row"]');
     expect(group!.textContent).toContain("1 failed");
+  });
+});
+
+describe("TimelineLedger — Internal maintenance lens", () => {
+  it("hides successful maintenance by default and groups it per butler when enabled", () => {
+    const events = [
+      makeMaintenanceEvent("maintenance-1", "2026-07-04T15:03:00Z", {
+        butler: "memory",
+        summary: "Scheduled: consolidation",
+      }),
+      makeMaintenanceEvent("maintenance-2", "2026-07-04T15:02:00Z", {
+        butler: "memory",
+        summary: "Scheduled: memory decay sweep",
+      }),
+      makeMaintenanceEvent("maintenance-3", "2026-07-04T15:01:00Z", {
+        butler: "qa",
+        summary: "Scheduled: memory catalog backfill",
+      }),
+    ];
+
+    renderLedger({ events });
+    expect(container.querySelector('[data-testid="timeline-row"]')).toBeNull();
+    expect(container.querySelector('[data-testid="maintenance-group-row"]')).toBeNull();
+
+    renderLedger({ events, includeInternal: true } as unknown as Partial<React.ComponentProps<typeof TimelineLedger>>);
+    const groups = container.querySelectorAll('[data-testid="maintenance-group-row"]');
+    expect(groups).toHaveLength(2);
+
+    const memoryGroup = Array.from(groups).find((group) => group.textContent?.includes("memory"));
+    expect(memoryGroup).not.toBeNull();
+    expect(memoryGroup?.textContent).toContain("2 maintenance runs");
+    expect(memoryGroup?.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => {
+      memoryGroup?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(memoryGroup?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("Scheduled: consolidation");
+  });
+
+  it("keeps failed maintenance visible when the Internal lens is off", () => {
+    const failedMaintenance = makeMaintenanceEvent("maintenance-failed", "2026-07-04T15:03:00Z", {
+      type: "error",
+      summary: "Scheduled: consolidation",
+      data: { success: false },
+    });
+
+    renderLedger({ events: [failedMaintenance] });
+    const row = container.querySelector('[data-testid="timeline-row"]');
+    expect(row?.textContent).toContain("Scheduled: consolidation");
+  });
+
+  it("keeps running and unknown maintenance visible when the Internal lens is off", () => {
+    const events = [
+      makeMaintenanceEvent("maintenance-running", "2026-07-04T15:03:00Z", {
+        summary: "Scheduled: running",
+        data: { success: null },
+      }),
+      makeMaintenanceEvent("maintenance-unknown-missing", "2026-07-04T15:02:00Z", {
+        summary: "Scheduled: unknown missing",
+        data: {},
+      }),
+      makeMaintenanceEvent("maintenance-unknown-nonboolean", "2026-07-04T15:01:00Z", {
+        summary: "Scheduled: unknown nonboolean",
+        data: { success: "pending" },
+      }),
+    ];
+
+    renderLedger({ events });
+
+    expect(
+      Array.from(container.querySelectorAll('[data-testid="timeline-row"]')).map((row) =>
+        row.getAttribute("data-event-id"),
+      ),
+    ).toEqual([
+      "maintenance-running",
+      "maintenance-unknown-missing",
+      "maintenance-unknown-nonboolean",
+    ]);
+    expect(container.querySelector('[data-testid="maintenance-group-row"]')).toBeNull();
+  });
+
+  it("labels the strict maintenance success matrix in the enabled Internal expansion", () => {
+    const events = [
+      makeMaintenanceEvent("maintenance-completed", "2026-07-04T15:05:00Z", {
+        summary: "Scheduled: completed",
+        data: { success: true },
+      }),
+      makeMaintenanceEvent("maintenance-failed", "2026-07-04T15:04:00Z", {
+        summary: "Scheduled: failed",
+        data: { success: false },
+      }),
+      makeMaintenanceEvent("maintenance-running", "2026-07-04T15:03:00Z", {
+        summary: "Scheduled: running",
+        data: { success: null },
+      }),
+      makeMaintenanceEvent("maintenance-unknown-missing", "2026-07-04T15:02:00Z", {
+        summary: "Scheduled: unknown missing",
+        data: {},
+      }),
+      makeMaintenanceEvent("maintenance-unknown-nonboolean", "2026-07-04T15:01:00Z", {
+        summary: "Scheduled: unknown nonboolean",
+        type: "error",
+        data: { success: "pending" },
+      }),
+    ];
+
+    renderLedger({ events, includeInternal: true });
+    const group = container.querySelector('[data-testid="maintenance-group-row"]');
+
+    act(() => {
+      group?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      Array.from(container.querySelectorAll('[data-testid="maintenance-run-status"]')).map(
+        (status) => status.textContent,
+      ),
+    ).toEqual(["completed", "failed", "running", "unknown", "unknown"]);
+    expect(group?.getAttribute("aria-label")).toContain("1 failed");
+  });
+
+  it("retains Load older when the owner lens has filtered a maintenance-only page", () => {
+    const maintenance = makeMaintenanceEvent("maintenance-older", "2026-07-04T15:03:00Z");
+
+    renderLedger({ events: [maintenance], hasMore: true, onLoadMore: vi.fn() });
+
+    expect(container.textContent).toContain("No owner activity in this window.");
+    expect(container.textContent).toContain("Load older");
   });
 });
 

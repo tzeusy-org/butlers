@@ -661,6 +661,39 @@ def test_heartbeat_classification_uses_trigger_source_not_summary_text():
         assert hb_event.is_heartbeat is True
 
 
+@pytest.mark.parametrize(
+    ("trigger_source", "expected_machine_class"),
+    [
+        ("route", "owner"),
+        ("schedule:daily_briefing", "owner"),
+        (None, "owner"),
+        ("schedule:consolidation", "maintenance"),
+        ("schedule:memory_decay_sweep", "maintenance"),
+        ("schedule:memory_consolidation", "maintenance"),
+        ("schedule:memory_episode_cleanup", "maintenance"),
+        ("schedule:memory_purge_superseded", "maintenance"),
+        ("schedule:memory_ann_observability", "maintenance"),
+        ("schedule:memory_consolidation_backfill", "maintenance"),
+        ("schedule:memory_catalog_backfill", "maintenance"),
+        # Exact taxonomy only: a suffix must not inherit maintenance status.
+        ("schedule:consolidation:retry", "owner"),
+        ("tick", "heartbeat"),
+        ("classification", "heartbeat"),
+    ],
+)
+def test_session_event_exposes_exact_presentation_machine_class(
+    trigger_source: str | None, expected_machine_class: str
+):
+    """Timeline presentation classifies only reviewed structured sources."""
+    event = _session_to_event(
+        _make_session_row(prompt="untrusted machine prose", trigger_source=trigger_source),
+        butler="atlas",
+    )
+
+    assert event.machine_class == expected_machine_class
+    assert event.is_heartbeat is (expected_machine_class == "heartbeat")
+
+
 # ---------------------------------------------------------------------------
 # Fix 4: correct heartbeat rollup inputs (ticks vs distinct butlers vs failed)
 # ---------------------------------------------------------------------------
@@ -846,6 +879,10 @@ async def test_timeline_error_lens_includes_failed_delivery(app):
     # The failed delivery is present in the Errors lens...
     assert len(events) == 1
     assert events[0]["data"]["status"] == "failed"
+    # Non-session events receive the additive owner default too, so every
+    # Timeline consumer has one bounded presentation vocabulary.
+    assert events[0]["machine_class"] == "owner"
+    assert events[0]["is_heartbeat"] is False
     # ...and the notification query was restricted to failed deliveries only.
     notif_sql = mock_pool.fetch.call_args.args[0]
     assert "status = 'failed'" in notif_sql

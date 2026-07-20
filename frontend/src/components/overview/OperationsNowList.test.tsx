@@ -16,10 +16,10 @@ import { MemoryRouter } from "react-router";
 import { OperationsNowList } from "./OperationsNowList";
 import type { OverviewNowRow } from "./model";
 
-function render(rows: OverviewNowRow[]): string {
+function render(rows: OverviewNowRow[], includeInternal = false): string {
   return renderToStaticMarkup(
     <MemoryRouter>
-      <OperationsNowList rows={rows} />
+      <OperationsNowList rows={rows} includeInternal={includeInternal} />
     </MemoryRouter>,
   );
 }
@@ -30,6 +30,16 @@ describe("OperationsNowList", () => {
     expect(html).toContain("Nothing scheduled.");
     // Zero state should be a single sentence, not a list of separate items
     expect(html).not.toContain("listitem");
+  });
+
+  it("renders a named, default-off Internal lens", () => {
+    const ownerLens = render([]);
+    expect(ownerLens).toContain('aria-label="Show internal activity"');
+    expect(ownerLens).toContain('aria-pressed="false"');
+
+    const internalLens = render([], true);
+    expect(internalLens).toContain('aria-label="Hide internal activity"');
+    expect(internalLens).toContain('aria-pressed="true"');
   });
 
   it("renders a pending approvals row with label and kind badge", () => {

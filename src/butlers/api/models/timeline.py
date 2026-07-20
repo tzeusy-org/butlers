@@ -8,7 +8,7 @@ event stream with cursor-based pagination.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -42,13 +42,19 @@ class TimelineEvent(BaseModel):
     butler: str
     timestamp: datetime
     summary: str
+    machine_class: Literal["owner", "heartbeat", "maintenance"] = Field(
+        default="owner",
+        description=(
+            "Presentation-only machine classification derived from exact "
+            "structured trigger metadata. Unknown sources remain owner "
+            "activity; this does not change persisted session behavior."
+        ),
+    )
     is_heartbeat: bool = Field(
         default=False,
         description=(
-            "True when this event's trigger_source is a heartbeat/tick source "
-            "('tick' or 'heartbeat'), classified server-side. Replaces the old "
-            "client-side substring sniff on the summary text (which matched "
-            "real owner events like 'Buy concert tickets')."
+            "Backward-compatible projection of machine_class == 'heartbeat'. "
+            "Classified server-side instead of from summary text."
         ),
     )
     data: dict[str, Any] = Field(default_factory=dict)

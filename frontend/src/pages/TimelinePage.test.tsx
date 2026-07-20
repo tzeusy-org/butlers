@@ -127,6 +127,34 @@ describe("TimelinePage — error vs empty state", () => {
     expect(html).toContain('data-testid="facet-notification"');
   });
 
+  it("uses an accessible URL-backed Internal lens without replacing existing filters", () => {
+    setLedger({});
+
+    renderDom(
+      <MemoryRouter initialEntries={["/timeline?butler=home&type=session"]}>
+        <TimelinePage />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    const internalLens = screen.getByRole("button", { name: "Show internal activity" });
+    expect(internalLens.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(internalLens);
+
+    expect(internalLens.getAttribute("aria-pressed")).toBe("true");
+    const enabled = new URLSearchParams(screen.getByTestId("timeline-location").textContent ?? "");
+    expect(enabled.get("internal")).toBe("1");
+    expect(enabled.get("butler")).toBe("home");
+    expect(enabled.get("type")).toBe("session");
+
+    fireEvent.click(internalLens);
+
+    expect(internalLens.getAttribute("aria-pressed")).toBe("false");
+    const disabled = new URLSearchParams(screen.getByTestId("timeline-location").textContent ?? "");
+    expect(disabled.get("internal")).toBeNull();
+  });
+
   it("forwards a trace URL scope to the timeline ledger", () => {
     setLedger({});
 

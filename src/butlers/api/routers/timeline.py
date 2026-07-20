@@ -37,7 +37,7 @@ from butlers.api.read_models.timeline_v1 import (
     query_timeline_notifications_single,
     query_timeline_sessions_fan_out,
 )
-from butlers.api.session_presentation import derive_session_summary
+from butlers.api.session_presentation import derive_session_machine_class, derive_session_summary
 
 logger = logging.getLogger(__name__)
 
@@ -49,18 +49,6 @@ def _get_db_manager() -> DatabaseManager:
     raise RuntimeError("DatabaseManager not initialized")
 
 
-# trigger_source values that identify a heartbeat/tick event. Classified here
-# server-side (structured data) instead of the old client-side substring sniff
-# on the summary text (``summary.includes('tick')``), which folded real owner
-# events like "Buy concert tickets" into the collapsed heartbeat group.
-#
-# "classification" is switchboard's routing-decision trigger_source
-# (bu-qvnce.12 renamed it from the historical "tick" — both values identify
-# the same operational-telemetry call site, so both collapse into the same
-# heartbeat group; "tick" is kept for rows recorded before the rename).
-_HEARTBEAT_TRIGGER_SOURCES = frozenset({"tick", "classification", "heartbeat"})
-
-
 # ---------------------------------------------------------------------------
 # Event builders — convert read-model DTOs to TimelineEvent response models
 # ---------------------------------------------------------------------------
@@ -70,6 +58,7 @@ def _session_dto_to_event(dto: TimelineSessionRow) -> TimelineEvent:
     """Convert a TimelineSessionRow DTO (timeline_v1) to a TimelineEvent."""
     event_type = "error" if dto.success is False else "session"
     summary = derive_session_summary(dto.prompt, trigger_source=dto.trigger_source)
+    machine_class = derive_session_machine_class(dto.trigger_source)
 
     return TimelineEvent(
         id=dto.id,
@@ -77,7 +66,8 @@ def _session_dto_to_event(dto: TimelineSessionRow) -> TimelineEvent:
         butler=dto.butler or "",
         timestamp=dto.started_at,
         summary=summary,
-        is_heartbeat=dto.trigger_source in _HEARTBEAT_TRIGGER_SOURCES,
+        machine_class=machine_class,
+        is_heartbeat=machine_class == "heartbeat",
         data={
             "trigger_source": dto.trigger_source,
             "success": dto.success,

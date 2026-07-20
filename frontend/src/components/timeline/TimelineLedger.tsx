@@ -10,8 +10,9 @@
  * dotted-timeline layout and client-side heartbeat sniff were the abandoned
  * pre-redesign version of this exact surface.
  *
- * Heartbeat classification is server-side (`event.is_heartbeat`, bu-86c4c.9)
- * — consecutive heartbeat events collapse into one row with an honest
+ * Machine classification is server-side (`event.machine_class`, with the
+ * legacy `is_heartbeat` fallback retained for rolling deploys) — consecutive
+ * heartbeat events collapse into one row with an honest
  * "{ticks} ticks · {butlers} butlers ticked" line computed from the group's
  * own members (the old UnifiedTimeline bug rendered the tick count where a
  * distinct-butler count belonged).
@@ -29,6 +30,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { useEventDrawerState } from "@/components/ingestion/timeline/useEventDrawerState";
 import type { TimelineEvent } from "@/api/types.ts";
+import {
+  isFailedMaintenanceEvent,
+  isSuccessfulMaintenanceEvent,
+  maintenanceRunStatus,
+  timelineMachineClass,
+} from "@/lib/timeline-machine-class";
 import { TimelineEventDrawer } from "./TimelineEventDrawer";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +45,8 @@ import { TimelineEventDrawer } from "./TimelineEventDrawer";
 export interface TimelineLedgerProps {
   events: TimelineEvent[];
   isLoading: boolean;
+  /** Reveal reviewed internal maintenance runs instead of the owner lens. */
+  includeInternal?: boolean;
   isError?: boolean;
   onRetry?: () => void;
   hasMore?: boolean;
@@ -93,7 +102,8 @@ function sessionDetailHref(event: TimelineEvent): string {
 }
 
 // ---------------------------------------------------------------------------
-// Grouping — by hour, with consecutive heartbeats collapsed
+// Grouping — by hour, with consecutive heartbeats and opt-in maintenance
+// rollups. Machine class is API-owned; this view never interprets a summary.
 // ---------------------------------------------------------------------------
 
 function hourGroupKey(timestamp: string): string {
@@ -111,27 +121,56 @@ interface HeartbeatEntry {
   events: TimelineEvent[];
 }
 
-type LedgerEntry = SingleEntry | HeartbeatEntry;
+interface MaintenanceEntry {
+  kind: "maintenance";
+  butler: string;
+  events: TimelineEvent[];
+}
 
-function groupHeartbeats(events: TimelineEvent[]): LedgerEntry[] {
+type LedgerEntry = SingleEntry | HeartbeatEntry | MaintenanceEntry;
+
+function groupLedgerEntries(events: TimelineEvent[], includeInternal: boolean): LedgerEntry[] {
   const entries: LedgerEntry[] = [];
-  let i = 0;
-  while (i < events.length) {
-    const event = events[i];
-    if (event.is_heartbeat) {
-      const group: TimelineEvent[] = [event];
-      let j = i + 1;
-      while (j < events.length && events[j].is_heartbeat) {
-        group.push(events[j]);
-        j++;
+  const maintenanceByButler = new Map<string, MaintenanceEntry>();
+  let previousSourceWasHeartbeat = false;
+
+  for (const event of events) {
+    const machineClass = timelineMachineClass(event);
+    if (machineClass === "maintenance") {
+      // A hidden or separately-rendered maintenance run is still a boundary
+      // between raw heartbeat events; do not merge heartbeat groups across it.
+      previousSourceWasHeartbeat = false;
+      if (includeInternal) {
+        const butler = event.butler || "Unassigned";
+        const existingGroup = maintenanceByButler.get(butler);
+        if (existingGroup) {
+          existingGroup.events.push(event);
+        } else {
+          const group: MaintenanceEntry = { kind: "maintenance", butler, events: [event] };
+          maintenanceByButler.set(butler, group);
+          entries.push(group);
+        }
+      } else if (!isSuccessfulMaintenanceEvent(event)) {
+        // Failed, running, and unknown runs remain visible in the owner lens.
+        entries.push({ kind: "single", event });
       }
-      entries.push(group.length > 1 ? { kind: "heartbeat", events: group } : { kind: "single", event });
-      i = j;
+      continue;
+    }
+
+    if (machineClass === "heartbeat") {
+      const previousEntry = entries.at(-1);
+      if (previousSourceWasHeartbeat && previousEntry?.kind === "heartbeat") {
+        previousEntry.events.push(event);
+      } else {
+        entries.push({ kind: "heartbeat", events: [event] });
+      }
+      previousSourceWasHeartbeat = true;
     } else {
       entries.push({ kind: "single", event });
-      i++;
+      previousSourceWasHeartbeat = false;
     }
   }
+
   return entries;
 }
 
@@ -140,14 +179,17 @@ interface HourGroup {
   entries: LedgerEntry[];
 }
 
-function groupByHour(events: TimelineEvent[]): HourGroup[] {
+function groupByHour(events: TimelineEvent[], includeInternal: boolean): HourGroup[] {
   const groups: HourGroup[] = [];
   let currentKey: string | null = null;
   let currentEvents: TimelineEvent[] = [];
 
   const flush = () => {
     if (currentKey !== null) {
-      groups.push({ hourKey: currentKey, entries: groupHeartbeats(currentEvents) });
+      const entries = groupLedgerEntries(currentEvents, includeInternal);
+      if (entries.length > 0) {
+        groups.push({ hourKey: currentKey, entries });
+      }
     }
   };
 
@@ -280,6 +322,92 @@ function HeartbeatGroupRow({ events }: { events: TimelineEvent[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Maintenance group row — only shown in the explicit Internal lens. The
+// count is intentionally limited to the currently loaded Timeline page.
+// ---------------------------------------------------------------------------
+
+function MaintenanceGroupRow({ butler, events }: { butler: string; events: TimelineEvent[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const runs = events.length;
+  const failed = events.filter(isFailedMaintenanceEvent).length;
+  const runLabel = runs === 1 ? "maintenance run" : "maintenance runs";
+  const summary = `${butler}: ${runs} ${runLabel}`;
+
+  return (
+    <div className="border-b border-border/50">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-3 px-3 py-1.5 text-left transition-colors hover:bg-muted/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+        data-testid="maintenance-group-row"
+        aria-expanded={expanded}
+        aria-label={`${summary}${failed > 0 ? `, ${failed} failed` : ""}. ${expanded ? "Hide" : "Show"} details`}
+      >
+        <span className="font-mono text-[11px] text-muted-foreground w-[96px] shrink-0">
+          <Time value={events[0].timestamp} mode="absolute" precision="time-seconds" />
+        </span>
+        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground shrink-0">
+          <span className="size-1.5 rounded-full border border-dashed border-muted-foreground/60" />
+          internal
+        </span>
+        <span className="text-[13px] text-muted-foreground">
+          {summary}
+          {failed > 0 && <span className="text-destructive"> · {failed} failed</span>}
+        </span>
+      </button>
+      {expanded && (
+        <div className="pl-[96px] pb-2 space-y-1">
+          {events.map((event) => {
+            const status = maintenanceRunStatus(event);
+            const failedRun = status === "failed";
+            return (
+              <div key={event.id} className="flex items-center gap-2 px-3 text-[11px] text-muted-foreground">
+                <span className="font-mono w-[100px] shrink-0">
+                  <Time value={event.timestamp} mode="absolute" precision="time-seconds" />
+                </span>
+                <span
+                  className={failedRun ? "font-mono text-destructive" : "font-mono"}
+                  data-testid="maintenance-run-status"
+                >
+                  {status}
+                </span>
+                <span className="truncate" title={event.summary}>
+                  {event.summary}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SingleEventEntry({
+  event,
+  drawerEventId,
+  onOpenDrawer,
+  onCloseDrawer,
+}: {
+  event: TimelineEvent;
+  drawerEventId: string | null;
+  onOpenDrawer: (id: string) => void;
+  onCloseDrawer: () => void;
+}) {
+  const isOpen = drawerEventId === event.id;
+  return (
+    <div key={event.id}>
+      <EventRow
+        event={event}
+        isOpen={isOpen}
+        onToggle={() => (isOpen ? onCloseDrawer() : onOpenDrawer(event.id))}
+      />
+      {isOpen && <TimelineEventDrawer event={event} onClose={onCloseDrawer} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Hour group header + body
 // ---------------------------------------------------------------------------
 
@@ -306,19 +434,36 @@ function HourGroupSection({
 
       {group.entries.map((entry) => {
         if (entry.kind === "heartbeat") {
-          return <HeartbeatGroupRow key={`hb-${entry.events[0].id}`} events={entry.events} />;
-        }
-        const event = entry.event;
-        const isOpen = drawerEventId === event.id;
-        return (
-          <div key={event.id}>
-            <EventRow
-              event={event}
-              isOpen={isOpen}
-              onToggle={() => (isOpen ? onCloseDrawer() : onOpenDrawer(event.id))}
+          if (entry.events.length > 1) {
+            return <HeartbeatGroupRow key={`hb-${entry.events[0].id}`} events={entry.events} />;
+          }
+          return (
+            <SingleEventEntry
+              key={entry.events[0].id}
+              event={entry.events[0]}
+              drawerEventId={drawerEventId}
+              onOpenDrawer={onOpenDrawer}
+              onCloseDrawer={onCloseDrawer}
             />
-            {isOpen && <TimelineEventDrawer event={event} onClose={onCloseDrawer} />}
-          </div>
+          );
+        }
+        if (entry.kind === "maintenance") {
+          return (
+            <MaintenanceGroupRow
+              key={`maintenance-${entry.butler}`}
+              butler={entry.butler}
+              events={entry.events}
+            />
+          );
+        }
+        return (
+          <SingleEventEntry
+            key={entry.event.id}
+            event={entry.event}
+            drawerEventId={drawerEventId}
+            onOpenDrawer={onOpenDrawer}
+            onCloseDrawer={onCloseDrawer}
+          />
         );
       })}
     </div>
@@ -350,6 +495,16 @@ function EmptyState() {
       variant="page"
       title="No events found."
       description="Events appear as butlers process sessions and deliver notifications."
+    />
+  );
+}
+
+function InternalMaintenanceEmptyState() {
+  return (
+    <EmptyStateUI
+      variant="page"
+      title="No owner activity in this window."
+      description="Enable Internal activity to inspect scheduled maintenance runs."
     />
   );
 }
@@ -410,6 +565,7 @@ function ErrorState({ onRetry }: { onRetry?: () => void }) {
 export function TimelineLedger({
   events,
   isLoading,
+  includeInternal = false,
   isError,
   onRetry,
   hasMore,
@@ -442,22 +598,26 @@ export function TimelineLedger({
     );
   }
 
-  const hourGroups = groupByHour(events);
+  const hourGroups = groupByHour(events, includeInternal);
 
   return (
     <div>
       {drawerEventMissing && drawerEventId && (
         <EventNotFoundNotice eventId={drawerEventId} onClose={closeDrawer} />
       )}
-      {hourGroups.map((group) => (
-        <HourGroupSection
-          key={group.hourKey}
-          group={group}
-          drawerEventId={drawerEventId}
-          onOpenDrawer={openDrawer}
-          onCloseDrawer={closeDrawer}
-        />
-      ))}
+      {hourGroups.length === 0 ? (
+        <InternalMaintenanceEmptyState />
+      ) : (
+        hourGroups.map((group) => (
+          <HourGroupSection
+            key={group.hourKey}
+            group={group}
+            drawerEventId={drawerEventId}
+            onOpenDrawer={openDrawer}
+            onCloseDrawer={closeDrawer}
+          />
+        ))
+      )}
       {onLoadMore && (hasMore || isLoadingMore) && (
         <div className="flex justify-center pt-4">
           <Button variant="outline" size="sm" onClick={onLoadMore} disabled={isLoadingMore}>

@@ -15,11 +15,14 @@
 
 import { Link } from "react-router";
 
+import { Button } from "@/components/ui/button";
 import { Section } from "./Section";
 import type { OverviewNowRow } from "./model";
 
 interface OperationsNowListProps {
   rows: OverviewNowRow[];
+  includeInternal?: boolean;
+  onToggleInternal?: () => void;
 }
 
 const KIND_LABELS: Record<OverviewNowRow["kind"], string> = {
@@ -30,9 +33,26 @@ const KIND_LABELS: Record<OverviewNowRow["kind"], string> = {
   error: "unavail",
 };
 
-export function OperationsNowList({ rows }: OperationsNowListProps) {
+export function OperationsNowList({
+  rows,
+  includeInternal = false,
+  onToggleInternal,
+}: OperationsNowListProps) {
   return (
     <Section eyebrow="Now">
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          variant={includeInternal ? "secondary" : "outline"}
+          size="xs"
+          onClick={onToggleInternal}
+          aria-pressed={includeInternal}
+          aria-label={includeInternal ? "Hide internal activity" : "Show internal activity"}
+          data-testid="dashboard-internal-lens"
+        >
+          Internal
+        </Button>
+      </div>
       {rows.length === 0 ? (
         <p
           style={{
@@ -69,9 +89,11 @@ function NowRow({ row, isFirst }: NowRowProps) {
   // child of role="list" is a listitem) stays intact (bu-86c4c.2, JARVIS
   // audit move 1b).
   const isSourceError = row.kind === "error";
+  const isFailure = row.isFailure === true;
+  const isAlert = isSourceError || isFailure;
   const inner = (
     <div
-      role={isSourceError ? "alert" : undefined}
+      role={isAlert ? "alert" : undefined}
       style={{
         display: "grid",
         gridTemplateColumns: "auto 1fr auto",
@@ -88,15 +110,15 @@ function NowRow({ row, isFirst }: NowRowProps) {
         style={{
           fontFamily: "var(--font-mono)",
           fontSize: "9px",
-          color: "var(--muted-foreground)",
-          border: "1px solid var(--border)",
+          color: isFailure ? "var(--destructive)" : "var(--muted-foreground)",
+          border: isFailure ? "1px solid var(--destructive)" : "1px solid var(--border)",
           borderRadius: "var(--radius-sm)",
           padding: "2px 5px",
           lineHeight: 1,
           whiteSpace: "nowrap",
         }}
       >
-        {KIND_LABELS[row.kind]}
+        {isFailure ? "failed" : KIND_LABELS[row.kind]}
       </span>
 
       {/* Label */}
@@ -105,11 +127,13 @@ function NowRow({ row, isFirst }: NowRowProps) {
           fontFamily: "var(--font-sans)",
           fontSize: "13px",
           color:
-            row.kind === "error"
-              ? "var(--muted-foreground)"
-              : row.href
-                ? "var(--foreground)"
-                : "var(--muted-foreground)",
+            isFailure
+              ? "var(--destructive)"
+              : row.kind === "error"
+                ? "var(--muted-foreground)"
+                : row.href
+                  ? "var(--foreground)"
+                  : "var(--muted-foreground)",
           fontStyle: row.kind === "error" ? "italic" : undefined,
           lineHeight: 1.4,
         }}

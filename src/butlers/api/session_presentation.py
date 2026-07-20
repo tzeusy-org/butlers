@@ -10,6 +10,7 @@ bounded prompt text.
 from __future__ import annotations
 
 import re
+from typing import Final, Literal
 
 _SUMMARY_MAX_LEN = 120
 _ROUTE_TRIGGER_SOURCE = "route"
@@ -41,6 +42,39 @@ _EXACT_TRIGGER_LABELS = {
 }
 
 _SAFE_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9:_-]*[A-Za-z0-9])?$")
+
+
+MachineClass = Literal["owner", "heartbeat", "maintenance"]
+
+# Presentation taxonomy, not scheduler or lifecycle policy. Exact keys keep
+# owner-value schedules visible by default and avoid coupling this API boundary
+# to module startup internals. `schedule:consolidation` is the runtime session
+# emitted by memory consolidation; the remaining keys mirror reviewed module
+# schedule names for historical or direct session rows.
+_MACHINE_CLASS_BY_TRIGGER_SOURCE: Final[dict[str, MachineClass]] = {
+    "tick": "heartbeat",
+    "classification": "heartbeat",
+    "heartbeat": "heartbeat",
+    "schedule:consolidation": "maintenance",
+    "schedule:memory_decay_sweep": "maintenance",
+    "schedule:memory_consolidation": "maintenance",
+    "schedule:memory_episode_cleanup": "maintenance",
+    "schedule:memory_purge_superseded": "maintenance",
+    "schedule:memory_ann_observability": "maintenance",
+    "schedule:memory_consolidation_backfill": "maintenance",
+    "schedule:memory_catalog_backfill": "maintenance",
+}
+
+
+def derive_session_machine_class(trigger_source: str | None) -> MachineClass:
+    """Classify a session for presentation from exact structured metadata only.
+
+    Unknown and future sources default to owner activity. This deliberately
+    leaves the Spawner's exact consolidation episode exclusion untouched.
+    """
+    if not isinstance(trigger_source, str):
+        return "owner"
+    return _MACHINE_CLASS_BY_TRIGGER_SOURCE.get(trigger_source, "owner")
 
 
 def _truncate(text: str) -> str:

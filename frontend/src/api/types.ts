@@ -541,6 +541,9 @@ export interface UndismissIssueResult {
 // Activity / Timeline
 // ---------------------------------------------------------------------------
 
+/** Bounded presentation classification supplied by GET /api/timeline. */
+export type TimelineMachineClass = "owner" | "heartbeat" | "maintenance";
+
 /** A unified timeline event from GET /api/timeline. */
 export interface TimelineEvent {
   id: string;
@@ -548,6 +551,12 @@ export interface TimelineEvent {
   butler: string;
   timestamp: string; // ISO 8601
   summary: string;
+  /**
+   * Additive presentation classification derived by the API from exact
+   * structured trigger metadata. Optional so a client can safely render an
+   * older server response during a rolling deploy.
+   */
+  machine_class?: TimelineMachineClass;
   /**
    * True when this event's trigger_source is a heartbeat/tick source ("tick"
    * or "heartbeat"), classified server-side (bu-86c4c.9). Use this instead of

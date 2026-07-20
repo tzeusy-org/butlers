@@ -8,6 +8,11 @@ import type {
   TimelineEvent,
 } from "@/api/types";
 import { NEEDS_YOU_ACTIVITIES } from "@/hooks/use-butler-status-board";
+import {
+  isFailedMaintenanceEvent,
+  isMaintenanceEvent,
+  isSuccessfulMaintenanceEvent,
+} from "@/lib/timeline-machine-class";
 
 export type OverviewSeverity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -25,6 +30,8 @@ export interface OverviewDerivationOptions {
   includeOldIssueRows?: boolean;
   maxRecentIssueRows?: number;
   maxTimelineRows?: number;
+  /** Reveal reviewed internal maintenance as per-butler rollups in Now. */
+  includeInternal?: boolean;
   /** Cap on individually-actionable approval rows (bu-86c4c.14); extras collapse into a "N more" link row. */
   maxAttentionApprovalRows?: number;
 }
@@ -142,6 +149,8 @@ export interface OverviewNowRow {
   detail: string;
   href: string | null;
   count?: number;
+  /** True only for a confirmed operational failure, never an unknown outcome. */
+  isFailure?: boolean;
 }
 
 export interface OverviewTriageModel {
@@ -198,6 +207,7 @@ export function deriveOverviewTriageModel(
   const maxRecentIssueRows =
     options.maxRecentIssueRows ?? DEFAULT_MAX_RECENT_ISSUE_ROWS;
   const maxTimelineRows = options.maxTimelineRows ?? DEFAULT_MAX_TIMELINE_ROWS;
+  const includeInternal = options.includeInternal ?? false;
   const maxAttentionApprovalRows =
     options.maxAttentionApprovalRows ?? DEFAULT_MAX_ATTENTION_APPROVAL_ROWS;
 
@@ -314,7 +324,7 @@ export function deriveOverviewTriageModel(
     );
   }
 
-  const nowRows = deriveNowRows(input, maxTimelineRows, now);
+  const nowRows = deriveNowRows(input, maxTimelineRows, now, includeInternal);
 
   return {
     kpis: {
@@ -754,6 +764,7 @@ function deriveNowRows(
   input: OverviewDerivationInput,
   maxTimelineRows: number,
   now: Date,
+  includeInternal: boolean,
 ): OverviewNowRow[] {
   const rows: OverviewNowRow[] = [];
 
@@ -850,20 +861,75 @@ function deriveNowRows(
       href: "/timeline",
     });
   } else {
-    rows.push(
-      ...(input.timeline ?? [])
-        .slice(0, maxTimelineRows)
-        .map((event): OverviewNowRow => ({
-          id: `now:activity:${event.id}`,
-          kind: "activity",
-          label: event.summary,
-          detail: `${event.butler} · ${event.type}`,
-          href: "/timeline",
-        })),
-    );
+    rows.push(...deriveTimelineNowRows(input.timeline ?? [], maxTimelineRows, includeInternal));
   }
 
   return rows;
+}
+
+function deriveTimelineNowRows(
+  events: TimelineEvent[],
+  maxTimelineRows: number,
+  includeInternal: boolean,
+): OverviewNowRow[] {
+  const ownerLensEvents: TimelineEvent[] = [];
+  const maintenanceByButler = new Map<string, TimelineEvent[]>();
+
+  for (const event of events) {
+    if (!isMaintenanceEvent(event)) {
+      ownerLensEvents.push(event);
+      continue;
+    }
+
+    if (includeInternal) {
+      const butler = event.butler || "Unassigned";
+      const grouped = maintenanceByButler.get(butler) ?? [];
+      grouped.push(event);
+      maintenanceByButler.set(butler, grouped);
+    } else if (!isSuccessfulMaintenanceEvent(event)) {
+      // Failed, running, and unknown internal runs are operationally meaningful
+      // on the owner lens, so they retain ordinary Timeline activity rows.
+      ownerLensEvents.push(event);
+    }
+  }
+
+  const rows = ownerLensEvents
+    .slice(0, maxTimelineRows)
+    .map((event): OverviewNowRow => {
+      const isFailure = isFailedMaintenanceEvent(event);
+      return {
+        id: `now:activity:${event.id}`,
+        kind: "activity",
+        label: event.summary,
+        detail: `${event.butler} · ${event.type}`,
+        href: "/timeline",
+        ...(isFailure ? { isFailure: true } : {}),
+      };
+    });
+
+  if (!includeInternal) return rows;
+
+  // The query already bounds this page's source events. Always show one
+  // compact row for each loaded butler group once the owner opted in, rather
+  // than letting the owner-activity preview cap make the lens look empty.
+  return [
+    ...rows,
+    ...Array.from(maintenanceByButler, ([butler, maintenanceEvents]): OverviewNowRow => {
+      const runs = maintenanceEvents.length;
+      const failed = maintenanceEvents.filter(isFailedMaintenanceEvent).length;
+      return {
+        id: `now:maintenance:${butler}`,
+        kind: "activity",
+        label: `${butler}: ${runs} maintenance ${runs === 1 ? "run" : "runs"}${
+          failed > 0 ? ` · ${failed} failed` : ""
+        }`,
+        detail: failed > 0 ? `Internal activity · ${failed} failed` : "Internal activity",
+        href: "/timeline?internal=1",
+        count: runs,
+        ...(failed > 0 ? { isFailure: true } : {}),
+      };
+    }),
+  ];
 }
 
 function summarizeQaState(

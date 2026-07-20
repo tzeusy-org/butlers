@@ -48,6 +48,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
@@ -93,6 +94,9 @@ import { Section } from "@/components/overview/Section";
 import { deriveOverviewTriageModel } from "@/components/overview/model";
 
 export default function DashboardPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const includeInternal = searchParams.get("internal") === "1";
+
   // Briefing
   const {
     data: briefing,
@@ -176,6 +180,14 @@ export default function DashboardPage() {
   const notificationStats = notificationStatsQuery.data?.data;
   const qaSummary = qaSummaryQuery.data?.data;
   const timeline = timelineQuery.data?.data;
+  const toggleInternal = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (next.get("internal") === "1") next.delete("internal");
+      else next.set("internal", "1");
+      return next;
+    });
+  }, [setSearchParams]);
   const model = useMemo(
     () =>
       deriveOverviewTriageModel(
@@ -206,7 +218,7 @@ export default function DashboardPage() {
             isSourceError: fleetHalt.isError,
           },
         },
-        { now: new Date(overviewNowMs) },
+        { now: new Date(overviewNowMs), includeInternal },
       ),
     [
       approvals,
@@ -219,6 +231,7 @@ export default function DashboardPage() {
       fleetHalt.deniedTotal,
       fleetHalt.isError,
       fleetHalt.since,
+      includeInternal,
       issuesData,
       issuesQuery.isError,
       notificationStats,
@@ -468,7 +481,11 @@ export default function DashboardPage() {
             butlers={model.operationsRows}
             butlersError={model.butlersError}
           />
-          <OperationsNowList rows={model.nowRows} />
+          <OperationsNowList
+            rows={model.nowRows}
+            includeInternal={includeInternal}
+            onToggleInternal={toggleInternal}
+          />
         </div>
       </div>
 

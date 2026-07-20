@@ -97,6 +97,7 @@ export default function TimelinePage() {
   const selectedTypes = useMemo(() => parseCsvList(searchParams, "type"), [searchParams]);
   const trace = searchParams.get("trace")?.trim() || undefined;
   const activeViewId = searchParams.get("view") ?? "all";
+  const includeInternal = searchParams.get("internal") === "1";
 
   const { data: butlersResponse } = useButlers();
   const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
@@ -203,6 +204,15 @@ export default function TimelinePage() {
       const current = parseCsvList(prev, "butler");
       const updated = current.includes(name) ? current.filter((b) => b !== name) : [...current, name];
       writeCsvList(next, "butler", updated);
+      return next;
+    });
+  }
+
+  function toggleInternal() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (next.get("internal") === "1") next.delete("internal");
+      else next.set("internal", "1");
       return next;
     });
   }
@@ -361,6 +371,23 @@ export default function TimelinePage() {
               ))}
             </div>
           </div>
+
+          {/* Successful internal maintenance is opt-in so it cannot crowd
+              owner-facing history during a scheduled burst. */}
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1.5">Lens</p>
+            <Button
+              type="button"
+              variant={includeInternal ? "secondary" : "outline"}
+              size="xs"
+              onClick={toggleInternal}
+              aria-pressed={includeInternal}
+              aria-label={includeInternal ? "Hide internal activity" : "Show internal activity"}
+              data-testid="timeline-internal-lens"
+            >
+              Internal
+            </Button>
+          </div>
         </div>
 
         <NewEventsPill count={newCount} onClick={showNewEvents} />
@@ -369,6 +396,7 @@ export default function TimelinePage() {
           <TimelineLedger
             events={events}
             isLoading={isLoading}
+            includeInternal={includeInternal}
             isError={isError}
             onRetry={refetch}
             hasMore={hasMore}

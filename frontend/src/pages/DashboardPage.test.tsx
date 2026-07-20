@@ -318,9 +318,11 @@ function setDefaultData(
   } as AnyMock);
 }
 
-function renderPage({ basename = "" }: { basename?: string } = {}): string {
+function renderPage(
+  { basename = "", initialEntry }: { basename?: string; initialEntry?: string } = {},
+): string {
   const queryClient = new QueryClient();
-  const initialEntries = basename ? [`${basename}/`] : ["/"];
+  const initialEntries = [initialEntry ?? (basename ? `${basename}/` : "/")];
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter basename={basename} initialEntries={initialEntries}>
@@ -770,6 +772,104 @@ describe("DashboardPage -- OperationsNowList", () => {
   it("renders 'Nothing scheduled.' when no now signals are active", () => {
     const html = renderPage();
     expect(html).toContain("Nothing scheduled.");
+  });
+
+  it("keeps maintenance out of Now by default and exposes it through the URL-backed Internal lens", () => {
+    vi.mocked(useTimeline).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "maintenance-1",
+            type: "session",
+            butler: "memory",
+            timestamp: "2026-05-14T11:59:00.000Z",
+            summary: "Scheduled: consolidation",
+            machine_class: "maintenance",
+            is_heartbeat: false,
+            data: { success: true },
+          },
+          {
+            id: "maintenance-2",
+            type: "session",
+            butler: "memory",
+            timestamp: "2026-05-14T11:58:00.000Z",
+            summary: "Scheduled: memory decay sweep",
+            machine_class: "maintenance",
+            is_heartbeat: false,
+            data: { success: true },
+          },
+        ],
+        meta: { cursor: null, has_more: false },
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const ownerLens = renderPage();
+    expect(ownerLens).toContain('data-testid="dashboard-internal-lens"');
+    expect(ownerLens).toContain('aria-pressed="false"');
+    expect(ownerLens).not.toContain("memory: 2 maintenance runs");
+
+    const internalLens = renderPage({ initialEntry: "/?internal=1" });
+    expect(internalLens).toContain('aria-pressed="true"');
+    expect(internalLens).toContain("memory: 2 maintenance runs");
+    expect(internalLens).toContain('href="/timeline?internal=1"');
+  });
+
+  it("renders failed maintenance as a failure in both Dashboard Now lenses", () => {
+    vi.mocked(useTimeline).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "maintenance-success",
+            type: "session",
+            butler: "memory",
+            timestamp: "2026-05-14T11:59:00.000Z",
+            summary: "Scheduled: consolidation",
+            machine_class: "maintenance",
+            is_heartbeat: false,
+            data: { success: true },
+          },
+          {
+            id: "maintenance-failed",
+            type: "error",
+            butler: "memory",
+            timestamp: "2026-05-14T11:58:00.000Z",
+            summary: "Scheduled: memory decay sweep",
+            machine_class: "maintenance",
+            is_heartbeat: false,
+            data: { success: false },
+          },
+        ],
+        meta: { cursor: null, has_more: false },
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const ownerLens = renderPage();
+    const failedRowStart = ownerLens.indexOf("Scheduled: memory decay sweep");
+    expect(failedRowStart).toBeGreaterThan(-1);
+    const ownerRowStart = ownerLens.lastIndexOf('role="listitem"', failedRowStart);
+    expect(ownerRowStart).toBeGreaterThan(-1);
+    const ownerFailure = ownerLens.slice(ownerRowStart, failedRowStart + 240);
+    expect(ownerFailure).toContain(">failed<");
+    expect(ownerFailure).toContain('role="alert"');
+    expect(ownerFailure).toContain("color:var(--destructive)");
+    expect(ownerLens).not.toContain("memory: 2 maintenance runs");
+
+    const internalLens = renderPage({ initialEntry: "/?internal=1" });
+    const internalRollupStart = internalLens.indexOf("memory: 2 maintenance runs");
+    expect(internalRollupStart).toBeGreaterThan(-1);
+    const internalRowStart = internalLens.lastIndexOf('role="listitem"', internalRollupStart);
+    expect(internalRowStart).toBeGreaterThan(-1);
+    const internalFailure = internalLens.slice(internalRowStart, internalRollupStart + 280);
+    expect(internalFailure).toContain("1 failed");
+    expect(internalFailure).toContain(">failed<");
+    expect(internalFailure).toContain('role="alert"');
+    expect(internalFailure).toContain("color:var(--destructive)");
   });
 
   it("renders pending approvals row when approvals are pending", () => {

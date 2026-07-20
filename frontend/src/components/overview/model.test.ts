@@ -1014,6 +1014,103 @@ describe("deriveOverviewTriageModel", () => {
     });
   });
 
+  it("keeps Now owner-focused by default and rolls maintenance up only in the Internal lens", () => {
+    const successfulMaintenance = [
+      {
+        id: "maintenance-1",
+        type: "session",
+        butler: "memory",
+        timestamp: "2026-05-14T11:59:00.000Z",
+        summary: "Scheduled: consolidation",
+        is_heartbeat: false,
+        machine_class: "maintenance" as const,
+        data: { success: true },
+      },
+      {
+        id: "maintenance-2",
+        type: "session",
+        butler: "memory",
+        timestamp: "2026-05-14T11:58:00.000Z",
+        summary: "Scheduled: memory decay sweep",
+        is_heartbeat: false,
+        machine_class: "maintenance" as const,
+        data: { success: true },
+      },
+    ] satisfies TimelineEvent[];
+    const failedMaintenance = {
+      id: "maintenance-failed",
+      type: "error",
+      butler: "memory",
+      timestamp: "2026-05-14T11:57:00.000Z",
+      summary: "Scheduled: consolidation",
+      is_heartbeat: false,
+      machine_class: "maintenance" as const,
+      data: { success: false },
+    } satisfies TimelineEvent;
+    const ownerEvent: TimelineEvent = {
+      id: "owner-1",
+      type: "session",
+      butler: "general",
+      timestamp: "2026-05-14T11:56:00.000Z",
+      summary: "Routed message",
+      is_heartbeat: false,
+      data: {},
+    };
+
+    const defaultModel = deriveOverviewTriageModel(
+      { timeline: [...successfulMaintenance, failedMaintenance, ownerEvent] },
+      { maxTimelineRows: 5 },
+    );
+    expect(defaultModel.nowRows.map((row) => row.id)).toContain("now:activity:owner-1");
+    expect(defaultModel.nowRows.map((row) => row.id)).toContain("now:activity:maintenance-failed");
+    expect(defaultModel.nowRows.map((row) => row.id)).not.toContain("now:activity:maintenance-1");
+    expect(defaultModel.nowRows.map((row) => row.id)).not.toContain("now:activity:maintenance-2");
+
+    const internalModel = deriveOverviewTriageModel(
+      { timeline: [...successfulMaintenance, failedMaintenance, ownerEvent] },
+      { maxTimelineRows: 5, includeInternal: true },
+    );
+    expect(internalModel.nowRows).toContainEqual({
+      id: "now:maintenance:memory",
+      kind: "activity",
+      label: "memory: 3 maintenance runs · 1 failed",
+      detail: "Internal activity · 1 failed",
+      href: "/timeline?internal=1",
+      count: 3,
+      isFailure: true,
+    });
+  });
+
+  it.each([
+    ["running", "maintenance-running", { success: null }],
+    ["unknown without a success value", "maintenance-unknown-missing", {}],
+    ["unknown with a nonboolean success value", "maintenance-unknown-nonboolean", { success: "pending" }],
+  ])("keeps %s maintenance in Now by default", (_state, id, data) => {
+    const maintenance = {
+      id,
+      type: "session",
+      butler: "memory",
+      timestamp: "2026-05-14T11:59:00.000Z",
+      summary: "Scheduled: consolidation",
+      is_heartbeat: false,
+      machine_class: "maintenance" as const,
+      data,
+    } satisfies TimelineEvent;
+
+    const model = deriveOverviewTriageModel(
+      { timeline: [maintenance] },
+      { maxTimelineRows: 5 },
+    );
+
+    expect(model.nowRows).toContainEqual({
+      id: `now:activity:${id}`,
+      kind: "activity",
+      label: "Scheduled: consolidation",
+      detail: "memory · session",
+      href: "/timeline",
+    });
+  });
+
   it("emits a named error row and sets butlersError when butlersError is true", () => {
     const model = deriveOverviewTriageModel({
       boardRows: [],
