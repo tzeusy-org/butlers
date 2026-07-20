@@ -252,6 +252,15 @@ def _ledger_insert_calls(mock_pool: AsyncMock) -> list[tuple[Any, ...]]:
     ]
 
 
+def _deferred_notification_insert_calls(mock_pool: AsyncMock) -> list[tuple[Any, ...]]:
+    """Return fetchval call args whose query persists deferred notifications."""
+    return [
+        call.args
+        for call in mock_pool.fetchval.await_args_list
+        if call.args and "INSERT INTO deferred_notifications" in call.args[0]
+    ]
+
+
 _IN_WINDOW_QUIET_POLICY = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
 _NO_QUIET_POLICY = {"quiet_start_hour": None, "quiet_end_hour": None, "timezone": "UTC"}
 
@@ -340,11 +349,7 @@ class TestQuietHoursLedgerRecording:
         assert result["reason"] == "policy_quiet_hours"
         daemon.switchboard_client.call_tool.assert_not_awaited()
 
-        deferred_calls = [
-            call.args
-            for call in mock_pool.fetchval.await_args_list
-            if call.args and "INSERT INTO deferred_notifications" in call.args[0]
-        ]
+        deferred_calls = _deferred_notification_insert_calls(mock_pool)
         assert len(deferred_calls) == 1
         (_, deferred_butler, deferred_channel, deferred_message, _priority, envelope, *_rest) = (
             deferred_calls[0]
@@ -391,6 +396,117 @@ class TestQuietHoursLedgerRecording:
         assert source == "notify"
         assert outcome == "deferred"
         assert reason == "policy_quiet_hours"
+
+    async def test_explicit_recipient_skips_owner_default_quiet_hours_parking(
+        self, butler_dir: Path
+    ) -> None:
+        """An explicit owner recipient must deliver despite an active owner quiet window."""
+        import butlers.core.approvals_hooks as approval_hooks
+        from butlers.modules.approvals.email_guard import check_recipient
+
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+        owner_resolver = AsyncMock(return_value=MagicMock(roles=["owner"]))
+
+        with (
+            patch.object(approval_hooks, "_recipient_guard_hook", new=check_recipient),
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=owner_resolver,
+            ),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Direct check-in",
+                recipient="explicit-owner-chat",
+                _why="The owner explicitly selected this recipient.",
+                _evidence=[],
+            )
+
+        assert result["status"] == "ok"
+        owner_resolver.assert_awaited_once_with(mock_pool, "telegram", "explicit-owner-chat")
+        assert _deferred_notification_insert_calls(mock_pool) == []
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
+        assert notify_request["delivery"]["recipient"] == "explicit-owner-chat"
+
+    async def test_entity_target_skips_owner_default_quiet_hours_parking(
+        self, butler_dir: Path
+    ) -> None:
+        """An explicit entity target must not be treated as an implicit owner default."""
+        import butlers.core.approvals_hooks as approval_hooks
+        from butlers.modules.approvals.email_guard import check_recipient
+
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+        entity_id = uuid.UUID("00000000-0000-0000-0000-000000000042")
+        entity_resolver = AsyncMock(return_value="entity-owner-chat")
+        owner_resolver = AsyncMock(return_value=MagicMock(roles=["owner"]))
+
+        with (
+            patch.object(approval_hooks, "_recipient_guard_hook", new=check_recipient),
+            patch.object(
+                daemon,
+                "_resolve_entity_channel_identifier",
+                new=entity_resolver,
+            ),
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=owner_resolver,
+            ),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Entity-specific check-in",
+                entity_id=entity_id,
+                _why="This target was selected by entity id.",
+                _evidence=[],
+            )
+
+        assert result["status"] == "ok"
+        entity_resolver.assert_awaited_once_with(
+            entity_id=entity_id,
+            channel="telegram",
+            msg_context=None,
+        )
+        owner_resolver.assert_awaited_once_with(mock_pool, "telegram", "entity-owner-chat")
+        assert _deferred_notification_insert_calls(mock_pool) == []
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
+        assert notify_request["delivery"]["recipient"] == "entity-owner-chat"
+
+    async def test_reply_intent_skips_owner_default_quiet_hours_parking(
+        self, butler_dir: Path
+    ) -> None:
+        """A reply is not an eligible owner-default notification for parking."""
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+
+        result = await notify_fn(
+            channel="telegram",
+            message="Acknowledged.",
+            intent="reply",
+            request_context={
+                "request_id": "01900000-0000-0000-0000-000000000000",
+                "source_channel": "telegram",
+                "source_endpoint_identity": "telegram:reply-target-chat",
+                "source_sender_identity": "owner",
+                "source_thread_identity": "telegram-thread-42",
+            },
+        )
+
+        assert result["status"] == "ok"
+        assert _deferred_notification_insert_calls(mock_pool) == []
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
+        assert notify_request["delivery"]["intent"] == "reply"
+        assert notify_request["delivery"]["recipient"] == "reply-target-chat"
 
     async def test_non_owner_without_dossier_retries_without_persistence_or_ledger(
         self, butler_dir: Path
