@@ -9,7 +9,8 @@ Covers:
 - dispatch_novel_findings: returns all results, empty list, stops at concurrency cap
 - check_open_pr_statuses: no token → empty counts, MERGED/CLOSED states, review tracking
 - _extract_review_state: state extraction from gh pr view JSON
-- _dispatch_pr_review_followup: anonymization failure, dispatch success
+- _dispatch_pr_review_followup: anonymization failure, explicit remote-ref
+  materialization, fail-closed fetch failure
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import json as _test_json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1026,8 +1027,8 @@ async def test_dispatch_pr_review_followup_missing_branch():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_pr_review_followup_success():
-    """Successful anonymization + existing-branch worktree → True, follow_up_count incremented."""
+async def test_dispatch_pr_review_followup_materializes_remote_ref_before_worktree_add():
+    """A fetchable PR head is materialized as origin/<branch> before worktree add."""
     pool = _make_pool()
     attempt_id = uuid.uuid4()
     branch_name = "qa/general/abcdef-1234"
@@ -1043,7 +1044,7 @@ async def test_dispatch_pr_review_followup_success():
         patch(
             "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
             return_value=mock_proc_ok,
-        ),
+        ) as create_process,
         patch("pathlib.Path.mkdir"),
         patch("pathlib.Path.is_dir", return_value=True),
         patch("butlers.core.qa.dispatch._run_review_followup_session", new_callable=AsyncMock),
@@ -1069,10 +1070,21 @@ async def test_dispatch_pr_review_followup_success():
     assert "follow_up_count" in call_sql
     assert "last_follow_up_at" in call_sql
 
+    fetch_call, worktree_call = create_process.await_args_list
+    assert fetch_call.args[:4] == (
+        "git",
+        "fetch",
+        "origin",
+        f"+refs/heads/{branch_name}:refs/remotes/origin/{branch_name}",
+    )
+    assert worktree_call.args[:5] == ("git", "worktree", "add", "-B", branch_name)
+    assert worktree_call.args[-1] == f"origin/{branch_name}"
+    assert "FETCH_HEAD" not in worktree_call.args
+
 
 @pytest.mark.asyncio
-async def test_dispatch_pr_review_followup_worktree_failure():
-    """Worktree creation failure (git fetch error) → returns False."""
+async def test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_fails():
+    """A failed remote-ref materialization never reaches worktree creation."""
     pool = _make_pool()
     attempt_id = uuid.uuid4()
 
@@ -1087,8 +1099,12 @@ async def test_dispatch_pr_review_followup_worktree_failure():
         patch(
             "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
             return_value=mock_proc_fail,
-        ),
+        ) as create_process,
         patch("pathlib.Path.mkdir"),
+        patch(
+            "butlers.core.qa.dispatch._run_review_followup_session",
+            new_callable=AsyncMock,
+        ) as run_followup,
     ):
         result = await _dispatch_pr_review_followup(
             pool=pool,
@@ -1105,3 +1121,15 @@ async def test_dispatch_pr_review_followup_worktree_failure():
             gh_token="token",
         )
     assert result is False
+    create_process.assert_awaited_once_with(
+        "git",
+        "fetch",
+        "origin",
+        "+refs/heads/qa/general/abcdef:refs/remotes/origin/qa/general/abcdef",
+        cwd="/tmp/repo",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env=ANY,
+    )
+    run_followup.assert_not_awaited()
+    pool.execute.assert_not_awaited()

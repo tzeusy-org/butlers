@@ -2904,8 +2904,10 @@ async def _dispatch_pr_review_followup(
             stdout, _ = await proc.communicate()
             return proc.returncode, stdout.decode("utf-8", errors="replace")
 
-        # Ensure the remote branch is available locally
-        fetch_rc, fetch_out = await _run_git_here("fetch", "origin", followup_branch)
+        # Materialize the exact remote-tracking ref that the worktree command
+        # anchors below. A branch-only fetch can leave only FETCH_HEAD behind.
+        remote_refspec = f"+refs/heads/{followup_branch}:refs/remotes/origin/{followup_branch}"
+        fetch_rc, fetch_out = await _run_git_here("fetch", "origin", remote_refspec)
         if fetch_rc != 0:
             logger.warning(
                 "PR review follow-up: git fetch failed for branch %s (attempt=%s): %s",
