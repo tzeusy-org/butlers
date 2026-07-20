@@ -638,10 +638,15 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
     expect(html).not.toContain("Recent patrols");
   });
 
-  // The backend only ever emits "findings_dispatched" (qa.py _VALID_PATROL_STATUSES),
-  // never "dispatched" -- the stale frontend check never matched, so a patrol
-  // that actually dispatched findings rendered as clean-green (bu-qvnce.2).
-  it("colors a findings_dispatched patrol amber, not clean green", () => {
+  it.each([
+    ["clean", "clean", "bg-[var(--green)]"],
+    ["findings_dispatched", "findings dispatched", "bg-[var(--amber)]"],
+    ["suppressed", "findings suppressed", "bg-[var(--amber)]"],
+    ["error", "patrol error", "bg-destructive"],
+    ["running", "patrol running", "bg-muted-foreground"],
+    ["skipped_overlap", "patrol skipped due to overlap", "bg-muted-foreground"],
+    ["future_status", "unknown patrol status", "bg-destructive"],
+  ])("renders %s as %s instead of a clean fallback", (status, label, dotClass) => {
     (useQaPatrols as AnyMock).mockReturnValue({
       data: {
         data: [
@@ -649,7 +654,7 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
             id: "patrol-2",
             started_at: "2026-05-16T00:00:00Z",
             completed_at: "2026-05-16T00:05:00Z",
-            status: "findings_dispatched",
+            status,
             findings_count: 3,
             novel_count: 1,
             dispatched_count: 1,
@@ -666,8 +671,9 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
     const linkIdx = html.indexOf('href="/qa/patrols/patrol-2"');
     expect(linkIdx).toBeGreaterThan(-1);
     const window = html.slice(linkIdx, linkIdx + 300);
-    expect(window).toContain("bg-[var(--amber)]");
-    expect(window).not.toContain("bg-[var(--green)]");
+    expect(window).toContain(dotClass);
+    expect(window).toContain(`<span class="sr-only">${label} patrol, 3 findings</span>`);
+    if (status !== "clean") expect(window).not.toContain("bg-[var(--green)]");
   });
 });
 

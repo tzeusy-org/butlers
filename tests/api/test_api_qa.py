@@ -983,16 +983,49 @@ class TestListPatrols:
         assert response.json()["data"][0]["id"] == str(patrol_id)
         assert response.json()["data"][0]["status"] == "findings_dispatched"
 
-        assert (
-            await _call(
-                _build_app(fetch_rows=[_make_patrol_row(status="clean")], fetchval_result=1)[0],
-                "get",
-                "/api/qa/patrols",
-                params={"status": "clean"},
-            )
-        ).status_code == 200
-        r = await _call(_build_app()[0], "get", "/api/qa/patrols", params={"status": "not_valid"})
-        assert r.status_code == 422 and "not_valid" in r.json()["detail"]
+    @pytest.mark.parametrize(
+        "status",
+        (
+            "running",
+            "clean",
+            "findings_dispatched",
+            "error",
+            "skipped_overlap",
+            "suppressed",
+        ),
+    )
+    async def test_list_patrols_accepts_every_persisted_status_filter(self, status: str) -> None:
+        """Each writer status is accepted by the list filter and applied to SQL."""
+        app, pool = _build_app(fetch_rows=[_make_patrol_row(status=status)], fetchval_result=1)
+
+        response = await _call(app, "get", "/api/qa/patrols", params={"status": status})
+
+        assert response.status_code == 200
+        assert response.json()["data"][0]["status"] == status
+        assert "WHERE status = $1" in pool.fetchval.await_args.args[0]
+        assert pool.fetchval.await_args.args[1] == status
+
+    async def test_list_patrols_rejects_unknown_status_filter_with_vocabulary(self) -> None:
+        """A future filter cannot silently widen the operator's patrol query."""
+        r = await _call(
+            _build_app()[0],
+            "get",
+            "/api/qa/patrols",
+            params={"status": "future_status"},
+        )
+
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert "future_status" in detail
+        for status in (
+            "running",
+            "clean",
+            "findings_dispatched",
+            "error",
+            "skipped_overlap",
+            "suppressed",
+        ):
+            assert status in detail
 
 
 class TestGetCircuitBreakerStatus:
@@ -1028,6 +1061,21 @@ class TestGetCircuitBreakerStatus:
 
 
 class TestGetPatrol:
+    async def test_patrol_detail_preserves_unknown_status_for_read_only_presentation(self) -> None:
+        """A corrupt stored value reaches the fail-closed frontend instead of a 500."""
+        patrol_id = uuid.uuid4()
+        response = await _call(
+            _build_app(
+                fetchrow_result=_make_patrol_row(patrol_id=patrol_id, status="future_status"),
+                fetch_rows=[],
+            )[0],
+            "get",
+            f"/api/qa/patrols/{patrol_id}",
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"]["status"] == "future_status"
+
     async def test_patrol_detail_happy_path_and_error_cases(self) -> None:
         """Returns findings when found; 404 when missing; 422 for invalid UUID."""
         patrol_id = uuid.uuid4()

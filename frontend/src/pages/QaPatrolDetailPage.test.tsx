@@ -129,16 +129,19 @@ describe("QaPatrolDetailPage — header", () => {
     expect(html).toContain("lookback");
   });
 
-  it("renders 'clean' status in caption", () => {
-    setPatrolState({ ...BASE_PATROL, status: "clean" });
+  it.each([
+    ["clean", "clean"],
+    ["findings_dispatched", "findings dispatched"],
+    ["suppressed", "findings suppressed"],
+    ["error", "patrol error"],
+    ["running", "patrol running"],
+    ["skipped_overlap", "patrol skipped due to overlap"],
+    ["future_status", "unknown patrol status"],
+  ])("renders %s as the human label %s", (status, label) => {
+    setPatrolState({ ...BASE_PATROL, status });
     const html = renderPage();
-    expect(html).toContain("clean");
-  });
-
-  it("renders 'dispatched' status in caption for findings_dispatched", () => {
-    setPatrolState({ ...BASE_PATROL, status: "findings_dispatched" });
-    const html = renderPage();
-    expect(html).toContain("dispatched");
+    expect(html).toContain(label);
+    if (status === "future_status") expect(html).not.toContain("future_status");
   });
 });
 

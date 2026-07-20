@@ -359,6 +359,45 @@ describe("ButlerQaInvestigationsTab — all sections present", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: Patrol status presentation
+// ---------------------------------------------------------------------------
+
+describe("ButlerQaInvestigationsTab — patrol status presentation", () => {
+  afterEach(() => cleanup());
+
+  it.each([
+    ["clean", "clean", "default", "bg-[var(--green)]"],
+    ["findings_dispatched", "findings dispatched", "outline", "border-[var(--amber)]"],
+    ["suppressed", "findings suppressed", "outline", "border-[var(--amber)]"],
+    ["error", "patrol error", "destructive", null],
+    ["running", "patrol running", "secondary", null],
+    ["skipped_overlap", "patrol skipped due to overlap", "secondary", null],
+    ["future_status", "unknown patrol status", "destructive", null],
+  ])(
+    "renders %s as the shared %s presentation",
+    (status, label, variant, className) => {
+      vi.resetAllMocks();
+      setupWithData();
+      vi.mocked(useQaPatrols).mockReturnValue({
+        data: {
+          data: [{ ...PATROLS_DATA[0], status }],
+          meta: { total: 1, has_more: false, offset: 0, limit: 24 },
+        },
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useQaPatrols>);
+
+      renderTab();
+
+      const badge = screen.getByText(label);
+      expect(badge.getAttribute("data-variant")).toBe(variant);
+      if (className) expect(badge.className).toContain(className);
+      if (status !== "clean") expect(badge.className).not.toContain("bg-[var(--green)]");
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Tests: KPI values
 // ---------------------------------------------------------------------------
 

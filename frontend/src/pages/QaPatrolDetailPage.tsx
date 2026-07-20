@@ -5,6 +5,7 @@ import { Time } from "@/components/ui/time";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { useQaPatrol } from "@/hooks/use-qa";
 import type { QaFindingRecord } from "@/api/index.ts";
+import { getQaPatrolStatusPresentation } from "@/lib/qa-patrol-status";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -167,21 +168,6 @@ function DispatchedRow({ finding }: { finding: QaFindingRecord }) {
 }
 
 // ---------------------------------------------------------------------------
-// Patrol status label
-// ---------------------------------------------------------------------------
-
-function patrolStatusLabel(status: string): string {
-  const map: Record<string, string> = {
-    clean: "clean",
-    findings_dispatched: "dispatched",
-    running: "running",
-    error: "error",
-    skipped_overlap: "skipped",
-  };
-  return map[status] ?? status;
-}
-
-// ---------------------------------------------------------------------------
 // Loading skeleton
 // ---------------------------------------------------------------------------
 
@@ -225,6 +211,7 @@ export default function QaPatrolDetailPage() {
   const dispatched = patrol.findings.filter((f) => f.healing_attempt_id);
   const duration = formatDuration(patrol.started_at, patrol.completed_at);
   const sourcesLabel = patrol.sources_polled.map(formatSourceType).join(", ");
+  const status = getQaPatrolStatusPresentation(patrol.status);
 
   return (
     <div className="space-y-8">
@@ -243,7 +230,7 @@ export default function QaPatrolDetailPage() {
           Patrol · <Time value={patrol.started_at} mode="absolute" />
         </h1>
         <p className="font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum">
-          {[duration, patrolStatusLabel(patrol.status), sourcesLabel, `${patrol.log_lookback_minutes}m lookback`]
+          {[duration, status.label, sourcesLabel, `${patrol.log_lookback_minutes}m lookback`]
             .filter(Boolean)
             .join(" · ")}
         </p>

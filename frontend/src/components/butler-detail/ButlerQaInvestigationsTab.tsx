@@ -27,6 +27,7 @@ import {
   useQaPatrols,
   useQaSummary,
 } from "@/hooks/use-qa";
+import { getQaPatrolStatusPresentation } from "@/lib/qa-patrol-status";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -174,31 +175,27 @@ interface PatrolStripeProps {
   isLoading: boolean;
 }
 
-function PatrolStatusChip({ status }: { status: string }) {
-  if (status === "clean") {
-    return (
-      <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90 text-xs">
-        clean
-      </Badge>
-    );
+function PatrolStatusChip({ status }: { status: QaPatrolSummary["status"] }) {
+  const presentation = getQaPatrolStatusPresentation(status);
+
+  switch (presentation.tone) {
+    case "healthy":
+      return (
+        <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90 text-xs">
+          {presentation.label}
+        </Badge>
+      );
+    case "attention":
+      return (
+        <Badge variant="outline" className="border-[var(--amber)] text-[var(--amber-text)] text-xs">
+          {presentation.label}
+        </Badge>
+      );
+    case "destructive":
+      return <Badge variant="destructive" className="text-xs">{presentation.label}</Badge>;
+    case "muted":
+      return <Badge variant="secondary" className="text-xs">{presentation.label}</Badge>;
   }
-  if (status === "findings_dispatched") {
-    return (
-      <Badge className="bg-blue-600 text-white hover:bg-blue-600/90 text-xs">
-        dispatched
-      </Badge>
-    );
-  }
-  if (status === "running") {
-    return (
-      <Badge variant="outline" className="border-[var(--amber)] text-[var(--amber-text)] text-xs">
-        running
-      </Badge>
-    );
-  }
-  if (status === "error") return <Badge variant="destructive" className="text-xs">error</Badge>;
-  if (status === "skipped_overlap") return <Badge variant="secondary" className="text-xs">skipped</Badge>;
-  return <Badge variant="outline" className="text-xs">{status}</Badge>;
 }
 
 function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {

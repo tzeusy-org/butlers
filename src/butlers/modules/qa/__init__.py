@@ -46,6 +46,7 @@ from butlers.core.qa.dispatch import (
 from butlers.core.qa.findings import get_dispatch_queued_findings
 from butlers.core.qa.journal import record_patrol_tick_events
 from butlers.core.qa.models import QaFinding
+from butlers.core.qa.patrol_status import QaPatrolStatus, require_patrol_status
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
@@ -438,7 +439,7 @@ class QaModule(Module):
         self._patrol_lock = asyncio.Lock()
         self._current_patrol_id: uuid.UUID | None = None
         self._last_patrol_at: datetime | None = None
-        self._last_patrol_status: str | None = None
+        self._last_patrol_status: QaPatrolStatus | None = None
         self._last_patrol_findings: int = 0
         self._last_patrol_novel: int = 0
         self._last_patrol_dispatched: int = 0
@@ -642,12 +643,15 @@ class QaModule(Module):
         This prevents stale rows from blocking patrol overlap detection on the
         next patrol cycle.
         """
+        stale_status = require_patrol_status("running")
+        recovery_status = require_patrol_status("error")
         try:
             rows = await pool.fetch(
                 """
                 SELECT id FROM public.qa_patrols
-                WHERE status = 'running' AND completed_at IS NULL
-                """
+                WHERE status = $1 AND completed_at IS NULL
+                """,
+                stale_status,
             )
             if not rows:
                 return
@@ -655,11 +659,12 @@ class QaModule(Module):
                 await pool.execute(
                     """
                     UPDATE public.qa_patrols
-                    SET status = 'error',
+                    SET status = $1,
                         completed_at = now(),
                         error_detail = 'daemon restart during patrol'
-                    WHERE id = $1
+                    WHERE id = $2
                     """,
+                    recovery_status,
                     row["id"],
                 )
             logger.info("QaModule startup: recovered %d stale patrol row(s)", len(rows))
@@ -1393,6 +1398,7 @@ class QaModule(Module):
             # "suppressed" means findings were found but all were filtered out
             # by cooldown or severity threshold (novel_count > 0 but nothing
             # dispatched and no dispatch error).
+            patrol_status: QaPatrolStatus
             if error_detail:
                 patrol_status = "error"
             elif findings_count == 0:
@@ -1561,14 +1567,16 @@ class QaModule(Module):
 
     async def _create_patrol_record(self, pool: Any) -> uuid.UUID:
         """Insert a new 'running' patrol record and return its UUID."""
+        initial_status = require_patrol_status("running")
         patrol_id = await pool.fetchval(
             """
             INSERT INTO public.qa_patrols (
                 status, log_lookback_minutes, sources_polled
             )
-            VALUES ('running', $1, $2)
+            VALUES ($1, $2, $3)
             RETURNING id
             """,
+            initial_status,
             self._config.log_lookback_minutes,
             [],
         )
@@ -1578,7 +1586,7 @@ class QaModule(Module):
         self,
         pool: Any,
         patrol_id: uuid.UUID,
-        status: str,
+        status: QaPatrolStatus,
         findings_count: int,
         novel_count: int,
         dispatched_count: int,
@@ -1586,6 +1594,7 @@ class QaModule(Module):
         error_detail: str | None,
     ) -> None:
         """Update the patrol record with final outcome."""
+        status = require_patrol_status(status)
         await pool.execute(
             """
             UPDATE public.qa_patrols
@@ -1609,14 +1618,16 @@ class QaModule(Module):
 
     async def _record_patrol_skip(self, pool: Any) -> None:
         """Insert a skipped_overlap patrol record (no findings, immediate close)."""
+        skipped_status = require_patrol_status("skipped_overlap")
         try:
             await pool.execute(
                 """
                 INSERT INTO public.qa_patrols (
                     status, completed_at, log_lookback_minutes, sources_polled
                 )
-                VALUES ('skipped_overlap', now(), $1, '{}')
+                VALUES ($1, now(), $2, '{}')
                 """,
+                skipped_status,
                 self._config.log_lookback_minutes,
             )
         except Exception:
@@ -1624,7 +1635,7 @@ class QaModule(Module):
 
         if _qa_patrol_total is not None:
             try:
-                _qa_patrol_total.labels(status="skipped_overlap").inc()
+                _qa_patrol_total.labels(status=skipped_status).inc()
             except Exception:
                 logger.debug(
                     "QaModule: failed to record qa_patrol_total metric (skipped_overlap)",

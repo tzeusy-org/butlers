@@ -947,6 +947,8 @@ export type {
   QaKpiBlock,
   QaKnownIssue,
   QaPatrolDetail,
+  QaPatrolReadStatus,
+  QaPatrolStatus,
   QaPatrolsParams,
   QaPatrolSummary,
   QaPrSummary,

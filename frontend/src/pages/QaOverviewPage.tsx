@@ -51,6 +51,7 @@ import {
   useResetQaCircuitBreaker,
 } from "@/hooks/use-qa";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import { getQaPatrolStatusPresentation } from "@/lib/qa-patrol-status";
 
 // ---------------------------------------------------------------------------
 // Filter types (all URL-persisted — see useSearchParams below)
@@ -469,15 +470,6 @@ function DossierPlaceholder({ children }: { children: React.ReactNode }) {
 
 const PATROL_STRIP_LIMIT = 8;
 
-function statusDotClass(status: string): string {
-  if (status === "error" || status === "failed") return "bg-destructive";
-  // Backend patrol status is "findings_dispatched" (qa.py _VALID_PATROL_STATUSES),
-  // not "dispatched" -- the stale check never matched, so dispatched patrols
-  // rendered clean-green instead of amber (bu-qvnce.2).
-  if (status === "findings_dispatched") return "bg-[var(--amber)]";
-  return "bg-[var(--green)]";
-}
-
 function PatrolPulseStrip() {
   const patrols = useQaPatrols({ limit: PATROL_STRIP_LIMIT });
   const rows = patrols.data?.data ?? [];
@@ -512,28 +504,34 @@ function PatrolPulseStrip() {
         <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
           Recent patrols
         </span>
-        {rows.map((patrol) => (
-          <Tip
-            key={patrol.id}
-            content={`${patrol.status} · ${patrol.findings_count} findings`}
-          >
-            <Link
-              to={`/qa/patrols/${patrol.id}`}
-              className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/60"
+        {rows.map((patrol) => {
+          const status = getQaPatrolStatusPresentation(patrol.status);
+          return (
+            <Tip
+              key={patrol.id}
+              content={`${status.label} · ${patrol.findings_count} findings`}
             >
-              <span
-                aria-hidden="true"
-                className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass(patrol.status)}`}
-              />
-              <Time
-                value={patrol.started_at}
-                mode="relative"
-                className="font-mono text-[10px] text-muted-foreground"
-                showTitle={false}
-              />
-            </Link>
-          </Tip>
-        ))}
+              <Link
+                to={`/qa/patrols/${patrol.id}`}
+                className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/60"
+              >
+                <span className="sr-only">
+                  {status.label} patrol, {patrol.findings_count} findings
+                </span>
+                <span
+                  aria-hidden="true"
+                  className={`inline-block h-1.5 w-1.5 rounded-full ${status.dotClassName}`}
+                />
+                <Time
+                  value={patrol.started_at}
+                  mode="relative"
+                  className="font-mono text-[10px] text-muted-foreground"
+                  showTitle={false}
+                />
+              </Link>
+            </Tip>
+          );
+        })}
       </div>
     </FetchingDim>
   );

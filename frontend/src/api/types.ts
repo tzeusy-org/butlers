@@ -5128,12 +5128,27 @@ export interface SteamDisconnectResponse {
 // QA Staffer
 // ---------------------------------------------------------------------------
 
+/** Canonical persisted values accepted by GET /api/qa/patrols?status=. */
+export type QaPatrolStatus =
+  | "running"
+  | "clean"
+  | "findings_dispatched"
+  | "error"
+  | "skipped_overlap"
+  | "suppressed";
+
+/**
+ * Patrol reads stay open to a malformed or future database value so the UI can
+ * make that condition visible through its fail-closed presentation.
+ */
+export type QaPatrolReadStatus = QaPatrolStatus | (string & { readonly __qaPatrolStatus?: never });
+
 /** Lightweight patrol record for list views — GET /api/qa/patrols */
 export interface QaPatrolSummary {
   id: string;
   started_at: string;
   completed_at: string | null;
-  status: string;
+  status: QaPatrolReadStatus;
   findings_count: number;
   novel_count: number;
   dispatched_count: number;
@@ -5404,7 +5419,7 @@ export interface QaDismissRequest {
 export interface QaPatrolsParams {
   offset?: number;
   limit?: number;
-  status?: string;
+  status?: QaPatrolStatus;
 }
 
 /** A single investigation record — GET /api/qa/investigations */

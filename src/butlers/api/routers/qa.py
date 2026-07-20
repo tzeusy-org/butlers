@@ -76,6 +76,11 @@ from butlers.core.model_routing import get_breaker_states
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes
+from butlers.core.qa.patrol_status import (
+    VALID_PATROL_STATUSES,
+    is_valid_patrol_status,
+    require_patrol_status,
+)
 from butlers.core.qa.repo_whitelist import parse_repo_url
 from butlers.core.qa.severity import (
     escalated_open_cases_sql,
@@ -340,6 +345,9 @@ class QaPatrolSummary(BaseModel):
     id: uuid.UUID
     started_at: datetime
     completed_at: datetime | None = None
+    # Read status remains transparent so a malformed/future stored value can
+    # reach the dashboard's explicit fail-closed presentation instead of
+    # turning a patrol response into a generic server error.
     status: str
     findings_count: int
     novel_count: int
@@ -1821,20 +1829,11 @@ async def list_patrols(
     args: list[Any] = []
     idx = 1
 
-    _VALID_PATROL_STATUSES = {
-        "running",
-        "clean",
-        "findings_dispatched",
-        "error",
-        "skipped_overlap",
-        "suppressed",
-    }
-
     if status is not None:
-        if status not in _VALID_PATROL_STATUSES:
+        if not is_valid_patrol_status(status):
             raise HTTPException(
                 status_code=422,
-                detail=f"Invalid status '{status}'. Valid values: {sorted(_VALID_PATROL_STATUSES)}",
+                detail=f"Invalid status '{status}'. Valid values: {sorted(VALID_PATROL_STATUSES)}",
             )
         conditions.append(f"status = ${idx}")
         args.append(status)
@@ -2930,6 +2929,7 @@ async def create_synthetic_finding(
     pool = _shared_pool(db)
     now = datetime.now(tz=UTC)
     patrol_id = uuid.uuid4()
+    synthetic_patrol_status = require_patrol_status("suppressed")
     patrol_error_detail = "Synthetic validation placeholder patrol created by dashboard API"
 
     fp_result = compute_fingerprint_from_report(
@@ -2951,9 +2951,10 @@ async def create_synthetic_finding(
             id, completed_at, status, findings_count, novel_count, dispatched_count,
             log_lookback_minutes, sources_polled, error_detail
         )
-        VALUES ($1, now(), 'suppressed', 0, 0, 0, 0, '{}', $2)
+        VALUES ($1, now(), $2, 0, 0, 0, 0, '{}', $3)
         """,
         patrol_id,
+        synthetic_patrol_status,
         patrol_error_detail,
     )
 
