@@ -7,11 +7,10 @@
 // pending, and toast feedback that surfaces the API error message.
 //
 // Measurements are TEMPORAL facts: `measured_at` is the reading time and
-// multiple readings coexist by design (no supersession). `type` is one of
-// weight/blood_pressure/heart_rate/blood_sugar/temperature and is encoded in
-// the backing predicate, so changing it rewrites the `measurement_{type}` fact.
-// `value` is JSONB: blood_pressure is a compound { systolic, diastolic } dict;
-// every other type is a scalar wrapped as { value: N }.
+// multiple readings coexist by design (no supersession). New entries are
+// limited to the five direct-write types below. Existing readings can also
+// originate from connectors with arbitrary type slugs and JSONB value shapes;
+// those are edited through the generic object editor without rewriting type.
 //
 // Pair it with the `useCreateMeasurement` / `useUpdateMeasurement` hooks in
 // hooks/use-health.ts.
@@ -21,7 +20,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
-import type { Measurement, MeasurementType } from "@/api/types";
+import type { Measurement, MeasurementType, MeasurementUpdateRequest } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -44,6 +43,10 @@ const TYPE_META: Record<MeasurementType, { label: string; unit: string }> = {
   blood_sugar: { label: "Blood sugar", unit: "mg/dL" },
   temperature: { label: "Temperature", unit: "°C" },
 };
+
+function isCoreMeasurementType(type: string): type is MeasurementType {
+  return MEASUREMENT_TYPES.some((candidate) => candidate === type);
+}
 
 interface MeasurementFormProps {
   /** When provided, the form edits this measurement; otherwise it logs a new one. */
@@ -85,16 +88,31 @@ function valueField(measurement: Measurement | undefined, key: string): string {
   return v == null ? "" : String(v);
 }
 
+/** Parse a connector-provided JSONB value while requiring the API's object shape. */
+function parseValueObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFormProps) {
   const isEdit = measurement != null;
 
-  const initialType = (measurement?.type as MeasurementType) ?? "weight";
-  const [type, setType] = useState<MeasurementType>(initialType);
+  const [type, setType] = useState(measurement?.type ?? "weight");
   // Scalar value (every type except blood_pressure).
   const [scalar, setScalar] = useState(valueField(measurement, "value"));
   // Compound value (blood_pressure).
   const [systolic, setSystolic] = useState(valueField(measurement, "systolic"));
   const [diastolic, setDiastolic] = useState(valueField(measurement, "diastolic"));
+  // Connector-provided measurements can carry any JSON object, not only the
+  // scalar and blood-pressure shapes exposed by the direct-write UI.
+  const [valueObject, setValueObject] = useState(() =>
+    JSON.stringify(measurement?.value ?? {}, null, 2),
+  );
   const [measuredAt, setMeasuredAt] = useState(isoToDateInput(measurement?.measured_at));
   const [notes, setNotes] = useState(measurement?.notes ?? "");
 
@@ -102,7 +120,9 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
   const updateMutation = useUpdateMeasurement();
   const isPending = createMutation.isPending || updateMutation.isPending;
 
-  const isCompound = type === "blood_pressure";
+  const isCoreType = isCoreMeasurementType(type);
+  const usesGenericValueEditor = isEdit && !isCoreType;
+  const isCompound = isCoreType && type === "blood_pressure";
 
   function handleError(err: unknown) {
     const message =
@@ -111,16 +131,19 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
   }
 
   /** Build the JSONB value payload, or null when the inputs are invalid/blank. */
-  function buildValue(): Record<string, number> | null {
+  function buildValue(): Record<string, unknown> | null {
+    if (usesGenericValueEditor) return parseValueObject(valueObject);
+
+    const existingValue = measurement?.value ?? {};
     if (isCompound) {
       const sys = parseNumber(systolic);
       const dia = parseNumber(diastolic);
       if (sys == null || dia == null) return null;
-      return { systolic: sys, diastolic: dia };
+      return { ...existingValue, systolic: sys, diastolic: dia };
     }
     const v = parseNumber(scalar);
     if (v == null) return null;
-    return { value: v };
+    return { ...existingValue, value: v };
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -129,7 +152,9 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
     const value = buildValue();
     if (value == null) {
       toast.error(
-        isCompound
+        usesGenericValueEditor
+          ? "Value must be a valid JSON object."
+          : isCompound
           ? "Systolic and diastolic are required."
           : "A numeric value is required.",
       );
@@ -141,17 +166,25 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
 
     try {
       if (isEdit) {
+        const body: MeasurementUpdateRequest = {
+          value,
+          measured_at: measuredIso,
+          notes: trimmedNotes === "" ? null : trimmedNotes,
+        };
+        // A type change is only valid for the existing five direct-write
+        // types. Omit it for connector-provided readings so their predicate
+        // remains unchanged.
+        if (isCoreMeasurementType(type)) body.type = type;
         await updateMutation.mutateAsync({
           id: measurement.id,
-          body: {
-            type,
-            value,
-            measured_at: measuredIso,
-            notes: trimmedNotes === "" ? null : trimmedNotes,
-          },
+          body,
         });
         toast.success("Measurement updated.");
       } else {
+        if (!isCoreMeasurementType(type)) {
+          toast.error("Choose a supported measurement type.");
+          return;
+        }
         await createMutation.mutateAsync({
           type,
           value,
@@ -166,25 +199,40 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
     }
   }
 
-  const unit = TYPE_META[type].unit;
+  const typeMeta = isCoreMeasurementType(type) ? TYPE_META[type] : null;
+  const unit = typeMeta?.unit ?? "";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" data-testid="measurement-form">
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="meas-type">Type</Label>
-          <select
-            id="meas-type"
-            value={type}
-            onChange={(e) => setType(e.target.value as MeasurementType)}
-            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
-          >
-            {MEASUREMENT_TYPES.map((opt) => (
-              <option key={opt} value={opt}>
-                {TYPE_META[opt].label}
-              </option>
-            ))}
-          </select>
+          {usesGenericValueEditor ? (
+            <Input
+              id="meas-type"
+              value={type}
+              disabled
+              aria-describedby="meas-type-help"
+            />
+          ) : (
+            <select
+              id="meas-type"
+              value={type}
+              onChange={(e) => setType(e.target.value)}
+              className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            >
+              {MEASUREMENT_TYPES.map((opt) => (
+                <option key={opt} value={opt}>
+                  {TYPE_META[opt].label}
+                </option>
+              ))}
+            </select>
+          )}
+          {usesGenericValueEditor && (
+            <p id="meas-type-help" className="text-xs text-muted-foreground">
+              This type comes from its source and cannot be changed here.
+            </p>
+          )}
         </div>
         <div className="space-y-2">
           <Label htmlFor="meas-measured">Measured (optional)</Label>
@@ -197,7 +245,21 @@ export function MeasurementForm({ measurement, onDone, onCancel }: MeasurementFo
         </div>
       </div>
 
-      {isCompound ? (
+      {usesGenericValueEditor ? (
+        <div className="space-y-2">
+          <Label htmlFor="meas-value-json">Value (JSON)</Label>
+          <Textarea
+            id="meas-value-json"
+            value={valueObject}
+            onChange={(e) => setValueObject(e.target.value)}
+            placeholder='{ "value": 0 }'
+            rows={7}
+          />
+          <p className="text-xs text-muted-foreground">
+            Keep this as a JSON object so every value supplied by the source is retained.
+          </p>
+        </div>
+      ) : isCompound ? (
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="meas-systolic">Systolic ({unit})</Label>

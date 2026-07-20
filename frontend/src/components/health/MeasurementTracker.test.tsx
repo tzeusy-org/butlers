@@ -46,8 +46,16 @@ vi.mock("@/hooks/use-health", () => ({
           notes: "morning",
           created_at: "2026-01-01T00:00:00Z",
         },
+        {
+          id: "meas-hrv",
+          type: "hrv",
+          value: { daily_rmssd: 28.4, deep_rmssd: 31.2, coverage: 0.86 },
+          measured_at: "2026-01-02T00:00:00Z",
+          notes: null,
+          created_at: "2026-01-02T00:00:00Z",
+        },
       ],
-      meta: { total: 1, has_more: false },
+      meta: { total: 2, has_more: false },
     },
     isLoading: false,
   }),
@@ -129,6 +137,40 @@ describe("MeasurementTracker — direct CRUD", () => {
     expect(updateMutate).toHaveBeenCalledWith({
       id: "meas-1",
       body: expect.objectContaining({ type: "weight", value: { value: 72 } }),
+    });
+  });
+
+  it("edits an unknown compound reading without rewriting its type or value keys", async () => {
+    renderTracker();
+
+    fireEvent.click(screen.getByRole("button", { name: /edit hrv/i }));
+
+    const type = screen.getByLabelText("Type") as HTMLInputElement;
+    expect(type.value).toBe("hrv");
+    expect(type.disabled).toBe(true);
+
+    const value = screen.getByLabelText("Value (JSON)") as HTMLTextAreaElement;
+    expect(JSON.parse(value.value)).toEqual({
+      daily_rmssd: 28.4,
+      deep_rmssd: 31.2,
+      coverage: 0.86,
+    });
+    fireEvent.change(value, {
+      target: {
+        value: JSON.stringify({ daily_rmssd: 29.1, deep_rmssd: 31.2, coverage: 0.86 }),
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    expect(updateMutate).toHaveBeenCalledWith({
+      id: "meas-hrv",
+      body: {
+        value: { daily_rmssd: 29.1, deep_rmssd: 31.2, coverage: 0.86 },
+        measured_at: "2026-01-02T12:00:00.000Z",
+        notes: null,
+      },
     });
   });
 
