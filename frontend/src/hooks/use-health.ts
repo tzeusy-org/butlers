@@ -20,6 +20,7 @@ import {
   getConditions,
   getMeals,
   getNutritionSummary,
+  getMeasurementTypes,
   getMeasurements,
   getMeasurementsLatest,
   getMeasurementSources,
@@ -61,12 +62,25 @@ import type {
   SymptomUpdateRequest,
 } from "@/api/index.ts";
 
+/** Fetch the observed active measurement vocabulary for Health read surfaces. */
+export function useMeasurementTypes() {
+  return useQuery({
+    queryKey: ["health-measurement-types"],
+    queryFn: getMeasurementTypes,
+    refetchInterval: 30_000,
+  });
+}
+
 /** Fetch a paginated list of health measurements. */
-export function useMeasurements(params?: MeasurementParams) {
+export function useMeasurements(
+  params?: MeasurementParams,
+  options?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: ["health-measurements", params],
     queryFn: () => getMeasurements(params),
     refetchInterval: 30_000,
+    enabled: options?.enabled ?? true,
   });
 }
 
@@ -76,12 +90,15 @@ export function useMeasurements(params?: MeasurementParams) {
  * Deterministic read — auto-refreshes every 30s per the health auto-refresh
  * contract. Disabled until a `type` is supplied.
  */
-export function useMeasurementTrend(params: MeasurementTrendParams) {
+export function useMeasurementTrend(
+  params: MeasurementTrendParams,
+  options?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: ["health-measurement-trend", params],
     queryFn: () => getMeasurementsTrend(params),
     refetchInterval: 30_000,
-    enabled: !!params.type,
+    enabled: !!params.type && (options?.enabled ?? true),
   });
 }
 
@@ -93,8 +110,12 @@ export function useMeasurementTrend(params: MeasurementTrendParams) {
  */
 function useInvalidateMeasurements() {
   const queryClient = useQueryClient();
-  return () =>
+  return () => {
     queryClient.invalidateQueries({ queryKey: ["health-measurements"] });
+    queryClient.invalidateQueries({ queryKey: ["health-measurement-types"] });
+    queryClient.invalidateQueries({ queryKey: ["health-measurements-latest"] });
+    queryClient.invalidateQueries({ queryKey: ["health-measurement-trend"] });
+  };
 }
 
 /**

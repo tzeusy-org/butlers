@@ -10,8 +10,9 @@
  *   - DateEyebrow + BriefingStatus pill (manual refresh via pill; NO auto-refresh)
  *   - Display headline: single most important current health fact
  *   - Voice elaboration paragraph
- *   - KpiStrip: 4 cells — weight, blood_pressure, heart_rate, blood_sugar
- *     sourced from GET /api/health/measurements/latest
+ *   - KpiStrip: 4 structural cells — observed core vitals retain their slots;
+ *     eligible dynamic types may fill absent core positions, sourced from
+ *     GET /api/health/measurements/types + /latest
  *   - Data-freshness chip from GET /api/health/measurements/sources
  *
  * Right column (indexes):
@@ -22,8 +23,8 @@
  * Cost guards:
  *   - useHealthBriefing sets NO refetchInterval (5-min TTL + manual pill refresh)
  *   - useInsights sets NO refetchInterval (manual pill refresh)
- *   - useMeasurementsLatest and useMeasurementSources use their deterministic
- *     30s/60s intervals from use-health.ts
+ *   - useMeasurementTypes, useMeasurementsLatest, and useMeasurementSources
+ *     use their deterministic 30s/60s intervals from use-health.ts
  *
  * Design contracts:
  *   - Health hue (--category-5 / "health" slot) ONLY on ButlerMark
@@ -44,7 +45,12 @@ import { useHealthBriefing } from "@/hooks/use-health-briefing.ts";
 import { useInsights } from "@/hooks/use-insights.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { healthInsightSeverity } from "@/lib/health-insight-priority";
-import { useMeasurementsLatest, useMeasurementSources } from "@/hooks/use-health.ts";
+import {
+  useMeasurementsLatest,
+  useMeasurementSources,
+  useMeasurementTypes,
+} from "@/hooks/use-health.ts";
+import { selectKpiMeasurementSlots } from "@/lib/measurement-vocabulary";
 import type { LatestMeasurementEntry, MeasurementSource } from "@/api/types.ts";
 import type { InsightCandidate } from "@/api/types.ts";
 
@@ -94,8 +100,9 @@ function fmtScalar(
 
 function fmtNum(raw: string | number | null | undefined): string {
   if (raw === undefined || raw === null) return "—";
-  const n = typeof raw === "string" ? parseFloat(raw) : raw;
-  if (isNaN(n)) return "—";
+  if (typeof raw === "string" && !raw.trim()) return "—";
+  const n = typeof raw === "string" ? Number(raw) : raw;
+  if (!Number.isFinite(n)) return "—";
   return n % 1 === 0 ? String(n) : n.toFixed(1);
 }
 
@@ -302,7 +309,6 @@ function toAttentionItems(candidates: InsightCandidate[]): AttentionListItem[] {
 // Page
 // ---------------------------------------------------------------------------
 
-const KPI_TYPES = ["weight", "blood_pressure", "heart_rate", "blood_sugar"];
 const INSIGHT_PARAMS = { butler: "health", status: "pending" };
 
 export default function HealthOverviewPage() {
@@ -314,8 +320,24 @@ export default function HealthOverviewPage() {
     refetch: refetchBriefing,
   } = useHealthBriefing();
 
-  // --- KPI measurements latest ---
-  const { data: latestData, isError: measurementsError } = useMeasurementsLatest(KPI_TYPES);
+  // --- KPI measurement vocabulary + latest readings ---
+  const {
+    data: measurementTypesData,
+    isLoading: measurementTypesLoading,
+    isError: measurementTypesError,
+    refetch: refetchMeasurementTypes,
+  } = useMeasurementTypes();
+  const measurementTypes = measurementTypesData?.types ?? [];
+  const kpiSlots = selectKpiMeasurementSlots(measurementTypes);
+  const kpiTypes = kpiSlots.flatMap((slot) => (slot.type ? [slot.type] : []));
+  const {
+    data: latestData,
+    isLoading: latestMeasurementsLoading,
+    isError: latestMeasurementsError,
+    refetch: refetchLatestMeasurements,
+  } = useMeasurementsLatest(
+    measurementTypesLoading || measurementTypesError ? [] : kpiTypes,
+  );
   const measurements = latestData?.measurements ?? {};
 
   // --- Source freshness ---
@@ -354,24 +376,20 @@ export default function HealthOverviewPage() {
       "Your health butler is composing a fresh briefing. Check back in a moment.");
 
   // --- KPI strip cells ---
-  const weightEntry = measurements["weight"] ?? null;
-  const bpEntry = measurements["blood_pressure"] ?? null;
-  const hrEntry = measurements["heart_rate"] ?? null;
-  const bsEntry = measurements["blood_sugar"] ?? null;
-
-  // Each cell threads the reading's measured_at age into its delta line
-  // (amber past the vital's freshness SLA) and its data source into a tooltip,
-  // so a week-old weight no longer renders as current with zero age signal.
-  const kpiCells: [
+  // Core slots stay in place when observed. If a future server contract marks
+  // an alternate type KPI-eligible, the pure slot selector fills only an
+  // absent core position, preserving the structural four-cell strip.
+  const kpiLoading = measurementTypesLoading || latestMeasurementsLoading;
+  const kpiCells = kpiSlots.map((slot) => {
+    const entry = slot.type ? measurements[slot.type] ?? null : null;
+    const value = slot.type === "blood_pressure" ? fmtBloodPressure(entry) : fmtScalar(entry);
+    const cell = buildVitalCell(slot.label, slot.type ?? "", value, entry);
+    return kpiLoading ? { ...cell, delta: "Loading…" } : cell;
+  }) as [
     ReturnType<typeof buildVitalCell>,
     ReturnType<typeof buildVitalCell>,
     ReturnType<typeof buildVitalCell>,
     ReturnType<typeof buildVitalCell>,
-  ] = [
-    buildVitalCell("Weight", "weight", fmtScalar(weightEntry), weightEntry),
-    buildVitalCell("Blood pressure", "blood_pressure", fmtBloodPressure(bpEntry), bpEntry),
-    buildVitalCell("Heart rate", "heart_rate", fmtScalar(hrEntry), hrEntry),
-    buildVitalCell("Blood sugar", "blood_sugar", fmtScalar(bsEntry), bsEntry),
   ];
 
   // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
@@ -459,16 +477,28 @@ export default function HealthOverviewPage() {
           {/* Voice elaboration paragraph */}
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
-          {/* KPI strip: weight / blood_pressure / heart_rate / blood_sugar.
-              Cells fall back to "—" (never a fake number) when a reading is
-              absent; a source error additionally gets a named degraded note
-              below so "—" everywhere doesn't get mistaken for "no data logged". */}
+          {/* KPI strip: exactly four structural cells. Observed core vital
+              positions are retained and server-eligible dynamic types may fill
+              an absent one. Cells fall back to "—" (never a fake number) when
+              a reading is absent; a source error additionally gets a named
+              degraded note below so "—" everywhere doesn't get mistaken for
+              "no data logged". */}
           <Section eyebrow="Vitals">
             <KpiStrip cells={kpiCells} />
-            {measurementsError && (
+            {measurementTypesError && (
+              <SourceDegradedNote
+                label="Vitals"
+                detail="measurement vocabulary unavailable, cells cannot be selected safely"
+                onRetry={() => void refetchMeasurementTypes()}
+                className="mt-2"
+                testId="measurement-types-degraded"
+              />
+            )}
+            {latestMeasurementsError && (
               <SourceDegradedNote
                 label="Vitals"
                 detail="measurements source unavailable, readings above may be stale or missing"
+                onRetry={() => void refetchLatestMeasurements()}
                 className="mt-2"
               />
             )}

@@ -263,7 +263,10 @@ suffix (`type`) and include `type`, deterministic slug-derived `label`,
 
 This is an observed read vocabulary: it includes unknown/imported types but
 does not alter the fixed five-type manual measurement writer allowlist.
-`kpi_eligible` separately marks the fixed four dashboard KPI slots.
+`kpi_eligible` identifies server-authorized candidates for the fixed four
+structural dashboard KPI positions. The current server marks the four core
+types; a future non-core eligible type can fill only an absent core position,
+not add a cell or displace an observed core type.
 
 ## Connectors Contract
 

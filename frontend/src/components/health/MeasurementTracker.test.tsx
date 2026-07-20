@@ -33,8 +33,47 @@ function renderTracker(initialPath = "/health/measurements") {
 const createMutate = vi.fn().mockResolvedValue({});
 const updateMutate = vi.fn().mockResolvedValue({});
 const deleteMutate = vi.fn().mockResolvedValue(undefined);
+const refetchMeasurementTypes = vi.fn();
+
+const defaultMeasurementTypesResult = {
+  data: {
+    types: [
+      {
+        type: "weight",
+        label: "Weight",
+        sample_count: 1,
+        latest_at: "2026-01-01T00:00:00Z",
+        unit: "kg",
+        value_shape: "scalar" as const,
+        chart_eligible: true,
+        kpi_eligible: true,
+      },
+      {
+        type: "hrv",
+        label: "HRV",
+        sample_count: 1,
+        latest_at: "2026-01-02T00:00:00Z",
+        unit: "ms",
+        value_shape: "scalar" as const,
+        chart_eligible: true,
+        kpi_eligible: false,
+      },
+    ],
+  },
+  isLoading: false,
+  isError: false,
+  refetch: refetchMeasurementTypes,
+};
+type MeasurementTypesResult = {
+  data: typeof defaultMeasurementTypesResult.data | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  refetch: typeof refetchMeasurementTypes;
+};
+let measurementTypesResult: MeasurementTypesResult = defaultMeasurementTypesResult;
 
 vi.mock("@/hooks/use-health", () => ({
+  useMeasurementTypes: () => measurementTypesResult,
   useMeasurements: () => ({
     data: {
       data: [
@@ -71,6 +110,7 @@ vi.mock("sonner", () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  measurementTypesResult = defaultMeasurementTypesResult;
 });
 
 describe("MeasurementTracker — direct CRUD", () => {
@@ -200,5 +240,65 @@ describe("MeasurementTracker — URL-backed type filter (bu-qvnce.13)", () => {
     renderTracker();
     const select = screen.getByLabelText("Filter by type") as HTMLSelectElement;
     expect(select.value).toBe("");
+  });
+
+  it("uses the observed vocabulary for filter options, including HRV", () => {
+    renderTracker("/health/measurements?type=hrv");
+
+    const select = screen.getByLabelText("Filter by type") as HTMLSelectElement;
+    expect(select.value).toBe("hrv");
+    expect(Array.from(select.options).map((option) => option.text)).toEqual([
+      "All types",
+      "Weight",
+      "HRV",
+    ]);
+  });
+
+  it("keeps an unknown URL-selected type visible without inventing it", () => {
+    renderTracker("/health/measurements?type=resting_hr");
+
+    const select = screen.getByLabelText("Filter by type") as HTMLSelectElement;
+    expect(select.value).toBe("resting_hr");
+    expect(Array.from(select.options).map((option) => option.text)).toContain(
+      "resting_hr (selected)",
+    );
+  });
+
+  it("keeps a controlled clear path while vocabulary loading is in progress", () => {
+    measurementTypesResult = {
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      refetch: refetchMeasurementTypes,
+    };
+    renderTracker("/health/measurements?type=resting_hr");
+
+    const select = screen.getByLabelText("Filter by type") as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+    expect(Array.from(select.options).map((option) => option.text)).toEqual([
+      "All types",
+      "resting_hr (selected)",
+    ]);
+    expect(screen.getByText("Loading measurement types…")).toBeTruthy();
+  });
+
+  it("keeps a controlled clear path for an unknown URL type when vocabulary loading fails", () => {
+    measurementTypesResult = {
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: refetchMeasurementTypes,
+    };
+    renderTracker("/health/measurements?type=resting_hr");
+
+    const select = screen.getByLabelText("Filter by type") as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+    expect(Array.from(select.options).map((option) => option.text)).toEqual([
+      "All types",
+      "resting_hr (selected)",
+    ]);
+    fireEvent.change(select, { target: { value: "" } });
+    expect(select.value).toBe("");
+    expect(screen.getByText(/measurement types: unavailable/i)).toBeTruthy();
   });
 });

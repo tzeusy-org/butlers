@@ -13,33 +13,25 @@ import {
 import type {
   Measurement,
   MeasurementParams,
+  MeasurementTypeInfo,
   MeasurementTrendWindowDays,
 } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
+import { chartableMeasurementTypes } from "@/lib/measurement-vocabulary";
 import { cn } from "@/lib/utils";
-import { useMeasurements, useMeasurementTrend } from "@/hooks/use-health";
+import {
+  useMeasurements,
+  useMeasurementTrend,
+  useMeasurementTypes,
+} from "@/hooks/use-health";
 import { butlerHueVar } from "@/components/ui/ButlerMark";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-// Only types the system can actually produce. The legacy `glucose`, `sleep`,
-// and `oxygen` tabs are dropped — the create form can never produce them, so
-// they yielded a perpetual "No data" state. `blood_sugar`, `spo2`, and `steps`
-// are the real predicates the fact store carries.
-const CHART_TYPES = [
-  "weight",
-  "blood_pressure",
-  "heart_rate",
-  "blood_sugar",
-  "temperature",
-  "spo2",
-  "steps",
-] as const;
 
 // Trend lookback windows (days) — each wired to the real `window_days` query param.
 const TREND_WINDOWS: { value: MeasurementTrendWindowDays; label: string }[] = [
@@ -89,15 +81,30 @@ function useCategoryHue(): string {
   return hue;
 }
 
-/** Extract a numeric value from a measurement for charting. */
+/** Convert only finite numeric values into chart points. */
+function finiteNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Extract a named numeric value from a measurement for charting. */
 function extractValue(m: Measurement, key: string): number | null {
   const v = m.value[key];
-  if (typeof v === "number") return v;
-  if (typeof v === "string") {
-    const n = Number(v);
-    return Number.isNaN(n) ? null : n;
-  }
-  return null;
+  return finiteNumber(v);
+}
+
+function chartDate(measuredAt: string): string {
+  const date = new Date(measuredAt);
+  return Number.isNaN(date.getTime()) ? "Unknown date" : format(date, "MMM d");
+}
+
+interface ChartPoint {
+  date: string;
+  value?: number | null;
+  systolic?: number | null;
+  diastolic?: number | null;
 }
 
 /** Format a measurement's value object as a readable string for display. */
@@ -116,6 +123,7 @@ function formatValue(m: Measurement): string {
 
 /** Round a trend value to at most one decimal place. */
 function formatTrendValue(value: number): string {
+  if (!Number.isFinite(value)) return "—";
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
@@ -141,39 +149,66 @@ function EmptyLine({ children }: { children: React.ReactNode }) {
 // ---------------------------------------------------------------------------
 
 export default function MeasurementChart({ initialType }: MeasurementChartProps) {
-  const [activeType, setActiveType] = useState<string>(initialType ?? "weight");
+  const [requestedType, setRequestedType] = useState<string>(initialType ?? "weight");
   const [windowDays, setWindowDays] = useState<MeasurementTrendWindowDays>(14);
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const [showTable, setShowTable] = useState(false);
+  const {
+    data: measurementTypesData,
+    isLoading: measurementTypesLoading,
+    isError: measurementTypesError,
+    refetch: refetchMeasurementTypes,
+  } = useMeasurementTypes();
+  const chartTypes = useMemo(
+    () => chartableMeasurementTypes(measurementTypesData?.types ?? []),
+    [measurementTypesData],
+  );
+  const activeTypeInfo = useMemo<MeasurementTypeInfo | undefined>(
+    () =>
+      chartTypes.find((measurementType) => measurementType.type === requestedType) ??
+      chartTypes[0],
+    [chartTypes, requestedType],
+  );
+  const activeType = activeTypeInfo?.type ?? "";
+  const typeLabel = (activeTypeInfo?.label ?? activeType) || "measurement";
+  const vocabularyReady = !measurementTypesLoading && !measurementTypesError;
+  const isBP = activeType === "blood_pressure";
+  // The trend endpoint aggregates metadata.value as a scalar float. Compound
+  // readings have a tab and raw-data view, but no implicit series key is safe.
+  const supportsTrend = activeTypeInfo?.value_shape === "scalar";
 
   const hue = useCategoryHue();
 
   // --- Trend (the leading surface) ------------------------------------------
-  const trendQuery = useMeasurementTrend({
-    type: activeType,
-    window_days: windowDays,
-    bucket: "daily",
-  });
+  const trendQuery = useMeasurementTrend(
+    {
+      type: supportsTrend ? activeType : "",
+      window_days: windowDays,
+      bucket: "daily",
+    },
+    { enabled: vocabularyReady && supportsTrend },
+  );
   const buckets = useMemo(() => trendQuery.data?.buckets ?? [], [trendQuery.data]);
   // Show newest bucket first so the most relevant data is at the top.
   const reversedBuckets = useMemo(() => [...buckets].reverse(), [buckets]);
 
   // --- Raw measurements (chart + table) -------------------------------------
   const params: MeasurementParams = {
-    type: activeType,
+    type: activeType || undefined,
     since: since || undefined,
     until: until || undefined,
     limit: 500,
   };
-  const { data, isLoading, isError, refetch } = useMeasurements(params);
+  const { data, isLoading, isError, refetch } = useMeasurements(params, {
+    enabled: vocabularyReady && !!activeType,
+  });
   const measurements = useMemo(() => data?.data ?? [], [data]);
 
-  const isBP = activeType === "blood_pressure";
-
-  // Build chart data
-  const chartData = useMemo(() => {
-    if (!measurements.length) return [];
+  // Build only semantically named series: scalars use the API's normalized
+  // value key, while blood pressure has its explicit two-key contract.
+  const chartData = useMemo<ChartPoint[]>(() => {
+    if (!measurements.length || (!supportsTrend && !isBP)) return [];
 
     const sorted = [...measurements].sort(
       (a, b) => new Date(a.measured_at).getTime() - new Date(b.measured_at).getTime(),
@@ -181,37 +216,60 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
 
     if (isBP) {
       return sorted.map((m) => ({
-        date: format(new Date(m.measured_at), "MMM d"),
+        date: chartDate(m.measured_at),
         systolic: extractValue(m, "systolic"),
         diastolic: extractValue(m, "diastolic"),
       }));
     }
 
-    return sorted.map((m) => {
-      const keys = Object.keys(m.value);
-      const key = keys.includes("value") ? "value" : (keys[0] ?? "value");
-      return {
-        date: format(new Date(m.measured_at), "MMM d"),
-        value: extractValue(m, key),
-      };
-    });
-  }, [measurements, isBP]);
+    return sorted.map((m) => ({
+      date: chartDate(m.measured_at),
+      value: extractValue(m, "value"),
+    }));
+  }, [measurements, isBP, supportsTrend]);
+  const hasChartableValues = chartData.some((point) =>
+    isBP
+      ? point.systolic != null || point.diastolic != null
+      : point.value != null,
+  );
 
-  const typeLabel = activeType.replace(/_/g, " ");
+  if (measurementTypesLoading) {
+    return (
+      <div className="space-y-3" role="status" aria-label="Loading measurement chart types">
+        <Skeleton className="h-7 w-72" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
+  if (measurementTypesError) {
+    return (
+      <SourceDegradedNote
+        label="Measurement chart types"
+        detail="unavailable"
+        onRetry={() => void refetchMeasurementTypes()}
+        testId="measurement-types-degraded"
+      />
+    );
+  }
+
+  if (!activeTypeInfo) {
+    return <EmptyLine>No chartable measurement types are available.</EmptyLine>;
+  }
 
   return (
     <div className="space-y-5">
       {/* Type selector — Dispatch mono tabs */}
       <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Measurement type">
-        {CHART_TYPES.map((t) => {
-          const active = activeType === t;
+        {chartTypes.map((measurementType) => {
+          const active = activeType === measurementType.type;
           return (
             <button
-              key={t}
+              key={measurementType.type}
               type="button"
               role="tab"
               aria-selected={active}
-              onClick={() => setActiveType(t)}
+              onClick={() => setRequestedType(measurementType.type)}
               className={cn(
                 "rounded-sm border px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.08em] transition-colors",
                 active
@@ -219,7 +277,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
                   : "border-border bg-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              {t.replace(/_/g, " ")}
+              {measurementType.label}
             </button>
           );
         })}
@@ -251,7 +309,11 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
           </div>
         </div>
 
-        {trendQuery.isLoading ? (
+        {!supportsTrend ? (
+          <EmptyLine>
+            Trend aggregation is unavailable for compound {typeLabel} readings.
+          </EmptyLine>
+        ) : trendQuery.isLoading ? (
           <div className="space-y-2">
             {Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-6 w-full" />
@@ -357,7 +419,11 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
           onRetry={() => void refetch()}
           testId="measurement-readings-degraded"
         />
-      ) : chartData.length === 0 ? (
+      ) : !supportsTrend && !isBP ? (
+        <EmptyLine>
+          No unambiguous {typeLabel} series is available for this range.
+        </EmptyLine>
+      ) : !hasChartableValues ? (
         <EmptyLine>No {typeLabel} readings for this range.</EmptyLine>
       ) : (
         <div className="h-72 w-full">

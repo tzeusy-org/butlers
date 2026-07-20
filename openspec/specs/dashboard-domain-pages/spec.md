@@ -29,15 +29,22 @@ The Overview MUST contain, in the left column:
 - A **Voice briefing** (serif elaboration) sourced from `GET /api/health/briefing`, carrying a
   **BriefingStatus pill** that reads `llm · cached` when the line was model-written and `templated`
   when deterministic, so the owner always knows whether a line was computed or model-written.
-- A **KPI strip** of exactly four cells, each a mono eyebrow over the latest value, for: latest
-  `weight`, latest `blood_pressure`, latest `heart_rate`, latest `blood_sugar` — sourced from
-  `GET /api/health/measurements/latest`. No fabricated or placeholder values; an absent reading
-  renders a single em-dash, never a fake number. Each cell with a reading MUST thread the reading's
-  `measured_at` age into a delta line (e.g. "7d"); the age MUST render amber (`--amber-text`) once it
-  exceeds a per-vital freshness SLA so week-old data is never presented as current. The per-vital
-  SLAs are a documented constant (`weight` 3 days, `blood_pressure` 3 days, `heart_rate` 2 days,
-  `blood_sugar` 2 days). Each cell MUST expose its reading's data source (resolved from the latest
-  entry's metadata) as a hover tooltip.
+- A **KPI strip** of exactly four structural cells, each a mono eyebrow over the latest value.
+  `GET /api/health/measurements/types` is the observed read-vocabulary authority for selecting
+  those cells. Observed core types `weight`, `blood_pressure`, `heart_rate`, and `blood_sugar` MUST
+  retain their established positions even when an individual response marks them ineligible. An
+  absent core position MAY be filled only by an unused, non-core observed type marked
+  `kpi_eligible`, ordered by `latest_at` descending and then `type` ascending. A dynamic candidate
+  MUST NOT displace an observed core type. If no eligible candidate is available, the position MUST
+  retain its original core label and render a single em-dash, never a fabricated or placeholder
+  value. `GET /api/health/measurements/latest` MUST be requested only for the selected types; the
+  vocabulary response itself MUST NOT be treated as a latest value.
+  Each cell with a reading MUST thread the reading's `measured_at` age into a delta line (e.g.
+  "7d"). The documented per-vital freshness SLAs (`weight` 3 days, `blood_pressure` 3 days,
+  `heart_rate` 2 days, `blood_sugar` 2 days) apply to their respective core readings, whose age
+  MUST render amber (`--amber-text`) once stale. A dynamic fallback MAY show its real reading age
+  but MUST NOT be declared fresh under a guessed SLA. Each cell MUST expose its reading's data
+  source (resolved from the latest entry's metadata) as a hover tooltip when known.
 - A **data-freshness indicator** sourced from `GET /api/health/measurements/sources` (one of the
   wire-orphaned reads this redesign consumes), shown as a quiet mono chip (e.g. "synced 2h ago" per
   source). It MUST state real last-sample times only; when no source data exists the chip is omitted,
@@ -59,11 +66,23 @@ serif-italic line, with no empty-state decoration.
 - **AND** the briefing headline MUST state the single most important current health fact in one
   sentence
 
-#### Scenario: KPI strip shows the four canonical cells
+#### Scenario: KPI strip keeps four structural positions from the observed vocabulary
 
 - **WHEN** the Overview renders the KPI strip
-- **THEN** the four cells MUST be latest `weight`, `blood_pressure`, `heart_rate`, and `blood_sugar`
-- **AND** a cell with no available reading MUST render an em-dash, never a fabricated value
+- **THEN** it MUST render exactly four cells
+- **AND** each observed core type (`weight`, `blood_pressure`, `heart_rate`, `blood_sugar`) MUST
+  retain its established position
+- **AND** an absent core position MAY use only an unused non-core type the server marks
+  `kpi_eligible`, selected by newest `latest_at` and then ascending `type`
+- **AND** a position without an eligible selected type MUST retain its core label and render an
+  em-dash, never a fabricated value
+
+#### Scenario: KPI vocabulary or latest read failure is named
+
+- **WHEN** the measurement vocabulary or latest-read query fails
+- **THEN** the four structural cells MUST remain visible with an inline `SourceDegradedNote` naming
+  the failed source
+- **AND** the Overview MUST NOT fabricate a cell selection, a latest value, or a calm no-data state
 
 #### Scenario: KPI cell surfaces reading age and staleness
 
@@ -101,7 +120,9 @@ Health read surfaces MUST NOT render a calm empty state (e.g. "No doses logged y
 recorded yet", "No nutrition data for this window", an empty trend, or an empty readings chart) when
 the underlying query has failed. A failed read MUST instead render an inline degraded note that
 names the source (the `SourceDegradedNote` vocabulary), so a broken source is never mistaken for
-"nothing logged" on a health surface. This applies to the measurement trend list and readings chart
+"nothing logged" on a health surface. This applies to the observed measurement vocabulary and
+selection (`GET /api/health/measurements/types`), Overview latest values
+(`GET /api/health/measurements/latest`), the measurement trend list and readings chart
 (`GET /api/health/measurements/trend`, `GET /api/health/measurements`), the medication adherence
 statement and dose history (`GET /api/health/medications/{id}/adherence`,
 `GET /api/health/medications/{id}/doses`), and the meals daily-totals mini-KPI
@@ -125,11 +146,12 @@ statement and dose history (`GET /api/health/medications/{id}/adherence`,
 - **THEN** the mini-KPI MUST render an inline degraded note naming the failed nutrition source
 - **AND** it MUST NOT render "No nutrition data for this window" over the failure
 
-#### Scenario: A failing measurement read is named, not rendered as an empty surface
+#### Scenario: A failing measurement vocabulary or read is named, not rendered as an empty surface
 
-- **WHEN** the measurement trend read or the readings read errors
+- **WHEN** the measurement vocabulary, latest, trend, or readings read errors
 - **THEN** the corresponding surface MUST render an inline degraded note naming the failed source
-- **AND** it MUST NOT render an empty trend or empty chart over the failure
+- **AND** it MUST NOT present an empty tracker, trend, chart, or blank KPI value as calm absence
+  without that degraded note
 
 ---
 
@@ -141,32 +163,60 @@ Overview) reframed from "data entry" to "trajectory": the page MUST lead with th
 interactive line charts with a supporting raw-data view.
 
 The page MUST contain:
-- A type selector displaying tabs for measurement types: `weight`, `blood_pressure`, `heart_rate`,
-  `blood_sugar`, `temperature`, `spo2`, `steps`. The tabs MUST use only predicates the system can
-  actually produce; the legacy tabs `glucose`, `sleep`, and `oxygen` (which the create form can
-  never produce, yielding a perpetual "No data" state) MUST NOT appear. Clicking a type SHALL filter
-  the chart and rule-list to that type.
+- A chart type selector derived from `GET /api/health/measurements/types`. The response is the
+  observed read-vocabulary authority: tabs MUST contain only observed entries with
+  `chart_eligible = true`, using the response's labels, and MUST NOT fall back to a static type
+  list. Clicking a tab SHALL filter the chart and rule-list to that type. If the requested initial
+  type is not chart-eligible, the first returned chart-eligible type becomes active. The reading-log
+  filter MUST include all observed types, not just chartable types, and preserve an unobserved raw
+  `?type=` selection until the owner clears it.
+- The observed vocabulary is read-only. It MUST NOT expand the manual measurement writer: its type
+  choices and write allowlist remain exactly `weight`, `blood_pressure`, `heart_rate`,
+  `blood_sugar`, and `temperature`.
 - Date range filters (`since`/`until`) using date inputs, with a Clear button when any filter is
   active.
-- A Recharts `LineChart` in a `ResponsiveContainer`. For `blood_pressure`, the chart MUST render two
-  lines (systolic and diastolic). For all other types, a single line plotting the primary numeric
-  value. The line palette MUST be driven by the health hue token `--category-4` (bridged to a literal
-  color for recharts via a read of the computed CSS variable), not a hardcoded hex. Where two lines
-  are shown (systolic/diastolic), the second line MUST use a distinguishable shade derived from
-  `--category-4` (e.g. a reduced-opacity or lightened variant of the same hue) so the two lines remain
-  visually separable while staying within the single health hue.
+- A Recharts `LineChart` in a `ResponsiveContainer` with explicit value-shape semantics. A scalar
+  type MUST plot only finite values from the normalized `value` key. `blood_pressure` is the sole
+  named compound exception: it MUST render `systolic` and `diastolic` as two lines. Another
+  chart-eligible compound type MAY expose its raw data, but it MUST NOT guess a numeric key or invent
+  a line series; it MUST state that no unambiguous series is available instead. The line palette MUST
+  be driven by the health hue token `--category-5` (bridged to a literal color for recharts via a read
+  of the computed CSS variable), not a hardcoded hex. Where two lines are shown
+  (systolic/diastolic), the second line MUST use a distinguishable shade derived from `--category-5`
+  (e.g. a reduced-opacity or lightened variant of the same hue) so the two lines remain visually
+  separable while staying within the single health hue.
 - The trend rule-list as the primary surface, sourced from `GET /api/health/measurements/trend`
-  (the bucketed mean/min/max aggregation — one of the wire-orphaned reads this redesign consumes), and
-  a "Show/Hide raw data" affordance for the full table (Date, Type, Value, Notes). Measurement values
-  are compound JSONB objects (e.g., `{"systolic": 120, "diastolic": 80}`); the chart MUST extract
-  numeric values with key-aware parsing and the table MUST format them as `key: value` pairs.
+  (the bucketed mean/min/max aggregation). Only scalar types MAY request or render that scalar
+  aggregation. `blood_pressure` and other compound types MUST state that trend aggregation is
+  unavailable rather than coercing a compound value. The page MUST provide a "Show/Hide raw data"
+  affordance for the full table (Date, Type, Value, Notes); compound table values MUST format as
+  `key: value` pairs.
 
-#### Scenario: Chart tabs use only producible predicates
+#### Scenario: Chart tabs use the observed eligible vocabulary
 
 - **WHEN** the measurements page renders the type selector
-- **THEN** the tabs MUST be exactly `weight`, `blood_pressure`, `heart_rate`, `blood_sugar`,
-  `temperature`, `spo2`, `steps`
-- **AND** the tabs `glucose`, `sleep`, and `oxygen` MUST NOT appear
+- **THEN** it MUST render exactly the observed entries whose `chart_eligible` flag is true
+- **AND** it MUST use each observed entry's returned label
+- **AND** a type absent from the observed response or marked ineligible MUST NOT appear as a chart
+  tab merely because it appears in a static client list
+
+#### Scenario: Vocabulary loading, failure, and empty results stay honest
+
+- **WHEN** the observed vocabulary is loading
+- **THEN** the chart surface MUST render a loading skeleton, not guessed static tabs
+- **WHEN** the observed vocabulary read fails
+- **THEN** the chart surface MUST render a `SourceDegradedNote` naming the type source
+- **WHEN** the observed vocabulary succeeds with zero chart-eligible types
+- **THEN** the chart surface MUST render a single serif-italic no-chartable-types line, not a
+  fabricated tab or chart
+
+#### Scenario: Observed types never expand the manual writer
+
+- **WHEN** the observed vocabulary contains an imported or unknown measurement type
+- **THEN** the tracker may display it as a read filter and the chart or KPI may consume it only under
+  their eligibility rules
+- **AND** the manual measurement writer MUST still offer and accept exactly `weight`,
+  `blood_pressure`, `heart_rate`, `blood_sugar`, and `temperature`
 
 #### Scenario: Page leads with the trend, not the form
 
@@ -182,6 +232,15 @@ The page MUST contain:
 - **AND** the two lines MUST use distinguishable shades of `--category-4` (the diastolic line a
   reduced-opacity or lightened variant) so they are not the same indistinguishable color
 - **AND** the chart tooltip MUST label them "Systolic" and "Diastolic"
+
+#### Scenario: Scalar and compound data never create a guessed series
+
+- **WHEN** the active type is scalar and a reading has a finite normalized `value`
+- **THEN** the chart MUST plot that `value` and the trend rule-list MAY use scalar aggregation
+- **WHEN** the active type is a chart-eligible compound type other than `blood_pressure`
+- **THEN** the page MUST NOT choose a numeric key, plot a line, or request scalar trend aggregation
+- **AND** it MUST state that no unambiguous chart series is available while retaining its raw-data
+  view when readings exist
 
 #### Scenario: Empty state for type with no data
 
@@ -340,12 +399,13 @@ The page MUST contain:
 
 ### Requirement: Health data hooks with auto-refresh
 
-Deterministic health domain hooks (CRUD lists, KPI/latest reads, and trend reads) MUST use TanStack
-Query hooks that auto-refresh every 30 seconds (`refetchInterval: 30_000`). The following
-deterministic hooks MUST be provided and MUST auto-refresh:
+Deterministic health domain hooks MUST use TanStack Query hooks that auto-refresh every 30 seconds
+(`refetchInterval: 30_000`), including observed measurement vocabulary, CRUD lists, KPI/latest reads,
+and trend reads. The following deterministic hooks MUST be provided and MUST auto-refresh:
 
 | Hook | Query Key Prefix | API Function |
 |---|---|---|
+| `useMeasurementTypes()` | `health-measurement-types` | `getMeasurementTypes` |
 | `useMeasurements(params)` | `health-measurements` | `getMeasurements` |
 | `useMedications(params)` | `health-medications` | `getMedications` |
 | `useMedicationDoses(id, params)` | `health-medication-doses` | `getMedicationDoses` |

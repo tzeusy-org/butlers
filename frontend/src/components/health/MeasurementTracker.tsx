@@ -9,11 +9,11 @@
 // date-range filters are preserved here.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
-import type { Measurement, MeasurementParams, MeasurementType } from "@/api/types";
+import type { Measurement, MeasurementParams, MeasurementTypeInfo } from "@/api/types";
 import { MeasurementForm } from "@/components/health/MeasurementForm";
 import {
   AlertDialog,
@@ -33,33 +33,40 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { QueryBoundary } from "@/components/ui/query-boundary";
+import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { useDeleteMeasurement, useMeasurements } from "@/hooks/use-health";
+import {
+  useDeleteMeasurement,
+  useMeasurements,
+  useMeasurementTypes,
+} from "@/hooks/use-health";
 
 const PAGE_SIZE = 50;
 
-const TYPE_FILTERS: readonly { value: "" | MeasurementType; label: string }[] = [
-  { value: "", label: "All types" },
-  { value: "weight", label: "Weight" },
-  { value: "blood_pressure", label: "Blood pressure" },
-  { value: "heart_rate", label: "Heart rate" },
-  { value: "blood_sugar", label: "Blood sugar" },
-  { value: "temperature", label: "Temperature" },
-] as const;
+interface TypeFilterOption {
+  value: string;
+  label: string;
+}
 
-const TYPE_LABELS: Record<string, string> = {
-  weight: "Weight",
-  blood_pressure: "Blood pressure",
-  heart_rate: "Heart rate",
-  blood_sugar: "Blood sugar",
-  temperature: "Temperature",
-};
+/** Keep the endpoint's observed type list safe for controlled select options. */
+function normaliseMeasurementTypes(types: readonly MeasurementTypeInfo[]): MeasurementTypeInfo[] {
+  const seen = new Set<string>();
+  const normalised: MeasurementTypeInfo[] = [];
 
-/** Human-readable label for a measurement type (falls back to the raw type). */
-function typeLabel(type: string): string {
-  return TYPE_LABELS[type] ?? type;
+  for (const candidate of types) {
+    const type = typeof candidate.type === "string" ? candidate.type.trim() : "";
+    if (!type || seen.has(type)) continue;
+    seen.add(type);
+    const label = typeof candidate.label === "string" ? candidate.label.trim() : "";
+    normalised.push({
+      ...candidate,
+      type,
+      label: label || type,
+    });
+  }
+
+  return normalised;
 }
 
 /** Render a measurement's JSONB value as a readable string. */
@@ -115,9 +122,11 @@ function EmptyLine() {
 function MeasurementRow({
   measurement,
   onEdit,
+  labelForType,
 }: {
   measurement: Measurement;
   onEdit: (measurement: Measurement) => void;
+  labelForType: (type: string) => string;
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const deleteMutation = useDeleteMeasurement();
@@ -132,7 +141,7 @@ function MeasurementRow({
     }
   }
 
-  const label = typeLabel(measurement.type);
+  const label = labelForType(measurement.type);
 
   return (
     <div className="grid grid-cols-[1fr_auto] items-center gap-4 py-3">
@@ -207,12 +216,52 @@ export default function MeasurementTracker() {
   // Overview page's vitals KPIs) lands pre-filtered and the view is
   // shareable/reloadable. No local mirror — the URL is the sole source.
   const [searchParams, setSearchParams] = useSearchParams();
-  const typeFilter = (searchParams.get("type") ?? "") as "" | MeasurementType;
+  const typeFilter = searchParams.get("type") ?? "";
   const since = searchParams.get("since") ?? "";
   const until = searchParams.get("until") ?? "";
   const [page, setPage] = useState(0);
   // `null` = closed; `undefined` = add mode; a Measurement = edit mode.
   const [formTarget, setFormTarget] = useState<Measurement | null | undefined>(null);
+  const {
+    data: measurementTypesData,
+    isLoading: measurementTypesLoading,
+    isError: measurementTypesError,
+    refetch: refetchMeasurementTypes,
+  } = useMeasurementTypes();
+  const measurementTypes = useMemo(
+    () => normaliseMeasurementTypes(measurementTypesData?.types ?? []),
+    [measurementTypesData],
+  );
+  const typeLabels = useMemo(
+    () =>
+      new Map(
+        measurementTypes.map((measurementType) => [
+          measurementType.type,
+          measurementType.label,
+        ]),
+      ),
+    [measurementTypes],
+  );
+  const typeOptions = useMemo<TypeFilterOption[]>(() => {
+    if (measurementTypesLoading || measurementTypesError) {
+      return [
+        { value: "", label: "All types" },
+        ...(typeFilter ? [{ value: typeFilter, label: `${typeFilter} (selected)` }] : []),
+      ];
+    }
+
+    const options: TypeFilterOption[] = [
+      { value: "", label: "All types" },
+      ...measurementTypes.map((measurementType) => ({
+        value: measurementType.type,
+        label: measurementType.label,
+      })),
+    ];
+    if (typeFilter && !measurementTypes.some((measurementType) => measurementType.type === typeFilter)) {
+      options.push({ value: typeFilter, label: `${typeFilter} (selected)` });
+    }
+    return options;
+  }, [measurementTypes, measurementTypesError, measurementTypesLoading, typeFilter]);
 
   const params: MeasurementParams = {
     type: typeFilter || undefined,
@@ -259,14 +308,28 @@ export default function MeasurementTracker() {
             aria-label="Filter by type"
             value={typeFilter}
             onChange={(e) => setUrlFilter("type", e.target.value)}
+            aria-busy={measurementTypesLoading || undefined}
             className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-44 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           >
-            {TYPE_FILTERS.map((opt) => (
+            {typeOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
           </select>
+          {measurementTypesLoading && (
+            <span role="status" className="font-mono text-[10px] text-muted-foreground">
+              Loading measurement types…
+            </span>
+          )}
+          {measurementTypesError && (
+            <SourceDegradedNote
+              label="Measurement types"
+              detail="unavailable"
+              onRetry={() => void refetchMeasurementTypes()}
+              testId="measurement-types-degraded"
+            />
+          )}
           <div className="flex items-center gap-2">
             <label htmlFor="measurement-tracker-since" className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
               From
@@ -331,6 +394,7 @@ export default function MeasurementTracker() {
               key={measurement.id}
               measurement={measurement}
               onEdit={setFormTarget}
+              labelForType={(type) => typeLabels.get(type) ?? type}
             />
           ))}
         </div>

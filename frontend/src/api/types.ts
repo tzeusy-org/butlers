@@ -2268,6 +2268,23 @@ export interface MeasurementSource {
   sample_count: number;
 }
 
+/** A data-derived measurement predicate the Health API has observed. */
+export interface MeasurementTypeInfo {
+  type: string;
+  label: string;
+  sample_count: number;
+  latest_at: string;
+  unit: string | null;
+  value_shape: "scalar" | "compound" | "unknown";
+  chart_eligible: boolean;
+  kpi_eligible: boolean;
+}
+
+/** Response for GET /api/health/measurements/types. */
+export interface MeasurementTypesResponse {
+  types: MeasurementTypeInfo[];
+}
+
 /** Query parameters for measurement endpoints. */
 export interface MeasurementParams {
   type?: string;

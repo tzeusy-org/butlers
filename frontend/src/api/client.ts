@@ -128,6 +128,7 @@ import type {
   MealUpdateRequest,
   Measurement,
   MeasurementParams,
+  MeasurementTypesResponse,
   MeasurementCreateRequest,
   MeasurementUpdateRequest,
   Medication,
@@ -1934,6 +1935,11 @@ export function getUpcomingDates(days?: number): Promise<UpcomingDate[]> {
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
+
+/** Fetch the observed active Health measurement vocabulary. */
+export function getMeasurementTypes(): Promise<MeasurementTypesResponse> {
+  return apiFetch<MeasurementTypesResponse>("/health/measurements/types");
+}
 
 /** Fetch a paginated list of health measurements. */
 export function getMeasurements(params?: MeasurementParams): Promise<PaginatedResponse<Measurement>> {
