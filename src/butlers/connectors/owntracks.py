@@ -128,6 +128,20 @@ _TIER_FULL = "full"
 # Credential key in CredentialStore
 _CRED_WEBHOOK_TOKEN = "owntracks_webhook_token"
 
+# Active device identities must survive connector-process restarts. OwnTracks is
+# push-driven, so waiting for the next webhook before recreating each heartbeat
+# can falsely mark a healthy connector process offline for hours.
+_SELECT_REGISTERED_DEVICES_SQL = """\
+SELECT endpoint_identity
+FROM switchboard.connector_registry
+WHERE connector_type = $1
+  AND endpoint_identity <> $2
+  AND deleted_at IS NULL
+  AND archived_at IS NULL
+  AND state IS DISTINCT FROM 'paused'
+ORDER BY endpoint_identity
+"""
+
 # Public aliases used by standalone auth helpers and their tests
 _DB_KEY = _CRED_WEBHOOK_TOKEN
 _ENV_VAR = "OWNTRACKS_WEBHOOK_TOKEN"
@@ -1006,6 +1020,11 @@ class OwnTracksConnector:
                     "OwnTracksConnector: Switchboard readiness probe timed out; proceeding."
                 )
 
+            # Restore real device identities before serving webhooks. The
+            # process-level heartbeat contract must survive restarts even when
+            # a push-driven device remains quiet after the restart.
+            await self._restore_registered_devices()
+
             # Phase 6: Start health + webhook server
             app = self._build_app()
             self._start_health_server(app)
@@ -1072,14 +1091,19 @@ class OwnTracksConnector:
                         device.endpoint_identity,
                     )
 
-            try:
-                await device.heartbeat._send_heartbeat()
-            except Exception as exc:
-                logger.debug(
-                    "OwnTracksConnector: final heartbeat failed for %s (non-fatal): %s",
-                    device.endpoint_identity,
-                    exc,
-                )
+            unresolved_placeholder = (
+                not self._config.tracker_id_override
+                and device.endpoint_identity == self._endpoint_identity
+            )
+            if not unresolved_placeholder:
+                try:
+                    await device.heartbeat._send_heartbeat()
+                except Exception as exc:
+                    logger.debug(
+                        "OwnTracksConnector: final heartbeat failed for %s (non-fatal): %s",
+                        device.endpoint_identity,
+                        exc,
+                    )
             await device.heartbeat.stop()
 
         # Stop health server
@@ -1145,6 +1169,58 @@ class OwnTracksConnector:
             filtered_event_buffer=filtered_event_buffer,
             heartbeat=heartbeat,
         )
+
+    async def _restore_registered_devices(self) -> None:
+        """Resume heartbeats for active device identities known before restart.
+
+        OwnTracks devices push events opportunistically, so a device may not
+        emit another webhook for many hours after this process restarts. The
+        registry is the durable identity set; restoring its active rows keeps
+        connector liveness tied to the running process rather than event
+        frequency. Deliberately paused, archived, disconnected, and unresolved
+        placeholder rows are excluded.
+
+        A registry read failure is non-fatal. The webhook server can still
+        start, and any later device event lazily recreates that identity via
+        :meth:`_get_or_create_device`.
+        """
+        if self._config.tracker_id_override or self._cursor_pool is None:
+            return
+
+        try:
+            async with self._cursor_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    _SELECT_REGISTERED_DEVICES_SQL,
+                    _CONNECTOR_TYPE,
+                    self._endpoint_identity,
+                )
+        except Exception:
+            logger.warning(
+                "OwnTracksConnector: failed to restore registered device identities; "
+                "devices will be restored on their next webhook",
+                exc_info=True,
+            )
+            return
+
+        identity_prefix = f"{_CONNECTOR_TYPE}:"
+        restored_count = 0
+        for row in rows:
+            identity = row["endpoint_identity"]
+            if (
+                not isinstance(identity, str)
+                or not identity.startswith(identity_prefix)
+                or _TID_PATTERN.fullmatch(identity.removeprefix(identity_prefix)) is None
+            ):
+                continue
+
+            await self._get_or_create_device(identity)
+            restored_count += 1
+
+        if restored_count:
+            logger.info(
+                "OwnTracksConnector: restored %d registered device heartbeat(s)",
+                restored_count,
+            )
 
     async def _get_or_create_device(self, identity: str) -> _OwnTracksDeviceState:
         """Return the per-device state for ``identity``, registering it if new.

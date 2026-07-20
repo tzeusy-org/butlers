@@ -43,8 +43,13 @@ pytestmark = pytest.mark.unit
 
 
 class _FakeConn:
-    def __init__(self, store: dict[tuple[str, str], str]) -> None:
+    def __init__(
+        self,
+        store: dict[tuple[str, str], str],
+        registered_identities: list[str],
+    ) -> None:
         self._store = store
+        self._registered_identities = registered_identities
 
     async def execute(
         self,
@@ -63,13 +68,29 @@ class _FakeConn:
         value = self._store.get((connector_type, endpoint_identity))
         return None if value is None else {"checkpoint_cursor": value}
 
+    async def fetch(self, sql: str, connector_type: str, placeholder_identity: str):
+        assert "deleted_at IS NULL" in sql
+        assert "archived_at IS NULL" in sql
+        assert "state IS DISTINCT FROM 'paused'" in sql
+        assert connector_type == "owntracks"
+        return [
+            {"endpoint_identity": identity}
+            for identity in self._registered_identities
+            if identity != placeholder_identity
+        ]
+
 
 class _FakeAcquireContext:
-    def __init__(self, store: dict[tuple[str, str], str]) -> None:
+    def __init__(
+        self,
+        store: dict[tuple[str, str], str],
+        registered_identities: list[str],
+    ) -> None:
         self._store = store
+        self._registered_identities = registered_identities
 
     async def __aenter__(self) -> _FakeConn:
-        return _FakeConn(self._store)
+        return _FakeConn(self._store, self._registered_identities)
 
     async def __aexit__(self, *exc: object) -> bool:
         return False
@@ -84,11 +105,12 @@ class _FakeCursorPool:
     real production keying.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, registered_identities: list[str] | None = None) -> None:
         self.store: dict[tuple[str, str], str] = {}
+        self.registered_identities = registered_identities or []
 
     def acquire(self) -> _FakeAcquireContext:
-        return _FakeAcquireContext(self.store)
+        return _FakeAcquireContext(self.store, self.registered_identities)
 
 
 def _make_connector(
@@ -232,6 +254,48 @@ async def test_devices_have_independent_metrics_and_policy_scope() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def test_restart_restores_heartbeat_for_registered_devices() -> None:
+    """A process restart must not leave quiet webhook devices falsely offline."""
+    cursor_pool = _FakeCursorPool(
+        registered_identities=["owntracks:unknown", "owntracks:a", "owntracks:b"]
+    )
+    connector = _make_connector(cursor_pool=cursor_pool)
+
+    try:
+        await connector._restore_registered_devices()
+
+        assert connector._devices.keys() == {"owntracks:a", "owntracks:b"}
+        assert all(device.heartbeat._task is not None for device in connector._devices.values())
+        assert connector._mcp_client.call_tool.await_count == 2
+    finally:
+        await _stop_all_heartbeats(connector)
+
+
+async def test_restart_skips_invalid_registered_device_identities() -> None:
+    """Persisted rows must not bypass the device-reported TID boundary."""
+    cursor_pool = _FakeCursorPool(
+        registered_identities=[
+            "owntracks:a",
+            "owntracks:b2",
+            "owntracks:abc",
+            "owntracks:phone",
+            "owntracks:a!",
+            "owntracks:a:b",
+            "owntracks:",
+            "telegram:a",
+        ]
+    )
+    connector = _make_connector(cursor_pool=cursor_pool)
+
+    try:
+        await connector._restore_registered_devices()
+
+        assert connector._devices.keys() == {"owntracks:a", "owntracks:b2"}
+        assert connector._mcp_client.call_tool.await_count == 2
+    finally:
+        await _stop_all_heartbeats(connector)
+
+
 async def test_new_device_heartbeat_does_not_stop_existing_devices_heartbeat() -> None:
     """Resolving a second device must not touch the first device's heartbeat task.
 
@@ -274,6 +338,16 @@ async def test_shutdown_stops_every_devices_heartbeat() -> None:
 
     assert device_a.heartbeat._task is None
     assert device_b.heartbeat._task is None
+
+
+async def test_shutdown_does_not_register_unresolved_placeholder() -> None:
+    connector = _make_connector()
+    placeholder = connector._create_device_state(connector._endpoint_identity)
+    connector._devices[connector._endpoint_identity] = placeholder
+
+    await connector._shutdown()
+
+    connector._mcp_client.call_tool.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
