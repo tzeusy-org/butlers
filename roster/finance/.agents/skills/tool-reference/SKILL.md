@@ -23,7 +23,7 @@ Record a payment or receipt.
 | `category` | string | No | Spending category (e.g., `"dining"`, `"subscriptions"`, `"groceries"`). |
 | `direction` | string | No | `"debit"` (default) or `"credit"` (refund/incoming transfer). |
 | `payment_method` | string | No | Card or payment method label (e.g., `"Amex"`, `"Chase Sapphire"`). |
-| `account` | string | No | Account label if known (e.g., `"Ally Savings"`, `"Chase Checking"`). |
+| `account_id` | string | No | Existing account UUID or label (name, institution/type, or institution/type/last-four). Omit rather than inventing an identifier when the account is unknown. |
 | `source_message_id` | string | No | Email message ID or other source provenance. Used for deduplication — always pass when ingesting from email. |
 | `metadata` | JSONB dict | No | Raw context or partial data that couldn't be fully parsed. Use to preserve provenance for future enrichment. |
 
@@ -43,7 +43,7 @@ Query the transaction ledger.
 | `end_date` | date string | No | Filter to transactions on or before this date. |
 | `category` | string | No | Filter by category. |
 | `merchant` | string | No | Filter by merchant name (substring match). |
-| `account` | string | No | Filter by account label. |
+| `account_id` | string | No | Filter by an existing account UUID or label. |
 | `direction` | string | No | `"debit"` or `"credit"`. |
 | `min_amount` | decimal string | No | Minimum transaction amount. |
 | `max_amount` | decimal string | No | Maximum transaction amount. |

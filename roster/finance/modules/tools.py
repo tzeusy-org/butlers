@@ -96,7 +96,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
           When provided, it takes precedence over the amount sign.
         description: Optional transaction description or memo.
         payment_method: Card or payment method label (e.g. "Amex", "Chase Sapphire").
-        account_id: Account identifier (e.g. "chase-checking").
+        account_id: Optional existing account UUID or label. Labels may combine institution,
+          type, and last four (e.g. "chase-checking" or "chase-card-4242"). Never invent an
+          opaque identifier; omit account_id when the account is unknown.
         receipt_url: URL to a receipt image or document.
         external_ref: External reference number from the source system.
         source_message_id: Email message ID or source provenance — always pass when ingesting

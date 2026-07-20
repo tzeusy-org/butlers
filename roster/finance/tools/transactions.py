@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid as _uuid_mod
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -19,6 +20,14 @@ logger = logging.getLogger(__name__)
 # Maximum rows accepted by bulk_record_transactions in a single call.
 _MAX_BULK_TRANSACTIONS = 500
 
+_ACCOUNT_TYPE_LABELS: dict[str, tuple[str, ...]] = {
+    "credit": ("credit", "card", "credit card"),
+    "checking": ("checking",),
+    "savings": ("savings",),
+    "investment": ("investment",),
+}
+_MIN_FUZZY_ACCOUNT_LABEL_LENGTH = 4
+
 
 def _is_uuid(value: str) -> bool:
     """Return True if *value* is a valid UUID string."""
@@ -29,13 +38,92 @@ def _is_uuid(value: str) -> bool:
         return False
 
 
+def _normalize_account_identifier(value: object) -> str:
+    """Normalize an account label so punctuation-separated slugs compare cleanly."""
+    if value is None:
+        return ""
+    return re.sub(r"[\W_]+", " ", str(value).casefold()).strip()
+
+
+def _account_row_aliases(row: Any) -> tuple[set[str], set[str], set[str]]:
+    """Return direct, composite, and safely fuzzy-matchable aliases for a row."""
+    institution = str(row["institution"] or "").strip()
+    account_type = str(row["type"] or "").strip()
+    name = str(row["name"] or "").strip()
+    last_four = str(row["last_four"] or "").strip()
+
+    direct = {
+        normalized
+        for normalized in (
+            _normalize_account_identifier(institution),
+            _normalize_account_identifier(name),
+            _normalize_account_identifier(last_four),
+        )
+        if normalized
+    }
+
+    composite: set[str] = set()
+    type_labels = _ACCOUNT_TYPE_LABELS.get(account_type.casefold(), (account_type,))
+    for type_label in type_labels:
+        for parts in (
+            (institution, type_label),
+            (institution, type_label, last_four),
+        ):
+            normalized = _normalize_account_identifier(" ".join(part for part in parts if part))
+            if normalized:
+                composite.add(normalized)
+    if name and last_four:
+        composite.add(_normalize_account_identifier(f"{name} {last_four}"))
+
+    fuzzy = {
+        normalized
+        for normalized in (
+            _normalize_account_identifier(institution),
+            _normalize_account_identifier(name),
+        )
+        if normalized
+    }
+    return direct, composite, fuzzy
+
+
+def _unique_account_match(rows: list[Any], raw: str) -> str | None:
+    """Resolve *raw* against fetched account rows, preserving ambiguity safety."""
+    normalized_raw = _normalize_account_identifier(raw)
+    if not normalized_raw:
+        return None
+
+    aliases = [(row, *_account_row_aliases(row)) for row in rows]
+    match_groups = (
+        (row for row, direct, _, _ in aliases if normalized_raw in direct),
+        (row for row, _, composite, _ in aliases if normalized_raw in composite),
+    )
+    if len(normalized_raw) >= _MIN_FUZZY_ACCOUNT_LABEL_LENGTH:
+        fuzzy_matches = (
+            row
+            for row, _, _, fuzzy in aliases
+            if any(normalized_raw in alias for alias in fuzzy if alias != normalized_raw)
+        )
+        match_groups = (*match_groups, fuzzy_matches)
+
+    for matches in match_groups:
+        unique_matches = {str(row["id"]): row for row in matches}
+        if len(unique_matches) == 1:
+            return next(iter(unique_matches))
+        if len(unique_matches) > 1:
+            raise ValueError(
+                f"account_id '{raw}' is ambiguous — matched multiple accounts. "
+                "Pass the account UUID instead."
+            )
+    return None
+
+
 async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None:
     """Resolve a human-readable account identifier to its UUID.
 
-    Accepts a UUID string (returned as-is) or a fuzzy identifier that is
-    matched against ``accounts.name``, ``accounts.institution``, or
-    ``accounts.last_four``.  Returns ``None`` when *raw* is ``None`` or
-    when no matching account is found.
+    Accepts a UUID string (returned as-is) or a human-readable identifier that
+    is matched against ``accounts.name``, ``accounts.institution``,
+    ``accounts.last_four``, or composite labels such as
+    ``"Example Bank card 4321"``. Returns ``None`` when *raw* is ``None``.
 
     Raises :class:`ValueError` with an actionable hint when a non-UUID
     identifier matches zero or multiple accounts.
@@ -45,38 +133,18 @@ async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None
     if _is_uuid(raw):
         return raw
 
-    # Try exact match on name, then institution, then last_four.
-    row = await pool.fetchrow(
-        """
-        SELECT id FROM accounts
-        WHERE name = $1 OR institution = $1 OR last_four = $1
-        LIMIT 2
-        """,
-        raw,
+    # A user-federated instance has a small account registry. Fetching its label
+    # fields once lets us rank exact, composite, and partial matches consistently
+    # and detect ambiguity instead of returning an arbitrary LIMIT 1 result.
+    rows = await pool.fetch("SELECT id, institution, type, name, last_four FROM accounts")
+    match = _unique_account_match(list(rows), raw)
+    if match is not None:
+        return match
+    raise ValueError(
+        f"account_id '{raw}' is not a valid UUID and no matching account was "
+        "found by name, institution, type, or last_four. Pass an existing account "
+        "UUID or label; omit account_id when the account is unknown."
     )
-    if row is None:
-        # Try case-insensitive ILIKE on name and institution.
-        rows = await pool.fetch(
-            """
-            SELECT id FROM accounts
-            WHERE name ILIKE $1 OR institution ILIKE $1
-            LIMIT 2
-            """,
-            f"%{raw}%",
-        )
-        if len(rows) == 1:
-            return str(rows[0]["id"])
-        if len(rows) > 1:
-            raise ValueError(
-                f"account_id '{raw}' is ambiguous — matched multiple accounts. "
-                "Pass the account UUID instead. List accounts with list_accounts()."
-            )
-        raise ValueError(
-            f"account_id '{raw}' is not a valid UUID and no matching account was "
-            "found by name, institution, or last_four. "
-            "List accounts with list_accounts() and pass the UUID."
-        )
-    return str(row["id"])
 
 
 # Module-level cache for _has_column results.

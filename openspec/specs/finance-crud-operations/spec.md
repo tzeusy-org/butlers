@@ -20,6 +20,12 @@ Creating a single transaction SHALL check for duplicates, apply merchant mapping
 - **AND** if a mapping is found, the category SHALL be set from the mapping with `category_source = 'auto'`
 - **AND** if no mapping is found, the category SHALL remain `'uncategorized'`
 
+#### Scenario: Safe account-label resolution
+- **WHEN** a transaction tool receives a non-UUID account label
+- **THEN** normalized direct or documented composite labels SHALL resolve only when exactly one account candidate matches
+- **AND** fuzzy containment SHALL be considered only for normalized labels of at least four characters and SHALL resolve only when exactly one account candidate matches
+- **AND** ambiguous candidates or labels that do not meet these rules SHALL not select an account and SHALL yield actionable guidance to pass an account UUID or omit `account_id` when the account is unknown
+
 #### Scenario: Unknown category fallback under the category foreign-key schema
 - **WHEN** `record_transaction` is called with a category and the migrated `categories` taxonomy table exists (enforcing `transactions.category -> categories.name`)
 - **THEN** the tool SHALL resolve the supplied category against `categories` case-insensitively and store the canonical `name` when a match is found
