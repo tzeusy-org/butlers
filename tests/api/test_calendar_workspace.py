@@ -1916,6 +1916,7 @@ _UNDO_PRE_STATE = {
     "start_at": "2026-06-20T10:00:00+00:00",
     "end_at": "2026-06-20T11:00:00+00:00",
     "timezone": "UTC",
+    "all_day": False,
     "description": "Original description",
     "body": None,
     "location": "Room A",
@@ -1923,6 +1924,14 @@ _UNDO_PRE_STATE = {
     "recurrence_rule": None,
     "color_id": None,
     "entity_ids": ["11111111-1111-1111-1111-111111111111"],
+}
+
+
+_ALL_DAY_UNDO_PRE_STATE = {
+    **_UNDO_PRE_STATE,
+    "start_at": "2026-06-20T00:00:00+00:00",
+    "end_at": "2026-06-21T00:00:00+00:00",
+    "all_day": True,
 }
 
 
@@ -2032,6 +2041,27 @@ async def test_undo_update_reverse_applies_pre_state(app):
     assert arguments["request_id"] == data["request_id"]
 
 
+async def test_undo_update_preserves_all_day_pre_state(app):
+    """Undo restores all-day truth with the original midnight boundaries."""
+    row = _undo_action_row(
+        action_type="workspace_user_update",
+        action_result={"status": "updated", "pre_state": _ALL_DAY_UNDO_PRE_STATE},
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="updated")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 200
+    tool_name, arguments = mock_client.call_tool.await_args.args
+    assert tool_name == "calendar_update_event"
+    assert arguments["all_day"] is True
+    assert arguments["start_at"] == "2026-06-20T00:00:00+00:00"
+    assert arguments["end_at"] == "2026-06-21T00:00:00+00:00"
+
+
 async def test_undo_update_uses_explicit_clear_for_empty_people_pre_state(app):
     """Undo must restore an empty link set rather than preserving new links."""
     row = _undo_action_row(
@@ -2080,6 +2110,27 @@ async def test_undo_delete_recreates_event(app):
     assert arguments["entity_ids"] == _UNDO_PRE_STATE["entity_ids"]
     assert "event_id" not in arguments  # create does not target an id
     assert arguments["request_id"] == data["request_id"]
+
+
+async def test_undo_delete_recreates_all_day_event(app):
+    """Undo recreates an all-day event with the original date boundaries."""
+    row = _undo_action_row(
+        action_type="workspace_user_delete",
+        action_result={"status": "deleted", "pre_state": _ALL_DAY_UNDO_PRE_STATE},
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="created")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 200
+    tool_name, arguments = mock_client.call_tool.await_args.args
+    assert tool_name == "calendar_create_event"
+    assert arguments["all_day"] is True
+    assert arguments["start_at"] == "2026-06-20T00:00:00+00:00"
+    assert arguments["end_at"] == "2026-06-21T00:00:00+00:00"
 
 
 async def test_undo_create_deletes_event(app):

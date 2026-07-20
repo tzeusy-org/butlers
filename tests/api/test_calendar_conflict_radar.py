@@ -182,13 +182,21 @@ def test_display_tz_changes_grouping_date():
 
 
 def _ws_row(
-    *, entry_id, title: str, start: datetime, minutes: int = 60, status="confirmed"
+    *,
+    entry_id,
+    title: str,
+    start: datetime,
+    minutes: int = 60,
+    status="confirmed",
+    all_day: bool = False,
+    timezone: str = "UTC",
+    event_metadata: object | None = None,
 ) -> dict:
     """A workspace event-instance row (shape ``row_to_workspace`` consumes)."""
     return {
         "instance_id": entry_id,
         "origin_instance_ref": str(uuid4()),
-        "instance_timezone": "UTC",
+        "instance_timezone": timezone,
         "instance_starts_at": start,
         "instance_ends_at": start + timedelta(minutes=minutes),
         "instance_status": status,
@@ -198,12 +206,14 @@ def _ws_row(
         "title": title,
         "description": "",
         "location": "",
-        "event_timezone": "UTC",
-        "all_day": False,
+        "event_timezone": timezone,
+        "all_day": all_day,
         "event_status": status,
         "visibility": "default",
         "recurrence_rule": None,
-        "event_metadata": {"source_type": "provider_event"},
+        "event_metadata": (
+            {"source_type": "provider_event"} if event_metadata is None else event_metadata
+        ),
         "source_butler": None,
         "source_session_id": None,
         "source_id": uuid4(),
@@ -436,6 +446,137 @@ async def test_conflicts_endpoint_still_detects_overlap_between_two_distinct_but
     overlaps = [i for i in data["issues"] if i["kind"] == "overlap"]
     assert len(overlaps) == 1
     assert {e["entry_id"] for e in overlaps[0]["events"]} == {"a", "b"}
+
+
+async def test_conflicts_endpoint_excludes_explicit_generated_metadata_from_overlap_and_overload(
+    app,
+):
+    generated = _ws_row(
+        entry_id="generated",
+        title="Review draft",
+        start=_DAY,
+        minutes=7 * 60,
+        event_metadata={"butler_generated": True},
+    )
+    human = _ws_row(
+        entry_id="human",
+        title="Human 1:1",
+        start=_DAY + timedelta(minutes=30),
+        minutes=60,
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [generated, human]})
+
+    resp = await _get(app)
+    data = resp.json()["data"]
+
+    assert data["issues_available"] is True
+    assert data["issues"] == []
+
+
+async def test_conflicts_endpoint_excludes_explicit_generated_metadata_from_back_to_back(app):
+    generated = _ws_row(
+        entry_id="generated",
+        title="Review draft",
+        start=_DAY,
+        event_metadata={"butler_generated": True},
+    )
+    human = _ws_row(
+        entry_id="human",
+        title="Human 1:1",
+        start=_DAY + timedelta(minutes=65),
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [generated, human]})
+
+    resp = await _get(app)
+    assert resp.json()["data"]["issues"] == []
+
+
+async def test_conflicts_endpoint_keeps_equivalent_timed_human_overlap_and_overload(app):
+    first = _ws_row(
+        entry_id="first",
+        title="Review draft",
+        start=_DAY,
+        minutes=7 * 60,
+        event_metadata={"butler_generated": False},
+    )
+    second = _ws_row(
+        entry_id="second",
+        title="Human 1:1",
+        start=_DAY + timedelta(minutes=30),
+        minutes=60,
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [first, second]})
+
+    resp = await _get(app)
+    kinds = {issue["kind"] for issue in resp.json()["data"]["issues"]}
+
+    assert "overlap" in kinds
+    assert "overloaded_day" in kinds
+
+
+async def test_conflicts_endpoint_keeps_equivalent_timed_human_back_to_back(app):
+    first = _ws_row(
+        entry_id="first",
+        title="Review draft",
+        start=_DAY,
+        event_metadata={"butler_generated": False},
+    )
+    second = _ws_row(
+        entry_id="second",
+        title="Human 1:1",
+        start=_DAY + timedelta(minutes=65),
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [first, second]})
+
+    resp = await _get(app)
+    kinds = {issue["kind"] for issue in resp.json()["data"]["issues"]}
+
+    assert "back_to_back" in kinds
+
+
+async def test_conflicts_endpoint_excludes_legacy_midnight_row_from_every_detector(app):
+    singapore = ZoneInfo("Asia/Singapore")
+    legacy_start = datetime(2026, 7, 1, 0, 0, tzinfo=singapore)
+    legacy = _ws_row(
+        entry_id="legacy",
+        title="Imported all-day block",
+        start=legacy_start,
+        minutes=24 * 60,
+        timezone="Asia/Singapore",
+        all_day=False,
+    )
+    human = _ws_row(
+        entry_id="human",
+        title="Human 1:1",
+        start=_DAY + timedelta(minutes=30),
+        minutes=60,
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [legacy, human]})
+
+    resp = await _get(app)
+    assert resp.json()["data"]["issues"] == []
+
+
+async def test_conflicts_endpoint_malformed_metadata_or_timezone_retains_timed_human_event(app):
+    first = _ws_row(
+        entry_id="first",
+        title="Planning",
+        start=_DAY,
+        event_metadata="not-a-json-object",
+        timezone="not/a-timezone",
+    )
+    second = _ws_row(
+        entry_id="second",
+        title="Review",
+        start=_DAY + timedelta(minutes=30),
+        timezone="not/a-timezone",
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [first, second]})
+
+    resp = await _get(app)
+    data = resp.json()["data"]
+    assert data["issues_available"] is True
+    assert [issue["kind"] for issue in data["issues"] if issue["kind"] == "overlap"] == ["overlap"]
 
 
 async def test_conflicts_endpoint_rejects_inverted_window(app):

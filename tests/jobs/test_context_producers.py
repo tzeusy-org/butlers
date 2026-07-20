@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
@@ -107,6 +108,117 @@ def test_resolve_presence():
         )
         is True
     )
+
+
+def _active_calendar_row(
+    *,
+    title: str,
+    starts_at: datetime,
+    ends_at: datetime,
+    timezone: str = "UTC",
+    all_day: bool = False,
+    metadata: object = None,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "timezone": timezone,
+        "all_day": all_day,
+        "metadata": metadata,
+    }
+
+
+async def test_calendar_context_producer_skips_explicit_butler_generated_event_but_keeps_human_event():
+    now = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            _active_calendar_row(
+                title="BUTLER: Draft follow-up",
+                starts_at=now - timedelta(minutes=5),
+                ends_at=now + timedelta(minutes=30),
+                metadata={"butler_generated": True},
+            ),
+            _active_calendar_row(
+                title="Human standup",
+                starts_at=now - timedelta(minutes=10),
+                ends_at=now + timedelta(minutes=20),
+                metadata={"butler_generated": False},
+            ),
+        ]
+    )
+    set_context_mock = AsyncMock()
+    clear_context_mock = AsyncMock()
+
+    with (
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+    ):
+        result = await run_calendar_context_producer(pool)
+
+    assert result["signal"] == "meeting"
+    assert result["value"] == "Human standup"
+    assert set_context_mock.await_args.kwargs["expires_at"] == now + timedelta(minutes=20)
+    pool.fetch.assert_awaited_once()
+
+
+async def test_calendar_context_producer_treats_legacy_midnight_block_as_non_meeting():
+    singapore = ZoneInfo("Asia/Singapore")
+    starts_at = datetime(2026, 7, 1, 0, 0, tzinfo=singapore)
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            _active_calendar_row(
+                title="Legacy all-day import",
+                starts_at=starts_at,
+                ends_at=starts_at + timedelta(days=1),
+                timezone="Asia/Singapore",
+                all_day=False,
+                metadata={},
+            )
+        ]
+    )
+    set_context_mock = AsyncMock()
+    clear_context_mock = AsyncMock()
+
+    with (
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+    ):
+        result = await run_calendar_context_producer(pool)
+
+    assert result == {"signal": None, "cleared": ["meeting", "focused"]}
+    set_context_mock.assert_not_awaited()
+    assert clear_context_mock.await_count == 2
+
+
+async def test_calendar_context_producer_malformed_provenance_retains_timed_human_event():
+    now = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            _active_calendar_row(
+                title="Planning",
+                starts_at=now - timedelta(minutes=5),
+                ends_at=now + timedelta(minutes=25),
+                timezone="not/a-timezone",
+                metadata="not-a-json-object",
+            )
+        ]
+    )
+    set_context_mock = AsyncMock()
+    clear_context_mock = AsyncMock()
+
+    with (
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+    ):
+        result = await run_calendar_context_producer(pool)
+
+    assert result["signal"] == "meeting"
+    assert result["value"] == "Planning"
+    set_context_mock.assert_awaited_once()
 
 
 async def test_sleep_producer_uses_shared_exact_policy_anchor():

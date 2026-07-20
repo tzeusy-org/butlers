@@ -18,6 +18,7 @@ from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -115,6 +116,14 @@ SOURCE_KIND_INTERNAL_REMINDERS = "internal_reminders"
 # the source-freshness ledger, so registration is refused for these ids and any
 # residual rows are purged once on startup (bu-ssp91).
 _INVALID_PROBE_CALENDAR_IDS: frozenset[str] = frozenset({"__invalid_check__"})
+# Exact residual source keys from an older internal-projection naming scheme.
+# This deliberately is not a pattern: valid future/internal sources must remain
+# eligible for ordinary source registration and cascade semantics.
+_OBSOLETE_INTERNAL_SOURCE_KEYS: tuple[str, ...] = (
+    "internal_scheduler:butler",
+    "internal_scheduler:butlers",
+    "internal_reminders:butlers",
+)
 # Projection status constants surfaced to sync/status consumers.
 PROJECTION_STATUS_FRESH = "fresh"
 PROJECTION_STATUS_STALE = "stale"
@@ -903,6 +912,12 @@ def _google_event_to_calendar_event(
         fallback_timezone=fallback_timezone,
     )
     timezone = start_timezone or end_timezone or fallback_timezone
+    all_day = (
+        _normalize_optional_text(start_payload.get("date")) is not None
+        and _normalize_optional_text(end_payload.get("date")) is not None
+        and _normalize_optional_text(start_payload.get("dateTime")) is None
+        and _normalize_optional_text(end_payload.get("dateTime")) is None
+    )
 
     title = _normalize_optional_text(payload.get("summary")) or "(untitled)"
     butler_generated, butler_name = _extract_google_private_metadata(
@@ -924,6 +939,7 @@ def _google_event_to_calendar_event(
         start_at=start_at,
         end_at=end_at,
         timezone=timezone,
+        all_day=all_day,
         description=description_text,
         body=description_text,
         location=_normalize_optional_text(payload.get("location")),
@@ -1095,6 +1111,7 @@ def _build_google_event_patch_body(
     existing_start_at: datetime | None = None,
     existing_end_at: datetime | None = None,
     existing_timezone: str | None = None,
+    existing_all_day: bool | None = None,
 ) -> dict[str, Any]:
     """Translate a CalendarEventUpdate patch into a partial Google Calendar API event body.
 
@@ -1102,9 +1119,10 @@ def _build_google_event_patch_body(
     that unchanged fields are not overwritten on the server (true partial-update
     semantics as required by the PATCH endpoint).
 
-    ``existing_start_at``, ``existing_end_at``, and ``existing_timezone`` are
-    supplied by the provider when only the timezone changes (no time boundary
-    update) so that the start/end can be re-emitted with the new timezone.
+    ``existing_start_at``, ``existing_end_at``, ``existing_timezone``, and
+    ``existing_all_day`` are supplied by the provider when a partial patch needs
+    the existing event boundaries. That preserves date-only Google boundaries
+    when restoring or updating an all-day event.
     """
     body: dict[str, Any] = {}
 
@@ -1125,33 +1143,45 @@ def _build_google_event_patch_body(
     # consistently to both start and end.
     timezone = patch.timezone
 
-    if patch.start_at is not None or patch.end_at is not None or timezone is not None:
+    if (
+        patch.start_at is not None
+        or patch.end_at is not None
+        or timezone is not None
+        or patch.all_day is not None
+    ):
         # Resolve effective start/end datetimes.
         start_dt = patch.start_at if patch.start_at is not None else existing_start_at
         end_dt = patch.end_at if patch.end_at is not None else existing_end_at
         effective_tz = timezone if timezone is not None else existing_timezone
+        is_all_day = patch.all_day if patch.all_day is not None else existing_all_day
 
-        if start_dt is not None:
-            if effective_tz is not None:
-                tz = ZoneInfo(effective_tz)
-                if start_dt.tzinfo is None:
-                    start_dt = start_dt.replace(tzinfo=tz)
+        if is_all_day:
+            if start_dt is not None:
+                body["start"] = {"date": start_dt.date().isoformat()}
+            if end_dt is not None:
+                body["end"] = {"date": end_dt.date().isoformat()}
+        else:
+            if start_dt is not None:
+                if effective_tz is not None:
+                    tz = ZoneInfo(effective_tz)
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=tz)
+                    else:
+                        start_dt = start_dt.astimezone(tz)
+                    body["start"] = {"dateTime": start_dt.isoformat(), "timeZone": effective_tz}
                 else:
-                    start_dt = start_dt.astimezone(tz)
-                body["start"] = {"dateTime": start_dt.isoformat(), "timeZone": effective_tz}
-            else:
-                body["start"] = {"dateTime": _google_rfc3339(start_dt)}
+                    body["start"] = {"dateTime": _google_rfc3339(start_dt)}
 
-        if end_dt is not None:
-            if effective_tz is not None:
-                tz = ZoneInfo(effective_tz)
-                if end_dt.tzinfo is None:
-                    end_dt = end_dt.replace(tzinfo=tz)
+            if end_dt is not None:
+                if effective_tz is not None:
+                    tz = ZoneInfo(effective_tz)
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=tz)
+                    else:
+                        end_dt = end_dt.astimezone(tz)
+                    body["end"] = {"dateTime": end_dt.isoformat(), "timeZone": effective_tz}
                 else:
-                    end_dt = end_dt.astimezone(tz)
-                body["end"] = {"dateTime": end_dt.isoformat(), "timeZone": effective_tz}
-            else:
-                body["end"] = {"dateTime": _google_rfc3339(end_dt)}
+                    body["end"] = {"dateTime": _google_rfc3339(end_dt)}
 
     # Attendees
     if patch.attendees is not None:
@@ -1615,6 +1645,7 @@ class CalendarEvent(BaseModel):
     start_at: datetime
     end_at: datetime
     timezone: str
+    all_day: bool = False
     description: str | None = None
     body: str | None = None
     location: str | None = None
@@ -1705,6 +1736,7 @@ class CalendarEventUpdate(BaseModel):
     title: str | None = None
     start_at: datetime | None = None
     end_at: datetime | None = None
+    all_day: bool | None = None
     timezone: str | None = None
     description: str | None = None
     body: str | None = None
@@ -2532,11 +2564,12 @@ class _GoogleProvider(CalendarProvider):
         existing_start_at: datetime | None = None
         existing_end_at: datetime | None = None
         existing_timezone: str | None = None
+        existing_all_day: bool | None = None
         fetched_etag: str | None = None
 
         needs_existing_times = (
-            patch.timezone is not None and patch.start_at is None and patch.end_at is None
-        )
+            patch.all_day is not None and (patch.start_at is None or patch.end_at is None)
+        ) or (patch.timezone is not None and patch.start_at is None and patch.end_at is None)
         if needs_existing_times:
             # Fetch the current event to get both the existing boundaries and
             # (if the caller did not supply one) the etag for optimistic
@@ -2553,6 +2586,7 @@ class _GoogleProvider(CalendarProvider):
             existing_start_at = existing.start_at
             existing_end_at = existing.end_at
             existing_timezone = existing.timezone
+            existing_all_day = existing.all_day
             fetched_etag = existing.etag
 
         body = _build_google_event_patch_body(
@@ -2560,6 +2594,7 @@ class _GoogleProvider(CalendarProvider):
             existing_start_at=existing_start_at,
             existing_end_at=existing_end_at,
             existing_timezone=existing_timezone,
+            existing_all_day=existing_all_day,
         )
 
         # Build extra headers for optimistic concurrency using the etag.
@@ -3561,6 +3596,7 @@ class CalendarModule(Module):
             title: str | None = None,
             start_at: datetime | None = None,
             end_at: datetime | None = None,
+            all_day: bool | None = None,
             timezone: str | None = None,
             description: str | None = None,
             body: str | None = None,
@@ -3596,6 +3632,8 @@ class CalendarModule(Module):
             if clear_entity_ids and entity_ids != []:
                 raise ValueError("clear_entity_ids requires entity_ids=[]")
             if recurrence_scope != "series":
+                if all_day is not None:
+                    raise ValueError("all_day updates require recurrence_scope='series'")
                 return await module._apply_occurrence_update(
                     event_id=event_id,
                     instance_start_at=instance_start_at,
@@ -3632,6 +3670,7 @@ class CalendarModule(Module):
                 "title": title,
                 "start_at": start_at,
                 "end_at": end_at,
+                "all_day": all_day,
                 "timezone": timezone,
                 "description": description,
                 "body": body,
@@ -3709,6 +3748,13 @@ class CalendarModule(Module):
 
             normalized_title = title.strip() if isinstance(title, str) else None
             update_title = normalized_title
+            patch_all_day = all_day
+            if (
+                patch_all_day is None
+                and existing_event.all_day
+                and (start_at is not None or end_at is not None)
+            ):
+                patch_all_day = True
             private_metadata: dict[str, str] | None = None
             if existing_event.butler_generated:
                 update_title = module._ensure_butler_title(
@@ -3733,6 +3779,9 @@ class CalendarModule(Module):
                         title=update_title or existing_event.title,
                         start_at=start_at if start_at is not None else existing_event.start_at,
                         end_at=end_at if end_at is not None else existing_event.end_at,
+                        all_day=(
+                            patch_all_day if patch_all_day is not None else existing_event.all_day
+                        ),
                         timezone=timezone or existing_event.timezone,
                         description=(
                             description if description is not None else existing_event.description
@@ -3814,6 +3863,7 @@ class CalendarModule(Module):
                             "title": title,
                             "start_at": start_at.isoformat() if start_at else None,
                             "end_at": end_at.isoformat() if end_at else None,
+                            "all_day": all_day,
                             "timezone": timezone,
                             "description": description,
                             "body": body,
@@ -3850,6 +3900,7 @@ class CalendarModule(Module):
                 title=update_title,
                 start_at=start_at,
                 end_at=end_at,
+                all_day=patch_all_day,
                 timezone=timezone,
                 description=description,
                 body=body,
@@ -6204,6 +6255,7 @@ class CalendarModule(Module):
         # older validation path. Idempotent — a no-op once purged, and the
         # registration guard in ``_ensure_calendar_source`` prevents recreation.
         await self._purge_invalid_probe_sources()
+        await self._purge_obsolete_internal_sources()
 
         if self._config.sync.enabled:
             self._sync_task = asyncio.create_task(
@@ -6795,6 +6847,34 @@ class CalendarModule(Module):
         except Exception as exc:
             logger.debug("Failed to purge probe calendar sources: %s", exc)
 
+    async def _purge_obsolete_internal_sources(self) -> None:
+        """Delete only the known obsolete internal source keys, idempotently."""
+        if not await self._projection_tables_available():
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        try:
+            result = await pool.execute(
+                "DELETE FROM calendar_sources WHERE source_key = ANY($1::text[])",
+                list(_OBSOLETE_INTERNAL_SOURCE_KEYS),
+            )
+            if isinstance(result, str) and not result.endswith(" 0"):
+                logger.info("Purged obsolete internal calendar sources: %s", result)
+        except Exception as exc:
+            logger.debug("Failed to purge obsolete internal calendar sources: %s", exc)
+
+    @staticmethod
+    def _is_registered_roster_butler(butler_name: str | None) -> bool:
+        """Return whether an internal source owner names a real roster butler."""
+        normalized = _normalize_optional_string(butler_name)
+        if normalized is None or normalized in {".", ".."}:
+            return False
+        if "/" in normalized or "\\" in normalized:
+            return False
+        roster_root = Path(__file__).resolve().parents[3] / "roster"
+        return (roster_root / normalized / "butler.toml").is_file()
+
     async def _ensure_calendar_source(
         self,
         *,
@@ -6813,6 +6893,15 @@ class CalendarModule(Module):
         # ``provider:<name>:__invalid_check__`` row polluting source freshness.
         if calendar_id is not None and calendar_id in _INVALID_PROBE_CALENDAR_IDS:
             logger.debug("Refusing to register probe calendar source '%s'", source_key)
+            return None
+        if source_kind in {SOURCE_KIND_INTERNAL_SCHEDULER, SOURCE_KIND_INTERNAL_REMINDERS} and not (
+            self._is_registered_roster_butler(butler_name)
+        ):
+            logger.warning(
+                "Refusing to register internal calendar source '%s' for invalid roster butler '%s'",
+                source_key,
+                butler_name,
+            )
             return None
         if not await self._projection_tables_available():
             return None
@@ -7430,7 +7519,7 @@ class CalendarModule(Module):
                 timezone=event.timezone,
                 starts_at=event.start_at,
                 ends_at=event.end_at,
-                all_day=False,
+                all_day=event.all_day,
                 status=status_value,
                 visibility=visibility_value,
                 recurrence_rule=event.recurrence_rule,
@@ -8768,6 +8857,7 @@ class CalendarModule(Module):
         lane: Literal["user", "butler"],
         calendar_id: str | None = None,
     ) -> uuid.UUID | None:
+        resolved_butler_name = self._resolve_effective_butler_name()
         if source_kind == SOURCE_KIND_PROVIDER:
             provider = self._require_provider()
             resolved_calendar = calendar_id or self._require_config().calendar_id
@@ -8786,23 +8876,23 @@ class CalendarModule(Module):
             )
         if source_kind == SOURCE_KIND_INTERNAL_SCHEDULER:
             return await self._ensure_calendar_source(
-                source_key=f"internal_scheduler:{self._butler_name}",
+                source_key=f"internal_scheduler:{resolved_butler_name}",
                 source_kind=SOURCE_KIND_INTERNAL_SCHEDULER,
                 lane="butler",
                 provider="internal",
-                butler_name=self._butler_name,
-                display_name=f"{self._butler_name} schedules",
+                butler_name=resolved_butler_name,
+                display_name=f"{resolved_butler_name} schedules",
                 writable=True,
                 metadata={"projection": "scheduler"},
             )
         if source_kind == SOURCE_KIND_INTERNAL_REMINDERS:
             return await self._ensure_calendar_source(
-                source_key=f"internal_reminders:{self._butler_name}",
+                source_key=f"internal_reminders:{resolved_butler_name}",
                 source_kind=SOURCE_KIND_INTERNAL_REMINDERS,
                 lane="butler",
                 provider="internal",
-                butler_name=self._butler_name,
-                display_name=f"{self._butler_name} reminders",
+                butler_name=resolved_butler_name,
+                display_name=f"{resolved_butler_name} reminders",
                 writable=True,
                 metadata={"projection": "reminders"},
             )
@@ -10420,6 +10510,7 @@ class CalendarModule(Module):
             "start_at": event.start_at.isoformat(),
             "end_at": event.end_at.isoformat(),
             "timezone": event.timezone,
+            "all_day": event.all_day,
             "description": event.description,
             "body": event.body,
             "location": event.location,
@@ -10440,6 +10531,7 @@ class CalendarModule(Module):
             "start_at": event.start_at.isoformat(),
             "end_at": event.end_at.isoformat(),
             "timezone": event.timezone,
+            "all_day": event.all_day,
             "description": event.description,
             "body": event.body,
             "location": event.location,

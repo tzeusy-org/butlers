@@ -54,6 +54,7 @@ from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
     policy_quiet_hours_deliver_at,
 )
+from butlers.core.temporal.calendar_provenance import is_calendar_analysis_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -93,24 +94,38 @@ async def run_calendar_context_producer(
 ) -> dict[str, Any]:
     """Publish ``meeting`` / ``focused`` from the general butler's live calendar.
 
-    Reads the currently-active confirmed, non-all-day event from
+    Reads the latest eligible active confirmed human event from
     ``calendar_events`` (resolved via the general schema search_path) and sets
-    the matching signal with the event's end time as expiry. When no event is
-    active, both ``meeting`` and ``focused`` are cleared. Idempotent: safe to
-    run on any cadence.
+    the matching signal with the event's end time as expiry. Explicitly
+    butler-generated and legacy all-day-shaped rows remain projected but cannot
+    assert context. When no eligible event is active, both ``meeting`` and
+    ``focused`` are cleared. Idempotent: safe to run on any cadence.
     """
     del job_args
-    row = await pool.fetchrow(
+    rows = await pool.fetch(
         """
-        SELECT title, ends_at
+        SELECT title, starts_at, ends_at, timezone, all_day, metadata
         FROM calendar_events
         WHERE status = 'confirmed'
           AND all_day = false
           AND starts_at <= now()
           AND ends_at > now()
         ORDER BY starts_at DESC
-        LIMIT 1
         """
+    )
+    row = next(
+        (
+            candidate
+            for candidate in rows
+            if is_calendar_analysis_candidate(
+                metadata=candidate["metadata"],
+                all_day=candidate["all_day"],
+                starts_at=candidate["starts_at"],
+                ends_at=candidate["ends_at"],
+                timezone=candidate["timezone"],
+            )
+        ),
+        None,
     )
 
     if row is None:

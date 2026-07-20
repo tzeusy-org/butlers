@@ -62,6 +62,8 @@ from butlers.modules.calendar import (
     CalendarSyncState,
     CalendarSyncTokenExpiredError,
     CalendarTokenRefreshError,
+    _build_google_event_body,
+    _build_google_event_patch_body,
     _coerce_expires_in_seconds,
     _compute_free_slots,
     _extract_google_credential_value,
@@ -308,10 +310,14 @@ class TestModuleStartup:
 
 
 class TestCalendarReadTools:
-    async def test_list_and_get_tool_wiring(self):
+    async def test_list_and_get_tool_wiring_preserves_date_only_all_day_truth(self):
         event = _make_event(
             event_id="evt-123",
-            title="Dentist",
+            title="Public holiday",
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+            timezone="Asia/Singapore",
+            all_day=True,
             attendees=[AttendeeInfo(email="alex@example.com")],
         )
         provider = _ProviderDouble(events=[event], event=event)
@@ -333,6 +339,8 @@ class TestCalendarReadTools:
         assert provider.get_calls[0]["event_id"] == "evt-123"
         assert list_result["events"][0]["event_id"] == "evt-123"
         assert get_result["event"]["event_id"] == "evt-123"
+        assert list_result["events"][0]["all_day"] is True
+        assert get_result["event"]["all_day"] is True
 
     async def test_calendar_id_override_applied(self):
         provider = _ProviderDouble()
@@ -413,6 +421,67 @@ class TestCalendarReadTools:
 
 
 class TestCalendarWriteTools:
+    async def test_create_event_response_preserves_date_only_all_day_truth(self):
+        created = _make_event(
+            event_id="date-only-create",
+            title="BUTLER: Public holiday",
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+            timezone="Asia/Singapore",
+            all_day=True,
+            butler_generated=True,
+            butler_name="general",
+        )
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Public holiday",
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+            all_day=True,
+            timezone="Asia/Singapore",
+        )
+
+        assert result["event"]["all_day"] is True
+
+    async def test_update_event_response_preserves_date_only_all_day_truth(self):
+        updated = _make_event(
+            event_id="date-only-update",
+            title="Public holiday (updated)",
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+            timezone="Asia/Singapore",
+            all_day=True,
+        )
+        provider = _ProviderDouble(event=updated)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+
+        result = await mcp.tools["calendar_update_event"](
+            event_id="date-only-update",
+            title="Public holiday (updated)",
+        )
+
+        assert result["event"]["all_day"] is True
+
     async def test_create_event_adds_butler_prefix_and_metadata(self):
         created = _make_event(
             title="BUTLER: Team Sync", butler_generated=True, butler_name="general"
@@ -2498,6 +2567,107 @@ class TestGoogleEventParserBodyMapping:
         assert event.title == "Team Sync"
 
 
+class TestGoogleDateOnlyProjection:
+    """Google's date-only boundaries must remain all-day through projection."""
+
+    @staticmethod
+    def _date_only_payload() -> dict[str, object]:
+        return {
+            "id": "google-all-day-1",
+            "summary": "Public holiday",
+            "start": {"date": "2026-07-01", "timeZone": "Asia/Singapore"},
+            "end": {"date": "2026-07-02", "timeZone": "Asia/Singapore"},
+        }
+
+    def test_google_date_only_payload_is_marked_all_day(self) -> None:
+        event = _google_event_to_calendar_event(self._date_only_payload(), fallback_timezone="UTC")
+
+        assert event is not None
+        assert event.all_day is True
+
+    async def test_google_date_only_projection_preserves_all_day_flag(self) -> None:
+        event = _google_event_to_calendar_event(self._date_only_payload(), fallback_timezone="UTC")
+        assert event is not None
+
+        module = CalendarModule()
+        module._butler_name = "general"
+        module._upsert_projection_event = AsyncMock(return_value=uuid.uuid4())
+        module._upsert_projection_instance = AsyncMock(return_value=uuid.uuid4())
+        module._prune_superseded_provider_instances = AsyncMock()
+
+        await module._project_provider_changes(
+            source_id=uuid.uuid4(),
+            provider_name="google",
+            calendar_id="primary",
+            updated_events=[event],
+            cancelled_ids=[],
+        )
+
+        assert module._upsert_projection_event.await_args.kwargs["all_day"] is True
+
+    def test_google_all_day_create_body_uses_date_boundaries(self) -> None:
+        body = _build_google_event_body(
+            CalendarEventCreate(
+                title="Public holiday",
+                start_at=datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+                end_at=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+                all_day=True,
+                timezone="Asia/Singapore",
+            )
+        )
+
+        assert body["start"] == {"date": "2026-07-01"}
+        assert body["end"] == {"date": "2026-07-02"}
+        assert "dateTime" not in body["start"]
+        assert "dateTime" not in body["end"]
+
+    def test_google_all_day_update_patch_uses_date_boundaries(self) -> None:
+        body = _build_google_event_patch_body(
+            CalendarEventUpdate(
+                start_at=datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+                end_at=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+                all_day=True,
+                timezone="Asia/Singapore",
+            )
+        )
+
+        assert body["start"] == {"date": "2026-07-01"}
+        assert body["end"] == {"date": "2026-07-02"}
+        assert "dateTime" not in body["start"]
+        assert "dateTime" not in body["end"]
+
+    async def test_google_all_day_update_reuses_existing_date_boundaries(self) -> None:
+        provider = _google_provider()
+        existing = _make_event(
+            event_id="google-all-day-1",
+            title="Public holiday",
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+            end_at=datetime(2026, 7, 2, 0, 0, tzinfo=UTC),
+            all_day=True,
+        )
+        provider.get_event = AsyncMock(return_value=existing)
+        provider._request_google_json = AsyncMock(
+            return_value={
+                "id": "google-all-day-1",
+                "summary": "Public holiday",
+                "start": {"date": "2026-07-01"},
+                "end": {"date": "2026-07-02"},
+            }
+        )
+
+        await provider.update_event(
+            calendar_id="primary",
+            event_id="google-all-day-1",
+            patch=CalendarEventUpdate(all_day=True),
+        )
+
+        body = provider._request_google_json.await_args.kwargs["json_body"]
+        assert body["start"] == {"date": "2026-07-01"}
+        assert body["end"] == {"date": "2026-07-02"}
+        assert "dateTime" not in body["start"]
+        assert "dateTime" not in body["end"]
+
+
 class TestEventToPayloadNewFields:
     """_event_to_payload includes body, source_butler, source_session_id, entity_ids."""
 
@@ -3099,6 +3269,10 @@ class _FakeRecord:
 
 def _make_module_with_pool(pool) -> CalendarModule:
     mod = CalendarModule()
+    # Internal source registration now requires a real roster identity. Most
+    # projection tests exercise a running general-butler module, not the
+    # CalendarModule's unconfigured sentinel default.
+    mod._butler_name = "general"
     db = MagicMock()
     db.pool = pool
     mod._db = db

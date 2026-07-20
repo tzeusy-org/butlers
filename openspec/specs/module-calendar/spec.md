@@ -105,6 +105,8 @@ The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list
 - **WHEN** `calendar_update_event` is called with an event_id and partial fields
 - **THEN** only non-None fields are sent to the provider's PATCH endpoint
 - **AND** timezone changes re-emit start/end boundaries with the new timezone
+- **AND** `all_day=true` serializes Google `start` and `end` as date-only
+  boundaries, never `dateTime` boundaries
 
 #### Scenario: Delete event
 
@@ -113,8 +115,11 @@ The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list
 
 ### Requirement: CalendarEvent Model
 
-The canonical `CalendarEvent` model SHALL be provider-neutral with fields: `event_id`, `title`, `start_at`, `end_at`, `timezone`, `description`, `body`, `location`, `attendees` (list of `AttendeeInfo`), `recurrence_rule`, `color_id`, `butler_generated`, `butler_name`, `source_butler`, `source_session_id`, `entity_ids`, `status`, `organizer`, `visibility`, `etag`, `created_at`, `updated_at`.
+The canonical `CalendarEvent` model SHALL be provider-neutral with fields: `event_id`, `title`, `start_at`, `end_at`, `timezone`, `all_day`, `description`, `body`, `location`, `attendees` (list of `AttendeeInfo`), `recurrence_rule`, `color_id`, `butler_generated`, `butler_name`, `source_butler`, `source_session_id`, `entity_ids`, `status`, `organizer`, `visibility`, `etag`, `created_at`, `updated_at`.
 
+- `all_day` — provider-authoritative boolean truth; Google `start.date` and
+  `end.date` boundaries set it to `true` and SHALL be re-serialized as dates
+  for all-day creates and updates
 - `body` — a longer freeform description to complement the short `title` (nullable; maps to Google Calendar `description` field on parse)
 - `source_butler` — the butler name that created or owns the event (NOT NULL; backfilled from `metadata.butler_name` on migration)
 - `source_session_id` — session identifier of the creating LLM session (nullable)
@@ -129,6 +134,7 @@ The canonical `CalendarEvent` model SHALL be provider-neutral with fields: `even
 - **AND** recurrence rules are extracted from the `recurrence` array
 - **AND** butler-generated metadata is extracted from `extendedProperties.private`
 - **AND** `description` field is mapped to `body` on the model
+- **AND** date-only `start.date` and `end.date` boundaries set `all_day=true`
 
 #### Scenario: Authorship annotation on create
 
@@ -751,9 +757,9 @@ the dashboard undo endpoint reverse-applies.
 - **WHEN** `calendar_update_event` resolves an existing event and applies a patch
 - **THEN** the finalized `action_result` for the `workspace_user_update` row
   includes the pre-mutation event state (at least title, start_at, end_at,
-  timezone, location, description, attendees, recurrence_rule, the resolved
-  calendar id, and `entity_ids`) under a stable key, alongside the existing
-  post-mutation outcome
+  timezone, `all_day`, location, description, attendees, recurrence_rule, the
+  resolved calendar id, and `entity_ids`) under a stable key, alongside the
+  existing post-mutation outcome
 - **AND** the pre-state reuses the `existing_event` already fetched before the
   PATCH and reads local `entity_ids` from the projection when available, adding
   no extra provider round-trip
@@ -767,6 +773,17 @@ the dashboard undo endpoint reverse-applies.
 - **AND** the captured pre-image is sufficient for an inverse
   `calendar_create_event` to recreate the event and its linked people on its home
   calendar
+
+#### Scenario: All-day pre-state round-trips through undo
+
+- **WHEN** an applied user-lane update or delete has a captured pre-state with
+  `all_day=true` and the dashboard reverses it
+- **THEN** the inverse `calendar_update_event` or `calendar_create_event` call
+  carries `all_day=true` with the captured start and end boundaries
+- **AND** Google receives `start.date` and `end.date`, with no `dateTime`
+  boundary in the inverse write
+- **AND** the existing `this`, `following`, and `series` recurrence-scope
+  semantics remain unchanged
 
 #### Scenario: Pre-state is absent for non-reversible or non-applied outcomes
 

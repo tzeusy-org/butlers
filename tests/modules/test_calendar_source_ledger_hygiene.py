@@ -19,6 +19,9 @@ import pytest
 
 from butlers.modules.calendar import (
     _INVALID_PROBE_CALENDAR_IDS,
+    _OBSOLETE_INTERNAL_SOURCE_KEYS,
+    SOURCE_KIND_INTERNAL_REMINDERS,
+    SOURCE_KIND_INTERNAL_SCHEDULER,
     SOURCE_KIND_PROVIDER,
     CalendarEvent,
     CalendarModule,
@@ -178,3 +181,81 @@ class TestInvalidProbeSourceHygiene:
 
     def test_sentinel_set_contains_invalid_check(self) -> None:
         assert "__invalid_check__" in _INVALID_PROBE_CALENDAR_IDS
+
+
+class TestObsoleteInternalSourceHygiene:
+    def test_obsolete_source_key_set_is_exactly_bounded(self) -> None:
+        assert _OBSOLETE_INTERNAL_SOURCE_KEYS == (
+            "internal_scheduler:butler",
+            "internal_scheduler:butlers",
+            "internal_reminders:butlers",
+        )
+
+    async def test_purge_deletes_only_the_exact_obsolete_internal_source_keys(self) -> None:
+        pool = MagicMock()
+        pool.execute = AsyncMock(return_value="DELETE 3")
+        module = CalendarModule()
+        module._db = _make_db(pool=pool)
+        module._projection_tables_available_cache = True
+
+        await module._purge_obsolete_internal_sources()
+
+        pool.execute.assert_awaited_once()
+        sql, *args = pool.execute.await_args.args
+        normalized = " ".join(sql.split())
+        assert "DELETE FROM calendar_sources" in normalized
+        assert "source_key = ANY" in normalized
+        assert args == [list(_OBSOLETE_INTERNAL_SOURCE_KEYS)]
+        assert "LIKE" not in normalized
+
+    async def test_purge_noops_when_projection_tables_are_unavailable(self) -> None:
+        pool = MagicMock()
+        pool.execute = AsyncMock()
+        module = CalendarModule()
+        module._db = _make_db(pool=pool)
+        module._projection_tables_available_cache = False
+
+        await module._purge_obsolete_internal_sources()
+
+        pool.execute.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "source_kind",
+        [SOURCE_KIND_INTERNAL_SCHEDULER, SOURCE_KIND_INTERNAL_REMINDERS],
+    )
+    async def test_invalid_roster_name_cannot_register_internal_source(
+        self, source_kind: str
+    ) -> None:
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        module = CalendarModule()
+        module._db = _make_db(pool=pool)
+        module._projection_tables_available_cache = True
+
+        result = await module._ensure_calendar_source(
+            source_key=f"{source_kind}:ghost",
+            source_kind=source_kind,
+            lane="butler",
+            butler_name="ghost",
+        )
+
+        assert result is None
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_valid_roster_name_still_uses_normal_internal_source_upsert(self) -> None:
+        source_id = uuid.uuid4()
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": source_id})
+        module = CalendarModule()
+        module._db = _make_db(pool=pool)
+        module._projection_tables_available_cache = True
+
+        result = await module._ensure_calendar_source(
+            source_key="internal_scheduler:general",
+            source_kind=SOURCE_KIND_INTERNAL_SCHEDULER,
+            lane="butler",
+            butler_name="general",
+        )
+
+        assert result == source_id
+        pool.fetchrow.assert_awaited_once()
