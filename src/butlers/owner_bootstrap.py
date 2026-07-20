@@ -107,6 +107,10 @@ async def _seed_owner_telegram_handle(
     row are absent.
     """
     try:
+        schema = await conn.fetchval("SELECT current_schema()")
+        if schema != "relationship":
+            return
+
         tables_ready = await conn.fetchval(
             "SELECT to_regclass('relationship.entity_facts') IS NOT NULL "
             "AND to_regclass('public.entity_info') IS NOT NULL"
