@@ -252,7 +252,7 @@ def _ledger_insert_calls(mock_pool: AsyncMock) -> list[tuple[Any, ...]]:
     ]
 
 
-_ALL_DAY_QUIET_POLICY = {"quiet_start_hour": 0, "quiet_end_hour": 23, "timezone": "UTC"}
+_IN_WINDOW_QUIET_POLICY = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
 _NO_QUIET_POLICY = {"quiet_start_hour": None, "quiet_end_hour": None, "timezone": "UTC"}
 
 
@@ -262,6 +262,33 @@ def _ledger_row_of(mock_pool: AsyncMock, outcome: str) -> tuple[Any, ...] | None
         if len(args) > 8 and args[8] == outcome:
             return args
     return None
+
+
+@pytest.fixture
+def _fixed_policy_quiet_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Evaluate ledger policy holds at a stable in-window instant.
+
+    ``notify`` imports ``policy_quiet_hours_deliver_at`` when it is invoked,
+    so patch its defining module. The wrapper still delegates to the real
+    policy helper, retaining its validation, end-exclusive interval, and
+    delivery-anchor behavior while keeping these ledger-path tests independent
+    of the host clock.
+    """
+    import butlers.core.approvals_policy as approvals_policy
+
+    real_policy_quiet_hours_deliver_at = approvals_policy.policy_quiet_hours_deliver_at
+
+    def _at_fixed_quiet_hour(policy: dict[str, Any] | None, *, now: datetime) -> datetime | None:
+        return real_policy_quiet_hours_deliver_at(
+            policy,
+            now=now.replace(hour=23, minute=30, second=0, microsecond=0),
+        )
+
+    monkeypatch.setattr(
+        approvals_policy,
+        "policy_quiet_hours_deliver_at",
+        _at_fixed_quiet_hour,
+    )
 
 
 def _make_result(*, is_error: bool, data: Any = None, content_text: str | None = None) -> Any:
@@ -285,11 +312,12 @@ def _client_raising(exc: BaseException) -> Any:
     return mock_client
 
 
+@pytest.mark.usefixtures("_fixed_policy_quiet_clock")
 class TestQuietHoursLedgerRecording:
     async def test_quiet_hours_defers_full_envelope_and_records_ledger(
         self, butler_dir: Path
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
@@ -371,7 +399,7 @@ class TestQuietHoursLedgerRecording:
         import butlers.core.approvals_hooks as approval_hooks
         from butlers.modules.approvals.email_guard import check_recipient
 
-        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
@@ -460,7 +488,7 @@ class TestQuietHoursLedgerRecording:
     async def test_policy_and_context_holds_use_the_later_delivery_anchor(
         self, butler_dir: Path
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
@@ -489,7 +517,7 @@ class TestQuietHoursLedgerRecording:
     async def test_deferred_persistence_failure_returns_retryable_error_without_delivery(
         self, butler_dir: Path
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
 
         async def _fetchval(query: str, *_args: Any, **_kwargs: Any) -> str:
             if "INSERT INTO deferred_notifications" in query:
@@ -520,7 +548,7 @@ class TestQuietHoursLedgerRecording:
         self, butler_dir: Path
     ) -> None:
         """Queue durability wins over best-effort ledger observability."""
-        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
@@ -568,7 +596,7 @@ class TestQuietHoursLedgerRecording:
     async def test_high_priority_bypasses_quiet_hours_and_context_bus(
         self, butler_dir: Path
     ) -> None:
-        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
