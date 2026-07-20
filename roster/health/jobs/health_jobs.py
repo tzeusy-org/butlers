@@ -110,6 +110,19 @@ _ENV_CORRELATION_MIN_DAYS = 2
 _CORRELATION_ENV_PRIORITY = 50
 
 
+def _measurement_door_metadata(
+    *, mtype: str, since: datetime, until: datetime
+) -> dict[str, dict[str, str]]:
+    """Build the typed date-only chart door used by measurement insights only."""
+    return {
+        "measurement_door": {
+            "type": mtype,
+            "since": since.date().isoformat(),
+            "until": until.date().isoformat(),
+        }
+    }
+
+
 async def run_insight_scan(
     db_pool: asyncpg.Pool,
     ha_environment_reader: HaEnvironmentReader | None = None,
@@ -170,18 +183,24 @@ async def run_insight_scan(
         message: str,
         expires_at: datetime,
         cooldown_days: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Submit one candidate; return False if verbosity=off (early exit signal)."""
         stats["candidates_proposed"] += 1
+        proposal_kwargs: dict[str, Any] = {
+            "origin_butler": "health",
+            "priority": priority,
+            "category": category,
+            "dedup_key": dedup_key,
+            "message": message,
+            "expires_at": expires_at,
+            "cooldown_days": cooldown_days,
+        }
+        if metadata is not None:
+            proposal_kwargs["metadata"] = metadata
         result = await propose_insight_candidate(
             db_pool,
-            origin_butler="health",
-            priority=priority,
-            category=category,
-            dedup_key=dedup_key,
-            message=message,
-            expires_at=expires_at,
-            cooldown_days=cooldown_days,
+            **proposal_kwargs,
         )
         status = result.get("status", "error")
         if status == "accepted":
@@ -289,6 +308,11 @@ async def run_insight_scan(
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
+            metadata=_measurement_door_metadata(
+                mtype=mtype,
+                since=most_recent,
+                until=now_utc,
+            ),
         )
         if not should_continue:
             logger.info("Health insight scan: verbosity=off, exiting early after measurement-gap")
@@ -722,7 +746,7 @@ async def _scan_measurement_drift_correlation(
         predicate = f"measurement_{mtype}"
         rows = await db_pool.fetch(
             """
-            SELECT metadata->>'value' AS value
+            SELECT valid_at AS measured_at, metadata->>'value' AS value
             FROM facts
             WHERE predicate = $1
               AND scope = 'health'
@@ -736,11 +760,14 @@ async def _scan_measurement_drift_correlation(
         )
 
         # Newest-first numeric values.
-        values: list[float] = []
+        readings: list[tuple[datetime, float]] = []
         for row in rows:
             parsed = _parse_float(row["value"])
-            if parsed is not None:
-                values.append(parsed)
+            measured_at = _parse_datetime_from_db(row["measured_at"])
+            if parsed is not None and measured_at is not None:
+                readings.append((measured_at, parsed))
+
+        values = [value for _, value in readings]
 
         if len(values) < _DRIFT_MIN_HISTORY:
             continue
@@ -775,6 +802,11 @@ async def _scan_measurement_drift_correlation(
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
+            metadata=_measurement_door_metadata(
+                mtype=mtype,
+                since=min(measured_at for measured_at, _ in readings),
+                until=max(measured_at for measured_at, _ in readings),
+            ),
         ):
             return False
 

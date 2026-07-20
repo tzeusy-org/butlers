@@ -127,6 +127,41 @@ def _capture_proposals():
     return captured, _fake
 
 
+async def test_measurement_gap_submits_typed_door_metadata():
+    """A measurement gap carries its own bounded chart-door metadata."""
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    history = [now - timedelta(days=25 + i * 7) for i in range(5)]
+
+    def fetch_router(sql, args):
+        if "SELECT DISTINCT predicate" in sql:
+            return [{"predicate": "measurement_weight"}]
+        if "ORDER BY valid_at DESC NULLS LAST" in sql:
+            return [{"measured_at": measured_at} for measured_at in history]
+        return []
+
+    pool = _RoutingPool(fetch_router)
+    captured, fake = _capture_proposals()
+
+    with patch(
+        "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+        side_effect=fake,
+    ):
+        health_jobs = load_roster_jobs("health")
+        await health_jobs.run_insight_scan(pool)
+
+    gap = [candidate for candidate in captured if candidate["category"] == "measurement-gap"]
+    assert len(gap) == 1
+    assert gap[0]["metadata"] == {
+        "measurement_door": {
+            "type": "weight",
+            "since": history[0].date().isoformat(),
+            "until": now.date().isoformat(),
+        }
+    }
+
+
 async def test_adherence_symptom_correlation_submits_via_mcp_tool():
     """An adherence dip followed by a symptom flare submits a correlation candidate."""
     from datetime import UTC, datetime, timedelta
@@ -169,21 +204,28 @@ async def test_adherence_symptom_correlation_submits_via_mcp_tool():
     assert cand["priority"] == 60
     assert cand["dedup_key"].startswith(f"health:correlation-adherence:{med_id}:")
     assert "Metformin" in cand["message"]
+    assert "metadata" not in cand
     assert voice_lint_passes(cand["message"])
 
 
 async def test_measurement_drift_correlation_submits_via_mcp_tool():
     """A gradual median shift across recent readings submits a drift candidate."""
+    from datetime import UTC, datetime, timedelta
+
     from butlers.api.briefing.lint import voice_lint_passes
 
     # Newest-first: newest third median 80, oldest third median 70 → ~14% drift.
     drift_values = ["80", "80", "80", "75", "75", "75", "70", "70", "70"]
+    now = datetime.now(UTC)
 
     def fetch_router(sql, args):
         if "SELECT DISTINCT predicate" in sql:
             return [{"predicate": "measurement_weight"}]
         if "metadata->>'value' AS value" in sql:
-            return [{"value": v} for v in drift_values]
+            return [
+                {"measured_at": now - timedelta(days=index), "value": value}
+                for index, value in enumerate(drift_values)
+            ]
         return []
 
     pool = _RoutingPool(fetch_router)
@@ -202,6 +244,13 @@ async def test_measurement_drift_correlation_submits_via_mcp_tool():
     assert cand["priority"] == 50
     assert cand["dedup_key"].startswith("health:correlation-drift:weight:")
     assert "upward" in cand["message"]
+    assert cand["metadata"] == {
+        "measurement_door": {
+            "type": "weight",
+            "since": (now - timedelta(days=8)).date().isoformat(),
+            "until": now.date().isoformat(),
+        }
+    }
     assert voice_lint_passes(cand["message"])
 
 
@@ -246,6 +295,7 @@ async def test_environment_correlation_submits_via_mcp_tool():
     assert cand["priority"] == 50
     assert cand["dedup_key"].startswith("health:correlation-env:temperature:")
     assert "bedroom temperature" in cand["message"]
+    assert "metadata" not in cand
     assert voice_lint_passes(cand["message"])
 
 

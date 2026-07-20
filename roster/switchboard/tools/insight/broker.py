@@ -14,7 +14,6 @@ Database tables used (all in the ``public`` schema):
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -262,7 +261,7 @@ async def propose_insight_candidate(
         expires_dt,
         message,
         channel,
-        json.dumps(metadata) if metadata is not None else None,
+        metadata,
     )
     return {"status": "accepted", "reason": "candidate queued for delivery cycle"}
 

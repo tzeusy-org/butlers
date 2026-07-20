@@ -407,7 +407,7 @@ async def test_measurement_gap_2x_cadence_generates_warning_candidate(provisione
         result = await run_insight_scan(pool)
 
         gap_rows = await pool.fetch(
-            "SELECT priority, dedup_key, message FROM insight_candidates"
+            "SELECT priority, dedup_key, message, metadata FROM insight_candidates"
             " WHERE category = 'measurement-gap'"
         )
         assert len(gap_rows) == 1
@@ -415,6 +415,13 @@ async def test_measurement_gap_2x_cadence_generates_warning_candidate(provisione
         assert row["priority"] == 55
         assert "health:measurement-gap:blood_pressure" == row["dedup_key"]
         assert "blood_pressure" in row["message"]
+        assert row["metadata"] == {
+            "measurement_door": {
+                "type": "blood_pressure",
+                "since": (now - timedelta(days=16)).date().isoformat(),
+                "until": now.date().isoformat(),
+            }
+        }
         assert result["candidates_accepted"] == 1
 
 
@@ -1184,7 +1191,7 @@ async def test_correlation_measurement_drift_generates_candidate(provisioned_pos
         await run_insight_scan(pool)
 
         rows = await pool.fetch(
-            "SELECT priority, dedup_key, message FROM insight_candidates"
+            "SELECT priority, dedup_key, message, metadata FROM insight_candidates"
             " WHERE category = 'correlation-drift'"
         )
         assert len(rows) == 1
@@ -1192,6 +1199,13 @@ async def test_correlation_measurement_drift_generates_candidate(provisioned_pos
         assert row["priority"] == 50
         assert row["dedup_key"].startswith("health:correlation-drift:weight:")
         assert "drift" in row["message"]
+        assert row["metadata"] == {
+            "measurement_door": {
+                "type": "weight",
+                "since": (now - timedelta(days=8)).date().isoformat(),
+                "until": now.date().isoformat(),
+            }
+        }
 
 
 async def test_correlation_measurement_drift_stable_no_candidate(provisioned_postgres_pool):

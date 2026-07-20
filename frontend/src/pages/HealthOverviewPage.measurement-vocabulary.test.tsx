@@ -46,6 +46,11 @@ let latestResult: {
   isError: boolean;
   refetch: typeof refetch;
 };
+let insightsResult: {
+  data: Array<Record<string, unknown>>;
+  isError: boolean;
+  refetch: typeof refetch;
+};
 
 function resetResults() {
   vocabularyResult = {
@@ -94,6 +99,11 @@ function resetResults() {
     isError: false,
     refetch,
   };
+  insightsResult = {
+    data: [],
+    isError: false,
+    refetch,
+  };
 }
 
 resetResults();
@@ -127,7 +137,7 @@ vi.mock("@/hooks/use-health-briefing", () => ({
 }));
 
 vi.mock("@/hooks/use-insights", () => ({
-  useInsights: () => ({ data: [], isError: false, refetch }),
+  useInsights: () => insightsResult,
 }));
 
 vi.mock("@/lib/command-registry", () => ({
@@ -213,5 +223,132 @@ describe("HealthOverviewPage — measurement vocabulary", () => {
 
     expect(container.querySelector('[aria-label="Key performance indicators"]')?.children).toHaveLength(4);
     expect(screen.getByTestId("measurement-types-degraded")).toBeTruthy();
+  });
+
+  it("builds a same-origin measurement door only from typed gap metadata", () => {
+    insightsResult = {
+      data: [
+        {
+          id: "gap-weight",
+          origin_butler: "health",
+          priority: 75,
+          category: "measurement-gap",
+          dedup_key: "health:measurement-gap:weight",
+          cooldown_days: null,
+          expires_at: null,
+          message: "Weight is overdue.",
+          channel: null,
+          metadata: {
+            measurement_door: {
+              type: "weight",
+              since: "2026-07-01",
+              until: "2026-07-20",
+            },
+          },
+          created_at: null,
+          status: "pending",
+          delivered_at: null,
+          delivery_attempt_count: 0,
+        },
+      ],
+      isError: false,
+      refetch,
+    };
+
+    renderPage();
+
+    expect(screen.getByTestId("attention-item").getAttribute("href")).toBe(
+      "/health/measurements?type=weight&since=2026-07-01&until=2026-07-20",
+    );
+  });
+
+  it("ignores arbitrary insight href metadata when a measurement door is invalid", () => {
+    insightsResult = {
+      data: [
+        {
+          id: "gap-invalid",
+          origin_butler: "health",
+          priority: 55,
+          category: "measurement-gap",
+          dedup_key: "health:measurement-gap:weight",
+          cooldown_days: null,
+          expires_at: null,
+          message: "Weight needs a check-in.",
+          channel: null,
+          metadata: {
+            href: "https://untrusted.example/measurement",
+            measurement_door: {
+              type: "weight",
+              since: "2026-07-20",
+              until: "2026-07-01",
+            },
+          },
+          created_at: null,
+          status: "pending",
+          delivered_at: null,
+          delivery_attempt_count: 0,
+        },
+      ],
+      isError: false,
+      refetch,
+    };
+
+    renderPage();
+
+    expect(screen.getByTestId("attention-item").getAttribute("href")).toBe(
+      "/health/measurements",
+    );
+  });
+
+  it.each([
+    ["unknown", "unknown_measurement", undefined],
+    ["known but ineligible", "recovery_note", false],
+  ])("falls back for an %s measurement-door type", (_description, type, chartEligible) => {
+    const types = [measurementType("weight", "Weight", true)];
+    if (chartEligible !== undefined) {
+      const observedType = measurementType(type, "Recovery note");
+      observedType.chart_eligible = chartEligible;
+      types.push(observedType);
+    }
+    vocabularyResult = {
+      data: { types },
+      isLoading: false,
+      isError: false,
+      refetch,
+    };
+    insightsResult = {
+      data: [
+        {
+          id: `gap-${type}`,
+          origin_butler: "health",
+          priority: 55,
+          category: "measurement-gap",
+          dedup_key: `health:measurement-gap:${type}`,
+          cooldown_days: null,
+          expires_at: null,
+          message: "A measurement needs a check-in.",
+          channel: null,
+          metadata: {
+            measurement_door: {
+              type,
+              since: "2026-07-01",
+              until: "2026-07-20",
+            },
+          },
+          created_at: null,
+          status: "pending",
+          delivered_at: null,
+          delivery_attempt_count: 0,
+        },
+      ],
+      isError: false,
+      refetch,
+    };
+
+    renderPage();
+
+    expect(screen.getByTestId("attention-item").getAttribute("href")).toBe(
+      "/health/measurements",
+    );
   });
 });

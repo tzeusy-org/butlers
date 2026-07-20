@@ -33,8 +33,8 @@
  *   - Absent readings render "—", never a fake number
  *   - Empty attention index: one serif-italic line, no decoration
  *
- * Spec: openspec/changes/health-dashboard-overview-redesign/specs/
- *       dashboard-domain-pages/spec.md → "Health Overview landing page"
+ * Spec: openspec/specs/dashboard-domain-pages/spec.md →
+ *       "Health Overview landing page"
  *
  * bu-w7b18.1
  */
@@ -50,7 +50,11 @@ import {
   useMeasurementSources,
   useMeasurementTypes,
 } from "@/hooks/use-health.ts";
-import { selectKpiMeasurementSlots } from "@/lib/measurement-vocabulary";
+import { measurementDoorFromInsight, measurementDoorHref } from "@/lib/measurement-door";
+import {
+  chartableMeasurementTypes,
+  selectKpiMeasurementSlots,
+} from "@/lib/measurement-vocabulary";
 import type { LatestMeasurementEntry, MeasurementSource } from "@/api/types.ts";
 import type { InsightCandidate } from "@/api/types.ts";
 
@@ -259,30 +263,24 @@ function FreshnessChips({ sources }: FreshnessChipsProps) {
  * Map an InsightCandidate to a signal href.
  * Falls back to null (no link) when the category is not mapped.
  */
-function insightHref(candidate: InsightCandidate): string | null {
+function insightHref(
+  candidate: InsightCandidate,
+  chartEligibleTypes: ReadonlySet<string>,
+): string | null {
   const { category, metadata } = candidate;
-  // If the insight carries an explicit href in metadata, use it.
-  if (
-    metadata &&
-    typeof (metadata as Record<string, unknown>)["href"] === "string"
-  ) {
-    return (metadata as Record<string, unknown>)["href"] as string;
+  const measurementDoor = measurementDoorFromInsight(category, metadata);
+  if (measurementDoor && chartEligibleTypes.has(measurementDoor.type)) {
+    return measurementDoorHref(measurementDoor);
   }
-  // Map known health signal categories to their sub-pages. Measurement
-  // categories carry a `?type=` predicate (bu-qvnce.13, "health measurements
-  // ?type=") so the link lands on the pre-filtered reading log for that
-  // vital, not the unfiltered "All types" view.
+
+  // Map known health signal categories to their fixed, same-origin sub-pages.
+  // Untrusted metadata never controls a destination or query parameter.
   switch (category) {
     case "medication":
     case "adherence":
       return "/health/medications";
     case "measurement":
       return "/health/measurements";
-    case "blood_pressure":
-    case "heart_rate":
-    case "weight":
-    case "blood_sugar":
-      return `/health/measurements?type=${encodeURIComponent(category)}`;
     case "symptom":
       return "/health/symptoms";
     case "condition":
@@ -295,13 +293,16 @@ function insightHref(candidate: InsightCandidate): string | null {
   }
 }
 
-function toAttentionItems(candidates: InsightCandidate[]): AttentionListItem[] {
+function toAttentionItems(
+  candidates: InsightCandidate[],
+  chartEligibleTypes: ReadonlySet<string>,
+): AttentionListItem[] {
   return candidates.map((c) => ({
     id: c.id,
     severity: healthInsightSeverity(c.priority),
     title: c.message,
     detail: null,
-    href: insightHref(c),
+    href: insightHref(c, chartEligibleTypes),
   }));
 }
 
@@ -328,6 +329,13 @@ export default function HealthOverviewPage() {
     refetch: refetchMeasurementTypes,
   } = useMeasurementTypes();
   const measurementTypes = measurementTypesData?.types ?? [];
+  const chartEligibleTypes = useMemo(
+    () =>
+      new Set(
+        chartableMeasurementTypes(measurementTypes).map((measurementType) => measurementType.type),
+      ),
+    [measurementTypes],
+  );
   const kpiSlots = selectKpiMeasurementSlots(measurementTypes);
   const kpiTypes = kpiSlots.flatMap((slot) => (slot.type ? [slot.type] : []));
   const {
@@ -359,7 +367,7 @@ export default function HealthOverviewPage() {
           onRetry: () => void refetchInsights(),
         },
       ]
-    : toAttentionItems(insights ?? []);
+    : toAttentionItems(insights ?? [], chartEligibleTypes);
 
   // --- Derived briefing values with safe fallbacks. A failed briefing fetch
   // must never render the indefinite "Health overview loading…" copy forever

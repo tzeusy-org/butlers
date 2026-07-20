@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 
 import MeasurementChart from "@/components/health/MeasurementChart";
 
@@ -77,6 +78,14 @@ vi.mock("@/hooks/use-health", () => ({
   }),
 }));
 
+function renderChart(initialPath = "/health/measurements") {
+  return render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <MeasurementChart />
+    </MemoryRouter>,
+  );
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -90,7 +99,7 @@ afterEach(() => {
 
 describe("MeasurementChart — observed vocabulary", () => {
   it("renders only observed chartable tabs and selects the first one when the old default is absent", () => {
-    render(<MeasurementChart />);
+    renderChart();
 
     expect(screen.getByRole("tab", { name: "HRV" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByRole("tab", { name: "Blood pressure" })).toBeTruthy();
@@ -117,7 +126,7 @@ describe("MeasurementChart — observed vocabulary", () => {
       refetch,
     };
 
-    render(<MeasurementChart initialType="hrv" />);
+    renderChart("/health/measurements?type=hrv");
 
     expect(screen.getByText(/no hrv readings for this range/i)).toBeTruthy();
   });

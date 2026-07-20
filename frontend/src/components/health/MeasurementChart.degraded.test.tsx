@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 
 import MeasurementChart from "@/components/health/MeasurementChart";
 
@@ -56,7 +57,11 @@ afterEach(() => {
 
 describe("MeasurementChart — degraded source honesty", () => {
   it("names failing trend and readings sources instead of empty surfaces", () => {
-    render(<MeasurementChart />);
+    render(
+      <MemoryRouter>
+        <MeasurementChart />
+      </MemoryRouter>,
+    );
     expect(screen.getByTestId("measurement-trend-degraded")).toBeTruthy();
     expect(screen.getByTestId("measurement-readings-degraded")).toBeTruthy();
   });

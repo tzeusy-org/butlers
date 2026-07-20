@@ -58,6 +58,14 @@ the concerning signal (missed doses, severe symptom, drifting measurement) so it
 click. When no insight candidate is pending, the attention index MUST collapse to a single
 serif-italic line, with no empty-state decoration.
 
+A measurement-gap or correlation-drift item MAY become a measurements door only when its metadata
+contains a typed `measurement_door` object with a non-empty `type` and real, ordered date-only
+`since` and `until` bounds. The dashboard MUST construct the destination itself as the fixed
+same-origin `/health/measurements` path plus encoded `type`, `since`, and `until` query keys. It
+MUST NOT navigate to an arbitrary `metadata.href` value. Missing, malformed, reversed, or
+otherwise ineligible door metadata MUST fall back to the fixed measurements path without query
+keys.
+
 #### Scenario: Overview lands the owner on the most important thing
 
 - **WHEN** the owner navigates to `/health`
@@ -111,6 +119,20 @@ serif-italic line, with no empty-state decoration.
 - **WHEN** `GET /api/switchboard/insights?butler=health&status=pending` returns zero candidates
 - **THEN** the attention index MUST collapse to a single serif-italic line
 - **AND** it MUST NOT render placeholder cards, confetti, or celebratory styling
+
+#### Scenario: Typed measurement insights open a bounded same-origin chart door
+
+- **WHEN** a pending `measurement-gap` or `correlation-drift` insight supplies a typed
+  `measurement_door` with a type and ordered `YYYY-MM-DD` bounds
+- **THEN** its attention row MUST link to `/health/measurements` with encoded `type`, `since`, and
+  `until` query keys
+- **AND** the dashboard MUST build that URL itself, never navigate to `metadata.href`
+
+#### Scenario: Invalid measurement-door metadata cannot control navigation
+
+- **WHEN** a measurement insight omits a typed door or its type, dates, or date ordering are invalid
+- **THEN** its attention row MUST fall back to `/health/measurements` without typed query keys
+- **AND** arbitrary metadata values MUST NOT redirect the owner away from that same-origin route
 
 ---
 
@@ -175,6 +197,14 @@ The page MUST contain:
   `blood_sugar`, and `temperature`.
 - Date range filters (`since`/`until`) using date inputs, with a Clear button when any filter is
   active.
+- The chart's `type`, `since`, and `until` URL keys are authoritative for chart initialization. A
+  supplied type is valid only when it is an observed `chart_eligible` entry; supplied bounds must
+  be real `YYYY-MM-DD` dates and ordered when both are present. A missing type may use the first
+  observed chart-eligible entry as the ordinary default. An unknown or ineligible supplied type,
+  malformed bound, or reversed range MUST NOT trigger a chart, trend, or readings query. The chart
+  MAY show its ordinary first eligible tab as a visual fallback, but it MUST preserve the raw URL
+  selection for the reading-log filter. Selecting a chart tab or editing/clearing chart dates MUST
+  update only those keys with history replacement and preserve unrelated query keys.
 - A Recharts `LineChart` in a `ResponsiveContainer` with explicit value-shape semantics. A scalar
   type MUST plot only finite values from the normalized `value` key. `blood_pressure` is the sole
   named compound exception: it MUST render `systolic` and `diastolic` as two lines. Another
@@ -209,6 +239,18 @@ The page MUST contain:
 - **WHEN** the observed vocabulary succeeds with zero chart-eligible types
 - **THEN** the chart surface MUST render a single serif-italic no-chartable-types line, not a
   fabricated tab or chart
+
+#### Scenario: Chart URL initialization accepts only valid observed state
+
+- **WHEN** `/health/measurements` loads with an observed chart-eligible `type` and ordered
+  date-only `since`/`until` query keys
+- **THEN** the matching tab MUST be active and chart reads MUST receive those bounds
+- **AND** changing the tab or bounds MUST retain unrelated query keys
+- **WHEN** the URL type is unknown or not chart-eligible, or either supplied bound is malformed or
+  the range is reversed
+- **THEN** that value MUST NOT become a chart tab or issue a chart query
+- **AND** the chart MUST retain an honest non-data fallback while the owner can select a valid tab
+  or correct the bounds
 
 #### Scenario: Observed types never expand the manual writer
 

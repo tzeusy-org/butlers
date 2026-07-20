@@ -1954,6 +1954,46 @@ class TestProposeInsightCandidateUnit:
         assert r2["status"] == "accepted"
 
 
+class TestProposeInsightCandidatePersistence:
+    """Real-Postgres checks for the broker's structured candidate payload."""
+
+    @pytest.mark.skipif(not _docker_available, reason="Docker not available")
+    @pytest.mark.integration
+    async def test_metadata_round_trips_as_a_jsonb_object(self, insight_pool):
+        """Structured metadata must survive the broker writer without double encoding."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        metadata = {
+            "measurement_door": {
+                "type": "weight",
+                "since": "2026-07-01",
+                "until": "2026-07-20",
+            }
+        }
+        result = await propose_insight_candidate(
+            insight_pool,
+            origin_butler="health",
+            priority=55,
+            category="measurement-gap",
+            dedup_key="health:measurement-gap:weight",
+            message="Weight is overdue.",
+            expires_at=_future(),
+            metadata=metadata,
+        )
+
+        assert result["status"] == "accepted"
+        row = await insight_pool.fetchrow(
+            "SELECT metadata, jsonb_typeof(metadata) AS metadata_kind "
+            "FROM insight_candidates WHERE dedup_key = $1",
+            "health:measurement-gap:weight",
+        )
+        assert row is not None
+        assert row["metadata_kind"] == "object", (
+            "insight_candidates.metadata was double-encoded into a JSONB string"
+        )
+        assert row["metadata"] == metadata
+
+
 # ===========================================================================
 # Category: Daemon job handler registration [bu-a3wr]
 # ===========================================================================

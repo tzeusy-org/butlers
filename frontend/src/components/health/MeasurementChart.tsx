@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { format } from "date-fns";
+import { useSearchParams } from "react-router";
 import {
   CartesianGrid,
   Line,
@@ -20,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
+import { hasValidMeasurementUrlState } from "@/lib/measurement-door";
 import { chartableMeasurementTypes } from "@/lib/measurement-vocabulary";
 import { cn } from "@/lib/utils";
 import {
@@ -50,15 +52,6 @@ const HEALTH_HUE_FALLBACK = "oklch(0.641 0.140 11.2)";
 // always tracks the mark's slot — no separate constant to keep in sync.
 // butlerHueVar("health") returns e.g. "var(--category-5)"; slice off the wrapper.
 const HEALTH_HUE_PROP = butlerHueVar("health").slice(4, -1);
-
-// ---------------------------------------------------------------------------
-// Props
-// ---------------------------------------------------------------------------
-
-export interface MeasurementChartProps {
-  /** Override the default type filter. */
-  initialType?: string;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,11 +141,12 @@ function EmptyLine({ children }: { children: React.ReactNode }) {
 // MeasurementChart
 // ---------------------------------------------------------------------------
 
-export default function MeasurementChart({ initialType }: MeasurementChartProps) {
-  const [requestedType, setRequestedType] = useState<string>(initialType ?? "weight");
+export default function MeasurementChart() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedType = searchParams.get("type") ?? "";
+  const since = searchParams.get("since") ?? "";
+  const until = searchParams.get("until") ?? "";
   const [windowDays, setWindowDays] = useState<MeasurementTrendWindowDays>(14);
-  const [since, setSince] = useState("");
-  const [until, setUntil] = useState("");
   const [showTable, setShowTable] = useState(false);
   const {
     data: measurementTypesData,
@@ -164,15 +158,28 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
     () => chartableMeasurementTypes(measurementTypesData?.types ?? []),
     [measurementTypesData],
   );
-  const activeTypeInfo = useMemo<MeasurementTypeInfo | undefined>(
-    () =>
-      chartTypes.find((measurementType) => measurementType.type === requestedType) ??
-      chartTypes[0],
+  const chartEligibleTypes = useMemo(
+    () => new Set(chartTypes.map((measurementType) => measurementType.type)),
+    [chartTypes],
+  );
+  const requestedTypeInfo = useMemo<MeasurementTypeInfo | undefined>(
+    () => chartTypes.find((measurementType) => measurementType.type === requestedType),
     [chartTypes, requestedType],
+  );
+  const activeTypeInfo = useMemo<MeasurementTypeInfo | undefined>(
+    () => requestedTypeInfo ?? chartTypes[0],
+    [chartTypes, requestedTypeInfo],
   );
   const activeType = activeTypeInfo?.type ?? "";
   const typeLabel = (activeTypeInfo?.label ?? activeType) || "measurement";
   const vocabularyReady = !measurementTypesLoading && !measurementTypesError;
+  const invalidChartUrl = !hasValidMeasurementUrlState(
+    requestedType,
+    since,
+    until,
+    chartEligibleTypes,
+  );
+  const chartQueryEnabled = vocabularyReady && !!activeType && !invalidChartUrl;
   const isBP = activeType === "blood_pressure";
   // The trend endpoint aggregates metadata.value as a scalar float. Compound
   // readings have a tab and raw-data view, but no implicit series key is safe.
@@ -187,7 +194,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
       window_days: windowDays,
       bucket: "daily",
     },
-    { enabled: vocabularyReady && supportsTrend },
+    { enabled: chartQueryEnabled && supportsTrend },
   );
   const buckets = useMemo(() => trendQuery.data?.buckets ?? [], [trendQuery.data]);
   // Show newest bucket first so the most relevant data is at the top.
@@ -196,14 +203,41 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
   // --- Raw measurements (chart + table) -------------------------------------
   const params: MeasurementParams = {
     type: activeType || undefined,
-    since: since || undefined,
-    until: until || undefined,
+    since: invalidChartUrl ? undefined : since || undefined,
+    until: invalidChartUrl ? undefined : until || undefined,
     limit: 500,
   };
   const { data, isLoading, isError, refetch } = useMeasurements(params, {
-    enabled: vocabularyReady && !!activeType,
+    enabled: chartQueryEnabled,
   });
-  const measurements = useMemo(() => data?.data ?? [], [data]);
+  const measurements = useMemo(
+    () => (invalidChartUrl ? [] : data?.data ?? []),
+    [data, invalidChartUrl],
+  );
+
+  function setChartParam(key: "type" | "since" | "until", value: string) {
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
+  function clearDateBounds() {
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete("since");
+        next.delete("until");
+        return next;
+      },
+      { replace: true },
+    );
+  }
 
   // Build only semantically named series: scalars use the API's normalized
   // value key, while blood pressure has its explicit two-key contract.
@@ -269,7 +303,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
               type="button"
               role="tab"
               aria-selected={active}
-              onClick={() => setRequestedType(measurementType.type)}
+              onClick={() => setChartParam("type", measurementType.type)}
               className={cn(
                 "rounded-sm border px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.08em] transition-colors",
                 active
@@ -309,7 +343,9 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
           </div>
         </div>
 
-        {!supportsTrend ? (
+        {invalidChartUrl ? (
+          <EmptyLine>That chart link has invalid type or date filters.</EmptyLine>
+        ) : !supportsTrend ? (
           <EmptyLine>
             Trend aggregation is unavailable for compound {typeLabel} readings.
           </EmptyLine>
@@ -379,7 +415,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
             id="measurement-chart-since"
             type="date"
             value={since}
-            onChange={(e) => setSince(e.target.value)}
+            onChange={(e) => setChartParam("since", e.target.value)}
             className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           />
         </div>
@@ -391,7 +427,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
             id="measurement-chart-until"
             type="date"
             value={until}
-            onChange={(e) => setUntil(e.target.value)}
+            onChange={(e) => setChartParam("until", e.target.value)}
             className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           />
         </div>
@@ -399,10 +435,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => {
-              setSince("");
-              setUntil("");
-            }}
+            onClick={clearDateBounds}
           >
             Clear
           </Button>
@@ -410,7 +443,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
       </div>
 
       {/* Chart */}
-      {isLoading ? (
+      {invalidChartUrl ? null : isLoading ? (
         <Skeleton className="h-64 w-full" />
       ) : isError ? (
         <SourceDegradedNote

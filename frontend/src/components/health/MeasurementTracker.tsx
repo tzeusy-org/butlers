@@ -41,6 +41,7 @@ import {
   useMeasurements,
   useMeasurementTypes,
 } from "@/hooks/use-health";
+import { hasValidMeasurementUrlState } from "@/lib/measurement-door";
 
 const PAGE_SIZE = 50;
 
@@ -106,11 +107,15 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 }
 
 /** Single serif-italic empty line — Dispatch empty state (no decorated chrome). */
-function EmptyLine() {
+function EmptyLine({ children }: { children?: React.ReactNode }) {
   return (
     <p className="py-8 font-serif text-sm italic text-muted-foreground">
-      No measurements logged yet. Log one with the button above, or record one by
-      talking to your Health butler.
+      {children ?? (
+        <>
+          No measurements logged yet. Log one with the button above, or record one by
+          talking to your Health butler.
+        </>
+      )}
     </p>
   );
 }
@@ -232,6 +237,15 @@ export default function MeasurementTracker() {
     () => normaliseMeasurementTypes(measurementTypesData?.types ?? []),
     [measurementTypesData],
   );
+  const chartEligibleTypes = useMemo(
+    () =>
+      new Set(
+        measurementTypes
+          .filter((measurementType) => measurementType.chart_eligible)
+          .map((measurementType) => measurementType.type),
+      ),
+    [measurementTypes],
+  );
   const typeLabels = useMemo(
     () =>
       new Map(
@@ -270,6 +284,12 @@ export default function MeasurementTracker() {
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
   };
+  const readingsQueryEnabled = hasValidMeasurementUrlState(
+    typeFilter,
+    since,
+    until,
+    chartEligibleTypes,
+  );
 
   function setUrlFilter(key: "type" | "since" | "until", value: string) {
     // replace: true — since/until are native date inputs that can fire
@@ -287,11 +307,13 @@ export default function MeasurementTracker() {
     setPage(0);
   }
 
-  const { data, isLoading, isError, error, refetch } = useMeasurements(params);
+  const { data, isLoading, isError, error, refetch } = useMeasurements(params, {
+    enabled: readingsQueryEnabled,
+  });
 
-  const measurements = data?.data ?? [];
-  const total = data?.meta?.total ?? 0;
-  const hasMore = data?.meta?.has_more ?? false;
+  const measurements = readingsQueryEnabled ? data?.data ?? [] : [];
+  const total = readingsQueryEnabled ? data?.meta?.total ?? 0 : 0;
+  const hasMore = readingsQueryEnabled ? data?.meta?.has_more ?? false : false;
 
   const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const rangeEnd = Math.min((page + 1) * PAGE_SIZE, total);
@@ -378,30 +400,34 @@ export default function MeasurementTracker() {
         </Button>
       </div>
 
-      <QueryBoundary
-        isLoading={isLoading}
-        isError={isError}
-        error={error}
-        isEmpty={measurements.length === 0}
-        onRetry={() => void refetch()}
-        sourceLabel="the health record"
-        loadingFallback={<SkeletonRows />}
-        emptyFallback={<EmptyLine />}
-      >
-        <div className="divide-y divide-border/60 border-y border-border/60">
-          {measurements.map((measurement) => (
-            <MeasurementRow
-              key={measurement.id}
-              measurement={measurement}
-              onEdit={setFormTarget}
-              labelForType={(type) => typeLabels.get(type) ?? type}
-            />
-          ))}
-        </div>
-      </QueryBoundary>
+      {!readingsQueryEnabled ? (
+        <EmptyLine>That reading-log link has invalid type or date filters.</EmptyLine>
+      ) : (
+        <QueryBoundary
+          isLoading={isLoading}
+          isError={isError}
+          error={error}
+          isEmpty={measurements.length === 0}
+          onRetry={() => void refetch()}
+          sourceLabel="the health record"
+          loadingFallback={<SkeletonRows />}
+          emptyFallback={<EmptyLine />}
+        >
+          <div className="divide-y divide-border/60 border-y border-border/60">
+            {measurements.map((measurement) => (
+              <MeasurementRow
+                key={measurement.id}
+                measurement={measurement}
+                onEdit={setFormTarget}
+                labelForType={(type) => typeLabels.get(type) ?? type}
+              />
+            ))}
+          </div>
+        </QueryBoundary>
+      )}
 
       {/* Pagination */}
-      {total > 0 && (
+      {readingsQueryEnabled && total > 0 && (
         <div className="flex items-center justify-between">
           <p className="font-mono text-[11px] text-muted-foreground tnum">
             Showing {rangeStart}–{rangeEnd} of {total.toLocaleString()}
