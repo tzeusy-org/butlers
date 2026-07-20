@@ -380,6 +380,31 @@ class LatestMeasurementsResponse(BaseModel):
     measurements: dict[str, LatestMeasurementEntry | None]
 
 
+class MeasurementTypeInfo(BaseModel):
+    """An active measurement type observed from temporal Health facts.
+
+    ``type`` is the suffix of an active ``measurement_{type}`` predicate and
+    ``label`` is derived deterministically from that slug. This read vocabulary
+    does not grant write permission; the manual measurement write API retains
+    its fixed allowlist.
+    """
+
+    type: str
+    label: str
+    sample_count: int
+    latest_at: str
+    unit: str | None
+    value_shape: Literal["scalar", "compound", "unknown"]
+    chart_eligible: bool
+    kpi_eligible: bool
+
+
+class MeasurementTypesResponse(BaseModel):
+    """Response for GET /measurements/types."""
+
+    types: list[MeasurementTypeInfo]
+
+
 class SleepStage(BaseModel):
     """A single sleep-stage entry in a sleep session."""
 

@@ -245,12 +245,25 @@ Operational sync and telemetry guidance:
 ## Health Domain Contract
 
 - `GET /api/health/measurements` -> `PaginatedResponse<Measurement>`
+- `GET /api/health/measurements/types` -> `MeasurementTypesResponse`
 - `GET /api/health/medications` -> `PaginatedResponse<Medication>`
 - `GET /api/health/medications/{medicationId}/doses` -> `Dose[]`
 - `GET /api/health/conditions` -> `PaginatedResponse<HealthCondition>`
 - `GET /api/health/symptoms` -> `PaginatedResponse<Symptom>`
 - `GET /api/health/meals` -> `PaginatedResponse<Meal>`
 - `GET /api/health/research` -> `PaginatedResponse<HealthResearch>`
+
+`MeasurementTypesResponse` is an unwrapped `{ "types": MeasurementTypeInfo[] }`
+payload derived only from active Health-pool `facts` whose predicates match
+`measurement_%` and have a `valid_at`. Entries are ordered by their predicate
+suffix (`type`) and include `type`, deterministic slug-derived `label`,
+`sample_count`, `latest_at`, latest observed `unit` (or `null`),
+`value_shape` (`scalar` | `compound` | `unknown`), `chart_eligible`, and
+`kpi_eligible`.
+
+This is an observed read vocabulary: it includes unknown/imported types but
+does not alter the fixed five-type manual measurement writer allowlist.
+`kpi_eligible` separately marks the fixed four dashboard KPI slots.
 
 ## Connectors Contract
 

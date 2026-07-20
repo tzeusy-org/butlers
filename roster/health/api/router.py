@@ -14,6 +14,7 @@ import os
 import re
 import sys
 from datetime import UTC, datetime, timedelta
+from math import isfinite
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -50,6 +51,8 @@ if _spec is not None and _spec.loader is not None:
     MealUpdateRequest = _models.MealUpdateRequest
     Measurement = _models.Measurement
     MeasurementCreateRequest = _models.MeasurementCreateRequest
+    MeasurementTypeInfo = _models.MeasurementTypeInfo
+    MeasurementTypesResponse = _models.MeasurementTypesResponse
     MeasurementUpdateRequest = _models.MeasurementUpdateRequest
     MeasurementSource = _models.MeasurementSource
     MeasurementSourcesResponse = _models.MeasurementSourcesResponse
@@ -262,6 +265,94 @@ async def list_measurements(
         data=data,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /measurements/types — active observed measurement vocabulary
+# ---------------------------------------------------------------------------
+
+# These are the fixed four dashboard KPI slots, not the five-type manual
+# measurement writer allowlist. Observed types remain read-only vocabulary.
+_KPI_MEASUREMENT_TYPES = frozenset({"weight", "blood_pressure", "heart_rate", "blood_sugar"})
+
+
+def _measurement_type_label(type_slug: str) -> str:
+    """Derive a stable display label from an observed predicate suffix."""
+    return type_slug.replace("_", " ").replace("-", " ").capitalize()
+
+
+def _measurement_value_shape(value: object) -> str:
+    """Classify the latest observed JSON value without coercing its content."""
+    if isinstance(value, dict):
+        return "compound"
+    if value is None or isinstance(value, (list, tuple)):
+        return "unknown"
+    return "scalar"
+
+
+def _contains_chartable_number(value: object) -> bool:
+    """Return whether a scalar or compound value contains a finite number."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float, str)):
+        try:
+            return isfinite(float(value))
+        except (OverflowError, ValueError):
+            return False
+    if isinstance(value, dict):
+        return any(_contains_chartable_number(child) for child in value.values())
+    return False
+
+
+@router.get("/measurements/types", response_model=MeasurementTypesResponse)
+async def get_measurement_types(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> MeasurementTypesResponse:
+    """Return the active, data-derived vocabulary of measurement predicates.
+
+    The query is intentionally limited to active temporal ``facts`` in the
+    Health pool. It returns the latest observed metadata and sample count for
+    every ``measurement_*`` predicate, including unknown wellness-imported
+    types, without changing the manual measurement write allowlist.
+    """
+    pool = _pool(db)
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (predicate)
+            predicate,
+            valid_at AS latest_at,
+            metadata,
+            COUNT(*) OVER (PARTITION BY predicate) AS sample_count
+        FROM facts
+        WHERE predicate LIKE 'measurement~_%' ESCAPE '~'
+          AND predicate <> 'measurement_'
+          AND scope = 'health'
+          AND validity = 'active'
+          AND valid_at IS NOT NULL
+        ORDER BY predicate ASC, valid_at DESC NULLS LAST, id DESC
+        """
+    )
+
+    types: list[MeasurementTypeInfo] = []
+    for row in rows:
+        type_slug = row["predicate"].removeprefix("measurement_")
+        metadata = _as_json_object(row["metadata"])
+        value = metadata.get("value")
+        unit = metadata.get("unit")
+        types.append(
+            MeasurementTypeInfo(
+                type=type_slug,
+                label=_measurement_type_label(type_slug),
+                sample_count=int(row["sample_count"]),
+                latest_at=_isoformat(row["latest_at"]),
+                unit=unit if isinstance(unit, str) and unit else None,
+                value_shape=_measurement_value_shape(value),
+                chart_eligible=_contains_chartable_number(value),
+                kpi_eligible=type_slug in _KPI_MEASUREMENT_TYPES,
+            )
+        )
+
+    return MeasurementTypesResponse(types=types)
 
 
 # ---------------------------------------------------------------------------
