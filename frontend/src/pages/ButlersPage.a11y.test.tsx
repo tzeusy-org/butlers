@@ -21,7 +21,8 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, cleanup } from "@testing-library/react";
+import { render, cleanup, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { axe, toHaveNoViolations } from "jest-axe";
@@ -239,5 +240,43 @@ describe("a11y (real page): Quarantined cell (restore chip)", () => {
       aggregates: makeAggregates({ total: 2, butlerCount: 2, quarantined: 1 }),
     });
     await checkA11y();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Story 6: Needs-you rows remain real keyboard-reachable route doors
+// ---------------------------------------------------------------------------
+
+describe("a11y (real page): Needs-you route doors", () => {
+  it("keeps an attention row reachable by keyboard as a native detail link", async () => {
+    const row = makeRow({
+      name: "down-butler",
+      activity: "offline",
+      cellTone: "red",
+      status: "down",
+    });
+    mockUseButlerStatusBoard.mockReturnValue({
+      rows: [row],
+      needsYou: [row],
+      aggregates: makeAggregates({ total: 1, butlerCount: 1, offline: 1 }),
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ButlersPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const needsYou = screen.getByRole("group", { name: "Needs your attention" });
+    const link = within(needsYou).getByRole("link", { name: /down-butler/i });
+    const user = userEvent.setup();
+    for (let tabCount = 0; tabCount < 20 && document.activeElement !== link; tabCount += 1) {
+      await user.tab();
+    }
+
+    expect(document.activeElement).toBe(link);
+    expect(link.getAttribute("href")).toBe("/butlers/down-butler");
   });
 });

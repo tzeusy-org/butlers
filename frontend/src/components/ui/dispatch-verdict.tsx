@@ -25,13 +25,18 @@
 // clauses always first).
 // ---------------------------------------------------------------------------
 
+import type { ReactNode } from "react";
 import { Link } from "react-router";
+
+import { cn } from "@/lib/utils";
 
 export interface VerdictSource {
   /** Named inline when this source errors, e.g. "fleet status", "QA summary". */
   label: string;
   isLoading: boolean;
   isError: boolean;
+  /** Natural drill-down target for this source's unavailable clause, when one exists. */
+  href?: string;
 }
 
 export interface VerdictClause {
@@ -39,6 +44,12 @@ export interface VerdictClause {
   text: string;
   /** When set, the clause renders as a real <Link> (a door) instead of plain text. */
   href?: string;
+  /** Optional richer inline composition while keeping the same clause/link semantics. */
+  content?: ReactNode;
+  /** Additional styling for this clause's list item. */
+  className?: string;
+  /** Additional styling for this clause's link when it has a drill-down target. */
+  linkClassName?: string;
 }
 
 export interface DispatchVerdictProps {
@@ -62,6 +73,18 @@ export interface DispatchVerdictProps {
   allClear: string;
   /** aria-label for the clause list when non-empty. Defaults to `${landmarkLabel} needs attention`. */
   clausesLabel?: string;
+  /** Inline clauses are dot-separated; stacked clauses preserve row-like compositions. */
+  layout?: "inline" | "stacked";
+  /** Optional content displayed above a non-empty clause list. */
+  clausesHeader?: ReactNode;
+  /** Additional styling for the loading placeholder. */
+  skeletonClassName?: string;
+  /** Additional styling for the all-clear status line. */
+  allClearClassName?: string;
+  /** Additional styling for the non-empty clause group. */
+  clausesClassName?: string;
+  /** Additional styling for the clause list. */
+  clausesListClassName?: string;
   className?: string;
 }
 
@@ -79,6 +102,12 @@ export function DispatchVerdict({
   clauses,
   allClear,
   clausesLabel,
+  layout = "inline",
+  clausesHeader,
+  skeletonClassName,
+  allClearClassName,
+  clausesClassName,
+  clausesListClassName,
   className,
 }: DispatchVerdictProps) {
   const isLoading = sources.some((s) => s.isLoading);
@@ -88,7 +117,7 @@ export function DispatchVerdict({
       <div role="region" aria-label={landmarkLabel} className={className}>
         <div
           role="status"
-          className="h-8 w-full rounded bg-muted"
+          className={cn("h-8 w-full rounded bg-muted", skeletonClassName)}
           data-testid={`${testId}-verdict-skeleton`}
           aria-label={`Loading ${landmarkLabel}`}
         />
@@ -102,7 +131,11 @@ export function DispatchVerdict({
   // alongside a source that is actually down.
   const errorClauses: VerdictClause[] = sources
     .filter((s) => s.isError)
-    .map((s) => ({ key: `${slug(s.label)}-error`, text: `${s.label} unavailable` }));
+    .map((s) => ({
+      key: `${slug(s.label)}-error`,
+      text: `${s.label} unavailable`,
+      href: s.href,
+    }));
 
   const allClauses = [...errorClauses, ...clauses];
 
@@ -112,7 +145,7 @@ export function DispatchVerdict({
         <div
           role="status"
           data-testid={`${testId}-verdict-all-clear`}
-          className="font-mono text-sm text-muted-foreground"
+          className={cn("font-mono text-sm text-muted-foreground", allClearClassName)}
         >
           {allClear}
         </div>
@@ -126,21 +159,33 @@ export function DispatchVerdict({
         role="group"
         aria-label={clausesLabel ?? `${landmarkLabel} needs attention`}
         data-testid={`${testId}-verdict-clauses`}
+        className={clausesClassName}
       >
-        <ul className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
+        {clausesHeader}
+        <ul
+          className={cn(
+            layout === "stacked"
+              ? "flex flex-col gap-1 text-sm"
+              : "flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm",
+            clausesListClassName,
+          )}
+        >
           {allClauses.map((c, i) => (
-            <li key={c.key} className="flex items-baseline gap-1.5">
-              {i > 0 && (
+            <li
+              key={c.key}
+              className={cn(layout === "inline" && "flex items-baseline gap-1.5", c.className)}
+            >
+              {layout === "inline" && i > 0 && (
                 <span aria-hidden="true" className="text-muted-foreground">
                   ·
                 </span>
               )}
               {c.href ? (
-                <Link to={c.href} className="text-inherit hover:underline">
-                  {c.text}
+                <Link to={c.href} className={cn("text-inherit hover:underline", c.linkClassName)}>
+                  {c.content ?? c.text}
                 </Link>
               ) : (
-                <span>{c.text}</span>
+                <span>{c.content ?? c.text}</span>
               )}
             </li>
           ))}

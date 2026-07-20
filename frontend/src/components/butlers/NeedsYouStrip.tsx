@@ -12,7 +12,7 @@
 //   - Tailwind tokens only (no inline style, no raw oklch).
 // ---------------------------------------------------------------------------
 
-import { Link } from "react-router"
+import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict"
 
 import type { StatusBoardRow } from "@/hooks/use-butler-status-board"
 
@@ -59,35 +59,37 @@ export interface NeedsYouStripProps {
 // ---------------------------------------------------------------------------
 
 export function NeedsYouStrip({ rows, total }: NeedsYouStripProps) {
-  if (rows.length === 0) {
-    return (
-      <div
-        role="status"
-        className="border-b border-border px-7 py-3 font-mono text-xs text-muted-foreground"
-      >
-        All {total} {total === 1 ? "butler" : "butlers"} healthy
-      </div>
-    )
-  }
+  const clauses: VerdictClause[] = rows.map((row) => ({
+    key: row.name,
+    text: row.name,
+    href: `/butlers/${row.name}`,
+    content: (
+      <>
+        <span className="font-medium capitalize">{row.name}</span>
+        <span className="text-xs text-muted-foreground">{reasonFor(row)}</span>
+      </>
+    ),
+    linkClassName: "flex flex-wrap items-baseline gap-x-2 text-sm no-underline text-inherit hover:underline",
+  }))
 
   return (
-    <div role="group" aria-label="Needs your attention" className="border-b border-border px-7 py-4">
-      <span className="mb-2 block font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-        {rows.length} {rows.length === 1 ? "thing needs" : "things need"} you
-      </span>
-      <ul className="flex flex-col gap-1.5">
-        {rows.map((row) => (
-          <li key={row.name}>
-            <Link
-              to={`/butlers/${row.name}`}
-              className="flex flex-wrap items-baseline gap-x-2 text-sm no-underline text-inherit hover:underline"
-            >
-              <span className="font-medium capitalize">{row.name}</span>
-              <span className="text-xs text-muted-foreground">{reasonFor(row)}</span>
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <DispatchVerdict
+      testId="butlers-needs-you"
+      landmarkLabel="Needs your attention"
+      sources={[]}
+      clauses={clauses}
+      allClear={`All ${total} ${total === 1 ? "butler" : "butlers"} healthy`}
+      clausesLabel="Needs your attention"
+      layout="stacked"
+      className="border-b border-border px-7"
+      allClearClassName="py-3 text-xs"
+      clausesClassName="py-4"
+      clausesListClassName="gap-1.5"
+      clausesHeader={
+        <span className="mb-2 block font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+          {rows.length} {rows.length === 1 ? "thing needs" : "things need"} you
+        </span>
+      }
+    />
   )
 }

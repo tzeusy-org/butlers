@@ -13,8 +13,7 @@
 //     drill-down target.
 // ---------------------------------------------------------------------------
 
-import { Link } from "react-router";
-
+import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import {
   useBackupFacts,
@@ -24,13 +23,6 @@ import {
   useInsightDeliveryState,
   useInstanceFacts,
 } from "@/hooks/use-system";
-
-interface Problem {
-  key: string;
-  text: string;
-  href?: string;
-  tone?: "red";
-}
 
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86400);
@@ -72,55 +64,17 @@ export function SystemVerdictBanner() {
   const drift = useDriftFacts();
   const deployments = useDeploymentFacts();
 
-  // Never render a verdict (all-clear or otherwise) while a source that
-  // feeds it is still loading -- a premature "all clear" is worse than a
-  // brief skeleton.
-  const stillLoading =
-    board.isLoading ||
-    instance.isLoading ||
-    backups.isLoading ||
-    insights.isPending ||
-    posture.isPending ||
-    drift.isPending ||
-    deployments.isPending;
+  const sources = [
+    { label: "fleet status", isLoading: board.isLoading, isError: board.isError, href: "/butlers" },
+    { label: "instance facts", isLoading: instance.isLoading, isError: instance.isError },
+    { label: "backup facts", isLoading: backups.isLoading, isError: backups.isError },
+    { label: "insight delivery status", isLoading: insights.isPending, isError: insights.isError },
+    { label: "security posture", isLoading: posture.isPending, isError: posture.isError },
+    { label: "migration drift status", isLoading: drift.isPending, isError: drift.isError },
+    { label: "deployment status", isLoading: deployments.isPending, isError: deployments.isError },
+  ];
 
-  if (stillLoading) {
-    return (
-      <div
-        role="status"
-        className="mb-4 h-12 rounded bg-muted"
-        data-testid="verdict-banner-skeleton"
-        aria-label="Loading instance verdict"
-      />
-    );
-  }
-
-  const problems: Problem[] = [];
-
-  // A settled (non-loading) error must never be silently dropped from the
-  // verdict -- each of these sources feeds either a problem line or the
-  // "all clear" summary below, and a failed fetch is neither.
-  if (board.isError) {
-    problems.push({ key: "board-error", text: "fleet status unavailable", href: "/butlers" });
-  }
-  if (instance.isError) {
-    problems.push({ key: "instance-error", text: "instance facts unavailable" });
-  }
-  if (backups.isError) {
-    problems.push({ key: "backups-error", text: "backup facts unavailable" });
-  }
-  if (insights.isError) {
-    problems.push({ key: "insights-error", text: "insight delivery status unavailable" });
-  }
-  if (posture.isError) {
-    problems.push({ key: "posture-error", text: "security posture unavailable" });
-  }
-  if (drift.isError) {
-    problems.push({ key: "drift-error", text: "migration drift status unavailable" });
-  }
-  if (deployments.isError) {
-    problems.push({ key: "deployments-error", text: "deployment status unavailable" });
-  }
+  const problems: VerdictClause[] = [];
 
   if (board.offline > 0) {
     problems.push({
@@ -214,7 +168,11 @@ export function SystemVerdictBanner() {
     ? bindMountedWorktreeTruth(deploymentData.current)
     : null;
   if (worktreeTruth) {
-    problems.push({ key: "bind-mounted-worktree", text: worktreeTruth, tone: "red" });
+    problems.push({
+      key: "bind-mounted-worktree",
+      text: worktreeTruth,
+      className: "text-[var(--red-text)] font-medium",
+    });
   }
   if (deploymentData?.current?.result === "failed") {
     problems.push({ key: "deploy-failed", text: "last deploy failed" });
@@ -229,54 +187,33 @@ export function SystemVerdictBanner() {
     });
   }
 
-  if (problems.length === 0) {
-    const instanceData = instance.data?.data;
-    const parts = [
-      instanceData ? `v${instanceData.version}` : null,
-      instanceData ? formatUptime(instanceData.uptime_seconds) : null,
-      backupData ? formatBackupRecency(backupData.last_backup_at) : null,
-      board.total > 0 ? `all ${board.total} beating` : null,
-    ].filter((p): p is string => Boolean(p));
-
-    return (
-      <div
-        role="status"
-        data-testid="verdict-banner-all-clear"
-        className="mb-4 rounded border border-border px-4 py-3 font-mono text-sm text-muted-foreground"
-      >
-        Instance healthy{parts.length > 0 ? `: ${parts.join(", ")}` : ""}
-      </div>
-    );
-  }
+  const instanceData = instance.data?.data;
+  const parts = [
+    instanceData ? `v${instanceData.version}` : null,
+    instanceData ? formatUptime(instanceData.uptime_seconds) : null,
+    backupData ? formatBackupRecency(backupData.last_backup_at) : null,
+    board.total > 0 ? `all ${board.total} beating` : null,
+  ].filter((p): p is string => Boolean(p));
+  const problemCount = sources.filter((source) => source.isError).length + problems.length;
 
   return (
-    <div
-      role="group"
-      aria-label="Instance problems"
-      data-testid="verdict-banner-problems"
-      className="mb-4 rounded border border-[var(--amber)]/40 bg-[var(--amber)]/5 px-4 py-3"
-    >
-      <span className="mb-2 block font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-        {problems.length} {problems.length === 1 ? "thing needs" : "things need"} you
-      </span>
-      <ul className="flex flex-col gap-1 text-sm">
-        {problems.map((p) =>
-          p.href ? (
-            <li key={p.key} className={p.tone === "red" ? "text-[var(--red-text)] font-medium" : undefined}>
-              <Link to={p.href} className="text-inherit hover:underline">
-                {p.text}
-              </Link>
-            </li>
-          ) : (
-            <li
-              key={p.key}
-              className={p.tone === "red" ? "text-[var(--red-text)] font-medium" : undefined}
-            >
-              {p.text}
-            </li>
-          ),
-        )}
-      </ul>
-    </div>
+    <DispatchVerdict
+      testId="system"
+      landmarkLabel="instance verdict"
+      sources={sources}
+      clauses={problems}
+      allClear={`Instance healthy${parts.length > 0 ? `: ${parts.join(", ")}` : ""}`}
+      clausesLabel="Instance problems"
+      layout="stacked"
+      className="mb-4"
+      skeletonClassName="h-12"
+      allClearClassName="rounded border border-border px-4 py-3"
+      clausesClassName="rounded border border-[var(--amber)]/40 bg-[var(--amber)]/5 px-4 py-3"
+      clausesHeader={
+        <span className="mb-2 block font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+          {problemCount} {problemCount === 1 ? "thing needs" : "things need"} you
+        </span>
+      }
+    />
   );
 }

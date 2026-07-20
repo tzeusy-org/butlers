@@ -582,13 +582,14 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("renders a loading skeleton while any source is still loading", () => {
     setAllLoading();
     const html = renderPage();
-    expect(html).toContain('data-testid="verdict-banner-skeleton"');
+    expect(html).toContain('data-testid="system-verdict-skeleton"');
+    expect(html).toContain('aria-label="Loading instance verdict"');
   });
 
   it("renders an all-clear verdict line when nothing needs the owner", () => {
     setAllSuccess();
     const html = renderPage();
-    expect(html).toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).toContain('data-testid="system-verdict-all-clear"');
     expect(html).toContain("Instance healthy");
     expect(html).toContain("v1.0.0");
     expect(html).toContain("all 1 beating");
@@ -597,11 +598,12 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
   it("renders a ranked problem list when butlers are offline/quarantined/overdue", () => {
     setAllSuccess({ offline: 2, quarantined: 1, overdue: 3 });
     const html = renderPage();
-    expect(html).toContain('data-testid="verdict-banner-problems"');
+    expect(html).toContain('data-testid="system-verdict-clauses"');
     expect(html).toContain("2 butlers offline");
     expect(html).toContain("1 quarantined");
     expect(html).toContain("3 overdue against their own schedule");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).toContain('href="/butlers"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces a failed-insights problem instead of staying silent", () => {
@@ -650,7 +652,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("backup artifact corrupt");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces a stale backup as a problem (bu-9r3hd.5)", () => {
@@ -724,14 +726,14 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("restore drill never run");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces degraded fleet sources rather than a falsely confident all-clear", () => {
     setAllSuccess({ sourcesPartiallyDegraded: true });
     const html = renderPage();
     expect(html).toContain("some fleet data is degraded or unavailable");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces board.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
@@ -750,7 +752,8 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("fleet status unavailable");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).toContain('href="/butlers"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces instance.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
@@ -764,7 +767,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("instance facts unavailable");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces backups.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
@@ -778,7 +781,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("backup facts unavailable");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces insights.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
@@ -792,7 +795,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("insight delivery status unavailable");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces a failed deploy instead of a falsely confident all-clear (bu-hmdqz.1)", () => {
@@ -821,7 +824,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("last deploy failed");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces a bind-mounted worktree boot as a red problem", () => {
@@ -854,7 +857,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
     const html = renderPage();
     expect(html).toContain("boot from bind-mounted worktree .worktrees/frozen-checkout (hotreload)");
     expect(html).toContain("--red-text");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces N commits behind origin/main as a problem (bu-hmdqz.1)", () => {
@@ -883,7 +886,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("serving 16 commits behind origin/main");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces an unavailable commits-behind check instead of silence (bu-hmdqz.1)", () => {
@@ -912,7 +915,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("commits-behind-origin/main check unavailable");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces deployments.isError instead of a falsely confident all-clear (bu-hmdqz.1)", () => {
@@ -926,7 +929,7 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("deployment status unavailable");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
   it("surfaces posture.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
@@ -940,6 +943,6 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("security posture unavailable");
-    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 });

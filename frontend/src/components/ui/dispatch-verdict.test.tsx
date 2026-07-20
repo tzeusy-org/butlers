@@ -93,6 +93,73 @@ describe("DispatchVerdict -- clauses", () => {
     );
     expect(html).toContain('aria-label="Approvals verdict needs attention"');
   });
+
+  it("supports stacked, caller-composed clauses without losing their real link doors", () => {
+    const html = render(
+      <DispatchVerdict
+        testId="system"
+        landmarkLabel="Instance verdict"
+        sources={[HEALTHY_SOURCE]}
+        clauses={[
+          {
+            key: "worktree",
+            text: "boot from bind-mounted worktree",
+            href: "/butlers",
+            content: (
+              <>
+                <span className="font-medium">boot from bind-mounted worktree</span>
+                <span className="text-muted-foreground">(hotreload)</span>
+              </>
+            ),
+            className: "text-[var(--red-text)]",
+            linkClassName: "flex items-baseline gap-x-2 text-inherit hover:underline",
+          },
+          { key: "behind", text: "serving 2 commits behind origin/main" },
+        ]}
+        allClear="Instance healthy"
+        layout="stacked"
+        clausesHeader={<span data-testid="instance-problem-count">2 things need you</span>}
+        clausesClassName="rounded border border-border px-4 py-3"
+        clausesListClassName="gap-1"
+      />,
+    );
+
+    expect(html).toContain('data-testid="instance-problem-count"');
+    expect(html).toContain('href="/butlers"');
+    expect(html).toContain("boot from bind-mounted worktree");
+    expect(html).toContain("(hotreload)");
+    expect(html).toContain("serving 2 commits behind origin/main");
+    expect(html).toContain("text-[var(--red-text)]");
+    expect(html).not.toContain(">·<");
+  });
+});
+
+describe("DispatchVerdict -- state presentation", () => {
+  it("forwards all-clear and skeleton presentation classes to the active state", () => {
+    const allClear = render(
+      <DispatchVerdict
+        testId="system"
+        landmarkLabel="Instance verdict"
+        sources={[HEALTHY_SOURCE]}
+        clauses={[]}
+        allClear="Instance healthy"
+        allClearClassName="rounded border border-border px-4 py-3"
+      />,
+    );
+    const loading = render(
+      <DispatchVerdict
+        testId="system"
+        landmarkLabel="Instance verdict"
+        sources={[{ label: "instance facts", isLoading: true, isError: false }]}
+        clauses={[]}
+        allClear="Instance healthy"
+        skeletonClassName="h-12 rounded bg-muted"
+      />,
+    );
+
+    expect(allClear).toContain("rounded border border-border px-4 py-3");
+    expect(loading).toContain("h-12 rounded bg-muted");
+  });
 });
 
 describe("DispatchVerdict -- isError-suppression contract (bu-qvnce.1 / move 1)", () => {
@@ -101,13 +168,14 @@ describe("DispatchVerdict -- isError-suppression contract (bu-qvnce.1 / move 1)"
       <DispatchVerdict
         testId="spend"
         landmarkLabel="Spend verdict"
-        sources={[{ label: "spend summary", isLoading: false, isError: true }]}
+        sources={[{ label: "spend summary", isLoading: false, isError: true, href: "/spend" }]}
         clauses={[]}
         allClear="On pace: $12.00/day"
       />,
     );
     expect(html).toContain('data-testid="spend-verdict-clauses"');
     expect(html).toContain("spend summary unavailable");
+    expect(html).toContain('href="/spend"');
     expect(html).not.toContain("On pace: $12.00/day");
     expect(html).not.toContain('data-testid="spend-verdict-all-clear"');
   });
