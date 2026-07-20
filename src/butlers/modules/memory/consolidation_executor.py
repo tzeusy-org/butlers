@@ -140,6 +140,7 @@ async def execute_consolidation(
                 tags=fact.tags,
                 source_butler=butler_name,
                 entity_id=fact_entity_id,
+                valid_at=fact.valid_at,
                 tenant_id=tenant_id,
                 request_id=request_id,
                 enable_shared_catalog=enable_shared_catalog,

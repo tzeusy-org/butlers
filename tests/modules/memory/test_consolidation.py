@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -69,6 +70,60 @@ class TestValidParsing:
         assert result.confirmations == [UUID1, UUID2]
         assert result.parse_errors == []
 
+    def test_temporal_fact_timestamps_are_parsed(self) -> None:
+        payload = {
+            "new_facts": [
+                {
+                    "subject": "s",
+                    "predicate": "event",
+                    "content": "c",
+                    "valid_at": "2026-07-21T09:30:00+08:00",
+                }
+            ],
+        }
+
+        result = parse(_json(payload))
+
+        assert result.new_facts[0].valid_at == datetime.fromisoformat("2026-07-21T09:30:00+08:00")
+        assert result.parse_errors == []
+
+    def test_temporal_fact_timestamp_with_surrounding_whitespace_is_parsed(self) -> None:
+        payload = {
+            "new_facts": [
+                {
+                    "subject": "s",
+                    "predicate": "event",
+                    "content": "c",
+                    "valid_at": " \t2026-07-21T01:30:00Z\n",
+                }
+            ],
+        }
+
+        result = parse(_json(payload))
+
+        assert result.new_facts[0].valid_at == datetime(2026, 7, 21, 1, 30, tzinfo=UTC)
+        assert result.parse_errors == []
+
+    def test_temporal_updated_fact_is_rejected_as_new_observation(self) -> None:
+        payload = {
+            "updated_facts": [
+                {
+                    "target_id": UUID1,
+                    "subject": "s",
+                    "predicate": "upcoming_event",
+                    "content": "updated event details",
+                    "valid_at": "2026-07-22T01:30:00Z",
+                }
+            ]
+        }
+
+        result = parse(_json(payload))
+
+        assert result.updated_facts == []
+        assert result.parse_errors == [
+            "Skipping updated_fact: temporal observations must use new_facts"
+        ]
+
     def test_empty_object_returns_empty_result(self) -> None:
         result = parse(_json({}))
         assert result.new_facts == [] and result.updated_facts == []
@@ -117,6 +172,19 @@ class TestErrorHandling:
         result = parse(_json(payload))
         assert result.updated_facts == [] and len(result.parse_errors) == 1
 
+    def test_new_fact_with_invalid_valid_at_is_skipped(self) -> None:
+        fact = {
+            "subject": "s",
+            "predicate": "event",
+            "content": "c",
+            "valid_at": "not-a-timestamp",
+        }
+
+        result = parse(_json({"new_facts": [fact]}))
+
+        assert result.new_facts == []
+        assert result.parse_errors == ["Skipping new_fact: invalid valid_at"]
+
 
 # ---------------------------------------------------------------------------
 # Validation
@@ -159,3 +227,30 @@ class TestValidation:
         assert fact.permanence == "standard"
         assert fact.importance == 5.0
         assert fact.tags == []
+        assert fact.valid_at is None
+
+
+def test_consolidation_prompt_requires_valid_at_for_temporal_facts() -> None:
+    from butlers.modules.memory.prompt_template import build_consolidation_prompt
+
+    prompt = build_consolidation_prompt(
+        [],
+        [
+            {
+                "id": UUID1,
+                "subject": "s",
+                "predicate": "event",
+                "content": "c",
+                "permanence": "volatile",
+                "valid_at": datetime(2026, 7, 21, 1, 30, tzinfo=UTC),
+            }
+        ],
+        [],
+        "relationship",
+    )
+
+    assert '"valid_at": "<ISO-8601 timestamp>"' in prompt
+    assert "Temporal Facts" in prompt
+    assert "Temporal observations belong in `new_facts`" in prompt
+    assert "registered temporal predicate" in prompt
+    assert "valid_at=2026-07-21 01:30:00+00:00" in prompt

@@ -201,7 +201,7 @@ async def run_consolidation(
                 # and consolidation should recognize an episode that reconfirms
                 # a fading fact as an update to it, not create a duplicate.
                 facts_rows = await pool.fetch(
-                    "SELECT id, subject, predicate, content, permanence, entity_id "
+                    "SELECT id, subject, predicate, content, permanence, entity_id, valid_at "
                     "FROM facts "
                     "WHERE validity IN ('active', 'fading') AND source_butler = $1 "
                     "  AND tenant_id = $2 "

@@ -163,13 +163,20 @@ The consolidation executor SHALL apply parsed consolidation results to the datab
 
 - **WHEN** the executor processes a `new_facts` entry
 - **THEN** `store_fact` MUST be called with the entry's fields, `source_butler` set to the butler name, and `tenant_id` set to the episode group's tenant_id
+- **AND** a `valid_at` value on the entry MUST be forwarded so the fact is stored as a temporal observation
 - **AND** a `derived_from` link MUST be created from the new fact to each source episode
 
 #### Scenario: Updated facts trigger supersession with tenant context
 
-- **WHEN** the executor processes an `updated_facts` entry
+- **WHEN** the executor processes a property `updated_facts` entry without `valid_at`
 - **THEN** `store_fact` MUST be called with `tenant_id` from the episode group (which auto-supersedes the existing fact via the uniqueness key)
 - **AND** a `derived_from` link MUST be created from the new fact to each source episode
+
+#### Scenario: Temporal observations are not updated facts
+
+- **WHEN** consolidation output contains an `updated_facts` entry with a non-null `valid_at`
+- **THEN** the parser MUST reject the entry and the executor MUST NOT write it
+- **AND** the consolidation prompt MUST direct temporal observations to `new_facts`, where `valid_at` preserves coexistence rather than supersession
 
 #### Scenario: New rules stored with tenant context
 

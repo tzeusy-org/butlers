@@ -9,6 +9,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class NewFact:
     importance: float = 5.0
     tags: list[str] = field(default_factory=list)
     entity_id: str | None = None
+    valid_at: datetime | None = None
 
 
 @dataclass
@@ -121,6 +123,37 @@ def _validate_permanence(value: str) -> str:
     return "standard"
 
 
+def _parse_valid_at(
+    raw: dict,
+    item_name: str,
+    errors: list[str],
+) -> tuple[datetime | None, bool]:
+    """Parse an optional ISO-8601 ``valid_at`` value.
+
+    The boolean indicates whether parsing succeeded. Missing values are valid
+    and remain ``None`` for property facts; malformed values reject the action
+    so they cannot be silently downgraded from temporal to property semantics.
+    """
+    value = raw.get("valid_at")
+    if value is None:
+        return None, True
+    if not isinstance(value, str):
+        parsed = None
+    else:
+        try:
+            parsed = datetime.fromisoformat(value.strip())
+        except ValueError:
+            parsed = None
+    if parsed is None:
+        msg = f"Skipping {item_name}: invalid valid_at"
+        logger.warning(msg)
+        errors.append(msg)
+        return None, False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed, True
+
+
 # ---------------------------------------------------------------------------
 # Item parsers
 # ---------------------------------------------------------------------------
@@ -156,6 +189,9 @@ def _parse_new_fact(raw: dict, errors: list[str]) -> NewFact | None:
     entity_id = (
         entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
     )
+    valid_at, valid_at_ok = _parse_valid_at(raw, "new_fact", errors)
+    if not valid_at_ok:
+        return None
 
     return NewFact(
         subject=subject,
@@ -165,11 +201,18 @@ def _parse_new_fact(raw: dict, errors: list[str]) -> NewFact | None:
         importance=importance,
         tags=tags,
         entity_id=entity_id,
+        valid_at=valid_at,
     )
 
 
 def _parse_updated_fact(raw: dict, errors: list[str]) -> UpdatedFact | None:
     """Parse a single updated_fact entry. Returns None if required fields missing."""
+    if raw.get("valid_at") is not None:
+        msg = "Skipping updated_fact: temporal observations must use new_facts"
+        logger.warning(msg)
+        errors.append(msg)
+        return None
+
     target_id = raw.get("target_id")
     subject = raw.get("subject")
     predicate = raw.get("predicate")

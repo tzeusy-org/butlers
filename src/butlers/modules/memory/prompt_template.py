@@ -52,7 +52,9 @@ def _format_facts(facts: list[dict]) -> str:
         perm = f.get("permanence", "?")
         entity_id = f.get("entity_id")
         entity_tag = f" (entity_id={entity_id})" if entity_id else ""
-        lines.append(f"- **{fid}**: [{perm}] {subj}{entity_tag} — {pred} — {content}")
+        valid_at = f.get("valid_at")
+        temporal_tag = f" (valid_at={valid_at})" if valid_at else ""
+        lines.append(f"- **{fid}**: [{perm}] {subj}{entity_tag} — {pred}{temporal_tag} — {content}")
     return "\n".join(lines)
 
 
