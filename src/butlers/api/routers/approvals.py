@@ -70,6 +70,7 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     PendingAction,
 )
+from butlers.modules.approvals.redaction import redact_execution_result
 from butlers.modules.approvals.rules import is_rule_effective
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
 from butlers.modules.base import ToolMeta
@@ -343,11 +344,44 @@ def _pending_action_to_api(
     )
 
 
+async def _latest_rejection_reason(conn: Any, action_id: UUID) -> str | None:
+    """Return the latest immutable rejection reason when this pool can supply it.
+
+    ``approval_events`` is optional detail context for the dashboard. Some
+    legacy or degraded approvals pools cannot expose it, which must not turn a
+    readable pending-action dossier into a 404 or 500.
+    """
+    try:
+        event = await conn.fetchrow(
+            "SELECT reason FROM approval_events "
+            "WHERE action_id = $1 AND event_type = 'action_rejected' "
+            "ORDER BY occurred_at DESC, event_id DESC LIMIT 1",
+            action_id,
+        )
+    except Exception:  # noqa: BLE001 -- optional provenance must not break the dossier
+        logger.debug(
+            "Unable to read approval rejection provenance for %s; returning no reason",
+            action_id,
+            exc_info=True,
+        )
+        return None
+
+    if event is None:
+        return None
+    try:
+        reason = event["reason"]
+    except (KeyError, TypeError):
+        return None
+    return reason if isinstance(reason, str) else None
+
+
 def _pending_action_to_detail(
     action: PendingAction,
     butler_name: str,
     target_contact: TargetContact | None = None,
     referenced_entities: list[EntityRef] | None = None,
+    *,
+    denial_reason: str | None = None,
 ) -> ApprovalDetail:
     """Convert a PendingAction to the full Dispatch dossier ApprovalDetail."""
     title = f"{action.tool_name.replace('_', ' ').title()} ({butler_name})"
@@ -370,6 +404,12 @@ def _pending_action_to_detail(
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,
+        denial_reason=denial_reason,
+        execution_result=(
+            redact_execution_result(action.execution_result)
+            if action.execution_result is not None
+            else None
+        ),
         target_contact=target_contact,
         session_id=str(action.session_id) if action.session_id else None,
         referenced_entities=referenced_entities or [],
@@ -2285,13 +2325,23 @@ async def get_approval_detail(
         try:
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+                if row is not None:
+                    pa = PendingAction.from_row(row)
+                    denial_reason = (
+                        await _latest_rejection_reason(conn, pa.id)
+                        if pa.status.value == "rejected"
+                        else None
+                    )
             if row is not None:
-                pa = PendingAction.from_row(row)
                 target_contact = await _resolve_target_contact(db_mgr, pa)
                 referenced_entities = await _resolve_referenced_entities(db_mgr, pa.tool_args)
                 return ApiResponse(
                     data=_pending_action_to_detail(
-                        pa, butler_name, target_contact, referenced_entities
+                        pa,
+                        butler_name,
+                        target_contact,
+                        referenced_entities,
+                        denial_reason=denial_reason,
                     )
                 )
         except Exception:

@@ -887,6 +887,121 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(provenance?.querySelector("time")?.dateTime).toBe("2026-05-17T10:05:00Z");
   });
 
+  it("renders the redacted decision and execution outcome without losing provenance", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("terminal-outcome")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        id: "terminal-outcome",
+        title: "Send Email (general)",
+        butler: "general",
+        created_at: "2026-05-17T10:00:00Z",
+        expires_at: null,
+        why: "The previous execution failed.",
+        evidence: [],
+        proposed_action: {
+          tool_name: "send_email",
+          tool_args: {},
+          agent_summary: null,
+        },
+        status: "executed",
+        decided_by: "human:owner@telegram",
+        decided_at: "2026-05-17T10:05:00Z",
+        denial_reason: "The owner chose a different response.",
+        execution_result: {
+          success: false,
+          error: "***REDACTED***",
+          result: { retryable: false },
+        },
+        target_contact: null,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-decision-outcome"]') !== null,
+    );
+
+    const outcome = container.querySelector('[data-testid="approval-decision-outcome"]');
+    expect(outcome).not.toBeNull();
+    const outcomeText = outcome?.textContent ?? "";
+    expect(outcomeText).toContain("Decision outcome");
+    expect(outcomeText).toContain("Denial reason");
+    expect(outcomeText).toContain("The owner chose a different response.");
+    expect(outcomeText).toContain("Execution outcome");
+    expect(outcomeText).toContain("***REDACTED***");
+    expect(outcomeText).not.toContain("postgres://operator:top-secret");
+    expect(container.querySelector('[data-testid="approval-decision-provenance"]')).not.toBeNull();
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
+  it("renders dossier Retry only while an approved action has no execution result", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("retry-eligible")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        id: "retry-eligible",
+        title: "Send Email (general)",
+        butler: "general",
+        created_at: "2026-05-17T10:00:00Z",
+        expires_at: null,
+        why: "The owner approved this.",
+        evidence: [],
+        proposed_action: {
+          tool_name: "send_email",
+          tool_args: {},
+          agent_summary: null,
+        },
+        status: "approved",
+        decided_by: "human:owner",
+        decided_at: "2026-05-17T10:05:00Z",
+        denial_reason: null,
+        execution_result: null,
+        target_contact: null,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+    expect(findButton(container, "Retry dispatch")).toBeDefined();
+  });
+
+  it("does not render dossier Retry after an approved action records execution", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("execution-recorded")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        id: "execution-recorded",
+        title: "Send Email (general)",
+        butler: "general",
+        created_at: "2026-05-17T10:00:00Z",
+        expires_at: null,
+        why: "The owner approved this.",
+        evidence: [],
+        proposed_action: {
+          tool_name: "send_email",
+          tool_args: {},
+          agent_summary: null,
+        },
+        status: "approved",
+        decided_by: "human:owner",
+        decided_at: "2026-05-17T10:05:00Z",
+        denial_reason: null,
+        execution_result: { success: false, error: "***REDACTED***" },
+        target_contact: null,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-decision-outcome"]') !== null,
+    );
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
   it("denies in a single click — no 'Confirm Deny' step (optimistic)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("d1")]) as AnyMock,

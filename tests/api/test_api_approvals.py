@@ -1513,6 +1513,121 @@ async def test_detail_session_id_null_when_action_has_none(app):
 
 
 # ---------------------------------------------------------------------------
+# Decision and execution outcome dossier (bu-kqnum.10.4)
+# ---------------------------------------------------------------------------
+
+
+async def test_detail_derives_denial_reason_from_latest_immutable_rejection_event(app):
+    """The structured event reason, rather than decided_by presentation text,
+    is the dossier's denial reason."""
+    action_id = uuid4()
+    action_row = {
+        **_make_action(status="rejected"),
+        "id": action_id,
+        "decided_by": "human:owner (reason: legacy display text)",
+        "decided_at": _NOW,
+    }
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=action_row)
+
+    async def fetchrow(sql, *args):
+        if "FROM approval_events" in sql:
+            assert action_id in args
+            return {"reason": "The recipient asked not to receive this."}
+        return action_row
+
+    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{action_id}")
+
+    assert resp.status_code == 200
+    detail = resp.json()["data"]
+    assert detail["denial_reason"] == "The recipient asked not to receive this."
+    assert detail["decided_by"] == "human:owner (reason: legacy display text)"
+
+    event_query = next(
+        str(call.args[0])
+        for call in mock_conn.fetchrow.await_args_list
+        if "FROM approval_events" in call.args[0]
+    )
+    assert "event_type = 'action_rejected'" in event_query
+    assert "ORDER BY occurred_at DESC, event_id DESC" in event_query
+
+
+async def test_detail_returns_null_denial_reason_without_rejection_event(app):
+    """Legacy rejected actions remain readable when the audit spine has no row."""
+    action_id = uuid4()
+    action_row = {**_make_action(status="rejected"), "id": action_id}
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=action_row)
+
+    async def fetchrow(sql, *_args):
+        return None if "FROM approval_events" in sql else action_row
+
+    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{action_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["denial_reason"] is None
+
+
+async def test_detail_redacts_execution_result_before_serializing(app):
+    """Raw execution errors never cross the approval-detail API boundary."""
+    action_id = uuid4()
+    raw_error = "postgres://operator:top-secret@example.test/butlers"
+    action_row = {
+        **_make_action(status="executed"),
+        "id": action_id,
+        "execution_result": {
+            "success": False,
+            "error": raw_error,
+            "result": {"retryable": False},
+        },
+    }
+    app, _ = _app_with_mock_db(app, fetchrow_return=action_row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{action_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["execution_result"] == {
+        "success": False,
+        "error": "***REDACTED***",
+        "result": {"retryable": False},
+    }
+    assert raw_error not in resp.text
+
+
+async def test_detail_keeps_legacy_dossier_available_when_event_lookup_fails(app):
+    """An inaccessible audit table is optional context, not a detail outage."""
+    action_id = uuid4()
+    action_row = {**_make_action(status="rejected"), "id": action_id}
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=action_row)
+
+    async def fetchrow(sql, *_args):
+        if "FROM approval_events" in sql:
+            raise RuntimeError("approval_events unavailable in this pool")
+        return action_row
+
+    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{action_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["denial_reason"] is None
+
+
+# ---------------------------------------------------------------------------
 # Detail dossier resolves target_contact from entity_id (bu — approvals UX)
 # ---------------------------------------------------------------------------
 

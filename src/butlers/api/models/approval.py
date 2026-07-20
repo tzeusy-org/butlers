@@ -105,6 +105,8 @@ class ApprovalDetail(BaseModel):
     status: str
     decided_by: str | None = None
     decided_at: datetime | None = None
+    denial_reason: str | None = None
+    execution_result: dict[str, Any] | None = None
     target_contact: TargetContact | None = None
     session_id: str | None = Field(
         default=None,

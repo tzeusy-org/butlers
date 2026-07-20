@@ -3091,6 +3091,10 @@ export interface ApprovalDetail {
   status: string;
   decided_by?: string | null;
   decided_at?: string | null;
+  /** Recorded by the latest immutable action_rejected event, when available. */
+  denial_reason?: string | null;
+  /** Already redacted by the approval-detail API before dashboard presentation. */
+  execution_result?: Record<string, unknown> | null;
   target_contact?: TargetContact | null;
   /**
    * Originating session UUID that produced this action, when known. Lets the

@@ -478,6 +478,8 @@ function Dossier({
 
   const detail: ApprovalDetail = data.data;
   const isPending = detail.status === "pending";
+  const canRetryDispatch =
+    detail.status === "approved" && detail.execution_result === null;
   // A keyboard-triage decision for THIS exact approval is scheduled but not
   // yet fired (bu-86c4c.14). Guards against a stale bookmark/back-navigation
   // firing a second, conflicting decision on top of the one already counting
@@ -712,6 +714,54 @@ function Dossier({
                   </dt>
                   <dd className="mt-0.5 text-sm text-foreground">
                     <time dateTime={detail.decided_at}>{fmtTs(detail.decided_at)}</time>
+                  </dd>
+                </div>
+              )}
+            </dl>
+          </section>
+        )}
+
+        {(detail.denial_reason || detail.execution_result || canRetryDispatch) && (
+          <section
+            data-testid="approval-decision-outcome"
+            aria-labelledby="approval-decision-outcome-heading"
+            className="border-t border-border pt-4"
+          >
+            <h3
+              id="approval-decision-outcome-heading"
+              className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2"
+            >
+              Decision outcome
+            </h3>
+            <dl className="space-y-3">
+              {detail.denial_reason && (
+                <div>
+                  <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Denial reason
+                  </dt>
+                  <dd className="mt-0.5 text-sm text-foreground">{detail.denial_reason}</dd>
+                </div>
+              )}
+              {detail.execution_result && (
+                <div>
+                  <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Execution outcome
+                  </dt>
+                  <dd>
+                    <pre className="mt-1 text-[11px] bg-muted/30 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap">
+                      {JSON.stringify(detail.execution_result, null, 2)}
+                    </pre>
+                  </dd>
+                </div>
+              )}
+              {canRetryDispatch && (
+                <div>
+                  <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Execution outcome
+                  </dt>
+                  <dd className="mt-1 flex flex-wrap items-center gap-3 text-sm text-foreground">
+                    <span>Approved, awaiting dispatch.</span>
+                    <RetryDispatchButton actionId={detail.id} />
                   </dd>
                 </div>
               )}
@@ -1149,6 +1199,7 @@ function RetryDispatchButton({ actionId }: { actionId: string }) {
       }
       qc.invalidateQueries({ queryKey: Q.history() });
       qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+      qc.invalidateQueries({ queryKey: Q.detail(actionId) });
     },
     onError: (e: Error) => toast.error(`Retry failed: ${e.message}`),
   });
