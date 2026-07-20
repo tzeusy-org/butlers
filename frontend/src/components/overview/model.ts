@@ -984,8 +984,9 @@ function summarizeQaState(
 
 function hasRecentQaPatrolFailure(summary: QaSummary, now: Date): boolean {
   const patrol = summary.last_patrol;
-  if (!patrol || (patrol.status !== "failed" && !patrol.error_detail))
-    return false;
+  // ``error`` is the persisted terminal failure state; error_detail is
+  // optional context and must not turn another status into a failure.
+  if (!patrol || patrol.status !== "error") return false;
   const startedAt = Date.parse(patrol.started_at);
   if (Number.isNaN(startedAt)) return false;
   const ageMs = now.getTime() - startedAt;

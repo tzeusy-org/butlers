@@ -131,13 +131,25 @@ table.
 - **THEN** the attention list renders a critical-severity row naming the
   circuit breaker as tripped and the `consecutive_failures` count, linking to
   `/qa`
-- **AND** this row takes precedence over a same-summary "last patrol failed"
+- **AND** this row takes precedence over a same-summary recent patrol-error
   row (a tripped breaker means the QA staffer has stopped dispatching
   entirely, a more severe state than one failed patrol run)
 
+#### Scenario: A recent QA patrol error surfaces as an attention row
+
+- **WHEN** `GET /api/qa/summary` returns a `last_patrol` whose `status` is
+  `error` and whose `started_at` is in the closed interval `[now - 24 hours,
+  now]`, and its circuit breaker is not tripped
+- **THEN** the attention list renders a high-severity "QA patrol failed" row
+  linking to `/qa`
+- **AND** a null `error_detail` still renders the failure row with generic
+  failure context
+- **AND** any non-`error` status, including one with non-null `error_detail`,
+  does not render a patrol-failure row
+
 #### Scenario: Active QA investigations surface as attention
 
-- **WHEN** no QA breaker or recent failed patrol has higher precedence and
+- **WHEN** no QA breaker or recent patrol error has higher precedence and
   `GET /api/qa/summary` reports `kpis.active_cases_now` greater than zero
 - **THEN** the attention list renders a medium-severity row naming the active QA
   investigation count and linking to `/qa`

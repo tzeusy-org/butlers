@@ -221,7 +221,7 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
                 id: "patrol-contract-1",
                 started_at: "2026-07-12T10:00:00.000Z",
                 completed_at: "2026-07-12T10:05:00.000Z",
-                status: scenario.qa.last_patrol_failed ? "failed" : "completed",
+                status: scenario.qa.last_patrol_failed ? "error" : "clean",
                 findings_count: scenario.qa.novel_findings,
                 novel_count: scenario.qa.novel_findings,
                 dispatched_count: scenario.qa.dispatched_investigations,

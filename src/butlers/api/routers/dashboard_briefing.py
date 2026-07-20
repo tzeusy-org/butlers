@@ -573,7 +573,7 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
     frontend/src/components/overview/model.ts::summarizeQaState reads to
     decide whether QA needs an attention row: the circuit-breaker tripped
     state (checked FIRST, mirroring summarizeQaState -- bu-y2xqi), the last
-    non-running patrol's recent failure state, and active investigation count.
+    non-running patrol's recent ``error`` state, and active investigation count.
     ``None`` when the QA tables are not provisioned (legitimately absent, not
     degraded).
     """
@@ -585,7 +585,7 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
     try:
         last_patrol = await pool.fetchrow(
             """
-            SELECT status, error_detail
+            SELECT status
             FROM public.qa_patrols
             WHERE status != 'running'
               AND started_at >= NOW() - INTERVAL '24 hours'
@@ -651,9 +651,10 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
         {
             "circuit_breaker_tripped": circuit_breaker_tripped,
             "circuit_breaker_consecutive_failures": circuit_breaker_consecutive_failures,
+            # ``error`` is the canonical terminal patrol failure.  Detail is
+            # optional diagnostic context, never a second failure signal.
             "last_patrol_failed": bool(
-                last_patrol is not None
-                and (last_patrol["status"] == "failed" or last_patrol["error_detail"])
+                last_patrol is not None and last_patrol["status"] == "error"
             ),
             "active_cases_now": int(active_cases_now or 0),
         },

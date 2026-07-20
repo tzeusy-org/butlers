@@ -96,10 +96,12 @@ totals remain available on the Notifications page and SHALL NOT affect briefing 
   "qa"` naming the tripped breaker and its consecutive-failure count
 - **AND** no further QA checks are considered because a tripped breaker means the QA
   staffer has stopped dispatching entirely
-- **WHEN** the breaker is not tripped, and the most recent non-running QA patrol failed
-  or has non-null `error_detail` in the closed interval `[now - 24 hours, now]`
+- **WHEN** the breaker is not tripped, and the most recent non-running QA patrol has
+  `status = 'error'` in the closed interval `[now - 24 hours, now]`
 - **THEN** a single attention item is added with `severity = "high"` and `source =
   "qa"`, and no further QA checks are considered
+- **AND** a null `error_detail` does not suppress that attention item, while a
+  non-`error` status does not create one solely because it has `error_detail`
 - **WHEN** neither higher-precedence state applies and
   `GET /api/qa/summary` reports `kpis.active_cases_now` greater than zero
 - **THEN** a single attention item is added with `severity = "medium"` and `source =

@@ -676,12 +676,12 @@ class TestFetchQaState:
         assert qa_state is None
         assert degraded is True
 
-    async def test_success_path_reads_last_patrol_and_active_case_count(self):
+    async def test_error_patrol_without_detail_reads_as_failure_and_active_case_count(self):
         db = MagicMock()
         pool = AsyncMock()
 
         pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "failed", "error_detail": "timeout"})
+            return_value=_make_record({"status": "error", "error_detail": None})
         )
         pool.fetch = AsyncMock(return_value=[])
         pool.fetchval = AsyncMock(return_value=2)
@@ -701,6 +701,26 @@ class TestFetchQaState:
         )
         assert "started_at <= NOW()" in pool.fetchrow.await_args_list[0].args[0]
 
+    @pytest.mark.parametrize(
+        "status",
+        ["running", "clean", "findings_dispatched", "suppressed", "skipped_overlap", "failed"],
+    )
+    async def test_non_error_patrol_never_infers_failure_from_error_detail(self, status: str):
+        db = MagicMock()
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value=_make_record({"status": status, "error_detail": "legacy detail"})
+        )
+        pool.fetch = AsyncMock(return_value=[])
+        pool.fetchval = AsyncMock(return_value=0)
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert degraded is False
+        assert qa_state is not None
+        assert qa_state["last_patrol_failed"] is False
+
     async def test_circuit_breaker_tripped_feeds_qa_state(self):
         """bu-y2xqi: a tripped breaker with no failed patrol / novel signal
         must still surface -- this is the exact drift the bead pins."""
@@ -708,7 +728,7 @@ class TestFetchQaState:
         pool = AsyncMock()
 
         pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "completed", "error_detail": None})
+            return_value=_make_record({"status": "clean", "error_detail": None})
         )
         pool.fetch = AsyncMock(return_value=[_make_record({"status": "failed"}) for _ in range(5)])
         pool.fetchval = AsyncMock(return_value=0)
@@ -729,7 +749,7 @@ class TestFetchQaState:
         pool = AsyncMock()
 
         pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "completed", "error_detail": None})
+            return_value=_make_record({"status": "clean", "error_detail": None})
         )
         pool.fetch = AsyncMock(return_value=[_make_record({"status": "failed"}) for _ in range(2)])
         pool.fetchval = AsyncMock(return_value=0)
@@ -748,7 +768,7 @@ class TestFetchQaState:
         pool = AsyncMock()
 
         pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "completed", "error_detail": None})
+            return_value=_make_record({"status": "error", "error_detail": None})
         )
         pool.fetch = AsyncMock(side_effect=RuntimeError("connection dropped"))
         pool.fetchval = AsyncMock(return_value=0)
@@ -760,7 +780,7 @@ class TestFetchQaState:
         assert qa_state == {
             "circuit_breaker_tripped": False,
             "circuit_breaker_consecutive_failures": 0,
-            "last_patrol_failed": False,
+            "last_patrol_failed": True,
             "active_cases_now": 0,
         }
 
@@ -770,7 +790,7 @@ class TestFetchQaState:
         pool = AsyncMock()
 
         pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "completed", "error_detail": None})
+            return_value=_make_record({"status": "clean", "error_detail": None})
         )
         pool.fetch = AsyncMock(
             side_effect=RuntimeError('relation "healing_attempts" does not exist')
@@ -784,11 +804,11 @@ class TestFetchQaState:
         assert qa_state["circuit_breaker_tripped"] is False
 
     async def test_active_case_query_failure_keeps_a_successful_patrol_signal(self):
-        """A partial QA source outage must not turn a failed patrol into a quiet state."""
+        """A partial QA source outage must not turn an error patrol into a quiet state."""
         db = MagicMock()
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "failed", "error_detail": "timeout"})
+            return_value=_make_record({"status": "error", "error_detail": None})
         )
         pool.fetchval = AsyncMock(side_effect=RuntimeError("healing attempts unavailable"))
         pool.fetch = AsyncMock(return_value=[])

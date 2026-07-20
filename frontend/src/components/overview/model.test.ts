@@ -743,13 +743,13 @@ describe("deriveOverviewTriageModel", () => {
             id: "patrol-1",
             started_at: "2026-05-14T11:00:00.000Z",
             completed_at: "2026-05-14T11:01:00.000Z",
-            status: "failed",
+            status: "error",
             findings_count: 0,
             novel_count: 0,
             dispatched_count: 0,
             log_lookback_minutes: 60,
             sources_polled: ["sessions"],
-            error_detail: "log scanner failed",
+            error_detail: null,
           },
         }),
       },
@@ -761,12 +761,40 @@ describe("deriveOverviewTriageModel", () => {
     ).toMatchObject({
       severity: "high",
       title: "QA patrol failed",
-      detail: "log scanner failed",
+      detail: "Last patrol ended in a failed state.",
     });
     expect(errorModel.nowRows.find((row) => row.kind === "qa")).toMatchObject({
       label: "QA patrol failed",
     });
   });
+
+  it.each(["running", "clean", "findings_dispatched", "suppressed", "skipped_overlap", "failed"])(
+    "does not infer a QA patrol failure from a non-error status (%s), even with detail",
+    (status) => {
+      const model = deriveOverviewTriageModel(
+        {
+          qaSummary: qaSummary({
+            last_patrol: {
+              id: `non-error-${status}`,
+              started_at: "2026-05-14T11:00:00.000Z",
+              completed_at: "2026-05-14T11:01:00.000Z",
+              status,
+              findings_count: 0,
+              novel_count: 0,
+              dispatched_count: 0,
+              log_lookback_minutes: 60,
+              sources_polled: ["sessions"],
+              error_detail: "legacy detail",
+            },
+          }),
+        },
+        { now: NOW },
+      );
+
+      expect(model.attentionRows.some((row) => row.kind === "qa")).toBe(false);
+      expect(model.nowRows.some((row) => row.kind === "qa")).toBe(false);
+    },
+  );
 
   it("surfaces active QA investigations as attention", () => {
     const model = deriveOverviewTriageModel(
@@ -839,7 +867,7 @@ describe("deriveOverviewTriageModel", () => {
             id: "historical-patrol",
             started_at: "2026-05-13T10:00:00.000Z",
             completed_at: "2026-05-13T10:01:00.000Z",
-            status: "failed",
+            status: "error",
             findings_count: 0,
             novel_count: 0,
             dispatched_count: 0,
@@ -864,7 +892,7 @@ describe("deriveOverviewTriageModel", () => {
             id: "future-patrol",
             started_at: "2026-05-14T12:10:00.000Z",
             completed_at: "2026-05-14T12:11:00.000Z",
-            status: "failed",
+            status: "error",
             findings_count: 0,
             novel_count: 0,
             dispatched_count: 0,
@@ -894,7 +922,7 @@ describe("deriveOverviewTriageModel", () => {
             id: "patrol-boundary",
             started_at: startedAt,
             completed_at: startedAt,
-            status: "failed",
+            status: "error",
             findings_count: 0,
             novel_count: 0,
             dispatched_count: 0,
@@ -1430,7 +1458,7 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
           id: "patrol-1",
           started_at: "2026-05-14T11:00:00.000Z",
           completed_at: "2026-05-14T11:01:00.000Z",
-          status: "failed",
+          status: "error",
           findings_count: 0,
           novel_count: 0,
           dispatched_count: 0,
