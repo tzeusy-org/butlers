@@ -43,6 +43,7 @@ import { useMemo } from "react";
 import { useHealthBriefing } from "@/hooks/use-health-briefing.ts";
 import { useInsights } from "@/hooks/use-insights.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import { healthInsightSeverity } from "@/lib/health-insight-priority";
 import { useMeasurementsLatest, useMeasurementSources } from "@/hooks/use-health.ts";
 import type { LatestMeasurementEntry, MeasurementSource } from "@/api/types.ts";
 import type { InsightCandidate } from "@/api/types.ts";
@@ -287,17 +288,10 @@ function insightHref(candidate: InsightCandidate): string | null {
   }
 }
 
-/** Severity label used by AttentionList to pick the glyph color. */
-function insightSeverity(priority: number): string {
-  if (priority <= 1) return "high";
-  if (priority <= 2) return "medium";
-  return "low";
-}
-
 function toAttentionItems(candidates: InsightCandidate[]): AttentionListItem[] {
   return candidates.map((c) => ({
     id: c.id,
-    severity: insightSeverity(c.priority),
+    severity: healthInsightSeverity(c.priority),
     title: c.message,
     detail: null,
     href: insightHref(c),
