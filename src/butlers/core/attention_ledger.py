@@ -408,18 +408,20 @@ async def get_suppressing_context_signal(pool: asyncpg.Pool | None) -> str | Non
 async def check_owner_notify_suppression(
     pool: asyncpg.Pool | None, *, log_context: str
 ) -> str | None:
-    """Decide whether a medium-priority owner notification should be suppressed.
+    """Return a suppression reason for legacy out-of-process callers that drop sends.
 
-    Mirrors ``notify()``'s owner-default gate (``core_tools/_notifications.py``
-    lines ~588-690): quiet hours via ``public.approvals_policy``
-    (:func:`get_approvals_policy_quiet_hours` + :func:`is_policy_quiet_now`),
-    then the context-bus dnd/sleeping signal
-    (:func:`get_suppressing_context_signal`). Returns a machine-readable reason
-    string (``"quiet_hours"`` or ``"context_bus:<signal>"``) when suppressed, else
-    ``None``.
+    It checks quiet hours via ``public.approvals_policy``
+    (:func:`get_approvals_policy_quiet_hours` + :func:`is_policy_quiet_now`), then
+    the context-bus dnd/sleeping signal (:func:`get_suppressing_context_signal`). A
+    non-``None`` reason is terminal for these callers: they record ``suppressed`` and
+    drop the attempted notification.
 
-    Shared by the out-of-process job callers that replicate this gate:
-    ``butlers.jobs.secrets_lifecycle._check_suppression`` and
+    This intentionally does not mirror direct ``notify()`` owner-default parking.
+    Direct ``notify()`` durably defers a routine owner-default notification; this
+    legacy helper returns ``"quiet_hours"`` or ``"context_bus:<signal>"`` for callers
+    to suppress, else ``None``.
+
+    Shared by ``butlers.jobs.secrets_lifecycle._check_suppression`` and
     ``butlers.jobs.home._check_owner_notify_suppression`` (bu-gts7r). ``log_context``
     is the debug-log prefix used when the quiet-hours policy lookup fails, so each
     caller's log line reads exactly as it did before the extraction.

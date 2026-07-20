@@ -358,13 +358,13 @@ async def _last_notified_state(pool: Any, key: str) -> str | None:
 
 
 async def _check_suppression(pool: Any) -> str | None:
-    """Decide whether a medium-priority owner notification should be suppressed.
+    """Apply legacy destructive suppression to a secrets-lifecycle job push.
 
-    Thin wrapper over the shared owner-notify suppression gate
-    (:func:`butlers.core.attention_ledger.check_owner_notify_suppression`), which
-    replicates notify()'s owner-default gate (quiet hours + context-bus). Kept as a
-    module-local name because ``run_secrets_lifecycle_check`` and its tests reference
-    and monkeypatch it (bu-gts7r).
+    The shared helper returns a terminal reason for this out-of-process caller to
+    record as ``suppressed`` and drop; it does not mirror direct ``notify()``
+    owner-default parking. Kept as a module-local name because
+    ``run_secrets_lifecycle_check`` and its tests reference and monkeypatch it
+    (bu-gts7r).
     """
     return await check_owner_notify_suppression(pool, log_context="secrets_lifecycle_check")
 

@@ -1,9 +1,11 @@
-"""Unit tests for the shared owner-notify suppression gate (bu-gts7r).
+"""Unit tests for legacy destructive owner-notify suppression (bu-gts7r).
 
 ``check_owner_notify_suppression`` was extracted from the near-verbatim copies in
 ``butlers.jobs.secrets_lifecycle._check_suppression`` and
-``butlers.jobs.home._check_owner_notify_suppression``. It replicates notify()'s
-owner-default gate: quiet hours first, then the context-bus dnd/sleeping signal.
+``butlers.jobs.home._check_owner_notify_suppression``. It returns a terminal
+suppression reason for those out-of-process callers to record and drop, rather than
+mirroring direct ``notify()`` owner-default parking. The helper checks quiet hours
+first, then the context-bus dnd/sleeping signal.
 """
 
 from __future__ import annotations
