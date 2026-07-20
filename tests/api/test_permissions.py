@@ -11,6 +11,7 @@ Covers:
 - audit.append is called on successful mutation.
 - PUT returns 422 + {"error": "reason_contains_credential"} when reason matches a credential pattern.
 - No state change and no audit row when reason_contains_credential fires.
+- PUT rejects non-enforced permissions and unknown butlers before a permission write.
 - dispatch_event is called for permission.set on successful mutation.
 """
 
@@ -72,13 +73,15 @@ class _AcquireCtx:
 def _make_pool(
     rows: list[dict] | None = None,
     butler_rows: list[dict] | None = None,
+    registered: bool = True,
 ) -> AsyncMock:
     """Return an asyncpg pool mock wired for two sequential fetch calls.
 
     GET /api/permissions calls pool.fetch twice:
       1. butler_registry query  → butler_rows
       2. public.permissions query → rows
-    PUT /api/permissions doesn't call pool.fetch at all.
+    PUT /api/permissions reads the live butler registry through pool.fetchval,
+    then performs its mutation through the acquired connection.
 
     ``pool.acquire()`` yields the pool mock itself as "conn" (see
     ``_AcquireCtx``) and ``pool.transaction()`` is a no-op context manager, so
@@ -87,7 +90,7 @@ def _make_pool(
     """
     pool = AsyncMock()
     pool.execute = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(return_value=registered)
     pool.fetchrow = AsyncMock(return_value=None)
     pool.fetch = AsyncMock(
         side_effect=[
@@ -303,6 +306,52 @@ async def test_put_permission_success(app):
     route_call = route_calls[0]
     assert route_call.kwargs["target"] == "chronicler.spawn"
     assert route_call.kwargs["note"] == "Needed for scheduled sessions"
+
+
+async def test_put_permission_rejects_non_enforced_permission_before_writing(app):
+    """The writable route cannot mint decorative, non-runtime permission rows."""
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.put(
+            "/api/permissions/chronicler/decorative.permission",
+            json={"granted": True, "reason": "No decorative permissions"},
+        )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "permission_not_enforced"
+    pool.fetchval.assert_not_awaited()
+    pool.execute.assert_not_awaited()
+
+
+async def test_put_permission_rejects_unregistered_butler_before_writing(app):
+    """Only live registry members can receive an explicit permission override."""
+    pool = _make_pool(registered=False)
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with (
+        patch("butlers.api.routers.permissions.audit.append", new_callable=AsyncMock) as mock_audit,
+        patch("butlers.api.routers.permissions.dispatch_event") as mock_dispatch,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/permissions/not-a-registered-butler/spawn",
+                json={"granted": True, "reason": "Do not create orphan grants"},
+            )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "butler_not_registered"
+    pool.fetchval.assert_awaited_once()
+    assert "FROM butler_registry" in pool.fetchval.await_args.args[0]
+    pool.execute.assert_not_awaited()
+    route_calls = [
+        c for c in mock_audit.call_args_list if len(c.args) >= 3 and c.args[2] == "permission.set"
+    ]
+    assert route_calls == [], f"No permission audit row expected, got: {mock_audit.call_args_list}"
+    mock_dispatch.assert_not_called()
 
 
 async def test_put_permission_empty_reason_returns_422(app):

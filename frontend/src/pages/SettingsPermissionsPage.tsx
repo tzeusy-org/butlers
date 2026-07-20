@@ -250,6 +250,10 @@ function CellFlipModal({
     try {
       await onConfirm(reason);
       onClose();
+    } catch (err) {
+      toast.error(
+        `Permission update failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       setSubmitting(false);
     }
@@ -360,11 +364,10 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
                   >
                     <button
                       onClick={() => onCellFlip(butler, perm, granted)}
-                      disabled={inherited}
                       className={cn(
-                        "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors",
+                        "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/50",
                         inherited
-                          ? "opacity-40 cursor-default"
+                          ? "opacity-40 hover:opacity-100 hover:bg-muted/40"
                           : granted
                             ? "text-[var(--green)] hover:bg-muted/40"
                             : "text-muted-foreground hover:bg-muted/40",
@@ -1238,12 +1241,47 @@ export default function SettingsPermissionsPage() {
     setFlipModal({ open: true, butler, perm, granted });
   }
 
+  function replaceMatrixCell(butler: string, perm: string, nextCell: PermissionCell) {
+    setMatrix((current) => {
+      const butlerCells = current?.cells[butler];
+      if (!current || !butlerCells?.[perm]) return current;
+
+      return {
+        ...current,
+        cells: {
+          ...current.cells,
+          [butler]: {
+            ...butlerCells,
+            [perm]: nextCell,
+          },
+        },
+      };
+    });
+  }
+
   async function handleFlipConfirm(reason: string) {
     if (!flipModal) return;
     const { butler, perm, granted } = flipModal;
-    await putPermission(butler, perm, !granted, reason);
-    toast.success(`Permission ${!granted ? "granted" : "revoked"}: ${butler} · ${perm}`);
-    await loadMatrix();
+    const previousCell = matrix?.cells[butler]?.[perm];
+    if (!previousCell) {
+      throw new Error("Permission matrix changed; reload and try again");
+    }
+
+    replaceMatrixCell(butler, perm, {
+      ...previousCell,
+      granted: !granted,
+      reason,
+      updated_at: new Date().toISOString(),
+      inherited: false,
+    });
+
+    try {
+      await putPermission(butler, perm, !granted, reason);
+      toast.success(`Permission ${!granted ? "granted" : "revoked"}: ${butler} · ${perm}`);
+    } catch (err) {
+      replaceMatrixCell(butler, perm, previousCell);
+      throw err;
+    }
   }
 
   // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses

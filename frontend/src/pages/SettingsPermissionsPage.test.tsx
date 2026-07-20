@@ -9,8 +9,8 @@
  *
  * Verifies inherited cell semantics:
  *   - Inherited cells are rendered dim (aria-label includes "(inherited)")
- *   - Inherited cell buttons are disabled (non-editable)
- *   - Explicit cells are enabled and editable
+ *   - Inherited cells remain dim but can create the first explicit override
+ *   - Explicit cells remain foreground and editable
  */
 
 // @vitest-environment jsdom
@@ -251,13 +251,93 @@ describe("SettingsPermissionsPage — inherited cell semantics [bu-9q1dx.3]", ()
     expect(notifyCell.getAttribute("aria-label")).toContain("(inherited)");
   });
 
-  it("inherited cells are disabled (non-editable)", async () => {
+  it("lets an inherited cell create an optimistic explicit revoke with a reason", async () => {
+    const updates: Array<{ url: string; init?: RequestInit }> = [];
+    let resolvePut: (() => void) | undefined;
+    const pendingPut = new Promise<{ ok: boolean; json: () => Promise<{ data: object }> }>(
+      (resolve) => {
+        resolvePut = () =>
+          resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+      },
+    );
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/permissions/") && init?.method === "PUT") {
+        updates.push({ url, init });
+        return pendingPut;
+      }
+      return denseMatrixFetch(url);
+    });
+
     await act(async () => {
       renderPage();
     });
 
     const notifyCell = await screen.findByTestId("perm-cell-chronicler-notify");
-    expect((notifyCell as HTMLButtonElement).disabled).toBe(true);
+    expect((notifyCell as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(notifyCell);
+    fireEvent.change(await screen.findByLabelText("Reason (required)"), {
+      target: { value: "Disable proactive notification delivery" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+
+    await waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.url).toBe("/api/permissions/chronicler/notify");
+    expect(JSON.parse(String(updates[0]?.init?.body))).toEqual({
+      granted: false,
+      reason: "Disable proactive notification delivery",
+    });
+
+    await waitFor(() => {
+      const optimisticCell = screen.getByTestId("perm-cell-chronicler-notify");
+      expect(optimisticCell.getAttribute("aria-label")).not.toContain("(inherited)");
+      expect(optimisticCell.className).not.toContain("opacity-40");
+      expect(optimisticCell.textContent).toBe("○");
+    });
+
+    await act(async () => {
+      resolvePut?.();
+    });
+  });
+
+  it("restores the inherited visual state when the first override fails", async () => {
+    let rejectPut: ((reason?: unknown) => void) | undefined;
+    const failedPut = new Promise<never>((_resolve, reject) => {
+      rejectPut = reject;
+    });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/permissions/") && init?.method === "PUT") {
+        return failedPut;
+      }
+      return denseMatrixFetch(url);
+    });
+
+    await act(async () => {
+      renderPage();
+    });
+
+    fireEvent.click(await screen.findByTestId("perm-cell-chronicler-notify"));
+    fireEvent.change(await screen.findByLabelText("Reason (required)"), {
+      target: { value: "Temporarily disable notifications" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("perm-cell-chronicler-notify").getAttribute("aria-label"),
+      ).not.toContain("(inherited)");
+    });
+
+    await act(async () => {
+      rejectPut?.(new Error("permission write failed"));
+    });
+
+    await waitFor(() => {
+      const restoredCell = screen.getByTestId("perm-cell-chronicler-notify");
+      expect(restoredCell.getAttribute("aria-label")).toContain("(inherited)");
+      expect(restoredCell.className).toContain("opacity-40");
+      expect(restoredCell.textContent).toBe("●");
+    });
   });
 
   it("explicit cells are enabled (editable)", async () => {

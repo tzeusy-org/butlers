@@ -57,11 +57,11 @@ _TEST_KEY_HEX = bytes(range(32)).hex()
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain (public.permissions/webhooks/audit_log)."""
+    """Provision the core writes and the switchboard registry they validate."""
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["core"],
+        chains=["core", "switchboard"],
     )
 
 
@@ -76,6 +76,12 @@ async def pool(postgres_container, migrated_db_url: str):
     await p.execute("TRUNCATE TABLE public.permissions CASCADE")
     await p.execute("TRUNCATE TABLE public.webhooks CASCADE")
     await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
+    await p.execute(
+        "INSERT INTO butler_registry (name, endpoint_url) VALUES ($1, $2) "
+        "ON CONFLICT (name) DO NOTHING",
+        "chronicler",
+        "http://chronicler.test",
+    )
     yield p
     await p.close()
 

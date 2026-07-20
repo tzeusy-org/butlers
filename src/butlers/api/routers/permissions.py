@@ -164,13 +164,20 @@ async def set_permission(
     """Flip one permission cell.
 
     Returns HTTP 422 with ``{"error": "reason_required"}`` when ``reason``
-    is empty or whitespace-only.  On success calls ``audit.append``.
+    is empty or whitespace-only.  It also rejects a path vocabulary outside
+    the enforced permission set or live butler registry. On success calls
+    ``audit.append``.
 
     The permissions UPSERT and the audit append run inside the same
     transaction (acquired connection + ``conn.transaction()``) so the audit
     row is atomic with the state change: if either write fails, both roll
     back together (§D17 atomicity requirement).
     """
+    # Do not let direct API callers create decorative rows outside the runtime
+    # vocabulary the matrix renders.
+    if perm not in ENFORCED_PERMISSIONS:
+        raise HTTPException(status_code=422, detail={"error": "permission_not_enforced"})
+
     # Enforce the non-empty reason here (not via a Pydantic validator) so the
     # spec-mandated {"error": "reason_required"} body is returned for empty,
     # missing, or whitespace-only reasons.
@@ -187,24 +194,31 @@ async def set_permission(
 
     now = datetime.now(UTC)
 
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute(
-            "INSERT INTO public.permissions (butler, permission, granted, reason, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5) "
-            "ON CONFLICT (butler, permission) DO UPDATE "
-            "SET granted = EXCLUDED.granted, "
-            "    reason  = EXCLUDED.reason, "
-            "    updated_at = EXCLUDED.updated_at",
-            butler,
-            perm,
-            body.granted,
-            body.reason,
-            now,
+    async with pool.acquire() as conn:
+        registered = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM butler_registry WHERE name = $1)", butler
         )
+        if not registered:
+            raise HTTPException(status_code=422, detail={"error": "butler_not_registered"})
 
-        await audit.append(
-            conn, "owner", "permission.set", target=f"{butler}.{perm}", note=body.reason
-        )
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO public.permissions (butler, permission, granted, reason, updated_at) "
+                "VALUES ($1, $2, $3, $4, $5) "
+                "ON CONFLICT (butler, permission) DO UPDATE "
+                "SET granted = EXCLUDED.granted, "
+                "    reason  = EXCLUDED.reason, "
+                "    updated_at = EXCLUDED.updated_at",
+                butler,
+                perm,
+                body.granted,
+                body.reason,
+                now,
+            )
+
+            await audit.append(
+                conn, "owner", "permission.set", target=f"{butler}.{perm}", note=body.reason
+            )
 
     dispatch_event(
         pool,
