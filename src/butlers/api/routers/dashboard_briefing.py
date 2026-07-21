@@ -317,7 +317,7 @@ async def _fetch_dashboard_state(
                 "link": "/notifications?"
                 + urlencode(
                     {
-                        "status": "failed",
+                        "status": "terminal_failed",
                         "since": notification_since.isoformat(),
                         "until": notification_until.isoformat(),
                     }

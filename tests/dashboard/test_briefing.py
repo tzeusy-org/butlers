@@ -1102,7 +1102,7 @@ class TestFetchDashboardState:
         assert "3 failed notifications" in item["description"]
         window = parse_qs(urlparse(item["link"]).query)
         assert window == {
-            "status": ["failed"],
+            "status": ["terminal_failed"],
             "since": [(now - timedelta(hours=24)).isoformat()],
             "until": [now.isoformat()],
         }
