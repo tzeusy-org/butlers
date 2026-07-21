@@ -152,6 +152,31 @@ async def test_resolve_account_id_from_composite_label():
     assert result == str(account_id)
 
 
+async def test_resolve_account_id_from_institution_and_last_four():
+    """Composite institution/last-four labels resolve without a UUID."""
+    account_id = uuid4()
+    pool = _make_pool()
+
+    async def fetch_accounts(query, *args):
+        if "SELECT id, institution, type, name, last_four" in query:
+            return [
+                {
+                    "id": account_id,
+                    "institution": "Example Bank",
+                    "type": "credit",
+                    "name": None,
+                    "last_four": "4321",
+                }
+            ]
+        return []
+
+    pool.fetch = AsyncMock(side_effect=fetch_accounts)
+
+    result = await _txn_module._resolve_account_id(pool, "example-bank-4321")
+
+    assert result == str(account_id)
+
+
 async def test_resolve_account_id_rejects_ambiguous_composite_label():
     """Composite labels never choose arbitrarily between matching accounts."""
     account_rows = [

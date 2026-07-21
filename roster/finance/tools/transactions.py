@@ -58,6 +58,7 @@ def _account_label_candidates(row: Any) -> set[str]:
     add_label(last_four)
     add_label(name, last_four)
     add_label(institution, name)
+    add_label(institution, last_four)
     add_label(institution, name, last_four)
     for type_label in type_labels:
         add_label(type_label, last_four)
