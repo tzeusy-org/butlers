@@ -9,6 +9,11 @@ The dashboard SHALL expose the spend endpoints.
 - **AND** every dollar amount, token actual, `by_butler` value, and `by_model` value is grouped from `public.token_usage_ledger` joined to `public.model_catalog` by `catalog_entry_id`, so it describes the model that actually consumed the tokens rather than `sessions.model`.
 - **AND** the router MUST NOT substitute per-butler session fan-out pricing when that ledger query is unavailable; it returns degraded source evidence instead of a plausible alternate dollar total.
 
+#### Scenario: Compatibility source errors are unavailable evidence in every summary and daily consumer
+- **WHEN** a compatibility-success (`200`) Spend summary response has `source_error: true`, or a daily Spend response has `meta.source_error: true`
+- **THEN** its compatibility totals, maps, and empty daily series MUST be treated as unavailable evidence, never as a genuine `$0`, empty-state, "all systems ok", mover, per-session, model-breakdown, or trend result.
+- **AND** Dashboard/CostWidget, Sidebar, Butler spend/detail surfaces, and SpendPage/CostStripeChart render a source-degraded/unavailable state that identifies the unavailable evidence while preserving an explicitly known zero when `source_error` is absent or false.
+
 #### Scenario: Spend breakdown uses executed ledger attribution
 - **WHEN** `GET /api/spend/breakdown?by=butler|model|purpose` is called
 - **THEN** the response is `ApiResponse[{by: str, breakdown: {key: cost_usd}, unpriced_models: [], billing_classes: {model: class}, source_error: bool, divergences: [], historical_attribution_note: str | null}]` for the current month (MTD), with no guaranteed map order.

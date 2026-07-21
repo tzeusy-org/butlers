@@ -749,6 +749,37 @@ describe("DashboardPage -- cost surface", () => {
     expect(html).not.toContain("Top: general");
   });
 
+  it("treats a summary compatibility zero with source_error as unavailable evidence", () => {
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          total_cost_usd: 0,
+          total_sessions: 0,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          by_butler: {},
+          by_model: {},
+          source_error: true,
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    vi.mocked(useDailySpend).mockReturnValue({
+      data: { data: [], meta: { source_error: true } },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+
+    expect(html).toContain("Cost source unavailable");
+    expect(html).not.toContain("Top: general");
+  });
+
   it("shows the most-expensive butler derived from the by_butler breakdown", () => {
     const html = renderPage();
     // by_butler { general: 0.30, health: 0.12 } -> top is general at $0.30

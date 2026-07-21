@@ -2,6 +2,7 @@ import { Link } from "react-router";
 
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { formatCostUsd } from "@/lib/format-cost";
 import type { DailySpend, UnpricedModelUsage } from "@/api/types";
 
@@ -14,6 +15,8 @@ interface CostWidgetProps {
    * widget must not promote that subtotal as a truthful fleet total.
    */
   unpricedModels?: UnpricedModelUsage[];
+  /** Compatibility summary envelope has placeholder totals rather than evidence. */
+  sourceError?: boolean;
   isLoading?: boolean;
   /**
    * Real daily cost series for the trailing 7 days (from GET /api/spend/daily).
@@ -24,6 +27,8 @@ interface CostWidgetProps {
   dailyCosts?: DailySpend[];
   /** True when the daily-cost source failed to load. */
   dailyCostsError?: boolean;
+  /** Compatibility daily envelope has an empty series rather than evidence. */
+  dailySourceError?: boolean;
   /** Unpriced coverage in the daily series, independent from today's summary. */
   dailyUnpricedModels?: UnpricedModelUsage[];
 }
@@ -33,9 +38,11 @@ export default function CostWidget({
   topButler,
   topButlerCost,
   unpricedModels = [],
+  sourceError = false,
   isLoading,
   dailyCosts,
   dailyCostsError = false,
+  dailySourceError = false,
   dailyUnpricedModels = [],
 }: CostWidgetProps) {
   const unpricedCalls = unpricedModels.reduce((total, model) => total + model.calls, 0);
@@ -64,23 +71,36 @@ export default function CostWidget({
         </Button>
       </CardHeader>
       <CardContent>
-        {hasUnpricedModels ? (
+        {sourceError ? (
+          <SourceDegradedNote
+            label="Cost source unavailable"
+            detail="compatibility total hidden"
+            testId="cost-widget-source-unavailable"
+          />
+        ) : hasUnpricedModels ? (
           <p className="text-2xl font-bold" data-testid="cost-widget-unpriced" aria-label="unpriced">
             {"—"}/unpriced
           </p>
         ) : (
           <div className="text-2xl font-bold">{formatCostUsd(totalCostUsd)}</div>
         )}
-        {hasUnpricedModels ? (
+        {!sourceError && hasUnpricedModels ? (
           <p className="mt-1 text-xs text-muted-foreground">
             {unpricedCalls.toLocaleString()} unpriced {unpricedCalls === 1 ? "call" : "calls"} excluded
           </p>
-        ) : topButler ? (
+        ) : !sourceError && topButler ? (
           <p className="mt-1 text-xs text-muted-foreground">
             Top: {topButler} ({formatCostUsd(topButlerCost)})
           </p>
         ) : null}
-        {dailyCostsError ? (
+        {dailySourceError ? (
+          <SourceDegradedNote
+            className="mt-3"
+            label="7-day trend"
+            detail="cost source unavailable"
+            testId="cost-widget-trend-source-unavailable"
+          />
+        ) : dailyCostsError ? (
           <p className="mt-3 text-xs text-muted-foreground" data-testid="cost-widget-trend-unavailable">
             7-day trend unavailable
           </p>
@@ -106,7 +126,7 @@ export default function CostWidget({
             7-day trend unavailable
           </p>
         )}
-        {!dailyCostsError && dailyCosts && dailyCosts.length > 0 && dailyUnpricedCalls > 0 ? (
+        {!dailySourceError && !dailyCostsError && dailyCosts && dailyCosts.length > 0 && dailyUnpricedCalls > 0 ? (
           <p className="mt-1 text-xs text-muted-foreground" data-testid="cost-widget-trend-unpriced">
             7-day trend excludes {dailyUnpricedCalls.toLocaleString()} unpriced {dailyUnpricedCalls === 1 ? "call" : "calls"}
           </p>

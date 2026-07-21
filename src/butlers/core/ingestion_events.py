@@ -1287,12 +1287,10 @@ def ingestion_events_list_enrichment(
     Consumes the output of :func:`ingestion_events_sessions_for_ids`. For each
     event id, returns:
     - ``tokens_in`` / ``tokens_out`` — summed across all of the event's sessions.
-    - ``session_cost_usd`` — summed session cost (unknown per-session cost
-      treated as ``0.0``, matching :func:`ingestion_event_rollup`'s drawer-side
-      total so list rows and the drawer agree on the same event), or ``None``
-      when the event has no sessions (distinct from ``0.0``, so callers can
-      fall back to the denormalized ``cost_usd`` column only when there is
-      truly nothing to sum).
+    - ``session_cost_usd`` — known-priced session subtotal, or ``None`` when
+      no session has a known price. This is intentionally distinct from an
+      explicit ``0.0`` for a declared zero-marginal-cost session.
+    - ``unpriced_session_count`` — sessions omitted from that known subtotal.
     - ``session_count`` — total session count (not capped).
     - ``sessions`` — compact per-session dicts (``butler_name``, ``duration_ms``,
       ``cost_usd``, ``success``), capped at :data:`_MAX_LIST_SESSIONS_PER_EVENT`.
@@ -1308,12 +1306,23 @@ def ingestion_events_list_enrichment(
     for event_id, sessions in sessions_by_id.items():
         tokens_in = sum(s.get("input_tokens") or 0 for s in sessions)
         tokens_out = sum(s.get("output_tokens") or 0 for s in sessions)
-        session_cost_usd = sum(s.get("cost_usd") or 0.0 for s in sessions) if sessions else None
+        known_cost_total = 0.0
+        known_cost_count = 0
+        unpriced_session_count = 0
+        for session in sessions:
+            session_cost = session.get("cost_usd")
+            if session_cost is None:
+                unpriced_session_count += 1
+                continue
+            known_cost_total += float(session_cost)
+            known_cost_count += 1
+        session_cost_usd = known_cost_total if known_cost_count > 0 else None
 
         enrichment[event_id] = {
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
             "session_cost_usd": session_cost_usd,
+            "unpriced_session_count": unpriced_session_count,
             "session_count": len(sessions),
             "sessions": [
                 {
@@ -1349,13 +1358,18 @@ def ingestion_event_rollup(
         - ``total_sessions`` — number of sessions
         - ``total_input_tokens`` — sum of ``input_tokens`` (NULL treated as 0)
         - ``total_output_tokens`` — sum of ``output_tokens`` (NULL treated as 0)
-        - ``total_cost`` — sum of estimated or stored costs across all sessions
+        - ``total_cost`` — known-priced subtotal, or ``None`` when every
+          session cost is unavailable
+        - ``unpriced_session_count`` — number of sessions omitted from that
+          known subtotal
         - ``by_butler`` — dict mapping butler_name to per-butler breakdown
     """
     total_sessions = len(sessions)
     total_input_tokens = 0
     total_output_tokens = 0
-    total_cost = 0.0
+    known_cost_total = 0.0
+    known_cost_count = 0
+    unpriced_session_count = 0
     by_butler: dict[str, dict[str, Any]] = {}
 
     for session in sessions:
@@ -1365,7 +1379,8 @@ def ingestion_event_rollup(
                 "sessions": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
-                "cost": 0.0,
+                "cost": None,
+                "unpriced_session_count": 0,
             }
 
         entry = by_butler[butler]
@@ -1378,41 +1393,25 @@ def ingestion_event_rollup(
         entry["input_tokens"] += in_tok
         entry["output_tokens"] += out_tok
 
-        # Compute cost: prefer pricing-based estimation, fall back to stored cost
-        session_cost: float | None = None
-        if pricing is not None:
-            model = session.get("model") or ""
-            cached_tok = session.get("cached_input_tokens") or 0
-            cache_write_tok = session.get("cache_creation_tokens") or 0
-            if model and (in_tok or out_tok or cached_tok or cache_write_tok):
-                session_cost = estimate_session_cost(
-                    pricing,
-                    model,
-                    in_tok,
-                    out_tok,
-                    cached_input_tokens=cached_tok,
-                    cache_creation_tokens=cache_write_tok,
-                )
+        session_cost = _compute_session_cost_usd(session, pricing)
         if session_cost is None:
-            # Legacy fallback: read from cost JSONB column
-            cost = session.get("cost")
-            if isinstance(cost, dict):
-                usd = cost.get("total_usd")
-                if usd is not None:
-                    try:
-                        session_cost = float(usd)
-                    except (TypeError, ValueError):
-                        pass
-        if session_cost is not None:
-            total_cost += session_cost
-            entry["cost"] += session_cost
+            unpriced_session_count += 1
+            entry["unpriced_session_count"] += 1
+            continue
+
+        known_cost_total += session_cost
+        known_cost_count += 1
+        if entry["cost"] is None:
+            entry["cost"] = 0.0
+        entry["cost"] += session_cost
 
     return {
         "request_id": request_id,
         "total_sessions": total_sessions,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
-        "total_cost": total_cost,
+        "total_cost": known_cost_total if known_cost_count > 0 else None,
+        "unpriced_session_count": unpriced_session_count,
         "by_butler": by_butler,
     }
 
@@ -1436,11 +1435,13 @@ async def ingestion_window_rollup(
     ingestion_events_list.  Session count is derived by summing sessions across
     all registered butler schemas (fan-out via db.fan_out_with_status).
 
-    When ``pricing`` is supplied, ``cost`` is populated by summing per-model
-    token counts across all matching sessions and estimating USD cost via
-    ``estimate_session_cost``.  Models not found in the pricing catalog
-    contribute $0.  When ``pricing`` is ``None``, ``cost`` is returned as
-    ``None``.
+    When ``pricing`` is supplied, ``cost`` is populated from known-price
+    cost-signature groups across matching sessions. The grouping preserves
+    each session's price inputs, so unpriced rows cannot disappear inside a
+    priced model aggregate. Models absent from the pricing catalog remain
+    omitted from that subtotal and are counted in ``unpriced_session_count``.
+    When ``pricing`` is ``None``, every discovered session is counted as
+    unpriced and ``cost`` is returned as ``None``.
 
     Args:
         pool:      asyncpg pool for the shared credentials database.
@@ -1455,9 +1456,10 @@ async def ingestion_window_rollup(
                    ignored (no ILIKE clause is added).
         db:        DatabaseManager for the cross-butler session fan-out.
                    When ``None``, session count is omitted (returns 0) and cost is ``None``.
-        pricing:   Optional pricing config for cost estimation.  When provided, cost is
-                   computed by summing per-model token totals across all linked sessions.
-                   When ``None``, cost is returned as ``None``.
+        pricing:   Optional pricing config for cost estimation. When provided, cost is
+                   computed from exact cost-signature groups so an unpriced
+                   session can never be hidden in a priced model bucket. When
+                   ``None``, cost is returned as ``None``.
         event_ids: Optional explicit set of event ids to restrict the result to
                    (``id = ANY(...)``), pushed into SQL exactly like the other
                    filters. Used by the ``trace_id`` filter (see
@@ -1474,7 +1476,8 @@ async def ingestion_window_rollup(
         Dict with:
         - ``events``:   int — total matching events
         - ``sessions``: int — total sessions linked to matching events
-        - ``cost``:     float | None — estimated USD cost, or None when pricing unavailable
+        - ``cost``:     float | None — known-priced USD subtotal, or None when unavailable
+        - ``unpriced_session_count``: int — sessions omitted from ``cost``
         - ``window``:   dict with ``from`` (ISO str | None) and ``to`` (ISO str | None)
     """
     args: list[Any] = []
@@ -1540,6 +1543,7 @@ async def ingestion_window_rollup(
     _SESSION_COUNT_ID_CAP = 10_000
     session_count = 0
     total_cost: float | None = None
+    unpriced_session_count = 0
     if db is not None and event_count > 0:
         id_sql = (
             f"SELECT id FROM ("
@@ -1564,38 +1568,54 @@ async def ingestion_window_rollup(
                     SELECT
                         COUNT(*) AS cnt,
                         COALESCE(model, '') AS model,
-                        COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
-                        COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
-                        COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
-                        COALESCE(SUM(cache_creation_tokens), 0)::bigint AS cache_creation_tokens
+                        COALESCE(input_tokens, 0)::bigint AS input_tokens,
+                        COALESCE(output_tokens, 0)::bigint AS output_tokens,
+                        COALESCE(cached_input_tokens, 0)::bigint AS cached_input_tokens,
+                        COALESCE(cache_creation_tokens, 0)::bigint AS cache_creation_tokens,
+                        cost
                     FROM sessions
                     WHERE request_id = ANY($1::text[])
-                    GROUP BY model
+                    GROUP BY
+                        model,
+                        COALESCE(input_tokens, 0),
+                        COALESCE(output_tokens, 0),
+                        COALESCE(cached_input_tokens, 0),
+                        COALESCE(cache_creation_tokens, 0),
+                        cost
                     """,
                     (event_ids,),
                 )
                 for rows in fan_results.values():
                     for row in rows:
-                        session_count += int(row.get("cnt") or 0)
-                        if pricing is not None:
-                            model = row.get("model") or ""
-                            in_tok = int(row.get("input_tokens") or 0)
-                            out_tok = int(row.get("output_tokens") or 0)
-                            cached_tok = int(row.get("cached_input_tokens") or 0)
-                            cache_write_tok = int(row.get("cache_creation_tokens") or 0)
-                            if model and (in_tok or out_tok or cached_tok or cache_write_tok):
-                                estimated_cost = estimate_session_cost(
-                                    pricing,
-                                    model,
-                                    in_tok,
-                                    out_tok,
-                                    cached_input_tokens=cached_tok,
-                                    cache_creation_tokens=cache_write_tok,
-                                )
-                                if estimated_cost is not None:
-                                    if total_cost is None:
-                                        total_cost = 0.0
-                                    total_cost += estimated_cost
+                        row_session_count = int(row.get("cnt") or 0)
+                        session_count += row_session_count
+                        if pricing is None:
+                            unpriced_session_count += row_session_count
+                            continue
+
+                        raw_cost = row.get("cost")
+                        if isinstance(raw_cost, str):
+                            try:
+                                raw_cost = json.loads(raw_cost)
+                            except json.JSONDecodeError:
+                                pass
+                        session_cost = _compute_session_cost_usd(
+                            {
+                                "model": row.get("model"),
+                                "input_tokens": int(row.get("input_tokens") or 0),
+                                "output_tokens": int(row.get("output_tokens") or 0),
+                                "cached_input_tokens": int(row.get("cached_input_tokens") or 0),
+                                "cache_creation_tokens": int(row.get("cache_creation_tokens") or 0),
+                                "cost": raw_cost,
+                            },
+                            pricing,
+                        )
+                        if session_cost is None:
+                            unpriced_session_count += row_session_count
+                            continue
+                        if total_cost is None:
+                            total_cost = 0.0
+                        total_cost += session_cost * row_session_count
             except Exception:
                 logger.debug("ingestion_window_rollup: session fan-out failed", exc_info=True)
 
@@ -1603,6 +1623,7 @@ async def ingestion_window_rollup(
         "events": event_count,
         "sessions": session_count,
         "cost": total_cost,
+        "unpriced_session_count": unpriced_session_count,
         "window": {
             "from": from_dt.isoformat() if from_dt is not None else None,
             "to": to_dt.isoformat() if to_dt is not None else None,

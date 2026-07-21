@@ -3829,10 +3829,9 @@ export interface IngestionEventSummary {
   /** Detailed error context for error-status events (e.g. exception message). */
   error_detail: string | null;
   /**
-   * Denormalized total cost in USD across all butler sessions for this event.
-   * Null until the event's rollup is first fetched (lazy write-through, core_126),
-   * falling back to the summed session-join cost (bu-4utdw.3) when still null.
-   * filtered_events always have null (no sessions = no cost).
+   * Known-priced session subtotal across this event's linked sessions. It is
+   * lazily denormalized after a complete rollup, or derived from live session
+   * lineage for the list; null when no linked session has a known cost.
    */
   cost_usd: number | null;
   /**
@@ -3843,6 +3842,8 @@ export interface IngestionEventSummary {
   tokens_in: number | null;
   tokens_out: number | null;
   session_count: number;
+  /** Linked sessions omitted from cost_usd because their cost is unavailable. */
+  unpriced_session_count?: number;
   sessions: IngestionEventListSessionSummary[];
   /**
    * Contact-resolved sender display name (relationship.entity_facts), or null
@@ -3902,7 +3903,10 @@ export interface ButlerRollupEntry {
   sessions: number;
   input_tokens: number;
   output_tokens: number;
-  cost: number;
+  /** Known-priced subtotal for this butler, if any. */
+  cost: number | null;
+  /** Sessions omitted from cost because their cost is unavailable. */
+  unpriced_session_count?: number;
 }
 
 /** Aggregate cost/token totals for all sessions linked to one ingestion event. */
@@ -3911,7 +3915,10 @@ export interface IngestionEventRollup {
   total_sessions: number;
   total_input_tokens: number;
   total_output_tokens: number;
-  total_cost: number;
+  /** Known-priced subtotal across all sessions, if any. */
+  total_cost: number | null;
+  /** Sessions omitted from total_cost because their cost is unavailable. */
+  unpriced_session_count?: number;
   by_butler: Record<string, ButlerRollupEntry>;
 }
 
@@ -4001,6 +4008,8 @@ export interface IngestionWindowRollup {
    * endpoint when pricing config is available; null when unavailable.
    */
   cost: number | null;
+  /** Sessions omitted from cost because their cost is unavailable. */
+  unpriced_session_count?: number;
   /** The active filter window boundaries. */
   window: { from: string | null; to: string | null };
 }

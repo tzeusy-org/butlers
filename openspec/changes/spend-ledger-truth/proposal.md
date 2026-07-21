@@ -2,10 +2,12 @@
 
 The Spend dashboard currently converts an absent price into `$0.00` and prices
 several daily aggregates from `sessions.model`, which records the requested
-model rather than the catalog entry that actually consumed tokens. That creates
-false zero-cost signals for the most-used gpt-5.6 models and can attribute
-historical spend to models that never ran, violating the project's
-"nothing fabricated" doctrine.
+model rather than the catalog entry that actually consumed tokens. Its
+backward-compatible `source_error` envelopes also leave several summary and
+daily consumers able to read compatibility zeros or an empty series as calm
+evidence. That creates false zero-cost signals for the most-used gpt-5.6
+models and can attribute historical spend to models that never ran, violating
+the project's "nothing fabricated" doctrine.
 
 ## What Changes
 
@@ -22,6 +24,11 @@ historical spend to models that never ran, violating the project's
   executed models.
 - Render unpriced entries as `—/unpriced`, and explicitly state when the
   monthly ceiling can only see the priced portion of spend.
+- Treat `source_error` in every summary/daily Spend consumer as unavailable
+  evidence rather than as its compatibility zero or empty value.
+- Preserve unknown ingestion-event session pricing as nullable known-cost
+  subtotals plus explicit unpriced-session coverage, including lazy write-back
+  and timeline consumers.
 
 ## Capabilities
 
@@ -36,6 +43,8 @@ historical spend to models that never ran, violating the project's
   and historical-attribution labeling.
 - `catalog-token-limits`: The ledger-backed monthly ceiling must preserve and
   expose the distinction between known zero cost and unknown pricing.
+- `ingestion-event-registry`: Event list, request rollup, and window rollup
+  costs must retain unpriced session coverage instead of manufacturing zero.
 
 ## Impact
 
@@ -45,6 +54,8 @@ historical spend to models that never ran, violating the project's
   ledger pricing and ceiling/deadman data.
 - Spend API models, frontend types, page rendering, and targeted backend and
   frontend tests.
+- Ingestion-event rollup/list core helpers, API models/router, and timeline
+  rendering for explicit unpriced-session coverage.
 - No schema migration or historical data rewrite is planned: the existing
   ledger already contains the executed catalog-entry linkage needed for this
   change.

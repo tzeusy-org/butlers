@@ -1753,6 +1753,7 @@ export default function SpendPage() {
   } = useDailySpend(timeWindow.from, timeWindow.to, {
     refetchInterval: timeWindow.pollingDisabled ? false : 60_000,
   })
+  const dailySourceError = dailyResponse?.meta?.source_error === true
   const dailyData = useMemo(() => dailyResponse?.data ?? [], [dailyResponse])
   // Butlers dropped from GET /api/spend/daily's fan-out — passed to the stacked
   // chart so vanished butlers are footnoted, not silently absent (bu-jad4j.3).
@@ -1776,6 +1777,9 @@ export default function SpendPage() {
     isLoading: priorSummaryLoading,
     isError: priorSummaryError,
   } = useSpendSummary(undefined, prevFrom, prevTo)
+  const currentSummarySourceError = currentSummary?.data?.source_error === true
+  const priorSummarySourceError = priorSummary?.data?.source_error === true
+  const moversSourceError = currentSummarySourceError || priorSummarySourceError
 
   return (
     <Page archetype="overview" title="Spend">
@@ -1788,8 +1792,8 @@ export default function SpendPage() {
           forecast={liveForecast}
           forecastLoading={forecastLoading}
           forecastError={forecastError}
-          currentByButler={currentSummary?.data?.by_butler ?? {}}
-          priorByButler={priorSummary?.data?.by_butler ?? {}}
+          currentByButler={currentSummarySourceError ? {} : (currentSummary?.data?.by_butler ?? {})}
+          priorByButler={priorSummarySourceError ? {} : (priorSummary?.data?.by_butler ?? {})}
           unavailableButlers={
             new Set([
               ...(currentSummary?.data?.unavailable_butlers ?? []),
@@ -1797,7 +1801,7 @@ export default function SpendPage() {
             ])
           }
           moversLoading={currentSummaryLoading || priorSummaryLoading}
-          moversError={currentSummaryError || priorSummaryError}
+          moversError={currentSummaryError || priorSummaryError || moversSourceError}
         />
 
         {/* Fleet-halt banner (bu-7o89u.3) — the ceiling IS denying dispatches
@@ -1943,11 +1947,11 @@ export default function SpendPage() {
 
         {/* What changed: movers strip */}
         <MoversStrip
-          current={currentSummary?.data?.by_butler ?? {}}
-          prior={priorSummary?.data?.by_butler ?? {}}
+          current={currentSummarySourceError ? {} : (currentSummary?.data?.by_butler ?? {})}
+          prior={priorSummarySourceError ? {} : (priorSummary?.data?.by_butler ?? {})}
           windowDays={windowDays}
           isLoading={currentSummaryLoading || priorSummaryLoading}
-          isError={currentSummaryError || priorSummaryError}
+          isError={currentSummaryError || priorSummaryError || moversSourceError}
           unavailableButlers={
             new Set([
               ...(currentSummary?.data?.unavailable_butlers ?? []),
@@ -1967,6 +1971,7 @@ export default function SpendPage() {
               data={dailyData}
               isLoading={dailyLoading}
               isError={dailyError}
+              sourceError={dailySourceError}
               unavailableButlers={dailyUnavailableButlers}
             />
             {dailyUnpricedModels.length > 0 && (

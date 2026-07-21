@@ -135,6 +135,25 @@ describe("Ingestion verdict openers", () => {
     expect(html).not.toContain("ingestion-timeline-verdict-all-clear");
   });
 
+  it("names unpriced session coverage instead of rendering the timeline all-clear", () => {
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: {
+        events: 12,
+        sessions: 3,
+        cost: 0.41,
+        unpriced_session_count: 1,
+        window: { from: null, to: null },
+      },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const html = render(<IngestionTimelineVerdictOpener range="24h" />);
+
+    expect(html).toContain("1 session cost unavailable");
+    expect(html).not.toContain("ingestion-timeline-verdict-all-clear");
+  });
+
   it("names a registry fallback on the connectors roster instead of healthy zero", () => {
     vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
       data: { data: { connectors: [], connector_registry_available: false } },

@@ -55,7 +55,9 @@ function timelineWindow(range: IngestionRange): { from: string; to: string } {
 
 function timelineAllClear(
   range: IngestionRange,
-  rollup: { events: number; sessions: number; cost: number | null } | undefined,
+  rollup:
+    | { events: number; sessions: number; cost: number | null; unpriced_session_count?: number }
+    | undefined,
 ): string {
   if (!rollup) return "Ingestion window ready";
 
@@ -66,6 +68,22 @@ function timelineAllClear(
   ].filter((fact): fact is string => Boolean(fact));
 
   return facts.join("; ");
+}
+
+function timelineCostCoverageClauses(
+  rollup:
+    | { events: number; sessions: number; cost: number | null; unpriced_session_count?: number }
+    | undefined,
+): VerdictClause[] {
+  const unpriced = rollup?.unpriced_session_count ?? 0;
+  if (unpriced === 0) return [];
+
+  return [
+    {
+      key: "unpriced-session-cost",
+      text: `${plural(unpriced, "session")} cost unavailable`,
+    },
+  ];
 }
 
 /** Verdict above the timeline ledger. Its rollup follows the visible range. */
@@ -88,7 +106,10 @@ export function IngestionTimelineVerdictOpener({ range }: { range: IngestionRang
             connectors.isError || connectors.data?.meta?.connector_registry_available === false,
         },
       ]}
-      clauses={attentionClauses(connectorRows)}
+      clauses={[
+        ...timelineCostCoverageClauses(rollup.data),
+        ...attentionClauses(connectorRows),
+      ]}
       allClear={timelineAllClear(range, rollup.data)}
       className="border-b border-border/60 pb-3"
     />

@@ -108,7 +108,8 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
   // elsewhere on this page (status board heartbeat, schedules, spend summary).
   const lastRunISO = activeRow?.lastRunISO ?? null
   const scheduleFacts = getScheduleHeaderFacts(schedulesResponse?.data ?? [], nowMs)
-  const costToday = spendResponse?.data?.by_butler?.[butler] ?? null
+  const spendSourceError = spendResponse?.data?.source_error === true
+  const costToday = spendSourceError ? null : (spendResponse?.data?.by_butler?.[butler] ?? null)
 
   // ---------------------------------------------------------------------------
   // Skeleton state
@@ -192,7 +193,7 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
             {" · next "}
             {scheduleFacts.next ? <Time value={scheduleFacts.next.nextRunAt} mode="relative-compact" /> : "--"}
             {" · "}
-            {formatCurrency(costToday)} today
+            {spendSourceError ? "spend unavailable" : `${formatCurrency(costToday)} today`}
           </span>
         </div>
         <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">

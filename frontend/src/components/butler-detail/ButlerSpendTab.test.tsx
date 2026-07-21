@@ -508,6 +508,43 @@ describe("ButlerSpendTab — error state", () => {
   });
 });
 
+describe("ButlerSpendTab — compatibility source errors", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          period: "today",
+          total_cost_usd: 0,
+          total_sessions: 0,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          by_butler: {},
+          by_model: {},
+          source_error: true,
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSpendSummary>);
+    vi.mocked(useDailySpend).mockReturnValue({
+      data: { data: [], meta: { source_error: true } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useDailySpend>);
+  });
+  afterEach(() => cleanup());
+
+  it("renders unavailable evidence rather than the compatibility $0.00 and empty trend", () => {
+    renderTab();
+
+    const strip = screen.getByTestId("spend-kpi-strip");
+    expect(strip.textContent).not.toContain("$0.00");
+    expect(screen.getByTestId("spend-source-unavailable").textContent).toContain("Spend source unavailable");
+    expect(screen.queryByTestId("day-bars")).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tests: butler-scoped daily costs and "all butlers" residual notes [bu-u1c02]
 // ---------------------------------------------------------------------------

@@ -114,6 +114,24 @@ note to name unpriced coverage, ceiling blindness, material divergence, and
 the pre-fix attribution window instead of attaching a deceptive zero to any
 of those cases.
 
+### 6. Compatibility envelopes and session-cost coverage carry their unknown state
+
+Spend endpoints retain their existing 200 compatibility envelopes when the
+ledger source fails, but `source_error` is authoritative over every placeholder
+total, map, or empty daily series in the response. Every summary or daily
+consumer therefore renders unavailable/degraded evidence instead of applying a
+normal zero fallback. This remains distinct from a successful known zero, which
+has no source error.
+
+For ingestion-event costs, a numeric value is a known-priced subtotal and an
+`unpriced_session_count` carries the omitted session coverage. All-unpriced
+sessions return a null subtotal; mixed known/unpriced sessions return the known
+subtotal plus the count; explicitly zero-priced sessions return `0.0` with a
+zero count. The list joins live session evidence whenever it exists, and lazy
+write-back occurs only when every session cost is known (including known zero).
+This additive contract is reused by request and window rollups so UI consumers
+can label partial evidence rather than treating it as a total.
+
 ## Risks / Trade-offs
 
 - [The priced subtotal can still be read as a global total] → Label it as

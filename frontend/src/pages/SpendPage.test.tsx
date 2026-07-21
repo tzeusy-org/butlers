@@ -81,10 +81,12 @@ vi.mock("@/components/costs/CostStripeChart", () => ({
   CostStripeChart: (props: {
     data: Array<{ date: string; by_butler?: Record<string, number> }>
     unavailableButlers?: readonly string[]
+    sourceError?: boolean
   }) => (
     <div
       data-testid="cost-stripe-chart-mock"
       data-unavailable={JSON.stringify(props.unavailableButlers ?? [])}
+      data-source-error={String(props.sourceError ?? false)}
     >
       {JSON.stringify(props.data)}
     </div>
@@ -651,6 +653,21 @@ describe("SpendPage — what changed", () => {
     expect(JSON.parse(chart.getAttribute("data-unavailable") ?? "[]")).toEqual([])
   })
 
+  it("passes a daily compatibility source_error to the chart rather than allowing its empty data state", async () => {
+    setHooks()
+    mockUseDailySpend.mockReturnValue({
+      data: { data: [], meta: { source_error: true } },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const chart = await screen.findByTestId("cost-stripe-chart-mock")
+    expect(chart.getAttribute("data-source-error")).toBe("true")
+  })
+
   it("footnotes unpriced daily ledger usage rather than rendering it as free", async () => {
     setHooks()
     mockUseDailySpend.mockReturnValue({
@@ -731,6 +748,30 @@ describe("SpendPage — what changed", () => {
     expect(strip.textContent).not.toContain("No spend change vs the prior window")
     expect(strip.textContent).toContain("spend comparison unavailable")
     expect(strip.querySelectorAll('[data-testid="mover-chip"]').length).toBe(0)
+  })
+
+  it("shows a degraded movers state when summary compatibility envelopes carry source_error", async () => {
+    setHooks()
+    mockUseSpendSummary.mockImplementation(() => ({
+      data: {
+        data: {
+          total_cost_usd: 0,
+          by_butler: {},
+          unavailable_butlers: [],
+          source_error: true,
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+    }))
+    await act(async () => {
+      renderPage()
+    })
+
+    const strip = await screen.findByTestId("movers-strip")
+    expect(strip.textContent).toContain("spend comparison unavailable")
+    expect(strip.textContent).not.toContain("No spend change vs the prior window")
   })
 
   it("excludes a butler with unavailable cost data instead of fabricating a '+$X · new' delta (bu-qvnce.1)", async () => {

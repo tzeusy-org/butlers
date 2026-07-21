@@ -232,6 +232,20 @@ describe("Sidebar", () => {
       expect(footerEl?.getAttribute("title")).toBeNull();
     });
 
+    it("names a summary source_error instead of showing its compatibility $0.00 as calm spend", () => {
+      vi.mocked(useSpendSummary).mockReturnValue({
+        data: { data: { total_cost_usd: 0, source_error: true } },
+        isLoading: false,
+      } as ReturnType<typeof useSpendSummary>);
+
+      renderExpanded();
+
+      const footerEl = container.querySelector('[aria-label="Spend source unavailable"]');
+      expect(footerEl).toBeTruthy();
+      expect(footerEl?.textContent).toContain("Spend source unavailable");
+      expect(footerEl?.textContent).not.toContain("$0.00 today");
+    });
+
     it("auto-expands Health into its overview and six ledger destinations for a direct sub-page visit", () => {
       setButlersState({
         data: {

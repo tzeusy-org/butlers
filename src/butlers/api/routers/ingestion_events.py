@@ -351,10 +351,14 @@ async def _enrich_list_summaries(
             summary.tokens_in = enr["tokens_in"]
             summary.tokens_out = enr["tokens_out"]
             summary.session_count = enr["session_count"]
+            summary.unpriced_session_count = enr["unpriced_session_count"]
             summary.sessions = [
                 IngestionEventListSessionSummary(**sess) for sess in enr["sessions"]
             ]
-            if summary.cost_usd is None and enr["session_cost_usd"] is not None:
+            # Live session lineage is the authoritative cost evidence for this
+            # row. It must replace a legacy denormalized compatibility zero
+            # whenever that lineage is all or partly unpriced.
+            if enr["session_count"] > 0:
                 summary.cost_usd = enr["session_cost_usd"]
 
         if summary.source_channel and summary.source_sender_identity:
@@ -684,13 +688,18 @@ async def get_ingestion_event_rollup(
     from token counts and model via the pricing config.
 
     Side effect: writes ``total_cost`` back to ``public.ingestion_events.cost_usd``
-    (lazy write-through, core_126) when at least one session is found.  This
-    populates the denormalized cost column used by the Spend sort view.
+    (lazy write-through, core_126) only when every discovered session has a
+    known cost. This preserves an explicit known zero while never persisting
+    an all/partly-unpriced compatibility subtotal as a total.
     """
     sessions_data = await ingestion_event_sessions(db, request_id)
     rollup_data = ingestion_event_rollup(request_id, sessions_data, pricing=pricing)
 
-    if rollup_data["total_sessions"] > 0:
+    if (
+        rollup_data["total_sessions"] > 0
+        and rollup_data["unpriced_session_count"] == 0
+        and rollup_data["total_cost"] is not None
+    ):
         try:
             pool = db.credential_shared_pool()
             await ingestion_event_set_cost_usd(pool, request_id, rollup_data["total_cost"])
@@ -1299,5 +1308,6 @@ async def get_ingestion_window_rollup(
         events=result["events"],
         sessions=result["sessions"],
         cost=result["cost"],
+        unpriced_session_count=result["unpriced_session_count"],
         window=result["window"],
     )

@@ -73,7 +73,7 @@ class IngestionEventSummary(BaseModel):
     filter_reason: str | None = None
     error_detail: str | None = None
     # Denormalized cost (core_126). NULL until the event's rollup is first fetched
-    # OR until session-join fallback (bu-4utdw.3) computes it below.
+    # OR until session-join fallback (bu-4utdw.3) computes a known-priced subtotal.
     # filtered_events rows always have NULL here (no sessions = no cost).
     cost_usd: float | None = None
     # ── Row-level enrichment (bu-4utdw.3) — computed via ONE grouped session
@@ -82,6 +82,9 @@ class IngestionEventSummary(BaseModel):
     tokens_in: int | None = None
     tokens_out: int | None = None
     session_count: int = 0
+    # Sessions whose cost is not known. A numeric cost_usd with a positive count
+    # is a priced subtotal, never a complete event total.
+    unpriced_session_count: int = 0
     sessions: list[IngestionEventListSessionSummary] = Field(default_factory=list)
     # Contact-resolved sender display name (relationship.entity_facts via
     # resolve_contacts_by_channel_bulk), or None when unresolved. The frontend
@@ -160,7 +163,8 @@ class ButlerRollupEntry(BaseModel):
     sessions: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
-    cost: float = 0.0
+    cost: float | None = None
+    unpriced_session_count: int = 0
 
 
 class IngestionEventRollup(BaseModel):
@@ -170,7 +174,8 @@ class IngestionEventRollup(BaseModel):
     total_sessions: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
-    total_cost: float = 0.0
+    total_cost: float | None = None
+    unpriced_session_count: int = 0
     by_butler: dict[str, ButlerRollupEntry] = Field(default_factory=dict)
 
 
@@ -191,14 +196,15 @@ class IngestionWindowRollupWindow(BaseModel):
 class IngestionWindowRollup(BaseModel):
     """Aggregate event/session counts for the active filter window.
 
-    Returned by GET /api/ingestion/rollup.  The ``cost`` field is always
-    ``None`` until cost-per-event data is available at the window level
-    (tracked as a separate follow-up bead).
+    Returned by GET /api/ingestion/rollup. ``cost`` is the known-priced
+    subtotal; ``unpriced_session_count`` makes any omitted session coverage
+    explicit instead of fabricating a zero.
     """
 
     events: int
     sessions: int
     cost: float | None = None
+    unpriced_session_count: int = 0
     window: dict[str, str | None]
 
 

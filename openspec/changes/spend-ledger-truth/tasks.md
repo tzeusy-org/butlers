@@ -28,3 +28,10 @@
 - [x] `uv run pytest tests/api/test_pricing.py tests/core/test_model_routing_quota.py tests/api/test_spend.py tests/core/test_core_spawner.py::TestSpendEventBusWiring -q --tb=short` — 127 passed.
 - [x] `npm test -- --run src/hooks/use-spend-ticker.test.ts src/pages/SpendPage.test.tsx src/components/costs/CostWidget.test.tsx` — 57 passed.
 - [x] `npm run lint:emdash`, `npm run lint` (exit 0; one existing unrelated HealthOverviewPage warning), `npm run build`, scoped Ruff, and `openspec validate spend-ledger-truth --strict` completed successfully.
+
+## Review correction (2026-07-22)
+
+- [x] 5.1 Add RED regressions for source-error compatibility envelopes and unknown ingestion-event session cost coverage.
+- [x] 5.2 Render summary/daily `source_error` as degraded evidence in every affected Spend consumer without changing known-zero behavior.
+- [x] 5.3 Preserve nullable known-cost subtotals and `unpriced_session_count` through ingestion event/list/window rollups, API contracts, and write-back.
+- [x] 5.4 Run the scoped backend/frontend/OpenSpec quality gates and prepare the existing PR for fresh review.

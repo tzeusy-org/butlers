@@ -28,6 +28,7 @@ import { startOfDayInTz, endOfDayInTz } from "@/lib/tz-format";
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { DayBars } from "@/components/butlers/DayBars";
 import { RangeToggle } from "@/components/ui/range-toggle";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import type { RangeValue } from "@/components/ui/range-toggle";
 import { ButlerPanelGrid, Panel, KpiCell, ErrorLine, LoadingLine, EmptyLine } from "@/components/butler-detail/atoms";
 
@@ -196,53 +197,60 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
     isError: dailyError,
   } = useDailySpend(trendFrom, todayEnd, { butler: butlerName });
 
+  const todaySourceError = todaySummary?.data?.source_error === true;
+  const summary30dSourceError = summary30d?.data?.source_error === true;
+  const dailySourceError = dailyCostsResp?.meta?.source_error === true;
+  const todayUnavailable = todayError || todaySourceError;
+  const summary30dUnavailable = error30d || summary30dSourceError;
+  const dailyUnavailable = dailyError || dailySourceError;
+
   // ---------------------------------------------------------------------------
   // Derived KPI values — all per-butler (summary queries pass ?butler=)
   // ---------------------------------------------------------------------------
 
   // KPI 1: Spend today — total_cost_usd from butler-scoped summary
-  const spendToday = todaySummary
+  const spendToday = !todaySourceError && todaySummary
     ? (todaySummary.data?.total_cost_usd ?? 0)
     : null;
   const spendTodayValue = todayLoading
     ? "..."
-    : todayError
+    : todayUnavailable
       ? "—"
       : spendToday != null
         ? formatCurrency(spendToday)
         : "—";
 
   // KPI 2: Spend 30d — total_cost_usd from butler-scoped summary
-  const spend30d = summary30d
+  const spend30d = !summary30dSourceError && summary30d
     ? (summary30d.data?.total_cost_usd ?? 0)
     : null;
   const spend30dValue = loading30d
     ? "..."
-    : error30d
+    : summary30dUnavailable
       ? "—"
       : spend30d != null
         ? formatCurrency(spend30d)
         : "—";
 
   // KPI 3: Cost per session — per-butler 30d cost / per-butler session count
-  const total30dCost = summary30d?.data?.total_cost_usd ?? 0;
+  const total30dCost = summary30dSourceError ? 0 : (summary30d?.data?.total_cost_usd ?? 0);
   const total30dSessions = summary30d?.data?.total_sessions ?? 0;
   const costPerSession =
     total30dSessions > 0 ? total30dCost / total30dSessions : null;
   const costPerSessionValue = loading30d
     ? "..."
-    : error30d
+    : summary30dUnavailable
       ? "—"
       : costPerSession != null
         ? formatCurrency(costPerSession)
         : "—";
 
   // KPI 4: Tokens today in / out — per-butler via butler-scoped today summary
-  const inputTokens = todaySummary?.data?.total_input_tokens ?? 0;
-  const outputTokens = todaySummary?.data?.total_output_tokens ?? 0;
+  const inputTokens = todaySourceError ? 0 : (todaySummary?.data?.total_input_tokens ?? 0);
+  const outputTokens = todaySourceError ? 0 : (todaySummary?.data?.total_output_tokens ?? 0);
   const tokenValue = todayLoading
     ? "..."
-    : todayError
+    : todayUnavailable
       ? "—"
       : `${formatTokenCount(inputTokens)} in / ${formatTokenCount(outputTokens)} out`;
 
@@ -253,12 +261,20 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   }, [dailyCostsResp]);
 
   // Model breakdown from butler-scoped 30d summary
-  const byModel = summary30d?.data?.by_model ?? {};
+  const byModel = summary30dSourceError ? {} : (summary30d?.data?.by_model ?? {});
   const modelBreakdownLoading = loading30d;
-  const modelBreakdownError = error30d;
+  const modelBreakdownError = summary30dUnavailable;
 
   return (
     <ButlerPanelGrid data-testid="spend-tab">
+      {(todaySourceError || summary30dSourceError || dailySourceError) && (
+        <SourceDegradedNote
+          className="col-span-1 lg:col-span-4"
+          label="Spend source unavailable"
+          detail="compatibility totals and trend hidden"
+          testId="spend-source-unavailable"
+        />
+      )}
       {/* Row 1: KPI strip — 4 cells */}
       <div
         className="col-span-1 lg:col-span-4 grid grid-cols-2 sm:grid-cols-4"
@@ -306,7 +322,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         onRangeChange={setRange}
         data={trendData}
         isLoading={dailyLoading}
-        isError={dailyError}
+        isError={dailyUnavailable}
       />
 
       {/* Row 3: Model breakdown full-width */}

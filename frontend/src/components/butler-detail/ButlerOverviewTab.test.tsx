@@ -335,6 +335,26 @@ describe("ButlerOverviewTab target overview grid", () => {
 // ---------------------------------------------------------------------------
 
 describe("ButlerOverviewTab -- partial-source verdicts", () => {
+  it("names a compatibility spend-source failure instead of showing $0 evidence", () => {
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          by_butler: { general: 0 },
+          source_error: true,
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSpendSummary>)
+
+    const html = renderOverview()
+
+    expect(html).toContain("spend source unavailable")
+    expect(html).toContain("spend summary unavailable")
+    expect(html).not.toContain("butler-detail-verdict-all-clear")
+  })
+
   it("scopes spend to the current butler and names its unavailable spend source", () => {
     vi.mocked(useSpendSummary).mockReturnValue({
       data: {

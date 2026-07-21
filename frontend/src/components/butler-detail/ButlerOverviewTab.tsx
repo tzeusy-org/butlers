@@ -359,7 +359,9 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const schedules = butler?.schedules ?? []
   const skills = butler?.skills ?? []
   const sessions24h = row?.sessions24h ?? butler?.sessions_24h ?? 0
-  const costToday = costQuery.data?.data?.by_butler?.[butlerName] ?? 0
+  const spendSourceError = costQuery.data?.data?.source_error === true
+  const costToday = spendSourceError ? null : (costQuery.data?.data?.by_butler?.[butlerName] ?? 0)
+  const costPerSession = costToday != null && sessions24h > 0 ? costToday / sessions24h : 0
   const visiblePendingActions = pendingActions ?? []
   const recentEvents = activityFeedData?.events ?? []
   const stripe = row?.hourlyStripe ?? Array(24).fill(0)
@@ -389,9 +391,9 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       sessions24h={sessions24h}
       boardLoading={aggregates.isLoading}
       boardError={butlerError || boardSourceError}
-      spendToday={costQuery.data?.data?.by_butler?.[butlerName]}
+      spendToday={spendSourceError ? undefined : costQuery.data?.data?.by_butler?.[butlerName]}
       spendLoading={costQuery.isLoading}
-      spendError={costQuery.isError || (!costQuery.isLoading && !costQuery.data)}
+      spendError={costQuery.isError || spendSourceError || (!costQuery.isLoading && !costQuery.data)}
       spendSourcesDegraded={spendSourcesDegraded}
       pendingApprovals={visiblePendingActions}
       pendingTotal={awaitingCount}
@@ -439,8 +441,12 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         ) : (
           <KpiCell
             label=""
-            value={formatCurrency(costToday)}
-            sub={`${formatCurrency(sessions24h > 0 ? costToday / sessions24h : 0)} / session`}
+            value={costToday == null ? "—" : formatCurrency(costToday)}
+            sub={
+              spendSourceError
+                ? "spend source unavailable"
+                : `${formatCurrency(costPerSession)} / session`
+            }
           />
         )}
       </Panel>

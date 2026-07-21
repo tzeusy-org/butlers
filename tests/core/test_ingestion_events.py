@@ -360,11 +360,13 @@ async def test_ingestion_events_list_and_sessions() -> None:
     rollup_result = ingestion_event_rollup("req-001", sessions)
     assert rollup_result["total_sessions"] == 4 and rollup_result["total_input_tokens"] == 300
     assert abs(rollup_result["total_cost"] - 0.015) < 1e-9
+    assert rollup_result["unpriced_session_count"] == 2
     assert (
         rollup_result["by_butler"]["atlas"]["sessions"] == 2
         and abs(rollup_result["by_butler"]["atlas"]["cost"] - 0.015) < 1e-9
     )
-    assert rollup_result["by_butler"]["herald"]["cost"] == 0.0
+    assert rollup_result["by_butler"]["herald"]["cost"] is None
+    assert rollup_result["by_butler"]["herald"]["unpriced_session_count"] == 2
 
 
 async def test_ingestion_events_list_event_ids_filter() -> None:
@@ -796,9 +798,10 @@ async def test_ingestion_window_rollup_cost_with_pricing() -> None:
 
     pricing = _make_pricing("claude-test", price_per_token=1e-6)
 
-    # Two model buckets across two butler schemas
+    # Exact cost-signature groups across two butler schemas. Token values are
+    # per session; cnt is the number of identical signatures in that group.
     session_rows_butler1 = [
-        # 1000 input tokens, 500 output tokens for claude-test
+        # Three sessions, each with 1000 input and 500 output tokens.
         {"cnt": 3, "model": "claude-test", "input_tokens": 1000, "output_tokens": 500},
     ]
     session_rows_butler2 = [
@@ -815,13 +818,13 @@ async def test_ingestion_window_rollup_cost_with_pricing() -> None:
     assert result["sessions"] == 5
     assert result["events"] == 5
 
-    # cost: estimate_session_cost sums both buckets
-    # butler1: 1000 * 1e-6 + 500 * 2e-6 = 0.001 + 0.001 = 0.002
-    # butler2: 600 * 1e-6 + 300 * 2e-6 = 0.0006 + 0.0006 = 0.0012
-    # total ≈ 0.0032
+    # cost: estimate_session_cost evaluates each signature then multiplies by
+    # its count. butler1: 3 * (0.001 + 0.001) = 0.006; butler2:
+    # 2 * (0.0006 + 0.0006) = 0.0024; total = 0.0084.
     assert result["cost"] is not None
     assert isinstance(result["cost"], float)
-    assert abs(result["cost"] - 0.0032) < 1e-9
+    assert abs(result["cost"] - 0.0084) < 1e-9
+    assert result["unpriced_session_count"] == 0
 
 
 async def test_ingestion_window_rollup_cost_null_without_pricing() -> None:
@@ -836,6 +839,7 @@ async def test_ingestion_window_rollup_cost_null_without_pricing() -> None:
 
     assert result["sessions"] == 3
     assert result["cost"] is None
+    assert result["unpriced_session_count"] == 3
 
 
 async def test_ingestion_window_rollup_cost_null_no_sessions() -> None:
@@ -850,6 +854,7 @@ async def test_ingestion_window_rollup_cost_null_no_sessions() -> None:
 
     assert result["sessions"] == 0
     assert result["cost"] is None
+    assert result["unpriced_session_count"] == 0
 
 
 async def test_ingestion_window_rollup_cost_skips_unknown_model() -> None:
@@ -874,6 +879,37 @@ async def test_ingestion_window_rollup_cost_skips_unknown_model() -> None:
     # known-model: 1000 * 1e-6 + 500 * 2e-6 = 0.001 + 0.001 = 0.002
     assert result["cost"] is not None
     assert abs(result["cost"] - 0.002) < 1e-9
+    assert result["unpriced_session_count"] == 1
+
+
+async def test_ingestion_window_rollup_preserves_unpriced_same_model_sessions() -> None:
+    """A no-usage session must not hide inside another priced model bucket."""
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    pricing = _make_pricing("known-model", price_per_token=1e-6)
+    # The exact-cost-signature query returns separate rows for a priced session
+    # and one with no metered usage. Grouping only by model would merge them
+    # and incorrectly report two priced sessions.
+    session_rows = [
+        {
+            "cnt": 1,
+            "model": "known-model",
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cost": None,
+        },
+        {"cnt": 1, "model": "known-model", "input_tokens": 0, "output_tokens": 0, "cost": None},
+    ]
+    db = _FakeDatabaseManager(results={"butler1": session_rows})
+    pool = _FakePoolForRollup(event_count=2)
+
+    result = await ingestion_window_rollup(pool, db=db, pricing=pricing)
+
+    assert result["sessions"] == 2
+    assert result["cost"] == 0.002
+    assert result["unpriced_session_count"] == 1
+    query = " ".join(db.fan_out_calls[-1][0].split())
+    assert "GROUP BY model, COALESCE(input_tokens, 0)" in query
 
 
 async def test_ingestion_window_rollup_cost_null_all_unknown_models() -> None:
@@ -893,6 +929,7 @@ async def test_ingestion_window_rollup_cost_null_all_unknown_models() -> None:
 
     assert result["sessions"] == 2
     assert result["cost"] is None
+    assert result["unpriced_session_count"] == 2
 
 
 async def test_ingestion_window_rollup_cost_null_when_db_none() -> None:
@@ -1079,6 +1116,7 @@ def test_ingestion_events_list_enrichment_aggregates_and_caps_sessions() -> None
     req1 = enrichment["req-1"]
     assert req1["tokens_in"] == 100 and req1["tokens_out"] == 50
     assert abs(req1["session_cost_usd"] - 0.01) < 1e-9
+    assert req1["unpriced_session_count"] == 0
     assert req1["session_count"] == 10  # uncapped
     assert len(req1["sessions"]) == 8  # capped at 8
     assert req1["sessions"][0]["duration_ms"] == 1000
@@ -1090,16 +1128,13 @@ def test_ingestion_events_list_enrichment_aggregates_and_caps_sessions() -> None
     # No sessions → session_cost_usd is None (distinct from 0.0), so the
     # router falls back to the denormalized cost_usd column.
     assert req2["session_cost_usd"] is None
+    assert req2["unpriced_session_count"] == 0
     assert req2["session_count"] == 0
     assert req2["sessions"] == []
 
 
-def test_ingestion_events_list_enrichment_unknown_cost_matches_drawer_parity() -> None:
-    """Unknown per-session cost sums as 0.0, matching ingestion_event_rollup's
-    drawer-side total — NOT None — so a list row and the drawer agree on the
-    same event's cost. (Only "no sessions at all" yields None; see the other
-    aggregation test above.)
-    """
+def test_ingestion_events_list_enrichment_preserves_unknown_and_known_zero_cost() -> None:
+    """Unknown session prices stay explicit while declared zero remains known."""
     from butlers.core.ingestion_events import ingestion_events_list_enrichment
 
     sessions_by_id = {
@@ -1138,10 +1173,30 @@ def test_ingestion_events_list_enrichment_unknown_cost_matches_drawer_parity() -
 
     enrichment = ingestion_events_list_enrichment(sessions_by_id)
 
-    # All sessions unknown-cost → 0.0 (matches the drawer rollup's fallback).
-    assert enrichment["req-1"]["session_cost_usd"] == 0.0
-    # Mixed known/unknown → unknown contributes 0.0 to the sum.
+    # All sessions unknown-cost have no subtotal, not a fabricated $0.
+    assert enrichment["req-1"]["session_cost_usd"] is None
+    assert enrichment["req-1"]["unpriced_session_count"] == 1
+    # Mixed known/unknown keeps the known subtotal and exposes the omission.
     assert abs(enrichment["req-2"]["session_cost_usd"] - 0.02) < 1e-9
+    assert enrichment["req-2"]["unpriced_session_count"] == 1
+
+    known_zero = ingestion_events_list_enrichment(
+        {
+            "req-3": [
+                {
+                    "butler_name": "butler-d",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cost_usd": 0.0,
+                    "success": True,
+                    "started_at": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+                    "completed_at": datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+                }
+            ]
+        }
+    )["req-3"]
+    assert known_zero["session_cost_usd"] == 0.0
+    assert known_zero["unpriced_session_count"] == 0
 
 
 def test_ingestion_events_list_enrichment_duration_none_when_incomplete() -> None:

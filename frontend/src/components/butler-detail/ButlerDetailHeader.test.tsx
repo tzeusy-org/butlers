@@ -57,6 +57,7 @@ import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board"
 import { useButler } from "@/hooks/use-butlers"
 import { useSchedules } from "@/hooks/use-schedules"
+import { useSpendSummary } from "@/hooks/use-spend"
 import type { Schedule } from "@/api/types"
 import { ButlerDetailHeader } from "./ButlerDetailHeader"
 import { getScheduleHeaderFacts } from "./schedule-header-facts"
@@ -403,6 +404,20 @@ describe("Scenario F: header facts replace port/uptime trivia", () => {
     renderHeader("relationship")
     const facts = screen.getByTestId("butler-header-facts")
     expect(facts.textContent).toContain("--")
+  })
+
+  it("F4: names a compatibility spend-source failure instead of a fabricated $0 today", () => {
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: { data: { by_butler: { relationship: 0 }, source_error: true } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSpendSummary>)
+
+    renderHeader("relationship")
+
+    const facts = screen.getByTestId("butler-header-facts")
+    expect(facts.textContent).toContain("spend unavailable")
+    expect(facts.textContent).not.toContain("$0.00 today")
   })
 })
 
