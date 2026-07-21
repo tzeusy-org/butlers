@@ -73,6 +73,22 @@ and muted dots for `running` and `skipped_overlap`. No transition, pulse, or oth
 motion is added; tooltip appearance remains the existing instant behavior, so
 reduced-motion users receive the same information without an animation.
 
+### Derived aggregate status fails closed without changing storage
+
+The API keeps `QaPatrolSummary.status: str` so a persisted future, malformed, or
+legacy status remains observable. When that value is not in the canonical vocabulary,
+`GET /api/qa/summary` derives `staffer_status = "unknown_patrol_status"`; it does not
+write, normalize, or reinterpret the stored value as `error`. This condition is a
+non-success aggregate state distinct from `staffer_status = "unknown"`, which continues
+to mean no completed patrol history.
+
+The QA verdict, Overview attention model, and briefing consume that explicit derived
+condition. Each uses a textual `unknown patrol status` explanation and a link to `/qa`
+or the patrol detail when available, never the raw storage identifier as display copy.
+The dashboard Overview and briefing give a breaker precedence over the condition; the
+unknown-status condition otherwise precedes a normal patrol-error or active-case fallback
+so an invalid persisted state cannot compose an all-clear.
+
 ## Risks / Trade-offs
 
 - [Backend and frontend are different languages] → The shared backend vocabulary
@@ -84,6 +100,9 @@ reduced-motion users receive the same information without an animation.
 - [Muted `running`/`skipped_overlap` dots are less urgent than amber/red] → Their
   labels explicitly name the non-success state; they never use the healthy green
   token or a success label.
+- [A historic legacy status may not have an error equivalence] → Preserve it as raw
+  read data and derive the explicit unknown-status condition rather than silently
+  normalizing it into a canonical failure value.
 
 ## Migration Plan
 

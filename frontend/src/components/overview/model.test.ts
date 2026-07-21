@@ -768,8 +768,40 @@ describe("deriveOverviewTriageModel", () => {
     });
   });
 
-  it.each(["running", "clean", "findings_dispatched", "suppressed", "skipped_overlap", "failed"])(
-    "does not infer a QA patrol failure from a non-error status (%s), even with detail",
+  it("surfaces an unknown persisted QA patrol status instead of calm attention", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        qaSummary: qaSummary({
+          staffer_status: "unknown_patrol_status",
+          last_patrol: {
+            id: "patrol-future-status",
+            started_at: "2026-05-14T11:00:00.000Z",
+            completed_at: "2026-05-14T11:01:00.000Z",
+            status: "future_status",
+            findings_count: 0,
+            novel_count: 0,
+            dispatched_count: 0,
+            log_lookback_minutes: 60,
+            sources_polled: ["sessions"],
+            error_detail: null,
+          },
+        }),
+      },
+      { now: NOW },
+    );
+
+    expect(model.attentionRows.find((row) => row.kind === "qa")).toMatchObject({
+      severity: "high",
+      title: "QA patrol status unknown",
+      detail: "Latest QA patrol reported an unrecognized status. Inspect the patrol details.",
+    });
+    expect(model.nowRows.find((row) => row.kind === "qa")).toMatchObject({
+      label: "QA patrol status unknown",
+    });
+  });
+
+  it.each(["running", "clean", "findings_dispatched", "suppressed", "skipped_overlap"])(
+    "keeps a canonical non-error QA patrol status quiet even with detail (%s)",
     (status) => {
       const model = deriveOverviewTriageModel(
         {

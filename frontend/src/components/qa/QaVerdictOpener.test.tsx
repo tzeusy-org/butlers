@@ -127,6 +127,33 @@ describe("QaVerdictOpener -- clauses", () => {
     expect(html).toContain('href="/qa/patrols/patrol-1"');
   });
 
+  it("names an unknown persisted patrol status instead of rendering all clear", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "unknown_patrol_status",
+      last_patrol: {
+        id: "patrol-future-status",
+        started_at: "2026-07-05T04:00:00Z",
+        completed_at: "2026-07-05T04:05:00Z",
+        status: "future_status",
+        findings_count: 0,
+        novel_count: 0,
+        dispatched_count: 0,
+        log_lookback_minutes: 60,
+        sources_polled: [],
+        error_detail: null,
+      },
+    };
+
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+
+    expect(html).toContain('data-testid="qa-verdict-clauses"');
+    expect(html).toContain("latest patrol reported an unknown status");
+    expect(html).toContain('href="/qa/patrols/patrol-future-status"');
+    expect(html).not.toContain('data-testid="qa-verdict-all-clear"');
+    expect(html).not.toContain("future_status");
+  });
+
   it("names missing credentials using the backend's own provisioning hint", () => {
     const summary: QaSummary = {
       ...HEALTHY_SUMMARY,

@@ -37,10 +37,11 @@ dashboard page renders, not a second, independently-drifting one:
     - failed notifications: GET /api/notifications/stats's ``failed`` count
       in a closed 24-hour interval, using the same terminal-failure definition
       and bounded window as the Overview page.
-    - QA: the same circuit-breaker-tripped / recent-last-patrol-failed /
-      active-investigation priority frontend/src/components/overview/model.ts::
-      summarizeQaState uses. Completed dispatches and novel findings remain
-      time-bounded activity, not briefing-classification inputs.
+    - QA: the same circuit-breaker-tripped / unknown-patrol-status /
+      recent-last-patrol-failed / active-investigation priority
+      frontend/src/components/overview/model.ts::summarizeQaState uses.
+      Completed dispatches and novel findings remain time-bounded activity,
+      not briefing-classification inputs.
 
 A source that cannot be read is tracked via DegradedSources and surfaces as
 the "degraded" state_class instead of silently composing "quiet"
@@ -81,6 +82,7 @@ from butlers.api.deps import (
 from butlers.api.models import ApiResponse
 from butlers.api.pricing import PricingConfig
 from butlers.core.general_settings import load_general_settings
+from butlers.core.qa.patrol_status import is_valid_patrol_status
 from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
@@ -572,8 +574,9 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
     qa_state mirrors the fields GET /api/qa/summary exposes that
     frontend/src/components/overview/model.ts::summarizeQaState reads to
     decide whether QA needs an attention row: the circuit-breaker tripped
-    state (checked FIRST, mirroring summarizeQaState -- bu-y2xqi), the last
-    non-running patrol's recent ``error`` state, and active investigation count.
+    state (checked FIRST, mirroring summarizeQaState -- bu-y2xqi), a
+    noncanonical latest patrol status, the last non-running patrol's recent
+    ``error`` state, and active investigation count.
     ``None`` when the QA tables are not provisioned (legitimately absent, not
     degraded).
     """
@@ -647,15 +650,21 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
             logger.warning("Could not fetch QA circuit breaker state for briefing: %s", exc)
             degraded = True
 
+    last_patrol_status = str(last_patrol["status"]) if last_patrol is not None else None
+    last_patrol_status_unknown = bool(
+        last_patrol_status is not None and not is_valid_patrol_status(last_patrol_status)
+    )
+
     return (
         {
             "circuit_breaker_tripped": circuit_breaker_tripped,
             "circuit_breaker_consecutive_failures": circuit_breaker_consecutive_failures,
             # ``error`` is the canonical terminal patrol failure.  Detail is
             # optional diagnostic context, never a second failure signal.
-            "last_patrol_failed": bool(
-                last_patrol is not None and last_patrol["status"] == "error"
-            ),
+            "last_patrol_failed": bool(last_patrol_status == "error"),
+            # Preserve the raw persisted value for the patrol API; this derived
+            # marker only prevents an aggregate briefing from becoming calm.
+            **({"last_patrol_status_unknown": True} if last_patrol_status_unknown else {}),
             "active_cases_now": int(active_cases_now or 0),
         },
         degraded,
@@ -666,11 +675,12 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
     """Return an attention item for QA state, or None.
 
     Mirrors frontend/src/components/overview/model.ts::summarizeQaState's
-    priority order exactly (circuit-breaker tripped > recent failed patrol >
-    active investigations), so the briefing and the attention list agree on
-    when QA needs a look. A tripped breaker means the QA staffer has stopped
-    dispatching entirely after repeated consecutive failures -- more severe
-    than a single failed patrol run, so it is checked FIRST (bu-y2xqi).
+    priority order exactly (circuit-breaker tripped > unknown patrol status >
+    recent failed patrol > active investigations), so the briefing and the
+    attention list agree on when QA needs a look. A tripped breaker means the
+    QA staffer has stopped dispatching entirely after repeated consecutive
+    failures -- more severe than a single failed patrol run, so it is checked
+    FIRST (bu-y2xqi).
     """
     if qa_state is None:
         return None
@@ -692,6 +702,16 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
             ),
             "link": "/qa",
             "occurrences": n,
+            "source": "qa",
+        }
+
+    if qa_state.get("last_patrol_status_unknown"):
+        return {
+            "severity": "high",
+            "type": "qa",
+            "butler": "qa",
+            "description": "QA patrol status unknown",
+            "link": "/qa",
             "source": "qa",
         }
 

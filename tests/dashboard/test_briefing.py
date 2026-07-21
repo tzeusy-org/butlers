@@ -701,11 +701,31 @@ class TestFetchQaState:
         )
         assert "started_at <= NOW()" in pool.fetchrow.await_args_list[0].args[0]
 
+    @pytest.mark.parametrize("status", ["future_status", "failed"])
+    async def test_unknown_persisted_patrol_status_is_not_quiet(self, status: str):
+        db = MagicMock()
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value=_make_record({"status": status, "error_detail": None})
+        )
+        pool.fetch = AsyncMock(return_value=[])
+        pool.fetchval = AsyncMock(return_value=0)
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert degraded is False
+        assert qa_state is not None
+        assert qa_state["last_patrol_failed"] is False
+        assert qa_state["last_patrol_status_unknown"] is True
+
     @pytest.mark.parametrize(
         "status",
-        ["running", "clean", "findings_dispatched", "suppressed", "skipped_overlap", "failed"],
+        ["running", "clean", "findings_dispatched", "suppressed", "skipped_overlap"],
     )
-    async def test_non_error_patrol_never_infers_failure_from_error_detail(self, status: str):
+    async def test_canonical_non_error_patrol_never_infers_failure_from_error_detail(
+        self, status: str
+    ):
         db = MagicMock()
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(
@@ -856,6 +876,26 @@ class TestQaAttentionItem:
         item = _qa_attention_item(state)
         assert item["severity"] == "high"
         assert item["description"] == "QA patrol failed"
+
+    def test_unknown_patrol_status_surfaces_as_attention(self):
+        state = {
+            "last_patrol_failed": False,
+            "last_patrol_status_unknown": True,
+            "novel_findings": 0,
+            "dispatched_investigations": 0,
+            "active_cases_now": 0,
+        }
+
+        item = _qa_attention_item(state)
+
+        assert item == {
+            "severity": "high",
+            "type": "qa",
+            "butler": "qa",
+            "description": "QA patrol status unknown",
+            "link": "/qa",
+            "source": "qa",
+        }
 
     def test_completed_dispatches_are_activity_not_attention(self):
         state = {

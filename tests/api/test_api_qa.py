@@ -549,6 +549,17 @@ class TestGetQaSummary:
         assert creds["git_author_email_present"] is False
         assert creds["provisioning_hint"] is None
 
+    async def test_unknown_persisted_patrol_status_fails_closed_without_normalizing_raw_value(
+        self,
+    ) -> None:
+        """A future/legacy persisted value stays observable but cannot become healthy."""
+        app, _ = _build_summary_app(last_patrol=_make_patrol_row(status="future_status"))
+
+        body = (await _call(app, "get", "/api/qa/summary")).json()["data"]
+
+        assert body["last_patrol"]["status"] == "future_status"
+        assert body["staffer_status"] == "unknown_patrol_status"
+
     async def test_summary_kpi_mttr_is_null_without_terminal_24h_sample(self) -> None:
         app, _ = _build_summary_app(
             kpis=_make_kpi_row(

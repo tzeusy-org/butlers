@@ -18,11 +18,11 @@ import type { useQaSummary } from "@/hooks/use-qa";
 // fallback for fixtures/callers that predate the wire-level threshold field.
 const DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 5;
 
-// staffer_status values per src/butlers/api/routers/qa.py:1527-1535: only
-// "circuit_breaker_tripped", "error", and "unknown" name a real problem --
-// "healthy" and any future/unrecognized value fall through as fine
-// (forward-compatible with new backend values instead of misreading them as
-// a problem).
+// staffer_status values per src/butlers/api/routers/qa.py: only
+// "circuit_breaker_tripped", "unknown_patrol_status", "error", and
+// "unknown" name a real problem. Arbitrary unrecognized values still fall
+// through as fine for wire forward-compatibility; the API derives the explicit
+// unknown-patrol condition from persisted patrol data instead.
 function buildClauses(summary: QaSummary): VerdictClause[] {
   const clauses: VerdictClause[] = [];
 
@@ -43,7 +43,13 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
         text: `${n} consecutive failure${n === 1 ? "" : "s"}, breaker opens at ${threshold}`,
       });
     }
-    if (summary.staffer_status === "error") {
+    if (summary.staffer_status === "unknown_patrol_status") {
+      clauses.push({
+        key: "unknown-patrol-status",
+        text: "latest patrol reported an unknown status",
+        href: summary.last_patrol ? `/qa/patrols/${summary.last_patrol.id}` : undefined,
+      });
+    } else if (summary.staffer_status === "error") {
       clauses.push({
         key: "last-patrol-failed",
         text: "last patrol failed",

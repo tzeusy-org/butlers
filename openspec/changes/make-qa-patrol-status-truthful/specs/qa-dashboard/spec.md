@@ -23,6 +23,16 @@ change SHALL NOT add a status value or alter how the QA patrol loop chooses one.
 - **AND** it SHALL NOT coerce that value to `clean`, reject the whole response, or
   mutate the patrol record
 
+#### Scenario: Summary derives an explicit unknown-status condition
+
+- **WHEN** `GET /api/qa/summary` selects a latest completed patrol whose persisted
+  `status` is outside the canonical vocabulary
+- **THEN** `last_patrol.status` preserves that raw value for forensic API consumers
+- **AND** `staffer_status` is `unknown_patrol_status`, not `healthy`, `unknown`, or
+  `error`
+- **AND** the endpoint SHALL NOT add or normalize a persisted patrol status or change
+  patrol-dispatch policy
+
 #### Scenario: Total overview status presentation
 
 - **WHEN** the QA overview renders a recent patrol

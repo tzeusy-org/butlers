@@ -959,6 +959,14 @@ function summarizeQaState(
     };
   }
 
+  if (summary.staffer_status === "unknown_patrol_status") {
+    return {
+      title: "QA patrol status unknown",
+      detail: "Latest QA patrol reported an unrecognized status. Inspect the patrol details.",
+      severity: "high",
+    };
+  }
+
   if (hasRecentQaPatrolFailure(summary, now)) {
     return {
       title: "QA patrol failed",

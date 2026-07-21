@@ -1720,11 +1720,16 @@ async def get_qa_summary(
                 seen.add(src)
                 active_sources.append(src)
 
-    # Derive staffer_status — circuit breaker takes priority over unknown/error
+    # Derive staffer_status — a raw, noncanonical persisted status must fail
+    # closed instead of falling through to the aggregate healthy state. Keep
+    # the raw ``last_patrol.status`` readable; this only derives its operator
+    # summary condition and never changes stored patrol data.
     if cb_tripped:
         staffer_status = "circuit_breaker_tripped"
     elif last_patrol is None:
         staffer_status = "unknown"
+    elif not is_valid_patrol_status(last_patrol.status):
+        staffer_status = "unknown_patrol_status"
     elif last_patrol.status == "error":
         staffer_status = "error"
     else:

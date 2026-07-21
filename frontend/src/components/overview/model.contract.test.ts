@@ -158,6 +158,7 @@ interface ContractScenario {
   >;
   qa: {
     last_patrol_failed: boolean;
+    last_patrol_status_unknown?: boolean;
     novel_findings: number;
     dispatched_investigations: number;
     active_cases_now?: number;
@@ -212,6 +213,9 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
         }),
         qaSummary: scenario.qa
           ? qaSummary({
+              staffer_status: scenario.qa.last_patrol_status_unknown
+                ? "unknown_patrol_status"
+                : "healthy",
               circuit_breaker: {
                 tripped: scenario.qa.circuit_breaker_tripped ?? false,
                 consecutive_failures:
@@ -221,7 +225,11 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
                 id: "patrol-contract-1",
                 started_at: "2026-07-12T10:00:00.000Z",
                 completed_at: "2026-07-12T10:05:00.000Z",
-                status: scenario.qa.last_patrol_failed ? "error" : "clean",
+                status: scenario.qa.last_patrol_status_unknown
+                  ? "future_status"
+                  : scenario.qa.last_patrol_failed
+                    ? "error"
+                    : "clean",
                 findings_count: scenario.qa.novel_findings,
                 novel_count: scenario.qa.novel_findings,
                 dispatched_count: scenario.qa.dispatched_investigations,

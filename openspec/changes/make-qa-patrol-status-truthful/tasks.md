@@ -27,3 +27,14 @@
   the repository-required final quality gates appropriate to the diff.
 - [x] 3.3 Review the final diff against the QA dashboard and design-language specs,
   commit the scoped change, push `agent/bu-kqnum.9.3`, and open a focused PR.
+
+## 4. Aggregate false-calm correction
+
+- [x] 4.1 Amend the unarchived patrol-status truth contract for the summary, QA verdict,
+  dashboard Overview, and briefing; pass strict OpenSpec validation before code changes.
+- [x] 4.2 Add focused RED regression coverage showing a persisted `future_status` remains
+  raw but derives an explicit non-success condition across each aggregate consumer.
+- [x] 4.3 Implement the derived fail-closed condition without changing stored values or
+  dispatch policy; retain canonical status semantics and make the focused regressions GREEN.
+- [x] 4.4 Run focused API, verdict, Overview, briefing, QA, lint/build, and final quality
+  gates; review the scoped diff and update this handoff task state.
