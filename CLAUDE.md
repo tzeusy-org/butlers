@@ -86,11 +86,9 @@ Every butler has **core components** (always present) and **modules** (opt-in pe
 
 Target-state isolation is schema-based in a single PostgreSQL database: each butler role can access only its own schema plus `public`. Inter-butler communication remains MCP-only through the Switchboard.
 
-The `public` schema contains cross-butler identity tables:
-- **`public.contacts`** — canonical contact registry; one row per known person/actor. Includes a `roles` array (e.g. `['owner']`) and optional `entity_id` FK to the memory module's entity graph.
-- **`public.contact_info`** — per-channel identifiers linked to contacts (e.g. Telegram chat ID, email address). UNIQUE on `(type, value)`. `secured=true` marks credential entries.
+Cross-butler identity is entity-first: `public.entities` supplies the shared entity anchor and roles, while active channel identifiers remain relationship-owned `relationship.entity_facts` triples. For Switchboard ingress, `resolve_contact_by_channel()` joins active facts to `public.entities` and returns an entity-keyed `ResolvedContact` (`contact_id` is `None`). This established resolver does not relax the schema-isolation or MCP-only communication rules above.
 
-These tables power identity resolution for all ingress routing (Switchboard reverse-lookup) and outbound targeting (`notify()` with `contact_id`). The owner contact is bootstrapped automatically on daemon startup.
+For entity-targeted outbound delivery, `notify()` uses `entity_id`; when optional `channel` is omitted, it calls `resolve_outbound_channel(pool, entity_id, ...)` to select a deliverable channel from the entity's active facts. The owner entity is bootstrapped automatically on daemon startup.
 
 ### Runtime Config Architecture
 
