@@ -88,6 +88,12 @@ export interface TimeProps {
   /** The date value to render. Accepts an ISO 8601 string or a Date object. */
   value: string | Date
   /**
+   * Optional caller-owned wall clock for deterministic relative-compact text.
+   * When omitted, relative-compact mode keeps its existing live Date.now()
+   * behavior.
+   */
+  nowMs?: number
+  /**
    * Display mode.
    *   - absolute:         full date + time + tz abbreviation
    *   - relative:         "N minutes/hours/days ago" (date-fns natural language)
@@ -272,10 +278,10 @@ function formatRelative(date: Date): string {
  * Exported so consumers (e.g. StatusBoardCell aria-labels) can derive the
  * same truthful text without duplicating the formatting logic.
  */
-export function formatRelativeCompact(date: Date): string {
+export function formatRelativeCompact(date: Date, nowMs: number = Date.now()): string {
   if (Number.isNaN(date.getTime())) return "unknown"
   try {
-    const diffMs = Date.now() - date.getTime()
+    const diffMs = nowMs - date.getTime()
     const absDiffSec = Math.floor(Math.abs(diffMs) / 1_000)
     if (absDiffSec < 60) return "now"
     const isPast = diffMs >= 0
@@ -365,6 +371,7 @@ function resolveSmartMode(date: Date): { useRelative: boolean } {
  */
 export function Time({
   value,
+  nowMs,
   mode = "smart",
   precision = "minute",
   compact = false,
@@ -464,7 +471,7 @@ export function Time({
   let text: string
   if (mode === "relative-compact") {
     void clockTick  // drives re-renders when the 60s interval fires
-    text = formatRelativeCompact(date)
+    text = formatRelativeCompact(date, nowMs)
   } else if (mode === "relative") {
     text = formatRelative(date)
   } else if (mode === "absolute") {

@@ -23,16 +23,19 @@
 // ---------------------------------------------------------------------------
 
 import type { ReactNode } from "react"
+import { Link } from "react-router"
 
 import { ButlerMark } from "@/components/ui/ButlerMark"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Time } from "@/components/ui/time"
+import { Time, formatRelativeCompact } from "@/components/ui/time"
 import { useButler } from "@/hooks/use-butlers"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import { useSchedules } from "@/hooks/use-schedules"
 import { useSpendSummary } from "@/hooks/use-spend"
+import { useTickingNow } from "@/hooks/use-ticking-now"
 import { formatCostUsd } from "@/lib/format-cost"
 import { titleize } from "@/lib/utils"
+import { getScheduleHeaderFacts } from "./schedule-header-facts"
 
 // ---------------------------------------------------------------------------
 // Props
@@ -50,20 +53,6 @@ export interface ButlerDetailHeaderProps {
 // lib/format-cost.ts), before formatCostUsd existed.
 function formatCurrency(amount: number | null | undefined): string {
   return amount == null ? "--" : formatCostUsd(amount)
-}
-
-/**
- * Earliest upcoming `next_run_at` across a butler's enabled schedules, or
- * null when there is no schedule (or none has a known next fire time).
- */
-function earliestNextRun(schedules: { enabled: boolean; next_run_at: string | null }[]): string | null {
-  const candidates = schedules
-    .filter((s) => s.enabled && s.next_run_at)
-    .map((s) => s.next_run_at as string)
-  if (candidates.length === 0) return null
-  return candidates.reduce((earliest, current) =>
-    new Date(current).getTime() < new Date(earliest).getTime() ? current : earliest,
-  )
 }
 
 function activityToneClass(activity: string): string {
@@ -103,6 +92,7 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
   const { data: butlerResponse } = useButler(butler)
   const { data: schedulesResponse } = useSchedules(butler)
   const { data: spendResponse } = useSpendSummary("today")
+  const nowMs = useTickingNow(60_000)
 
   // Find the active butler's description from the status board rows.
   // Falls back to null when loading, errored, or not found.
@@ -112,12 +102,12 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
   const activity = activeRow?.activity ?? "unknown"
 
   // Header trivia (bu-86c4c.18): port/uptime told the operator nothing about
-  // what the butler actually did or will do. Replace it with the three facts
-  // a calm-confidence glance needs -- last run, next scheduled fire, and
-  // today's spend -- sourced from the same data already fetched elsewhere on
-  // this page (status board heartbeat, schedules, spend summary).
+  // what the butler actually did or will do. Replace it with the schedule
+  // facts a calm-confidence glance needs: last run, any overdue schedule, the
+  // earliest future fire, and today's spend. The sources are already fetched
+  // elsewhere on this page (status board heartbeat, schedules, spend summary).
   const lastRunISO = activeRow?.lastRunISO ?? null
-  const nextRunISO = earliestNextRun(schedulesResponse?.data ?? [])
+  const scheduleFacts = getScheduleHeaderFacts(schedulesResponse?.data ?? [], nowMs)
   const costToday = spendResponse?.data?.by_butler?.[butler] ?? null
 
   // ---------------------------------------------------------------------------
@@ -182,8 +172,25 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
           <span className="text-muted-foreground" data-testid="butler-header-facts">
             last run{" "}
             {lastRunISO ? <Time value={lastRunISO} mode="relative-compact" /> : "--"}
+            {scheduleFacts.overdue ? (
+              <>
+                {" · "}
+                <Link
+                  to={`/butlers/${butler}?tab=system&section=schedules`}
+                  className="font-medium text-[var(--amber-text)] underline decoration-[var(--border-strong)] underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+                  aria-label={`Overdue ${scheduleFacts.overdue.name}, ${formatRelativeCompact(new Date(scheduleFacts.overdue.nextRunAt), nowMs)}. Open schedules.`}
+                >
+                  overdue: {scheduleFacts.overdue.name}{" "}
+                  <Time
+                    value={scheduleFacts.overdue.nextRunAt}
+                    mode="relative-compact"
+                    nowMs={nowMs}
+                  />
+                </Link>
+              </>
+            ) : null}
             {" · next "}
-            {nextRunISO ? <Time value={nextRunISO} mode="relative-compact" /> : "--"}
+            {scheduleFacts.next ? <Time value={scheduleFacts.next.nextRunAt} mode="relative-compact" /> : "--"}
             {" · "}
             {formatCurrency(costToday)} today
           </span>
