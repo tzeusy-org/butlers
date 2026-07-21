@@ -93,9 +93,11 @@ DECISION_LABEL = "decision"
 # frozenset in decision_review.py -- keep that one in sync if either changes.
 # The regex is kept inline rather than imported so this script runs standalone
 # (offline `--issues-json-file` mode) without the `butlers` package's
-# DB-touching import chain.
+# DB-touching import chain. Only an actual title prefix is decision-shaped;
+# quoted marker text in meta/dev titles is explanatory prose. The optional
+# ``[`` preserves legacy ``[OWNER-GATED]`` marker titles.
 _DECISION_TITLE_MARKERS = re.compile(
-    r"DECISION REQUIRED|OWNER[- ]GATED|OWNER DECISION|ARCHITECTURAL DECISION|\bOWNER:",
+    r"^\s*\[?(?:DECISION REQUIRED|OWNER[- ]GATED|OWNER DECISION|ARCHITECTURAL DECISION|\bOWNER:)",
     re.IGNORECASE,
 )
 _OPEN_STATUSES = frozenset({"open", "in_progress", "blocked"})
@@ -103,7 +105,7 @@ _OPEN_STATUSES = frozenset({"open", "in_progress", "blocked"})
 
 def is_unlabeled_marker_match(issue: Any) -> bool:
     """True if *issue* is open, not an epic, title-matches a legacy decision
-    marker, and does NOT already carry the ``decision`` label.
+    marker at its start, and does NOT already carry the ``decision`` label.
 
     This is ``--check-unlabeled-markers``'s discovery predicate: it widens
     the checked set beyond labeled beads so the convention lint is
@@ -123,7 +125,7 @@ def is_unlabeled_marker_match(issue: Any) -> bool:
     if isinstance(labels, list) and DECISION_LABEL in labels:
         return False
     title = issue.get("title") or ""
-    return bool(_DECISION_TITLE_MARKERS.search(title))
+    return bool(_DECISION_TITLE_MARKERS.match(title))
 
 
 def select_issues_to_check(issues: list[Any], *, check_unlabeled_markers: bool) -> list[Any]:

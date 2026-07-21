@@ -342,6 +342,28 @@ def test_unlabeled_marker_match_false_when_title_has_no_marker():
 @pytest.mark.parametrize(
     "title",
     [
+        "Meta: document `DECISION REQUIRED (owner)` title-marker text",
+        "Developer note: explain (OWNER-GATED) as an advisory example",
+    ],
+)
+def test_unlabeled_marker_match_excludes_quoted_marker_examples(title):
+    assert ldb.is_unlabeled_marker_match(_marker_issue(title=title)) is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "DECISION REQUIRED (owner): pick a lane",
+        "[OWNER-GATED] restart the drift job",
+    ],
+)
+def test_unlabeled_marker_match_retains_marker_title_prefixes(title):
+    assert ldb.is_unlabeled_marker_match(_marker_issue(title=title)) is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
         "ARCHITECTURAL DECISION (owner): memory-module episodes table collides",
         "OWNER: decide auto-apply vs owner-confirmed for skip/metadata_only",
         "[OWNER-GATED] restart the drift job",
