@@ -131,6 +131,7 @@ from tests.api.test_sessions_pagination import _make_app_with_sessions, _make_se
 from tests.api.test_spend import (
     _flat_pricing,
     _make_tool_result,
+    _mock_db,
 )
 from tests.api.test_spend import (
     _mock_mgr as _make_spend_mcp_mgr,
@@ -138,6 +139,7 @@ from tests.api.test_spend import (
 from tests.api.test_spend import (
     _wire as _wire_spend_app,
 )
+from tests.api.test_spend import _wire_db as _wire_spend_db
 
 pytestmark = pytest.mark.unit
 
@@ -597,15 +599,27 @@ def _case_spend_summary() -> DegradedCase:
         mgr = _make_spend_mcp_mgr(
             {"sw": _make_tool_result(sw_data), "broken": ButlerUnreachableError("broken")}
         )
-        _wire_spend_app(app, mgr, configs, _flat_pricing())
+        pool = MagicMock()
+        pool.fetch = AsyncMock(side_effect=RuntimeError("ledger unavailable"))
+        _wire_spend_db(
+            _wire_spend_app(app, mgr, configs, _flat_pricing()),
+            _mock_db({"switchboard": pool}),
+        )
 
         resp = await _request(app, "GET", "/api/spend")
         assert resp.status_code == 200
         data = resp.json()["data"]
-        assert "broken" not in data["by_butler"]
-        # The dropped butler must be named, not silently absorbed into the
-        # total as an unremarkable $0.00.
-        assert data["unavailable_butlers"] == ["broken"]
+        assert data["total_cost_usd"] == 0.0
+        assert data["total_sessions"] == 0
+        assert data["total_input_tokens"] == 0
+        assert data["total_output_tokens"] == 0
+        assert data["by_butler"] == {}
+        assert data["by_model"] == {}
+        assert data["source_error"] is True
+        # Ledger failures describe one failed source, not an invented list of
+        # per-butler MCP failures. The compatibility field stays empty.
+        assert data["unavailable_butlers"] == []
+        mgr.get_client.assert_not_called()
 
     return DegradedCase("spend_summary", _run)
 
