@@ -110,10 +110,7 @@ async def test_connector_view_surfaces_heartbeat_row_and_excludes_non_process_ro
         VALUES ($1, $2, $3, $4, $5)
         """,
         "google_health",
-        (
-            "google_health:user:owner@example.com:"
-            "00000000-0000-0000-0000-000000000003:sleep"
-        ),
+        ("google_health:user:owner@example.com:00000000-0000-0000-0000-000000000003:sleep"),
         "opaque-cursor",
         now - timedelta(days=8),
         now - timedelta(days=8),
