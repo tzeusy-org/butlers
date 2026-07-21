@@ -85,7 +85,7 @@ async def test_chronicler_memory_job_uses_memory_module_pool(tmp_path) -> None:
     memory_pool = AsyncMock(name="chronicler_mem_pool")
     memory_module = MagicMock()
     memory_module.name = "memory"
-    memory_module._get_pool.return_value = memory_pool
+    memory_module.get_pool.return_value = memory_pool
     daemon._modules = [memory_module]
 
     mock_handler = AsyncMock(return_value={"facts_backfilled": 0})
@@ -100,5 +100,6 @@ async def test_chronicler_memory_job_uses_memory_module_pool(tmp_path) -> None:
         )
 
     assert result == {"facts_backfilled": 0}
+    memory_module.get_pool.assert_called_once_with()
     mock_handler.assert_awaited_once_with(memory_pool, None)
     daemon.spawner.trigger.assert_not_awaited()

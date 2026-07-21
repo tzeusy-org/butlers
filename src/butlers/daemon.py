@@ -970,7 +970,7 @@ class ButlerDaemon:
             if is_memory_maintenance_job(job_name):
                 memory_module = self._resolve_memory_module()
                 if memory_module is not None:
-                    dispatch_pool = memory_module._get_pool()
+                    dispatch_pool = memory_module.get_pool()
                     logger.debug(
                         "Dispatching memory maintenance job through memory module pool "
                         "(butler=%s, job_name=%s)",
@@ -1043,7 +1043,7 @@ class ButlerDaemon:
                     # NOT self.db.pool (the chronicler domain schema). This is why
                     # synthesized facts land in chronicler_mem while chronicler.*
                     # domain tables stay untouched (bu-93y4rt / bu-w6jca).
-                    memory_pool = memory_module._get_pool()
+                    memory_pool = memory_module.get_pool()
                 except Exception:
                     logger.warning(
                         "Failed to resolve memory pool/engine; chronicler "

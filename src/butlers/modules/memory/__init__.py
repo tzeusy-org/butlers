@@ -520,6 +520,10 @@ class MemoryModule(Module):
             raise RuntimeError("MemoryModule not initialised — no DB available")
         return self._db.pool
 
+    def get_pool(self) -> Any:
+        """Return the memory module's active asyncpg pool."""
+        return self._get_pool()
+
     async def _get_or_create_chronicler_pool(self) -> Any:
         """Return a lazily-created asyncpg pool scoped to the chronicler schema.
 

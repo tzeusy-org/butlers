@@ -75,17 +75,17 @@ class TestLifecycle:
         assert mod._db is None
         assert mod._embedding_engine is None
 
-    def test_get_pool_raises_when_uninitialised(self):
+    def test_public_get_pool_raises_when_uninitialised(self):
         mod = MemoryModule()
         with pytest.raises(RuntimeError, match="not initialised"):
-            mod._get_pool()
+            mod.get_pool()
 
-    def test_get_pool_returns_db_pool(self):
+    def test_public_get_pool_returns_db_pool(self):
         mod = MemoryModule()
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         mod._db = fake_db
-        assert mod._get_pool() is fake_db.pool
+        assert mod.get_pool() is fake_db.pool
 
     async def test_on_startup_context_hook_enables_fleet_knowledge(self, monkeypatch):
         """The real trigger-time context hook (bu-qvnce.15) requests the
