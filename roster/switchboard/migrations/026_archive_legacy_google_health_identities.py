@@ -23,6 +23,10 @@ and clearing it would reactivate identities that no current connector emits.
 
 from __future__ import annotations
 
+import re
+
+import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -39,18 +43,35 @@ _LEGACY_GOOGLE_HEALTH_IDENTITY_RE = (
     r"(sleep|activity|resting_hr|hrv|spo2|breathing_rate|vo2_max)$"
 )
 
-_ARCHIVE_LEGACY_GOOGLE_HEALTH_IDENTITIES_SQL = f"""
+_SELECT_CANDIDATE_IDENTITIES_SQL = """
+    SELECT endpoint_identity
+      FROM connector_registry
+     WHERE archived_at IS NULL
+       AND deleted_at IS NULL
+       AND connector_type = 'google_health'
+"""
+
+_UPDATE_LEGACY_IDENTITIES_SQL = """
     UPDATE connector_registry
        SET archived_at = now()
      WHERE archived_at IS NULL
        AND deleted_at IS NULL
        AND connector_type = 'google_health'
-       AND endpoint_identity ~ '{_LEGACY_GOOGLE_HEALTH_IDENTITY_RE}'
+       AND endpoint_identity = ANY(:identities)
 """
 
 
 def upgrade() -> None:
-    op.execute(_ARCHIVE_LEGACY_GOOGLE_HEALTH_IDENTITIES_SQL)
+    connection = op.get_bind()
+    rows = connection.execute(sa.text(_SELECT_CANDIDATE_IDENTITIES_SQL)).fetchall()
+    pattern = re.compile(_LEGACY_GOOGLE_HEALTH_IDENTITY_RE)
+    legacy_identities = [row[0] for row in rows if pattern.fullmatch(row[0])]
+
+    if legacy_identities:
+        connection.execute(
+            sa.text(_UPDATE_LEGACY_IDENTITIES_SQL),
+            {"identities": legacy_identities},
+        )
 
 
 def downgrade() -> None:
