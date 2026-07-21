@@ -42,7 +42,7 @@ def upgrade() -> None:
     op.execute(
         f"""
         UPDATE connector_registry
-           SET archived_at = COALESCE(archived_at, now())
+           SET archived_at = now()
          WHERE connector_type = 'google_health'
            AND deleted_at IS NULL
            AND archived_at IS NULL

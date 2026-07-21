@@ -39,7 +39,7 @@ def test_upgrade_archives_google_health_resource_cursor_shape(monkeypatch) -> No
     assert len(statements) == 1
     statement = statements[0]
     assert "connector_type = 'google_health'" in statement
-    assert "archived_at = COALESCE(archived_at, now())" in statement
+    assert "archived_at = now()" in statement
     assert "[[:xdigit:]]{8}" in statement
     assert "spo2" in statement
 
