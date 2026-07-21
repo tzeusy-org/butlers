@@ -151,11 +151,17 @@ A CHECK constraint MUST tie `suggestion_kind` to column population: a
 `promotion` row MUST have non-empty `sender_key`, `source_channel`,
 `proposed_rule_type`, `proposed_condition`, and `proposed_action`, and
 `target_rule_id` MUST be NULL; a `demotion` row MUST have `target_rule_id`
-set and `proposed_rule_type`, `proposed_condition`, and `proposed_action`
-MUST all be NULL. Empty-string values for `sender_key`, `source_channel`,
-and `proposed_action` MUST be rejected by the same constraint as NULL — an
-empty string is just as vacuous as no value for these required
-identity/action fields.
+set and `sender_key`, `source_channel`, `proposed_rule_type`,
+`proposed_condition`, and `proposed_action` MUST all be NULL. A demotion
+row's `target_rule_id` is its sole rule-identity and display authority: a
+sender/channel observed in one spot-check event is sample-specific and can
+misrepresent a rule scoped by domain, header, or another condition. A
+demotion renderer MUST resolve the rule's condition and action from the
+linked `ingestion_rules` row, not retain sampled identity fields on the
+suggestion. Empty-string values for `sender_key`, `source_channel`, and
+`proposed_action` MUST be rejected by the same constraint as NULL — an empty
+string is just as vacuous as no value for these required identity/action
+fields.
 
 A unique partial index MUST exist on `(sender_key, source_channel) WHERE
 status = 'pending_review' AND suggestion_kind = 'promotion'` so at most one
@@ -185,6 +191,14 @@ demotion suggestion can exist per rule at a time.
   `target_rule_id` set, or with `sender_key`, `source_channel`, or
   `proposed_action` NULL or an empty string
 - **THEN** the CHECK constraint MUST reject the insert
+
+#### Scenario: Demotion row rejects sampled identity fields
+
+- **WHEN** an insert attempts a `suggestion_kind='demotion'` row with a valid
+  `target_rule_id` but either `sender_key` or `source_channel` set
+- **THEN** the CHECK constraint MUST reject the insert
+- **AND** any demotion display MUST resolve the target rule's scope and action
+  through `target_rule_id`
 
 #### Scenario: Pending promotion becomes superseded when a rule now covers it
 

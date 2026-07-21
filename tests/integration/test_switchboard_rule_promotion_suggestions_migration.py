@@ -10,8 +10,9 @@ migrated Postgres instance (testcontainers):
   constraints match the fixed vocabularies.
 - The ``chk_rule_promotion_suggestions_kind_shape`` constraint enforces that
   column population mirrors ``suggestion_kind`` (promotion rows carry the
-  proposed-rule triple and no ``target_rule_id``; demotion rows carry
-  ``target_rule_id`` and none of the proposed-rule columns).
+  proposed-rule triple and no ``target_rule_id``; demotion rows carry only
+  ``target_rule_id`` plus evidence and leave sampled sender/channel and
+  proposed-rule fields NULL).
 - The unique partial indexes prevent a second pending suggestion per
   sender/channel (promotion) or per rule (demotion).
 - ``target_rule_id`` / ``created_rule_id`` FKs to ``ingestion_rules`` are
@@ -25,8 +26,12 @@ migrated Postgres instance (testcontainers):
 
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import shutil
 import uuid
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
@@ -36,6 +41,7 @@ from alembic import command
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import (
     create_migrated_test_db,
+    create_migration_db,
     index_exists,
     migration_db_name,
     table_exists,
@@ -46,6 +52,40 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
+
+_DEMOTION_IDENTITY_SHAPE_MIGRATION = (
+    Path(__file__).resolve().parents[2]
+    / "roster"
+    / "switchboard"
+    / "migrations"
+    / "027_switchboard_demotion_identity_shape.py"
+)
+
+
+def _load_demotion_identity_shape_migration():
+    spec = importlib.util.spec_from_file_location(
+        "sw_027_demotion_identity_shape", _DEMOTION_IDENTITY_SHAPE_MIGRATION
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _collect_demotion_identity_upgrade_sql() -> list[str]:
+    module = _load_demotion_identity_shape_migration()
+    statements: list[str] = []
+    mock_op = MagicMock()
+    mock_op.execute.side_effect = statements.append
+
+    with patch.object(module, "op", mock_op):
+        module.upgrade()
+
+    return statements
+
+
+def _normalize_sql(statement: str) -> str:
+    return " ".join(statement.split()).upper()
 
 
 @pytest.fixture(scope="module")
@@ -319,6 +359,40 @@ async def test_kind_shape_check_rejects_demotion_row_with_proposed_action(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_kind_shape_check_rejects_demotion_row_with_sender_key(
+    pool: asyncpg.Pool,
+) -> None:
+    """Demotion scope comes from target_rule_id, not one sampled sender."""
+    rule_id = await _insert_ingestion_rule(pool, priority=106)
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            """
+            INSERT INTO rule_promotion_suggestions
+                (suggestion_kind, target_rule_id, sender_key)
+            VALUES ('demotion', $1, 'sample@example.com')
+            """,
+            rule_id,
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_kind_shape_check_rejects_demotion_row_with_source_channel(
+    pool: asyncpg.Pool,
+) -> None:
+    """Demotion scope comes from target_rule_id, not one sampled channel."""
+    rule_id = await _insert_ingestion_rule(pool, priority=107)
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            """
+            INSERT INTO rule_promotion_suggestions
+                (suggestion_kind, target_rule_id, source_channel)
+            VALUES ('demotion', $1, 'email')
+            """,
+            rule_id,
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_promotion_row_with_empty_string_sender_key(
     pool: asyncpg.Pool,
 ) -> None:
@@ -477,8 +551,108 @@ async def test_demotion_suggestion_targets_existing_rule(pool: asyncpg.Pool) -> 
     )
     assert row["suggestion_kind"] == "demotion"
     assert row["target_rule_id"] == rule_id
+    assert row["sender_key"] is None
+    assert row["source_channel"] is None
     assert row["proposed_action"] is None
     assert row["created_rule_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Upgrade data normalization
+# ---------------------------------------------------------------------------
+
+
+def test_upgrade_locks_writers_immediately_before_normalizing_legacy_demotion_rows() -> None:
+    """The lock spans cleanup and the stricter CHECK replacement.
+
+    ``UPDATE`` alone permits a concurrent writer to insert a still-valid
+    pre-sw_027 demotion row between cleanup and the new CHECK.  The migration
+    must acquire the writer-conflicting table lock as the immediately preceding
+    statement, then retain it through the constraint replacement transaction.
+    """
+    statements = [
+        _normalize_sql(statement) for statement in _collect_demotion_identity_upgrade_sql()
+    ]
+    lock_statement = "LOCK TABLE RULE_PROMOTION_SUGGESTIONS IN SHARE ROW EXCLUSIVE MODE"
+
+    assert lock_statement in statements
+    lock_index = statements.index(lock_statement)
+    cleanup_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.startswith("UPDATE RULE_PROMOTION_SUGGESTIONS")
+    )
+    constraint_drop_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.startswith(
+            "ALTER TABLE RULE_PROMOTION_SUGGESTIONS "
+            "DROP CONSTRAINT CHK_RULE_PROMOTION_SUGGESTIONS_KIND_SHAPE"
+        )
+    )
+
+    assert cleanup_index == lock_index + 1
+    assert cleanup_index < constraint_drop_index
+
+
+def test_upgrade_clears_legacy_demotion_identity_fields(postgres_container) -> None:
+    """The forward migration removes stray sampled identity data before pinning NULL."""
+    from butlers.migrations import _build_alembic_config, run_migrations
+
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(db_url, chain="core"))
+    config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
+    command.upgrade(config, "switchboard@sw_026")
+
+    rule_id = uuid.uuid4()
+    suggestion_id = uuid.uuid4()
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO switchboard.ingestion_rules
+                        (id, scope, rule_type, condition, action, priority, created_by)
+                    VALUES
+                        (:rule_id, 'global', 'sender_domain',
+                         '{"domain": "example.com"}'::jsonb, 'route_to:finance',
+                         300, 'migration_test')
+                    """
+                ),
+                {"rule_id": rule_id},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO switchboard.rule_promotion_suggestions
+                        (id, suggestion_kind, sender_key, source_channel, target_rule_id,
+                         evidence_count, status)
+                    VALUES
+                        (:suggestion_id, 'demotion', 'sample@example.com', 'email',
+                         :rule_id, 5, 'pending_review')
+                    """
+                ),
+                {"suggestion_id": suggestion_id, "rule_id": rule_id},
+            )
+
+        command.upgrade(config, "switchboard@head")
+
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT sender_key, source_channel
+                    FROM switchboard.rule_promotion_suggestions
+                    WHERE id = :suggestion_id
+                    """
+                ),
+                {"suggestion_id": suggestion_id},
+            ).one()
+    finally:
+        engine.dispose()
+
+    assert tuple(row) == (None, None)
 
 
 # ---------------------------------------------------------------------------
