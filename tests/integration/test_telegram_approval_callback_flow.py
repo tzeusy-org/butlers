@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -9,18 +10,25 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
+import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from butlers.api.middleware import ApiKeyMiddleware
 from butlers.api.routers import approvals as approvals_router
+from butlers.config import ApprovalRiskTier
 from butlers.connectors import telegram_bot as telegram_bot_module
 from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
 from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
     mint_approval_callback_token,
 )
+from butlers.db import register_jsonb_codec
+from butlers.modules.approvals import gate as approvals_gate_module
+from butlers.modules.approvals.gate import _make_gate_wrapper
+from butlers.modules.approvals.module import ApprovalsModule
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -44,6 +52,36 @@ class _DbManager:
     def pool(self, butler_name: str) -> Any:
         assert butler_name == "relationship"
         return self._pool
+
+
+class _ExecutingButlerClient:
+    """Expose the real owning-butler executor through the MCP dispatch seam."""
+
+    def __init__(self, module: ApprovalsModule) -> None:
+        self._module = module
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        self.calls.append((tool_name, arguments))
+        assert tool_name == "dispatch_approved_action"
+        result = await self._module._dispatch_approved_action_by_id(arguments["action_id"])
+        return SimpleNamespace(
+            is_error=False,
+            content=[SimpleNamespace(text=json.dumps(result, default=str))],
+        )
+
+
+class _ExecutingMcpManager:
+    """Minimal manager that keeps the API's real MCP dispatch path intact."""
+
+    butler_names = ["relationship"]
+
+    def __init__(self, client: _ExecutingButlerClient) -> None:
+        self._client = client
+
+    async def get_client(self, butler_name: str) -> _ExecutingButlerClient:
+        assert butler_name == "relationship"
+        return self._client
 
 
 class _CallbackHttpClient:
@@ -77,74 +115,203 @@ class _CallbackHttpClient:
         await self._dashboard.aclose()
 
 
-def _protected_approvals_app(pool: Any) -> FastAPI:
+def _protected_approvals_app(pool: Any, *, mcp_mgr: Any | None = None) -> FastAPI:
     """Build the real API-key gate with only the callback service credential."""
     app = FastAPI()
     app.state.approval_callback_connector_token = _CALLBACK_CONNECTOR_TOKEN
     app.add_middleware(ApiKeyMiddleware, api_key=_DASHBOARD_API_KEY)
     app.include_router(approvals_router.router)
     app.dependency_overrides[approvals_router._get_db_manager] = lambda: _DbManager(pool)
-    app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: MagicMock()
+    app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: (
+        mcp_mgr if mcp_mgr is not None else MagicMock()
+    )
     return app
 
 
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Use the production core + approvals migrations, not hand-rolled DDL."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "approvals"],
+    )
+
+
 @pytest.fixture
-async def approval_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute("""
-            CREATE TABLE pending_actions (
-                id UUID PRIMARY KEY,
-                tool_name TEXT NOT NULL,
-                tool_args JSONB NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                agent_summary TEXT,
-                session_id UUID,
-                requested_at TIMESTAMPTZ NOT NULL,
-                expires_at TIMESTAMPTZ,
-                decided_by TEXT,
-                decided_at TIMESTAMPTZ,
-                execution_result JSONB,
-                why TEXT,
-                evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
-                approval_rule_id UUID
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE approval_events (
-                event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                action_id UUID NOT NULL REFERENCES pending_actions(id),
-                rule_id UUID,
-                event_type TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                reason TEXT,
-                event_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                occurred_at TIMESTAMPTZ NOT NULL
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE public.audit_log (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                actor TEXT NOT NULL,
-                action TEXT NOT NULL,
-                target TEXT,
-                note TEXT,
-                ip INET,
-                request_id UUID,
-                ts TIMESTAMPTZ NOT NULL DEFAULT now(),
-                metadata JSONB,
-                result TEXT,
-                error TEXT
-            )
-        """)
-        await pool.execute(
-            """
-            INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)
-            VALUES ($1, 'send_telegram', '{"chat_id":"42"}'::jsonb, 'pending', $2)
-            """,
-            _ACTION_ID,
-            _REQUESTED_AT,
-        )
+async def approval_pool(migrated_db_url: str):
+    """Return an isolated JSONB-aware pool over the migrated approval schema."""
+    pool = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    await pool.execute(
+        "TRUNCATE TABLE public.audit_log, autonomy_suggestions, autonomy_approval_history, "
+        "approval_events, pending_actions, approval_rules CASCADE"
+    )
+    await pool.execute(
+        """
+        INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)
+        VALUES ($1, 'send_telegram', $2, 'pending', $3)
+        """,
+        _ACTION_ID,
+        {"chat_id": "42"},
+        _REQUESTED_AT,
+    )
+    try:
         yield pool
+    finally:
+        await pool.close()
+
+
+async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(
+    approval_pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real parked action must execute, edit Telegram, and retain callback provenance."""
+
+    async def original_tool(**_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("The original tool must not run before the owner approves it")
+
+    monkeypatch.setattr(
+        approvals_gate_module,
+        "resolve_action_target_contact",
+        AsyncMock(return_value=None),
+    )
+    park = _make_gate_wrapper(
+        tool_name="telegram_send_message",
+        original_fn=original_tool,
+        pool=approval_pool,
+        expiry_hours=72,
+        risk_tier=ApprovalRiskTier.MEDIUM,
+        rule_precedence=(),
+        butler_name="relationship",
+    )
+    parked = await park(
+        chat_id="42",
+        text="Approved callback integration proof",
+        _why="The owner requested this outbound message.",
+        _evidence=[],
+        _blast_radius="contact",
+        _reversibility="compensable",
+    )
+    assert parked["status"] == "pending_approval"
+    action_id = UUID(parked["action_id"])
+    requested_at = await approval_pool.fetchval(
+        "SELECT requested_at FROM pending_actions WHERE id = $1", action_id
+    )
+
+    module = ApprovalsModule()
+    await module.on_startup(config=None, db=approval_pool)
+    executed_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute_original_tool(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+        executed_calls.append((tool_name, tool_args))
+        return {"status": "sent", "message_id": "outbound-approval-proof"}
+
+    module.set_tool_executor(execute_original_tool)
+    mcp_client = _ExecutingButlerClient(module)
+    app = _protected_approvals_app(approval_pool, mcp_mgr=_ExecutingMcpManager(mcp_client))
+    connector = TelegramBotConnector(
+        TelegramBotConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity="telegram:bot:1",
+            telegram_token="test-token",
+            internal_api_url="http://dashboard-api:41200",
+            approval_callback_secret=_SECRET,
+            approval_callback_connector_token=_CALLBACK_CONNECTOR_TOKEN,
+        ),
+        db_pool=MagicMock(),
+        cursor_pool=MagicMock(),
+    )
+    http_client = _CallbackHttpClient(app)
+    connector._http_client = http_client
+    owner_resolver = AsyncMock(return_value=(SimpleNamespace(roles=["owner"]), True))
+    monkeypatch.setattr(telegram_bot_module, "resolve_owner_channel_via_definer", owner_resolver)
+    token = mint_approval_callback_token(
+        action_id=action_id,
+        verb="a",
+        requested_at=requested_at,
+        secret=_SECRET,
+    )
+
+    try:
+        handled = await connector._maybe_handle_approval_callback(
+            {
+                "callback_query": {
+                    "id": "cbq-approve",
+                    "data": token,
+                    "from": {"id": 9001},
+                    "message": {"chat": {"id": 9001}, "message_id": 44},
+                }
+            }
+        )
+        detail = await http_client.get(
+            f"http://dashboard-api:41200/api/approvals/{action_id}",
+            headers={APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CALLBACK_CONNECTOR_TOKEN},
+        )
+    finally:
+        await http_client.close()
+
+    assert handled is True
+    owner_resolver.assert_awaited_once_with(connector._db_pool, "telegram_bot", "9001")
+    action = await approval_pool.fetchrow(
+        "SELECT status, decided_by, execution_result FROM pending_actions WHERE id = $1", action_id
+    )
+    assert action is not None
+    assert action["status"] == "executed"
+    assert action["decided_by"] == "human:owner@telegram"
+    assert action["execution_result"]["success"] is True
+    assert action["execution_result"]["result"] == {
+        "status": "sent",
+        "message_id": "outbound-approval-proof",
+    }
+    assert executed_calls == [
+        (
+            "telegram_send_message",
+            {"chat_id": "42", "text": "Approved callback integration proof"},
+        )
+    ]
+    assert mcp_client.calls == [("dispatch_approved_action", {"action_id": str(action_id)})]
+    assert detail.status_code == 200
+    assert detail.json()["data"]["status"] == "executed"
+    assert detail.json()["data"]["decided_by"] == "human:owner@telegram"
+    audit = await approval_pool.fetchrow(
+        "SELECT actor, action, target FROM public.audit_log WHERE target = $1", str(action_id)
+    )
+    assert audit is not None
+    assert dict(audit) == {
+        "actor": "human:owner@telegram",
+        "action": "approval.approve",
+        "target": str(action_id),
+    }
+    event_rows = await approval_pool.fetch(
+        "SELECT event_type, actor FROM approval_events WHERE action_id = $1 ORDER BY occurred_at",
+        action_id,
+    )
+    assert {(row["event_type"], row["actor"]) for row in event_rows} == {
+        ("action_queued", "system:approval_gate"),
+        ("action_approved", "human:owner@telegram"),
+        ("action_execution_succeeded", "system:executor"),
+    }
+    assert [url.rsplit("/", 1)[-1] for url, _ in http_client.telegram_calls] == [
+        "answerCallbackQuery",
+        "editMessageText",
+        "editMessageReplyMarkup",
+    ]
+    assert http_client.telegram_calls[1][1] == {
+        "chat_id": "9001",
+        "message_id": 44,
+        "text": "✅ Approved",
+        "parse_mode": "HTML",
+    }
+    assert http_client.telegram_calls[2][1] == {
+        "chat_id": "9001",
+        "message_id": 44,
+        "reply_markup": None,
+    }
 
 
 async def test_owner_reject_tap_transitions_and_audits_via_standard_approval_route(
