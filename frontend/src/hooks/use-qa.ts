@@ -240,7 +240,6 @@ export function useResetQaCircuitBreaker() {
 // ---------------------------------------------------------------------------
 
 /** Fetch QA repo configuration. */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useQaRepoConfig() {
   return useQuery({
     queryKey: ["qa-repo-config"],
@@ -251,7 +250,6 @@ export function useQaRepoConfig() {
 }
 
 /** Update QA repo URL. Invalidates repo-config cache on success. */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useUpdateQaRepoConfig() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -263,7 +261,6 @@ export function useUpdateQaRepoConfig() {
 }
 
 /** Trigger immediate repo sync. Invalidates repo-config cache on success. */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useSyncQaRepo() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -278,7 +275,6 @@ export function useSyncQaRepo() {
  * Store the QA git author identity (name + email). Invalidates the QA summary
  * cache on success so the card's credentials status badges refresh.
  */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useUpdateQaGitAuthor() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -312,7 +308,6 @@ export function useForceQaPatrol() {
 // ---------------------------------------------------------------------------
 
 /** Fetch the QA allowed-repos whitelist. */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useQaAllowedRepos() {
   return useQuery({
     queryKey: ["qa-allowed-repos"],
@@ -322,7 +317,6 @@ export function useQaAllowedRepos() {
 }
 
 /** Add a repository to the QA whitelist. */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useAddQaAllowedRepo() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -334,7 +328,6 @@ export function useAddQaAllowedRepo() {
 }
 
 /** Toggle enabled on a whitelisted repository. */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function usePatchQaAllowedRepo() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -347,7 +340,6 @@ export function usePatchQaAllowedRepo() {
 }
 
 /** Remove a repository from the QA whitelist. */
-/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useDeleteQaAllowedRepo() {
   const queryClient = useQueryClient();
   return useMutation({

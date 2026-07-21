@@ -56,7 +56,7 @@ mayor/
 metadata.json
 polecats/
 refinery/
-settings/
+/settings/
 witness/
 
 # bv (beads viewer) local config and caches
