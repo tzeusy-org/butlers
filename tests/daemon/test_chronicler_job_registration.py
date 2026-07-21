@@ -103,3 +103,26 @@ async def test_chronicler_memory_dispatch_uses_module_schema_pool(tmp_path) -> N
     assert result == expected
     cleanup_handler.assert_awaited_once_with(memory_pool, None)
     daemon.spawner.trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chronicler_memory_dispatch_with_no_db_uses_missing_pool_error(tmp_path) -> None:
+    daemon = ButlerDaemon(tmp_path)
+    daemon.config = ButlerConfig(name="chronicler", port=41111)
+    daemon.db = None
+    daemon.spawner = MagicMock()
+
+    memory_module = MagicMock()
+    memory_module.name = "memory"
+    daemon._modules = [memory_module]
+
+    with pytest.raises(
+        RuntimeError,
+        match="Deterministic scheduler dispatch requires an initialized DB pool",
+    ):
+        await daemon._dispatch_scheduled_task(
+            trigger_source="schedule:memory_episode_cleanup",
+            job_name="memory_episode_cleanup",
+        )
+
+    memory_module._get_pool.assert_not_called()
