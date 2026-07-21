@@ -1,16 +1,18 @@
-"""DB-level regression for the QA case dossier session doors (bu-533qx.3).
+"""DB-level regressions for QA case session doors (bu-533qx.3, bu-rvz68).
 
 The unit tests in ``test_api_qa_cases.py`` mock the pool, so they never prove
-the dossier SELECT actually resolves ``a.healing_session_id`` / ``a.session_ids``
-against the real ``public.healing_attempts`` schema — mocked-green SELECT
-projections have broken main before. This module runs the *actual*
-``GET /api/qa/cases/:id`` endpoint against a core-migrated Postgres and asserts:
+the dossier and case-list SELECTs actually resolve ``a.healing_session_id`` /
+``a.session_ids`` against the real ``public.healing_attempts`` schema —
+mocked-green SELECT projections have broken main before. This module runs the
+actual endpoints against a core-migrated Postgres and asserts:
 
   1. A case whose attempt row carries a ``healing_session_id`` and a
      non-empty ``session_ids`` array surfaces both in the dossier payload —
      the trace-spine doors to ``/sessions/:id``.
-  2. A case with a NULL ``healing_session_id`` and an empty ``session_ids``
-     renders no door (null + empty), never a broken link.
+  2. The case-list summary projects the same fields before an operator opens
+     the dossier, so its rail can truthfully expose a trace door.
+  3. A case with a NULL ``healing_session_id`` and an empty ``session_ids``
+     exposes no door (null + empty), never a broken link.
 """
 
 from __future__ import annotations
@@ -74,12 +76,13 @@ async def _insert_attempt(
     healing_session_id: uuid.UUID | None,
     session_ids: list[uuid.UUID],
 ) -> uuid.UUID:
+    qa_patrol_id = await pool.fetchval("INSERT INTO public.qa_patrols DEFAULT VALUES RETURNING id")
     return await pool.fetchval(
         """
         INSERT INTO public.healing_attempts
             (fingerprint, butler_name, severity, exception_type, call_site,
-             status, healing_session_id, session_ids)
-        VALUES ($1, $2, $3, $4, $5, 'investigating', $6, $7)
+             status, healing_session_id, session_ids, qa_patrol_id)
+        VALUES ($1, $2, $3, $4, $5, 'investigating', $6, $7, $8)
         RETURNING id
         """,
         uuid.uuid4().hex * 2,
@@ -89,6 +92,7 @@ async def _insert_attempt(
         "finance.jobs:run",
         healing_session_id,
         session_ids,
+        qa_patrol_id,
     )
 
 
@@ -126,3 +130,33 @@ async def test_case_dossier_session_doors_null_safe_from_real_schema(
     data: dict[str, Any] = response.json()["data"]
     assert data["healing_session_id"] is None
     assert data["session_ids"] == []
+
+
+async def test_case_list_projects_session_doors_from_real_schema(
+    doors_app: FastAPI, pool: asyncpg.Pool
+) -> None:
+    """The rail summary carries trace ids before its dossier is requested."""
+    healing_session_id = uuid.uuid4()
+    session_ids = [uuid.uuid4(), uuid.uuid4()]
+    await _insert_attempt(pool, healing_session_id=healing_session_id, session_ids=session_ids)
+
+    response = await _get(doors_app, "/api/qa/cases?since=all")
+
+    assert response.status_code == 200, response.text
+    [case] = response.json()["data"]
+    assert case["healing_session_id"] == str(healing_session_id)
+    assert case["session_ids"] == [str(session_id) for session_id in session_ids]
+
+
+async def test_case_list_session_doors_null_safe_from_real_schema(
+    doors_app: FastAPI, pool: asyncpg.Pool
+) -> None:
+    """A rail row without session ids exposes no false trace affordance."""
+    await _insert_attempt(pool, healing_session_id=None, session_ids=[])
+
+    response = await _get(doors_app, "/api/qa/cases?since=all")
+
+    assert response.status_code == 200, response.text
+    [case] = response.json()["data"]
+    assert case["healing_session_id"] is None
+    assert case["session_ids"] == []

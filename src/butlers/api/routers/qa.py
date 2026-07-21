@@ -488,6 +488,10 @@ class QaCaseSummary(BaseModel):
     state: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
     pr_state: Literal["drafted", "open", "merged", "closed"] | None = None
     pr_url: str | None = None
+    # The rail exposes a compact trace door before the dossier loads. A case
+    # without either source has no door rather than a misleading empty affordance.
+    healing_session_id: uuid.UUID | None = None
+    session_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class QaPrSummary(BaseModel):
@@ -1119,6 +1123,8 @@ def _row_to_case_summary(row: Any) -> QaCaseSummary:
         state=state_of_case(row),
         pr_state=_pr_state_for_case(row),
         pr_url=row.get("pr_url"),
+        healing_session_id=row.get("healing_session_id"),
+        session_ids=list(row.get("session_ids") or []),
     )
 
 
@@ -2121,6 +2127,8 @@ async def list_cases(
             a.pr_url,
             a.created_at,
             a.error_detail,
+            a.healing_session_id,
+            a.session_ids,
             COALESCE(f.severity, a.severity) AS case_severity,
             COALESCE(f.detected_at, a.created_at) AS detected,
             EXTRACT(EPOCH FROM (now() - COALESCE(f.detected_at, a.created_at)))::int

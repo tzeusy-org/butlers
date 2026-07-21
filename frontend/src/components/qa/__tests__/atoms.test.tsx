@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -83,6 +84,11 @@ const cases: QaCaseSummary[] = [
     state: "pr",
     pr_state: "open",
     pr_url: "https://github.com/Tzeusy/butlers/pull/1",
+    healing_session_id: "11111111-2222-3333-4444-555555555555",
+    session_ids: [
+      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "99999999-8888-7777-6666-555555555555",
+    ],
   },
   {
     id: "case-2",
@@ -95,6 +101,8 @@ const cases: QaCaseSummary[] = [
     state: "diagnose",
     pr_state: null,
     pr_url: null,
+    healing_session_id: null,
+    session_ids: [],
   },
 ];
 
@@ -122,15 +130,80 @@ describe("QA dossier atoms", () => {
 
   it("marks the active CaseList row and still emits onSelect for row clicks", () => {
     const onSelect = vi.fn();
-    render(<CaseList cases={cases} selectedId="case-1" onSelect={onSelect} />);
+    render(
+      <MemoryRouter>
+        <CaseList cases={cases} selectedId="case-1" onSelect={onSelect} />
+      </MemoryRouter>,
+    );
 
     const activeRow = screen.getByTestId("qa-case-row-case-1");
     expect(activeRow.className).toContain("border-l-2");
     expect(activeRow.className).toContain("border-foreground");
     expect(activeRow.className).toContain("bg-white/[0.04]");
+    expect(activeRow.className).toContain("focus-visible:outline");
+    expect(activeRow.className).toContain("focus-visible:outline-2");
+    expect(activeRow.className).toContain("focus-visible:outline-offset-2");
+    expect(activeRow.className).toContain("focus-visible:outline-fg");
 
     fireEvent.click(screen.getByTestId("qa-case-row-case-2"));
     expect(onSelect).toHaveBeenCalledWith("case-2");
+  });
+
+  it("renders an accessible session-trace door in the rail when sessions are linked", () => {
+    render(
+      <MemoryRouter>
+        <CaseList cases={[cases[0]]} selectedId="case-1" onSelect={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    const door = screen.getByRole("link", {
+      name: "Open 3 linked session traces for QA case #401",
+    });
+    expect(door.getAttribute("href")).toBe("/sessions/11111111-2222-3333-4444-555555555555");
+    expect(door.textContent).toContain("3 traces");
+    expect(door.closest("button")).toBeNull();
+    expect(screen.getByTestId("qa-case-row-case-1").contains(door)).toBe(false);
+    expect(door.className).toContain("min-h-6");
+    expect(door.className).toContain("items-center");
+    expect(door.className).toContain("focus-visible:outline");
+    expect(door.className).toContain("focus-visible:outline-2");
+    expect(door.className).toContain("focus-visible:outline-offset-2");
+    expect(door.className).toContain("focus-visible:outline-fg");
+  });
+
+  it("renders no rail session-trace door when a case has no linked sessions", () => {
+    render(
+      <MemoryRouter>
+        <CaseList cases={[cases[1]]} selectedId="case-2" onSelect={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("link", { name: /linked session trace/i })).toBeNull();
+  });
+
+  it("falls back to the first distinct failing session when no investigation exists", () => {
+    const failingSessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    render(
+      <MemoryRouter>
+        <CaseList
+          cases={[
+            {
+              ...cases[0],
+              healing_session_id: null,
+              session_ids: [failingSessionId, failingSessionId],
+            },
+          ]}
+          selectedId="case-1"
+          onSelect={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    const door = screen.getByRole("link", {
+      name: "Open 1 linked session trace for QA case #401",
+    });
+    expect(door.getAttribute("href")).toBe(`/sessions/${failingSessionId}`);
+    expect(door.textContent).toContain("1 trace");
   });
 
   it("renders the escalated StateTrack variant with amber pr and landed stages", () => {

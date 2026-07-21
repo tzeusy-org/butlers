@@ -187,6 +187,8 @@ async def test_cases_return_descending_attempt_order_and_shape() -> None:
         "state": "pr",
         "pr_state": "open",
         "pr_url": "https://github.com/Tzeusy/butlers/pull/1651",
+        "healing_session_id": None,
+        "session_ids": [],
     }
     assert body["data"][1]["sev"] == "medium"
     assert body["data"][1]["state"] == "landed"
@@ -194,6 +196,8 @@ async def test_cases_return_descending_attempt_order_and_shape() -> None:
     fetch_sql = pool.fetch.await_args.args[0]
     assert "ORDER BY a.created_at DESC" in fetch_sql
     assert "MIN(first_seen) OVER () AS detected_at" in fetch_sql
+    assert "a.healing_session_id" in fetch_sql
+    assert "a.session_ids" in fetch_sql
 
 
 async def test_cases_severity_filter_maps_labels_to_stored_integer_ranges() -> None:

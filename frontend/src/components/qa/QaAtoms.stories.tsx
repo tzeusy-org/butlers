@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useState } from "react";
+import { MemoryRouter } from "react-router";
 
 import type { QaActiveBreakdown, QaCaseSummary, QaKpiBlock } from "@/api/types";
 
@@ -35,6 +36,8 @@ const cases: QaCaseSummary[] = [
     state: "pr",
     pr_state: "open",
     pr_url: "https://github.com/Tzeusy/butlers/pull/1",
+    healing_session_id: "11111111-2222-3333-4444-555555555555",
+    session_ids: ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"],
   },
   {
     id: "case-2",
@@ -47,6 +50,8 @@ const cases: QaCaseSummary[] = [
     state: "diagnose",
     pr_state: "drafted",
     pr_url: null,
+    healing_session_id: null,
+    session_ids: [],
   },
 ];
 
@@ -66,7 +71,9 @@ export function QaAtoms() {
       <div className="max-w-5xl space-y-8 p-8">
         <QaKpiStrip kpis={kpis} active={activeBreakdown} />
         <div className="grid gap-8 md:grid-cols-[320px_1fr]">
-          <CaseList cases={cases} selectedId="case-1" onSelect={() => undefined} />
+          <MemoryRouter>
+            <CaseList cases={cases} selectedId="case-1" onSelect={() => undefined} />
+          </MemoryRouter>
           <div className="space-y-4 border-t border-border/60 pt-4">
             <CaseDossierHeader case={cases[0]} stage="pr" fingerprint={null} dismissal={null} />
             <StateTrack stage="escalated" />

@@ -138,6 +138,11 @@ const fullCase: QaCaseDossier = {
     state: "pr",
     pr_state: "open",
     pr_url: "https://github.com/Tzeusy/butlers/pull/1677",
+    healing_session_id: "11111111-2222-3333-4444-555555555555",
+    session_ids: [
+      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "99999999-8888-7777-6666-555555555555",
+    ],
   },
   state_track_stage: "pr",
   fingerprint: "deadbeef" + "0".repeat(56),

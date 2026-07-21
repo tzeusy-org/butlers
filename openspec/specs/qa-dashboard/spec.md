@@ -21,7 +21,7 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
     - `active cases · now`
     - `failed · 24h`
   - **Two-pane body** (320 px case-list rail on the left + dossier body on the right):
-    - **Case list rail**: rule-separated rows; each row shows severity glyph (square, high/medium/low), short case id (e.g. `#218`), butler name, headline (one line), `detected` + `age` mono sub-line, and a PR-state dot on the right
+    - **Case list rail**: rule-separated rows; each row shows severity glyph (square, high/medium/low), short case id (e.g. `#218`), butler name, headline (one line), `detected` + `age` mono sub-line, a PR-state dot on the right, and a compact session-trace door when linked session evidence exists
     - **Dossier body** for the selected case (see Case Dossier Layout requirement)
 - **AND** the page uses Inter Tight (sans), JetBrains Mono (mono), Source Serif 4 (serif), and the OKLCH palette tokens already shipped in `frontend/src/index.css` — no new tokens are introduced
 - **AND** the page contains no card chrome, no drop shadows, no gradients, and no recharts components
@@ -31,6 +31,12 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
 - **WHEN** the QA staffer has not produced any cases in the last 7 days
 - **THEN** the case list rail renders a single serif-italic line "Nothing in the dossier." and the dossier body is hidden
 - **AND** the KPI strip continues to render with zero values
+
+#### Scenario: Case-list session trace door
+- **WHEN** a case-list row has a non-null `healing_session_id` and/or a non-empty `session_ids[]`
+- **THEN** it renders a compact, labeled navigation door to `/sessions/:id`, targeting the investigation session when present and otherwise the first failing session
+- **AND** the door visibly states the number of distinct linked session traces and remains a sibling control to the row-selection button, so both controls have independent keyboard and screen-reader semantics
+- **AND** when `healing_session_id` is null and `session_ids` is empty, no session-trace door is rendered
 
 #### Scenario: Patrol pulse strip degraded source
 - **WHEN** the overview page's recent-patrols pulse strip queries `GET /api/qa/patrols` and that query errors (network failure or non-2xx)
@@ -292,7 +298,7 @@ The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for t
 #### Scenario: GET /api/qa/cases
 - **WHEN** `GET /api/qa/cases` is called with optional `limit` (default 25), `sev` (`high|medium|low|all`), and `since` (`24h`, `7d`, `30d`, `all`; default `7d`)
 - **THEN** it returns a paginated list of cases ordered by most recent first
-- **AND** each case includes: `id` (UUID, the canonical attempt id), `short_id` (`#NNN` derived from id), `sev` (high/medium/low mapped from severity int), `butler`, `headline` (from `investigation_notes.headline` or fallback to the linked finding's `event_summary`), `detected` (earliest `qa_findings.first_seen`), `age_seconds`, `state` (one of: `detect`, `diagnose`, `pr`, `landed`, `escalated`, `failed`), `pr_state` (drafted/open/merged/closed or null), `pr_url` (or null)
+- **AND** each case includes: `id` (UUID, the canonical attempt id), `short_id` (`#NNN` derived from id), `sev` (high/medium/low mapped from severity int), `butler`, `headline` (from `investigation_notes.headline` or fallback to the linked finding's `event_summary`), `detected` (earliest `qa_findings.first_seen`), `age_seconds`, `state` (one of: `detect`, `diagnose`, `pr`, `landed`, `escalated`, `failed`), `pr_state` (drafted/open/merged/closed or null), `pr_url` (or null), `healing_session_id` (or null), and `session_ids[]` (empty when no failing sessions were captured)
 - **AND** `?state=failed` filters to terminal-crash attempts (`status IN ('timeout', 'anonymization_failed')`, or `status = 'failed'` without a human-action marker) — the same precedence `state_of_case()` uses, so the filter and the rendered badge never disagree
 
 #### Scenario: GET /api/qa/cases/:id

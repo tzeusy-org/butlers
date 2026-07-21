@@ -5325,6 +5325,10 @@ export interface QaCaseSummary {
   state: "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
   pr_state: "drafted" | "open" | "merged" | "closed" | null;
   pr_url: string | null;
+  /** The QA staffer's investigation session, or null when none was spawned. */
+  healing_session_id: string | null;
+  /** Failing sessions that seeded the finding. Empty when none were captured. */
+  session_ids: string[];
 }
 
 /** Parsed QA investigation notes embedded in a case dossier. */

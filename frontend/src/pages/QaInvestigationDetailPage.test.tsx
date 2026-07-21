@@ -50,6 +50,8 @@ const BASE_CASE_SUMMARY = {
   state: "diagnose" as const,
   pr_state: null,
   pr_url: null,
+  healing_session_id: null,
+  session_ids: [],
 };
 
 const BASE_DOSSIER: QaCaseDossier = {

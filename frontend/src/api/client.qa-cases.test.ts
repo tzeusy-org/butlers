@@ -37,6 +37,8 @@ const EMPTY_DOSSIER = {
       state: "detect",
       pr_state: null,
       pr_url: null,
+      healing_session_id: null,
+      session_ids: [],
     },
     state_track_stage: "detect",
     dismissal: null,
