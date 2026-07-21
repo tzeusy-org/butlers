@@ -103,7 +103,7 @@ This preamble gives domain butlers the sender context they need for personalized
 Identity resolution is called at several points in the system:
 
 - **Switchboard ingestion** --- before routing, to inject the sender identity preamble
-- **notify()** --- to resolve outbound recipients from a `contact_id`
+- **notify()** --- to resolve outbound recipients from an `entity_id`; when optional `channel` is omitted, it selects the entity's preferred `channel` only when it is deliverable and reachable through an active `has-*` fact; otherwise it falls back to `telegram`, then `email`; without an `entity_id`, it defaults to `telegram`
 - **Approval gate** --- to replace name-heuristic target resolution with role-based checks
 - **Memory module** --- to anchor facts and episodes to the correct entity
 
