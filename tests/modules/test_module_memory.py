@@ -19,6 +19,16 @@ from tests.modules.memory._test_helpers import make_embedding_engine_mock
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _clear_memory_runtime_pool_hook() -> None:
+    """Keep module startup tests from leaking their registered pool resolver."""
+    from butlers.core.memory_hooks import clear_memory_runtime_pool
+
+    clear_memory_runtime_pool()
+    yield
+    clear_memory_runtime_pool()
+
+
 # ---------------------------------------------------------------------------
 # Module ABC compliance
 # ---------------------------------------------------------------------------
