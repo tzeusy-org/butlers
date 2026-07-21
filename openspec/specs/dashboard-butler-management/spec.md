@@ -504,8 +504,9 @@ the whole tab behind a single combined flag.
 #### Scenario: 24-hour activity stripe panel
 
 - **WHEN** the span-2 "activity" panel renders
-- **THEN** it SHALL render a 24-bucket `ActivityStripe` bar visualization with an
-  hour axis (00, 03, 06, 09, 12, 15, 18, 21, now)
+- **THEN** it SHALL render a 24-bucket `ActivityStripe` bar visualization with a
+  rolling relative-time axis (`-24h`, `-12h`, `now`) rather than clock-of-day
+  labels
 - **AND** the bucket values SHALL be the status-board row's `hourlyStripe`,
   defaulting to 24 zero buckets when unavailable
   (`frontend/src/hooks/use-butler-status-board.ts:60`)

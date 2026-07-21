@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -477,5 +477,32 @@ describe("prompt diff modal", () => {
     // The changed lines appear in the diff body.
     expect(screen.getByText("line b")).toBeTruthy();
     expect(screen.getByText("line c")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: §5 owner-local hour axis semantics (bu-ajsac)
+// ---------------------------------------------------------------------------
+
+describe("Activity stripe axis semantics", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+  });
+  afterEach(() => cleanup());
+
+  it("uses the static owner-hour endpoint instead of a misleading now label", () => {
+    renderTab();
+
+    const activitySection = screen
+      .getByRole("heading", { name: "Activity · last 24 hours" })
+      .closest("section");
+    if (!activitySection) throw new Error("Expected the activity stripe section");
+
+    const axis = within(activitySection);
+    for (const label of ["00", "06", "12", "18", "23"]) {
+      expect(axis.getByText(label)).toBeTruthy();
+    }
+    expect(axis.queryByText("now")).toBeNull();
   });
 });

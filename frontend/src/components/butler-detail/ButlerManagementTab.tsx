@@ -675,7 +675,7 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
         <span>06</span>
         <span>12</span>
         <span>18</span>
-        <span>now</span>
+        <span>23</span>
       </div>
     </Section>
   );

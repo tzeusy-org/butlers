@@ -96,7 +96,7 @@ function last24HoursSince(): string {
 function HourAxis() {
   return (
     <div className="mt-2 flex justify-between font-mono text-[9px] text-muted-foreground">
-      {["00", "03", "06", "09", "12", "15", "18", "21", "now"].map((label) => (
+      {["-24h", "-12h", "now"].map((label) => (
         <span key={label}>{label}</span>
       ))}
     </div>

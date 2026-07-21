@@ -282,6 +282,18 @@ describe("ButlerOverviewTab target overview grid", () => {
     }
   })
 
+  it("uses relative anchors for the rolling activity stripe instead of clock hours", () => {
+    renderOverviewLive()
+
+    const axis = within(screen.getByTestId("panel-activity"))
+    for (const label of ["-24h", "-12h", "now"]) {
+      expect(axis.getByText(label)).toBeTruthy()
+    }
+    for (const label of ["00", "03", "06", "09", "12", "15", "18", "21"]) {
+      expect(axis.queryByText(label)).toBeNull()
+    }
+  })
+
   it("does not render legacy identity/process/heartbeat/modules panels", () => {
     const html = renderOverview()
     expect(html).not.toContain('data-testid="panel-identity"')
