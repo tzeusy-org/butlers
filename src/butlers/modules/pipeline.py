@@ -567,6 +567,10 @@ def _build_dashboard_lane_prompt(
         "no reply.\n\n"
         "IMPORTANT: You MUST call exactly one of `route_to_butler` or "
         "`file_bug_report` at least once. Do NOT call `notify`.\n\n"
+        "If `route_to_butler` returns `{status: 'refused', reason: "
+        "'dashboard_lane_conflict'}`, `file_bug_report` already handled the "
+        "message. Treat that refusal as terminal: Do NOT call either tool again; "
+        "respond with your brief text summary.\n\n"
         "After calling the tool, respond with a brief text summary of your "
         "decision.\n\n"
     ]

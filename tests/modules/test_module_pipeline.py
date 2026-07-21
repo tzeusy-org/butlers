@@ -1246,6 +1246,13 @@ class TestBuildDashboardLanePrompt:
         assert "route_to_butler" in prompt
         assert "file_bug_report" in prompt
 
+    def test_explains_dashboard_lane_conflict_refusal_is_terminal(self):
+        prompt = _build_dashboard_lane_prompt("the chart is broken", _MOCK_BUTLERS)
+
+        assert "status: 'refused'" in prompt
+        assert "reason: 'dashboard_lane_conflict'" in prompt
+        assert "Do NOT call either tool again" in prompt
+
     def test_surfaces_conversation_id_and_page_context(self):
         prompt = _build_dashboard_lane_prompt(
             "Alice's birthday is March 3rd",
