@@ -465,11 +465,21 @@ class OwnTracksRetention:
         self._pool = pool
         self._purge_interval_s = purge_interval_s
         self._task: asyncio.Task | None = None
+        self._consecutive_failures = 0
 
     @property
     def retention_days(self) -> int:
         """Return the active retention period in days."""
         return self._config.retention_days
+
+    @property
+    def health_degradation_message(self) -> str | None:
+        """Return a sanitized health diagnostic for consecutive purge failures."""
+        failures = self._consecutive_failures
+        if failures == 0:
+            return None
+        occurrence = "time" if failures == 1 else "times"
+        return f"OwnTracks retention purge has failed {failures} consecutive {occurrence}"
 
     def start(self) -> None:
         """Schedule the background purge loop as an asyncio task.
@@ -544,12 +554,14 @@ class OwnTracksRetention:
         """Execute one purge cycle with error handling and logging."""
         try:
             deleted = await self.purge_once()
+            self._consecutive_failures = 0
             logger.info(
                 "OwnTracks retention purge complete: deleted %d rows (retention_days=%d)",
                 deleted,
                 self._config.retention_days,
             )
         except Exception:
+            self._consecutive_failures += 1
             logger.warning(
                 "OwnTracks retention purge failed (retention_days=%d). Will retry on next cycle.",
                 self._config.retention_days,
@@ -1532,6 +1544,10 @@ class OwnTracksConnector:
         """Return (state, error_message) for heartbeat."""
         if self._health_error:
             return "error", self._health_error
+        if self._retention is not None:
+            retention_message = self._retention.health_degradation_message
+            if retention_message is not None:
+                return "degraded", retention_message
         if self._last_ingest_ok is None:
             return "healthy", None
         if self._last_ingest_ok:
