@@ -1,10 +1,4 @@
-# Switchboard Identity
-
-## Purpose
-
-Defines how the Switchboard resolves inbound message identities to canonical entities so requests route to the correct butler.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Inbound message identity resolution
 
@@ -42,8 +36,6 @@ The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every in
 - **AND** `resolve_contact_by_channel('email', 'chloe@example.com')` returns a contact
 - **THEN** the Switchboard MUST identify the sender using the resolved contact
 
----
-
 ### Requirement: Identity-enriched prompt injection
 
 After resolving the sender's identity, the Switchboard MUST inject a structured identity preamble into the prompt before routing to downstream butlers. The preamble format depends on the sender's identity resolution result. The text preamble carries `entity_id` only; `contact_id` is no longer emitted in the preamble (bead bu-akads), `entity_id` being the canonical preamble identifier. An entity-only unknown sender MUST NOT gain a contact identifier merely to populate the preamble or routing context.
@@ -73,8 +65,6 @@ After resolving the sender's identity, the Switchboard MUST inject a structured 
 - **WHEN** the Switchboard routes `[Source: Chloe (entity_id: def-456), via telegram] I had lunch at 2pm today` to the Relationship butler
 - **THEN** the Relationship butler MUST store the fact "had lunch at 2pm" with `entity_id = 'def-456'` (Chloe's entity), NOT the owner's entity
 
----
-
 ### Requirement: Structured entity_id in route.v1 request_context
 
 In addition to the text preamble, the Switchboard MUST include the resolved sender identity as structured fields in the `request_context` dict of the route.v1 envelope. This provides a machine-readable path for downstream butlers to access the sender's entity_id without parsing free-text.
@@ -103,8 +93,6 @@ In addition to the text preamble, the Switchboard MUST include the resolved send
 - **THEN** `request_context` MUST NOT contain `source_sender_contact_id` or `source_sender_entity_id`
 - **AND** downstream butlers MUST fall back to text preamble parsing or `memory_entity_resolve`
 
----
-
 ### Requirement: Routing log identity enrichment
 
 The Switchboard's `routing_log` table SHALL be extended to store resolved identity alongside the raw `source_id`. The following columns SHALL be added: `contact_id UUID`, `entity_id UUID`, and `sender_roles TEXT[]`.
@@ -120,33 +108,6 @@ The Switchboard's `routing_log` table SHALL be extended to store resolved identi
 - **THEN** the `routing_log` entry MUST include the transitory `entity_id`
 - **AND** its `contact_id` MUST be null rather than a temporary-contact ID
 - **AND** `sender_roles` MUST be `'{}'` (empty array)
-
----
-
-### Requirement: Owner vs non-owner message differentiation
-
-The Switchboard MUST differentiate message handling based on whether the sender has the `'owner'` role. Owner messages are treated as first-person instructions. Non-owner messages are treated as third-party communications that the butler system processes on behalf of the owner.
-
-#### Scenario: Owner message treated as first-person instruction
-
-- **WHEN** the owner sends "Remind me to call Mom at 5pm"
-- **THEN** the Switchboard MUST route this as a first-person instruction from the owner
-- **AND** the downstream butler MUST create a reminder for the owner
-
-#### Scenario: Non-owner message treated as third-party communication
-
-- **WHEN** Chloe (non-owner) sends "I had lunch at 2pm today"
-- **THEN** the Switchboard MUST route this with Chloe's identity context
-- **AND** the downstream butler MUST store the fact against Chloe's entity, NOT the owner's
-
-#### Scenario: Non-owner message that instructs the system
-
-- **WHEN** Chloe (non-owner) sends "Remind me to call the dentist"
-- **THEN** the Switchboard MUST route this with Chloe's identity context
-- **AND** the downstream butler MUST create a reminder attributed to Chloe, NOT the owner
-- **AND** the reminder notification MUST be sent to Chloe's channel (subject to approval gating since Chloe is non-owner)
-
----
 
 ### Requirement: Resolved sender identity in route.v1 request_context
 
