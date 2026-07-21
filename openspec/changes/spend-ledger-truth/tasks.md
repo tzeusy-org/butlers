@@ -21,3 +21,10 @@
 - [x] 4.1 Run targeted pricing, routing, Spend API, and Spend page tests; fix all failures.
 - [x] 4.2 Validate the OpenSpec change strictly and run the required lint/type/build quality gates for changed Python and frontend surfaces.
 - [x] 4.3 Rebase on fresh `origin/main`, re-run focused verification, commit scoped changes, push the worker branch, and open a PR.
+
+## Recovery verification (2026-07-22)
+
+- Rebased the correction branch on `origin/main@8397e72585d37091722aabd7650e895d9123e73f`; `git range-diff` maps both original PR commits exactly.
+- [x] `uv run pytest tests/api/test_pricing.py tests/core/test_model_routing_quota.py tests/api/test_spend.py tests/core/test_core_spawner.py::TestSpendEventBusWiring -q --tb=short` — 127 passed.
+- [x] `npm test -- --run src/hooks/use-spend-ticker.test.ts src/pages/SpendPage.test.tsx src/components/costs/CostWidget.test.tsx` — 57 passed.
+- [x] `npm run lint:emdash`, `npm run lint` (exit 0; one existing unrelated HealthOverviewPage warning), `npm run build`, scoped Ruff, and `openspec validate spend-ledger-truth --strict` completed successfully.

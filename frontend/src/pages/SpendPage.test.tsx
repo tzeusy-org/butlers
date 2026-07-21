@@ -196,7 +196,7 @@ function setHooks({
   currentError?: boolean
   priorError?: boolean
 } = {}) {
-  mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
+  mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0, streamedUnpricedEvents: [] })
   // Fleet-halt inactive by default -- individual fleet-halt tests below
   // override this per-case (bu-7o89u.3).
   mockUseFleetHaltStatus.mockReturnValue({
@@ -437,7 +437,7 @@ describe("SpendPage — live MTD stream merge", () => {
 
   it("adds live streamed spend on top of the polled MTD baseline", async () => {
     apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
-    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0, streamedUnpricedEvents: [] })
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { rerender } = render(
@@ -452,7 +452,7 @@ describe("SpendPage — live MTD stream merge", () => {
     })
 
     // $3 of live spend streams in before the next poll.
-    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 3 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 3, streamedUnpricedEvents: [] })
     rerender(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
@@ -466,7 +466,7 @@ describe("SpendPage — live MTD stream merge", () => {
     })
   })
 
-  it("does not double-count streamed spend once the next poll baseline already reflects it", async () => {
+  it("does not double-count streamed spend or unpriced usage once the next poll baseline reflects both", async () => {
     let forecastCalls = 0
     apiFetchMock.mockImplementation((path: string) => {
       if (path === "/spend/forecast") {
@@ -474,11 +474,32 @@ describe("SpendPage — live MTD stream merge", () => {
         // The 2nd poll's baseline already includes the $3 that streamed
         // between the 1st poll and now -- ground truth is $5.20, not $8.20.
         const mtd = forecastCalls === 1 ? 2.2 : 5.2
-        return Promise.resolve({ data: { ...MOCK_FORECAST.data, mtd_usd: mtd }, meta: {} })
+        return Promise.resolve({
+          data: {
+            ...MOCK_FORECAST.data,
+            mtd_usd: mtd,
+            ...(forecastCalls === 2
+              ? {
+                  unpriced_models: [
+                    {
+                      model: "unpriced-live-model",
+                      calls: 1,
+                      input_tokens: 1000,
+                      output_tokens: 500,
+                      cached_input_tokens: 125,
+                      cache_creation_tokens: 25,
+                    },
+                  ],
+                  ceiling_blind_to_unpriced_models: 1,
+                }
+              : {}),
+          },
+          meta: {},
+        })
       }
       return defaultApiFetch(path)
     })
-    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0, streamedUnpricedEvents: [] })
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { rerender } = render(
@@ -493,7 +514,18 @@ describe("SpendPage — live MTD stream merge", () => {
     })
 
     // $3 streams in live, ahead of the next poll.
-    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 3 })
+    mockUseSpendTicker.mockReturnValue({
+      streamedCostUsd: 3,
+      streamedUnpricedEvents: [
+        {
+          model: "unpriced-live-model",
+          input_tokens: 1000,
+          output_tokens: 500,
+          cached_input_tokens: 125,
+          cache_creation_tokens: 25,
+        },
+      ],
+    })
     rerender(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
@@ -504,6 +536,7 @@ describe("SpendPage — live MTD stream merge", () => {
     await waitFor(() => {
       expect(screen.getByTestId("kpi-mtd").textContent).toContain("$5.20")
     })
+    expect(screen.getByTestId("kpi-mtd").textContent).toContain("excludes 1 unpriced call")
 
     // The interval fires; the next poll lands with a baseline that already
     // reflects that $3 (simulate it directly rather than fake-timing 120s,
@@ -517,6 +550,53 @@ describe("SpendPage — live MTD stream merge", () => {
 
     expect(screen.getByTestId("kpi-mtd").textContent).toContain("$5.20")
     expect(screen.getByTestId("kpi-mtd").textContent).not.toContain("$8.20")
+    expect(screen.getByTestId("kpi-mtd").textContent).toContain("excludes 1 unpriced call")
+    expect(screen.getByTestId("kpi-mtd").textContent).not.toContain("excludes 2 unpriced calls")
+  })
+
+  it("surfaces an unpriced live call instead of treating it as a complete zero-dollar total", async () => {
+    apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0, streamedUnpricedEvents: [] })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SpendPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-mtd").textContent).toContain("$2.20")
+    })
+
+    mockUseSpendTicker.mockReturnValue({
+      streamedCostUsd: 0,
+      streamedUnpricedEvents: [
+        {
+          model: "unpriced-live-model",
+          input_tokens: 1000,
+          output_tokens: 500,
+          cached_input_tokens: 125,
+          cache_creation_tokens: 25,
+        },
+      ],
+    })
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SpendPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-mtd").textContent).toContain("excludes 1 unpriced call")
+    })
+    expect(screen.getByTestId("forecast-unpriced").textContent).toContain(
+      "blind to 1 unpriced model",
+    )
+    expect(screen.getByTestId("forecast-unpriced").textContent).toContain("unpriced-live-model")
   })
 })
 

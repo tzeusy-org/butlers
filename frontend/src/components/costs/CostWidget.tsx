@@ -65,8 +65,8 @@ export default function CostWidget({
       </CardHeader>
       <CardContent>
         {hasUnpricedModels ? (
-          <p className="text-2xl font-bold" data-testid="cost-widget-unpriced">
-            —/unpriced
+          <p className="text-2xl font-bold" data-testid="cost-widget-unpriced" aria-label="unpriced">
+            {"—"}/unpriced
           </p>
         ) : (
           <div className="text-2xl font-bold">{formatCostUsd(totalCostUsd)}</div>

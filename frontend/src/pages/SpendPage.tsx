@@ -47,7 +47,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Eyebrow } from "@/components/ui/Eyebrow"
 import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
-import { useSpendTicker } from "@/hooks/use-spend-ticker"
+import { useSpendTicker, type LiveUnpricedSpendEvent } from "@/hooks/use-spend-ticker"
 import { useFleetHaltStatus } from "@/hooks/use-fleet-halt"
 import { useModelCatalog } from "@/hooks/use-model-catalog"
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval"
@@ -187,6 +187,28 @@ function unpricedCallCount(models: readonly UnpricedModelUsage[] | undefined): n
 
 function unpricedModelNames(models: readonly UnpricedModelUsage[] | undefined): string {
   return (models ?? []).map((model) => model.model).join(", ")
+}
+
+function mergeUnpricedModels(
+  ledgerModels: readonly UnpricedModelUsage[] | undefined,
+  liveEvents: readonly LiveUnpricedSpendEvent[],
+): UnpricedModelUsage[] {
+  const merged = new Map<string, UnpricedModelUsage>()
+  const addUsage = (usage: UnpricedModelUsage) => {
+    const previous = merged.get(usage.model)
+    merged.set(usage.model, {
+      model: usage.model,
+      calls: (previous?.calls ?? 0) + usage.calls,
+      input_tokens: (previous?.input_tokens ?? 0) + usage.input_tokens,
+      output_tokens: (previous?.output_tokens ?? 0) + usage.output_tokens,
+      cached_input_tokens: (previous?.cached_input_tokens ?? 0) + usage.cached_input_tokens,
+      cache_creation_tokens: (previous?.cache_creation_tokens ?? 0) + usage.cache_creation_tokens,
+    })
+  }
+
+  for (const usage of ledgerModels ?? []) addUsage(usage)
+  for (const event of liveEvents) addUsage({ ...event, calls: 1 })
+  return [...merged.values()]
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +640,7 @@ function BreakdownBar({ label, value, maxValue, href, billingClass }: BreakdownB
         />
       </div>
       <span className="w-36 text-right tabular-nums text-xs">
-        {isUnpriced ? "—/unpriced" : fmtUsdPrecise(value)}
+        {isUnpriced ? <span aria-label="unpriced">{"—"}/unpriced</span> : fmtUsdPrecise(value)}
         {billingClass === "subscription" && " · subscription"}
         {billingClass === "local" && " · local"}
       </span>
@@ -1622,7 +1644,7 @@ export default function SpendPage() {
   // slice 2; formerly its own /api/spend/stream socket) and update KPIs
   // incrementally. streamedCostUsd is a monotonic cumulative counter of live
   // "call" events received since mount — it never resets on its own.
-  const { streamedCostUsd } = useSpendTicker()
+  const { streamedCostUsd, streamedUnpricedEvents = [] } = useSpendTicker()
 
   // Each polled forecast (every 120s) is a fresh MTD baseline that already
   // reflects any spend that streamed in before that poll landed. Pin the
@@ -1634,26 +1656,47 @@ export default function SpendPage() {
   // since refs cannot be read or written during render (react-hooks/refs).
   const [baselineForecast, setBaselineForecast] = useState(forecast)
   const [baselineStreamedCostUsd, setBaselineStreamedCostUsd] = useState(streamedCostUsd)
+  const [baselineStreamedUnpricedEventCount, setBaselineStreamedUnpricedEventCount] = useState(
+    streamedUnpricedEvents.length,
+  )
   if (forecast !== baselineForecast) {
     setBaselineForecast(forecast)
     setBaselineStreamedCostUsd(streamedCostUsd)
+    setBaselineStreamedUnpricedEventCount(streamedUnpricedEvents.length)
   }
 
   const liveForecast = useMemo(() => {
     if (!forecast) return forecast
     const sinceBaseline =
       forecast === baselineForecast ? streamedCostUsd - baselineStreamedCostUsd : 0
-    if (sinceBaseline <= 0) return forecast
-    const liveMtd = forecast.mtd_usd + sinceBaseline
-    const daysIn = forecast.days_in_month
-    const daysElapsed = Math.max(forecast.days_elapsed, 1)
-    const liveProjected = (liveMtd / daysElapsed) * daysIn
+    const liveUnpricedEvents =
+      forecast === baselineForecast
+        ? streamedUnpricedEvents.slice(baselineStreamedUnpricedEventCount)
+        : []
+    if (sinceBaseline <= 0 && liveUnpricedEvents.length === 0) return forecast
+    const liveUnpricedModels = mergeUnpricedModels(forecast.unpriced_models, liveUnpricedEvents)
+    const hasPricedLiveSpend = sinceBaseline > 0
+    const liveMtd = forecast.mtd_usd + Math.max(sinceBaseline, 0)
+    const liveProjected = hasPricedLiveSpend
+      ? (liveMtd / Math.max(forecast.days_elapsed, 1)) * forecast.days_in_month
+      : forecast.projected_eom_usd
     return {
       ...forecast,
-      mtd_usd: liveMtd,
-      projected_eom_usd: liveProjected,
+      ...(hasPricedLiveSpend ? { mtd_usd: liveMtd, projected_eom_usd: liveProjected } : {}),
+      unpriced_models: liveUnpricedModels,
+      ceiling_blind_to_unpriced_models: Math.max(
+        forecast.ceiling_blind_to_unpriced_models ?? 0,
+        liveUnpricedModels.length,
+      ),
     }
-  }, [forecast, streamedCostUsd, baselineForecast, baselineStreamedCostUsd])
+  }, [
+    forecast,
+    streamedCostUsd,
+    streamedUnpricedEvents,
+    baselineForecast,
+    baselineStreamedCostUsd,
+    baselineStreamedUnpricedEventCount,
+  ])
 
   // NOTE: spend-breakdown invalidation on live spend events used to be a
   // bespoke, throttled useEffect here. bu-01r64.4 moved that coverage into
