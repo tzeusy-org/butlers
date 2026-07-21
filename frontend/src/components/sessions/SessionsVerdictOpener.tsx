@@ -29,9 +29,12 @@ export const SESSIONS_VERDICT_WINDOW_HOURS = 24;
 /** The dominant failure cluster: whichever axis (butler or trigger_source) is
  * more concentrated. Ties favor butler -- fewer, more directly actionable
  * groups than a raw trigger_source string. */
-function dominantClusterLabel(agg: SessionAggregate): { label: string; href: string } | null {
+function dominantClusterLabel(
+  agg: SessionAggregate,
+  allowTrigger: boolean,
+): { label: string; href: string } | null {
   const topButler = agg.by_butler[0];
-  const topTrigger = agg.by_trigger_source[0];
+  const topTrigger = allowTrigger ? agg.by_trigger_source[0] : undefined;
   if (!topButler && !topTrigger) return null;
   const useTrigger = topTrigger != null && (topButler == null || topTrigger.count > topButler.count);
   if (useTrigger && topTrigger) {
@@ -73,7 +76,18 @@ function buildClauses(
   }
 
   if (agg && agg.total > 0) {
-    const cluster = dominantClusterLabel(agg);
+    // Keep a rolling dashboard deploy safe if it briefly receives a response
+    // from a pre-field backend; a missing field has the same meaning as none
+    // of the optional breakdown pools failing.
+    const triggerBreakdownDegraded = agg.trigger_breakdown_degraded_sources ?? [];
+    if (triggerBreakdownDegraded.length > 0) {
+      clauses.push({
+        key: "trigger-breakdown-degraded",
+        text: `${triggerBreakdownDegraded.join(", ")} unreachable, so trigger clustering is unavailable`,
+      });
+    }
+
+    const cluster = dominantClusterLabel(agg, triggerBreakdownDegraded.length === 0);
     const suffix = cluster ? `, clustered on ${cluster.label}` : "";
     clauses.push({
       key: "failed-cluster",

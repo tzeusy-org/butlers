@@ -110,6 +110,21 @@ async def test_global_session_detail_resolves_across_schemas() -> None:
     assert data["prompt"] == "test prompt"
 
 
+async def test_global_session_detail_ignores_legacy_butler_query_hint() -> None:
+    """A preserved legacy link still performs the global cross-butler lookup."""
+    session_id = uuid4()
+    row = _make_detail_row(session_id)
+    app = _make_app(owning_butler="general", row=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{session_id}?butler=finance")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["butler"] == "general"
+
+
 async def test_global_session_detail_404_when_no_butler_has_it() -> None:
     """GET /api/sessions/{id} returns 404 when no schema owns the session."""
     session_id = uuid4()

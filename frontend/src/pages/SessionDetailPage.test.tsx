@@ -2,20 +2,12 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import SessionDetailPage from "@/pages/SessionDetailPage";
 import { useGlobalSessionDetail } from "@/hooks/use-sessions";
 import type { SessionDetail } from "@/api/types";
-
-vi.mock("react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("react-router")>();
-  return {
-    ...actual,
-    useParams: vi.fn(() => ({ id: "sess-abc123" })),
-  };
-});
 
 vi.mock("@/hooks/use-sessions", () => ({
   useGlobalSessionDetail: vi.fn(),
@@ -70,12 +62,14 @@ function setSessionState(
   } as UseGlobalSessionDetailResult);
 }
 
-function renderPage(): string {
+function renderPage(initialEntry = "/sessions/sess-abc123"): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <SessionDetailPage />
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route path="/sessions/:id" element={<SessionDetailPage />} />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -123,6 +117,12 @@ describe("SessionDetailPage — content", () => {
   it("fetches via the global useGlobalSessionDetail hook keyed on the route id", () => {
     setSessionState(BASE_SESSION);
     renderPage();
+    expect(useGlobalSessionDetail).toHaveBeenCalledWith("sess-abc123");
+  });
+
+  it("ignores a legacy butler query hint and keeps the global detail lookup", () => {
+    setSessionState(BASE_SESSION);
+    renderPage("/sessions/sess-abc123?butler=finance");
     expect(useGlobalSessionDetail).toHaveBeenCalledWith("sess-abc123");
   });
 

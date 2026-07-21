@@ -25,6 +25,7 @@ function makeAggregate(overrides: Partial<SessionAggregate> = {}): SessionAggreg
     output_tokens: 500_000,
     by_butler: [{ butler: "health", count: 60 }],
     by_trigger_source: [],
+    trigger_breakdown_degraded_sources: [],
     ...overrides,
   };
 }

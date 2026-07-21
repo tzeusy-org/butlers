@@ -193,6 +193,25 @@ The `DatabaseManager.fan_out()` method SHALL execute a SQL query concurrently ac
 - **THEN** it returns `(results, failed_butler_names)` where every failed butler also has an empty-list entry in `results`
 - **AND** callers that must surface a degraded-source flag use this instead of `fan_out()`, which discards the failed list
 
+### Requirement: Session Trigger-Breakdown Degradation Is Distinct from Scalar Degradation
+When `GET /api/sessions/aggregate` receives `include_trigger_breakdown=true`, the API SHALL preserve the failed source list from the optional `GROUP BY trigger_source` fan-out in `data.trigger_breakdown_degraded_sources: string[]`. The existing `meta.sources_degraded` field SHALL continue to represent only failures of the scalar aggregate fan-out.
+
+#### Scenario: Trigger breakdown loses a pool after a complete scalar aggregate
+- **WHEN** the scalar aggregate answers from every queried pool but the opt-in trigger-breakdown query drops one or more pools
+- **THEN** the response remains HTTP 200 with scalar counts from the complete scalar aggregate and trigger buckets from reachable pools
+- **AND** `data.trigger_breakdown_degraded_sources` names the dropped trigger-breakdown pools
+- **AND** `meta.sources_degraded` remains absent or empty
+
+#### Scenario: Scalar and trigger-breakdown failures remain independently attributable
+- **WHEN** either or both aggregate fan-outs drop pools
+- **THEN** `meta.sources_degraded` names only pools dropped from the scalar aggregate fan-out
+- **AND** `data.trigger_breakdown_degraded_sources` names only pools dropped from the trigger-breakdown fan-out
+- **AND** the API SHALL NOT merge one failure list into the other
+
+#### Scenario: Complete or unrequested trigger breakdown has no degraded sources
+- **WHEN** the trigger breakdown is healthy or is not requested
+- **THEN** `data.trigger_breakdown_degraded_sources` is an empty list
+
 ### Requirement: Sessions Owner-Timezone Day-Window Date Filters
 
 The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_date`/`to_date` filter as an owner-timezone calendar-day boundary, not midnight in the database session timezone (UTC). This covers `GET /api/sessions`, `GET /api/sessions/aggregate`, and `GET /api/butlers/{name}/sessions`, whose filters compare against the `started_at` timestamptz column; the dashboard SessionsPage From/To inputs send bare day keys (see `frontend/src/lib/day-window.ts`), mirroring the health butler's `_resolve_valid_at_bound` convention. A full ISO-8601 timestamp value (e.g. the verdict opener's rolling-window cutoff) MUST parse and be used as-is.

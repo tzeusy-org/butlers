@@ -54,6 +54,19 @@ The Sessions page (`/sessions`) SHALL provide a paginated, filterable table of s
 - **WHEN** the cross-butler session fetch fails
 - **THEN** the page renders an error region with a retry action (not the empty "No sessions found" state), so a failed read is never presented as "no sessions"
 
+### Requirement: Sessions Verdict Withholds Partial Trigger Attribution
+The sessions failure verdict SHALL distinguish incomplete trigger attribution from scalar aggregate degradation. It SHALL retain a truthful failed-session count while refusing to name a trigger source as the dominant cluster when `trigger_breakdown_degraded_sources` is non-empty.
+
+#### Scenario: Partial trigger breakdown cannot support a trigger-dominance claim
+- **WHEN** the failed-session aggregate has one or more `trigger_breakdown_degraded_sources` and matching scalar failures
+- **THEN** the verdict names that trigger attribution is unavailable from the affected source or sources
+- **AND** it retains the scalar failure count
+- **AND** it SHALL NOT render a `clustered on {trigger_source}` claim or a trigger-filter link derived from the partial breakdown
+
+#### Scenario: Complete trigger breakdown keeps existing trigger attribution
+- **WHEN** the failed-session aggregate has trigger buckets and an empty `trigger_breakdown_degraded_sources` list
+- **THEN** the verdict may use the most concentrated trigger source as its existing cluster label and link
+
 ### Requirement: Session Table Visual Treatment
 The session table (`SessionTable`) SHALL apply visual affordances to communicate status at a glance without requiring the operator to read every cell.
 
@@ -132,13 +145,12 @@ The `SessionDetailDrawer` SHALL be a slide-over sheet that provides full session
 - **THEN** a check icon replaces the copy icon for 2 seconds before reverting
 
 ### Requirement: Session Detail Full Page
-The `SessionDetailPage` (`/sessions/:id?butler=<name>`) SHALL provide a full-page view of a single session. It serves as the deep-link target for session references from other surfaces (notifications, timeline).
+The `SessionDetailPage` (`/sessions/:id`) SHALL provide a full-page view of a single session. It serves as the deep-link target for session references from other surfaces (notifications, timeline).
 
-#### Scenario: Butler-scoped vs global session fetch
-- **WHEN** the URL contains a `?butler=<name>` query parameter
-- **THEN** the butler-scoped endpoint (`getButlerSession(butler, id)`) is used
-- **WHEN** no `butler` query parameter is present
-- **THEN** the global endpoint (`getSession(id)`) is used as a fallback
+#### Scenario: Global session fetch accepts legacy butler query state
+- **WHEN** the URL is `/sessions/{id}` with or without a legacy `?butler=<name>` query parameter
+- **THEN** the page SHALL ignore the query parameter and use the global endpoint (`getSession(id)`) for the same cross-butler lookup
+- **AND** it SHALL NOT select or require a butler-scoped session-detail endpoint
 
 #### Scenario: Breadcrumb navigation
 - **WHEN** the session detail page loads
@@ -451,6 +463,7 @@ The visibility surfaces SHALL be interconnected through contextual links that al
 #### Scenario: Notification to session navigation
 - **WHEN** a notification row has a `session_id`
 - **THEN** a "Session {shortId}" link navigates to `/sessions/{session_id}?butler={source_butler}`
+- **AND** the destination treats the legacy `?butler=` state as ignored input and resolves the global session detail
 
 #### Scenario: Notification to trace navigation
 - **WHEN** a notification row has a `trace_id`
@@ -510,7 +523,7 @@ All visibility surfaces SHALL handle loading and error states consistently to pr
 
 #### Scenario: Error states
 - **WHEN** the session detail API call fails
-- **THEN** a destructive-styled error message is shown with a suggestion to add `?butler=name` if the butler parameter is missing
+- **THEN** a destructive-styled error message is shown without suggesting a `?butler=` remedy, because the global session lookup is authoritative
 - **WHEN** the notification feed fails to load
 - **THEN** a destructive-styled message reads "Failed to load notifications. Please try refreshing the page."
 

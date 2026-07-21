@@ -167,6 +167,7 @@ async def test_aggregate_names_degraded_pool_in_meta() -> None:
     body = resp.json()
     assert body["data"]["failed_count"] == 0
     assert body["meta"]["sources_degraded"] == ["finance"]
+    assert body["data"]["trigger_breakdown_degraded_sources"] == []
 
 
 async def test_aggregate_meta_has_no_degraded_when_all_pools_answer() -> None:
@@ -276,6 +277,45 @@ async def test_aggregate_by_trigger_source_populated_when_requested() -> None:
     # The scalar aggregate is untouched by the extra facet.
     assert data["total"] == 9
     assert data["failed_count"] == 9
+
+
+async def test_trigger_breakdown_degradation_is_distinct_from_scalar_meta() -> None:
+    """The optional GROUP BY failure names its source without tainting scalar meta."""
+
+    def _side_effect(sql, args, **kw):
+        if "GROUP BY trigger_source" in sql:
+            return (
+                {"health": [_make_trigger_record("schedule", 4)], "finance": []},
+                ["finance"],
+            )
+        return (
+            {
+                "health": [_make_agg_record({"total": 4, "failed_count": 4})],
+                "finance": [_make_agg_record({"total": 2, "failed_count": 2})],
+            },
+            [],
+        )
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["health", "finance"]
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_side_effect)
+
+    app = create_app()
+    app.dependency_overrides[_sessions_get_db] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/sessions/aggregate?status=failed&include_trigger_breakdown=true"
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["total"] == 6
+    assert body["data"]["by_trigger_source"] == [{"trigger_source": "schedule", "count": 4}]
+    assert body["data"]["trigger_breakdown_degraded_sources"] == ["finance"]
+    assert "sources_degraded" not in body["meta"]
 
 
 async def test_aggregate_status_running_uses_success_is_null() -> None:

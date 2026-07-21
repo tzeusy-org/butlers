@@ -526,14 +526,16 @@ async def get_session_aggregate(
     )
 
     by_trigger_source: list[SessionAggregateTriggerSource] = []
+    trigger_breakdown_degraded_sources: list[str] = []
     if include_trigger_breakdown:
         trigger_breakdown = await query_session_trigger_breakdown_fan_out(
             db, where_clause, tuple(args), butler_names=target_butlers
         )
         by_trigger_source = [
             SessionAggregateTriggerSource(trigger_source=t.trigger_source, count=t.count)
-            for t in trigger_breakdown
+            for t in trigger_breakdown.breakdown
         ]
+        trigger_breakdown_degraded_sources = trigger_breakdown.degraded_sources
 
     rated = result.success_count + result.failed_count
     success_rate = (result.success_count / rated) if rated > 0 else None
@@ -561,6 +563,7 @@ async def get_session_aggregate(
                 SessionAggregateButler(butler=b.butler, count=b.count) for b in result.by_butler
             ],
             by_trigger_source=by_trigger_source,
+            trigger_breakdown_degraded_sources=trigger_breakdown_degraded_sources,
         ),
         meta=meta,
     )

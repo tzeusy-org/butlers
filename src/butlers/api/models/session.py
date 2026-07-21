@@ -149,6 +149,10 @@ class SessionAggregate(BaseModel):
     # count > 0 only; powers the sessions verdict opener's failure-clustering
     # "clustered on <trigger>" clause.
     by_trigger_source: list[SessionAggregateTriggerSource] = []
+    # Failures from only the optional trigger-breakdown GROUP BY fan-out. This
+    # stays distinct from ApiMeta.sources_degraded, which names scalar
+    # aggregate failures; a complete scalar count can have partial attribution.
+    trigger_breakdown_degraded_sources: list[str] = []
 
 
 class SessionDetail(BaseModel):

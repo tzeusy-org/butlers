@@ -17,7 +17,7 @@ Query functions (all async):
         -> FanOutKeysetResult
     query_session_aggregate_fan_out(db, where, args, *, butler_names) -> FanOutAggregateResult
     query_session_trigger_breakdown_fan_out(db, where, args, *, butler_names)
-        -> list[TriggerSourceCount]
+        -> FanOutTriggerBreakdownResult
     query_session_detail_fan_out(db, session_id) -> FanOutDetailResult
 
 Cursor helpers:
@@ -162,6 +162,19 @@ class TriggerSourceCount:
 
     trigger_source: str
     count: int
+
+
+@dataclass
+class FanOutTriggerBreakdownResult:
+    """Merged trigger buckets and failures from the optional grouped fan-out.
+
+    ``degraded_sources`` is deliberately separate from the scalar aggregate's
+    degraded sources: the optional trigger breakdown can fail after a complete
+    scalar aggregate, making attribution partial without invalidating counts.
+    """
+
+    breakdown: list[TriggerSourceCount] = field(default_factory=list)
+    degraded_sources: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -497,7 +510,7 @@ async def query_session_trigger_breakdown_fan_out(
     args: tuple[Any, ...],
     *,
     butler_names: list[str] | None = None,
-) -> list[TriggerSourceCount]:
+) -> FanOutTriggerBreakdownResult:
     """Fan out a filter-aware ``GROUP BY trigger_source`` breakdown across butlers.
 
     Runs the per-butler grouped count on every queried butler, then merges by
@@ -519,11 +532,12 @@ async def query_session_trigger_breakdown_fan_out(
 
     Returns
     -------
-    list[TriggerSourceCount]
-        Combined per-trigger_source counts, sorted count descending.
+    FanOutTriggerBreakdownResult
+        Combined per-trigger_source counts, sorted count descending, plus the
+        pool failures from this optional fan-out only.
     """
     sql = _TRIGGER_BREAKDOWN_SQL_TEMPLATE.format(where_clause=where_clause)
-    results, _failed = await db.fan_out_with_status(sql, args, butler_names=butler_names)
+    results, failed = await db.fan_out_with_status(sql, args, butler_names=butler_names)
 
     counts: dict[str, int] = {}
     for _butler_name, db_rows in results.items():
@@ -533,7 +547,7 @@ async def query_session_trigger_breakdown_fan_out(
 
     breakdown = [TriggerSourceCount(trigger_source=k, count=v) for k, v in counts.items()]
     breakdown.sort(key=lambda t: t.count, reverse=True)
-    return breakdown
+    return FanOutTriggerBreakdownResult(breakdown=breakdown, degraded_sources=failed)
 
 
 async def query_session_detail_fan_out(

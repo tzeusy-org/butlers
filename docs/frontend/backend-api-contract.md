@@ -40,8 +40,19 @@ All endpoints and payload shapes below are mandatory. Absence or shape drift is 
 
 - `GET /api/sessions` -> `PaginatedResponse<SessionSummary>`
 - `GET /api/sessions/{id}` -> `ApiResponse<SessionDetail>`
+- `GET /api/sessions/aggregate` -> `ApiResponse<SessionAggregate>`
 - `GET /api/butlers/{name}/sessions` -> `PaginatedResponse<SessionSummary>`
-- `GET /api/butlers/{name}/sessions/{id}` -> `ApiResponse<SessionDetail>`
+
+Single-session detail is served only by the global `GET /api/sessions/{id}`
+fan-out. Session IDs are globally unique; legacy dashboard links that retain
+`/sessions/{id}?butler={name}` remain accepted but the query is ignored and
+does not select a second detail endpoint.
+
+`GET /api/sessions/aggregate?include_trigger_breakdown=true` returns optional
+`by_trigger_source` attribution. Its
+`data.trigger_breakdown_degraded_sources: string[]` names pools that failed
+only the optional trigger-breakdown fan-out; scalar aggregate failures remain
+exclusively in `meta.sources_degraded`.
 
 Required query filters for list endpoints:
 

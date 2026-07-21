@@ -290,6 +290,8 @@ export interface SessionAggregateTriggerSource {
  * `by_trigger_source` is only populated when the request set
  * `include_trigger_breakdown=true` -- otherwise an empty array (bu-y0v0c;
  * powers the sessions verdict opener's failure-clustering clause).
+ * `trigger_breakdown_degraded_sources` names pools that failed only that
+ * optional fan-out; it is distinct from scalar `meta.sources_degraded`.
  */
 export interface SessionAggregate {
   total: number;
@@ -301,6 +303,7 @@ export interface SessionAggregate {
   output_tokens: number;
   by_butler: SessionAggregateButler[];
   by_trigger_source: SessionAggregateTriggerSource[];
+  trigger_breakdown_degraded_sources: string[];
 }
 
 /** Query parameters for session list endpoints. */

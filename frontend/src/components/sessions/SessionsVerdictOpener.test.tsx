@@ -34,6 +34,7 @@ function aggregate(overrides: Partial<SessionAggregate> = {}): SessionAggregate 
     output_tokens: 0,
     by_butler: [],
     by_trigger_source: [],
+    trigger_breakdown_degraded_sources: [],
     ...overrides,
   };
 }
@@ -150,6 +151,35 @@ describe("SessionsVerdictOpener -- clauses", () => {
     );
     expect(html).toContain("clustered on cron:daily-digest");
     expect(html).toContain('href="/sessions?status=failed&amp;trigger=cron%3Adaily-digest"');
+  });
+
+  it("withholds a partial trigger cluster while retaining the scalar failure verdict", () => {
+    const agg = aggregate({
+      total: 6,
+      failed_count: 6,
+      by_butler: [
+        { butler: "chronicler", count: 3 },
+        { butler: "finance", count: 3 },
+      ],
+      by_trigger_source: [{ trigger_source: "cron:daily-digest", count: 5 }],
+      trigger_breakdown_degraded_sources: ["finance"],
+    });
+    const html = render(
+      <SessionsVerdictOpener
+        failedAggregate={agg}
+        failedLoading={false}
+        failedError={false}
+        runningSessions={[]}
+        runningLoading={false}
+        runningError={false}
+      />,
+    );
+
+    expect(html).toContain("finance unreachable, so trigger clustering is unavailable");
+    expect(html).toContain(`6 sessions failed in the last ${SESSIONS_VERDICT_WINDOW_HOURS}h`);
+    expect(html).toContain("clustered on chronicler");
+    expect(html).not.toContain("clustered on cron:daily-digest");
+    expect(html).not.toContain("trigger=cron%3Adaily-digest");
   });
 
   it("pluralizes correctly for a single failure and omits the running clause with no running session", () => {

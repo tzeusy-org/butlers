@@ -29,6 +29,7 @@ from butlers.api.read_models.sessions_v1 import (
     FanOutAggregateResult,
     FanOutDetailResult,
     FanOutKeysetResult,
+    FanOutTriggerBreakdownResult,
     decode_session_cursor,
     encode_session_cursor,
     query_session_aggregate_fan_out,
@@ -490,10 +491,12 @@ async def test_trigger_breakdown_merges_and_sums_across_butlers():
 
     result = await query_session_trigger_breakdown_fan_out(mock_db, "", ())
 
-    assert [(t.trigger_source, t.count) for t in result] == [
+    assert isinstance(result, FanOutTriggerBreakdownResult)
+    assert [(t.trigger_source, t.count) for t in result.breakdown] == [
         ("schedule", 10),
         ("webhook", 2),
     ]
+    assert result.degraded_sources == []
 
 
 async def test_trigger_breakdown_empty_when_no_rows():
@@ -503,7 +506,27 @@ async def test_trigger_breakdown_empty_when_no_rows():
 
     result = await query_session_trigger_breakdown_fan_out(mock_db, "", ())
 
-    assert result == []
+    assert isinstance(result, FanOutTriggerBreakdownResult)
+    assert result.breakdown == []
+    assert result.degraded_sources == []
+
+
+async def test_trigger_breakdown_keeps_its_failed_sources() -> None:
+    """A partial GROUP BY fan-out cannot silently look like complete attribution."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "finance"]
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=(
+            {"atlas": [_trigger_row(trigger_source="schedule", count=4)], "finance": []},
+            ["finance"],
+        )
+    )
+
+    result = await query_session_trigger_breakdown_fan_out(mock_db, "", ())
+
+    assert isinstance(result, FanOutTriggerBreakdownResult)
+    assert [(item.trigger_source, item.count) for item in result.breakdown] == [("schedule", 4)]
+    assert result.degraded_sources == ["finance"]
 
 
 async def test_trigger_breakdown_uses_group_by_sql_and_butler_names():
