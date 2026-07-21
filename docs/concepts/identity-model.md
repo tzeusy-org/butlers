@@ -73,27 +73,20 @@ The sender's channel triple is not written here. Asserting the `relationship.ent
 
 The identity preamble for unknown senders includes `-- pending disambiguation`, signaling to the receiving butler that the sender identity is provisional.
 
-### Owner-notification activation gap
+### Owner notification for surfaced unknown senders
 
-The entity-first contract requires a one-time, message-content-free owner
-notification when an unknown sender is surfaced as a transitory entity; the
-owner reviews it through the Unidentified Entities flow rather than a retired
-contact record. The helper at
-`roster/switchboard/tools/identity/inject.py::resolve_and_inject_identity()`
-does create a transitory entity without a contact row, but its inactive
-notification branch still builds a legacy `/butlers/contacts/...` target. Its
-best-effort `butler_state` read/write handling also treats state failures as
-new or non-fatal and performs no atomic claim before delivery, so it does not
-provide durable, race-safe no-repeat behavior.
+Normal Switchboard fleet ingress enables identity resolution and supplies a
+deterministic owner-notification callback. When the helper surfaces a
+transitory entity, it first atomically inserts a sender-scoped claim in the
+Switchboard `state` table. Only the winner sends one content-free `notify.v1`
+notice through the normal Switchboard-to-Messenger boundary; the notice points
+to `/entities/index?state=unidentified`, never a contacts route.
 
-That behavior is not active for normal fleet ingress today:
-`src/butlers/switchboard_wiring.py::wire_pipelines()` leaves
-`MessagePipeline.enable_identity_resolution` at its default `False` and does
-not provide `notify_owner_fn`. A separate runtime change must enable that path,
-wire delivery through the standard owner-notification boundary, replace the
-legacy target with the Unidentified Entities review flow, and establish
-durable, race-safe notification deduplication before operators can rely on
-notifications being dispatched.
+The claim remains after a delivery failure, so later ingress cannot turn an
+outage into a notification storm. If the state claim cannot be persisted, the
+helper logs the problem, skips the owner send, and leaves normal unknown-sender
+routing intact. The owner can still review the transitory entity through the
+Unidentified Entities flow.
 
 ## Identity Preamble
 

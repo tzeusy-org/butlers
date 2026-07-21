@@ -652,6 +652,8 @@ async def create_temp_contact(
     channel_type: str,
     channel_value: str,
     display_name: str | None = None,
+    *,
+    reservation_state_key: str | None = None,
 ) -> ResolvedContact | None:
     """Create a temporary entity for an unknown sender.
 
@@ -681,6 +683,14 @@ async def create_temp_contact(
     display_name:
         Optional human-readable name for the contact.  Defaults to a
         synthesized ``"Unknown ({channel_type} {channel_value})"`` label.
+    reservation_state_key:
+        Optional caller-owned ``state`` key used to atomically reserve the
+        temporary entity for one sender.  The Switchboard passes this only for
+        its unknown-sender ingress path, where concurrent first messages can
+        arrive before the relationship-owned channel-fact hook has established
+        its normal reverse-lookup key.  The reservation and entity insert share
+        one transaction; this helper still never writes
+        ``relationship.entity_facts``.
 
     Returns
     -------
@@ -711,6 +721,101 @@ async def create_temp_contact(
                 if existing_in_txn is not None:
                     return existing_in_txn
 
+                if reservation_state_key is not None:
+                    # The relationship-owned post-resolution hook establishes
+                    # the normal channel-fact dedup key only after this helper
+                    # returns.  Reserve this sender's entity in the
+                    # Switchboard-local state table first, so concurrent first
+                    # messages cannot both mint an entity during that gap.
+                    #
+                    # ``ON CONFLICT DO NOTHING`` waits for a concurrent winner
+                    # to commit or abort.  The following row lock therefore
+                    # sees either the committed winner's entity UUID or an
+                    # empty reservation this transaction now owns.
+                    await conn.execute(
+                        """
+                        INSERT INTO state (key, value, updated_at, version)
+                        VALUES ($1, '{}'::jsonb, now(), 1)
+                        ON CONFLICT (key) DO NOTHING
+                        """,
+                        reservation_state_key,
+                    )
+                    reservation = await conn.fetchrow(
+                        "SELECT value FROM state WHERE key = $1 FOR UPDATE",
+                        reservation_state_key,
+                    )
+                    if reservation is None:
+                        raise RuntimeError(
+                            "Temporary-entity reservation disappeared before it could be read"
+                        )
+
+                    reservation_value = reservation["value"]
+                    raw_reserved_entity_id = (
+                        reservation_value.get("entity_id")
+                        if isinstance(reservation_value, dict)
+                        else None
+                    )
+                    if raw_reserved_entity_id is not None:
+                        try:
+                            reserved_entity_id = UUID(str(raw_reserved_entity_id))
+                        except (TypeError, ValueError, AttributeError):
+                            logger.warning(
+                                "create_temp_contact: invalid temporary-entity reservation for %s",
+                                reservation_state_key,
+                            )
+                            reserved_entity_id = None
+
+                        if reserved_entity_id is not None:
+                            reserved_entity = await conn.fetchrow(
+                                """
+                                SELECT canonical_name, roles
+                                FROM public.entities
+                                WHERE id = $1
+                                """,
+                                reserved_entity_id,
+                            )
+                            if reserved_entity is not None:
+                                raw_roles = reserved_entity["roles"]
+                                return ResolvedContact(
+                                    contact_id=None,
+                                    name=reserved_entity["canonical_name"] or None,
+                                    roles=(
+                                        [str(role) for role in raw_roles]
+                                        if isinstance(raw_roles, (list, tuple))
+                                        else []
+                                    ),
+                                    entity_id=reserved_entity_id,
+                                )
+
+                            logger.warning(
+                                "create_temp_contact: temporary-entity reservation %s references "
+                                "missing entity %s; replacing it",
+                                reservation_state_key,
+                                reserved_entity_id,
+                            )
+
+                        # A manually deleted/corrupt reservation must not
+                        # strand this sender. The row lock serializes repair
+                        # with another first-message worker before a replacement
+                        # entity is minted below.
+                        await conn.execute(
+                            """
+                            UPDATE state
+                            SET value = '{}'::jsonb, updated_at = now(), version = version + 1
+                            WHERE key = $1
+                            """,
+                            reservation_state_key,
+                        )
+
+                    # A fact may have landed while this worker waited on a
+                    # sender reservation. Prefer that canonical resolution over
+                    # minting another transitory entity.
+                    existing_after_reservation = await resolve_contact_by_channel(
+                        conn, channel_type, channel_value
+                    )
+                    if existing_after_reservation is not None:
+                        return existing_after_reservation
+
                 # Create an unidentified entity so facts can be anchored.
                 entity_metadata: dict[str, Any] = {
                     "unidentified": True,
@@ -727,6 +832,19 @@ async def create_temp_contact(
                     name,
                     entity_metadata,
                 )
+
+                if reservation_state_key is not None:
+                    await conn.execute(
+                        """
+                        UPDATE state
+                        SET value = jsonb_build_object('entity_id', $2::text),
+                            updated_at = now(),
+                            version = version + 1
+                        WHERE key = $1
+                        """,
+                        reservation_state_key,
+                        str(entity_id),
+                    )
 
         # Phase 7 (bu-jnaa3): create_temp_contact NO LONGER writes a
         # public.contacts row — the contact object is being retired and

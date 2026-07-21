@@ -149,12 +149,54 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         pipeline_mod._config.classification_timeout_s if pipeline_mod is not None else None
     )
 
+    async def _notify_owner_about_unknown_sender(message: str) -> None:
+        """Deliver one entity-review notice through the normal notify boundary.
+
+        This callback is deliberately deterministic and narrow: identity ingress
+        has already constructed a content-free review message, and this seam
+        only resolves the configured owner Telegram recipient before sending a
+        ``notify.v1`` envelope through Switchboard → Messenger.  It must raise
+        for every unsent result so identity injection can log the failed attempt
+        while retaining its durable no-repeat claim.
+        """
+        recipient = await daemon._resolve_default_notify_recipient(
+            channel="telegram",
+            intent="send",
+            recipient=None,
+        )
+        if not recipient:
+            raise RuntimeError(
+                "No Telegram recipient configured for unknown-sender owner notification"
+            )
+
+        from butlers.tools.switchboard.notification.deliver import deliver
+
+        result = await deliver(
+            pool,
+            source_butler="switchboard",
+            notify_request={
+                "schema_version": "notify.v1",
+                "origin_butler": "switchboard",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "telegram",
+                    "recipient": recipient,
+                    "message": message,
+                },
+            },
+        )
+        if not isinstance(result, dict) or result.get("status") != "sent":
+            detail = result.get("error") if isinstance(result, dict) else None
+            raise RuntimeError(f"Unknown-sender owner notification failed: {detail or result}")
+
     pipeline = MessagePipeline(
         switchboard_pool=pool,
         dispatch_fn=daemon.spawner.trigger,
         source_butler="switchboard",
         enable_ingress_dedupe=enable_ingress_dedupe,
         classification_timeout_s=classification_timeout_s,
+        enable_identity_resolution=True,
+        notify_owner_fn=_notify_owner_about_unknown_sender,
         # daemon.mcp is not yet assigned a real FastMCP instance at this
         # point in startup (see butlers.lifecycle.run_startup: _wire_pipelines
         # runs at step 10b, daemon.mcp = FastMCP(...) at step 12) — a provider

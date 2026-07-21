@@ -7,8 +7,8 @@ For each incoming message:
 
 1. Call ``resolve_contact_by_channel(pool, channel_type, channel_value)`` to
    look up the sender in ``relationship.entity_facts`` (migration bead 7).
-2. If unknown: create a temporary contact with ``needs_disambiguation=true``
-   and notify the owner (exactly once per new unknown sender).
+2. If unknown: create a transitory entity with
+   ``metadata.unidentified=true`` and notify the owner at most once.
 3. Build the identity preamble and inject it at the top of the routed prompt.
 
 Preamble formats (``entity_id`` is the canonical identifier post bu-akads):
@@ -22,18 +22,16 @@ Preamble formats (``entity_id`` is the canonical identifier post bu-akads):
 * Unknown (no entity_id):    ``[Source: Unknown sender, via {channel} -- pending disambiguation]``
 
 The result includes ``entity_id`` and ``sender_roles`` for population in
-``routing_log``.  ``contact_id`` is carried for backward compatibility: it is
-always ``None`` for resolved (known) contacts — ``resolve_contact_by_channel``
-returns ``contact_id=None`` post bu-akads — and may be non-``None`` only when
-``create_temp_contact`` succeeds for an unknown sender (that path still writes
-to ``public.contacts``).  See the routing-log-contact-id audit report for the
-full deprecation analysis.
+``routing_log``. ``contact_id`` is retained only as a compatibility field;
+the entity-first unknown-sender path always leaves it ``None``.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from html import escape
 from typing import Any
 from uuid import UUID
 
@@ -48,10 +46,16 @@ from butlers.identity import (
 
 logger = logging.getLogger(__name__)
 
-# State-key prefix for tracking "owner has been notified about this sender."
-# Stored in the switchboard's key-value state so notification fires only once
-# per unknown sender, not on every message.
+# State-key prefix for the durable pre-delivery claim. The existing
+# Switchboard-local ``state`` table serializes the claim so concurrent ingress
+# cannot turn one unknown sender into multiple owner notifications.
 _NOTIFIED_STATE_KEY_PREFIX = "identity:unknown_notified:"
+# This reservation is intentionally independent from the one-time
+# notification claim. It makes first-message entity minting idempotent before
+# the relationship-owned post-resolution fact writer has established the
+# channel-triple lookup key.
+_TEMP_ENTITY_STATE_KEY_PREFIX = "identity:unknown_entity:"
+_UNIDENTIFIED_ENTITIES_REVIEW_PATH = "/entities/index?state=unidentified"
 
 
 @dataclass
@@ -64,13 +68,9 @@ class IdentityResolutionResult:
         The structured identity preamble line to prepend to the routed prompt.
         Empty string when resolution was skipped (no channel_value provided).
     contact_id:
-        UUID of the resolved or created contact, or ``None``.  Post bu-akads
-        this is always ``None`` for resolved (known) contacts because
-        ``resolve_contact_by_channel`` no longer queries ``public.contacts``.
-        It may be non-``None`` only for unknown senders whose temp contact was
-        successfully created via ``create_temp_contact``.  Kept for backward
-        compatibility with ``routing_log.contact_id``; consider deprecating
-        once the column is confirmed redundant (see audit report).
+        Optional compatibility UUID for an independently resolved legacy
+        contact. The entity-first unknown-sender path always leaves it
+        ``None`` and does not create a contact record.
     entity_id:
         UUID of the linked memory entity, or ``None``.
     sender_roles:
@@ -83,8 +83,8 @@ class IdentityResolutionResult:
         ``True`` iff the sender was not found and a temp contact was created
         (or creation was attempted).
     new_unknown_sender:
-        ``True`` iff a new temporary contact was created in this call
-        (i.e., the owner should be notified).
+        ``True`` iff this call atomically claimed the one owner-notification
+        attempt for a newly surfaced unknown sender.
     channel_value:
         The raw sender identifier observed on the channel (e.g. a Telegram chat
         ID or email address). Carried through so the routing pipeline can
@@ -111,7 +111,7 @@ async def resolve_and_inject_identity(
     channel_value: str | None,
     *,
     display_name: str | None = None,
-    notify_owner_fn: Any | None = None,
+    notify_owner_fn: Callable[[str], Awaitable[None]] | None = None,
     state_pool: asyncpg.Pool | None = None,
 ) -> IdentityResolutionResult:
     """Resolve sender identity and build the preamble for the routed prompt.
@@ -125,7 +125,7 @@ async def resolve_and_inject_identity(
     pool:
         asyncpg pool for the Switchboard schema.  Must have at minimum SELECT
         on ``relationship.entity_facts`` and ``public.entities``, and INSERT on
-        ``public.entities`` and ``public.contacts`` (for unknown sender creation).
+        ``public.entities`` (for unknown sender creation).
     channel_type:
         Source channel type (e.g. ``"telegram"``, ``"email"``).
     channel_value:
@@ -134,14 +134,16 @@ async def resolve_and_inject_identity(
         returned (no preamble, no column population).
     display_name:
         Optional human-readable name for the sender (e.g. from Telegram's
-        ``from_user.full_name``).  Used when creating a temporary contact.
+        ``from_user.full_name``). Used when creating the transitory entity and
+        as the safe notification label.
     notify_owner_fn:
         Async callable ``(message: str) -> None`` that sends a notification to
-        the owner.  When ``None``, no notification is sent.
+        the owner through the standard delivery boundary. When ``None``, no
+        notification claim or delivery attempt is made.
     state_pool:
-        Optional separate pool for checking/setting the ``butler_state`` KV
-        store (for idempotent "already notified" tracking).  When ``None``,
-        the ``pool`` argument is also used for state queries.
+        Optional separate pool for the Switchboard-local ``state`` KV store
+        (for the atomic notification claim). When ``None``, the ``pool``
+        argument is also used for the claim.
 
     Returns
     -------
@@ -170,18 +172,22 @@ async def resolve_and_inject_identity(
             is_unknown=False,
         )
 
-    # Step 2: Unknown sender — create a temporary contact.
+    # Step 2: Unknown sender — create a transitory entity.
     temp_contact = await create_temp_contact(
         pool,
         channel_type,
         channel_value,
         display_name=display_name,
+        reservation_state_key=(f"{_TEMP_ENTITY_STATE_KEY_PREFIX}{channel_type}:{channel_value}"),
     )
 
-    # Determine if this temp contact was freshly created (not pre-existing).
-    new_sender = False
-    if temp_contact is not None:
-        new_sender = await _is_new_unknown_sender(
+    # Reserve the owner-notification attempt before delivery. The atomic claim
+    # is deliberately made only when a real callback is wired: an unconfigured
+    # caller must not permanently consume the notification without attempting
+    # it, while the production Switchboard always supplies the callback.
+    notification_claimed = False
+    if temp_contact is not None and notify_owner_fn is not None:
+        notification_claimed = await _claim_unknown_sender_notification(
             state_pool or pool,
             channel_type,
             channel_value,
@@ -202,24 +208,21 @@ async def resolve_and_inject_identity(
         is_owner=False,
         is_known=False,
         is_unknown=True,
-        new_unknown_sender=new_sender,
+        new_unknown_sender=notification_claimed,
         # Carry the raw identifier so the routing pipeline can deterministically
         # assert the channel triple for this unresolved/temp sender (entity-v3,
         # bu-hvrt1). Switchboard ingress itself never writes entity_facts.
         channel_value=channel_value,
     )
 
-    # Step 3: Notify owner once per new unknown sender.
-    if new_sender and notify_owner_fn is not None:
-        contact_name = (
-            temp_contact.name if temp_contact else None
-        ) or f"{channel_type} {channel_value}"
-        contact_link = (
-            f"/butlers/contacts/{temp_contact.contact_id}" if temp_contact else "/butlers/contacts"
-        )
+    # Step 3: The successful claimer makes the one owner-facing attempt. A
+    # delivery failure is observable but intentionally does not clear the
+    # durable claim: later ingress must not retry into a notification storm.
+    if notification_claimed and notify_owner_fn is not None:
+        sender_label = _safe_sender_label(display_name)
         notification_msg = (
-            f"Received a message from {contact_name} ({channel_type}). "
-            f"Who is this? Resolve at {contact_link}"
+            f"Unknown sender: {sender_label} ({channel_type}). "
+            f"Review in Unidentified Entities: {_UNIDENTIFIED_ENTITIES_REVIEW_PATH}"
         )
         try:
             await notify_owner_fn(notification_msg)
@@ -230,63 +233,50 @@ async def resolve_and_inject_identity(
                 channel_value,
                 exc_info=True,
             )
-        finally:
-            # Mark as notified so future messages from this sender don't re-notify.
-            await _mark_notified(
-                state_pool or pool,
-                channel_type,
-                channel_value,
-            )
 
     return result
 
 
-async def _is_new_unknown_sender(
-    pool: asyncpg.Pool,
+def _safe_sender_label(display_name: str | None) -> str:
+    """Normalize an untrusted source label without exposing its raw identifier."""
+    normalized = " ".join(display_name.split()) if isinstance(display_name, str) else ""
+    return escape(normalized[:120], quote=False) if normalized else "Unknown sender"
+
+
+async def _claim_unknown_sender_notification(
+    pool: Any,
     channel_type: str,
     channel_value: str,
 ) -> bool:
-    """Return True if we have NOT yet notified the owner about this sender.
+    """Atomically reserve this sender's one owner-notification attempt.
 
-    Uses a lightweight check in butler_state KV store to track per-sender
-    notification state.  Returns True (i.e., "new") if no notification record
-    exists or if the state table is not available.
+    The ``state`` primary key makes the operation durable and race-safe. A
+    state-store failure is deliberately fail-open for ingress routing but
+    fail-closed for notification delivery: without a claim, no send occurs.
     """
     state_key = f"{_NOTIFIED_STATE_KEY_PREFIX}{channel_type}:{channel_value}"
     try:
         row = await pool.fetchrow(
-            "SELECT value FROM butler_state WHERE key = $1 LIMIT 1",
-            state_key,
-        )
-        return row is None
-    except Exception:  # noqa: BLE001
-        # butler_state may not exist in this schema (switchboard).  Treat as new.
-        logger.debug(
-            "_is_new_unknown_sender: could not read butler_state; treating as new sender",
-            exc_info=True,
-        )
-        return True
-
-
-async def _mark_notified(
-    pool: asyncpg.Pool,
-    channel_type: str,
-    channel_value: str,
-) -> None:
-    """Record that the owner has been notified about this unknown sender."""
-    state_key = f"{_NOTIFIED_STATE_KEY_PREFIX}{channel_type}:{channel_value}"
-    try:
-        await pool.execute(
             """
-            INSERT INTO butler_state (key, value)
-            VALUES ($1, $2::jsonb)
+            INSERT INTO state (key, value, updated_at, version)
+            VALUES (
+                $1,
+                jsonb_build_object('unknown_sender_notification_attempted', true),
+                now(),
+                1
+            )
             ON CONFLICT (key) DO NOTHING
+            RETURNING key
             """,
             state_key,
-            '{"notified": true}',
         )
+        return row is not None
     except Exception:  # noqa: BLE001
-        logger.debug(
-            "_mark_notified: could not write to butler_state (non-fatal)",
+        logger.warning(
+            "Unknown-sender identity resolution could not persist owner-notification claim "
+            "for %s/%s; continuing without owner delivery",
+            channel_type,
+            channel_value,
             exc_info=True,
         )
+        return False
