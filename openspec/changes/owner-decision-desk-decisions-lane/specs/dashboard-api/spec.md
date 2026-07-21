@@ -76,3 +76,41 @@ matching `compute_decision_digest()`'s own ordering.
   `export_stale` (`decisions_available: false`)
 - **THEN** `meta.export_as_of` is still populated with the export's mtime
   (not `null`), so a caller can report exactly how stale the data is
+
+### Requirement: Scheduled Decision-Convention Lint Uses Live Candidates
+
+The scheduled full-export marker-lint selection SHALL select only `open`,
+`in_progress`, and `blocked` issues before linting. When
+`scripts/lint_decision_beads.py` receives a full beads export through
+`--check-unlabeled-markers` without explicit issue IDs, that live-status filter
+applies equally to decision-labeled issues and to
+unlabeled title-marker matches, so historical closed records cannot create a
+weekly owner-facing migration alert. The scheduled
+`butlers.jobs.decision_review` subprocess invocation SHALL retain its existing
+unavailable/error handling; a failed or unreadable lint input MUST NOT be
+reported as a calm successful audit.
+
+Explicit issue IDs SHALL remain forensic input and MUST be linted as supplied,
+even when `--check-unlabeled-markers` is present. An ordinary non-strict
+`--status all` audit SHALL likewise retain historical records, because the
+live-status selection is specific to the scheduled full-export marker mode.
+
+#### Scenario: Closed malformed records do not enter the weekly lint lane
+
+- **WHEN** the scheduled marker-mode subprocess reads a full export containing
+  an open malformed decision candidate and a closed malformed decision-labeled
+  record (or a closed unlabeled marker match)
+- **THEN** only the open candidate is returned as a lint violation
+- **AND** the closed historical records produce no owner-facing migration alert
+
+#### Scenario: Explicit forensic input retains historical visibility
+
+- **WHEN** an operator supplies a closed issue ID explicitly with
+  `--check-unlabeled-markers`
+- **THEN** the linter checks that supplied issue regardless of its status
+
+#### Scenario: Non-strict all-status audits retain historical visibility
+
+- **WHEN** an operator runs an ordinary `--status all` audit without
+  `--check-unlabeled-markers`
+- **THEN** the linter retains historical records from that input

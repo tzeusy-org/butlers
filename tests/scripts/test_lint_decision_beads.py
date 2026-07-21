@@ -374,19 +374,32 @@ def test_unlabeled_marker_match_covers_all_seed_queue_title_shapes(title):
     assert ldb.is_unlabeled_marker_match(_marker_issue(title=title)) is True
 
 
-def test_select_issues_to_check_noop_without_flag():
-    issues = [_marker_issue(), _decision_issue()]
+def test_select_issues_to_check_keeps_closed_records_without_strict_flag():
+    # A normal `--status all` audit reaches this no-op path, so its historical
+    # input remains available for explicit forensic inspection.
+    issues = [_marker_issue(), _decision_issue(), _decision_issue(id="bu-closed", status="closed")]
     assert ldb.select_issues_to_check(issues, check_unlabeled_markers=False) == issues
 
 
-def test_select_issues_to_check_keeps_labeled_and_marker_matched_drops_rest():
-    labeled = _decision_issue(id="bu-labeled")
-    marker_unlabeled = _marker_issue(id="bu-unlabeled")
+@pytest.mark.parametrize("status", ("open", "in_progress", "blocked"))
+def test_select_issues_to_check_keeps_each_live_labeled_and_marker_candidate(status):
+    labeled = _decision_issue(id="bu-labeled", status=status)
+    closed_labeled = _decision_issue(id="bu-closed-labeled", status="closed")
+    marker_unlabeled = _marker_issue(id="bu-unlabeled", status=status)
+    closed_marker_unlabeled = _marker_issue(id="bu-closed-unlabeled", status="closed")
     unrelated = {"id": "bu-unrelated", "title": "fix a typo", "status": "open", "labels": []}
     epic = _marker_issue(id="bu-epic", issue_type="epic", title="Owner Decision Desk: ...")
 
     selected = ldb.select_issues_to_check(
-        [labeled, marker_unlabeled, unrelated, epic], check_unlabeled_markers=True
+        [
+            labeled,
+            closed_labeled,
+            marker_unlabeled,
+            closed_marker_unlabeled,
+            unrelated,
+            epic,
+        ],
+        check_unlabeled_markers=True,
     )
 
     assert {i["id"] for i in selected} == {"bu-labeled", "bu-unlabeled"}
@@ -397,6 +410,38 @@ def test_select_issues_to_check_drops_non_dict_entries():
         ["not a dict", _marker_issue()], check_unlabeled_markers=True
     )
     assert len(selected) == 1
+
+
+def test_load_issues_from_bd_explicit_id_bypasses_strict_discovery(monkeypatch):
+    closed = _marker_issue(id="bu-closed-explicit", status="closed")
+    calls = []
+
+    def fake_run_bd_json(args):
+        calls.append(args)
+        return closed
+
+    monkeypatch.setattr(ldb, "_run_bd_json", fake_run_bd_json)
+
+    assert ldb.load_issues_from_bd(
+        ["bu-closed-explicit"], status="all", check_unlabeled_markers=True
+    ) == [closed]
+    assert calls == [["show", "bu-closed-explicit"]]
+
+
+def test_load_issues_from_bd_all_status_forensic_mode_keeps_closed_history(monkeypatch):
+    closed = _decision_issue(id="bu-closed-forensic", status="closed")
+    calls = []
+
+    def fake_run_bd_json(args):
+        calls.append(args)
+        return [closed]
+
+    monkeypatch.setattr(ldb, "_run_bd_json", fake_run_bd_json)
+
+    issues = ldb.load_issues_from_bd([], status="all", check_unlabeled_markers=False)
+
+    assert ldb.select_issues_to_check(issues, check_unlabeled_markers=False) == [closed]
+    assert calls == [["list", "--label", "decision", "--status", "all"]]
 
 
 # ---------------------------------------------------------------------------
@@ -456,13 +501,13 @@ def test_cli_check_unlabeled_markers_explicit_ids_unaffected(tmp_path):
     # Explicit issue IDs bypass discovery/select_issues_to_check entirely --
     # the flag must not change that an explicitly-named ID is always checked.
     fixture = tmp_path / "issue.json"
-    fixture.write_text(json.dumps(_marker_issue()))
-    proc_without_flag = _run_cli("--issues-json-file", str(fixture), "--json")
-    proc_with_flag = _run_cli(
-        "--issues-json-file", str(fixture), "--check-unlabeled-markers", "--json"
+    fixture.write_text(json.dumps(_marker_issue(id="bu-closed-marker", status="closed")))
+    proc = _run_cli(
+        "bu-closed-marker",
+        "--issues-json-file",
+        str(fixture),
+        "--check-unlabeled-markers",
+        "--json",
     )
-    # Both check the single issue in the file as given (file mode has no
-    # concept of "explicit IDs" -- this asserts the file-mode result is
-    # identical with/without the flag when there's only one candidate and no
-    # unrelated noise to filter out).
-    assert json.loads(proc_without_flag.stdout) == json.loads(proc_with_flag.stdout)
+    assert proc.returncode == 1
+    assert [result["id"] for result in json.loads(proc.stdout)] == ["bu-closed-marker"]

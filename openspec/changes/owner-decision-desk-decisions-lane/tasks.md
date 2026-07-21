@@ -39,3 +39,14 @@ gap; it does not change the scope above.
   weekly `decision_review` job wiring, so the convention lint is non-vacuous
   against the live queue (documented in AGENTS.md, not a dashboard-facing
   capability -- no spec delta)
+
+## 5. bu-kqnum.9.2 — Scheduled lint live-candidate scope
+
+- [x] 5.1 Add the Dashboard API delta requirement covering live-status
+  selection for scheduled full-export marker linting and the forensic-mode
+  exceptions.
+- [x] 5.2 Add RED regression coverage for labeled and unlabeled closed records,
+  explicit-ID/all-status forensic behavior, and the real `decision_review`
+  subprocess path.
+- [x] 5.3 Apply the minimal strict-selector/help change, verify the focused
+  suites and OpenSpec validation, and preserve unavailable/error behavior.

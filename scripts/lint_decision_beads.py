@@ -45,14 +45,16 @@ By default this script only checks issues that ALREADY carry the
 queue where zero beads have adopted the label yet, it discovers zero rows
 and reports a vacuous "clean" pass. ``--check-unlabeled-markers`` widens
 *discovery only* (never explicit issue IDs, which are always checked as
-given) to also include open, non-epic beads whose titles match a legacy
-decision marker (``DECISION REQUIRED``, ``OWNER-GATED``, ``OWNER DECISION``,
+given) to include only live (``open``, ``in_progress``, or ``blocked``)
+labeled decisions and non-epic beads whose titles match a legacy decision
+marker (``DECISION REQUIRED``, ``OWNER-GATED``, ``OWNER DECISION``,
 ``ARCHITECTURAL DECISION``, ``OWNER:``) but lack the label -- see
-:data:`_DECISION_TITLE_MARKERS` and :func:`is_unlabeled_marker_match`. Those
-beads then fail :func:`lint_issue`'s existing "missing 'decision' label"
-check the same way a labeled-but-incomplete bead fails its other checks,
-which is what makes the lint non-vacuous against a live, pre-migration
-queue. This is also what ``src/butlers/jobs/decision_review.py``'s weekly
+:data:`_DECISION_TITLE_MARKERS` and :func:`is_unlabeled_marker_match`.
+Those beads then fail :func:`lint_issue`'s existing "missing 'decision'
+label" check the same way a labeled-but-incomplete bead fails its other
+checks, which is what makes the lint non-vacuous against a live,
+pre-migration queue without resurfacing closed history in the weekly owner
+alert. This is also what ``src/butlers/jobs/decision_review.py``'s weekly
 digest job runs (via ``--issues-json-file`` against the mounted export) to
 flag an attention-ledger row when the convention has unmigrated adopters.
 
@@ -104,7 +106,7 @@ _OPEN_STATUSES = frozenset({"open", "in_progress", "blocked"})
 
 
 def is_unlabeled_marker_match(issue: Any) -> bool:
-    """True if *issue* is open, not an epic, title-matches a legacy decision
+    """True if *issue* is live, not an epic, title-matches a legacy decision
     marker at its start, and does NOT already carry the ``decision`` label.
 
     This is ``--check-unlabeled-markers``'s discovery predicate: it widens
@@ -136,15 +138,17 @@ def select_issues_to_check(issues: list[Any], *, check_unlabeled_markers: bool) 
     curated their own issue set (existing ``--issues-json-file`` fixtures,
     the default ``bd list --label decision`` discovery) get it back
     unfiltered, preserving the original "explicit input is checked as given"
-    contract. With the flag set, keeps every already-labeled issue plus every
-    :func:`is_unlabeled_marker_match` hit, dropping everything else (e.g. the
-    other ~5,660 unrelated beads in a full export).
+    contract. With the flag set, keeps only live already-labeled issues plus
+    every :func:`is_unlabeled_marker_match` hit, dropping closed history and
+    everything else (e.g. the other ~5,660 unrelated beads in a full export).
     """
     if not check_unlabeled_markers:
         return issues
     selected = []
     for issue in issues:
         if not isinstance(issue, dict):
+            continue
+        if issue.get("status") not in _OPEN_STATUSES:
             continue
         labels = issue.get("labels")
         if isinstance(labels, list) and DECISION_LABEL in labels:
@@ -352,12 +356,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-unlabeled-markers",
         action="store_true",
         help=(
-            "Non-vacuous discovery mode: also check open, non-epic beads whose titles "
-            "match a legacy decision marker (DECISION REQUIRED / OWNER-GATED / OWNER "
-            "DECISION / ARCHITECTURAL DECISION / OWNER:) but lack the 'decision' label -- "
-            "they then fail the existing 'missing label' check. Only widens discovery "
-            "(bd list without --label, or the full --issues-json-file pool); explicit "
-            "issue IDs are always checked as given, unaffected by this flag."
+            "Non-vacuous full-export mode: check only live (open/in_progress/blocked) "
+            "labeled decisions plus non-epic beads whose titles match a legacy decision "
+            "marker (DECISION REQUIRED / OWNER-GATED / OWNER DECISION / ARCHITECTURAL "
+            "DECISION / OWNER:) but lack the 'decision' label. They then fail the existing "
+            "'missing label' check. Explicit issue IDs are always checked as given, "
+            "unaffected by this flag."
         ),
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")

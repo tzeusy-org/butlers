@@ -760,18 +760,23 @@ async def test_run_digest_lint_violations_deliver_separate_low_priority_message(
 def test_run_unlabeled_marker_lint_real_subprocess_wiring(tmp_path):
     """Exercises the real subprocess call into scripts/lint_decision_beads.py
     (no mocking) so the wiring itself -- script path resolution, --json
-    parsing -- is verified, not just the mocked call sites above."""
+    parsing, and live-status selection -- is verified, not just the mocked
+    call sites above."""
     export = tmp_path / "issues.export.jsonl"
     _write_export(
         export,
         [
-            # The linter's whole job is to catch a decision-shaped bead filed
-            # WITHOUT the `decision` label, so this fixture is deliberately
-            # unlabeled (labels=[]) -- that is the unlabeled-marker violation.
+            # Both records are malformed labeled decisions. The scheduled
+            # full-export marker path must report only the live one, never
+            # resurrect the closed historical record as a weekly owner alert.
             _decision(
-                "bu-w6jca",
+                "bu-open-malformed",
                 title="ARCHITECTURAL DECISION (owner): pick a schema",
-                labels=[],
+            ),
+            _decision(
+                "bu-closed-malformed",
+                title="ARCHITECTURAL DECISION (owner): historical schema",
+                status="closed",
             ),
             {"id": "bu-ordinary", "title": "fix a typo", "status": "open"},
         ],
@@ -779,8 +784,8 @@ def test_run_unlabeled_marker_lint_real_subprocess_wiring(tmp_path):
 
     violations = _run_unlabeled_marker_lint(export)
 
-    assert [v["id"] for v in violations] == ["bu-w6jca"]
-    assert any("label" in v for v in violations[0]["violations"])
+    assert [v["id"] for v in violations] == ["bu-open-malformed"]
+    assert any("metadata.decision" in v for v in violations[0]["violations"])
 
 
 def test_run_unlabeled_marker_lint_missing_script_returns_empty(tmp_path, monkeypatch):
