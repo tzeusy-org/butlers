@@ -57,7 +57,7 @@ The function is safe to call before migrations have run --- it catches all datab
 
 The owner contact is the system administrator. It is bootstrapped automatically on daemon startup. The owner entity carries the `"owner"` role, which is used for:
 
-- **Identity preamble** --- Routed messages from the owner are prepended with `[Source: Owner (contact_id: ..., entity_id: ...), via <channel>]`.
+- **Identity preamble** --- Routed messages from the owner are prepended with `[Source: Owner (entity_id: ...), via <channel>]`.
 - **Approval gates** --- Certain sensitive tool calls require owner authorization.
 - **Routing priority** --- Owner messages may receive preferential queue ordering.
 
@@ -92,9 +92,9 @@ Unidentified Entities flow.
 
 The `build_identity_preamble()` function constructs a structured text prefix that is prepended to every routed message. The format varies by sender type:
 
-- **Owner:** `[Source: Owner (contact_id: <uuid>, entity_id: <uuid>), via telegram]`
-- **Known contact:** `[Source: Chloe (contact_id: <uuid>, entity_id: <uuid>), via telegram]`
-- **Unknown sender:** `[Source: Unknown sender (contact_id: <uuid>, entity_id: <uuid>), via telegram -- pending disambiguation]`
+- **Owner:** `[Source: Owner (entity_id: <uuid>), via telegram]`
+- **Known contact:** `[Source: Chloe (entity_id: <uuid>), via telegram]`
+- **Unknown sender:** `[Source: Unknown sender (entity_id: <uuid>), via telegram -- pending disambiguation]`
 
 This preamble gives domain butlers the sender context they need for personalized responses, access control decisions, and entity-linked memory retrieval.
 
