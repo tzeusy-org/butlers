@@ -126,7 +126,7 @@ async def measurement_log(
         unit = _MEASUREMENT_UNITS.get(type, "")
         content = f"{type}: {value}{(' ' + unit) if unit else ''}"
 
-    metadata: dict[str, Any] = {"value": value}
+    metadata: dict[str, Any] = {"value": value, "source": "owner_log"}
     if notes is not None:
         metadata["notes"] = notes
 

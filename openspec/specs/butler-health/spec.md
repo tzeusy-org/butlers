@@ -73,6 +73,11 @@ The health butler migrates 6 dedicated CRUD tables (measurements, symptoms, medi
 - **AND** when `measurement_history` or `measurement_latest` is called
 - **THEN** they MUST query facts with predicate matching `measurement_{type}`, ordered by `valid_at DESC`
 
+#### Scenario: Owner measurement provenance
+- **WHEN** `measurement_log` writes a new owner-supplied measurement fact
+- **THEN** its metadata MUST carry the canonical `source='owner_log'` attribution key
+- **AND** `measurement_update` MUST preserve any existing canonical `source` or legacy `provider` attribution while changing the measurement's editable fields
+
 #### Scenario: Symptom tools as temporal fact wrappers
 - **WHEN** `symptom_log` is called
 - **THEN** it MUST internally call `store_fact` with `predicate='symptom'`, `valid_at=occurred_at`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={severity, condition_id, notes}`
