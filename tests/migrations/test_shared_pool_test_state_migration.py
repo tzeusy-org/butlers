@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from butlers.credential_store import _SECRETS_TABLE_DDL, _SECRETS_TEST_STATE_DDL
+from butlers.credential_store import _SECRETS_TABLE_DDL
 
 pytestmark = pytest.mark.unit
 
@@ -68,11 +68,7 @@ def test_migration_column_set_matches_core_106():
     assert tuple(col for col, _ in mod._TEST_STATE_COLUMNS) == _TEST_STATE_COLUMNS
 
 
-def test_ensure_secrets_schema_ddl_includes_test_state_columns():
-    """Fresh DBs created by ensure_secrets_schema must match the migrated shape:
-    the CREATE DDL carries the columns, and the convergence ALTER adds them to
-    pre-existing tables (idempotently)."""
+def test_fresh_schema_ddl_includes_test_state_columns():
+    """Fresh DBs receive the same columns that core_117 adds to existing tables."""
     for col in _TEST_STATE_COLUMNS:
         assert col in _SECRETS_TABLE_DDL, f"'{col}' missing from _SECRETS_TABLE_DDL"
-        assert col in _SECRETS_TEST_STATE_DDL, f"'{col}' missing from _SECRETS_TEST_STATE_DDL"
-    assert "ADD COLUMN IF NOT EXISTS" in _SECRETS_TEST_STATE_DDL

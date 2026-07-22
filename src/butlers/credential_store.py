@@ -118,6 +118,7 @@ def assert_entity_info_secured(info_type: str, secured: bool) -> None:
 
 _DEFAULT_SHARED_DB_NAME = "butlers"
 _ENV_SHARED_DB_NAME = "BUTLER_SHARED_DB_NAME"
+_SECRETS_CATEGORY_INDEX = "ix_butler_secrets_category"
 
 _SECRETS_TABLE_DDL = f"""
 CREATE TABLE IF NOT EXISTS {_TABLE} (
@@ -136,19 +137,8 @@ CREATE TABLE IF NOT EXISTS {_TABLE} (
 )
 """
 
-# Test-state columns (core_106 / core_117). Applied via ALTER on every
-# ensure_secrets_schema call so tables created before these columns existed
-# converge without depending on the alembic chain having run.
-_SECRETS_TEST_STATE_DDL = f"""
-ALTER TABLE {_TABLE}
-    ADD COLUMN IF NOT EXISTS last_verified TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS last_test_ok BOOLEAN,
-    ADD COLUMN IF NOT EXISTS last_test_code INTEGER,
-    ADD COLUMN IF NOT EXISTS last_test_message TEXT
-"""
-
 _SECRETS_CATEGORY_INDEX_DDL = f"""
-CREATE INDEX IF NOT EXISTS ix_butler_secrets_category
+CREATE INDEX IF NOT EXISTS {_SECRETS_CATEGORY_INDEX}
 ON {_TABLE} (category)
 """
 
@@ -735,11 +725,23 @@ def shared_db_name_from_env() -> str:
 
 
 async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:
-    """Ensure ``butler_secrets`` exists on the target database."""
+    """Provision ``butler_secrets`` only when the target schema lacks it.
+
+    The table DDL contains the complete current shape for a fresh database.
+    Alembic owns convergence for pre-existing tables: reissuing ``ALTER TABLE``
+    during every daemon or dashboard startup can block behind a plain
+    ``pg_dump`` relation lock and make readiness wait for the backup.
+    """
     async with _acquire_conn(pool) as conn:
-        await conn.execute(_SECRETS_TABLE_DDL)
-        await conn.execute(_SECRETS_TEST_STATE_DDL)
-        await conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
+        table_exists = await conn.fetchval("SELECT to_regclass($1::text) IS NOT NULL", _TABLE)
+        if not table_exists:
+            await conn.execute(_SECRETS_TABLE_DDL)
+
+        index_exists = await conn.fetchval(
+            "SELECT to_regclass($1::text) IS NOT NULL", _SECRETS_CATEGORY_INDEX
+        )
+        if not index_exists:
+            await conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
 
 
 async def resolve_owner_entity_info(pool: asyncpg.Pool, info_type: str) -> str | None:
