@@ -178,6 +178,33 @@ describe("Sidebar", () => {
       expect(brandDiv?.textContent).toContain("Butlers");
     });
 
+    it("marks desktop spend as incomplete instead of rendering an all-unpriced $0.00 subtotal", () => {
+      vi.mocked(useSpendSummary).mockReturnValue({
+        data: {
+          data: {
+            total_cost_usd: 0,
+            unpriced_models: [
+              {
+                model: "unknown-executed-model",
+                calls: 1,
+                input_tokens: 500,
+                output_tokens: 100,
+                cached_input_tokens: 0,
+                cache_creation_tokens: 0,
+              },
+            ],
+          },
+        },
+        isLoading: false,
+      } as ReturnType<typeof useSpendSummary>);
+
+      renderExpanded();
+
+      expect(container.textContent).toContain("Spend coverage incomplete");
+      expect(container.textContent).not.toContain("$0.00 today");
+      expect(container.textContent).not.toContain("All systems ok");
+    });
+
     it("renders a collapse toggle that invokes onToggleCollapse", () => {
       const onToggle = vi.fn();
       renderExpanded("/", onToggle);
@@ -355,6 +382,33 @@ describe("Sidebar", () => {
       renderMobile();
 
       expect(container.textContent).toContain("$26.27");
+    });
+
+    it("hides a mixed subtotal and names unpriced coverage in the mobile footer", () => {
+      vi.mocked(useSpendSummary).mockReturnValue({
+        data: {
+          data: {
+            total_cost_usd: 26.27,
+            unpriced_models: [
+              {
+                model: "unknown-executed-model",
+                calls: 1,
+                input_tokens: 500,
+                output_tokens: 100,
+                cached_input_tokens: 0,
+                cache_creation_tokens: 0,
+              },
+            ],
+          },
+        },
+        isLoading: false,
+      } as ReturnType<typeof useSpendSummary>);
+
+      renderMobile();
+
+      expect(container.textContent).not.toContain("$26.27");
+      expect(container.textContent).toContain("Spend coverage incomplete");
+      expect(container.textContent).toContain("unknown-executed-model");
     });
   });
 

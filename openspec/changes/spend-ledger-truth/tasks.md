@@ -35,3 +35,4 @@
 - [x] 5.2 Render summary/daily `source_error` as degraded evidence in every affected Spend consumer without changing known-zero behavior.
 - [x] 5.3 Preserve nullable known-cost subtotals and `unpriced_session_count` through ingestion event/list/window rollups, API contracts, and write-back.
 - [x] 5.4 Run the scoped backend/frontend/OpenSpec quality gates and prepare the existing PR for fresh review.
+- [x] 5.5 Preserve unpriced coverage through compact summary/mover/verdict consumers and align implicit Spend calendar defaults with the UTC ledger month, with all-unpriced/mixed and month-rollover regressions.

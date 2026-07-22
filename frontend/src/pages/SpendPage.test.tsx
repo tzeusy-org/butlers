@@ -188,6 +188,8 @@ function setHooks({
   priorByButler = {},
   currentUnavailable = [],
   priorUnavailable = [],
+  currentUnpriced = [],
+  priorUnpriced = [],
   currentError = false,
   priorError = false,
 }: {
@@ -195,6 +197,22 @@ function setHooks({
   priorByButler?: Record<string, number>
   currentUnavailable?: string[]
   priorUnavailable?: string[]
+  currentUnpriced?: Array<{
+    model: string
+    calls: number
+    input_tokens: number
+    output_tokens: number
+    cached_input_tokens: number
+    cache_creation_tokens: number
+  }>
+  priorUnpriced?: Array<{
+    model: string
+    calls: number
+    input_tokens: number
+    output_tokens: number
+    cached_input_tokens: number
+    cache_creation_tokens: number
+  }>
   currentError?: boolean
   priorError?: boolean
 } = {}) {
@@ -218,12 +236,18 @@ function setHooks({
     const isCurrent = call % 2 === 1
     const byButler = isCurrent ? currentByButler : priorByButler
     const unavailableButlers = isCurrent ? currentUnavailable : priorUnavailable
+    const unpricedModels = isCurrent ? currentUnpriced : priorUnpriced
     const isError = isCurrent ? currentError : priorError
     return {
       data: isError
         ? undefined
         : {
-            data: { total_cost_usd: 1, by_butler: byButler, unavailable_butlers: unavailableButlers },
+            data: {
+              total_cost_usd: 1,
+              by_butler: byButler,
+              unavailable_butlers: unavailableButlers,
+              unpriced_models: unpricedModels,
+            },
             meta: {},
           },
       isLoading: false,
@@ -772,6 +796,35 @@ describe("SpendPage — what changed", () => {
     const strip = await screen.findByTestId("movers-strip")
     expect(strip.textContent).toContain("spend comparison unavailable")
     expect(strip.textContent).not.toContain("No spend change vs the prior window")
+  })
+
+  it("suppresses movers and the calm spend verdict when either comparison window is unpriced", async () => {
+    setHooks({
+      currentByButler: { general: 1.0 },
+      priorByButler: { general: 0.2 },
+      currentUnpriced: [
+        {
+          model: "unknown-executed-model",
+          calls: 2,
+          input_tokens: 1_000,
+          output_tokens: 100,
+          cached_input_tokens: 0,
+          cache_creation_tokens: 0,
+        },
+      ],
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const strip = await screen.findByTestId("movers-strip")
+    expect(strip.textContent).toContain("comparison incomplete")
+    expect(strip.textContent).toContain("unknown-executed-model")
+    expect(strip.querySelectorAll('[data-testid="mover-chip"]').length).toBe(0)
+    expect(screen.queryByTestId("spend-verdict-all-clear")).toBeNull()
+    expect(screen.getByTestId("spend-verdict-clauses").textContent).toContain(
+      "comparison incomplete",
+    )
   })
 
   it("excludes a butler with unavailable cost data instead of fabricating a '+$X · new' delta (bu-qvnce.1)", async () => {

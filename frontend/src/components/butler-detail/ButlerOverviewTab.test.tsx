@@ -375,6 +375,43 @@ describe("ButlerOverviewTab -- partial-source verdicts", () => {
     expect(html).not.toContain("butler-detail-verdict-all-clear")
   })
 
+  it("hides a mixed priced subtotal when unpriced models leave this butler's spend incomplete", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: { data: [], meta: { total: 0 } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          by_butler: { general: 1.23 },
+          total_cost_usd: 1.23,
+          total_sessions: 7,
+          unpriced_models: [
+            {
+              model: "unknown-executed-model",
+              calls: 1,
+              input_tokens: 500,
+              output_tokens: 100,
+              cached_input_tokens: 0,
+              cache_creation_tokens: 0,
+            },
+          ],
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSpendSummary>)
+
+    const html = renderOverview()
+
+    expect(html).not.toContain("$1.23")
+    expect(html).toContain("unknown-executed-model")
+    expect(html).toContain("spend coverage incomplete")
+    expect(html).not.toContain("butler-detail-verdict-all-clear")
+  })
+
   it("names a partial approval source returned with HTTP 200", () => {
     vi.mocked(useApprovalActions).mockReturnValue({
       data: {

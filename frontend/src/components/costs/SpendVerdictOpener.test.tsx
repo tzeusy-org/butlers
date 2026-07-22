@@ -102,6 +102,39 @@ describe("SpendVerdictOpener -- clauses", () => {
     expect(html).toContain("inbox");
     expect(html).not.toContain("$/day pace");
   });
+
+  it("names all-unpriced forecast coverage instead of calculating a calm $0.00/day pace", () => {
+    const html = render(
+      <SpendVerdictOpener
+        forecast={{
+          ...FORECAST,
+          mtd_usd: 0,
+          unpriced_models: [
+            {
+              model: "unknown-executed-model",
+              calls: 2,
+              input_tokens: 1_000,
+              output_tokens: 100,
+              cached_input_tokens: 0,
+              cache_creation_tokens: 0,
+            },
+          ],
+        }}
+        forecastLoading={false}
+        forecastError={false}
+        currentByButler={{}}
+        priorByButler={{}}
+        unavailableButlers={new Set()}
+        moversLoading={false}
+        moversError={false}
+      />,
+    );
+
+    expect(html).toContain('data-testid="spend-verdict-clauses"');
+    expect(html).toContain("unknown-executed-model");
+    expect(html).toContain("unpriced model");
+    expect(html).not.toContain("$0.00/day pace");
+  });
 });
 
 describe("SpendVerdictOpener -- isError-suppression contract", () => {

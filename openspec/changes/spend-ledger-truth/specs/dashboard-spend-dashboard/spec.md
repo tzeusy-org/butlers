@@ -8,6 +8,7 @@ The dashboard SHALL expose the spend endpoints.
 - **THEN** the response is `ApiResponse[SpendSummary]` where `SpendSummary = {period, total_cost_usd, total_sessions, total_input_tokens, total_output_tokens, by_butler, by_model, unpriced_models, divergences, historical_attribution_note}`. There are no `total_usd`, `period_start`, or `period_end` fields.
 - **AND** every dollar amount, token actual, `by_butler` value, and `by_model` value is grouped from `public.token_usage_ledger` joined to `public.model_catalog` by `catalog_entry_id`, so it describes the model that actually consumed the tokens rather than `sessions.model`.
 - **AND** the router MUST NOT substitute per-butler session fan-out pricing when that ledger query is unavailable; it returns degraded source evidence instead of a plausible alternate dollar total.
+- **AND** implicit calendar defaults derive `today` from UTC, so preset summaries, the daily default range, MTD breakdown, and forecast elapsed-day calculation align with the UTC month used by the monthly-ceiling ledger helper.
 
 #### Scenario: Compatibility source errors are unavailable evidence in every summary and daily consumer
 - **WHEN** a compatibility-success (`200`) Spend summary response has `source_error: true`, or a daily Spend response has `meta.source_error: true`
@@ -25,6 +26,7 @@ The dashboard SHALL expose the spend endpoints.
 - **THEN** its numerical cost is omitted from the priced subtotal and it is included in `unpriced_models` as `{model, calls, input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens}`.
 - **AND** the API MUST NOT encode absent pricing as `0`, and the frontend renders the model as `—/unpriced` rather than a zero-valued bar or `$0.00` amount.
 - **AND** an explicitly classified `subscription` or `local` model with zero marginal rates remains a known numeric zero and is identified by `billing_classes`, not placed in `unpriced_models`.
+- **AND** when a relevant summary, daily, forecast, or comparison envelope has non-empty `unpriced_models`, Sidebar, Butler Spend/Overview, movers, and verdict consumers surface incomplete coverage and suppress partial dollar totals and calm pace/mover language; a numeric zero remains valid only when that envelope is empty.
 
 #### Scenario: Spend breakdown by purpose
 - **WHEN** `GET /api/spend/breakdown?by=purpose` is called

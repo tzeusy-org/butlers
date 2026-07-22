@@ -68,9 +68,17 @@ interface TrendPanelProps {
   data: number[];
   isLoading: boolean;
   isError: boolean;
+  coverageIncomplete: boolean;
 }
 
-function TrendPanel({ range, onRangeChange, data, isLoading, isError }: TrendPanelProps) {
+function TrendPanel({
+  range,
+  onRangeChange,
+  data,
+  isLoading,
+  isError,
+  coverageIncomplete,
+}: TrendPanelProps) {
   return (
     <Panel
       title="Daily spend trend"
@@ -84,6 +92,8 @@ function TrendPanel({ range, onRangeChange, data, isLoading, isError }: TrendPan
         <ErrorLine>Could not load spend trend.</ErrorLine>
       ) : isLoading ? (
         <LoadingLine />
+      ) : coverageIncomplete ? (
+        <EmptyLine>Spend trend omitted while price coverage is incomplete.</EmptyLine>
       ) : data.length === 0 ? (
         <EmptyLine>No spend data for this period.</EmptyLine>
       ) : (
@@ -107,9 +117,16 @@ interface ModelBreakdownPanelProps {
   totalCost: number;
   isLoading: boolean;
   isError: boolean;
+  coverageIncomplete: boolean;
 }
 
-function ModelBreakdownPanel({ byModel, totalCost, isLoading, isError }: ModelBreakdownPanelProps) {
+function ModelBreakdownPanel({
+  byModel,
+  totalCost,
+  isLoading,
+  isError,
+  coverageIncomplete,
+}: ModelBreakdownPanelProps) {
   // Sort models descending by cost
   const rows = useMemo(() => {
     const entries = Object.entries(byModel);
@@ -127,6 +144,8 @@ function ModelBreakdownPanel({ byModel, totalCost, isLoading, isError }: ModelBr
         <ErrorLine>Could not load model breakdown.</ErrorLine>
       ) : isLoading ? (
         <LoadingLine />
+      ) : coverageIncomplete ? (
+        <EmptyLine>Model costs omitted while price coverage is incomplete.</EmptyLine>
       ) : rows.length === 0 ? (
         <EmptyLine>No model usage data available.</EmptyLine>
       ) : (
@@ -200,8 +219,22 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   const todaySourceError = todaySummary?.data?.source_error === true;
   const summary30dSourceError = summary30d?.data?.source_error === true;
   const dailySourceError = dailyCostsResp?.meta?.source_error === true;
-  const todayUnavailable = todayError || todaySourceError;
-  const summary30dUnavailable = error30d || summary30dSourceError;
+  const todayUnpricedModels = todaySummary?.data?.unpriced_models ?? [];
+  const summary30dUnpricedModels = summary30d?.data?.unpriced_models ?? [];
+  const dailyUnpricedModels = dailyCostsResp?.meta?.unpriced_models ?? [];
+  const todayCoverageIncomplete = todayUnpricedModels.length > 0;
+  const summary30dCoverageIncomplete = summary30dUnpricedModels.length > 0;
+  const dailyCoverageIncomplete = dailyUnpricedModels.length > 0;
+  const allUnpricedModelNames = Array.from(
+    new Set(
+      [...todayUnpricedModels, ...summary30dUnpricedModels, ...dailyUnpricedModels].map(
+        ({ model }) => model,
+      ),
+    ),
+  ).sort();
+  const hasUnpricedCoverage = allUnpricedModelNames.length > 0;
+  const todayUnavailable = todayError || todaySourceError || todayCoverageIncomplete;
+  const summary30dUnavailable = error30d || summary30dSourceError || summary30dCoverageIncomplete;
   const dailyUnavailable = dailyError || dailySourceError;
 
   // ---------------------------------------------------------------------------
@@ -209,7 +242,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   // ---------------------------------------------------------------------------
 
   // KPI 1: Spend today — total_cost_usd from butler-scoped summary
-  const spendToday = !todaySourceError && todaySummary
+  const spendToday = !todayUnavailable && todaySummary
     ? (todaySummary.data?.total_cost_usd ?? 0)
     : null;
   const spendTodayValue = todayLoading
@@ -221,7 +254,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         : "—";
 
   // KPI 2: Spend 30d — total_cost_usd from butler-scoped summary
-  const spend30d = !summary30dSourceError && summary30d
+  const spend30d = !summary30dUnavailable && summary30d
     ? (summary30d.data?.total_cost_usd ?? 0)
     : null;
   const spend30dValue = loading30d
@@ -233,7 +266,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         : "—";
 
   // KPI 3: Cost per session — per-butler 30d cost / per-butler session count
-  const total30dCost = summary30dSourceError ? 0 : (summary30d?.data?.total_cost_usd ?? 0);
+  const total30dCost = summary30dUnavailable ? 0 : (summary30d?.data?.total_cost_usd ?? 0);
   const total30dSessions = summary30d?.data?.total_sessions ?? 0;
   const costPerSession =
     total30dSessions > 0 ? total30dCost / total30dSessions : null;
@@ -250,7 +283,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   const outputTokens = todaySourceError ? 0 : (todaySummary?.data?.total_output_tokens ?? 0);
   const tokenValue = todayLoading
     ? "..."
-    : todayUnavailable
+    : todayError || todaySourceError
       ? "—"
       : `${formatTokenCount(inputTokens)} in / ${formatTokenCount(outputTokens)} out`;
 
@@ -261,9 +294,9 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   }, [dailyCostsResp]);
 
   // Model breakdown from butler-scoped 30d summary
-  const byModel = summary30dSourceError ? {} : (summary30d?.data?.by_model ?? {});
+  const byModel = summary30dUnavailable ? {} : (summary30d?.data?.by_model ?? {});
   const modelBreakdownLoading = loading30d;
-  const modelBreakdownError = summary30dUnavailable;
+  const modelBreakdownError = error30d || summary30dSourceError;
 
   return (
     <ButlerPanelGrid data-testid="spend-tab">
@@ -273,6 +306,14 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
           label="Spend source unavailable"
           detail="compatibility totals and trend hidden"
           testId="spend-source-unavailable"
+        />
+      )}
+      {hasUnpricedCoverage && (
+        <SourceDegradedNote
+          className="col-span-1 lg:col-span-4"
+          label="Spend coverage incomplete"
+          detail={`unpriced model usage: ${allUnpricedModelNames.join(", ")}`}
+          testId="spend-unpriced-coverage"
         />
       )}
       {/* Row 1: KPI strip — 4 cells */}
@@ -323,6 +364,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         data={trendData}
         isLoading={dailyLoading}
         isError={dailyUnavailable}
+        coverageIncomplete={dailyCoverageIncomplete}
       />
 
       {/* Row 3: Model breakdown full-width */}
@@ -331,6 +373,7 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
         totalCost={total30dCost}
         isLoading={modelBreakdownLoading}
         isError={modelBreakdownError}
+        coverageIncomplete={summary30dCoverageIncomplete}
       />
     </ButlerPanelGrid>
   );

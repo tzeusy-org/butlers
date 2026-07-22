@@ -545,6 +545,72 @@ describe("ButlerSpendTab — compatibility source errors", () => {
   });
 });
 
+describe("ButlerSpendTab — unpriced coverage", () => {
+  afterEach(() => cleanup());
+
+  function setupUnpricedCoverage(totalCost: number) {
+    const unpriced = [
+      {
+        model: "unknown-executed-model",
+        calls: 2,
+        input_tokens: 1_000,
+        output_tokens: 100,
+        cached_input_tokens: 0,
+        cache_creation_tokens: 0,
+      },
+    ];
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          period: "today",
+          total_cost_usd: totalCost,
+          total_sessions: 2,
+          total_input_tokens: 1_000,
+          total_output_tokens: 100,
+          by_butler: { [BUTLER_NAME]: totalCost },
+          by_model: { "known-model": totalCost },
+          unpriced_models: unpriced,
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSpendSummary>);
+    vi.mocked(useDailySpend).mockReturnValue({
+      data: { ...DAILY_COSTS, meta: { unpriced_models: unpriced } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useDailySpend>);
+  }
+
+  it("hides an all-unpriced $0.00 subtotal behind explicit unknown coverage", () => {
+    vi.resetAllMocks();
+    setupUnpricedCoverage(0);
+
+    renderTab();
+
+    const strip = screen.getByTestId("spend-kpi-strip");
+    expect(strip.textContent).not.toContain("$0.00");
+    expect(screen.getByTestId("spend-unpriced-coverage").textContent).toContain(
+      "unknown-executed-model",
+    );
+    expect(screen.queryByTestId("model-breakdown-list")).toBeNull();
+  });
+
+  it("does not calculate calm mixed-coverage costs from a partial priced subtotal", () => {
+    vi.resetAllMocks();
+    setupUnpricedCoverage(3.25);
+
+    renderTab();
+
+    const strip = screen.getByTestId("spend-kpi-strip");
+    expect(strip.textContent).not.toContain("$3.25");
+    expect(strip.textContent).toContain("—");
+    expect(screen.getByTestId("spend-unpriced-coverage").textContent).toContain(
+      "Spend coverage incomplete",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tests: butler-scoped daily costs and "all butlers" residual notes [bu-u1c02]
 // ---------------------------------------------------------------------------

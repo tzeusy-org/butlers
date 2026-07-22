@@ -9,7 +9,7 @@ by-schedule contract + zero-div guard.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -2339,3 +2339,88 @@ async def test_by_schedule_db_and_mcp_both_fail_marks_unavailable(app):
     body = resp.json()
     assert body["data"] == []
     assert body["meta"]["unavailable_butlers"] == ["finance"]
+
+
+async def test_utc_today_keeps_spend_defaults_and_ledger_mtd_on_one_month_at_rollover(
+    app, monkeypatch
+):
+    """UTC 00:30 on Aug 1 is still Jul 31 for a west-of-UTC host.
+
+    Preset summaries, daily defaults, MTD breakdown, the forecast denominator,
+    and the ledger MTD used by the ceiling must all remain on Aug 1.  Letting
+    ``date.today()`` leak into the API would query Jul 31 while the ledger
+    gate's SQL is already explicitly UTC.
+    """
+    from butlers.api.routers import spend as spend_router
+    from butlers.core import model_routing
+
+    class UtcRolloverDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> UtcRolloverDatetime:
+            assert tz is UTC
+            return cls(2026, 8, 1, 0, 30, tzinfo=UTC)
+
+    monkeypatch.setattr(spend_router, "datetime", UtcRolloverDatetime)
+    # Do not monkeypatch the module's ``date`` name: FastAPI resolves the
+    # endpoint annotations lazily.  The explicit helper is the seam shared by
+    # all date-defaulting spend routes, while this frozen UTC instant models a
+    # west-of-UTC host that would still report July 31 from ``date.today()``.
+    assert spend_router._utc_today() == date(2026, 8, 1)
+
+    usage_row = _ledger_row(
+        day=date(2026, 8, 1),
+        model_id="claude-haiku-35-20241022",
+        input_tokens=1_000,
+        output_tokens=100,
+    )
+    pool = _mock_forecast_ledger_pool([usage_row], {"monthly_usd": 10.0})
+    _wire_db(app, _mock_db({"switchboard": pool}))
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        summary = await client.get("/api/spend?period=today")
+        daily = await client.get("/api/spend/daily")
+        breakdown = await client.get("/api/spend/breakdown?by=butler")
+        forecast = await client.get("/api/spend/forecast")
+
+    assert (
+        summary.status_code
+        == daily.status_code
+        == breakdown.status_code
+        == forecast.status_code
+        == 200
+    )
+    forecast_data = forecast.json()["data"]
+    assert forecast_data["days_elapsed"] == 1
+    assert forecast_data["mtd_usd"] == pytest.approx(0.0012)
+    assert forecast_data["projected_eom_usd"] == pytest.approx(0.0012 * 31)
+
+    # The forecast's MTD is the same UTC-ledger subtotal as the pre-spawn
+    # ceiling helper, whose query explicitly derives the start from UTC now.
+    ledger_mtd = await spend_router.price_mtd_from_ledger(pool, _flat_pricing())
+    assert forecast_data["mtd_usd"] == pytest.approx(ledger_mtd.cost_usd)
+    assert "now() AT TIME ZONE 'UTC'" in model_routing._MTD_USAGE_BY_MODEL_SQL
+
+    expected_start = datetime(2026, 8, 1, tzinfo=UTC)
+    expected_end = datetime(2026, 8, 2, tzinfo=UTC)
+    ranged_ledger_calls = [
+        call
+        for call in pool.fetch.await_args_list
+        if call.args[0] == spend_router._LEDGER_USAGE_BY_DAY_SQL
+    ]
+    assert len(ranged_ledger_calls) == 4
+    observed_ranges = [
+        (call.args[1].isoformat(), call.args[2].isoformat(), call.args[3])
+        for call in ranged_ledger_calls
+    ]
+    assert observed_ranges == [
+        # preset=today
+        (expected_start.isoformat(), expected_end.isoformat(), None),
+        # /daily default: UTC today and the preceding six UTC days
+        (datetime(2026, 7, 26, tzinfo=UTC).isoformat(), expected_end.isoformat(), None),
+        # MTD breakdown and forecast
+        (expected_start.isoformat(), expected_end.isoformat(), None),
+        (expected_start.isoformat(), expected_end.isoformat(), None),
+    ]

@@ -161,9 +161,14 @@ def _utc_day_bounds(from_date: date, to_date: date) -> tuple[datetime, datetime]
     )
 
 
+def _utc_today() -> date:
+    """Return the UTC calendar day shared by spend API and ledger windows."""
+    return datetime.now(UTC).date()
+
+
 def _period_bounds(period: str) -> tuple[date, date]:
     """Resolve the established Spend presets to inclusive calendar dates."""
-    today = date.today()
+    today = _utc_today()
     if period == "today":
         return today, today
     if period == "7d":
@@ -865,7 +870,7 @@ async def get_daily_costs(
     does not fall back to ``sessions_daily`` for money.
     """
     if to_date is None:
-        to_date = date.today()
+        to_date = _utc_today()
     if from_date is None:
         from_date = to_date - timedelta(days=6)
 
@@ -1423,7 +1428,7 @@ async def get_spend_breakdown(
     path; a richer feature taxonomy is deferred to a future revision.
     """
     if by in {"butler", "model", "purpose"}:
-        today = date.today()
+        today = _utc_today()
         month_start = today.replace(day=1)
         rows = await _fetch_ledger_usage(db, month_start, today)
         attribution_note = _historical_attribution_note(month_start)
@@ -1570,7 +1575,7 @@ async def get_spend_forecast(
     TODO: replace the naive daily-rate extrapolation with a smarter estimator
     (per-butler decay weighting, weekend vs weekday adjustment, etc.)
     """
-    today = date.today()
+    today = _utc_today()
     month_start = today.replace(day=1)
     days_in_month = calendar.monthrange(today.year, today.month)[1]
     days_elapsed = (today - month_start).days + 1  # inclusive of today

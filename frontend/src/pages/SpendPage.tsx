@@ -556,6 +556,7 @@ function MoversStrip({
   isLoading,
   isError,
   unavailableButlers,
+  unpricedModels,
 }: {
   current: Record<string, number>
   prior: Record<string, number>
@@ -563,10 +564,13 @@ function MoversStrip({
   isLoading: boolean
   isError: boolean
   unavailableButlers: ReadonlySet<string>
+  unpricedModels: readonly UnpricedModelUsage[]
 }) {
+  const coverageIncomplete = unpricedModels.length > 0
+  const unpricedNames = Array.from(new Set(unpricedModels.map(({ model }) => model))).sort()
   const movers = useMemo(
-    () => computeMovers(current, prior, unavailableButlers),
-    [current, prior, unavailableButlers],
+    () => (coverageIncomplete ? [] : computeMovers(current, prior, unavailableButlers)),
+    [coverageIncomplete, current, prior, unavailableButlers],
   )
 
   return (
@@ -586,6 +590,11 @@ function MoversStrip({
           </div>
         ) : isError ? (
           <SourceDegradedNote label="Movers" detail="spend comparison unavailable" />
+        ) : coverageIncomplete ? (
+          <SourceDegradedNote
+            label="Movers"
+            detail={`spend comparison incomplete: ${unpricedNames.length} unpriced model${unpricedNames.length === 1 ? "" : "s"} (${unpricedNames.join(", ")})`}
+          />
         ) : movers.length === 0 ? (
           <p className="font-serif italic text-muted-foreground text-sm">
             No spend change vs the prior window.
@@ -597,7 +606,7 @@ function MoversStrip({
             ))}
           </div>
         )}
-        {!isLoading && !isError && unavailableButlers.size > 0 && (
+        {!isLoading && !isError && !coverageIncomplete && unavailableButlers.size > 0 && (
           <SourceDegradedNote
             label="Movers"
             detail={`excluded from comparison, cost source unavailable: ${Array.from(unavailableButlers).join(", ")}`}
@@ -1780,6 +1789,22 @@ export default function SpendPage() {
   const currentSummarySourceError = currentSummary?.data?.source_error === true
   const priorSummarySourceError = priorSummary?.data?.source_error === true
   const moversSourceError = currentSummarySourceError || priorSummarySourceError
+  const comparisonUnpricedModels = useMemo(
+    () => [
+      ...(currentSummary?.data?.unpriced_models ?? []),
+      ...(priorSummary?.data?.unpriced_models ?? []),
+    ],
+    [currentSummary, priorSummary],
+  )
+  const comparisonCoverageIncomplete = comparisonUnpricedModels.length > 0
+  const currentByButler =
+    currentSummarySourceError || comparisonCoverageIncomplete
+      ? {}
+      : (currentSummary?.data?.by_butler ?? {})
+  const priorByButler =
+    priorSummarySourceError || comparisonCoverageIncomplete
+      ? {}
+      : (priorSummary?.data?.by_butler ?? {})
 
   return (
     <Page archetype="overview" title="Spend">
@@ -1792,14 +1817,15 @@ export default function SpendPage() {
           forecast={liveForecast}
           forecastLoading={forecastLoading}
           forecastError={forecastError}
-          currentByButler={currentSummarySourceError ? {} : (currentSummary?.data?.by_butler ?? {})}
-          priorByButler={priorSummarySourceError ? {} : (priorSummary?.data?.by_butler ?? {})}
+          currentByButler={currentByButler}
+          priorByButler={priorByButler}
           unavailableButlers={
             new Set([
               ...(currentSummary?.data?.unavailable_butlers ?? []),
               ...(priorSummary?.data?.unavailable_butlers ?? []),
             ])
           }
+          comparisonUnpricedModels={comparisonUnpricedModels}
           moversLoading={currentSummaryLoading || priorSummaryLoading}
           moversError={currentSummaryError || priorSummaryError || moversSourceError}
         />
@@ -1947,8 +1973,8 @@ export default function SpendPage() {
 
         {/* What changed: movers strip */}
         <MoversStrip
-          current={currentSummarySourceError ? {} : (currentSummary?.data?.by_butler ?? {})}
-          prior={priorSummarySourceError ? {} : (priorSummary?.data?.by_butler ?? {})}
+          current={currentByButler}
+          prior={priorByButler}
           windowDays={windowDays}
           isLoading={currentSummaryLoading || priorSummaryLoading}
           isError={currentSummaryError || priorSummaryError || moversSourceError}
@@ -1958,6 +1984,7 @@ export default function SpendPage() {
               ...(priorSummary?.data?.unavailable_butlers ?? []),
             ])
           }
+          unpricedModels={comparisonUnpricedModels}
         />
 
         {/* What changed: time window + honest per-butler-per-day stacked chart */}

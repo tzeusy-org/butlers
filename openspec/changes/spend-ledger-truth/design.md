@@ -83,6 +83,11 @@ purpose breakdowns, and forecast use the same structured pricing conversion.
 Session fan-out may still provide non-monetary session doors or diagnostics,
 but it is never used to choose a model price or total a named aggregate.
 
+Every implicit Spend "today" uses the UTC clock. That keeps preset summaries,
+the seven-day daily default, MTD breakdowns, forecast elapsed-day math, and the
+monthly-ceiling ledger helper on the same calendar month at a local-timezone
+rollover.
+
 This keeps all four dollar-bearing aggregate surfaces on one source. The
 previous fan-out cannot be retained as a fallback: a fallback that changes the
 source of truth would revive the requested-versus-executed attribution bug.
@@ -113,6 +118,12 @@ with their billing class. Summary/forecast/chart areas use a source-degraded
 note to name unpriced coverage, ceiling blindness, material divergence, and
 the pre-fix attribution window instead of attaching a deceptive zero to any
 of those cases.
+
+That rule also applies to compact and synthesized summary consumers: Butler
+Spend and Overview, desktop/mobile Sidebar, SpendPage movers, and spend
+verdicts suppress partial dollar totals and calm pace/mover language whenever
+their relevant `unpriced_models` envelope is non-empty. A numeric `$0.00`
+remains valid only when the relevant coverage is complete.
 
 ### 6. Compatibility envelopes and session-cost coverage carry their unknown state
 
