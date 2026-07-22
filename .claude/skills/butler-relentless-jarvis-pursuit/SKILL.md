@@ -161,3 +161,29 @@ run is *planning*, not execution. Always:
 - If the fleet is mid-execution on a prior pursuit epic, prefer auditing surfaces it has
   already landed (to measure) and lenses it is not touching (to ideate); note the overlap in
   the report instead of filing colliding beads.
+- **Stagger the fan-out over 12–16 hours (MANDATORY default).** A full-concurrency run blows
+  through the owner's 5-hour usage window. Structure the Workflow script for staggered
+  execution: order all fan-out `agent()` thunks deterministically, split them into hourly
+  batches of 2–3 via `BATCH_SIZES` and an `args.batch` cumulative counter (run batches
+  `0..args.batch-1` sequentially, each `await parallel(slice)`; return a partial result if
+  batches remain, run synthesis only after the final batch). Launch batch 1, then re-invoke
+  with `{scriptPath, resumeFromRunId: <previous run id>, args: {batch: N+1}}` on each hourly
+  `ScheduleWakeup(3600)` tick — prior batches hit the resume cache so only the newest batch
+  runs live. Keep a state file in the scratchpad (last batch, last run id) so wakeups survive
+  context summarization. Workflow-completion notifications are informational only — never
+  launch the next batch early on one; the wakeup drives the cadence. Only run all batches
+  at once if the owner explicitly says the usage limit is not a concern.
+- **Persist every batch's results to disk immediately (quota-disruption safety).** Never let
+  harvested findings live only in conversation context or an unfinished Workflow run: a
+  usage-limit cutoff mid-run must lose at most one batch. After each batch's completion
+  notification, harvest its agents' structured outputs from the run's transcript dir
+  (`journal.jsonl` records each `agent()` return value; `agent-<id>.jsonl` files are the
+  fallback) and append them to a durable harvest file (e.g.
+  `docs/redesigns/<date>-jarvis-pursuit-harvest.json` or the scratchpad state dir), keyed by
+  agent label. The state file (last batch, last run id, harvest path) plus the harvest file
+  must together be sufficient to resume or hand-synthesize the run from a cold start — the
+  final synthesis/dossier can then be rebuilt from disk even if the resume chain or session
+  context is lost.
+- **Precedent:** run 06 (2026-07-22) executed 26 agents as `[3,2,2,2,2,2,2,2,2,2,2,2]`
+  hourly batches after an all-at-once launch had to be killed mid-flight to protect the
+  owner's limit.
