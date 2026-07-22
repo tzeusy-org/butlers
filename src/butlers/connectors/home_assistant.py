@@ -147,7 +147,7 @@ def _domain_allowlist_with_defaults(domains: Iterable[str]) -> frozenset[str]:
 
 
 # Health states per spec §8
-HealthState = Literal["healthy", "degraded", "error", "starting"]
+HealthState = Literal["healthy", "degraded", "error"]
 
 # ---------------------------------------------------------------------------
 # WebSocket event types subscribed by the connector (task 3.3)
@@ -1248,11 +1248,12 @@ class HAConnector:
     - ``error``    — HA unreachable and REST fallback also failing
     - ``degraded`` — WebSocket down but REST polling active, or discretion LLM unavailable
     - ``healthy``  — WebSocket connected and all pipeline services responsive
-    - ``starting`` — Process started, not yet connected
+    Startup is reported as ``degraded`` until the first connection attempt completes.
 
     Transport mode in heartbeat (task 8.2):
     ``status.error_message`` includes the current transport mode:
-    ``"transport=websocket"`` or ``"transport=rest_fallback, ws_reconnect_attempts=N"``
+    ``"transport=starting"``, ``"transport=websocket"``, or
+    ``"transport=rest_fallback, ws_reconnect_attempts=N"``.
     """
 
     def __init__(
@@ -1372,12 +1373,11 @@ class HAConnector:
         Returns:
             ``(state, error_message)`` where state is one of:
             - ``"healthy"``  — WebSocket connected, discretion available
-            - ``"degraded"`` — WS down but REST active, or discretion unavailable
+            - ``"degraded"`` — Startup, WS down with REST active, or discretion unavailable
             - ``"error"``    — HA unreachable and REST also failing
-            - ``"starting"`` — Process started, no connection yet
         """
         if self._starting:
-            return ("starting", "transport=starting")
+            return ("degraded", "transport=starting")
 
         # Task 8.2: include transport mode in error_message
         transport_msg = self._build_transport_message()

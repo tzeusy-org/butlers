@@ -850,6 +850,14 @@ def test_spotify_health_reports_revocation_as_error_and_api_failure_as_degraded(
     )
 
 
+def test_spotify_startup_health_uses_canonical_degraded_state() -> None:
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+
+    assert connector._get_health_state() == ("degraded", "transport=starting")
+
+
 @pytest.mark.asyncio
 async def test_spotify_resource_401_after_successful_refresh_stays_degraded() -> None:
     """A resource-API rejection is not token-endpoint proof of revocation."""
