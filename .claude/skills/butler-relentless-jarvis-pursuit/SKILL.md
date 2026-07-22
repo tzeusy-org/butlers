@@ -118,11 +118,11 @@ new butler or manifesto amendment it implies).
 
 ## Phase 3 — Synthesis (single agent, barrier after Phases 1–2)
 
-Run this one on `opus` at `high` effort (`agent(prompt, {model:'opus', effort:'high'})`) — it is
-the ~1 agent whose cross-agent reasoning and doctrine calls the whole dossier hinges on, so it is
-where spend is justified. Read its inputs from the durable **harvest file**, not from live agent
-returns, so synthesis works even if the resume chain or session context was lost (see
-Execution discipline §3).
+Synthesis is the strategic core of the run, so keep it on the **`fable` orchestrator** — do it
+inline (preferred: the orchestrator already holds the run's context and doctrine), or spawn one
+`fable`/`opus`-`high` agent if you want a clean context window. Either way, read its inputs from the
+durable **harvest file**, not from live agent returns, so synthesis works even if the resume chain
+or session context was lost (see Execution discipline §3).
 
 - Dedupe across agents and against the known ledger once more.
 - Produce: tier board (with movement vs. baseline), systemic themes (cross-page defects with
@@ -187,18 +187,21 @@ never concurrency).
 
 ### 2. Dynamic model routing by task complexity
 
-Do not run every agent on the most expensive model — the fan-out is the spend, and most of it is
-scoped work a mid model does well. Assign per agent class via `agent(prompt, {model, effort})`
-(inherit the session model only when genuinely unsure which tier fits):
+Tier each agent to the actual difficulty of its task — don't blanket the fan-out on one model in
+either direction. Assign via `agent(prompt, {model, effort})`:
 
-| Agent class | `model` | `effort` | Why |
+| Role | `model` | `effort` | Why |
 |---|---|---|---|
-| Per-page UX auditors; ecosystem lens ideators (the bulk, ~25 agents) | `sonnet` | `medium` | Capable enough for scoped design critique / ideation, far cheaper than opus |
+| **Orchestrator** (this session) — Phase 0 grounding, surface/flow clustering, batch planning, Phase 3 synthesis + dossier authorship | **`fable`** | — | The strategic brain of the run: every high-order judgment (what to audit, how to cluster, what the findings *mean*) stays here. Leverage its intelligence deliberately. |
+| Planning-heavy fan-out — the 4 cross-cutting sweepers and the ecosystem lens ideators (they reason across the whole system and must name real integration points) | `opus` | `high` | Genuinely complex cross-system planning; `sonnet` under-powers it |
+| Per-page UX auditors — one scoped surface each (the ~20-agent bulk) | `sonnet` | `medium` | Scoped design critique against a known bar; capable here, far cheaper than opus |
 | Mechanical passes — surface scoping, QC wiring checks, dedup-vs-ledger extraction | `haiku` | `low` | Pattern-matching and extraction, not judgement |
-| Phase 3 synthesis; north-star tier adjudication; the hardest lenses (inference-flow, knowledge-graph) | `opus` | `high` | Cross-agent reasoning and doctrine calls where quality dominates cost (~1–3 agents) |
 
-Downtiering the ~25-agent bulk from opus to `sonnet` is the single largest spend reduction
-available; reserve `opus` for the few agents the dossier's correctness truly hinges on.
+The lever is *targeting*, not blanket-cheapening. The ~20 single-surface audits (the real bulk) go
+to `sonnet`; anything doing cross-system planning or ideation stays on `opus`/`high`; and the run's
+strategic judgment — orchestration and synthesis — stays on the `fable` orchestrator. **When
+genuinely unsure which tier a task needs, round _up_, not down** — a weak plan costs more than the
+model that would have made a good one.
 
 ### 3. Checkpoint every agent to disk — a kill loses at most one agent
 

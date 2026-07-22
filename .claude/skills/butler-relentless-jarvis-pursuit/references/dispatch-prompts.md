@@ -56,7 +56,8 @@ that teach), `visual-language` (Dispatch spec adherence, token usage, chart lang
 `interaction-speed` (polling vs streams, optimistic mutations, latency budgets, preloading),
 `accessibility` (keyboard operability, focus, contrast, semantics, reduced motion).
 
-**Model:** `sonnet` / `medium`.
+**Model:** `opus` / `high` — planning-heavy: one agent generalizing patterns across every surface
+and proposing the unifying mechanism. Too much cross-system reasoning for `sonnet`.
 
 ```
 {PREAMBLE}
@@ -70,8 +71,8 @@ shared hook, token) not just the symptom list.
 
 ## Ecosystem lens ideator (Phase 2, one per lens)
 
-**Model:** `sonnet` / `medium` — except the **inference-flow** and **knowledge-graph** lenses,
-which run `opus` / `high` (their reasoning is load-bearing for the dossier).
+**Model:** `opus` / `high` — ecosystem ideation is complex cross-system planning (name the exact
+modules, schemas, specs, and APIs a proposal touches); `sonnet` under-powers it.
 
 ```
 {PREAMBLE}
@@ -120,8 +121,9 @@ Ecosystem agents use the same schema with `verdict: "n/a"` and proposals in `mov
 
 ## Synthesis agent (Phase 3, barrier)
 
-**Model:** `opus` / `high`. Feed it the harvested JSON from disk (the durable harvest file), not
-live agent returns, so it survives a lost resume chain.
+**Model:** the **`fable` orchestrator**, inline (preferred) or as a spawned `fable`/`opus`-`high`
+agent. Feed it the harvested JSON from disk (the durable harvest file), not live agent returns, so
+it survives a lost resume chain.
 
 ```
 You receive the full JSON output of {N} auditors/ideators (attached below) plus the known
