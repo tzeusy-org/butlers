@@ -18,7 +18,7 @@ metadata:
     - tze
     - Claude Fable 5
   status: active
-  last_reviewed: "2026-07-04"
+  last_reviewed: "2026-07-22"
 compatibility: >
   Needs repo-root access, bd (beads) against the shared Dolt server, and the Workflow tool
   for the fan-out. The dev stack being up is optional (auditors work statically; live
@@ -118,6 +118,12 @@ new butler or manifesto amendment it implies).
 
 ## Phase 3 — Synthesis (single agent, barrier after Phases 1–2)
 
+Run this one on `opus` at `high` effort (`agent(prompt, {model:'opus', effort:'high'})`) — it is
+the ~1 agent whose cross-agent reasoning and doctrine calls the whole dossier hinges on, so it is
+where spend is justified. Read its inputs from the durable **harvest file**, not from live agent
+returns, so synthesis works even if the resume chain or session context was lost (see
+Execution discipline §3).
+
 - Dedupe across agents and against the known ledger once more.
 - Produce: tier board (with movement vs. baseline), systemic themes (cross-page defects with
   exemplars), and a single ranked move list (~10–15 moves) mixing UX moves and ecosystem
@@ -152,38 +158,76 @@ run is *planning*, not execution. Always:
 5. Release is the owner's move: closing the gate bead un-blocks the children and the fleet
    executes. Say this explicitly in the final report.
 
-## Scaling and cadence
+## Execution discipline (throttle · model routing · checkpoint · resume)
 
-- Default scale: ~20–25 page-surface agents + 4 cross-cutting + ~5 lens agents + 1 synthesis.
-  Honor any `+Nk` token budget the owner gives (Workflow `budget`).
+This skill's fan-out **must not spike the owner's usage window.** A run that violates any of the
+four rules below is a defect, not a style choice — this is the `/th-engineering` bar applied to
+the orchestration script itself: deterministic ordering, idempotent resume, fail-safe writes, no
+silent caps. Prefer a boring, resumable script over a clever one.
+
+### 1. Throttle — never more than 3 agents in flight at once
+
+The **only** sanctioned launch path is staggered hourly batches. There is no "all-at-once" mode;
+do not offer or build one even under a `+Nk` budget (a larger budget buys *depth over hours*,
+never concurrency).
+
+- Order all fan-out `agent()` thunks deterministically, split them into batches of **2–3** via a
+  `BATCH_SIZES` array and an `args.batch` cumulative counter. Run batches `0..args.batch-1`
+  **sequentially**, each as a single `await parallel(slice)` where **`slice.length <= 3`**.
+- **Never pass the full agent array to one `parallel()`/`pipeline()` call** — that hands Workflow
+  its default up-to-16-way concurrency and is exactly the mistake that spiked the owner 5%→80% in
+  ~15 min on run 06. Batch, always.
+- Guard it in code before the first launch: `if (Math.max(...BATCH_SIZES) > 3) throw ...`, and
+  `log()` the batch plan so the cap is auditable from the run output.
+- One batch per hourly `ScheduleWakeup(3600)` tick: launch batch 1, then re-invoke with
+  `{scriptPath, resumeFromRunId: <previous run id>, args: {batch: N+1}}` each tick — prior batches
+  hit the resume cache so only the newest 2–3 agents run live. Run synthesis only after the final
+  batch. **Workflow-completion notifications are informational only** — never launch the next
+  batch early on one; the wakeup drives the cadence. Full ~26-agent run ≈ 12–16h wall clock.
+
+### 2. Dynamic model routing by task complexity
+
+Do not run every agent on the most expensive model — the fan-out is the spend, and most of it is
+scoped work a mid model does well. Assign per agent class via `agent(prompt, {model, effort})`
+(inherit the session model only when genuinely unsure which tier fits):
+
+| Agent class | `model` | `effort` | Why |
+|---|---|---|---|
+| Per-page UX auditors; ecosystem lens ideators (the bulk, ~25 agents) | `sonnet` | `medium` | Capable enough for scoped design critique / ideation, far cheaper than opus |
+| Mechanical passes — surface scoping, QC wiring checks, dedup-vs-ledger extraction | `haiku` | `low` | Pattern-matching and extraction, not judgement |
+| Phase 3 synthesis; north-star tier adjudication; the hardest lenses (inference-flow, knowledge-graph) | `opus` | `high` | Cross-agent reasoning and doctrine calls where quality dominates cost (~1–3 agents) |
+
+Downtiering the ~25-agent bulk from opus to `sonnet` is the single largest spend reduction
+available; reserve `opus` for the few agents the dossier's correctness truly hinges on.
+
+### 3. Checkpoint every agent to disk — a kill loses at most one agent
+
+Never let harvested findings live only in conversation context or an unfinished Workflow run.
+
+- After **each batch** completes (2–3 agents), harvest their structured outputs from the run's
+  transcript dir — `journal.jsonl` records each `agent()` return value; `agent-<id>.jsonl` files
+  are the fallback — and **append** them to a durable harvest file
+  (`docs/redesigns/<date>-jarvis-pursuit-harvest.json` or the scratchpad state dir), keyed by
+  agent label.
+- Write **atomically**: write to a temp path in the same dir and `rename()` over the target, so a
+  crash mid-write never leaves a torn/half-JSON file.
+- Maintain a small state file `{last_batch, last_run_id, harvest_path, batch_plan, models}` next
+  to it, updated after every batch. The harvest file **plus** the state file must together be
+  sufficient to resume **or** hand-synthesize the run from a cold start. Phase 3 reads its inputs
+  from the harvest file, not from live agent returns — so the dossier can be rebuilt from disk
+  even if the resume chain or the session context is lost.
+
+### 4. Cadence, scale, and resume hygiene
+
+- Default scale: ~20–25 page-surface + 4 cross-cutting + ~5 lens + 1 synthesis, delivered as
+  2–3-wide hourly batches. Honor any `+Nk` budget as **depth**, never concurrency.
+- Keep the state file current so wakeups survive context summarization.
 - On a re-run soon after a prior release, expect fewer NEW findings — that is success, not
   failure. Report tier movement prominently; do not pad the move list to hit a count.
-- If the fleet is mid-execution on a prior pursuit epic, prefer auditing surfaces it has
-  already landed (to measure) and lenses it is not touching (to ideate); note the overlap in
-  the report instead of filing colliding beads.
-- **Stagger the fan-out over 12–16 hours (MANDATORY default).** A full-concurrency run blows
-  through the owner's 5-hour usage window. Structure the Workflow script for staggered
-  execution: order all fan-out `agent()` thunks deterministically, split them into hourly
-  batches of 2–3 via `BATCH_SIZES` and an `args.batch` cumulative counter (run batches
-  `0..args.batch-1` sequentially, each `await parallel(slice)`; return a partial result if
-  batches remain, run synthesis only after the final batch). Launch batch 1, then re-invoke
-  with `{scriptPath, resumeFromRunId: <previous run id>, args: {batch: N+1}}` on each hourly
-  `ScheduleWakeup(3600)` tick — prior batches hit the resume cache so only the newest batch
-  runs live. Keep a state file in the scratchpad (last batch, last run id) so wakeups survive
-  context summarization. Workflow-completion notifications are informational only — never
-  launch the next batch early on one; the wakeup drives the cadence. Only run all batches
-  at once if the owner explicitly says the usage limit is not a concern.
-- **Persist every batch's results to disk immediately (quota-disruption safety).** Never let
-  harvested findings live only in conversation context or an unfinished Workflow run: a
-  usage-limit cutoff mid-run must lose at most one batch. After each batch's completion
-  notification, harvest its agents' structured outputs from the run's transcript dir
-  (`journal.jsonl` records each `agent()` return value; `agent-<id>.jsonl` files are the
-  fallback) and append them to a durable harvest file (e.g.
-  `docs/redesigns/<date>-jarvis-pursuit-harvest.json` or the scratchpad state dir), keyed by
-  agent label. The state file (last batch, last run id, harvest path) plus the harvest file
-  must together be sufficient to resume or hand-synthesize the run from a cold start — the
-  final synthesis/dossier can then be rebuilt from disk even if the resume chain or session
-  context is lost.
-- **Precedent:** run 06 (2026-07-22) executed 26 agents as `[3,2,2,2,2,2,2,2,2,2,2,2]`
-  hourly batches after an all-at-once launch had to be killed mid-flight to protect the
-  owner's limit.
+- If the fleet is mid-execution on a prior pursuit epic, prefer auditing surfaces it has already
+  landed (to measure) and lenses it is not touching (to ideate); note the overlap in the report
+  instead of filing colliding beads.
+- **Precedent / cautionary tale:** run 06 (2026-07-22) launched ~10 concurrent agents at once and
+  took the owner from 5%→80% usage in ~15 minutes; it was killed mid-flight and resumed as
+  `[3,2,2,2,2,2,2,2,2,2,2,2]` hourly batches. The four rules above exist to make that first
+  mistake structurally unrepresentable.

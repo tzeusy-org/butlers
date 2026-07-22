@@ -143,9 +143,16 @@ reachable") down to every agent so none of them re-discover the dead end. If the
 either wait for readiness before fan-out or tell agents to retry a known-good path — don't let each
 agent guess three wrong paths.
 
-### Phase 1 — Walk each flow end to end (fan out, parallel)
+### Phase 1 — Walk each flow end to end (fan out, throttled)
 
-One `general-purpose` agent per flow, all dispatched in one message. Pass each agent
+One `general-purpose` agent per flow, dispatched on **`sonnet`** (medium-complexity verification —
+reserve `opus` only for a genuinely tangled flow). **Throttle to ≤3 agents in flight at once:**
+dispatch in waves of 2–3 (each wave in one message so that wave runs concurrently), and start the
+next wave only after the prior wave returns. A QC pass over ~5–8 flows is normally a single
+interactive session; if the flow set is large enough to need cross-session resume, adopt the parent
+skill's Execution discipline (hourly ≤3-wide batches + on-disk checkpoint) rather than dispatching
+everything at once — that all-at-once fan-out is what spiked the owner's usage window on run 06.
+Pass each agent
 [references/audit-agent-prompt.md](references/audit-agent-prompt.md) verbatim (fill the
 placeholders, **including the resolved API base from Phase 0.5 and the Phase 0 staleness warning**),
 append the trace-layer + topology pointers from

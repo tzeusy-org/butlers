@@ -3,6 +3,10 @@
 Templates for the Workflow `agent()` calls. Fill `{...}` slots at dispatch time. Every prompt
 gets the same PREAMBLE and the run's "already known" ledger.
 
+Each template names its **model tier** (SKILL.md → Execution discipline §2). Pass it as
+`agent(prompt, {model, effort, schema})`. Dispatch these only in ≤3-wide hourly batches (§1) and
+checkpoint each batch to the harvest file (§3).
+
 ## Shared preamble (prepend to every agent prompt)
 
 ```
@@ -23,6 +27,8 @@ not prose for a human.
 ```
 
 ## Page-surface auditor (Phase 1, one per surface)
+
+**Model:** `sonnet` / `medium`.
 
 ```
 {PREAMBLE}
@@ -50,6 +56,8 @@ that teach), `visual-language` (Dispatch spec adherence, token usage, chart lang
 `interaction-speed` (polling vs streams, optimistic mutations, latency budgets, preloading),
 `accessibility` (keyboard operability, focus, contrast, semantics, reduced motion).
 
+**Model:** `sonnet` / `medium`.
+
 ```
 {PREAMBLE}
 
@@ -61,6 +69,9 @@ shared hook, token) not just the symptom list.
 ```
 
 ## Ecosystem lens ideator (Phase 2, one per lens)
+
+**Model:** `sonnet` / `medium` — except the **inference-flow** and **knowledge-graph** lenses,
+which run `opus` / `high` (their reasoning is load-bearing for the dossier).
 
 ```
 {PREAMBLE}
@@ -108,6 +119,9 @@ duplicates the known ledger or exists in openspec/ already (check).
 Ecosystem agents use the same schema with `verdict: "n/a"` and proposals in `moves`.
 
 ## Synthesis agent (Phase 3, barrier)
+
+**Model:** `opus` / `high`. Feed it the harvested JSON from disk (the durable harvest file), not
+live agent returns, so it survives a lost resume chain.
 
 ```
 You receive the full JSON output of {N} auditors/ideators (attached below) plus the known
