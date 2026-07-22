@@ -23,7 +23,6 @@ from uuid import UUID
 import pytest
 
 from butlers.api.read_models.calendar_workspace_v1 import (
-    _BUTLER_EVENT_TITLE_PREFIX,
     PROPOSAL_COLUMNS,
     READ_MODEL_VERSION,
     SOURCE_COLUMNS,
@@ -32,8 +31,6 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     CalendarProposalRow,
     CalendarSourceRow,
     CalendarWorkspaceRow,
-    _exclude_butler_projected_copies,
-    _strip_butler_prefix,
     query_calendar_overlays,
     query_calendar_proposals,
     query_calendar_sources,
@@ -746,42 +743,6 @@ async def test_query_calendar_overlays_empty_when_no_calendar_butlers():
     db.butlers_with_module = MagicMock(return_value=None)
     db.butler_names = []
     assert await query_calendar_overlays(db) == []
-
-
-# ---------------------------------------------------------------------------
-# _strip_butler_prefix / _exclude_butler_projected_copies (bu-hmdqz.10)
-# ---------------------------------------------------------------------------
-
-
-def test_butler_event_title_prefix_stays_in_lock_step_with_the_module_constant():
-    """Guards the deliberate duplication documented on `_BUTLER_EVENT_TITLE_PREFIX`:
-    this module keeps its own copy (to avoid a hard import of the much heavier
-    `butlers.modules.calendar`), so a change to the module's constant must be
-    mirrored here explicitly rather than silently drifting apart."""
-    from butlers.modules.calendar import BUTLER_EVENT_TITLE_PREFIX
-
-    assert _BUTLER_EVENT_TITLE_PREFIX == BUTLER_EVENT_TITLE_PREFIX
-
-
-def test_strip_butler_prefix_matches_and_strips():
-    assert _strip_butler_prefix("BUTLER: Lunch with Sam") == "Lunch with Sam"
-    assert _strip_butler_prefix("butler: lowercase prefix") == "lowercase prefix"
-    assert _strip_butler_prefix("Lunch with Sam") is None
-    assert _strip_butler_prefix("") is None
-
-
-def test_exclude_butler_projected_copies_drops_matching_shadow():
-    owner = {"instance_id": "a", "title": "Lunch with Sam"}
-    shadow = {"instance_id": "b", "title": "BUTLER: Lunch with Sam"}
-    result = _exclude_butler_projected_copies([owner, shadow])
-    assert result == [owner]
-
-
-def test_exclude_butler_projected_copies_keeps_non_matching_butler_titles():
-    a = {"instance_id": "a", "title": "BUTLER: Prep for review"}
-    b = {"instance_id": "b", "title": "BUTLER: Draft follow-up"}
-    result = _exclude_butler_projected_copies([a, b])
-    assert result == [a, b]
 
 
 # ---------------------------------------------------------------------------

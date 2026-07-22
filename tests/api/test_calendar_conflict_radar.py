@@ -416,27 +416,55 @@ async def test_conflicts_endpoint_dedupes_origin_ref_cluster_no_overlap(app):
     assert [i for i in data["issues"] if i["kind"] == "overloaded_day"] == []
 
 
-async def test_conflicts_endpoint_excludes_butler_projected_copy_from_overlap(app):
-    """A butler-authored shadow copy of the owner's own event (title prefixed
-    'BUTLER: ', per butlers.modules.calendar.BUTLER_EVENT_TITLE_PREFIX) must
-    not pair with the real event as a phantom overlap. The dedup title pass
-    alone doesn't catch this case — the titles genuinely differ by the prefix
-    — so it needs its own exclusion in query_calendar_conflicts."""
-    owner_event = _ws_row(entry_id="owner", title="Lunch with Sam", start=_DAY)
-    butler_copy = _ws_row(entry_id="butler-copy", title="BUTLER: Lunch with Sam", start=_DAY)
-    app, _ = _build_app(app, workspace_rows={"general": [owner_event, butler_copy]})
+async def test_conflicts_endpoint_unmarked_butler_prefixed_row_preserves_overlap(app):
+    provider_event = _ws_row(entry_id="provider", title="BUTLER: Lunch with Sam", start=_DAY)
+    human_event = _ws_row(
+        entry_id="human", title="Lunch with Sam", start=_DAY + timedelta(minutes=30)
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [provider_event, human_event]})
 
     resp = await _get(app)
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["issues_available"] is True
-    assert [i for i in data["issues"] if i["kind"] == "overlap"] == []
+    overlaps = [issue for issue in data["issues"] if issue["kind"] == "overlap"]
+    assert len(overlaps) == 1
+    assert {event["entry_id"] for event in overlaps[0]["events"]} == {"provider", "human"}
+
+
+async def test_conflicts_endpoint_unmarked_butler_prefixed_row_preserves_back_to_back(app):
+    provider_event = _ws_row(entry_id="provider", title="BUTLER: Customer review", start=_DAY)
+    human_event = _ws_row(
+        entry_id="human", title="Customer review", start=_DAY + timedelta(minutes=65)
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [provider_event, human_event]})
+
+    resp = await _get(app)
+    kinds = {issue["kind"] for issue in resp.json()["data"]["issues"]}
+
+    assert "back_to_back" in kinds
+
+
+async def test_conflicts_endpoint_unmarked_butler_prefixed_row_preserves_overloaded_day(app):
+    provider_event = _ws_row(
+        entry_id="provider", title="BUTLER: Client work", start=_DAY, minutes=4 * 60
+    )
+    human_event = _ws_row(
+        entry_id="human",
+        title="Client work",
+        start=_DAY + timedelta(hours=4, minutes=30),
+        minutes=3 * 60,
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [provider_event, human_event]})
+
+    resp = await _get(app)
+    kinds = {issue["kind"] for issue in resp.json()["data"]["issues"]}
+
+    assert "overloaded_day" in kinds
 
 
 async def test_conflicts_endpoint_still_detects_overlap_between_two_distinct_butler_events(app):
-    """The butler-projected exclusion must not swallow a genuine overlap
-    between two DIFFERENT butler-authored events (neither shadows a
-    same-titled non-butler row, so both stay in the candidate set)."""
+    """Unmarked `BUTLER:` titles remain ordinary timed radar candidates."""
     a = _ws_row(entry_id="a", title="BUTLER: Prep for review", start=_DAY)
     b = _ws_row(entry_id="b", title="BUTLER: Draft follow-up", start=_DAY + timedelta(minutes=30))
     app, _ = _build_app(app, workspace_rows={"general": [a, b]})

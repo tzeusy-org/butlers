@@ -291,53 +291,6 @@ def _dedup_workspace_rows(
     return survivors, list(clusters.values())
 
 
-#: Mirrors ``butlers.modules.calendar.BUTLER_EVENT_TITLE_PREFIX`` — duplicated
-#: rather than imported so this read-model module's dependency surface stays
-#: free of the (much heavier) module layer; a unit test asserts the two stay
-#: in lock-step.
-_BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
-
-
-def _strip_butler_prefix(title: str) -> str | None:
-    """Return the un-prefixed title when *title* is a butler-authored shadow event.
-
-    Every event a butler creates on its own Google subcalendar is titled with
-    the ``BUTLER: `` prefix (``butlers.modules.calendar._ensure_butler_title``).
-    Returns ``None`` when *title* does not carry the prefix.
-    """
-    normalized = (title or "").strip()
-    prefix_len = len(_BUTLER_EVENT_TITLE_PREFIX)
-    if normalized[:prefix_len].upper() != _BUTLER_EVENT_TITLE_PREFIX:
-        return None
-    return normalized[prefix_len:].strip()
-
-
-def _exclude_butler_projected_copies(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop butler-authored shadow copies of the owner's own events from radar pairing.
-
-    A butler-created reminder/task prepping for an existing event (e.g. "BUTLER:
-    Lunch with Sam" alongside the owner's own "Lunch with Sam") is a second,
-    deliberate row with its own ``origin_ref`` and a *different* title, so
-    :func:`_dedup_workspace_rows`'s collapse never touches it — but it still
-    shadows the same real-world slot, and the radar pairing the two as an
-    overlap is a phantom warning, not a real scheduling conflict. A butler-
-    titled row is dropped from the conflict *candidate* set (never from the
-    workspace grid — this only trims the radar's input) whenever its stripped
-    title case-insensitively matches another row's title.
-    """
-    plain_titles = {
-        (row.get("title") or "").strip().casefold()
-        for row in rows
-        if _strip_butler_prefix(row.get("title") or "") is None
-    }
-    return [
-        row
-        for row in rows
-        if (stripped := _strip_butler_prefix(row.get("title") or "")) is None
-        or stripped.casefold() not in plain_titles
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Column projections (v1 schema contract)
 # ---------------------------------------------------------------------------
@@ -1278,10 +1231,9 @@ async def query_calendar_conflicts(
     via the windowed fan-out (served by the GIST(tstzrange) index), collapses
     cross-source duplicate rows the SAME way the workspace grid read does
     (:func:`_dedup_workspace_rows`, honoring the persisted match strategy and
-    keep-separate pins) and excludes butler-authored shadow copies of the
-    owner's own events (:func:`_exclude_butler_projected_copies`), runs the
-    pure :func:`~butlers.core.temporal.conflicts.detect_conflict_issues`
-    detector over the collapsed set, and joins any ``pending``
+    keep-separate pins), applies the shared provenance/all-day candidate filter,
+    runs the pure :func:`~butlers.core.temporal.conflicts.detect_conflict_issues`
+    detector over the eligible collapsed set, and joins any ``pending``
     ``calendar_event_proposals`` whose ``source_event_id`` equals an overlap
     issue's canonical pair id.
 
@@ -1329,7 +1281,6 @@ async def query_calendar_conflicts(
     deduped, _clusters = _dedup_workspace_rows(
         flattened, strategy=dedup_rules.match_strategy, keep_separate=keep_separate
     )
-    deduped = _exclude_butler_projected_copies(deduped)
 
     candidates = [
         ConflictCandidate(

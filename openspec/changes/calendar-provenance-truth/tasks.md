@@ -37,3 +37,12 @@
   plus date-only Google boundaries with no `dateTime` serialization.
 - [x] 5.3 Re-run strict OpenSpec validation and focused calendar verification
   after the correction, then review the amended PR diff.
+
+## 6. Metadata-only radar provenance correction
+
+- [x] 6.1 Add behavior-executing conflict-radar coverage for a timed, unmarked
+  `BUTLER:` provider row across overlap, back-to-back, and overloaded-day paths.
+- [x] 6.2 Remove title-prefix candidate suppression so shared metadata/all-day/
+  legacy provenance remains the sole radar exclusion authority.
+- [x] 6.3 Re-run strict OpenSpec validation and focused calendar provenance,
+  context-producer, source-ledger, and conflict-radar verification.
