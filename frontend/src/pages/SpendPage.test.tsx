@@ -908,6 +908,69 @@ describe("SpendPage — UTC implicit spend windows", () => {
     expect(scheduleTimezone).toBe("UTC")
   })
 
+  it.each(["Asia/Singapore", "America/Los_Angeles"])(
+    "keeps the implicit mover comparison to seven UTC dates in %s",
+    async (viewerTimezone) => {
+      const originalTimezone = process.env.TZ
+      process.env.TZ = viewerTimezone
+
+      try {
+        await act(async () => {
+          renderPage()
+        })
+
+        const [, priorFrom, priorTo] = mockUseSpendSummary.mock.calls.slice(-2)[1]
+        expect(formatCostDate(priorFrom as Date, "UTC")).toBe("2026-07-18")
+        expect(formatCostDate(priorTo as Date, "UTC")).toBe("2026-07-24")
+        expect(screen.getByTestId("movers-strip").textContent).toContain(
+          "prior 7-day window",
+        )
+      } finally {
+        process.env.TZ = originalTimezone
+      }
+    },
+  )
+
+  it.each([
+    {
+      viewerTimezone: "Asia/Singapore",
+      edgeLabel: "From",
+      enteredDate: "2026-07-26",
+      expectedFrom: "2026-07-26",
+      expectedTo: "2026-07-31",
+    },
+    {
+      viewerTimezone: "America/Los_Angeles",
+      edgeLabel: "To",
+      enteredDate: "2026-07-30",
+      expectedFrom: "2026-07-25",
+      expectedTo: "2026-07-30",
+    },
+  ])(
+    "preserves the untouched UTC date key when editing the $edgeLabel edge in $viewerTimezone",
+    async ({ viewerTimezone, edgeLabel, enteredDate, expectedFrom, expectedTo }) => {
+      const originalTimezone = process.env.TZ
+      process.env.TZ = viewerTimezone
+
+      try {
+        await act(async () => {
+          renderPage()
+        })
+
+        await act(async () => {
+          fireEvent.change(screen.getByLabelText(edgeLabel), { target: { value: enteredDate } })
+        })
+
+        const [dailyFrom, dailyTo, dailyOptions] = mockUseDailySpend.mock.calls.at(-1)!
+        expect(formatCostDate(dailyFrom as Date)).toBe(expectedFrom)
+        expect(formatCostDate(dailyTo as Date)).toBe(expectedTo)
+        expect(dailyOptions).not.toHaveProperty("dateKeyTimezone")
+      } finally {
+        process.env.TZ = originalTimezone
+      }
+    },
+  )
+
   it("keeps an explicit operator-selected range on the owner-timezone path", async () => {
     await act(async () => {
       renderPage(["/?from=2026-08-01&to=2026-08-01"])

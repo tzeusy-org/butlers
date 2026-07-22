@@ -27,6 +27,8 @@ interface TimeWindowPickerProps {
   window: UseTimeWindowResult
   /** Optional date-key formatter for a surface with a different implicit calendar. */
   formatDate?: (date: Date) => string
+  /** Optional date-key parser paired with `formatDate` for a different implicit calendar. */
+  parseDate?: (dateKey: string) => Date
   /** ID for the "from" date input. Defaults to "tw-from". */
   fromInputId?: string
   /** ID for the "to" date input. Defaults to "tw-to". */
@@ -36,6 +38,7 @@ interface TimeWindowPickerProps {
 export function TimeWindowPicker({
   window: tw,
   formatDate = formatWindowDate,
+  parseDate = parseISO,
   fromInputId = "tw-from",
   toInputId = "tw-to",
 }: TimeWindowPickerProps) {
@@ -77,7 +80,7 @@ export function TimeWindowPicker({
             value={formatDate(tw.from)}
             max={formatDate(tw.to)}
             onChange={(e) => {
-              const parsed = parseISO(e.target.value)
+              const parsed = parseDate(e.target.value)
               if (isValid(parsed)) {
                 tw.setCustomRange(parsed, tw.to)
               }
@@ -95,7 +98,7 @@ export function TimeWindowPicker({
             value={formatDate(tw.to)}
             min={formatDate(tw.from)}
             onChange={(e) => {
-              const parsed = parseISO(e.target.value)
+              const parsed = parseDate(e.target.value)
               if (isValid(parsed)) {
                 tw.setCustomRange(tw.from, parsed)
               }

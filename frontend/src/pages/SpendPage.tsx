@@ -34,7 +34,7 @@
 // now accept from/to, mirroring /api/spend/daily).
 // ---------------------------------------------------------------------------
 
-import { useState, useMemo, useRef } from "react"
+import { useState, useMemo, useRef, useCallback } from "react"
 import { Link, useSearchParams } from "react-router"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { differenceInCalendarDays, isValid, parseISO, subDays } from "date-fns"
@@ -95,6 +95,22 @@ function hasExplicitSpendRange(searchParams: URLSearchParams): boolean {
   const parsedFrom = parseISO(from)
   const parsedTo = parseISO(to)
   return isValid(parsedFrom) && isValid(parsedTo) && parsedFrom <= parsedTo
+}
+
+/**
+ * Spend's implicit range is keyed by the ledger's UTC calendar, whereas the
+ * shared time-window hook intentionally retains browser-local serialization
+ * for explicit operator ranges. These adapters bridge only that transition:
+ * the picker parses a typed UTC key into a UTC instant, then the shared hook
+ * receives browser-local midnight for the same key so it writes the intended
+ * explicit URL parameters without shifting the untouched edge.
+ */
+function parseSpendUtcDateKey(dateKey: string): Date {
+  return parseISO(`${dateKey}T00:00:00.000Z`)
+}
+
+function toExplicitSpendRangeDate(date: Date): Date {
+  return parseISO(formatCostDate(date, SPEND_UTC_DATE_KEY_TIMEZONE))
 }
 
 interface BreakdownData {
@@ -1761,12 +1777,22 @@ export default function SpendPage() {
   const [spendSearchParams] = useSearchParams()
   const usesImplicitUtcWindow = !hasExplicitSpendRange(spendSearchParams)
   const implicitUtcWindow = useMemo(() => utcDateWindow(7), [])
+  const setImplicitSpendRange = useCallback(
+    (from: Date, to: Date) => {
+      timeWindow.setCustomRange(
+        toExplicitSpendRangeDate(from),
+        toExplicitSpendRangeDate(to),
+      )
+    },
+    [timeWindow.setCustomRange],
+  )
   const spendWindow = usesImplicitUtcWindow
     ? {
         ...timeWindow,
         ...implicitUtcWindow,
         preset: "week" as const,
         pollingDisabled: isPollingDisabled(implicitUtcWindow.to),
+        setCustomRange: setImplicitSpendRange,
       }
     : timeWindow
   const spendDateKeyTimezone = usesImplicitUtcWindow
@@ -1817,7 +1843,11 @@ export default function SpendPage() {
 
   // Movers — current window vs the immediately preceding window of equal
   // length (e.g. "last 7 days" vs "the 7 days before that").
-  const windowDays = differenceInCalendarDays(spendWindow.to, spendWindow.from) + 1
+  // utcDateWindow(7) is inclusive by date key; browser-local calendar math
+  // would count the UTC end instant on an eighth local date outside UTC.
+  const windowDays = usesImplicitUtcWindow
+    ? 7
+    : differenceInCalendarDays(spendWindow.to, spendWindow.from) + 1
   const previousSpendWindow = useMemo(() => {
     if (usesImplicitUtcWindow) {
       return utcDateWindow(windowDays, new Date(implicitUtcWindow.from.getTime() - 1))
@@ -2056,6 +2086,7 @@ export default function SpendPage() {
             <TimeWindowPicker
               window={spendWindow}
               formatDate={(date) => formatCostDate(date, spendDateKeyTimezone)}
+              parseDate={usesImplicitUtcWindow ? parseSpendUtcDateKey : undefined}
             />
           </div>
           <div className="p-4">
