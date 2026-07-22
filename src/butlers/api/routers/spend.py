@@ -30,6 +30,8 @@ import calendar
 import json
 import logging
 import uuid
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
@@ -60,12 +62,18 @@ from butlers.api.models import (
     ApiResponse,
     DailySpend,
     ScheduleCost,
+    SpendDivergence,
     SpendSummary,
     TopSession,
+    UnpricedModelUsage,
 )
 from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.routers.audit import append as audit_append
-from butlers.core.model_routing import price_mtd_from_ledger
+from butlers.core.model_routing import (
+    LedgerSpend,
+    price_ledger_usage_rows,
+    price_mtd_from_ledger,
+)
 from butlers.core.sessions import (
     schedule_costs,
     sessions_daily,
@@ -108,14 +116,270 @@ def _is_tool_absent_error(exc: Exception, info: ButlerConnectionInfo) -> bool:
 def _get_db_manager() -> DatabaseManager | None:
     """Return dashboard DB manager when initialized, otherwise None.
 
-    Unit tests for this router often exercise only the legacy MCP fan-out path
-    without initializing API DB pools. Returning None preserves that path while
-    production requests can use DB-backed session aggregates.
+    Ledger-authoritative aggregate routes surface a degraded response when this
+    is unavailable; they never substitute session-derived prices.
     """
     try:
         return get_db_manager()
     except RuntimeError:
         return None
+
+
+# The Spend dashboard's dollar-bearing aggregate surfaces share this single
+# ledger spine. `sessions.model` describes the model requested for a session,
+# not necessarily the catalog entry that actually executed it, so it is only
+# suitable for diagnostics below -- never for pricing.
+_LEDGER_USAGE_BY_DAY_SQL = """
+SELECT
+    (tul.recorded_at AT TIME ZONE 'UTC')::date AS day,
+    tul.butler_name AS butler_name,
+    COALESCE(tul.purpose, 'unknown') AS purpose,
+    mc.model_id AS model_id,
+    COUNT(*)::bigint AS calls,
+    COALESCE(SUM(tul.input_tokens), 0)::bigint AS input_tokens,
+    COALESCE(SUM(tul.output_tokens), 0)::bigint AS output_tokens,
+    COALESCE(SUM(tul.cached_input_tokens), 0)::bigint AS cached_input_tokens,
+    COALESCE(SUM(tul.cache_creation_tokens), 0)::bigint AS cache_creation_tokens
+FROM public.token_usage_ledger tul
+JOIN public.model_catalog mc ON mc.id = tul.catalog_entry_id
+WHERE tul.recorded_at >= $1
+  AND tul.recorded_at < $2
+  AND ($3::text IS NULL OR tul.butler_name = $3)
+GROUP BY day, tul.butler_name, COALESCE(tul.purpose, 'unknown'), mc.model_id
+ORDER BY day, tul.butler_name, purpose, mc.model_id
+"""
+
+_HISTORICAL_MODEL_ATTRIBUTION_CUTOFF = date(2026, 7, 10)
+_SESSION_LEDGER_DIVERGENCE_THRESHOLD = 0.05
+
+
+def _utc_day_bounds(from_date: date, to_date: date) -> tuple[datetime, datetime]:
+    """Return inclusive UTC calendar-day bounds for a date-only API range."""
+    return (
+        datetime.combine(from_date, datetime.min.time(), tzinfo=UTC),
+        datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC),
+    )
+
+
+def _utc_today() -> date:
+    """Return the UTC calendar day shared by spend API and ledger windows."""
+    return datetime.now(UTC).date()
+
+
+def _period_bounds(period: str) -> tuple[date, date]:
+    """Resolve the established Spend presets to inclusive calendar dates."""
+    today = _utc_today()
+    if period == "today":
+        return today, today
+    if period == "7d":
+        return today - timedelta(days=6), today
+    if period == "30d":
+        return today - timedelta(days=29), today
+    raise ValueError(f"Unsupported spend period: {period!r}")
+
+
+def _historical_attribution_note(from_date: date) -> str | None:
+    """Name the requested-versus-executed model distinction for legacy windows."""
+    if from_date < _HISTORICAL_MODEL_ATTRIBUTION_CUTOFF:
+        return (
+            "Before 2026-07-10, legacy session model labels can name the requested "
+            "model; dollar values here use the executed ledger model."
+        )
+    return None
+
+
+async def _fetch_ledger_usage(
+    db: DatabaseManager | None,
+    from_date: date,
+    to_date: date,
+    *,
+    butler: str | None = None,
+) -> list[Mapping[str, object]] | None:
+    """Fetch all pricing inputs from the executed-model ledger, or fail visibly."""
+    if db is None:
+        return None
+    try:
+        start_at, end_at = _utc_day_bounds(from_date, to_date)
+        rows = await db.pool("switchboard").fetch(
+            _LEDGER_USAGE_BY_DAY_SQL,
+            start_at,
+            end_at,
+            butler,
+        )
+        return list(rows)
+    except Exception:
+        logger.warning("Failed to fetch ledger-backed spend aggregate", exc_info=True)
+        return None
+
+
+def _as_api_unpriced(usage: Iterable[object]) -> list[UnpricedModelUsage]:
+    """Translate core ledger omissions into the public response shape."""
+    return [
+        UnpricedModelUsage(
+            model=item.model,
+            calls=item.calls,
+            input_tokens=item.input_tokens,
+            output_tokens=item.output_tokens,
+            cached_input_tokens=item.cached_input_tokens,
+            cache_creation_tokens=item.cache_creation_tokens,
+        )
+        for item in usage
+    ]
+
+
+def _sum_tokens(rows: Iterable[Mapping[str, object]]) -> tuple[int, int, int, int]:
+    """Sum the four ledger token buckets without reinterpreting their meaning."""
+    input_tokens = output_tokens = cached_input_tokens = cache_creation_tokens = 0
+    for row in rows:
+        input_tokens += int(row.get("input_tokens") or 0)
+        output_tokens += int(row.get("output_tokens") or 0)
+        cached_input_tokens += int(row.get("cached_input_tokens") or 0)
+        cache_creation_tokens += int(row.get("cache_creation_tokens") or 0)
+    return input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens
+
+
+def _group_ledger_rows(
+    rows: Iterable[Mapping[str, object]],
+    key: str,
+) -> dict[str, list[Mapping[str, object]]]:
+    grouped: dict[str, list[Mapping[str, object]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row.get(key) or "unknown")].append(row)
+    return grouped
+
+
+def _known_group_costs(
+    rows: Iterable[Mapping[str, object]],
+    key: str,
+    pricing: PricingConfig,
+) -> dict[str, float]:
+    """Return priced group subtotals, never turning an all-unpriced group into zero."""
+    costs: dict[str, float] = {}
+    for label, group_rows in _group_ledger_rows(rows, key).items():
+        group_spend = price_ledger_usage_rows(group_rows, pricing)
+        # A group containing only unknown prices has no dollar value. A known
+        # subscription/local zero is retained, which lets the UI distinguish it
+        # from an omitted unknown model.
+        if group_spend.cost_usd != 0.0 or not group_spend.unpriced_models:
+            costs[label] = round(group_spend.cost_usd, 6)
+    return costs
+
+
+def _daily_ledger_spend(
+    rows: Iterable[Mapping[str, object]],
+    pricing: PricingConfig,
+) -> list[DailySpend]:
+    """Build daily actuals from ledger rows while retaining day-level omissions."""
+    by_day = _group_ledger_rows(rows, "day")
+    daily: list[DailySpend] = []
+    for day, day_rows in sorted(by_day.items()):
+        spend = price_ledger_usage_rows(day_rows, pricing)
+        input_tokens, output_tokens, _, _ = _sum_tokens(day_rows)
+        by_butler = _known_group_costs(day_rows, "butler_name", pricing)
+        daily.append(
+            DailySpend(
+                date=day,
+                cost_usd=round(spend.cost_usd, 6),
+                sessions=sum(int(row.get("calls") or 0) for row in day_rows),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                by_butler=by_butler,
+                unpriced_models=_as_api_unpriced(spend.unpriced_models),
+            )
+        )
+    return daily
+
+
+async def _session_token_totals_by_day(
+    db: DatabaseManager,
+    info: ButlerConnectionInfo,
+    from_date: date,
+    to_date: date,
+) -> dict[str, int] | None:
+    """Read session token totals for the diagnostic divergence detector only."""
+    try:
+        data = await sessions_daily(db.pool(info.name), from_date, to_date)
+    except Exception:
+        logger.warning(
+            "Failed to fetch session tokens for ledger divergence (%s)",
+            info.name,
+            exc_info=True,
+        )
+        return None
+
+    return {
+        str(day["date"]): (
+            int(day.get("input_tokens") or 0)
+            + int(day.get("output_tokens") or 0)
+            + int(day.get("cached_input_tokens") or 0)
+            + int(day.get("cache_creation_tokens") or 0)
+        )
+        for day in data.get("days", [])
+    }
+
+
+async def _ledger_session_divergences(
+    db: DatabaseManager | None,
+    configs: list[ButlerConnectionInfo],
+    from_date: date,
+    to_date: date,
+    rows: Iterable[Mapping[str, object]],
+) -> tuple[list[SpendDivergence], bool]:
+    """Compare session and ledger tokens without ever using sessions for money."""
+    if db is None:
+        return [], True
+
+    ledger_by_butler_day: dict[tuple[str, str], int] = defaultdict(int)
+    for row in rows:
+        key = (str(row.get("butler_name") or "unknown"), str(row.get("day") or ""))
+        ledger_by_butler_day[key] += sum(
+            int(row.get(field) or 0)
+            for field in (
+                "input_tokens",
+                "output_tokens",
+                "cached_input_tokens",
+                "cache_creation_tokens",
+            )
+        )
+
+    ledger_butlers = {name for name, _ in ledger_by_butler_day}
+    configured_butlers = {info.name for info in configs}
+    relevant = [info for info in configs if info.name in ledger_butlers]
+    # Ledger rows can outlive a butler's current connection configuration. A
+    # missing session pool is unknown diagnostic coverage, not proof that the
+    # two stores agree, so preserve that deadman's degraded state.
+    source_error = bool(ledger_butlers - configured_butlers)
+    if not relevant:
+        return [], source_error
+
+    results = await asyncio.gather(
+        *[_session_token_totals_by_day(db, info, from_date, to_date) for info in relevant]
+    )
+
+    divergences: list[SpendDivergence] = []
+    for info, session_days in zip(relevant, results, strict=True):
+        if session_days is None:
+            source_error = True
+            continue
+        days = {day for (name, day) in ledger_by_butler_day if name == info.name} | set(
+            session_days
+        )
+        for day in sorted(days):
+            ledger_tokens = ledger_by_butler_day.get((info.name, day), 0)
+            session_tokens = session_days.get(day, 0)
+            denominator = max(ledger_tokens, session_tokens, 1)
+            difference_ratio = abs(ledger_tokens - session_tokens) / denominator
+            if difference_ratio > _SESSION_LEDGER_DIVERGENCE_THRESHOLD:
+                divergences.append(
+                    SpendDivergence(
+                        date=day,
+                        butler=info.name,
+                        ledger_tokens=ledger_tokens,
+                        session_tokens=session_tokens,
+                        difference_ratio=round(difference_ratio, 6),
+                    )
+                )
+    return divergences, source_error
 
 
 def _cost_stats_from_session_summary(
@@ -136,6 +400,8 @@ def _cost_stats_from_session_summary(
             cache_creation_tokens=stats.get("cache_creation_tokens", 0),
             context_tokens=stats.get("context_tokens"),
         )
+        if cost is None:
+            continue
         total_cost += cost
         by_model[model_id] = by_model.get(model_id, 0.0) + cost
     return (
@@ -212,6 +478,8 @@ async def _get_butler_session_stats_for_range_from_db(
                 cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                 context_tokens=stats.get("context_tokens"),
             )
+            if cost is None:
+                continue
             total_cost += cost
             by_model[model_id] = by_model.get(model_id, 0.0) + cost
     return (info.name, total_cost, total_sessions, total_input, total_output, by_model)
@@ -243,7 +511,7 @@ async def _get_butler_daily_stats_from_db(
     for day_entry in data.get("days", []):
         day_cost = 0.0
         for model_id, stats in day_entry.get("by_model", {}).items():
-            day_cost += estimate_session_cost(
+            cost = estimate_session_cost(
                 pricing,
                 model_id,
                 stats.get("input_tokens", 0),
@@ -252,6 +520,8 @@ async def _get_butler_daily_stats_from_db(
                 cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                 context_tokens=stats.get("context_tokens"),
             )
+            if cost is not None:
+                day_cost += cost
         days.append(
             {
                 "date": day_entry.get("date", ""),
@@ -384,6 +654,8 @@ async def _get_butler_session_stats_for_range(
                             cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                             context_tokens=stats.get("context_tokens"),
                         )
+                        if cost is None:
+                            continue
                         total_cost += cost
                         by_model[model_id] = by_model.get(model_id, 0.0) + cost
                 return (info.name, total_cost, total_sessions, total_input, total_output, by_model)
@@ -433,7 +705,6 @@ async def get_cost_summary(
     from_date: date | None = Query(None, alias="from"),
     to_date: date | None = Query(None, alias="to"),
     butler: str | None = Query(None, description="Filter to a single butler by name"),
-    mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
     db: DatabaseManager | None = Depends(_get_db_manager),
@@ -461,77 +732,50 @@ async def get_cost_summary(
             status_code=422,
             detail="'from' must not be later than 'to'.",
         )
-    if butler is not None:
-        configs = [c for c in configs if c.name == butler]
-    tracker = DegradedSources(logger)
     if from_date is not None and to_date is not None:
-        tasks = [
-            _get_butler_session_stats_for_range_from_db(db, info, pricing, from_date, to_date)
-            if db is not None
-            else _get_butler_session_stats_for_range(
-                mgr, info, pricing, from_date, to_date, tracker=tracker
-            )
-            for info in configs
-        ]
+        range_from, range_to = from_date, to_date
         period_label = f"{from_date.isoformat()}/{to_date.isoformat()}"
     else:
-        tasks = [
-            _get_butler_session_stats_from_db(db, info, pricing, period)
-            if db is not None
-            else _get_butler_session_stats(mgr, info, pricing, period, tracker=tracker)
-            for info in configs
-        ]
+        range_from, range_to = _period_bounds(period)
         period_label = period
-    raw_results = await asyncio.gather(*tasks)
-    if db is not None:
-        if from_date is not None and to_date is not None:
-            fallback_tasks = [
-                _get_butler_session_stats_for_range(
-                    mgr, info, pricing, from_date, to_date, tracker=tracker
-                )
-                for info, result in zip(configs, raw_results, strict=False)
-                if result is None
-            ]
-        else:
-            fallback_tasks = [
-                _get_butler_session_stats(mgr, info, pricing, period, tracker=tracker)
-                for info, result in zip(configs, raw_results, strict=False)
-                if result is None
-            ]
-        fallback_results = await asyncio.gather(*fallback_tasks)
-        fallback_iter = iter(fallback_results)
-        results = [result if result is not None else next(fallback_iter) for result in raw_results]
-    else:
-        results = raw_results
+    if butler is not None:
+        configs = [info for info in configs if info.name == butler]
 
-    total_cost = 0.0
-    total_sessions = 0
-    total_input = 0
-    total_output = 0
-    by_butler: dict[str, float] = {}
-    by_model: dict[str, float] = {}
+    rows = await _fetch_ledger_usage(db, range_from, range_to, butler=butler)
+    attribution_note = _historical_attribution_note(range_from)
+    if rows is None:
+        return ApiResponse[SpendSummary](
+            data=SpendSummary(
+                period=period_label,
+                total_cost_usd=0.0,
+                total_sessions=0,
+                total_input_tokens=0,
+                total_output_tokens=0,
+                historical_attribution_note=attribution_note,
+                source_error=True,
+            )
+        )
 
-    for name, cost, sessions, inp, out, models in results:
-        total_cost += cost
-        total_sessions += sessions
-        total_input += inp
-        total_output += out
-        if cost > 0:
-            by_butler[name] = cost
-        for model_id, model_cost in models.items():
-            by_model[model_id] = by_model.get(model_id, 0.0) + model_cost
-
-    summary = SpendSummary(
-        period=period_label,
-        total_cost_usd=round(total_cost, 6),
-        total_sessions=total_sessions,
-        total_input_tokens=total_input,
-        total_output_tokens=total_output,
-        by_butler=by_butler,
-        by_model=by_model,
-        unavailable_butlers=sorted(tracker.names),
+    spend = price_ledger_usage_rows(rows, pricing)
+    input_tokens, output_tokens, _, _ = _sum_tokens(rows)
+    divergences, divergence_source_error = await _ledger_session_divergences(
+        db, configs, range_from, range_to, rows
     )
-    return ApiResponse[SpendSummary](data=summary)
+    return ApiResponse[SpendSummary](
+        data=SpendSummary(
+            period=period_label,
+            total_cost_usd=round(spend.cost_usd, 6),
+            total_sessions=sum(int(row.get("calls") or 0) for row in rows),
+            total_input_tokens=input_tokens,
+            total_output_tokens=output_tokens,
+            by_butler=_known_group_costs(rows, "butler_name", pricing),
+            by_model=_known_group_costs(rows, "model_id", pricing),
+            unpriced_models=_as_api_unpriced(spend.unpriced_models),
+            divergences=divergences,
+            divergence_source_error=divergence_source_error,
+            historical_attribution_note=attribution_note,
+        )
+    )
 
 
 async def _get_butler_daily_stats(
@@ -569,7 +813,7 @@ async def _get_butler_daily_stats(
                 for day_entry in data.get("days", []):
                     day_cost = 0.0
                     for model_id, stats in day_entry.get("by_model", {}).items():
-                        day_cost += estimate_session_cost(
+                        cost = estimate_session_cost(
                             pricing,
                             model_id,
                             stats.get("input_tokens", 0),
@@ -578,6 +822,8 @@ async def _get_butler_daily_stats(
                             cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                             context_tokens=stats.get("context_tokens"),
                         )
+                        if cost is not None:
+                            day_cost += cost
                     days.append(
                         {
                             "date": day_entry.get("date", ""),
@@ -606,7 +852,6 @@ async def get_daily_costs(
     from_date: date | None = Query(None, alias="from"),
     to_date: date | None = Query(None, alias="to"),
     butler: str | None = Query(None, description="Filter to a single butler by name"),
-    mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
     db: DatabaseManager | None = Depends(_get_db_manager),
@@ -620,93 +865,42 @@ async def get_daily_costs(
     When ``butler`` is provided, only that butler's data is included.  An
     unknown butler name returns an empty 200 response.
 
-    The endpoint fans out ``sessions_daily`` MCP calls to every butler,
-    then merges per-day results into a single sorted time series.
+    Actual tokens and priced subtotals are grouped from the executing-model
+    ledger. Session reads are diagnostic-only divergence evidence; this route
+    does not fall back to ``sessions_daily`` for money.
     """
     if to_date is None:
-        to_date = date.today()
+        to_date = _utc_today()
     if from_date is None:
         from_date = to_date - timedelta(days=6)
 
     if butler is not None:
-        configs = [c for c in configs if c.name == butler]
+        configs = [info for info in configs if info.name == butler]
 
-    tracker = DegradedSources(logger)
-    tasks = [
-        _get_butler_daily_stats_from_db(
-            db,
-            info,
-            pricing,
-            from_date.isoformat(),
-            to_date.isoformat(),
+    rows = await _fetch_ledger_usage(db, from_date, to_date, butler=butler)
+    attribution_note = _historical_attribution_note(from_date)
+    if rows is None:
+        return ApiResponse[list[DailySpend]](
+            data=[],
+            meta=ApiMeta(
+                source_error=True,
+                historical_attribution_note=attribution_note,
+            ),
         )
-        if db is not None
-        else _get_butler_daily_stats(
-            mgr, info, pricing, from_date.isoformat(), to_date.isoformat(), tracker=tracker
-        )
-        for info in configs
-    ]
-    raw_results = await asyncio.gather(*tasks)
-    if db is not None:
-        fallback_tasks = [
-            _get_butler_daily_stats(
-                mgr, info, pricing, from_date.isoformat(), to_date.isoformat(), tracker=tracker
-            )
-            for info, result in zip(configs, raw_results, strict=False)
-            if result is None
-        ]
-        fallback_results = await asyncio.gather(*fallback_tasks)
-        fallback_iter = iter(fallback_results)
-        all_results = [
-            result if result is not None else next(fallback_iter) for result in raw_results
-        ]
-    else:
-        all_results = raw_results
 
-    # Merge daily stats from all butlers keyed by date string. Each butler's
-    # day-list is already per-butler (see _get_butler_daily_stats[_from_db]);
-    # zip against `configs` (order-preserving through the DB/fallback split
-    # above) so the merge can retain *which* butler contributed each day's
-    # cost instead of discarding that identity — the frontend stacked chart
-    # needs real per-butler-per-day figures, not a smeared total (see
-    # frontend/src/components/costs/CostStripeChart.tsx).
-    merged: dict[str, dict] = {}
-    for info, butler_days in zip(configs, all_results, strict=True):
-        for day in butler_days:
-            d = day["date"]
-            if d not in merged:
-                merged[d] = {
-                    "date": d,
-                    "cost_usd": 0.0,
-                    "sessions": 0,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "by_butler": {},
-                }
-            merged[d]["cost_usd"] += day["cost_usd"]
-            merged[d]["sessions"] += day["sessions"]
-            merged[d]["input_tokens"] += day["input_tokens"]
-            merged[d]["output_tokens"] += day["output_tokens"]
-            if day["cost_usd"]:
-                merged[d]["by_butler"][info.name] = (
-                    merged[d]["by_butler"].get(info.name, 0.0) + day["cost_usd"]
-                )
-
-    # Sort by date ascending and round costs.
-    daily = [
-        DailySpend(
-            date=v["date"],
-            cost_usd=round(v["cost_usd"], 6),
-            sessions=v["sessions"],
-            input_tokens=v["input_tokens"],
-            output_tokens=v["output_tokens"],
-            by_butler={k: round(c, 6) for k, c in v["by_butler"].items()},
-        )
-        for v in sorted(merged.values(), key=lambda x: x["date"])
-    ]
-
-    meta = ApiMeta(unavailable_butlers=sorted(tracker.names)) if tracker.failed else ApiMeta()
-    return ApiResponse[list[DailySpend]](data=daily, meta=meta)
+    spend = price_ledger_usage_rows(rows, pricing)
+    divergences, divergence_source_error = await _ledger_session_divergences(
+        db, configs, from_date, to_date, rows
+    )
+    return ApiResponse[list[DailySpend]](
+        data=_daily_ledger_spend(rows, pricing),
+        meta=ApiMeta(
+            unpriced_models=[item.model_dump() for item in _as_api_unpriced(spend.unpriced_models)],
+            divergences=[item.model_dump() for item in divergences],
+            divergence_source_error=divergence_source_error,
+            historical_attribution_note=attribution_note,
+        ),
+    )
 
 
 def _top_sessions_from_data(
@@ -735,6 +929,8 @@ def _top_sessions_from_data(
             cache_creation_tokens=s.get("cache_creation_tokens", 0),
             context_tokens=s.get("context_tokens"),
         )
+        if cost is None:
+            continue
         sessions.append(
             TopSession(
                 session_id=s.get("session_id", ""),
@@ -956,6 +1152,8 @@ def _schedule_costs_from_data(
             cache_creation_tokens=entry.get("total_cache_creation_tokens", 0),
             context_tokens=entry.get("context_tokens"),
         )
+        if fragment_cost is None:
+            continue
         bucket = merged.setdefault(
             schedule_name,
             {
@@ -1200,6 +1398,8 @@ async def _get_spend_breakdown_by_purpose(
             cached_input_tokens=int(row["cached_input_tokens"]),
             cache_creation_tokens=int(row["cache_creation_tokens"]),
         )
+        if cost is None:
+            continue
         label = row["purpose"]
         breakdown[label] = round(breakdown.get(label, 0.0) + cost, 6)
     return {"by": "purpose", "breakdown": breakdown, "source_error": False}
@@ -1222,65 +1422,66 @@ async def get_spend_breakdown(
 ) -> ApiResponse[dict]:
     """Return spend broken down by butler, model, feature, or purpose for the current month.
 
-    Uses the MTD (month-to-date) summary from each butler.  The ``feature``
-    dimension currently mirrors the ``by_schedule`` breakdown — a richer
-    feature taxonomy is deferred to a future revision.  The ``purpose`` dimension
-    (bu-qvnce.12/core_156 -- ``route``/``schedule``/``classification``/``healing``/
-    ``discretion``/... -- the "why" a dispatch happened) is priced directly from
-    ``public.token_usage_ledger`` rather than the per-butler fan-out the other three
-    dimensions use; see ``_get_spend_breakdown_by_purpose``.
+    ``butler``, ``model``, and ``purpose`` are all grouped directly from
+    ``public.token_usage_ledger`` using the catalog entry that executed each
+    call. The ``feature`` dimension retains its by-schedule metadata evidence
+    path; a richer feature taxonomy is deferred to a future revision.
     """
-    if by == "purpose":
-        return ApiResponse[dict](data=await _get_spend_breakdown_by_purpose(db, pricing))
+    if by in {"butler", "model", "purpose"}:
+        today = _utc_today()
+        month_start = today.replace(day=1)
+        rows = await _fetch_ledger_usage(db, month_start, today)
+        attribution_note = _historical_attribution_note(month_start)
+        if rows is None:
+            return ApiResponse[dict](
+                data={
+                    "by": by,
+                    "breakdown": {},
+                    "unpriced_models": [],
+                    "billing_classes": {},
+                    "source_error": True,
+                    "divergences": [],
+                    "divergence_source_error": True,
+                    "historical_attribution_note": attribution_note,
+                }
+            )
 
-    # Reuse the existing MTD summary across all butlers
-    tracker = DegradedSources(logger)
-    tasks = [
-        _get_butler_session_stats_from_db(db, info, pricing, "30d")
-        if db is not None
-        else _get_butler_session_stats(mgr, info, pricing, "30d", tracker=tracker)
-        for info in configs
-    ]
-    raw_results = await asyncio.gather(*tasks)
-    if db is not None:
-        fallback_tasks = [
-            _get_butler_session_stats(mgr, info, pricing, "30d", tracker=tracker)
-            for info, result in zip(configs, raw_results, strict=False)
-            if result is None
-        ]
-        fallback_results = await asyncio.gather(*fallback_tasks)
-        fallback_iter = iter(fallback_results)
-        results = [r if r is not None else next(fallback_iter) for r in raw_results]
-    else:
-        results = raw_results
-
-    if by == "butler":
-        breakdown: dict[str, float] = {}
-        for name, cost, _, _, _, _ in results:
-            if cost > 0:
-                breakdown[name] = round(cost, 6)
-        return ApiResponse[dict](
-            data={
-                "by": "butler",
-                "breakdown": breakdown,
-                "unavailable_butlers": sorted(tracker.names),
-            }
+        group_key = {
+            "butler": "butler_name",
+            "model": "model_id",
+            "purpose": "purpose",
+        }[by]
+        spend = price_ledger_usage_rows(rows, pricing)
+        divergences, divergence_source_error = await _ledger_session_divergences(
+            db, configs, month_start, today, rows
         )
-
-    if by == "model":
-        breakdown = {}
-        for _, _, _, _, _, by_model in results:
-            for model_id, model_cost in by_model.items():
-                breakdown[model_id] = round(breakdown.get(model_id, 0.0) + model_cost, 6)
+        model_classes = (
+            {
+                model: billing_class
+                for model in _group_ledger_rows(rows, "model_id")
+                if (billing_class := pricing.billing_class_for(model)) is not None
+            }
+            if by == "model"
+            else {}
+        )
         return ApiResponse[dict](
             data={
-                "by": "model",
-                "breakdown": breakdown,
-                "unavailable_butlers": sorted(tracker.names),
+                "by": by,
+                "breakdown": _known_group_costs(rows, group_key, pricing),
+                "unpriced_models": [
+                    item.model_dump() for item in _as_api_unpriced(spend.unpriced_models)
+                ],
+                "billing_classes": model_classes,
+                "source_error": False,
+                "divergences": [item.model_dump() for item in divergences],
+                "divergence_source_error": divergence_source_error,
+                "historical_attribution_note": attribution_note,
             }
         )
 
     # by == "feature": proxy to schedule-level spend (DB-first, MCP fallback).
+    # This metadata-oriented table is intentionally left on its existing
+    # schedule evidence path; it is not used by the aggregate ledger spine.
     feature_tracker = DegradedSources(logger)
     schedule_tasks = [
         _butler_schedule_costs_db_first(db, mgr, info, pricing, tracker=feature_tracker)
@@ -1333,10 +1534,15 @@ class ForecastResponse(BaseModel):
     # wired -- mtd_usd/projected_eom_usd/ceiling_usd are then fabricated
     # zeros/None, not a genuine "$0 month" (bu-7o89u.1 degraded envelope).
     ceiling_source_error: bool = False
-    # Butlers dropped from the per-day fan-out that powers the chart's solid
-    # actuals series (`days`). Independent of ceiling_source_error: this
-    # series is NOT priced from the ledger (the ledger's MTD query has no
-    # per-day granularity), so its own source failures are tracked here.
+    unpriced_models: list[UnpricedModelUsage] = Field(default_factory=list)
+    # The ceiling still evaluates the known-priced subtotal for availability,
+    # but this count makes its unpriced coverage explicit to the operator.
+    ceiling_blind_to_unpriced_models: int = 0
+    divergences: list[SpendDivergence] = Field(default_factory=list)
+    divergence_source_error: bool = False
+    historical_attribution_note: str | None = None
+    # Retained as an additive compatibility field for older clients. Ledger
+    # daily actuals have no per-butler fan-out exclusion path.
     unavailable_butlers: list[str] = Field(default_factory=list)
 
 
@@ -1345,7 +1551,6 @@ async def get_spend_forecast(
     db: DatabaseManager | None = Depends(_get_db_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ForecastResponse]:
     """Return a naive linear spend forecast for the current month.
 
@@ -1362,75 +1567,34 @@ async def get_spend_forecast(
     ``ceiling_source_error=True`` and reports ``mtd_usd=0``/``ceiling_usd=None``
     rather than falling back to a different, potentially-divergent source.
 
-    The per-day ``days`` breakdown (needed only for the chart's solid-actuals
-    series — the ledger's MTD query is month-total only, not per-day) still
-    comes from the per-butler daily-stats fan-out; a fan-out failure there is
-    tracked separately in ``unavailable_butlers`` and never affects ``mtd_usd``.
+    The per-day ``days`` series is grouped from the same ledger input as MTD,
+    so solid actuals and the projected rate retain one executed-model spine.
+    Session reads are diagnostic-only divergence evidence and never supply a
+    fallback dollar figure.
 
     TODO: replace the naive daily-rate extrapolation with a smarter estimator
     (per-butler decay weighting, weekend vs weekday adjustment, etc.)
     """
-    today = date.today()
+    today = _utc_today()
     month_start = today.replace(day=1)
     days_in_month = calendar.monthrange(today.year, today.month)[1]
     days_elapsed = (today - month_start).days + 1  # inclusive of today
 
-    # Fetch daily actuals for the chart's solid-actuals series only (per-day
-    # breakdown). MTD/EOM totals are priced from the ledger below, not this
-    # fan-out -- see the module-level docstring above.
-    tracker = DegradedSources(logger)
-    tasks = [
-        _get_butler_daily_stats_from_db(
-            db,
-            info,
-            pricing,
-            month_start.isoformat(),
-            today.isoformat(),
-        )
-        if db is not None
-        else _get_butler_daily_stats(
-            mgr, info, pricing, month_start.isoformat(), today.isoformat(), tracker=tracker
-        )
-        for info in configs
-    ]
-    raw_results = await asyncio.gather(*tasks)
-    if db is not None:
-        fallback_tasks = [
-            _get_butler_daily_stats(
-                mgr, info, pricing, month_start.isoformat(), today.isoformat(), tracker=tracker
-            )
-            for info, result in zip(configs, raw_results, strict=False)
-            if result is None
-        ]
-        fallback_results = await asyncio.gather(*fallback_tasks)
-        fallback_iter = iter(fallback_results)
-        all_results = [r if r is not None else next(fallback_iter) for r in raw_results]
-    else:
-        all_results = raw_results
-
-    # Merge daily actuals across butlers (solid-actuals series only).
-    merged: dict[str, float] = {}
-    for butler_days in all_results:
-        for day_entry in butler_days:
-            d = day_entry["date"]
-            merged[d] = merged.get(d, 0.0) + day_entry["cost_usd"]
-
-    # Price MTD from the shared ledger helper -- the same source
-    # check_monthly_ceiling gates spawns on (bu-7o89u.1). Deliberately never
-    # falls back to sum(merged.values()): a ledger failure must render as a
-    # degraded envelope, not a silently-substituted (and possibly divergent)
-    # fan-out total.
+    # Fetch both the daily actuals and the gate total from the ledger. A
+    # session fan-out is deliberately not a fallback here: it would revive the
+    # requested-model attribution bug this endpoint exists to prevent.
     ceiling_source_error = False
-    mtd_usd = 0.0
+    ledger_rows: list[Mapping[str, object]] = []
+    mtd_spend = LedgerSpend(cost_usd=0.0)
     ceiling_usd: float | None = None
     if db is None:
-        # No MCP fallback exists for the ledger (no per-butler tool exposes
-        # token_usage_ledger rows) -- mirrors _get_spend_breakdown_by_purpose.
         ceiling_source_error = True
     else:
         try:
             pool = db.pool("switchboard")
-            mtd_usd = await price_mtd_from_ledger(pool)
+            start_at, end_at = _utc_day_bounds(month_start, today)
+            ledger_rows = list(await pool.fetch(_LEDGER_USAGE_BY_DAY_SQL, start_at, end_at, None))
+            mtd_spend = await price_mtd_from_ledger(pool, pricing)
             ceiling_row = await pool.fetchrow(
                 "SELECT monthly_usd FROM public.spend_ceiling WHERE id = 1"
             )
@@ -1443,18 +1607,20 @@ async def get_spend_forecast(
                 exc_info=True,
             )
             ceiling_source_error = True
-            mtd_usd = 0.0
+            ledger_rows = []
+            mtd_spend = LedgerSpend(cost_usd=0.0)
             ceiling_usd = None
 
-    daily_rate = mtd_usd / max(days_elapsed, 1)
+    daily_actuals = {day.date: day.cost_usd for day in _daily_ledger_spend(ledger_rows, pricing)}
+    divergences, divergence_source_error = await _ledger_session_divergences(
+        db, configs, month_start, today, ledger_rows
+    )
+    daily_rate = mtd_spend.cost_usd / max(days_elapsed, 1)
     projected_eom_usd = daily_rate * days_in_month
 
-    # Build solid actuals + dashed projection series. Solid actuals reflect
-    # the real per-day fan-out; the dashed projection uses the ledger-priced
-    # daily_rate above so the series stays internally consistent with
-    # mtd_usd/projected_eom_usd (when ceiling_source_error, daily_rate is 0 --
-    # the frontend must gate rendering of the projected segment on that flag
-    # rather than read the zeros as a genuine flat projection).
+    # Build solid actuals + dashed projection series from the same ledger cost
+    # calculation. When the source is degraded, the frontend gates the
+    # fabricated zero projection rather than reading it as a calm all-clear.
     forecast_days: list[ForecastDay] = []
     current = month_start
     month_end = month_start.replace(day=days_in_month)
@@ -1462,7 +1628,11 @@ async def get_spend_forecast(
         iso = current.isoformat()
         if current <= today:
             forecast_days.append(
-                ForecastDay(date=iso, cost_usd=round(merged.get(iso, 0.0), 6), projected=False)
+                ForecastDay(
+                    date=iso,
+                    cost_usd=round(daily_actuals.get(iso, 0.0), 6),
+                    projected=False,
+                )
             )
         else:
             forecast_days.append(
@@ -1476,11 +1646,15 @@ async def get_spend_forecast(
             projected_eom_usd=round(projected_eom_usd, 6),
             days_in_month=days_in_month,
             days_elapsed=days_elapsed,
-            mtd_usd=round(mtd_usd, 6),
+            mtd_usd=round(mtd_spend.cost_usd, 6),
             ceiling_usd=ceiling_usd,
             projection_confidence=projection_confidence_for(days_elapsed),
             ceiling_source_error=ceiling_source_error,
-            unavailable_butlers=sorted(tracker.names),
+            unpriced_models=_as_api_unpriced(mtd_spend.unpriced_models),
+            ceiling_blind_to_unpriced_models=len(mtd_spend.unpriced_models),
+            divergences=divergences,
+            divergence_source_error=divergence_source_error,
+            historical_attribution_note=_historical_attribution_note(month_start),
         )
     )
 

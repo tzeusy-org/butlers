@@ -81,10 +81,12 @@ vi.mock("@/components/costs/CostStripeChart", () => ({
   CostStripeChart: (props: {
     data: Array<{ date: string; by_butler?: Record<string, number> }>
     unavailableButlers?: readonly string[]
+    sourceError?: boolean
   }) => (
     <div
       data-testid="cost-stripe-chart-mock"
       data-unavailable={JSON.stringify(props.unavailableButlers ?? [])}
+      data-source-error={String(props.sourceError ?? false)}
     >
       {JSON.stringify(props.data)}
     </div>
@@ -111,6 +113,7 @@ vi.mock("@/hooks/use-spend", async (importOriginal) => {
 // Imports after mocks
 // ---------------------------------------------------------------------------
 
+import { formatCostDate } from "@/hooks/use-spend"
 import SpendPage from "@/pages/SpendPage"
 
 // ---------------------------------------------------------------------------
@@ -186,6 +189,8 @@ function setHooks({
   priorByButler = {},
   currentUnavailable = [],
   priorUnavailable = [],
+  currentUnpriced = [],
+  priorUnpriced = [],
   currentError = false,
   priorError = false,
 }: {
@@ -193,10 +198,26 @@ function setHooks({
   priorByButler?: Record<string, number>
   currentUnavailable?: string[]
   priorUnavailable?: string[]
+  currentUnpriced?: Array<{
+    model: string
+    calls: number
+    input_tokens: number
+    output_tokens: number
+    cached_input_tokens: number
+    cache_creation_tokens: number
+  }>
+  priorUnpriced?: Array<{
+    model: string
+    calls: number
+    input_tokens: number
+    output_tokens: number
+    cached_input_tokens: number
+    cache_creation_tokens: number
+  }>
   currentError?: boolean
   priorError?: boolean
 } = {}) {
-  mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
+  mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0, streamedUnpricedEvents: [] })
   // Fleet-halt inactive by default -- individual fleet-halt tests below
   // override this per-case (bu-7o89u.3).
   mockUseFleetHaltStatus.mockReturnValue({
@@ -216,12 +237,18 @@ function setHooks({
     const isCurrent = call % 2 === 1
     const byButler = isCurrent ? currentByButler : priorByButler
     const unavailableButlers = isCurrent ? currentUnavailable : priorUnavailable
+    const unpricedModels = isCurrent ? currentUnpriced : priorUnpriced
     const isError = isCurrent ? currentError : priorError
     return {
       data: isError
         ? undefined
         : {
-            data: { total_cost_usd: 1, by_butler: byButler, unavailable_butlers: unavailableButlers },
+            data: {
+              total_cost_usd: 1,
+              by_butler: byButler,
+              unavailable_butlers: unavailableButlers,
+              unpriced_models: unpricedModels,
+            },
             meta: {},
           },
       isLoading: false,
@@ -317,6 +344,62 @@ describe("SpendPage — posture", () => {
     expect(daysCell.textContent).toContain(String(DAYS_IN_MONTH))
   })
 
+  it("names unpriced ledger usage and makes the monthly-ceiling blind spot explicit", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/forecast") {
+        return Promise.resolve({
+          data: {
+            ...MOCK_FORECAST.data,
+            ceiling_usd: 10,
+            unpriced_models: [
+              {
+                model: "unpriced-codex",
+                calls: 1988,
+                input_tokens: 100,
+                output_tokens: 50,
+                cached_input_tokens: 0,
+                cache_creation_tokens: 0,
+              },
+            ],
+            ceiling_blind_to_unpriced_models: 1,
+            divergences: [
+              {
+                date: "2026-05-17",
+                butler: "general",
+                ledger_tokens: 100,
+                session_tokens: 80,
+                difference_ratio: 0.2,
+              },
+            ],
+            historical_attribution_note: "Legacy labels use requested models.",
+          },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    expect((await screen.findByTestId("kpi-mtd")).textContent).toContain(
+      "excludes 1,988 unpriced calls",
+    )
+    expect(screen.getByTestId("kpi-ceiling").textContent).toContain(
+      "blind to 1 unpriced model",
+    )
+    expect((await screen.findByTestId("forecast-unpriced")).textContent).toContain(
+      "unpriced-codex",
+    )
+    expect(screen.getByTestId("forecast-divergence").textContent).toContain(
+      "ledger/session token drift",
+    )
+    expect(screen.getByTestId("forecast-historical-attribution").textContent).toContain(
+      "Legacy labels",
+    )
+  })
+
   it("ceiling-update flow submits PUT and re-renders with the new ceiling", async () => {
     let ceilingSet = false
     apiFetchMock.mockImplementation((path: string, init?: RequestInit) => {
@@ -381,7 +464,7 @@ describe("SpendPage — live MTD stream merge", () => {
 
   it("adds live streamed spend on top of the polled MTD baseline", async () => {
     apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
-    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0, streamedUnpricedEvents: [] })
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { rerender } = render(
@@ -396,7 +479,7 @@ describe("SpendPage — live MTD stream merge", () => {
     })
 
     // $3 of live spend streams in before the next poll.
-    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 3 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 3, streamedUnpricedEvents: [] })
     rerender(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
@@ -410,7 +493,7 @@ describe("SpendPage — live MTD stream merge", () => {
     })
   })
 
-  it("does not double-count streamed spend once the next poll baseline already reflects it", async () => {
+  it("does not double-count streamed spend or unpriced usage once the next poll baseline reflects both", async () => {
     let forecastCalls = 0
     apiFetchMock.mockImplementation((path: string) => {
       if (path === "/spend/forecast") {
@@ -418,11 +501,32 @@ describe("SpendPage — live MTD stream merge", () => {
         // The 2nd poll's baseline already includes the $3 that streamed
         // between the 1st poll and now -- ground truth is $5.20, not $8.20.
         const mtd = forecastCalls === 1 ? 2.2 : 5.2
-        return Promise.resolve({ data: { ...MOCK_FORECAST.data, mtd_usd: mtd }, meta: {} })
+        return Promise.resolve({
+          data: {
+            ...MOCK_FORECAST.data,
+            mtd_usd: mtd,
+            ...(forecastCalls === 2
+              ? {
+                  unpriced_models: [
+                    {
+                      model: "unpriced-live-model",
+                      calls: 1,
+                      input_tokens: 1000,
+                      output_tokens: 500,
+                      cached_input_tokens: 125,
+                      cache_creation_tokens: 25,
+                    },
+                  ],
+                  ceiling_blind_to_unpriced_models: 1,
+                }
+              : {}),
+          },
+          meta: {},
+        })
       }
       return defaultApiFetch(path)
     })
-    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0, streamedUnpricedEvents: [] })
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { rerender } = render(
@@ -437,7 +541,18 @@ describe("SpendPage — live MTD stream merge", () => {
     })
 
     // $3 streams in live, ahead of the next poll.
-    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 3 })
+    mockUseSpendTicker.mockReturnValue({
+      streamedCostUsd: 3,
+      streamedUnpricedEvents: [
+        {
+          model: "unpriced-live-model",
+          input_tokens: 1000,
+          output_tokens: 500,
+          cached_input_tokens: 125,
+          cache_creation_tokens: 25,
+        },
+      ],
+    })
     rerender(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
@@ -448,6 +563,7 @@ describe("SpendPage — live MTD stream merge", () => {
     await waitFor(() => {
       expect(screen.getByTestId("kpi-mtd").textContent).toContain("$5.20")
     })
+    expect(screen.getByTestId("kpi-mtd").textContent).toContain("excludes 1 unpriced call")
 
     // The interval fires; the next poll lands with a baseline that already
     // reflects that $3 (simulate it directly rather than fake-timing 120s,
@@ -461,6 +577,53 @@ describe("SpendPage — live MTD stream merge", () => {
 
     expect(screen.getByTestId("kpi-mtd").textContent).toContain("$5.20")
     expect(screen.getByTestId("kpi-mtd").textContent).not.toContain("$8.20")
+    expect(screen.getByTestId("kpi-mtd").textContent).toContain("excludes 1 unpriced call")
+    expect(screen.getByTestId("kpi-mtd").textContent).not.toContain("excludes 2 unpriced calls")
+  })
+
+  it("surfaces an unpriced live call instead of treating it as a complete zero-dollar total", async () => {
+    apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0, streamedUnpricedEvents: [] })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SpendPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-mtd").textContent).toContain("$2.20")
+    })
+
+    mockUseSpendTicker.mockReturnValue({
+      streamedCostUsd: 0,
+      streamedUnpricedEvents: [
+        {
+          model: "unpriced-live-model",
+          input_tokens: 1000,
+          output_tokens: 500,
+          cached_input_tokens: 125,
+          cache_creation_tokens: 25,
+        },
+      ],
+    })
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SpendPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-mtd").textContent).toContain("excludes 1 unpriced call")
+    })
+    expect(screen.getByTestId("forecast-unpriced").textContent).toContain(
+      "blind to 1 unpriced model",
+    )
+    expect(screen.getByTestId("forecast-unpriced").textContent).toContain("unpriced-live-model")
   })
 })
 
@@ -515,6 +678,63 @@ describe("SpendPage — what changed", () => {
     expect(JSON.parse(chart.getAttribute("data-unavailable") ?? "[]")).toEqual([])
   })
 
+  it("passes a daily compatibility source_error to the chart rather than allowing its empty data state", async () => {
+    setHooks()
+    mockUseDailySpend.mockReturnValue({
+      data: { data: [], meta: { source_error: true } },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const chart = await screen.findByTestId("cost-stripe-chart-mock")
+    expect(chart.getAttribute("data-source-error")).toBe("true")
+  })
+
+  it("footnotes unpriced daily ledger usage rather than rendering it as free", async () => {
+    setHooks()
+    mockUseDailySpend.mockReturnValue({
+      data: {
+        data: DAILY_DATA,
+        meta: {
+          unpriced_models: [
+            {
+              model: "unpriced-codex",
+              calls: 3,
+              input_tokens: 100,
+              output_tokens: 50,
+              cached_input_tokens: 0,
+              cache_creation_tokens: 0,
+            },
+          ],
+          divergences: [
+            {
+              date: "2026-05-17",
+              butler: "general",
+              ledger_tokens: 100,
+              session_tokens: 80,
+              difference_ratio: 0.2,
+            },
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    expect((await screen.findByTestId("daily-spend-unpriced")).textContent).toContain(
+      "excludes 3 unpriced calls",
+    )
+    expect(screen.getByTestId("daily-spend-divergence").textContent).toContain(
+      "ledger/session token drift",
+    )
+  })
+
   it("ranks movers by delta vs the prior window, marking new butlers honestly", async () => {
     setHooks({
       currentByButler: { general: 1.0, memory: 0.5 },
@@ -555,6 +775,59 @@ describe("SpendPage — what changed", () => {
     expect(strip.querySelectorAll('[data-testid="mover-chip"]').length).toBe(0)
   })
 
+  it("shows a degraded movers state when summary compatibility envelopes carry source_error", async () => {
+    setHooks()
+    mockUseSpendSummary.mockImplementation(() => ({
+      data: {
+        data: {
+          total_cost_usd: 0,
+          by_butler: {},
+          unavailable_butlers: [],
+          source_error: true,
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+    }))
+    await act(async () => {
+      renderPage()
+    })
+
+    const strip = await screen.findByTestId("movers-strip")
+    expect(strip.textContent).toContain("spend comparison unavailable")
+    expect(strip.textContent).not.toContain("No spend change vs the prior window")
+  })
+
+  it("suppresses movers and the calm spend verdict when either comparison window is unpriced", async () => {
+    setHooks({
+      currentByButler: { general: 1.0 },
+      priorByButler: { general: 0.2 },
+      currentUnpriced: [
+        {
+          model: "unknown-executed-model",
+          calls: 2,
+          input_tokens: 1_000,
+          output_tokens: 100,
+          cached_input_tokens: 0,
+          cache_creation_tokens: 0,
+        },
+      ],
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const strip = await screen.findByTestId("movers-strip")
+    expect(strip.textContent).toContain("comparison incomplete")
+    expect(strip.textContent).toContain("unknown-executed-model")
+    expect(strip.querySelectorAll('[data-testid="mover-chip"]').length).toBe(0)
+    expect(screen.queryByTestId("spend-verdict-all-clear")).toBeNull()
+    expect(screen.getByTestId("spend-verdict-clauses").textContent).toContain(
+      "comparison incomplete",
+    )
+  })
+
   it("excludes a butler with unavailable cost data instead of fabricating a '+$X · new' delta (bu-qvnce.1)", async () => {
     // "finance" has real current spend but its prior-window cost was
     // unavailable server-side -- a naive current-vs-0 comparison would
@@ -576,6 +849,145 @@ describe("SpendPage — what changed", () => {
     expect(strip.textContent).toContain("excluded from comparison")
     expect(strip.textContent).toContain("finance")
   })
+})
+
+describe("SpendPage — UTC implicit spend windows", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    // This instant is already Aug 1 in the owner timezone (Asia/Singapore),
+    // while the ledger's UTC day and ceiling remain July 31.
+    vi.setSystemTime(new Date("2026-07-31T18:00:00.000Z"))
+    apiFetchMock.mockReset()
+    apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
+    setHooks()
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    cleanup()
+  })
+
+  it("aligns implicit daily, mover, and evidence queries with the ledger UTC day", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    const [dailyFrom, dailyTo, dailyOptions] = mockUseDailySpend.mock.calls.at(-1)!
+    expect(formatCostDate(dailyFrom as Date, "UTC")).toBe("2026-07-25")
+    expect(formatCostDate(dailyTo as Date, "UTC")).toBe("2026-07-31")
+    expect(dailyOptions).toMatchObject({ dateKeyTimezone: "UTC" })
+    expect((screen.getByLabelText("From") as HTMLInputElement).value).toBe("2026-07-25")
+    expect((screen.getByLabelText("To") as HTMLInputElement).value).toBe("2026-07-31")
+    expect(screen.getByRole("button", { name: "Last 7 days" }).getAttribute("aria-pressed")).toBe("true")
+    expect(screen.getByRole("button", { name: "Today" }).getAttribute("aria-pressed")).toBe("false")
+
+    const [currentSummaryCall, priorSummaryCall] = mockUseSpendSummary.mock.calls.slice(-2)
+    const [currentPeriod, currentFrom, currentTo, currentButler, currentTimezone] = currentSummaryCall
+    expect(currentPeriod).toBeUndefined()
+    expect(currentButler).toBeUndefined()
+    expect(formatCostDate(currentFrom as Date, "UTC")).toBe("2026-07-25")
+    expect(formatCostDate(currentTo as Date, "UTC")).toBe("2026-07-31")
+    expect(currentTimezone).toBe("UTC")
+
+    const [, priorFrom, priorTo, priorButler, priorTimezone] = priorSummaryCall
+    expect(priorButler).toBeUndefined()
+    expect(formatCostDate(priorFrom as Date, "UTC")).toBe("2026-07-18")
+    expect(formatCostDate(priorTo as Date, "UTC")).toBe("2026-07-24")
+    expect(priorTimezone).toBe("UTC")
+
+    const [topLimit, topFrom, topTo, topTimezone] = mockUseTopSessions.mock.calls.at(-1)!
+    expect(topLimit).toBe(10)
+    expect(formatCostDate(topFrom as Date, "UTC")).toBe("2026-07-25")
+    expect(formatCostDate(topTo as Date, "UTC")).toBe("2026-07-31")
+    expect(topTimezone).toBe("UTC")
+
+    const [scheduleFrom, scheduleTo, scheduleTimezone] = mockUseCostsBySchedule.mock.calls.at(-1)!
+    expect(formatCostDate(scheduleFrom as Date, "UTC")).toBe("2026-07-25")
+    expect(formatCostDate(scheduleTo as Date, "UTC")).toBe("2026-07-31")
+    expect(scheduleTimezone).toBe("UTC")
+  })
+
+  it.each(["Asia/Singapore", "America/Los_Angeles"])(
+    "keeps the implicit mover comparison to seven UTC dates in %s",
+    async (viewerTimezone) => {
+      const originalTimezone = process.env.TZ
+      process.env.TZ = viewerTimezone
+
+      try {
+        await act(async () => {
+          renderPage()
+        })
+
+        const [, priorFrom, priorTo] = mockUseSpendSummary.mock.calls.slice(-2)[1]
+        expect(formatCostDate(priorFrom as Date, "UTC")).toBe("2026-07-18")
+        expect(formatCostDate(priorTo as Date, "UTC")).toBe("2026-07-24")
+        expect(screen.getByTestId("movers-strip").textContent).toContain(
+          "prior 7-day window",
+        )
+      } finally {
+        process.env.TZ = originalTimezone
+      }
+    },
+  )
+
+  it.each([
+    {
+      viewerTimezone: "Asia/Singapore",
+      edgeLabel: "From",
+      enteredDate: "2026-07-26",
+      expectedFrom: "2026-07-26",
+      expectedTo: "2026-07-31",
+    },
+    {
+      viewerTimezone: "America/Los_Angeles",
+      edgeLabel: "To",
+      enteredDate: "2026-07-30",
+      expectedFrom: "2026-07-25",
+      expectedTo: "2026-07-30",
+    },
+  ])(
+    "preserves the untouched UTC date key when editing the $edgeLabel edge in $viewerTimezone",
+    async ({ viewerTimezone, edgeLabel, enteredDate, expectedFrom, expectedTo }) => {
+      const originalTimezone = process.env.TZ
+      process.env.TZ = viewerTimezone
+
+      try {
+        await act(async () => {
+          renderPage()
+        })
+
+        await act(async () => {
+          fireEvent.change(screen.getByLabelText(edgeLabel), { target: { value: enteredDate } })
+        })
+
+        const [dailyFrom, dailyTo, dailyOptions] = mockUseDailySpend.mock.calls.at(-1)!
+        expect(formatCostDate(dailyFrom as Date)).toBe(expectedFrom)
+        expect(formatCostDate(dailyTo as Date)).toBe(expectedTo)
+        expect(dailyOptions).not.toHaveProperty("dateKeyTimezone")
+      } finally {
+        process.env.TZ = originalTimezone
+      }
+    },
+  )
+
+  it("keeps an explicit operator-selected range on the owner-timezone path", async () => {
+    await act(async () => {
+      renderPage(["/?from=2026-08-01&to=2026-08-01"])
+    })
+
+    const [dailyFrom, dailyTo, dailyOptions] = mockUseDailySpend.mock.calls.at(-1)!
+    expect(formatCostDate(dailyFrom as Date)).toBe("2026-08-01")
+    expect(formatCostDate(dailyTo as Date)).toBe("2026-08-01")
+    expect(dailyOptions).not.toHaveProperty("dateKeyTimezone")
+
+    const [currentSummaryCall] = mockUseSpendSummary.mock.calls.slice(-2)
+    const [, currentFrom, currentTo, , currentTimezone] = currentSummaryCall
+    expect(formatCostDate(currentFrom as Date)).toBe("2026-08-01")
+    expect(formatCostDate(currentTo as Date)).toBe("2026-08-01")
+    expect(currentTimezone).toBeUndefined()
+  })
+
 })
 
 describe("SpendPage — spend breakdown", () => {
@@ -617,6 +1029,46 @@ describe("SpendPage — spend breakdown", () => {
       ).toBe(true)
     })
     expect(await screen.findByText("classification")).toBeTruthy()
+  })
+
+  it("renders absent model pricing as —/unpriced and keeps subscription zeroes distinct", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/breakdown?by=model") {
+        return Promise.resolve({
+          data: {
+            by: "model",
+            breakdown: { "gpt-5.6-luna": 0 },
+            billing_classes: { "gpt-5.6-luna": "subscription" },
+            unpriced_models: [
+              {
+                model: "unpriced-codex",
+                calls: 3,
+                input_tokens: 100,
+                output_tokens: 50,
+                cached_input_tokens: 0,
+                cache_creation_tokens: 0,
+              },
+            ],
+          },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "model" }))
+    })
+
+    expect(await screen.findByText("gpt-5.6-luna")).toBeTruthy()
+    expect(screen.getByText(/subscription/)).toBeTruthy()
+    expect(screen.getByText("—/unpriced")).toBeTruthy()
+    expect((await screen.findByTestId("breakdown-unpriced")).textContent).toContain(
+      "unpriced-codex",
+    )
   })
 
   it("gates the empty state when butlers drop out of the butler breakdown fan-out (bu-jad4j.3)", async () => {

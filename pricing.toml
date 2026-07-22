@@ -11,6 +11,10 @@
 # fallback for vendors that don't discount cached tokens or whose
 # discount is unknown).
 #
+# billing_class is optional for metered models. Declare `subscription` or
+# `local` for known zero-marginal usage so it cannot be confused with a model
+# missing from this file.
+#
 # Anthropic: cache reads = 0.1x input, 5-minute cache writes = 1.25x input.
 
 [models]
@@ -55,6 +59,25 @@ output_price_per_token = 0.0000025  # $2.50 / 1M tokens
 # gpt-5.4 (>272K): $5.00/$22.50 per 1M tokens
 # gpt-5.4-pro (>272K): $60.00/$270.00 per 1M tokens
 # gpt-5.5-pro has no long-context tier.
+
+# Codex subscription models — usage is real and recorded in the ledger, but
+# it has no marginal API price under the active subscription. These entries
+# intentionally price at $0 while carrying an explicit classification; an
+# absent gpt-5.6 entry would instead be rendered as unpriced.
+[models."gpt-5.6-luna"]
+billing_class = "subscription"
+input_price_per_token = 0.0
+output_price_per_token = 0.0
+
+[models."gpt-5.6-sol"]
+billing_class = "subscription"
+input_price_per_token = 0.0
+output_price_per_token = 0.0
+
+[models."gpt-5.6-terra"]
+billing_class = "subscription"
+input_price_per_token = 0.0
+output_price_per_token = 0.0
 
 [models."gpt-5.5"]
 input_price_per_token = 0.000005    # $5.00 / 1M tokens (<272K context)

@@ -4578,8 +4578,9 @@ export async function listIngestionEvents(
  * Aggregate event/session/cost counts for the active filter window.
  * GET /api/ingestion/rollup
  *
- * Accepts the same filter shape as GET /api/ingestion/events.
- * The ``cost`` field is always null until cost-per-event data is available.
+ * Accepts the same filter shape as GET /api/ingestion/events. ``cost`` is a
+ * known-priced subtotal; ``unpriced_session_count`` covers sessions whose
+ * cost cannot be derived.
  */
 export async function getIngestionWindowRollup(
   params?: IngestionWindowRollupParams,

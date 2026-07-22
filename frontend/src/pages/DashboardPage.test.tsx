@@ -714,6 +714,72 @@ describe("DashboardPage -- cost surface", () => {
     expect(html).toContain("$0.42");
   });
 
+  it("marks Cost Today unpriced instead of displaying a partial ledger subtotal as a total", () => {
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          total_cost_usd: 0.42,
+          total_sessions: 5,
+          total_input_tokens: 1000,
+          total_output_tokens: 500,
+          by_butler: { general: 0.3, health: 0.12 },
+          by_model: {},
+          unpriced_models: [
+            {
+              model: "unknown-executed-model",
+              calls: 3,
+              input_tokens: 100,
+              output_tokens: 50,
+              cached_input_tokens: 0,
+              cache_creation_tokens: 0,
+            },
+          ],
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+
+    expect(html).toContain("—/unpriced");
+    expect(html).toContain("3 unpriced calls excluded");
+    expect(html).not.toContain("Top: general");
+  });
+
+  it("treats a summary compatibility zero with source_error as unavailable evidence", () => {
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          total_cost_usd: 0,
+          total_sessions: 0,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          by_butler: {},
+          by_model: {},
+          source_error: true,
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    vi.mocked(useDailySpend).mockReturnValue({
+      data: { data: [], meta: { source_error: true } },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+
+    expect(html).toContain("Cost source unavailable");
+    expect(html).not.toContain("Top: general");
+  });
+
   it("shows the most-expensive butler derived from the by_butler breakdown", () => {
     const html = renderPage();
     // by_butler { general: 0.30, health: 0.12 } -> top is general at $0.30

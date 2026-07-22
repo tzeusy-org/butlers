@@ -2542,7 +2542,7 @@ class TestSpendEventBusWiring:
                 new_callable=AsyncMock,
                 return_value=(
                     "codex",
-                    "claude-sonnet-4-20250514",
+                    "gpt-5.6-luna",
                     [],
                     _FAKE_CATALOG_ID,
                     600,
@@ -2582,12 +2582,68 @@ class TestSpendEventBusWiring:
         ev = call_args.args[2]
         assert ev["kind"] == "call"
         assert ev["butler"] == "my-butler"
-        assert ev["model"] == "claude-sonnet-4-20250514"
+        assert ev["model"] == "gpt-5.6-luna"
         assert ev["tokens_in"] == 1000
         assert ev["tokens_out"] == 500
         assert ev["session_id"] == str(session_uuid)
-        assert isinstance(ev["cost_usd"], float)
+        assert ev["cost_usd"] == 0.0
         assert "ts" in ev
+
+    async def test_spend_event_preserves_unknown_model_cost_as_unpriced(self, tmp_path: Path):
+        """A live call with no pricing entry publishes ``None``, never a fabricated zero."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(name="my-butler")
+        mock_pool = AsyncMock()
+        session_uuid = uuid.UUID("00000000-0000-0000-0000-000000000043")
+        adapter = MockAdapter(
+            result_text="hello",
+            usage={"input_tokens": 1000, "output_tokens": 500},
+        )
+        mock_publish = AsyncMock()
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=(
+                    "codex",
+                    "unpriced-live-model",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    600,
+                    "workhorse",
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(
+                    allowed=True,
+                    usage_24h=0,
+                    usage_30d=0,
+                    limit_24h=None,
+                    limit_30d=None,
+                ),
+            ),
+            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
+            patch("butlers.fleet_events.publish_fleet_event", new=mock_publish),
+        ):
+            mock_create.return_value = session_uuid
+            result = await Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args.args[2]
+        assert event["model"] == "unpriced-live-model"
+        assert event["cost_usd"] is None
 
     async def test_spend_event_not_published_when_no_token_usage(self, tmp_path: Path):
         """When adapter reports no usage, publish_fleet_event is not called."""

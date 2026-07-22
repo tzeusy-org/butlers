@@ -14,7 +14,7 @@ import { afterEach } from "vitest";
 import { MemoryRouter } from "react-router";
 
 import CostWidget from "./CostWidget";
-import type { DailySpend } from "@/api/types";
+import type { DailySpend, UnpricedModelUsage } from "@/api/types";
 
 afterEach(() => {
   cleanup();
@@ -37,6 +37,17 @@ const DAILY: DailySpend[] = [
   { date: "2026-05-01", cost_usd: 0.1, sessions: 1, input_tokens: 100, output_tokens: 50 },
   { date: "2026-05-02", cost_usd: 0.4, sessions: 2, input_tokens: 200, output_tokens: 100 },
   { date: "2026-05-03", cost_usd: 0.2, sessions: 1, input_tokens: 100, output_tokens: 50 },
+];
+
+const UNPRICED: UnpricedModelUsage[] = [
+  {
+    model: "unknown-executed-model",
+    calls: 3,
+    input_tokens: 100,
+    output_tokens: 50,
+    cached_input_tokens: 0,
+    cache_creation_tokens: 0,
+  },
 ];
 
 describe("CostWidget — trend sparkline", () => {
@@ -70,5 +81,23 @@ describe("CostWidget — trend sparkline", () => {
     renderWidget({ totalCostUsd: 0.004 });
 
     expect(screen.getByText("<$0.01")).toBeTruthy();
+  });
+
+  it("does not present a priced subtotal as today's total when model pricing is absent", () => {
+    renderWidget({ dailyCosts: DAILY, unpricedModels: UNPRICED });
+
+    expect(screen.getByTestId("cost-widget-unpriced").textContent).toContain("—/unpriced");
+    expect(screen.getByText("3 unpriced calls excluded")).toBeTruthy();
+    expect(screen.queryByText("$1.50")).toBeNull();
+    expect(screen.queryByText(/Top: general/)).toBeNull();
+  });
+
+  it("labels a partial daily trend even when today's subtotal is fully priced", () => {
+    renderWidget({ dailyCosts: DAILY, dailyUnpricedModels: UNPRICED });
+
+    expect(screen.getByTestId("cost-widget-trend-unpriced").textContent).toContain(
+      "3 unpriced calls",
+    );
+    expect(screen.getByTestId("cost-widget-sparkline")).toBeTruthy();
   });
 });

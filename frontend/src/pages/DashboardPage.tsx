@@ -255,6 +255,8 @@ export default function DashboardPage() {
   // distinct surface from the per-butler subtitles in ButlerIndex, so no
   // aggregate cost figure is double-rendered.
   const costData = costQuery.isError ? null : costQuery.data?.data;
+  const costSourceError = costData?.source_error === true;
+  const dailyCostSourceError = dailySpendQuery.data?.meta?.source_error === true;
   const [topButler, topButlerCost] = Object.entries(
     costData?.by_butler ?? {},
   ).reduce<[string | null, number]>(
@@ -509,11 +511,15 @@ export default function DashboardPage() {
             totalCostUsd={costData?.total_cost_usd ?? 0}
             topButler={topButler}
             topButlerCost={topButlerCost}
+            unpricedModels={costData?.unpriced_models}
+            sourceError={costSourceError}
             isLoading={costQuery.isLoading}
             dailyCosts={
-              dailySpendQuery.isError ? undefined : dailySpendQuery.data?.data
+              dailySpendQuery.isError || dailyCostSourceError ? undefined : dailySpendQuery.data?.data
             }
             dailyCostsError={dailySpendQuery.isError}
+            dailySourceError={dailyCostSourceError}
+            dailyUnpricedModels={dailySpendQuery.isError ? undefined : dailySpendQuery.data?.meta?.unpriced_models}
           />
         </div>
         <TopSessionsTable

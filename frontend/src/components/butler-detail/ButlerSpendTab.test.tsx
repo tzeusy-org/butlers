@@ -22,19 +22,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // Mock hooks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/hooks/use-spend", () => ({
-  useSpendSummary: vi.fn(),
-  useDailySpend: vi.fn(),
-  formatCostDate: vi.fn((d: Date) => d.toISOString().slice(0, 10)),
-}));
+vi.mock("@/hooks/use-spend", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-spend")>();
+  return {
+    ...actual,
+    useSpendSummary: vi.fn(),
+    useDailySpend: vi.fn(),
+  };
+});
 
 vi.mock("@/hooks/use-time-window", () => ({
-  OWNER_TZ_DEFAULT: "UTC",
-}));
-
-vi.mock("@/lib/tz-format", () => ({
-  startOfDayInTz: (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()),
-  endOfDayInTz: (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999),
+  OWNER_TZ_DEFAULT: "Asia/Singapore",
 }));
 
 // Mock DayBars to avoid DOM complexity
@@ -508,6 +506,109 @@ describe("ButlerSpendTab — error state", () => {
   });
 });
 
+describe("ButlerSpendTab — compatibility source errors", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          period: "today",
+          total_cost_usd: 0,
+          total_sessions: 0,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          by_butler: {},
+          by_model: {},
+          source_error: true,
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSpendSummary>);
+    vi.mocked(useDailySpend).mockReturnValue({
+      data: { data: [], meta: { source_error: true } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useDailySpend>);
+  });
+  afterEach(() => cleanup());
+
+  it("renders unavailable evidence rather than the compatibility $0.00 and empty trend", () => {
+    renderTab();
+
+    const strip = screen.getByTestId("spend-kpi-strip");
+    expect(strip.textContent).not.toContain("$0.00");
+    expect(screen.getByTestId("spend-source-unavailable").textContent).toContain("Spend source unavailable");
+    expect(screen.queryByTestId("day-bars")).toBeNull();
+  });
+});
+
+describe("ButlerSpendTab — unpriced coverage", () => {
+  afterEach(() => cleanup());
+
+  function setupUnpricedCoverage(totalCost: number) {
+    const unpriced = [
+      {
+        model: "unknown-executed-model",
+        calls: 2,
+        input_tokens: 1_000,
+        output_tokens: 100,
+        cached_input_tokens: 0,
+        cache_creation_tokens: 0,
+      },
+    ];
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          period: "today",
+          total_cost_usd: totalCost,
+          total_sessions: 2,
+          total_input_tokens: 1_000,
+          total_output_tokens: 100,
+          by_butler: { [BUTLER_NAME]: totalCost },
+          by_model: { "known-model": totalCost },
+          unpriced_models: unpriced,
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSpendSummary>);
+    vi.mocked(useDailySpend).mockReturnValue({
+      data: { ...DAILY_COSTS, meta: { unpriced_models: unpriced } },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useDailySpend>);
+  }
+
+  it("hides an all-unpriced $0.00 subtotal behind explicit unknown coverage", () => {
+    vi.resetAllMocks();
+    setupUnpricedCoverage(0);
+
+    renderTab();
+
+    const strip = screen.getByTestId("spend-kpi-strip");
+    expect(strip.textContent).not.toContain("$0.00");
+    expect(screen.getByTestId("spend-unpriced-coverage").textContent).toContain(
+      "unknown-executed-model",
+    );
+    expect(screen.queryByTestId("model-breakdown-list")).toBeNull();
+  });
+
+  it("does not calculate calm mixed-coverage costs from a partial priced subtotal", () => {
+    vi.resetAllMocks();
+    setupUnpricedCoverage(3.25);
+
+    renderTab();
+
+    const strip = screen.getByTestId("spend-kpi-strip");
+    expect(strip.textContent).not.toContain("$3.25");
+    expect(strip.textContent).toContain("—");
+    expect(screen.getByTestId("spend-unpriced-coverage").textContent).toContain(
+      "Spend coverage incomplete",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Tests: butler-scoped daily costs and "all butlers" residual notes [bu-u1c02]
 // ---------------------------------------------------------------------------
@@ -554,6 +655,34 @@ describe("ButlerSpendTab — butler-scoped useDailySpend [bu-u1c02]", () => {
     // All calls should include the butler name as the 4th argument
     calls.forEach((args) => {
       expect(args[3]).toBe(BUTLER_NAME);
+    });
+  });
+});
+
+describe("ButlerSpendTab — UTC default trend window", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Singapore has crossed into Aug 1, but the Spend API and ceiling are
+    // still operating on the July 31 UTC ledger day.
+    vi.setSystemTime(new Date("2026-07-31T18:00:00.000Z"));
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    cleanup();
+  });
+
+  it("uses a UTC-keyed seven-day trend window at a non-UTC rollover", () => {
+    renderTab(BUTLER_NAME);
+
+    const [from, to, options] = vi.mocked(useDailySpend).mock.calls.at(-1)!;
+    expect((from as Date).toISOString()).toBe("2026-07-25T00:00:00.000Z");
+    expect((to as Date).toISOString()).toBe("2026-07-31T23:59:59.999Z");
+    expect(options).toMatchObject({
+      butler: BUTLER_NAME,
+      dateKeyTimezone: "UTC",
     });
   });
 });

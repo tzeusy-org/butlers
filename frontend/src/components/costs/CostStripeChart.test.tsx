@@ -97,6 +97,13 @@ describe("CostStripeChart", () => {
     expect(screen.getByTestId("cost-stripe-error")).toBeTruthy()
   })
 
+  it("names a daily compatibility source_error instead of rendering the calm empty state", () => {
+    render(<CostStripeChart data={[]} sourceError />)
+    expect(screen.queryByTestId("cost-stripe-empty")).toBeNull()
+    const note = screen.getByTestId("cost-stripe-source-unavailable")
+    expect(note.getAttribute("role")).toBe("alert")
+  })
+
   // -------------------------------------------------------------------------
   // Degraded-source honesty (bu-jad4j.3): GET /api/spend/daily drops any butler
   // whose cost source failed from the fan-out and names it in

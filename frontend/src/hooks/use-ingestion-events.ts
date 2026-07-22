@@ -255,8 +255,9 @@ export function useIngestionEventDetail(
  * Aggregate event/session/cost counts for the active filter window.
  *
  * Fetches from GET /api/ingestion/rollup with the same filter params as
- * GET /api/ingestion/events.  The ``cost`` field is always null until
- * cost-per-event data is available (see follow-up bead).
+ * GET /api/ingestion/events. ``cost`` is a known-priced subtotal when pricing
+ * is available; ``unpriced_session_count`` makes omitted session coverage
+ * explicit.
  *
  * The query is disabled by default — pass `enabled: true` to activate.
  */

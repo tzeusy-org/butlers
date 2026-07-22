@@ -826,7 +826,7 @@ function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
 // DispatchTicksCell.
 // ---------------------------------------------------------------------------
 
-const LEDGER_GRID_COLUMNS = "20px 72px 150px 1fr 112px 120px 64px 28px"
+const LEDGER_GRID_COLUMNS = "20px 72px 150px 1fr 112px 120px 128px 28px"
 
 // ---------------------------------------------------------------------------
 // LedgerRow — one row in the event ledger
@@ -860,6 +860,8 @@ function LedgerRow({
   // bu-4utdw.3: tokens/cost/sender are now list-provided fields (one grouped
   // fan-out for the whole page server-side) — no per-row hook mounts here.
   const resolvedName = event.sender_display ?? event.source_sender_identity ?? null;
+  const unpricedSessionCount = event.unpriced_session_count ?? 0;
+  const costEvidence = formatCostEvidence(event.cost_usd, unpricedSessionCount);
 
   const [isReplaying, setIsReplaying] = useState(false);
 
@@ -1041,8 +1043,11 @@ function LedgerRow({
       />
 
       {/* Cost */}
-      <span className="text-right tabular-nums font-mono text-[11px]">
-        {formatCostUsdPrecise(event.cost_usd)}
+      <span
+        className="text-right tabular-nums font-mono text-[11px]"
+        title={unpricedSessionCount > 0 ? `${unpricedSessionCount} session cost unavailable` : undefined}
+      >
+        {costEvidence}
       </span>
 
       {/* Replay / chevron — chevron on every row now */}
@@ -1314,10 +1319,26 @@ interface FooterRollupBandProps {
   events: number | undefined;
   sessions: number | undefined;
   cost: number | null | undefined;
+  unpricedSessionCount: number | undefined;
   isLoading: boolean;
 }
 
-function FooterRollupBand({ events, sessions, cost, isLoading }: FooterRollupBandProps) {
+function formatCostEvidence(
+  cost: number | null | undefined,
+  unpricedSessionCount: number | undefined,
+): string {
+  const knownSubtotal = cost !== null && cost !== undefined ? formatCostUsdPrecise(cost) : "—";
+  const unpriced = unpricedSessionCount ?? 0;
+  return unpriced > 0 ? `${knownSubtotal} · ${unpriced} unpriced` : knownSubtotal;
+}
+
+function FooterRollupBand({
+  events,
+  sessions,
+  cost,
+  unpricedSessionCount,
+  isLoading,
+}: FooterRollupBandProps) {
   const cell = (label: string, value: string) => (
     <div className="flex flex-col items-center gap-0.5 min-w-[80px]">
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
@@ -1339,8 +1360,7 @@ function FooterRollupBand({ events, sessions, cost, isLoading }: FooterRollupBan
       <div className="w-px h-4 bg-border/60" aria-hidden />
       {cell("sessions", sessions !== undefined ? sessions.toLocaleString() : "—")}
       <div className="w-px h-4 bg-border/60" aria-hidden />
-      {/* cost is populated live from /rollup when pricing is available; render em dash when null */}
-      {cell("cost", cost !== null && cost !== undefined ? formatCostUsdPrecise(cost) : "—")}
+      {cell("cost", formatCostEvidence(cost, unpricedSessionCount))}
     </div>
   );
 }
@@ -2302,6 +2322,7 @@ export function TimelineTab({
         events={rollupData?.events}
         sessions={rollupData?.sessions}
         cost={rollupData?.cost}
+        unpricedSessionCount={rollupData?.unpriced_session_count}
         isLoading={rollupLoading}
       />
 

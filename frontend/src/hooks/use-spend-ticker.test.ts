@@ -37,6 +37,7 @@ describe("useSpendTicker", () => {
   it("starts at 0", () => {
     const { result } = renderHook(() => useSpendTicker());
     expect(result.current.streamedCostUsd).toBe(0);
+    expect(result.current.streamedUnpricedEvents).toEqual([]);
   });
 
   it("accumulates cost_usd from live (non-replayed) call events", () => {
@@ -95,5 +96,53 @@ describe("useSpendTicker", () => {
       );
     });
     expect(result.current.streamedCostUsd).toBe(2);
+  });
+
+  it("preserves an explicit null cost as live unpriced usage while keeping a known zero numeric", () => {
+    const { result } = renderHook(() => useSpendTicker());
+
+    act(() => {
+      capturedListener?.(
+        {
+          type: "spend",
+          ts: 1,
+          data: {
+            kind: "call",
+            model: "unpriced-live-model",
+            tokens_in: 1000,
+            tokens_out: 500,
+            tokens_cached: 125,
+            tokens_cache_write: 25,
+            cost_usd: null,
+          },
+        },
+        { replayed: false },
+      );
+    });
+
+    expect(result.current.streamedCostUsd).toBe(0);
+    expect(result.current.streamedUnpricedEvents).toEqual([
+      {
+        model: "unpriced-live-model",
+        input_tokens: 1000,
+        output_tokens: 500,
+        cached_input_tokens: 125,
+        cache_creation_tokens: 25,
+      },
+    ]);
+
+    act(() => {
+      capturedListener?.(
+        {
+          type: "spend",
+          ts: 2,
+          data: { kind: "call", model: "subscription-model", cost_usd: 0 },
+        },
+        { replayed: false },
+      );
+    });
+
+    expect(result.current.streamedCostUsd).toBe(0);
+    expect(result.current.streamedUnpricedEvents).toHaveLength(1);
   });
 });

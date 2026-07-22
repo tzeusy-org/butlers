@@ -317,6 +317,14 @@ async def compute_spend_rule_savings(
                 cached_input_tokens=cached_tok,
                 cache_creation_tokens=cache_write_tok,
             )
+            if actual_cost is None or baseline_cost is None:
+                rules_skipped += 1
+                logger.warning(
+                    "spend_rule_savings: rule %s has unpriced model usage; "
+                    "skipping savings estimate",
+                    rule_id,
+                )
+                continue
             saved_7d = baseline_cost - actual_cost
 
             updates.append((saved_7d, rule_id))

@@ -2,7 +2,7 @@
 // ButlerVerdictOpener — JARVIS pursuit move 9, slice 4 (bu-vyjoi)
 // ---------------------------------------------------------------------------
 
-import type { ApprovalAction } from "@/api/types";
+import type { ApprovalAction, UnpricedModelUsage } from "@/api/types";
 import type { ActivityVerb } from "@/hooks/use-butler-status-board";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { formatCostUsd } from "@/lib/format-cost";
@@ -17,6 +17,8 @@ export interface ButlerVerdictOpenerProps {
   spendLoading: boolean;
   spendError: boolean;
   spendSourcesDegraded: string[];
+  /** Executed-model usage omitted from the priced subtotal. */
+  spendUnpricedModels?: readonly UnpricedModelUsage[];
   pendingApprovals: ApprovalAction[];
   pendingTotal: number;
   approvalsLoading: boolean;
@@ -52,6 +54,7 @@ function buildClauses({
   pendingTotal,
   failedSessions,
   spendSourcesDegraded,
+  spendUnpricedModels,
   approvalSourcesDegraded,
   failureSourcesDegraded,
   butlerName,
@@ -62,6 +65,7 @@ function buildClauses({
   | "pendingTotal"
   | "failedSessions"
   | "spendSourcesDegraded"
+  | "spendUnpricedModels"
   | "approvalSourcesDegraded"
   | "failureSourcesDegraded"
   | "butlerName"
@@ -72,6 +76,13 @@ function buildClauses({
     clauses.push({
       key: "spend-sources-degraded",
       text: `${spendSourcesDegraded.join(", ")} unavailable; spend may be incomplete`,
+    });
+  }
+  if ((spendUnpricedModels?.length ?? 0) > 0) {
+    const names = Array.from(new Set(spendUnpricedModels?.map(({ model }) => model))).sort();
+    clauses.push({
+      key: "spend-unpriced-models",
+      text: `spend coverage incomplete: ${plural(names.length, "unpriced model")} (${names.join(", ")})`,
     });
   }
   if (approvalSourcesDegraded.length > 0) {
@@ -119,6 +130,7 @@ export function ButlerVerdictOpener({
   spendLoading,
   spendError,
   spendSourcesDegraded,
+  spendUnpricedModels = [],
   pendingApprovals,
   pendingTotal,
   approvalsLoading,
@@ -151,6 +163,7 @@ export function ButlerVerdictOpener({
         pendingTotal,
         failedSessions,
         spendSourcesDegraded,
+        spendUnpricedModels,
         approvalSourcesDegraded,
         failureSourcesDegraded,
         butlerName,

@@ -129,6 +129,8 @@ export interface CostStripeChartProps {
   data: DailySpend[]
   isLoading?: boolean
   isError?: boolean
+  /** A 200 compatibility envelope has no trustworthy daily series. */
+  sourceError?: boolean
   /**
    * Butlers whose cost source failed and were dropped from GET /api/spend/daily's
    * fan-out (`meta.unavailable_butlers`). When non-empty, each vanished butler is
@@ -148,6 +150,7 @@ export function CostStripeChart({
   data,
   isLoading,
   isError,
+  sourceError = false,
   unavailableButlers = [],
 }: CostStripeChartProps) {
   const butlers = useMemo(() => collectButlers(data), [data])
@@ -181,6 +184,16 @@ export function CostStripeChart({
 
   if (isLoading) {
     return <ChartSkeleton height="h-[256px]" testId="cost-stripe-skeleton" />
+  }
+
+  if (sourceError) {
+    return (
+      <SourceDegradedNote
+        label="Daily spend"
+        detail="cost source unavailable"
+        testId="cost-stripe-source-unavailable"
+      />
+    )
   }
 
   if (isError) {

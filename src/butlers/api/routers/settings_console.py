@@ -191,7 +191,7 @@ async def _get_spend_mtd(
         )
     try:
         pool = db.pool("switchboard")
-        mtd_usd = await price_mtd_from_ledger(pool)
+        spend = await price_mtd_from_ledger(pool)
 
         ceiling_usd: float | None = None
         ceiling_row = await pool.fetchrow(
@@ -200,7 +200,20 @@ async def _get_spend_mtd(
         if ceiling_row:
             ceiling_usd = float(ceiling_row["monthly_usd"])
 
-        return round(mtd_usd, 2), ceiling_usd, None
+        if spend.unpriced_models:
+            names = ", ".join(usage.model for usage in spend.unpriced_models)
+            return (
+                None,
+                ceiling_usd,
+                AttentionItem(
+                    tone="amber",
+                    kind="subsystem_error",
+                    text=(f"Spend pricing is incomplete for executed models: {names}."),
+                    action_route="/settings/spend",
+                ),
+            )
+
+        return round(spend.cost_usd, 2), ceiling_usd, None
     except Exception as exc:
         logger.warning("console: spend-mtd aggregation failed: %s", exc)
         return (

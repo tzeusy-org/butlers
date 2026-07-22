@@ -21,6 +21,7 @@ import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-ve
 import { formatCostUsd } from "@/lib/format-cost";
 import { computeMovers } from "@/lib/spend-movers";
 import type { ForecastData } from "@/lib/spend-forecast";
+import type { UnpricedModelUsage } from "@/api/types";
 
 export interface SpendVerdictOpenerProps {
   forecast: ForecastData | undefined;
@@ -29,11 +30,33 @@ export interface SpendVerdictOpenerProps {
   currentByButler: Record<string, number>;
   priorByButler: Record<string, number>;
   unavailableButlers: ReadonlySet<string>;
+  /** Usage omitted from either comparison-window priced subtotal. */
+  comparisonUnpricedModels?: readonly UnpricedModelUsage[];
   moversLoading: boolean;
   moversError: boolean;
 }
 
-function buildClauses(unavailableButlers: ReadonlySet<string>): VerdictClause[] {
+function unpricedCoverageClause(
+  key: string,
+  coverage: string,
+  models: readonly UnpricedModelUsage[] | undefined,
+): VerdictClause | null {
+  if (!models || models.length === 0) return null;
+  const names = Array.from(new Set(models.map(({ model }) => model))).sort();
+  return {
+    key,
+    text: `${coverage} incomplete: ${names.length} unpriced model${names.length === 1 ? "" : "s"} (${names.join(", ")})`,
+  };
+}
+
+function buildClauses({
+  forecast,
+  unavailableButlers,
+  comparisonUnpricedModels,
+}: Pick<
+  SpendVerdictOpenerProps,
+  "forecast" | "unavailableButlers" | "comparisonUnpricedModels"
+>): VerdictClause[] {
   const clauses: VerdictClause[] = [];
 
   if (unavailableButlers.size > 0) {
@@ -43,6 +66,20 @@ function buildClauses(unavailableButlers: ReadonlySet<string>): VerdictClause[] 
       text: `${names.length} butler${names.length === 1 ? "" : "s"} excluded from spend comparison, cost source unavailable: ${names.join(", ")}`,
     });
   }
+
+  const forecastCoverage = unpricedCoverageClause(
+    "forecast-unpriced-models",
+    "forecast coverage",
+    forecast?.unpriced_models,
+  );
+  if (forecastCoverage) clauses.push(forecastCoverage);
+
+  const comparisonCoverage = unpricedCoverageClause(
+    "comparison-unpriced-models",
+    "spend comparison",
+    comparisonUnpricedModels,
+  );
+  if (comparisonCoverage) clauses.push(comparisonCoverage);
 
   return clauses;
 }
@@ -83,10 +120,11 @@ export function SpendVerdictOpener({
   currentByButler,
   priorByButler,
   unavailableButlers,
+  comparisonUnpricedModels = [],
   moversLoading,
   moversError,
 }: SpendVerdictOpenerProps) {
-  const clauses = buildClauses(unavailableButlers);
+  const clauses = buildClauses({ forecast, unavailableButlers, comparisonUnpricedModels });
   // A settled forecast with ceiling_source_error=true (bu-7o89u.1: ledger MTD
   // pricing failed or no DB pool wired) carries fabricated mtd_usd=0 --
   // treat it as an errored source too so DispatchVerdict never computes a

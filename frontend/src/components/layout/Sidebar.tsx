@@ -388,7 +388,11 @@ function SidebarFooter({
   expanded?: boolean
 }) {
   const { data: costResponse } = useSpendSummary('today')
-  const cost = costResponse?.data.total_cost_usd
+  const spendSourceError = costResponse?.data.source_error === true
+  const spendUnpricedModels = costResponse?.data.unpriced_models ?? []
+  const spendCoverageIncomplete = spendUnpricedModels.length > 0
+  const unpricedModelNames = Array.from(new Set(spendUnpricedModels.map(({ model }) => model))).sort()
+  const cost = spendSourceError || spendCoverageIncomplete ? null : costResponse?.data.total_cost_usd
 
   const containerClass = expanded
     ? 'flex items-center gap-2 border-t border-border px-4 py-3'
@@ -410,7 +414,7 @@ function SidebarFooter({
 
   const dotColor = hasError
     ? 'bg-destructive'
-    : hasDegraded
+    : hasDegraded || spendSourceError || spendCoverageIncomplete
       ? 'bg-[var(--amber)]'
       : 'bg-[var(--green)]'
 
@@ -419,6 +423,10 @@ function SidebarFooter({
   const parts: string[] = []
   if (errorCount > 0) parts.push(`${errorCount} error${errorCount > 1 ? 's' : ''}`)
   if (degradedCount > 0) parts.push(`${degradedCount} degraded`)
+  if (spendSourceError) parts.push('Spend source unavailable')
+  if (spendCoverageIncomplete) {
+    parts.push(`Spend coverage incomplete: ${unpricedModelNames.join(', ')}`)
+  }
   const costPart = cost != null ? `$${cost.toFixed(2)} today` : ''
   const allParts = [...parts, ...(costPart ? [costPart] : [])]
   const titleText = allParts.length > 0 ? allParts.join(' · ') : 'All systems ok'
@@ -803,7 +811,11 @@ function MobileSidebar({
   onNavClick?: () => void
 }) {
   const { data: costResponse, isLoading } = useSpendSummary('today')
-  const cost = costResponse?.data.total_cost_usd
+  const spendSourceError = costResponse?.data.source_error === true
+  const spendUnpricedModels = costResponse?.data.unpriced_models ?? []
+  const spendCoverageIncomplete = spendUnpricedModels.length > 0
+  const unpricedModelNames = Array.from(new Set(spendUnpricedModels.map(({ model }) => model))).sort()
+  const cost = spendSourceError || spendCoverageIncomplete ? null : costResponse?.data.total_cost_usd
 
   return (
     <div className="flex h-full flex-col font-sans">
@@ -827,6 +839,12 @@ function MobileSidebar({
         <p className="text-sm font-medium">
           {isLoading || cost == null ? '--' : `$${cost.toFixed(2)}`}
         </p>
+        {spendSourceError && <p className="text-xs text-[var(--amber-text)]">Spend source unavailable</p>}
+        {spendCoverageIncomplete && (
+          <p className="text-xs text-[var(--amber-text)]">
+            Spend coverage incomplete: {unpricedModelNames.join(', ')}
+          </p>
+        )}
       </div>
     </div>
   )

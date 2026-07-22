@@ -34,10 +34,10 @@
 // now accept from/to, mirroring /api/spend/daily).
 // ---------------------------------------------------------------------------
 
-import { useState, useMemo, useRef } from "react"
+import { useState, useMemo, useRef, useCallback } from "react"
 import { Link, useSearchParams } from "react-router"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import { differenceInCalendarDays, subDays } from "date-fns"
+import { differenceInCalendarDays, isValid, parseISO, subDays } from "date-fns"
 
 import { Page } from "@/components/ui/page"
 import { Button } from "@/components/ui/button"
@@ -47,17 +47,20 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Eyebrow } from "@/components/ui/Eyebrow"
 import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
-import { useSpendTicker } from "@/hooks/use-spend-ticker"
+import { useSpendTicker, type LiveUnpricedSpendEvent } from "@/hooks/use-spend-ticker"
 import { useFleetHaltStatus } from "@/hooks/use-fleet-halt"
 import { useModelCatalog } from "@/hooks/use-model-catalog"
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval"
 import {
+  formatCostDate,
+  SPEND_UTC_DATE_KEY_TIMEZONE,
+  utcDateWindow,
   useSpendSummary,
   useDailySpend,
   useTopSessions,
   useCostsBySchedule,
 } from "@/hooks/use-spend"
-import { useTimeWindow, formatWindowDate, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
+import { isPollingDisabled, useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
 import { CostStripeChart } from "@/components/costs/CostStripeChart"
 import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener"
@@ -66,7 +69,7 @@ import { cn } from "@/lib/utils"
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry"
 import { computeMovers, type Mover } from "@/lib/spend-movers"
 import type { ForecastData, ForecastDay } from "@/lib/spend-forecast"
-import type { ComplexityTier } from "@/api/types"
+import type { ComplexityTier, SpendDivergence, UnpricedModelUsage } from "@/api/types"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +87,32 @@ interface SpendRule {
   updated_at: string
 }
 
+function hasExplicitSpendRange(searchParams: URLSearchParams): boolean {
+  const from = searchParams.get("from")
+  const to = searchParams.get("to")
+  if (!from || !to) return false
+
+  const parsedFrom = parseISO(from)
+  const parsedTo = parseISO(to)
+  return isValid(parsedFrom) && isValid(parsedTo) && parsedFrom <= parsedTo
+}
+
+/**
+ * Spend's implicit range is keyed by the ledger's UTC calendar, whereas the
+ * shared time-window hook intentionally retains browser-local serialization
+ * for explicit operator ranges. These adapters bridge only that transition:
+ * the picker parses a typed UTC key into a UTC instant, then the shared hook
+ * receives browser-local midnight for the same key so it writes the intended
+ * explicit URL parameters without shifting the untouched edge.
+ */
+function parseSpendUtcDateKey(dateKey: string): Date {
+  return parseISO(`${dateKey}T00:00:00.000Z`)
+}
+
+function toExplicitSpendRangeDate(date: Date): Date {
+  return parseISO(formatCostDate(date, SPEND_UTC_DATE_KEY_TIMEZONE))
+}
+
 interface BreakdownData {
   by: string
   breakdown: Record<string, number>
@@ -97,6 +126,13 @@ interface BreakdownData {
   // breakdown undercounts, so an empty result must not read as a genuine "$0 month"
   // and a populated result must footnote the missing butlers.
   unavailable_butlers?: string[]
+  /** Executed models excluded from the priced subtotal because no price exists. */
+  unpriced_models?: UnpricedModelUsage[]
+  /** Declared marginal-cost class for model rows, including subscription zeroes. */
+  billing_classes?: Record<string, "metered" | "subscription" | "local">
+  divergences?: SpendDivergence[]
+  divergence_source_error?: boolean
+  historical_attribution_note?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +210,36 @@ function fmtUsdPrecise(n: number): string {
   return `$${n.toFixed(4)}`
 }
 
+function unpricedCallCount(models: readonly UnpricedModelUsage[] | undefined): number {
+  return (models ?? []).reduce((total, model) => total + model.calls, 0)
+}
+
+function unpricedModelNames(models: readonly UnpricedModelUsage[] | undefined): string {
+  return (models ?? []).map((model) => model.model).join(", ")
+}
+
+function mergeUnpricedModels(
+  ledgerModels: readonly UnpricedModelUsage[] | undefined,
+  liveEvents: readonly LiveUnpricedSpendEvent[],
+): UnpricedModelUsage[] {
+  const merged = new Map<string, UnpricedModelUsage>()
+  const addUsage = (usage: UnpricedModelUsage) => {
+    const previous = merged.get(usage.model)
+    merged.set(usage.model, {
+      model: usage.model,
+      calls: (previous?.calls ?? 0) + usage.calls,
+      input_tokens: (previous?.input_tokens ?? 0) + usage.input_tokens,
+      output_tokens: (previous?.output_tokens ?? 0) + usage.output_tokens,
+      cached_input_tokens: (previous?.cached_input_tokens ?? 0) + usage.cached_input_tokens,
+      cache_creation_tokens: (previous?.cache_creation_tokens ?? 0) + usage.cache_creation_tokens,
+    })
+  }
+
+  for (const usage of ledgerModels ?? []) addUsage(usage)
+  for (const event of liveEvents) addUsage({ ...event, calls: 1 })
+  return [...merged.values()]
+}
+
 // ---------------------------------------------------------------------------
 // Posture — KPI Strip. Hairline-divided, no card chrome. Mega numerals are
 // weight 500, tabular. State colour appears only when state demands
@@ -214,6 +280,8 @@ function KpiCell({ label, value, sub, tone = "fg", testId }: KpiCellProps) {
 
 function KpiStrip({ forecast }: { forecast: ForecastData }) {
   const daysRemaining = forecast.days_in_month - forecast.days_elapsed
+  const unpricedCalls = unpricedCallCount(forecast.unpriced_models)
+  const blindModels = forecast.ceiling_blind_to_unpriced_models ?? 0
   const pct =
     forecast.ceiling_usd != null && forecast.ceiling_usd > 0
       ? Math.min(100, Math.round((forecast.mtd_usd / forecast.ceiling_usd) * 100))
@@ -230,7 +298,11 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
         testId="kpi-mtd"
         label="MTD Spend"
         value={formatCostUsd(forecast.mtd_usd)}
-        sub={`${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`}
+        sub={
+          unpricedCalls > 0
+            ? `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed · excludes ${unpricedCalls.toLocaleString()} unpriced calls`
+            : `${forecast.days_elapsed} day${forecast.days_elapsed === 1 ? "" : "s"} elapsed`
+        }
       />
       <KpiCell
         testId="kpi-projected-eom"
@@ -243,7 +315,13 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
         testId="kpi-ceiling"
         label="Monthly Ceiling"
         value={forecast.ceiling_usd != null ? formatCostUsd(forecast.ceiling_usd) : "—"}
-        sub={pct != null ? `${pct}% used` : undefined}
+        sub={
+          blindModels > 0
+            ? `blind to ${blindModels} unpriced model${blindModels === 1 ? "" : "s"}`
+            : pct != null
+              ? `${pct}% used`
+              : undefined
+        }
       />
       <KpiCell
         testId="kpi-days-in-month"
@@ -507,6 +585,7 @@ function MoversStrip({
   isLoading,
   isError,
   unavailableButlers,
+  unpricedModels,
 }: {
   current: Record<string, number>
   prior: Record<string, number>
@@ -514,10 +593,13 @@ function MoversStrip({
   isLoading: boolean
   isError: boolean
   unavailableButlers: ReadonlySet<string>
+  unpricedModels: readonly UnpricedModelUsage[]
 }) {
+  const coverageIncomplete = unpricedModels.length > 0
+  const unpricedNames = Array.from(new Set(unpricedModels.map(({ model }) => model))).sort()
   const movers = useMemo(
-    () => computeMovers(current, prior, unavailableButlers),
-    [current, prior, unavailableButlers],
+    () => (coverageIncomplete ? [] : computeMovers(current, prior, unavailableButlers)),
+    [coverageIncomplete, current, prior, unavailableButlers],
   )
 
   return (
@@ -537,6 +619,11 @@ function MoversStrip({
           </div>
         ) : isError ? (
           <SourceDegradedNote label="Movers" detail="spend comparison unavailable" />
+        ) : coverageIncomplete ? (
+          <SourceDegradedNote
+            label="Movers"
+            detail={`spend comparison incomplete: ${unpricedNames.length} unpriced model${unpricedNames.length === 1 ? "" : "s"} (${unpricedNames.join(", ")})`}
+          />
         ) : movers.length === 0 ? (
           <p className="font-serif italic text-muted-foreground text-sm">
             No spend change vs the prior window.
@@ -548,7 +635,7 @@ function MoversStrip({
             ))}
           </div>
         )}
-        {!isLoading && !isError && unavailableButlers.size > 0 && (
+        {!isLoading && !isError && !coverageIncomplete && unavailableButlers.size > 0 && (
           <SourceDegradedNote
             label="Movers"
             detail={`excluded from comparison, cost source unavailable: ${Array.from(unavailableButlers).join(", ")}`}
@@ -565,13 +652,15 @@ function MoversStrip({
 
 interface BreakdownBarProps {
   label: string
-  value: number
+  value: number | null
   maxValue: number
   href?: string
+  billingClass?: "metered" | "subscription" | "local"
 }
 
-function BreakdownBar({ label, value, maxValue, href }: BreakdownBarProps) {
-  const pct = maxValue > 0 ? (value / maxValue) * 100 : 0
+function BreakdownBar({ label, value, maxValue, href, billingClass }: BreakdownBarProps) {
+  const isUnpriced = value === null
+  const pct = !isUnpriced && maxValue > 0 ? (value / maxValue) * 100 : 0
   const labelEl = href ? (
     <Link to={href} className="w-40 truncate text-muted-foreground font-mono text-xs hover:underline">
       {label}
@@ -588,7 +677,11 @@ function BreakdownBar({ label, value, maxValue, href }: BreakdownBarProps) {
           style={{ width: `${pct.toFixed(1)}%` }}
         />
       </div>
-      <span className="w-20 text-right tabular-nums text-xs">{fmtUsdPrecise(value)}</span>
+      <span className="w-36 text-right tabular-nums text-xs">
+        {isUnpriced ? <span aria-label="unpriced">{"—"}/unpriced</span> : fmtUsdPrecise(value)}
+        {billingClass === "subscription" && " · subscription"}
+        {billingClass === "local" && " · local"}
+      </span>
     </div>
   )
 }
@@ -611,10 +704,18 @@ function BreakdownSection() {
 
   const entries = useMemo(() => {
     const breakdown = data?.data?.breakdown ?? {}
-    return Object.entries(breakdown).sort(([, a], [, b]) => b - a)
-  }, [data])
-  const maxValue = entries[0]?.[1] ?? 0
-  const sourceError = by === "purpose" && data?.data?.source_error === true
+    const priced = Object.entries(breakdown).map(([label, value]) => ({ label, value }))
+    const unpriced =
+      by === "model"
+        ? (data?.data?.unpriced_models ?? [])
+            .filter((model) => !(model.model in breakdown))
+            .map((model) => ({ label: model.model, value: null }))
+        : []
+    return [...priced.sort((a, b) => b.value - a.value), ...unpriced]
+  }, [by, data])
+  const maxValue = Math.max(0, ...entries.map((entry) => entry.value ?? 0))
+  const sourceError = data?.data?.source_error === true
+  const divergenceCount = data?.data?.divergences?.length ?? 0
   // butler/model/feature dimensions name any butler dropped from the fan-out in
   // `unavailable_butlers` (purpose uses `source_error` above instead). When
   // non-empty the breakdown undercounts, so an empty result is an outage — not a
@@ -658,7 +759,10 @@ function BreakdownSection() {
             onRetry={() => void refetch()}
           />
         ) : sourceError ? (
-          <SourceDegradedNote label="Purpose breakdown" detail="spend source unavailable" />
+          <SourceDegradedNote
+            label={by === "purpose" ? "Purpose breakdown" : "Spend breakdown"}
+            detail="ledger source unavailable"
+          />
         ) : entries.length === 0 && unavailableButlers.length > 0 ? (
           // Empty because butlers dropped out of the fan-out, not a genuine $0
           // month — name them rather than the calm "nothing recorded" line
@@ -675,15 +779,44 @@ function BreakdownSection() {
           </p>
         ) : (
           <div className="space-y-2">
-            {entries.map(([label, value]) => (
+            {entries.map(({ label, value }) => (
               <BreakdownBar
                 key={label}
                 label={label}
                 value={value}
                 maxValue={maxValue}
                 href={by === "butler" ? `/butlers/${label}?tab=spend` : undefined}
+                billingClass={data?.data?.billing_classes?.[label]}
               />
             ))}
+            {(data?.data?.unpriced_models?.length ?? 0) > 0 && (
+              <SourceDegradedNote
+                label="Spend breakdown"
+                detail={`excludes ${unpricedCallCount(data?.data?.unpriced_models).toLocaleString()} unpriced calls (${unpricedModelNames(data?.data?.unpriced_models)})`}
+                testId="breakdown-unpriced"
+              />
+            )}
+            {divergenceCount > 0 && (
+              <SourceDegradedNote
+                label="Spend breakdown"
+                detail={`ledger/session token drift in ${divergenceCount} day-butler bucket${divergenceCount === 1 ? "" : "s"}`}
+                testId="breakdown-divergence"
+              />
+            )}
+            {data?.data?.divergence_source_error && (
+              <SourceDegradedNote
+                label="Spend breakdown"
+                detail="session-to-ledger comparison unavailable"
+                testId="breakdown-divergence-source-error"
+              />
+            )}
+            {data?.data?.historical_attribution_note && (
+              <SourceDegradedNote
+                label="Historical attribution"
+                detail={data.data.historical_attribution_note}
+                testId="breakdown-historical-attribution"
+              />
+            )}
             {unavailableButlers.length > 0 && (
               // Populated but partial: some butlers are absent from the bars.
               <SpendUnavailableFootnote
@@ -706,8 +839,16 @@ function BreakdownSection() {
 // (bu-oaiiw).
 // ---------------------------------------------------------------------------
 
-function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
-  const { data, isLoading, isError } = useTopSessions(10, from, to)
+function TopSessionsSection({
+  from,
+  to,
+  dateKeyTimezone,
+}: {
+  from: Date
+  to: Date
+  dateKeyTimezone?: string
+}) {
+  const { data, isLoading, isError } = useTopSessions(10, from, to, dateKeyTimezone)
   const sessions = data?.data ?? []
   // Butlers dropped from the top-sessions fan-out (meta.unavailable_butlers).
   // When non-empty the ranking omits their sessions, so an empty table is an
@@ -720,7 +861,7 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>Most Expensive Sessions</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          Top sessions by cost, {formatWindowDate(from)} – {formatWindowDate(to)}. Click through
+          Top sessions by cost, {formatCostDate(from, dateKeyTimezone)} – {formatCostDate(to, dateKeyTimezone)}. Click through
           to session detail.
         </p>
       </div>
@@ -804,8 +945,16 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
   )
 }
 
-function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
-  const { data, isLoading, isError } = useCostsBySchedule(from, to)
+function ByScheduleSection({
+  from,
+  to,
+  dateKeyTimezone,
+}: {
+  from: Date
+  to: Date
+  dateKeyTimezone?: string
+}) {
+  const { data, isLoading, isError } = useCostsBySchedule(from, to, dateKeyTimezone)
   const schedules = data?.data ?? []
   // Butlers dropped from the by-schedule fan-out (meta.unavailable_butlers).
   // When non-empty the ranking omits their schedules, so an empty table is an
@@ -818,8 +967,8 @@ function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>By Schedule</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          Projected monthly cost per cron job, runs from {formatWindowDate(from)} –{" "}
-          {formatWindowDate(to)}. See which schedule is burning money.
+          Projected monthly cost per cron job, runs from {formatCostDate(from, dateKeyTimezone)} –{" "}
+          {formatCostDate(to, dateKeyTimezone)}. See which schedule is burning money.
         </p>
       </div>
       <div className="p-4">
@@ -1549,7 +1698,7 @@ export default function SpendPage() {
   // slice 2; formerly its own /api/spend/stream socket) and update KPIs
   // incrementally. streamedCostUsd is a monotonic cumulative counter of live
   // "call" events received since mount — it never resets on its own.
-  const { streamedCostUsd } = useSpendTicker()
+  const { streamedCostUsd, streamedUnpricedEvents = [] } = useSpendTicker()
 
   // Each polled forecast (every 120s) is a fresh MTD baseline that already
   // reflects any spend that streamed in before that poll landed. Pin the
@@ -1561,26 +1710,47 @@ export default function SpendPage() {
   // since refs cannot be read or written during render (react-hooks/refs).
   const [baselineForecast, setBaselineForecast] = useState(forecast)
   const [baselineStreamedCostUsd, setBaselineStreamedCostUsd] = useState(streamedCostUsd)
+  const [baselineStreamedUnpricedEventCount, setBaselineStreamedUnpricedEventCount] = useState(
+    streamedUnpricedEvents.length,
+  )
   if (forecast !== baselineForecast) {
     setBaselineForecast(forecast)
     setBaselineStreamedCostUsd(streamedCostUsd)
+    setBaselineStreamedUnpricedEventCount(streamedUnpricedEvents.length)
   }
 
   const liveForecast = useMemo(() => {
     if (!forecast) return forecast
     const sinceBaseline =
       forecast === baselineForecast ? streamedCostUsd - baselineStreamedCostUsd : 0
-    if (sinceBaseline <= 0) return forecast
-    const liveMtd = forecast.mtd_usd + sinceBaseline
-    const daysIn = forecast.days_in_month
-    const daysElapsed = Math.max(forecast.days_elapsed, 1)
-    const liveProjected = (liveMtd / daysElapsed) * daysIn
+    const liveUnpricedEvents =
+      forecast === baselineForecast
+        ? streamedUnpricedEvents.slice(baselineStreamedUnpricedEventCount)
+        : []
+    if (sinceBaseline <= 0 && liveUnpricedEvents.length === 0) return forecast
+    const liveUnpricedModels = mergeUnpricedModels(forecast.unpriced_models, liveUnpricedEvents)
+    const hasPricedLiveSpend = sinceBaseline > 0
+    const liveMtd = forecast.mtd_usd + Math.max(sinceBaseline, 0)
+    const liveProjected = hasPricedLiveSpend
+      ? (liveMtd / Math.max(forecast.days_elapsed, 1)) * forecast.days_in_month
+      : forecast.projected_eom_usd
     return {
       ...forecast,
-      mtd_usd: liveMtd,
-      projected_eom_usd: liveProjected,
+      ...(hasPricedLiveSpend ? { mtd_usd: liveMtd, projected_eom_usd: liveProjected } : {}),
+      unpriced_models: liveUnpricedModels,
+      ceiling_blind_to_unpriced_models: Math.max(
+        forecast.ceiling_blind_to_unpriced_models ?? 0,
+        liveUnpricedModels.length,
+      ),
     }
-  }, [forecast, streamedCostUsd, baselineForecast, baselineStreamedCostUsd])
+  }, [
+    forecast,
+    streamedCostUsd,
+    streamedUnpricedEvents,
+    baselineForecast,
+    baselineStreamedCostUsd,
+    baselineStreamedUnpricedEventCount,
+  ])
 
   // NOTE: spend-breakdown invalidation on live spend events used to be a
   // bespoke, throttled useEffect here. bu-01r64.4 moved that coverage into
@@ -1599,17 +1769,42 @@ export default function SpendPage() {
     liveForecast?.ceiling_usd != null &&
     liveForecast.projected_eom_usd > liveForecast.ceiling_usd
 
-  // What changed — explore window (daily stacked chart + movers). Defaults
-  // to the last 7 days via useTimeWindow's "today" preset fallback logic —
-  // callers can widen with the picker below.
+  // What changed — explore window (daily stacked chart + movers). The shared
+  // picker retains owner-timezone semantics after an operator supplies a
+  // range. Its implicit fallback instead follows the Spend ledger's trailing
+  // seven UTC days.
   const timeWindow = useTimeWindow(OWNER_TZ_DEFAULT)
+  const [spendSearchParams] = useSearchParams()
+  const usesImplicitUtcWindow = !hasExplicitSpendRange(spendSearchParams)
+  const implicitUtcWindow = useMemo(() => utcDateWindow(7), [])
+  const setImplicitSpendRange = useCallback(
+    (from: Date, to: Date) => {
+      timeWindow.setCustomRange(
+        toExplicitSpendRangeDate(from),
+        toExplicitSpendRangeDate(to),
+      )
+    },
+    [timeWindow.setCustomRange],
+  )
+  const spendWindow = usesImplicitUtcWindow
+    ? {
+        ...timeWindow,
+        ...implicitUtcWindow,
+        preset: "week" as const,
+        pollingDisabled: isPollingDisabled(implicitUtcWindow.to),
+        setCustomRange: setImplicitSpendRange,
+      }
+    : timeWindow
+  const spendDateKeyTimezone = usesImplicitUtcWindow
+    ? SPEND_UTC_DATE_KEY_TIMEZONE
+    : undefined
 
   // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
   // Reuses TimeWindowPicker's own preset setters -- "change window" from the
   // dispatch context.
   const spendWindowCommands = useMemo<PaletteCommand[]>(() => {
     const commands: PaletteCommand[] = []
-    if (timeWindow.preset !== "today") {
+    if (spendWindow.preset !== "today") {
       commands.push({
         id: "spend-window-today",
         label: "Change window: today",
@@ -1617,7 +1812,7 @@ export default function SpendPage() {
         perform: () => timeWindow.setPreset("today"),
       })
     }
-    if (timeWindow.preset !== "week") {
+    if (spendWindow.preset !== "week") {
       commands.push({
         id: "spend-window-week",
         label: "Change window: this week",
@@ -1626,38 +1821,82 @@ export default function SpendPage() {
       })
     }
     return commands
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- timeWindow.setPreset is stable (useCallback); timeWindow.preset is what actually varies the resulting command set.
-  }, [timeWindow.preset])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- timeWindow.setPreset is stable (useCallback); spendWindow.preset is what actually varies the resulting command set.
+  }, [spendWindow.preset])
   useRegisterCommands(spendWindowCommands)
 
   const {
     data: dailyResponse,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailySpend(timeWindow.from, timeWindow.to, {
-    refetchInterval: timeWindow.pollingDisabled ? false : 60_000,
+  } = useDailySpend(spendWindow.from, spendWindow.to, {
+    refetchInterval: spendWindow.pollingDisabled ? false : 60_000,
+    ...(spendDateKeyTimezone ? { dateKeyTimezone: spendDateKeyTimezone } : {}),
   })
+  const dailySourceError = dailyResponse?.meta?.source_error === true
   const dailyData = useMemo(() => dailyResponse?.data ?? [], [dailyResponse])
   // Butlers dropped from GET /api/spend/daily's fan-out — passed to the stacked
   // chart so vanished butlers are footnoted, not silently absent (bu-jad4j.3).
   const dailyUnavailableButlers = dailyResponse?.meta?.unavailable_butlers ?? []
+  const dailyUnpricedModels = dailyResponse?.meta?.unpriced_models ?? []
+  const dailyDivergences = dailyResponse?.meta?.divergences ?? []
 
   // Movers — current window vs the immediately preceding window of equal
   // length (e.g. "last 7 days" vs "the 7 days before that").
-  const windowDays = differenceInCalendarDays(timeWindow.to, timeWindow.from) + 1
-  const prevTo = useMemo(() => subDays(timeWindow.from, 1), [timeWindow.from])
-  const prevFrom = useMemo(() => subDays(prevTo, windowDays - 1), [prevTo, windowDays])
+  // utcDateWindow(7) is inclusive by date key; browser-local calendar math
+  // would count the UTC end instant on an eighth local date outside UTC.
+  const windowDays = usesImplicitUtcWindow
+    ? 7
+    : differenceInCalendarDays(spendWindow.to, spendWindow.from) + 1
+  const previousSpendWindow = useMemo(() => {
+    if (usesImplicitUtcWindow) {
+      return utcDateWindow(windowDays, new Date(implicitUtcWindow.from.getTime() - 1))
+    }
+    const to = subDays(spendWindow.from, 1)
+    return { from: subDays(to, windowDays - 1), to }
+  }, [implicitUtcWindow.from, spendWindow.from, usesImplicitUtcWindow, windowDays])
 
   const {
     data: currentSummary,
     isLoading: currentSummaryLoading,
     isError: currentSummaryError,
-  } = useSpendSummary(undefined, timeWindow.from, timeWindow.to)
+  } = useSpendSummary(
+    undefined,
+    spendWindow.from,
+    spendWindow.to,
+    undefined,
+    spendDateKeyTimezone,
+  )
   const {
     data: priorSummary,
     isLoading: priorSummaryLoading,
     isError: priorSummaryError,
-  } = useSpendSummary(undefined, prevFrom, prevTo)
+  } = useSpendSummary(
+    undefined,
+    previousSpendWindow.from,
+    previousSpendWindow.to,
+    undefined,
+    spendDateKeyTimezone,
+  )
+  const currentSummarySourceError = currentSummary?.data?.source_error === true
+  const priorSummarySourceError = priorSummary?.data?.source_error === true
+  const moversSourceError = currentSummarySourceError || priorSummarySourceError
+  const comparisonUnpricedModels = useMemo(
+    () => [
+      ...(currentSummary?.data?.unpriced_models ?? []),
+      ...(priorSummary?.data?.unpriced_models ?? []),
+    ],
+    [currentSummary, priorSummary],
+  )
+  const comparisonCoverageIncomplete = comparisonUnpricedModels.length > 0
+  const currentByButler =
+    currentSummarySourceError || comparisonCoverageIncomplete
+      ? {}
+      : (currentSummary?.data?.by_butler ?? {})
+  const priorByButler =
+    priorSummarySourceError || comparisonCoverageIncomplete
+      ? {}
+      : (priorSummary?.data?.by_butler ?? {})
 
   return (
     <Page archetype="overview" title="Spend">
@@ -1670,16 +1909,17 @@ export default function SpendPage() {
           forecast={liveForecast}
           forecastLoading={forecastLoading}
           forecastError={forecastError}
-          currentByButler={currentSummary?.data?.by_butler ?? {}}
-          priorByButler={priorSummary?.data?.by_butler ?? {}}
+          currentByButler={currentByButler}
+          priorByButler={priorByButler}
           unavailableButlers={
             new Set([
               ...(currentSummary?.data?.unavailable_butlers ?? []),
               ...(priorSummary?.data?.unavailable_butlers ?? []),
             ])
           }
+          comparisonUnpricedModels={comparisonUnpricedModels}
           moversLoading={currentSummaryLoading || priorSummaryLoading}
-          moversError={currentSummaryError || priorSummaryError}
+          moversError={currentSummaryError || priorSummaryError || moversSourceError}
         />
 
         {/* Fleet-halt banner (bu-7o89u.3) — the ceiling IS denying dispatches
@@ -1788,43 +2028,121 @@ export default function SpendPage() {
                 testId="forecast-unavailable-butlers"
               />
             )}
+            {liveForecast && (liveForecast.ceiling_blind_to_unpriced_models ?? 0) > 0 && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Monthly ceiling"
+                detail={`blind to ${liveForecast.ceiling_blind_to_unpriced_models} unpriced model${liveForecast.ceiling_blind_to_unpriced_models === 1 ? "" : "s"}: ${unpricedModelNames(liveForecast.unpriced_models)}`}
+                testId="forecast-unpriced"
+              />
+            )}
+            {liveForecast && liveForecast.divergences && liveForecast.divergences.length > 0 && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Forecast attribution"
+                detail={`ledger/session token drift in ${liveForecast.divergences.length} day-butler bucket${liveForecast.divergences.length === 1 ? "" : "s"}`}
+                testId="forecast-divergence"
+              />
+            )}
+            {liveForecast?.divergence_source_error && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Forecast attribution"
+                detail="session-to-ledger comparison unavailable"
+                testId="forecast-divergence-source-error"
+              />
+            )}
+            {liveForecast?.historical_attribution_note && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Historical attribution"
+                detail={liveForecast.historical_attribution_note}
+                testId="forecast-historical-attribution"
+              />
+            )}
           </div>
         </section>
 
         {/* What changed: movers strip */}
         <MoversStrip
-          current={currentSummary?.data?.by_butler ?? {}}
-          prior={priorSummary?.data?.by_butler ?? {}}
+          current={currentByButler}
+          prior={priorByButler}
           windowDays={windowDays}
           isLoading={currentSummaryLoading || priorSummaryLoading}
-          isError={currentSummaryError || priorSummaryError}
+          isError={currentSummaryError || priorSummaryError || moversSourceError}
           unavailableButlers={
             new Set([
               ...(currentSummary?.data?.unavailable_butlers ?? []),
               ...(priorSummary?.data?.unavailable_butlers ?? []),
             ])
           }
+          unpricedModels={comparisonUnpricedModels}
         />
 
         {/* What changed: time window + honest per-butler-per-day stacked chart */}
         <section className="border border-border">
           <div className="flex flex-col gap-3 px-4 py-3 border-b border-border">
             <Eyebrow>Daily Spend</Eyebrow>
-            <TimeWindowPicker window={timeWindow} />
+            <TimeWindowPicker
+              window={spendWindow}
+              formatDate={(date) => formatCostDate(date, spendDateKeyTimezone)}
+              parseDate={usesImplicitUtcWindow ? parseSpendUtcDateKey : undefined}
+            />
           </div>
           <div className="p-4">
             <CostStripeChart
               data={dailyData}
               isLoading={dailyLoading}
               isError={dailyError}
+              sourceError={dailySourceError}
               unavailableButlers={dailyUnavailableButlers}
             />
+            {dailyUnpricedModels.length > 0 && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Daily Spend"
+                detail={`excludes ${unpricedCallCount(dailyUnpricedModels).toLocaleString()} unpriced calls (${unpricedModelNames(dailyUnpricedModels)})`}
+                testId="daily-spend-unpriced"
+              />
+            )}
+            {dailyDivergences.length > 0 && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Daily Spend"
+                detail={`ledger/session token drift in ${dailyDivergences.length} day-butler bucket${dailyDivergences.length === 1 ? "" : "s"}`}
+                testId="daily-spend-divergence"
+              />
+            )}
+            {dailyResponse?.meta?.divergence_source_error && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Daily Spend"
+                detail="session-to-ledger comparison unavailable"
+                testId="daily-spend-divergence-source-error"
+              />
+            )}
+            {dailyResponse?.meta?.historical_attribution_note && (
+              <SourceDegradedNote
+                className="mt-3"
+                label="Historical attribution"
+                detail={dailyResponse.meta.historical_attribution_note}
+                testId="daily-spend-historical-attribution"
+              />
+            )}
           </div>
         </section>
 
         {/* Why: evidence layer, scoped to the same window as the daily chart */}
-        <TopSessionsSection from={timeWindow.from} to={timeWindow.to} />
-        <ByScheduleSection from={timeWindow.from} to={timeWindow.to} />
+        <TopSessionsSection
+          from={spendWindow.from}
+          to={spendWindow.to}
+          dateKeyTimezone={spendDateKeyTimezone}
+        />
+        <ByScheduleSection
+          from={spendWindow.from}
+          to={spendWindow.to}
+          dateKeyTimezone={spendDateKeyTimezone}
+        />
 
         {/* Why: period breakdown */}
         <BreakdownSection />

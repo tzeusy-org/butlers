@@ -227,7 +227,7 @@ def _cost_usd_for_dto(dto: SessionSummaryRow, pricing: PricingConfig | None) -> 
     if not in_tok and not out_tok:
         return None
     cost = estimate_session_cost(pricing, dto.model, in_tok, out_tok)
-    return cost if cost != 0.0 else None
+    return cost
 
 
 def _dto_to_summary(dto: SessionSummaryRow, pricing: PricingConfig | None = None) -> SessionSummary:

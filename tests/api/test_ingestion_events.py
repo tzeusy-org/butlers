@@ -749,11 +749,11 @@ async def test_list_events_enriches_rows_with_sessions_and_sender(app):
     shared_pool.fetch.assert_awaited_once()
 
 
-async def test_list_events_enrichment_prefers_denormalized_cost_usd(app):
-    """When cost_usd is already denormalized (non-null), the session-join sum does NOT overwrite it."""
+async def test_list_events_enrichment_replaces_stale_denormalized_zero_with_unknown_coverage(app):
+    """Live unpriced session evidence must not inherit a stale denormalized $0."""
     event_id = str(uuid4())
     row = _make_event_row(event_id=event_id, status="ingested")
-    row["cost_usd"] = 0.5  # already denormalized (core_126)
+    row["cost_usd"] = 0.0  # legacy false-zero write-back from the old rollup
 
     mock_db = _app_with_mock_db(app)
     session_row = {
@@ -765,7 +765,7 @@ async def test_list_events_enrichment_prefers_denormalized_cost_usd(app):
         "success": True,
         "input_tokens": 10,
         "output_tokens": 5,
-        "cost": {"total_usd": 999.0},  # would clearly differ if it overwrote
+        "cost": None,
         "trace_id": None,
         "model": None,
     }
@@ -783,7 +783,8 @@ async def test_list_events_enrichment_prefers_denormalized_cost_usd(app):
 
     assert resp.status_code == 200
     item = resp.json()["data"][0]
-    assert item["cost_usd"] == 0.5
+    assert item["cost_usd"] is None
+    assert item["unpriced_session_count"] == 1
     assert item["tokens_in"] == 10  # tokens are still populated from the join
 
 
@@ -863,6 +864,7 @@ async def test_rollup_returns_correct_shape(app):
             "events": 42,
             "sessions": 7,
             "cost": None,
+            "unpriced_session_count": 0,
             "window": {"from": None, "to": None},
         },
     ):
@@ -876,6 +878,7 @@ async def test_rollup_returns_correct_shape(app):
     assert body["events"] == 42
     assert body["sessions"] == 7
     assert body["cost"] is None
+    assert body["unpriced_session_count"] == 0
     assert "window" in body
 
 
@@ -890,6 +893,7 @@ async def test_rollup_passes_filters_to_core(app):
             "events": 0,
             "sessions": 0,
             "cost": None,
+            "unpriced_session_count": 0,
             "window": {"from": "2026-01-01T00:00:00+00:00", "to": "2026-01-02T00:00:00+00:00"},
         },
     ) as mock_rollup:
@@ -927,7 +931,7 @@ async def test_rollup_503_on_db_unavailable(app):
 
 
 async def test_rollup_missing_cost_returns_null(app):
-    """GET /api/ingestion/rollup passes null cost through when core returns None."""
+    """GET /api/ingestion/rollup exposes unavailable-cost session coverage."""
     _app_with_mock_rollup_db(app)
 
     with patch(
@@ -937,6 +941,7 @@ async def test_rollup_missing_cost_returns_null(app):
             "events": 10,
             "sessions": 2,
             "cost": None,
+            "unpriced_session_count": 2,
             "window": {"from": None, "to": None},
         },
     ):
@@ -947,6 +952,7 @@ async def test_rollup_missing_cost_returns_null(app):
 
     assert resp.status_code == 200
     assert resp.json()["cost"] is None
+    assert resp.json()["unpriced_session_count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1186,6 +1192,7 @@ async def test_event_rollup_writes_cost_usd_back(app):
         "total_input_tokens": 100,
         "total_output_tokens": 50,
         "total_cost": 0.0042,
+        "unpriced_session_count": 0,
         "by_butler": {
             "atlas": {"sessions": 2, "input_tokens": 100, "output_tokens": 50, "cost": 0.0042}
         },
@@ -1217,6 +1224,112 @@ async def test_event_rollup_writes_cost_usd_back(app):
     call_args = mock_set_cost.await_args
     assert call_args.args[1] == request_id
     assert abs(call_args.args[2] - 0.0042) < 1e-9
+
+
+async def test_event_rollup_does_not_write_unknown_cost_coverage(app):
+    """An unpriced session must not be persisted as the old compatibility $0."""
+    request_id = str(uuid4())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = AsyncMock()
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
+
+    unpriced_rollup = {
+        "request_id": request_id,
+        "total_sessions": 1,
+        "total_input_tokens": 100,
+        "total_output_tokens": 50,
+        "total_cost": None,
+        "unpriced_session_count": 1,
+        "by_butler": {
+            "atlas": {
+                "sessions": 1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cost": None,
+                "unpriced_session_count": 1,
+            }
+        },
+    }
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_sessions",
+            new_callable=AsyncMock,
+            return_value=[{"id": str(uuid4()), "butler_name": "atlas", "cost_usd": None}],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_rollup",
+            return_value=unpriced_rollup,
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_set_cost_usd",
+            new_callable=AsyncMock,
+        ) as mock_set_cost,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{request_id}/rollup")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["total_cost"] is None
+    assert resp.json()["data"]["unpriced_session_count"] == 1
+    mock_set_cost.assert_not_awaited()
+
+
+async def test_event_rollup_writes_known_zero_cost_back(app):
+    """A declared zero is known evidence and remains eligible for write-back."""
+    request_id = str(uuid4())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = AsyncMock()
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
+
+    known_zero_rollup = {
+        "request_id": request_id,
+        "total_sessions": 1,
+        "total_input_tokens": 100,
+        "total_output_tokens": 50,
+        "total_cost": 0.0,
+        "unpriced_session_count": 0,
+        "by_butler": {
+            "atlas": {
+                "sessions": 1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cost": 0.0,
+                "unpriced_session_count": 0,
+            }
+        },
+    }
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_sessions",
+            new_callable=AsyncMock,
+            return_value=[{"id": str(uuid4()), "butler_name": "atlas", "cost_usd": 0.0}],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_rollup",
+            return_value=known_zero_rollup,
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_set_cost_usd",
+            new_callable=AsyncMock,
+        ) as mock_set_cost,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{request_id}/rollup")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["total_cost"] == 0.0
+    mock_set_cost.assert_awaited_once()
+    assert mock_set_cost.await_args.args[2] == 0.0
 
 
 async def test_event_rollup_skips_write_when_no_sessions(app):
@@ -1499,6 +1612,7 @@ async def test_rollup_trace_id_drops_window_bound(app):
                 "events": 1,
                 "sessions": 1,
                 "cost": None,
+                "unpriced_session_count": 1,
                 "window": {"from": None, "to": None},
             },
         ) as mock_rollup,

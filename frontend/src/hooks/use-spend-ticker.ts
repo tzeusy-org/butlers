@@ -25,25 +25,56 @@ import { useState } from "react";
 import { useBusEvent } from "@/lib/event-bus";
 import type { FleetEvent } from "@/hooks/event-cache-registry";
 
+/** A live call whose configured price is absent, not a known zero-cost call. */
+export interface LiveUnpricedSpendEvent {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cache_creation_tokens: number;
+}
+
 export interface UseSpendTickerResult {
   /** Cumulative live spend (USD) received since this hook mounted. Never
    *  resets on its own -- SpendPage pins a baseline against it when a fresh
    *  server-fetched forecast lands. */
   streamedCostUsd: number;
+  /** Explicitly unpriced live calls stay separate from numeric spend so a
+   *  missing price cannot become a zero-dollar total. */
+  streamedUnpricedEvents: LiveUnpricedSpendEvent[];
 }
 
 function asNumber(value: unknown): number {
-  return typeof value === "number" ? value : 0;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function asTokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function unpricedEvent(data: Record<string, unknown>): LiveUnpricedSpendEvent {
+  return {
+    model: typeof data.model === "string" && data.model ? data.model : "unknown",
+    input_tokens: asTokenCount(data.tokens_in),
+    output_tokens: asTokenCount(data.tokens_out),
+    cached_input_tokens: asTokenCount(data.tokens_cached),
+    cache_creation_tokens: asTokenCount(data.tokens_cache_write),
+  };
 }
 
 export function useSpendTicker(): UseSpendTickerResult {
   const [streamedCostUsd, setStreamedCostUsd] = useState(0);
+  const [streamedUnpricedEvents, setStreamedUnpricedEvents] = useState<LiveUnpricedSpendEvent[]>([]);
 
   useBusEvent("spend", (event: FleetEvent, meta) => {
     if (meta.replayed) return; // snapshot replay -- already in the baseline
     if (event.data.kind !== "call") return; // ignore non-call spend payloads
-    setStreamedCostUsd((prev) => prev + asNumber(event.data.cost_usd));
+    if (event.data.cost_usd === null) {
+      setStreamedUnpricedEvents((previous) => [...previous, unpricedEvent(event.data)]);
+      return;
+    }
+    setStreamedCostUsd((previous) => previous + asNumber(event.data.cost_usd));
   });
 
-  return { streamedCostUsd };
+  return { streamedCostUsd, streamedUnpricedEvents };
 }

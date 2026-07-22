@@ -1137,6 +1137,35 @@ describe("TimelineTab — footer rollup band (bu-mxtn2)", () => {
     expect(rollup!.textContent).toContain("—");
   });
 
+  it("keeps unknown session cost coverage visible beside a null subtotal", () => {
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: {
+        events: 10,
+        sessions: 2,
+        cost: null,
+        unpriced_session_count: 2,
+        window: { from: null, to: null },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const rollup = container.querySelector("[data-testid='footer-rollup-band']");
+    expect(rollup).not.toBeNull();
+    expect(rollup!.textContent).toContain("—");
+    expect(rollup!.textContent).toContain("2 unpriced");
+  });
+
   it("renders loading state (ellipsis) when rollup is loading", () => {
     vi.mocked(useIngestionWindowRollup).mockReturnValue({
       data: undefined,

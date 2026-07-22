@@ -35,7 +35,12 @@ import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import { useSpendSummary } from "@/hooks/use-spend"
 import { useSessionAggregate } from "@/hooks/use-sessions"
 import { formatCostUsd } from "@/lib/format-cost"
-import type { ActivityEventType, ApprovalAction, ButlerActivityEvent } from "@/api/types"
+import type {
+  ActivityEventType,
+  ApprovalAction,
+  ButlerActivityEvent,
+  UnpricedModelUsage,
+} from "@/api/types"
 import { ButlerVerdictOpener } from "@/components/butler-detail/ButlerVerdictOpener"
 
 interface ButlerOverviewTabProps {
@@ -359,7 +364,15 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const schedules = butler?.schedules ?? []
   const skills = butler?.skills ?? []
   const sessions24h = row?.sessions24h ?? butler?.sessions_24h ?? 0
-  const costToday = costQuery.data?.data?.by_butler?.[butlerName] ?? 0
+  const spendSourceError = costQuery.data?.data?.source_error === true
+  const spendUnpricedModels: readonly UnpricedModelUsage[] =
+    costQuery.data?.data?.unpriced_models ?? []
+  const spendCoverageIncomplete = spendUnpricedModels.length > 0
+  const costToday =
+    spendSourceError || spendCoverageIncomplete
+      ? null
+      : (costQuery.data?.data?.by_butler?.[butlerName] ?? 0)
+  const costPerSession = costToday != null && sessions24h > 0 ? costToday / sessions24h : null
   const visiblePendingActions = pendingActions ?? []
   const recentEvents = activityFeedData?.events ?? []
   const stripe = row?.hourlyStripe ?? Array(24).fill(0)
@@ -389,10 +402,15 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       sessions24h={sessions24h}
       boardLoading={aggregates.isLoading}
       boardError={butlerError || boardSourceError}
-      spendToday={costQuery.data?.data?.by_butler?.[butlerName]}
+      spendToday={
+        spendSourceError || spendCoverageIncomplete
+          ? undefined
+          : costQuery.data?.data?.by_butler?.[butlerName]
+      }
       spendLoading={costQuery.isLoading}
-      spendError={costQuery.isError || (!costQuery.isLoading && !costQuery.data)}
+      spendError={costQuery.isError || spendSourceError || (!costQuery.isLoading && !costQuery.data)}
       spendSourcesDegraded={spendSourcesDegraded}
+      spendUnpricedModels={spendUnpricedModels}
       pendingApprovals={visiblePendingActions}
       pendingTotal={awaitingCount}
       approvalsLoading={approvalsQuery.isLoading}
@@ -439,8 +457,14 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         ) : (
           <KpiCell
             label=""
-            value={formatCurrency(costToday)}
-            sub={`${formatCurrency(sessions24h > 0 ? costToday / sessions24h : 0)} / session`}
+            value={costToday == null ? "—" : formatCurrency(costToday)}
+            sub={
+              spendSourceError
+                ? "spend source unavailable"
+                : spendCoverageIncomplete
+                  ? "spend coverage incomplete"
+                  : `${formatCurrency(costPerSession)} / session`
+            }
           />
         )}
       </Panel>

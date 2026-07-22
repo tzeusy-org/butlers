@@ -115,8 +115,41 @@ async def test_price_mtd_from_ledger_is_check_monthly_ceilings_pricing_source() 
         direct_mtd = await price_mtd_from_ledger(pool)
         ceiling = await check_monthly_ceiling(pool)
 
-    assert direct_mtd == 42.0
-    assert ceiling.mtd_usd == direct_mtd
+    assert direct_mtd.cost_usd == 42.0
+    assert direct_mtd.unpriced_models == ()
+    assert ceiling.mtd_usd == direct_mtd.cost_usd
+
+
+@pytest.mark.unit
+async def test_price_mtd_from_ledger_preserves_unpriced_usage_for_the_ceiling() -> None:
+    """Unknown pricing must remain visible instead of becoming a zero-dollar model."""
+    usage_rows = [
+        {
+            "model_id": "new-unpriced-model",
+            "calls": 3,
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cached_input_tokens": 20,
+            "cache_creation_tokens": 10,
+        }
+    ]
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=usage_rows)
+    pool.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
+
+    with patch("butlers.api.pricing.estimate_session_cost", return_value=None):
+        priced = await price_mtd_from_ledger(pool)
+        ceiling = await check_monthly_ceiling(pool)
+
+    assert priced.cost_usd == 0.0
+    assert len(priced.unpriced_models) == 1
+    missing = priced.unpriced_models[0]
+    assert missing.model == "new-unpriced-model"
+    assert missing.calls == 3
+    assert missing.input_tokens == 1000
+    assert missing.cached_input_tokens == 20
+    assert ceiling.allowed is True
+    assert ceiling.unpriced_models == priced.unpriced_models
 
 
 @pytest.mark.unit

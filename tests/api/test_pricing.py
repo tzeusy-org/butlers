@@ -227,8 +227,22 @@ class TestEstimateCost:
         )
         assert direct == helper
 
-    def test_session_cost_unknown_model_returns_zero(self, config):
-        assert estimate_session_cost(config, "nonexistent", 1000, 500) == 0.0
+    def test_session_cost_unknown_model_remains_unpriced(self, config):
+        assert estimate_session_cost(config, "nonexistent", 1000, 500) is None
+
+    def test_explicit_subscription_zero_is_a_known_price(self):
+        config = PricingConfig(
+            {
+                "subscription-model": ModelPricing(
+                    0.0,
+                    0.0,
+                    billing_class="subscription",
+                )
+            }
+        )
+
+        assert estimate_session_cost(config, "subscription-model", 1_000, 500) == 0.0
+        assert config.billing_class_for("subscription-model") == "subscription"
 
     def test_session_cost_matches_direct_estimate(self, config):
         direct = config.estimate_cost("claude-sonnet-4-5-20250929", 1000, 500)

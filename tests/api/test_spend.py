@@ -9,7 +9,7 @@ by-schedule contract + zero-div guard.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -34,7 +34,7 @@ from butlers.api.pricing import (
     load_pricing,
 )
 from butlers.api.routers.spend import _get_db_manager as _costs_get_db
-from butlers.api.routers.spend import _is_tool_absent_error
+from butlers.api.routers.spend import _is_tool_absent_error, _ledger_session_divergences
 from butlers.core.model_routing import check_monthly_ceiling
 
 pytestmark = pytest.mark.unit
@@ -258,35 +258,41 @@ async def test_pricing_endpoint_flat_and_tiered(app):
 
 
 async def test_cost_summary_zero_butlers(app):
-    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": _mock_ledger_pool([])}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/spend")
     data = resp.json()["data"]
     assert data["total_cost_usd"] == 0.0
+    assert data["source_error"] is False
     SpendSummary.model_validate(data)
 
 
 async def test_cost_summary_aggregates_multiple_butlers(app):
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
+    rows = [
+        _ledger_row(
+            butler_name="sw",
+            model_id="claude-sonnet-4-20250514",
+            calls=5,
+            input_tokens=10_000,
+            output_tokens=5_000,
+        ),
+        _ledger_row(
+            butler_name="gen",
+            model_id="claude-haiku-35-20241022",
+            calls=3,
+            input_tokens=8_000,
+            output_tokens=4_000,
+        ),
     ]
-    sw_data = {
-        "total_sessions": 5,
-        "total_input_tokens": 10000,
-        "total_output_tokens": 5000,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
-    }
-    gen_data = {
-        "total_sessions": 3,
-        "total_input_tokens": 8000,
-        "total_output_tokens": 4000,
-        "by_model": {"claude-haiku-35-20241022": {"input_tokens": 8000, "output_tokens": 4000}},
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "gen": _make_tool_result(gen_data)})
-    _wire(app, mgr, configs, _flat_pricing())
+    mgr = MagicMock(spec=MCPClientManager)
+    _wire_db(
+        _wire(app, mgr, [], _flat_pricing()), _mock_db({"switchboard": _mock_ledger_pool(rows)})
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -294,138 +300,284 @@ async def test_cost_summary_aggregates_multiple_butlers(app):
     data = resp.json()["data"]
     assert data["total_sessions"] == 8
     assert data["total_cost_usd"] == pytest.approx(0.1274, abs=1e-4)
+    assert data["by_butler"] == {"gen": pytest.approx(0.0224), "sw": pytest.approx(0.105)}
+    mgr.get_client.assert_not_called()
 
 
-async def test_cost_summary_unreachable_butler_skipped(app):
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="broken", port=41101),
-    ]
-    sw_data = {
-        "total_sessions": 2,
-        "total_input_tokens": 1000,
-        "total_output_tokens": 500,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}},
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "broken": ButlerUnreachableError("broken")})
-    _wire(app, mgr, configs, _flat_pricing())
+async def test_cost_summary_ledger_failure_is_visible_and_never_falls_back_to_mcp(app):
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("ledger unavailable"))
+    mgr = _mock_mgr({"sw": ButlerUnreachableError("should not be called")})
+    _wire_db(
+        _wire(app, mgr, [ButlerConnectionInfo(name="sw", port=41100)], _flat_pricing()),
+        _mock_db({"switchboard": pool}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/spend")
     data = resp.json()["data"]
-    assert data["total_sessions"] == 2
-    assert "broken" not in data["by_butler"]
-    # The dropped butler must be named, not silently absorbed into the total
-    # as an unremarkable $0.00 (bu-qvnce.1 -- honest aggregation).
-    assert data["unavailable_butlers"] == ["broken"]
+    assert data["source_error"] is True
+    assert data["total_cost_usd"] == 0.0
+    mgr.get_client.assert_not_called()
 
 
-async def test_cost_summary_denied_registered_tool_marked_unavailable(app):
-    """A FastMCP per-tool denial must not be silently treated as absence.
-
-    FastMCP intentionally reports a per-tool authorization denial as the same
-    ``ToolError("Unknown tool: ...")`` emitted for a missing tool.  Finance is
-    a normal butler whose ``sessions_summary`` tool is registered, so its
-    contribution is a partial result and it must remain visible in
-    ``unavailable_butlers``.
-    """
-    configs = [ButlerConnectionInfo(name="finance", port=41100)]
+async def test_cost_summary_ignores_mcp_tool_denial_when_ledger_is_healthy(app):
+    """A dashboard aggregate is no longer partial because an MCP tool is denied."""
+    rows = [
+        _ledger_row(
+            butler_name="finance",
+            model_id="claude-sonnet-4-20250514",
+            calls=2,
+            input_tokens=1_000,
+            output_tokens=500,
+        )
+    ]
     denied_client = MagicMock()
     denied_client.call_tool = AsyncMock(side_effect=ToolError("Unknown tool: 'sessions_summary'"))
     mgr = MagicMock(spec=MCPClientManager)
     mgr.get_client = AsyncMock(return_value=denied_client)
-    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(
+        _wire(app, mgr, [], _flat_pricing()), _mock_db({"switchboard": _mock_ledger_pool(rows)})
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/spend")
 
     assert resp.status_code == 200
-    assert resp.json()["data"]["unavailable_butlers"] == ["finance"]
-    denied_client.call_tool.assert_awaited_once_with("sessions_summary", {"period": "today"})
-
-
-async def test_cost_summary_tool_absent_not_marked_unavailable(app):
-    """A staffer butler with no ``sessions_summary`` tool registered raises
-    ``ToolError('Unknown tool: ...')`` -- that is a legitimately-absent MCP
-    tool (see ``core_tools/_sessions.py``: sessions tools are non-STAFFER
-    only), NOT a degraded source. It must contribute a truthful $0 and must
-    NOT appear in ``unavailable_butlers`` (bu-hmdqz.7 -- classify-before-
-    flagging in the flagging direction; mirrors
-    ``memory.py::_is_missing_memory_schema_error`` for the tool-absence
-    case)."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="switchboard", port=41101, type="staffer"),
-    ]
-    sw_data = {
-        "total_sessions": 2,
-        "total_input_tokens": 1000,
-        "total_output_tokens": 500,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}},
-    }
-    mgr = _mock_mgr(
-        {
-            "sw": _make_tool_result(sw_data),
-            "switchboard": ToolError("Unknown tool: 'sessions_summary'"),
-        }
-    )
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/spend")
-    data = resp.json()["data"]
-    assert data["total_sessions"] == 2
-    assert "switchboard" not in data["by_butler"]
-    # Legitimately absent -- must not be confused with a genuine failure.
-    assert data["unavailable_butlers"] == []
+    assert resp.json()["data"]["source_error"] is False
+    mgr.get_client.assert_not_called()
 
 
 async def test_cost_summary_all_reachable_reports_no_unavailable_butlers(app):
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    sw_data = {
-        "total_sessions": 1,
-        "total_input_tokens": 100,
-        "total_output_tokens": 50,
-        "by_model": {},
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_data)})
-    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": _mock_ledger_pool([])}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/spend")
-    assert resp.json()["data"]["unavailable_butlers"] == []
+    assert resp.json()["data"]["source_error"] is False
 
 
-async def test_cost_breakdown_by_butler_reports_unavailable_butlers(app):
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="broken", port=41101),
-    ]
-    sw_data = {
-        "total_sessions": 2,
-        "total_input_tokens": 1000,
-        "total_output_tokens": 500,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}},
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "broken": ButlerUnreachableError("broken")})
-    _wire(app, mgr, configs, _flat_pricing())
+async def test_cost_breakdown_by_butler_reports_ledger_source_error(app):
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("ledger unavailable"))
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": pool}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/spend/breakdown?by=butler")
     data = resp.json()["data"]
-    assert "broken" not in data["breakdown"]
-    assert data["unavailable_butlers"] == ["broken"]
+    assert data["breakdown"] == {}
+    assert data["source_error"] is True
 
 
 def _mock_ledger_pool(rows: list[dict]):
     pool = MagicMock()
-    pool.fetch = AsyncMock(return_value=rows)
+
+    async def _fetch(*args):
+        # The aggregate query's final bind is its optional executing-butler
+        # filter. The MTD gate query has no binds and intentionally sees every
+        # row in this fixture.
+        butler = args[-1] if len(args) == 4 else None
+        if butler is None:
+            return rows
+        return [row for row in rows if row.get("butler_name") == butler]
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
     return pool
+
+
+def _ledger_row(
+    *,
+    day: date | None = None,
+    butler_name: str = "switchboard",
+    purpose: str = "route",
+    model_id: str = "claude-sonnet-4-20250514",
+    calls: int = 1,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cached_input_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> dict:
+    """Return one grouped executed-model ledger fixture row."""
+    return {
+        "day": day or date.today(),
+        "butler_name": butler_name,
+        "purpose": purpose,
+        "model_id": model_id,
+        "calls": calls,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+    }
+
+
+async def test_spend_aggregate_surfaces_use_executed_ledger_models_and_keep_unpriced_usage(app):
+    """Summary, daily, breakdown, and forecast share ledger execution truth.
+
+    The requested model intentionally never appears in the ledger fixture. If
+    any of these surfaces regress to pricing `sessions.model`, it will either
+    call the unreachable MCP manager or invent that requested-model bucket.
+    """
+    rows = [
+        {
+            "day": date.today(),
+            "butler_name": "travel",
+            "purpose": "schedule:trip-digest",
+            "model_id": "executed-model",
+            "calls": 2,
+            "input_tokens": 1_000,
+            "output_tokens": 500,
+            "cached_input_tokens": 0,
+            "cache_creation_tokens": 0,
+        },
+        {
+            "day": date.today(),
+            "butler_name": "travel",
+            "purpose": "schedule:trip-digest",
+            "model_id": "unpriced-executed-model",
+            "calls": 3,
+            "input_tokens": 200,
+            "output_tokens": 100,
+            "cached_input_tokens": 40,
+            "cache_creation_tokens": 10,
+        },
+    ]
+    pool = _mock_ledger_pool(rows)
+    pool.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
+    db = _mock_db({"switchboard": pool})
+    mgr = MagicMock(spec=MCPClientManager)
+    pricing = PricingConfig({"executed-model": ModelPricing(0.000001, 0.000002)})
+    _wire(app, mgr, [], pricing)
+    _wire_db(app, db)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        summary_response = await client.get(
+            f"/api/spend?from={date.today().isoformat()}&to={date.today().isoformat()}"
+        )
+        daily_response = await client.get(
+            f"/api/spend/daily?from={date.today().isoformat()}&to={date.today().isoformat()}"
+        )
+        breakdown_response = await client.get("/api/spend/breakdown?by=model")
+        forecast_response = await client.get("/api/spend/forecast")
+
+    assert summary_response.status_code == 200, summary_response.text
+    summary = summary_response.json()["data"]
+    assert summary["total_cost_usd"] == pytest.approx(0.002)
+    assert summary["by_model"] == {"executed-model": pytest.approx(0.002)}
+    assert "requested-model" not in summary["by_model"]
+    assert summary["unpriced_models"] == [
+        {
+            "model": "unpriced-executed-model",
+            "calls": 3,
+            "input_tokens": 200,
+            "output_tokens": 100,
+            "cached_input_tokens": 40,
+            "cache_creation_tokens": 10,
+        }
+    ]
+
+    assert daily_response.status_code == 200, daily_response.text
+    daily = daily_response.json()
+    assert daily["data"][0]["cost_usd"] == pytest.approx(0.002)
+    assert daily["data"][0]["by_butler"] == {"travel": pytest.approx(0.002)}
+    assert daily["data"][0]["unpriced_models"][0]["calls"] == 3
+
+    assert breakdown_response.status_code == 200, breakdown_response.text
+    breakdown = breakdown_response.json()["data"]
+    assert breakdown["breakdown"] == {"executed-model": pytest.approx(0.002)}
+    assert breakdown["unpriced_models"][0]["model"] == "unpriced-executed-model"
+
+    assert forecast_response.status_code == 200, forecast_response.text
+    forecast = forecast_response.json()["data"]
+    assert forecast["mtd_usd"] == pytest.approx(0.002)
+    assert forecast["ceiling_blind_to_unpriced_models"] == 1
+    assert forecast["unpriced_models"][0]["model"] == "unpriced-executed-model"
+    mgr.get_client.assert_not_called()
+
+
+async def test_ledger_session_divergence_deadman_reports_material_day_butler_drift():
+    """Session tokens are diagnostic evidence and surface >5% drift loudly."""
+    day = date(2026, 7, 11)
+    session_pool = MagicMock()
+    session_pool.fetch = AsyncMock(
+        side_effect=[
+            [
+                {
+                    "day": day,
+                    "sessions": 1,
+                    "input_tokens": 50,
+                    "output_tokens": 0,
+                    "cached_input_tokens": 0,
+                    "cache_creation_tokens": 0,
+                }
+            ],
+            [],
+        ]
+    )
+    db = _mock_db({"travel": session_pool})
+    ledger_rows = [
+        {
+            "day": day,
+            "butler_name": "travel",
+            "model_id": "executed-model",
+            "calls": 1,
+            "input_tokens": 100,
+            "output_tokens": 0,
+            "cached_input_tokens": 0,
+            "cache_creation_tokens": 0,
+        }
+    ]
+
+    divergences, source_error = await _ledger_session_divergences(
+        db,
+        [ButlerConnectionInfo(name="travel", port=41100)],
+        day,
+        day,
+        ledger_rows,
+    )
+
+    assert source_error is False
+    assert len(divergences) == 1
+    assert divergences[0].model_dump() == {
+        "date": "2026-07-11",
+        "butler": "travel",
+        "ledger_tokens": 100,
+        "session_tokens": 50,
+        "difference_ratio": 0.5,
+    }
+
+
+async def test_ledger_session_divergence_deadman_marks_missing_butler_evidence_degraded():
+    """A ledger butler absent from the session pool map is not a clean comparison."""
+    day = date(2026, 7, 11)
+    divergences, source_error = await _ledger_session_divergences(
+        MagicMock(),
+        [],
+        day,
+        day,
+        [
+            _ledger_row(
+                day=day,
+                butler_name="retired-butler",
+                model_id="executed-model",
+                input_tokens=100,
+            )
+        ],
+    )
+
+    assert divergences == []
+    assert source_error is True
 
 
 async def test_cost_breakdown_by_purpose_prices_ledger_rows(app):
@@ -504,39 +656,24 @@ async def test_cost_breakdown_by_purpose_query_failure_reports_source_error(app)
     assert data["source_error"] is True
 
 
-async def test_cost_summary_tiered_pricing(app):
-    configs = [ButlerConnectionInfo(name="t", port=41100)]
-
-    def _data(context: int):
-        return {
-            "total_sessions": 1,
-            "total_input_tokens": 1_000_000,
-            "total_output_tokens": 1_000_000,
-            "by_model": {
-                "gpt-5.4": {
-                    "input_tokens": 1_000_000,
-                    "output_tokens": 1_000_000,
-                    "cached_input_tokens": 0,
-                    "context_tokens": context,
-                }
-            },
-        }
-
-    mgr = _mock_mgr({"t": _make_tool_result(_data(100_000))})
-    _wire(app, mgr, configs, _tiered_pricing())
+async def test_cost_summary_prices_tiered_executed_ledger_models(app):
+    """The ledger path preserves the standard (zero-context) tier selection."""
+    rows = [
+        _ledger_row(
+            model_id="gpt-5.4",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        )
+    ]
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _tiered_pricing()),
+        _mock_db({"switchboard": _mock_ledger_pool(rows)}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as c:
-        resp_low = await c.get("/api/spend")
-    assert resp_low.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
-
-    mgr2 = _mock_mgr({"t": _make_tool_result(_data(300_000))})
-    _wire(app, mgr2, configs, _tiered_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as c:
-        resp_high = await c.get("/api/spend")
-    assert resp_high.json()["data"]["total_cost_usd"] == pytest.approx(27.50, abs=1e-4)
+        response = await c.get("/api/spend")
+    assert response.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
 
 
 async def test_cost_summary_invalid_period_422(app):
@@ -554,27 +691,14 @@ async def test_cost_summary_invalid_period_422(app):
 
 
 async def test_daily_costs_sorts_by_date(app):
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    daily_data = {
-        "days": [
-            {
-                "date": "2026-02-10",
-                "sessions": 1,
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "by_model": {},
-            },
-            {
-                "date": "2026-02-08",
-                "sessions": 2,
-                "input_tokens": 200,
-                "output_tokens": 100,
-                "by_model": {},
-            },
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(daily_data)})
-    _wire(app, mgr, configs, _flat_pricing())
+    rows = [
+        _ledger_row(day=date(2026, 2, 10), input_tokens=100, output_tokens=50),
+        _ledger_row(day=date(2026, 2, 8), input_tokens=200, output_tokens=100),
+    ]
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": _mock_ledger_pool(rows)}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -586,54 +710,37 @@ async def test_daily_costs_sorts_by_date(app):
 
 
 async def test_daily_costs_preserves_per_butler_identity(app):
-    """/api/spend/daily must NOT smear multi-butler days into a single total —
-    each day's by_butler dict should attribute cost to the butler that spent it
-    (bu-86c4c.11, subsumes bu-0as2o; extends _get_butler_daily_stats fan-out
-    instead of discarding butler identity at the merge step)."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
+    """Daily ledger rows retain each executing butler rather than smearing totals."""
+    rows = [
+        _ledger_row(
+            day=date(2026, 2, 8),
+            butler_name="sw",
+            model_id="claude-sonnet-4-20250514",
+            calls=1,
+            input_tokens=100,
+            output_tokens=50,
+        ),
+        _ledger_row(
+            day=date(2026, 2, 8),
+            butler_name="gen",
+            model_id="claude-haiku-35-20241022",
+            calls=2,
+            input_tokens=200,
+            output_tokens=100,
+        ),
+        _ledger_row(
+            day=date(2026, 2, 9),
+            butler_name="gen",
+            model_id="claude-haiku-35-20241022",
+            calls=1,
+            input_tokens=50,
+            output_tokens=25,
+        ),
     ]
-    sw_daily = {
-        "days": [
-            {
-                "date": "2026-02-08",
-                "sessions": 1,
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "by_model": {
-                    "claude-sonnet-4-20250514": {"input_tokens": 100, "output_tokens": 50}
-                },
-            },
-        ]
-    }
-    gen_daily = {
-        "days": [
-            {
-                "date": "2026-02-08",
-                "sessions": 2,
-                "input_tokens": 200,
-                "output_tokens": 100,
-                "by_model": {
-                    "claude-haiku-35-20241022": {"input_tokens": 200, "output_tokens": 100}
-                },
-            },
-            {
-                "date": "2026-02-09",
-                "sessions": 1,
-                "input_tokens": 50,
-                "output_tokens": 25,
-                "by_model": {"claude-haiku-35-20241022": {"input_tokens": 50, "output_tokens": 25}},
-            },
-        ]
-    }
-    mgr = _mock_mgr(
-        {
-            "sw": _make_tool_result(sw_daily),
-            "gen": _make_tool_result(gen_daily),
-        }
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": _mock_ledger_pool(rows)}),
     )
-    _wire(app, mgr, configs, _flat_pricing())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -658,149 +765,38 @@ async def test_daily_costs_preserves_per_butler_identity(app):
     assert set(day2["by_butler"].keys()) == {"gen"}
 
 
-async def test_daily_costs_reports_unavailable_butlers_for_genuine_failure(app):
-    """A butler whose sessions_daily call genuinely fails must be named in
-    meta.unavailable_butlers -- its contribution is silently dropped from the
-    merged series otherwise, indistinguishable from "no spend that day"
-    (bu-i7p0z, mirrors the schedule-costs / cost-summary degraded pattern)."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="broken", port=41101),
-    ]
-    sw_daily = {
-        "days": [
-            {
-                "date": "2026-02-08",
-                "sessions": 1,
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "by_model": {},
-            },
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_daily), "broken": ButlerUnreachableError("broken")})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
-        )
-    body = resp.json()
-    assert body["meta"]["unavailable_butlers"] == ["broken"]
-
-
-async def test_daily_costs_all_reachable_reports_no_unavailable_butlers(app):
-    """When every butler's sessions_daily call succeeds, meta must not carry a
-    degraded flag -- a truthful empty/complete result must not read as
-    partial."""
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    sw_daily = {"days": []}
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_daily)})
-    _wire(app, mgr, configs, _flat_pricing())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
-        )
-    assert "unavailable_butlers" not in resp.json()["meta"]
-
-
-async def test_daily_costs_tool_absent_not_marked_unavailable(app):
-    """A staffer butler with no ``sessions_daily`` tool registered raises
-    ``ToolError('Unknown tool: ...')`` -- legitimately absent (see
-    ``core_tools/_sessions.py``: ``sessions_daily`` is non-STAFFER only), NOT a
-    degraded source. It must contribute nothing and must NOT appear in
-    ``meta.unavailable_butlers`` (bu-hmdqz.7 -- classify-before-flagging in the
-    flagging direction; the tool-absent twin of the genuine-failure test above,
-    closing the asymmetric coverage flagged in bu-agdql). ``db`` is None so the
-    fan-out takes the MCP path where the ``_is_tool_absent_error`` classification
-    lives (the DB-first path is bypassed)."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="switchboard", port=41101, type="staffer"),
-    ]
-    sw_daily = {
-        "days": [
-            {
-                "date": "2026-02-08",
-                "sessions": 1,
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "by_model": {
-                    "claude-sonnet-4-20250514": {"input_tokens": 100, "output_tokens": 50}
-                },
-            }
-        ]
-    }
-    mgr = _mock_mgr(
-        {
-            "sw": _make_tool_result(sw_daily),
-            "switchboard": ToolError("Unknown tool: 'sessions_daily'"),
-        }
+async def test_daily_costs_ledger_failure_reports_source_error_without_mcp_fallback(app):
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("ledger unavailable"))
+    mgr = _mock_mgr({"sw": ButlerUnreachableError("should not be called")})
+    _wire_db(
+        _wire(app, mgr, [ButlerConnectionInfo(name="sw", port=41100)], _flat_pricing()),
+        _mock_db({"switchboard": pool}),
     )
-    _wire(app, mgr, configs, _flat_pricing())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get(
+        response = await client.get(
             "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
         )
-    assert resp.status_code == 200
-    body = resp.json()
-    # The reachable butler's day is present (data is the per-day list); the
-    # tool-absent staffer contributes nothing and is NOT flagged as a failure.
-    assert body["data"], "reachable butler's daily series must render"
-    assert "unavailable_butlers" not in body["meta"]
+    body = response.json()
+    assert body["data"] == []
+    assert body["meta"]["source_error"] is True
+    mgr.get_client.assert_not_called()
 
 
-async def test_daily_costs_db_fallback_failure_reports_unavailable_butlers(app):
-    """/daily's DB-primary-then-MCP-fallback branch must also mark the tracker:
-    a butler with no DB pool (KeyError -> None, triggering the MCP fallback)
-    whose fallback *also* fails must be named in meta.unavailable_butlers."""
-    configs = [ButlerConnectionInfo(name="broken", port=41101)]
-    db = _mock_db({})  # no pool registered -> KeyError -> falls back to MCP
-    mgr = _mock_mgr({"broken": ButlerUnreachableError("broken")})
-    _wire_db(_wire(app, mgr, configs, _flat_pricing()), db)
+async def test_daily_costs_empty_ledger_is_not_degraded(app):
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": _mock_ledger_pool([])}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get(
+        response = await client.get(
             "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
         )
-    body = resp.json()
-    assert body["meta"]["unavailable_butlers"] == ["broken"]
-
-
-async def test_daily_costs_db_fallback_recovery_reports_no_unavailable_butlers(app):
-    """When the DB primary path misses (KeyError -> None) but the MCP fallback
-    recovers real data, the butler must NOT be marked degraded -- the request
-    was served honestly, just via the fallback path."""
-    configs = [ButlerConnectionInfo(name="recovered", port=41101)]
-    recovered_daily = {
-        "days": [
-            {
-                "date": "2026-02-08",
-                "sessions": 1,
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "by_model": {},
-            },
-        ]
-    }
-    db = _mock_db({})  # no pool registered -> KeyError -> falls back to MCP
-    mgr = _mock_mgr({"recovered": _make_tool_result(recovered_daily)})
-    _wire_db(_wire(app, mgr, configs, _flat_pricing()), db)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
-        )
-    body = resp.json()
-    assert "unavailable_butlers" not in body["meta"]
-    assert body["data"][0]["sessions"] == 1
+    assert response.json()["meta"].get("source_error") is not True
 
 
 # ---------------------------------------------------------------------------
@@ -808,41 +804,27 @@ async def test_daily_costs_db_fallback_recovery_reports_no_unavailable_butlers(a
 # ---------------------------------------------------------------------------
 
 
-async def test_cost_summary_date_range_aggregates_sessions_daily(app):
-    """When from/to are provided, summary is computed from sessions_daily, not sessions_summary."""
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    daily_data = {
-        "days": [
-            {
-                "date": "2026-03-01",
-                "sessions": 3,
-                "input_tokens": 6000,
-                "output_tokens": 3000,
-                "by_model": {
-                    "claude-sonnet-4-20250514": {
-                        "input_tokens": 6000,
-                        "output_tokens": 3000,
-                        "cached_input_tokens": 0,
-                    }
-                },
-            },
-            {
-                "date": "2026-03-02",
-                "sessions": 2,
-                "input_tokens": 4000,
-                "output_tokens": 2000,
-                "by_model": {
-                    "claude-sonnet-4-20250514": {
-                        "input_tokens": 4000,
-                        "output_tokens": 2000,
-                        "cached_input_tokens": 0,
-                    }
-                },
-            },
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(daily_data)})
-    _wire(app, mgr, configs, _flat_pricing())
+async def test_cost_summary_date_range_aggregates_executed_ledger_rows(app):
+    rows = [
+        _ledger_row(
+            day=date(2026, 3, 1),
+            butler_name="sw",
+            calls=3,
+            input_tokens=6_000,
+            output_tokens=3_000,
+        ),
+        _ledger_row(
+            day=date(2026, 3, 2),
+            butler_name="sw",
+            calls=2,
+            input_tokens=4_000,
+            output_tokens=2_000,
+        ),
+    ]
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": _mock_ledger_pool(rows)}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -860,39 +842,29 @@ async def test_cost_summary_date_range_aggregates_sessions_daily(app):
 
 
 async def test_cost_summary_date_range_multi_butler(app):
-    """Date-range summary aggregates across multiple butlers."""
-    configs = [
-        ButlerConnectionInfo(name="a", port=41100),
-        ButlerConnectionInfo(name="b", port=41101),
+    """Date-range summary groups ledger rows by the executing butler."""
+    rows = [
+        _ledger_row(
+            day=date(2026, 4, 1),
+            butler_name="a",
+            model_id="claude-haiku-35-20241022",
+            calls=1,
+            input_tokens=1_000,
+            output_tokens=500,
+        ),
+        _ledger_row(
+            day=date(2026, 4, 1),
+            butler_name="b",
+            model_id="claude-haiku-35-20241022",
+            calls=2,
+            input_tokens=2_000,
+            output_tokens=1_000,
+        ),
     ]
-    day_a = {
-        "days": [
-            {
-                "date": "2026-04-01",
-                "sessions": 1,
-                "input_tokens": 1000,
-                "output_tokens": 500,
-                "by_model": {
-                    "claude-haiku-35-20241022": {"input_tokens": 1000, "output_tokens": 500}
-                },
-            }
-        ]
-    }
-    day_b = {
-        "days": [
-            {
-                "date": "2026-04-01",
-                "sessions": 2,
-                "input_tokens": 2000,
-                "output_tokens": 1000,
-                "by_model": {
-                    "claude-haiku-35-20241022": {"input_tokens": 2000, "output_tokens": 1000}
-                },
-            }
-        ]
-    }
-    mgr = _mock_mgr({"a": _make_tool_result(day_a), "b": _make_tool_result(day_b)})
-    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": _mock_ledger_pool(rows)}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -1122,26 +1094,16 @@ async def test_by_schedule_all_reachable_reports_no_unavailable_butlers(app):
 
 
 async def test_cost_summary_butler_filter_returns_only_that_butler(app):
-    """?butler=sw restricts the fan-out to only that butler."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
+    """?butler=sw is a ledger query filter, not an MCP fan-out filter."""
+    rows = [
+        _ledger_row(butler_name="sw", calls=5, input_tokens=10_000, output_tokens=5_000),
+        _ledger_row(butler_name="gen", calls=99, input_tokens=99_000, output_tokens=99_000),
     ]
-    sw_data = {
-        "total_sessions": 5,
-        "total_input_tokens": 10000,
-        "total_output_tokens": 5000,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
-    }
-    # gen is wired too — it must NOT be called when ?butler=sw
-    gen_data = {
-        "total_sessions": 99,
-        "total_input_tokens": 99000,
-        "total_output_tokens": 99000,
-        "by_model": {"claude-haiku-35-20241022": {"input_tokens": 99000, "output_tokens": 99000}},
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "gen": _make_tool_result(gen_data)})
-    _wire(app, mgr, configs, _flat_pricing())
+    pool = _mock_ledger_pool(rows)
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": pool}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -1152,21 +1114,18 @@ async def test_cost_summary_butler_filter_returns_only_that_butler(app):
     assert data["total_sessions"] == 5
     # gen must not appear in by_butler
     assert "gen" not in data["by_butler"]
+    assert pool.fetch.await_args.args[-1] == "sw"
     SpendSummary.model_validate(data)
 
 
-async def test_cost_summary_staffer_uses_db_when_session_tool_absent(app):
-    """Staffer butlers still surface spend because dashboard can read their DB pool."""
-    configs = [ButlerConnectionInfo(name="switchboard", port=41100, type="staffer")]
-    summary = {
-        "total_sessions": 5,
-        "total_input_tokens": 10000,
-        "total_output_tokens": 5000,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
-    }
-    mgr = _mock_mgr({"switchboard": ButlerUnreachableError("switchboard")})
-    db = _mock_db({"switchboard": _mock_db_pool(summary=summary)})
-    _wire_db(_wire(app, mgr, configs, _flat_pricing()), db)
+async def test_cost_summary_includes_staffer_ledger_rows_without_session_tool(app):
+    rows = [
+        _ledger_row(butler_name="switchboard", calls=5, input_tokens=10_000, output_tokens=5_000)
+    ]
+    mgr = _mock_mgr({"switchboard": ButlerUnreachableError("should not be called")})
+    _wire_db(
+        _wire(app, mgr, [], _flat_pricing()), _mock_db({"switchboard": _mock_ledger_pool(rows)})
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1183,17 +1142,23 @@ async def test_cost_summary_staffer_uses_db_when_session_tool_absent(app):
 
 async def test_cost_summary_unknown_butler_returns_empty_200(app):
     """?butler=nonexistent produces a zero-cost 200 response (not 404)."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
+    rows = [
+        _ledger_row(
+            butler_name="known",
+            calls=2,
+            input_tokens=1_000,
+            output_tokens=500,
+        )
     ]
-    sw_data = {
-        "total_sessions": 5,
-        "total_input_tokens": 10000,
-        "total_output_tokens": 5000,
-        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_data)})
-    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(
+        _wire(
+            app,
+            MagicMock(spec=MCPClientManager),
+            [ButlerConnectionInfo(name="known", port=41100)],
+            _flat_pricing(),
+        ),
+        _mock_db({"switchboard": _mock_ledger_pool(rows)}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -1212,40 +1177,28 @@ async def test_cost_summary_unknown_butler_returns_empty_200(app):
 
 
 async def test_daily_butler_filter_returns_only_that_butler(app):
-    """?butler=sw restricts /daily fan-out to only that butler."""
-    configs = [
-        ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="gen", port=41101),
+    """?butler=sw scopes the daily ledger aggregate to one executing butler."""
+    rows = [
+        _ledger_row(
+            day=date(2026, 5, 1),
+            butler_name="sw",
+            calls=2,
+            input_tokens=1_000,
+            output_tokens=500,
+        ),
+        _ledger_row(
+            day=date(2026, 5, 1),
+            butler_name="gen",
+            calls=99,
+            input_tokens=99_000,
+            output_tokens=99_000,
+        ),
     ]
-    sw_daily = {
-        "days": [
-            {
-                "date": "2026-05-01",
-                "sessions": 2,
-                "input_tokens": 1000,
-                "output_tokens": 500,
-                "by_model": {
-                    "claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}
-                },
-            }
-        ]
-    }
-    # gen returns more sessions — must NOT appear when ?butler=sw
-    gen_daily = {
-        "days": [
-            {
-                "date": "2026-05-01",
-                "sessions": 99,
-                "input_tokens": 99000,
-                "output_tokens": 99000,
-                "by_model": {
-                    "claude-haiku-35-20241022": {"input_tokens": 99000, "output_tokens": 99000}
-                },
-            }
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_daily), "gen": _make_tool_result(gen_daily)})
-    _wire(app, mgr, configs, _flat_pricing())
+    pool = _mock_ledger_pool(rows)
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing()),
+        _mock_db({"switchboard": pool}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -1257,25 +1210,24 @@ async def test_daily_butler_filter_returns_only_that_butler(app):
     data = resp.json()["data"]
     assert len(data) == 1
     assert data[0]["sessions"] == 2
+    assert data[0]["by_butler"] == {"sw": pytest.approx(0.0105)}
+    assert pool.fetch.await_args.args[-1] == "sw"
 
 
-async def test_daily_staffer_uses_db_when_session_tool_absent(app):
-    """Staffer daily spend should come from the DB pool instead of MCP tools."""
-    configs = [ButlerConnectionInfo(name="switchboard", port=41100, type="staffer")]
-    daily = [
-        {
-            "date": "2026-05-01",
-            "sessions": 2,
-            "input_tokens": 10000,
-            "output_tokens": 5000,
-            "by_model": {
-                "claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}
-            },
-        }
+async def test_daily_includes_staffer_ledger_rows_without_session_tool(app):
+    rows = [
+        _ledger_row(
+            day=date(2026, 5, 1),
+            butler_name="switchboard",
+            calls=2,
+            input_tokens=10_000,
+            output_tokens=5_000,
+        )
     ]
-    mgr = _mock_mgr({"switchboard": ButlerUnreachableError("switchboard")})
-    db = _mock_db({"switchboard": _mock_db_pool(daily=daily)})
-    _wire_db(_wire(app, mgr, configs, _flat_pricing()), db)
+    mgr = _mock_mgr({"switchboard": ButlerUnreachableError("should not be called")})
+    _wire_db(
+        _wire(app, mgr, [], _flat_pricing()), _mock_db({"switchboard": _mock_ledger_pool(rows)})
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1295,6 +1247,7 @@ async def test_daily_staffer_uses_db_when_session_tool_absent(app):
             "input_tokens": 10000,
             "output_tokens": 5000,
             "by_butler": {"switchboard": pytest.approx(0.105, abs=1e-4)},
+            "unpriced_models": [],
         }
     ]
     mgr.get_client.assert_not_called()
@@ -1302,20 +1255,24 @@ async def test_daily_staffer_uses_db_when_session_tool_absent(app):
 
 async def test_daily_unknown_butler_returns_empty_200(app):
     """?butler=nonexistent on /daily returns an empty list 200."""
-    configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    sw_daily = {
-        "days": [
-            {
-                "date": "2026-05-03",
-                "sessions": 1,
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "by_model": {},
-            }
-        ]
-    }
-    mgr = _mock_mgr({"sw": _make_tool_result(sw_daily)})
-    _wire(app, mgr, configs, _flat_pricing())
+    rows = [
+        _ledger_row(
+            day=date(2026, 5, 3),
+            butler_name="known",
+            calls=2,
+            input_tokens=1_000,
+            output_tokens=500,
+        )
+    ]
+    _wire_db(
+        _wire(
+            app,
+            MagicMock(spec=MCPClientManager),
+            [ButlerConnectionInfo(name="known", port=41100)],
+            _flat_pricing(),
+        ),
+        _mock_db({"switchboard": _mock_ledger_pool(rows)}),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -1997,14 +1954,24 @@ async def test_forecast_ledger_query_failure_reports_ceiling_source_error(app):
     assert data["ceiling_usd"] is None
 
 
-async def test_forecast_unavailable_butlers_independent_of_ceiling_source_error(app):
-    """unavailable_butlers (chart actuals fan-out) and ceiling_source_error
-    (ledger MTD) are tracked independently -- one degrading must not mask or
-    imply the other.
-    """
+async def test_forecast_divergence_source_error_is_independent_of_ceiling_source(app):
+    """The diagnostic session read can fail without invalidating ledger money."""
     configs = [ButlerConnectionInfo(name="broken", port=41100)]
-    mgr = _mock_mgr({"broken": ButlerUnreachableError("broken")})
-    app.dependency_overrides.pop(_costs_get_db, None)  # no db → also ceiling_source_error
+    ledger_rows = [
+        _ledger_row(
+            day=date.today(),
+            butler_name="broken",
+            model_id="claude-sonnet-4-20250514",
+            calls=1,
+            input_tokens=1_000,
+            output_tokens=500,
+        )
+    ]
+    ledger_pool = _mock_forecast_ledger_pool(ledger_rows, {"monthly_usd": 100.0})
+    session_pool = MagicMock()
+    session_pool.fetch = AsyncMock(side_effect=RuntimeError("session DB unavailable"))
+    _wire_db(app, _mock_db({"switchboard": ledger_pool, "broken": session_pool}))
+    mgr = _mock_mgr({"broken": ButlerUnreachableError("should not be called")})
     _wire(app, mgr, configs, _flat_pricing())
 
     async with httpx.AsyncClient(
@@ -2014,8 +1981,10 @@ async def test_forecast_unavailable_butlers_independent_of_ceiling_source_error(
 
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["ceiling_source_error"] is True
-    assert data["unavailable_butlers"] == ["broken"]
+    assert data["ceiling_source_error"] is False
+    assert data["divergence_source_error"] is True
+    assert data["unavailable_butlers"] == []
+    mgr.get_client.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2370,3 +2339,88 @@ async def test_by_schedule_db_and_mcp_both_fail_marks_unavailable(app):
     body = resp.json()
     assert body["data"] == []
     assert body["meta"]["unavailable_butlers"] == ["finance"]
+
+
+async def test_utc_today_keeps_spend_defaults_and_ledger_mtd_on_one_month_at_rollover(
+    app, monkeypatch
+):
+    """UTC 00:30 on Aug 1 is still Jul 31 for a west-of-UTC host.
+
+    Preset summaries, daily defaults, MTD breakdown, the forecast denominator,
+    and the ledger MTD used by the ceiling must all remain on Aug 1.  Letting
+    ``date.today()`` leak into the API would query Jul 31 while the ledger
+    gate's SQL is already explicitly UTC.
+    """
+    from butlers.api.routers import spend as spend_router
+    from butlers.core import model_routing
+
+    class UtcRolloverDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> UtcRolloverDatetime:
+            assert tz is UTC
+            return cls(2026, 8, 1, 0, 30, tzinfo=UTC)
+
+    monkeypatch.setattr(spend_router, "datetime", UtcRolloverDatetime)
+    # Do not monkeypatch the module's ``date`` name: FastAPI resolves the
+    # endpoint annotations lazily.  The explicit helper is the seam shared by
+    # all date-defaulting spend routes, while this frozen UTC instant models a
+    # west-of-UTC host that would still report July 31 from ``date.today()``.
+    assert spend_router._utc_today() == date(2026, 8, 1)
+
+    usage_row = _ledger_row(
+        day=date(2026, 8, 1),
+        model_id="claude-haiku-35-20241022",
+        input_tokens=1_000,
+        output_tokens=100,
+    )
+    pool = _mock_forecast_ledger_pool([usage_row], {"monthly_usd": 10.0})
+    _wire_db(app, _mock_db({"switchboard": pool}))
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        summary = await client.get("/api/spend?period=today")
+        daily = await client.get("/api/spend/daily")
+        breakdown = await client.get("/api/spend/breakdown?by=butler")
+        forecast = await client.get("/api/spend/forecast")
+
+    assert (
+        summary.status_code
+        == daily.status_code
+        == breakdown.status_code
+        == forecast.status_code
+        == 200
+    )
+    forecast_data = forecast.json()["data"]
+    assert forecast_data["days_elapsed"] == 1
+    assert forecast_data["mtd_usd"] == pytest.approx(0.0012)
+    assert forecast_data["projected_eom_usd"] == pytest.approx(0.0012 * 31)
+
+    # The forecast's MTD is the same UTC-ledger subtotal as the pre-spawn
+    # ceiling helper, whose query explicitly derives the start from UTC now.
+    ledger_mtd = await spend_router.price_mtd_from_ledger(pool, _flat_pricing())
+    assert forecast_data["mtd_usd"] == pytest.approx(ledger_mtd.cost_usd)
+    assert "now() AT TIME ZONE 'UTC'" in model_routing._MTD_USAGE_BY_MODEL_SQL
+
+    expected_start = datetime(2026, 8, 1, tzinfo=UTC)
+    expected_end = datetime(2026, 8, 2, tzinfo=UTC)
+    ranged_ledger_calls = [
+        call
+        for call in pool.fetch.await_args_list
+        if call.args[0] == spend_router._LEDGER_USAGE_BY_DAY_SQL
+    ]
+    assert len(ranged_ledger_calls) == 4
+    observed_ranges = [
+        (call.args[1].isoformat(), call.args[2].isoformat(), call.args[3])
+        for call in ranged_ledger_calls
+    ]
+    assert observed_ranges == [
+        # preset=today
+        (expected_start.isoformat(), expected_end.isoformat(), None),
+        # /daily default: UTC today and the preceding six UTC days
+        (datetime(2026, 7, 26, tzinfo=UTC).isoformat(), expected_end.isoformat(), None),
+        # MTD breakdown and forecast
+        (expected_start.isoformat(), expected_end.isoformat(), None),
+        (expected_start.isoformat(), expected_end.isoformat(), None),
+    ]

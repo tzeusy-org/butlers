@@ -53,9 +53,14 @@ import enum
 import json
 import logging
 import uuid
+from collections.abc import Iterable, Mapping
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import asyncpg
+
+if TYPE_CHECKING:
+    from butlers.api.pricing import PricingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -284,11 +289,45 @@ class CeilingStatus:
         ledger priced via the pricing catalog.
     ceiling_usd:
         Configured monthly USD ceiling, or ``None`` when no ceiling is set.
+    unpriced_models:
+        Executed models with ledger usage but no configured price. Their usage
+        is deliberately excluded from ``mtd_usd`` rather than treated as free.
     """
 
     allowed: bool
     mtd_usd: float
     ceiling_usd: float | None
+    unpriced_models: tuple[UnpricedModelUsage, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class UnpricedModelUsage:
+    """Observed ledger usage whose model has no configured price."""
+
+    model: str
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    cache_creation_tokens: int
+
+    @property
+    def total_tokens(self) -> int:
+        """Return all four token buckets for compact operator summaries."""
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cached_input_tokens
+            + self.cache_creation_tokens
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LedgerSpend:
+    """A priced ledger subtotal plus the models excluded for missing prices."""
+
+    cost_usd: float
+    unpriced_models: tuple[UnpricedModelUsage, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -685,6 +724,7 @@ SELECT monthly_usd FROM public.spend_ceiling WHERE id = 1
 _MTD_USAGE_BY_MODEL_SQL = """
 SELECT
     mc.model_id AS model_id,
+    COUNT(*) AS calls,
     COALESCE(SUM(tul.input_tokens), 0)  AS input_tokens,
     COALESCE(SUM(tul.output_tokens), 0) AS output_tokens,
     COALESCE(SUM(tul.cached_input_tokens), 0)   AS cached_input_tokens,
@@ -1354,7 +1394,75 @@ async def check_token_quota(
         return _unlimited
 
 
-async def price_mtd_from_ledger(pool: asyncpg.Pool) -> float:
+def price_ledger_usage_rows(
+    usage_rows: Iterable[Mapping[str, object]],
+    pricing: PricingConfig | None = None,
+) -> LedgerSpend:
+    """Price grouped ledger rows without erasing models missing from pricing.
+
+    ``usage_rows`` must expose an executed ``model_id`` and the four ledger
+    token buckets. ``calls`` is optional for backwards-compatible callers and
+    defaults to one. The function is deliberately shared by the monthly
+    ceiling and dashboard aggregates: every consumer gets the same priced
+    subtotal and the same omission envelope.
+    """
+    # Lazy import avoids turning the core routing module into an API import at
+    # module load time. It also mirrors the existing pricing path used by the
+    # spawner's live event emission.
+    from butlers.api.pricing import estimate_session_cost, load_pricing
+
+    effective_pricing = pricing or load_pricing()
+    cost_usd = 0.0
+    unpriced_by_model: dict[str, dict[str, int]] = {}
+
+    for row in usage_rows:
+        model_id = str(row.get("model_id") or "unknown")
+        calls = int(row.get("calls") or 1)
+        input_tokens = int(row.get("input_tokens") or 0)
+        output_tokens = int(row.get("output_tokens") or 0)
+        cached_input_tokens = int(row.get("cached_input_tokens") or 0)
+        cache_creation_tokens = int(row.get("cache_creation_tokens") or 0)
+        cost = estimate_session_cost(
+            effective_pricing,
+            model_id,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+        )
+        if cost is not None:
+            cost_usd += cost
+            continue
+
+        usage = unpriced_by_model.setdefault(
+            model_id,
+            {
+                "calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_input_tokens": 0,
+                "cache_creation_tokens": 0,
+            },
+        )
+        usage["calls"] += calls
+        usage["input_tokens"] += input_tokens
+        usage["output_tokens"] += output_tokens
+        usage["cached_input_tokens"] += cached_input_tokens
+        usage["cache_creation_tokens"] += cache_creation_tokens
+
+    return LedgerSpend(
+        cost_usd=cost_usd,
+        unpriced_models=tuple(
+            UnpricedModelUsage(model=model_id, **usage)
+            for model_id, usage in sorted(unpriced_by_model.items())
+        ),
+    )
+
+
+async def price_mtd_from_ledger(
+    pool: asyncpg.Pool,
+    pricing: PricingConfig | None = None,
+) -> LedgerSpend:
     """Price month-to-date spend directly from ``public.token_usage_ledger``.
 
     Aggregates the current-month ledger rows by ``model_id`` (joined to
@@ -1384,27 +1492,12 @@ async def price_mtd_from_ledger(pool: asyncpg.Pool) -> float:
 
     Returns
     -------
-    float
-        Estimated month-to-date spend in USD.
+    LedgerSpend
+        Estimated month-to-date priced subtotal plus any unpriced model usage.
     """
     usage_rows = await pool.fetch(_MTD_USAGE_BY_MODEL_SQL)
 
-    # Lazy import to avoid a core→api import cycle (mirrors spawner's
-    # per-call spend-event emission).
-    from butlers.api.pricing import estimate_session_cost, load_pricing
-
-    pricing = load_pricing()
-    mtd_usd = 0.0
-    for row in usage_rows:
-        mtd_usd += estimate_session_cost(
-            pricing,
-            row["model_id"] or "unknown",
-            int(row["input_tokens"]),
-            int(row["output_tokens"]),
-            cached_input_tokens=int(row["cached_input_tokens"]),
-            cache_creation_tokens=int(row["cache_creation_tokens"]),
-        )
-    return mtd_usd
+    return price_ledger_usage_rows(usage_rows, pricing)
 
 
 async def check_monthly_ceiling(
@@ -1444,12 +1537,13 @@ async def check_monthly_ceiling(
             # Non-positive ceiling is treated as "no ceiling configured".
             return _unlimited
 
-        mtd_usd = await price_mtd_from_ledger(pool)
+        spend = await price_mtd_from_ledger(pool)
 
         return CeilingStatus(
-            allowed=mtd_usd < ceiling_usd,
-            mtd_usd=mtd_usd,
+            allowed=spend.cost_usd < ceiling_usd,
+            mtd_usd=spend.cost_usd,
             ceiling_usd=ceiling_usd,
+            unpriced_models=spend.unpriced_models,
         )
 
     except Exception:
