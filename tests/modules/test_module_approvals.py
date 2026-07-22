@@ -400,6 +400,39 @@ class TestApproveLifecycle:
 
         assert result["status"] == "executed"
         assert executed_calls[0][0] == "email_send"
+        assert result["execution_result"]["success"] is True
+        event_types = [call["args"][0] for call in mock_db.approval_events]
+        assert "action_execution_succeeded" in event_types
+
+    async def test_manual_approval_without_executor_stays_approved_for_dispatch(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        """Approval alone is not execution when this butler has no executor."""
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(tool_name="memory_entity_merge", status="pending")
+
+        result = await module._approve_action(str(action_id), actor=human_actor)
+
+        assert result["status"] == "approved"
+        assert result["execution_result"] is None
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+        assert mock_db.pending_actions[action_id]["execution_result"] is None
+
+    async def test_rest_mark_executed_refuses_a_failed_dispatch(self, mock_db: MockDB):
+        """The REST seam cannot turn a failed side effect into `executed`."""
+        from butlers.modules.approvals import operations
+
+        action_id = mock_db._insert_action(tool_name="notify", status="approved")
+
+        result = await operations.mark_executed(
+            mock_db,
+            str(action_id),
+            execution_result={"success": False, "error": "delivery unavailable"},
+        )
+
+        assert "error" in result
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+        assert mock_db.pending_actions[action_id]["execution_result"] is None
 
     async def test_reject_action(
         self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
@@ -571,6 +604,93 @@ class TestDispatchApprovedActionById:
         result = await module._dispatch_approved_action_by_id(str(action_id))
 
         assert result["status"] == "executed"
+
+    async def test_already_executed_replay_does_not_require_an_executor(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        """A restarted daemon still serves the durable result without a tool call."""
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="memory_entity_merge",
+            status="executed",
+            execution_result={"success": True, "result": {"target_entity_id": "target"}},
+        )
+
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert result["status"] == "executed"
+        assert result["execution_result"] == {
+            "success": True,
+            "result": {"target_entity_id": "target"},
+        }
+
+    async def test_approved_action_with_existing_result_is_not_eligible_for_recovery(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        """Retry only applies to legacy-approved rows that have no result."""
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="entity_merge",
+            status="approved",
+            execution_result={"success": False, "error": "prior failure"},
+        )
+
+        async def boom_executor(tool_name, tool_args):  # pragma: no cover - must not run
+            raise AssertionError("an action with a persisted result must not be replayed")
+
+        module.set_tool_executor(boom_executor)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert "error" in result
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+
+    async def test_failed_executor_leaves_action_approved_without_result(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        """A handler failure is auditable but must never claim completed execution."""
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="memory_entity_merge",
+            tool_args={"source_entity_id": "source", "target_entity_id": "target"},
+            status="approved",
+        )
+
+        async def failing_executor(tool_name, tool_args):
+            raise RuntimeError("source entity is already tombstoned")
+
+        module.set_tool_executor(failing_executor)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert "error" in result
+        assert "already tombstoned" in result["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+        assert mock_db.pending_actions[action_id]["execution_result"] is None
+        event_types = [call["args"][0] for call in mock_db.approval_events]
+        assert "action_execution_failed" in event_types
+
+    async def test_unsuccessful_executor_result_leaves_action_approved_without_result(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        """An explicit unsuccessful result has the same truth boundary as an exception."""
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="memory_entity_merge",
+            tool_args={"source_entity_id": "source", "target_entity_id": "target"},
+            status="approved",
+        )
+
+        async def unsuccessful_executor(tool_name, tool_args):
+            return {"success": False, "reason": "source entity is already tombstoned"}
+
+        module.set_tool_executor(unsuccessful_executor)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert "error" in result
+        assert "unsuccessful" in result["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+        assert mock_db.pending_actions[action_id]["execution_result"] is None
+        event_types = [call["args"][0] for call in mock_db.approval_events]
+        assert "action_execution_failed" in event_types
 
     async def test_rejects_action_not_in_approved_state(
         self, module: ApprovalsModule, mock_db: MockDB

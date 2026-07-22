@@ -1,9 +1,10 @@
 """Approvals module — MCP tools for managing the pending action approval queue.
 
-Provides sixteen tools:
+Provides seventeen tools:
 - list_pending_actions: list actions with optional status filter
 - show_pending_action: show full details for a single action
-- approve_action: approve and execute a pending action
+- approve_action: approve a pending action and dispatch it when an executor is available
+- dispatch_approved_action: dispatch an eligible approved action without re-entering its gate
 - reject_action: reject with optional reason
 - pending_action_count: count of pending actions
 - expire_stale_actions: mark expired actions past their expires_at
@@ -269,12 +270,12 @@ class ApprovalsModule(Module):
         return "approvals"
 
     def set_tool_executor(self, executor: ToolExecutor) -> None:
-        """Set the callback used by approve_action to execute the original tool.
+        """Set the owning-daemon callback used to execute the original tool.
 
         The executor receives (tool_name, tool_args) and returns a result dict.
-        This is designed to be wired up by the MCP dispatch interception layer
-        (task clc.4). Until then, approve_action will store the approval but
-        skip execution if no executor is set.
+        The daemon wires it for all active approval queues, including queues
+        with no automatic gate wrappers. Without it, approval is still durable
+        but remains `approved` until an owning dispatch path is available.
         """
         self._tool_executor = executor
 
@@ -358,7 +359,7 @@ class ApprovalsModule(Module):
         return None
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
-        """Register all 16 approval MCP tools (7 queue + 6 rules CRUD + 3 suggestion tools)."""
+        """Register all 17 approval MCP tools (8 queue + 6 rules + 3 suggestion tools)."""
         self._config = (
             config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))
         )
@@ -373,7 +374,7 @@ class ApprovalsModule(Module):
                 return mcp.tool()
             return lambda fn: fn  # no-op — function defined but not registered
 
-        # --- Approval queue tools (7) ---
+        # --- Approval queue tools (8) ---
 
         @_tool("actions")
         async def list_pending_actions(
@@ -392,7 +393,7 @@ class ApprovalsModule(Module):
             action_id: str,
             create_rule: bool = False,
         ) -> dict:
-            """Approve a pending action and execute it."""
+            """Approve a pending action and execute it when an executor is available."""
             return await module._approve_action(
                 action_id,
                 create_rule=create_rule,
@@ -633,11 +634,29 @@ class ApprovalsModule(Module):
             return {"error": f"Action not found: {action_id}"}
 
         action = PendingAction.from_row(row)
-        if action.status not in (ActionStatus.APPROVED, ActionStatus.EXECUTED):
+        # Executed actions are pure replays. Do this before checking for an
+        # executor so a restarted daemon can still return the persisted result
+        # without ever re-running an irreversible tool such as entity merge.
+        if action.status == ActionStatus.EXECUTED:
+            return action.to_dict()
+
+        if action.status != ActionStatus.APPROVED:
             return {
                 "error": (
                     f"Action {action_id} is not executable from status "
                     f"'{action.status.value}' (expected 'approved')"
+                )
+            }
+
+        # The recovery seam is deliberately narrow: only approved actions with
+        # no persisted result may be dispatched. A non-null result is evidence
+        # of a prior terminal attempt and must be resolved explicitly rather
+        # than replaying an irreversible side effect.
+        if action.execution_result is not None:
+            return {
+                "error": (
+                    f"Action {action_id} already has an execution result and "
+                    "is not eligible for dispatch recovery"
                 )
             }
 
@@ -655,7 +674,7 @@ class ApprovalsModule(Module):
         async def _tool_fn(**kwargs: Any) -> dict[str, Any]:
             return await _exec(_tname, kwargs)
 
-        await execute_approved_action(
+        execution = await execute_approved_action(
             pool=self._db,
             action_id=parsed_id,
             tool_name=action.tool_name,
@@ -663,6 +682,12 @@ class ApprovalsModule(Module):
             tool_fn=_tool_fn,
             decision_memory_writer=self._decision_memory_writer,
         )
+        if not execution.success:
+            return {
+                "error": (
+                    execution.error or f"Approved action {action_id} did not complete execution"
+                )
+            }
 
         final_row = await self._db.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1", parsed_id
@@ -677,7 +702,7 @@ class ApprovalsModule(Module):
         create_rule: bool = False,
         actor: ActorContext | None = None,
     ) -> dict:
-        """Approve a pending action, execute it, and optionally create a rule."""
+        """Approve a pending action, dispatch if possible, and optionally create a rule."""
         actor_result = _require_authenticated_human_actor("approve_action", actor)
         if isinstance(actor_result, dict):
             return actor_result
@@ -740,7 +765,10 @@ class ApprovalsModule(Module):
             occurred_at=now,
         )
 
-        # Execute the original tool via the executor
+        # Execute the original tool via the executor when this daemon has one.
+        # A queue can intentionally exist without automatic gates; in that
+        # case approval remains an auditable, retryable `approved` transition
+        # until the normal dispatch seam can reach an owning executor.
         if self._tool_executor is not None:
             # Wrap the ToolExecutor callback as a tool_fn for the executor
             _exec = self._tool_executor
@@ -757,35 +785,6 @@ class ApprovalsModule(Module):
                 tool_fn=_tool_fn,
                 decision_memory_writer=self._decision_memory_writer,
             )
-        else:
-            # No executor — still mark as executed (with no execution result)
-            executed_row = await self._db.fetchrow(
-                "UPDATE pending_actions SET status = $1, execution_result = $2, "
-                "decided_at = $3 WHERE id = $4 AND status = $5 RETURNING *",
-                ActionStatus.EXECUTED.value,
-                None,
-                now,
-                parsed_id,
-                ActionStatus.APPROVED.value,
-            )
-            if executed_row is None:
-                latest_row = await self._db.fetchrow(
-                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-                )
-                if latest_row is None:
-                    return {"error": f"Action not found: {action_id}"}
-                latest_action = PendingAction.from_row(latest_row)
-                return {
-                    "error": (
-                        f"Cannot transition from '{latest_action.status.value}' "
-                        f"to '{ActionStatus.EXECUTED.value}'"
-                    )
-                }
-            if self._decision_memory_writer is not None:
-                await self._decision_memory_writer.record_terminal_decision(
-                    PendingAction.from_row(executed_row), "approved"
-                )
-
         # Post-approval autonomy tracker hook (task 7.1)
         # Wrap in try/except so tracker failure doesn't block approval
         try:

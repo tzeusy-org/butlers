@@ -49,13 +49,14 @@ The approval gate operates at two independent layers, both enforcing gating:
 
 ## Tools Provided
 
-The module registers 13 MCP tools:
+The module registers 17 MCP tools (8 queue, 6 rule, and 3 autonomy-suggestion tools):
 
 | Tool | Category | Description |
 |------|----------|-------------|
 | `list_pending_actions` | Queue | List actions with optional status filter |
 | `show_pending_action` | Queue | Show full details for a single action |
-| `approve_action` | Queue | Approve and execute a pending action |
+| `approve_action` | Queue | Approve a pending action; execute immediately only when an owning executor is available |
+| `dispatch_approved_action` | Queue | Dispatch an approved, un-run action through the owning daemon's original tool handler |
 | `reject_action` | Queue | Reject with optional reason |
 | `pending_action_count` | Queue | Count of pending actions |
 | `expire_stale_actions` | Queue | Mark expired actions past their `expires_at` |
@@ -66,6 +67,9 @@ The module registers 13 MCP tools:
 | `show_approval_rule` | Rules | Show full rule details with use count |
 | `revoke_approval_rule` | Rules | Deactivate a standing approval rule |
 | `suggest_rule_constraints` | Rules | Preview suggested constraints for a pending action |
+| `list_promotion_suggestions` | Autonomy | List pending promotion or demotion suggestions |
+| `confirm_promotion_suggestion` | Autonomy | Apply a confirmed promotion or demotion suggestion |
+| `dismiss_promotion_suggestion` | Autonomy | Dismiss a promotion or demotion suggestion |
 
 ## Standing Rules
 
@@ -98,7 +102,7 @@ approved -> executed
 rejected, expired, executed -> (terminal)
 ```
 
-Both auto-approved and manually approved actions execute through the shared `execute_approved_action()` path, which normalizes return values, persists execution results, and increments rule use counts.
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry or reject it; an already-executed replay returns the stored result without re-running the tool.
 
 ## Risk Tiers
 
@@ -109,8 +113,8 @@ Tools and actions are classified into risk tiers: `low`, `medium`, `high`, `crit
 The module owns tables in the hosting butler's schema (Alembic branch: `approvals`):
 
 - `pending_actions` -- durable queue and audit log for gated invocations
-- `approval_rules` -- standing rules for auto-approval
-- `approval_events` -- append-only immutable audit log (never updated or deleted)
+- `approval_rules` -- standing rules for auto-approval. Its optional `created_from` action ID is historical provenance, so a retained rule does not block deletion of its terminal source action after that action's 90-day window.
+- `approval_events` -- append-only immutable audit log. Its `action_id` is historical provenance, so deleting a terminal action after its 90-day window neither mutates nor deletes the event; events retain their separate 365-day audit window.
 
 ## Dependencies
 

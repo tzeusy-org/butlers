@@ -2888,7 +2888,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     Tombstoned entities (``metadata->>'merged_into' IS NOT NULL``) are excluded.
 
     For every duplicate pair detected, a ``pending_actions`` row is inserted
-    with ``tool_name='entity_merge'`` so the owner must explicitly approve the
+    with ``tool_name='memory_entity_merge'`` so the owner must explicitly approve the
     merge.  **No autonomous merge is ever performed.**  The ``tool_args``
     format matches the :func:`~butlers.modules.memory.tools.entities.entity_merge`
     call signature::
@@ -2901,8 +2901,9 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     **Dedup guard:** before inserting, the job checks whether a
     ``status='pending'`` row already exists for the same ordered pair
-    (source, target).  If one exists the pair is skipped — the existing
-    proposal is still outstanding.
+    (source, target). Both the canonical callable name and the historic
+    ``entity_merge`` name count during the bounded compatibility window, so a
+    deploy never creates a duplicate review item for an outstanding proposal.
 
     **Merge direction convention:** within each duplicate group, the entity
     with the highest ``created_at`` (newest) is the source (merged away) and
@@ -3081,7 +3082,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 existing = await conn.fetchval(
                     """
                     SELECT id FROM pending_actions
-                     WHERE tool_name = 'entity_merge'
+                     WHERE tool_name IN ('memory_entity_merge', 'entity_merge')
                        AND status    = 'pending'
                        AND (tool_args ->> 'source_entity_id') = $1
                        AND (tool_args ->> 'target_entity_id') = $2
@@ -3127,7 +3128,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     "requested_at, expires_at, why, evidence) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                     action_id,
-                    "entity_merge",
+                    "memory_entity_merge",
                     {
                         "source_entity_id": source_id,
                         "target_entity_id": target_id,

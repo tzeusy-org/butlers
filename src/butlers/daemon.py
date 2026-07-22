@@ -189,6 +189,15 @@ _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "telegram_chat_id entity_info entry on the owner entity via the dashboard"
 )
 
+# A small, explicit compatibility map for durable actions written before the
+# relationship dedup producer adopted the registered memory callable name.
+# Keep this at the owning-butler boundary: it lets an already-approved legacy
+# row use the normal audited executor without rewriting its provenance or
+# allowing a generic cross-butler tool lookup.
+_LEGACY_APPROVAL_TOOL_ALIASES: dict[str, dict[str, str]] = {
+    "relationship": {"entity_merge": "memory_entity_merge"},
+}
+
 
 async def _resolve_mcp_tool(mcp: Any, tool_name: str) -> Any | None:
     """Resolve a tool by name via FastMCP public API."""
@@ -1402,8 +1411,69 @@ class ButlerDaemon:
             if callable(set_tool_metadata):
                 set_tool_metadata(tool_metadata)
 
+        # The executor is required for *all* approval queues, even when no
+        # automatic gates are configured.  Relationship, for example, creates
+        # its own human-gated merge proposals and has an empty ``gated_tools``
+        # map.  It must still dispatch an approved row through the registered
+        # tool in this daemon, never through a different butler or a gate-wrapped
+        # public call.
+        originals: dict[str, Any] = {}
+        if approvals_module is not None:
+            set_policy = getattr(approvals_module, "set_approval_policy", None)
+            if callable(set_policy):
+                set_policy(approval_config)
+
+            set_executor = getattr(approvals_module, "set_tool_executor", None)
+            mcp = getattr(self, "mcp", None)
+            if callable(set_executor) and mcp is not None:
+                butler_name = getattr(self.config, "name", "")
+                aliases = _LEGACY_APPROVAL_TOOL_ALIASES.get(butler_name, {})
+
+                async def _execute_approved_tool(
+                    tool_name: str,
+                    tool_args: dict[str, Any],
+                    *,
+                    _originals: dict[str, Any] = originals,
+                    _aliases: dict[str, str] = aliases,
+                    _mcp: Any = mcp,
+                ) -> Any:
+                    """Run a registered tool outside the approval gate.
+
+                    Gated tools use their captured pre-gate handler. Ungated
+                    approval producers resolve the tool from this daemon's MCP
+                    registry. Legacy aliases are deliberately scoped to the
+                    owning relationship runtime and never mutate the stored
+                    action name.
+                    """
+                    executable_name = _aliases.get(tool_name, tool_name)
+                    original_fn = _originals.get(executable_name) or _originals.get(tool_name)
+                    if original_fn is None:
+                        tool_obj = await _resolve_mcp_tool(_mcp, executable_name)
+                        if tool_obj is None:
+                            raise RuntimeError(
+                                f"No registered handler for approved tool: {executable_name}"
+                            )
+                        original_fn = getattr(tool_obj, "fn", None)
+                        if not callable(original_fn):
+                            raise RuntimeError(
+                                f"Registered handler is unavailable for approved tool: "
+                                f"{executable_name}"
+                            )
+
+                    raw_result = original_fn(**tool_args)
+                    if inspect.isawaitable(raw_result):
+                        raw_result = await raw_result
+                    if isinstance(raw_result, dict):
+                        if raw_result.get("error"):
+                            raise RuntimeError(str(raw_result["error"]))
+                        if raw_result.get("success") is False:
+                            raise RuntimeError("tool reported unsuccessful execution")
+                    return raw_result
+
+                set_executor(_execute_approved_tool)
+
         if approval_config is None or not approval_config.enabled:
-            return {}
+            return originals
 
         pool = self.db.pool
 
@@ -1415,7 +1485,7 @@ class ButlerDaemon:
             if callable(get_decision_memory_writer):
                 decision_memory_writer = get_decision_memory_writer()
 
-        originals = await apply_approval_gates(
+        wrapped_originals = await apply_approval_gates(
             self.mcp,
             approval_config,
             pool,
@@ -1424,32 +1494,11 @@ class ButlerDaemon:
             decision_memory_writer=decision_memory_writer,
             approval_push_runtime=self._build_approval_push_runtime(),
         )
+        # Keep the executor closure wired above, but make its captured mapping
+        # available once gate wrapping has saved the original handlers.
+        originals.update(wrapped_originals)
 
-        if approvals_module is not None and hasattr(approvals_module, "set_approval_policy"):
-            approvals_module.set_approval_policy(approval_config)
-
-        # Wire the originals into the ApprovalsModule if it's loaded,
-        # so the post-approval executor can invoke them directly
         if originals:
-            for mod in self._active_modules:
-                if mod.name == "approvals":
-                    # Set up a tool executor that calls the original tool function
-                    async def _execute_original(
-                        tool_name: str,
-                        tool_args: dict[str, Any],
-                        _originals: dict[str, Any] = originals,
-                    ) -> dict[str, Any]:
-                        original_fn = _originals.get(tool_name)
-                        if original_fn is None:
-                            tool_obj = await _resolve_mcp_tool(self.mcp, tool_name)
-                            if tool_obj is None:
-                                return {"error": f"No handler for tool: {tool_name}"}
-                            original_fn = tool_obj.fn
-                        return await original_fn(**tool_args)
-
-                    mod.set_tool_executor(_execute_original)
-                    break
-
             logger.info(
                 "Applied approval gates to %d tool(s): %s",
                 len(originals),

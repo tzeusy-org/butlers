@@ -11,7 +11,8 @@ This file covers:
   - Tombstoned entities are excluded
   - Dedup guard: second run skips already-pending pairs
   - Insight candidate proposed alongside pending_action
-  - pending_actions row has correct tool_name and tool_args
+  - pending_actions row uses the canonical executable tool_name and correct tool_args
+  - legacy pending proposals suppress duplicate canonical proposals during rollout
   - _levenshtein unit tests (pure logic, no DB)
 """
 
@@ -143,7 +144,7 @@ async def _count_pending_for_pair(
     return await pool.fetchval(
         """
         SELECT COUNT(*) FROM pending_actions
-         WHERE tool_name = 'entity_merge'
+         WHERE tool_name IN ('memory_entity_merge', 'entity_merge')
            AND status = 'pending'
            AND (tool_args ->> 'source_entity_id') = $1
            AND (tool_args ->> 'target_entity_id') = $2
@@ -296,7 +297,7 @@ async def test_entity_dedup_exact_match_leading_trailing_spaces(
 async def test_entity_dedup_pending_action_has_correct_tool_name_and_args(
     pool: asyncpg.Pool, mock_propose_insight
 ):
-    """pending_actions row specifies tool_name='entity_merge' with correct tool_args."""
+    """New pending_actions rows use the registered memory_entity_merge callable."""
     target = await _make_entity(pool, name="Chloe Dupont")
     source = await _make_entity(pool, name="Chloe Dupont")
 
@@ -304,10 +305,10 @@ async def test_entity_dedup_pending_action_has_correct_tool_name_and_args(
 
     row = await pool.fetchrow(
         "SELECT tool_name, tool_args FROM pending_actions "
-        "WHERE tool_name = 'entity_merge' AND status = 'pending' LIMIT 1"
+        "WHERE tool_name = 'memory_entity_merge' AND status = 'pending' LIMIT 1"
     )
     assert row is not None
-    assert row["tool_name"] == "entity_merge"
+    assert row["tool_name"] == "memory_entity_merge"
     args = dict(row["tool_args"])
     assert args["source_entity_id"] == str(source)
     assert args["target_entity_id"] == str(target)
@@ -412,6 +413,32 @@ async def test_entity_dedup_second_run_skips_existing_pending(
     # Still only one pending_actions row
     count = await _count_pending_for_pair(pool, source, target)
     assert count == 1
+
+
+async def test_entity_dedup_legacy_pending_action_suppresses_canonical_duplicate(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """A rollout-era entity_merge proposal remains the one reviewable action.
+
+    The producer must not rewrite the legacy row, but it must recognize that
+    the same ordered pair is already awaiting a human decision.
+    """
+    target = await _make_entity(pool, name="Chloe Dupont")
+    source = await _make_entity(pool, name="Chloe Dupont")
+
+    await pool.execute(
+        "INSERT INTO pending_actions "
+        "(id, tool_name, tool_args, agent_summary, status, requested_at, evidence) "
+        "VALUES ($1, 'entity_merge', $2, 'legacy proposal', 'pending', now(), '[]')",
+        uuid.uuid4(),
+        {"source_entity_id": str(source), "target_entity_id": str(target)},
+    )
+
+    result = await run_entity_dedup_curation(pool)
+
+    assert result["pairs_surfaced"] == 0
+    assert result["pairs_skipped_already_pending"] == 1
+    assert await _count_pending_for_pair(pool, source, target) == 1
 
 
 async def test_entity_dedup_resurfaced_after_decided(pool: asyncpg.Pool, mock_propose_insight):

@@ -8,7 +8,7 @@ The Approvals module is a reusable execution-control module that butlers load lo
 
 ### Requirement: Gate Wrapper Interception
 
-The module wraps configured MCP tools at FastMCP registration time so that gated tool calls are serialized into pending actions before the original handler executes. Unknown configured gated tools are skipped during wrapping with warning logs.
+The module MUST wrap configured MCP tools at FastMCP registration time so that gated tool calls are serialized into pending actions before the original handler executes. Unknown configured gated tools MUST be skipped during wrapping with warning logs.
 
 #### Scenario: Gated tool is called with no matching standing rule
 
@@ -33,7 +33,7 @@ The module wraps configured MCP tools at FastMCP registration time so that gated
 
 ### Requirement: Pending Actions Queue
 
-The `pending_actions` table is a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, and `evidence`.
+The `pending_actions` table MUST provide a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, and `evidence`.
 
 #### Scenario: Pending action rationale fields
 
@@ -61,15 +61,15 @@ The `pending_actions` table is a durable queue and audit log for approval-gated 
 
 ### Requirement: Status Transition Contract
 
-Valid status transitions are `pending -> approved|rejected|expired`, `approved -> executed`, and `rejected|expired|executed` are terminal. Invalid transitions raise `InvalidTransitionError`.
+The approval lifecycle MUST allow `pending -> approved|rejected|expired` and `approved -> executed`; `rejected|expired|executed` are terminal. Invalid transitions raise `InvalidTransitionError`.
 
 #### Scenario: Approve a pending action
 
 - **WHEN** `approve_action` is called with a valid action_id and authenticated human actor context
 - **THEN** a compare-and-set UPDATE transitions status from `pending` to `approved`
-- **AND** the shared executor runs the original tool function
-- **AND** status advances to `executed` with `execution_result` persisted
 - **AND** an `action_approved` audit event is recorded
+- **AND** an available owning executor MAY then run the original tool function
+- **AND** status advances to `executed` only after that execution persists its result and success audit event
 
 #### Scenario: Approve with concurrent race
 
@@ -97,7 +97,7 @@ Valid status transitions are `pending -> approved|rejected|expired`, `approved -
 
 ### Requirement: Standing Rules CRUD and Matching
 
-Standing approval rules enable auto-approval of repeatable safe invocations. Each rule has `id`, `tool_name`, `arg_constraints` (JSONB), `description`, `created_at`, `active`, and optional `created_from`, `expires_at`, `max_uses`, `use_count`.
+Standing approval rules MUST enable auto-approval of repeatable safe invocations. Each rule has `id`, `tool_name`, `arg_constraints` (JSONB), `description`, `created_at`, `active`, and optional `created_from`, `expires_at`, `max_uses`, `use_count`. A rule's `created_from` is historical action provenance rather than a deletion-blocking foreign key, so action retention does not mutate or delete a retained rule.
 
 #### Scenario: Create a standing rule
 
@@ -149,7 +149,7 @@ Standing approval rules enable auto-approval of repeatable safe invocations. Eac
 
 ### Requirement: Risk Tier Enforcement
 
-Tools are classified into explicit risk tiers (`low`, `medium`, `high`, `critical`) via policy metadata in `[modules.approvals]` config. Default risk tier is `medium`.
+The module MUST classify tools into explicit risk tiers (`low`, `medium`, `high`, `critical`) via policy metadata in `[modules.approvals]` config. Default risk tier is `medium`.
 
 #### Scenario: High-risk rule creation requires narrow constraints
 
@@ -165,7 +165,7 @@ Tools are classified into explicit risk tiers (`low`, `medium`, `high`, `critica
 
 ### Requirement: Shared Executor Path
 
-Both auto-approved and manually approved actions execute through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, persists `execution_result` with `success`/`executed_at` (and `result` or `error`), updates action status to `executed`, and increments `use_count` for auto-approved executions.
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — MUST go through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, and only then persists a successful `execution_result`, `executed` status, immutable success audit event, and any auto-approval `use_count` increment. The terminal state and audit append are atomic when the runtime provides a transaction.
 
 #### Scenario: Tool execution succeeds
 
@@ -173,27 +173,37 @@ Both auto-approved and manually approved actions execute through `execute_approv
 - **THEN** the result is persisted as `{"success": true, "result": {...}, "executed_at": "..."}`
 - **AND** status transitions from `approved` to `executed`
 - **AND** an `action_execution_succeeded` audit event is recorded
+- **AND** the successful result is not reported until the persisted result and audit transition complete
 
 #### Scenario: Tool execution fails with exception
 
 - **WHEN** the tool function raises an exception
-- **THEN** the error is captured and persisted as `{"success": false, "error": "...", "executed_at": "..."}`
-- **AND** status still advances to `executed` (execution was attempted)
-- **AND** an `action_execution_failed` audit event is recorded
+- **THEN** the error is returned to the caller and an `action_execution_failed` audit event is recorded
+- **AND** status remains `approved` with `execution_result = null`
+- **AND** no automatic replay occurs; an operator may retry the approved action or reject it explicitly
 
 #### Scenario: Manual approval without executor wired
 
 - **WHEN** `approve_action` is called but no tool executor is wired
-- **THEN** status advances to `executed` with `execution_result = null`
+- **THEN** status remains `approved` with `execution_result = null`
+- **AND** the action remains eligible for the owning-butler dispatch/retry seam
+
+#### Scenario: Approved dispatch recovery is deliberately narrow
+
+- **WHEN** `dispatch_approved_action` receives an `approved` action with `execution_result = null`
+- **THEN** it invokes the owning daemon's registered original tool handler without re-entering the gate
+- **AND** a legacy `relationship` action named `entity_merge` is resolved as the registered `memory_entity_merge` callable without rewriting the stored row
+- **AND** actions in any other status, or approved actions with a non-null result, are not replayed
 
 #### Scenario: At-most-once execution with concurrency lock
 
 - **WHEN** concurrent execution attempts target the same action
-- **THEN** a per-action asyncio lock (WeakValueDictionary-based) ensures at-most-once execution
+- **THEN** a per-action asyncio lock (WeakValueDictionary-based) serializes attempts within one daemon process
+- **AND** a persisted `executed` result is replayed without invoking the tool again
 
 ### Requirement: Immutable Audit Events
 
-The `approval_events` table is an append-only audit log. Events include `event_type`, `action_id`, `rule_id`, `actor`, `reason`, `event_metadata` (JSONB), and `occurred_at`. A database trigger prevents UPDATE and DELETE operations.
+The `approval_events` table MUST be an append-only audit log. Events include `event_type`, `action_id`, `rule_id`, `actor`, `reason`, `event_metadata` (JSONB), and `occurred_at`. A database trigger prevents UPDATE and DELETE operations. An event's `action_id` is immutable historical provenance rather than a deletion-blocking foreign key, so terminal action retention does not mutate or delete the event.
 
 #### Scenario: Audit event creation for all state transitions
 
@@ -214,7 +224,7 @@ The `approval_events` table is an append-only audit log. Events include `event_t
 
 ### Requirement: Redaction
 
-Sensitive fields in tool arguments and execution results are redacted before persistence or presentation. Redaction uses sensitivity classification (module metadata, heuristic arg name matching, default).
+Sensitive fields in tool arguments and execution results MUST be redacted before persistence or presentation. Redaction uses sensitivity classification (module metadata, heuristic arg name matching, default).
 
 #### Scenario: Sensitive tool args redaction
 
@@ -236,12 +246,15 @@ Sensitive fields in tool arguments and execution results are redacted before per
 
 ### Requirement: Retention Policy
 
-Configurable retention windows control automatic cleanup of approvals data: `pending_actions_retention_days` (default 90), `approval_rules_retention_days` (default 180), `approval_events_retention_days` (default 365).
+The module MUST support configurable retention windows for approvals data: `pending_actions_retention_days` (default 90), `approval_rules_retention_days` (default 180), `approval_events_retention_days` (default 365).
 
 #### Scenario: Cleanup old actions
 
 - **WHEN** `cleanup_old_actions` runs
-- **THEN** only terminal-status actions (`approved`, `rejected`, `expired`, `executed`) older than the retention window are deleted
+- **THEN** only terminal-status actions (`rejected`, `expired`, `executed`) older than the retention window are deleted
+- **AND** `approved` actions remain retained and retryable, including old rows with a null `execution_result`
+- **AND** related immutable action events remain unchanged with their historical `action_id` until their own event-retention window
+- **AND** standing rules created from those terminal actions remain unchanged with their historical `created_from` until their separate rule-retention policy applies
 - **AND** pending actions are never cleaned up automatically
 - **AND** a dry-run mode returns counts without deleting
 
@@ -260,13 +273,14 @@ Configurable retention windows control automatic cleanup of approvals data: `pen
 
 ### Requirement: MCP Tool Surface (17 Tools)
 
-The module registers exactly 17 stable MCP tools when enabled (8 queue tools + 6 rule tools + 3 autonomy suggestion tools).
+The module MUST register exactly 17 stable MCP tools when enabled (8 queue tools + 6 rule tools + 3 autonomy suggestion tools).
 
 #### Scenario: Queue management tools (8)
 
 - **WHEN** the approvals module is registered
 - **THEN** the following 8 queue tools are available: `list_pending_actions`, `show_pending_action`, `approve_action`, `dispatch_approved_action`, `reject_action`, `pending_action_count`, `expire_stale_actions`, `list_executed_actions`
-- **AND** `dispatch_approved_action` executes an already-approved action by calling the original tool directly (idempotent replay), without re-entering the approval gate
+- **AND** `dispatch_approved_action` executes an eligible already-approved action through its owning daemon's original registered tool handler, without re-entering the approval gate
+- **AND** an already-executed replay returns its stored result without invoking the tool again
 
 #### Scenario: Rule management tools (6)
 
@@ -285,7 +299,7 @@ The module registers exactly 17 stable MCP tools when enabled (8 queue tools + 6
 
 ### Requirement: Configuration Contract
 
-Module config is declared under `[modules.approvals]` in `butler.toml`.
+Module config MUST be declared under `[modules.approvals]` in `butler.toml`.
 
 #### Scenario: Valid config with gated tools
 
@@ -346,7 +360,7 @@ The approval gate operates at two layers. Both MUST enforce gating independently
 
 ### Requirement: Authorization Model
 
-The approvals module is a single-user control surface. Decision-bearing actions require authenticated human identity.
+The approvals module MUST be a single-user control surface. Decision-bearing actions require authenticated human identity.
 
 #### Scenario: Decision action with authenticated human actor
 
@@ -363,7 +377,7 @@ The approvals module is a single-user control surface. Decision-bearing actions 
 
 ### Requirement: [TARGET-STATE] Batch Approve/Reject
 
-Batch approval/rejection for homogeneous low-risk items when explicit user intent is clear.
+The target state MUST support batch approval/rejection for homogeneous low-risk items when explicit user intent is clear.
 
 #### Scenario: Bulk approval of homogeneous actions
 
@@ -372,7 +386,7 @@ Batch approval/rejection for homogeneous low-risk items when explicit user inten
 
 ### Requirement: [TARGET-STATE] Rule Blast Radius Preview
 
-Show estimated blast radius before creating broad rules.
+The target state MUST show estimated blast radius before creating broad rules.
 
 #### Scenario: Preview matching actions for a proposed rule
 
@@ -381,7 +395,7 @@ Show estimated blast radius before creating broad rules.
 
 ### Requirement: [TARGET-STATE] API Mutation Endpoints
 
-REST API write endpoints for approval decisions, blocked on auth subsystem.
+The target state MUST provide REST API write endpoints for approval decisions once the auth subsystem is available.
 
 #### Scenario: API approve/reject/create-rule endpoints
 
@@ -407,7 +421,7 @@ After a pending action is manually approved by a human actor (status transitions
 
 ### Requirement: Post-Execution Demotion Hook
 
-After an auto-approved action fails execution (execution_result has `success: false`), the approvals module MUST invoke the autonomy suggestion engine to create a demotion suggestion for the standing rule that auto-approved the action.
+After an auto-approved action fails execution (the executor returns `success: false` while the action remains retryable), the approvals module MUST invoke the autonomy suggestion engine to create a demotion suggestion for the standing rule that auto-approved the action.
 
 #### Scenario: Execution failure triggers demotion check
 

@@ -2059,10 +2059,8 @@ def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
     return result
 
 
-async def test_dispatch_approved_action_falls_back_to_next_butler():
-    """When the owning butler declines (error dict), the next butler is tried in
-    order and its successful execution is returned.
-    """
+async def test_dispatch_approved_action_never_falls_back_to_another_butler():
+    """An action stays in its owning schema when that butler declines it."""
     import json
 
     from butlers.api.routers.approvals import _dispatch_approved_action
@@ -2106,10 +2104,11 @@ async def test_dispatch_approved_action_falls_back_to_next_butler():
         "messenger",
     )
 
-    assert result is not None
-    assert result["status"] == "executed"
-    # The owning butler is tried first, then the fallback — in order.
-    assert [c.args[0] for c in mock_mcp.get_client.await_args_list] == ["messenger", "general"]
+    assert result is None
+    # The API must not use a different butler's executor as a generic fallback:
+    # it would cross the approval row's schema/MCP ownership boundary.
+    assert [c.args[0] for c in mock_mcp.get_client.await_args_list] == ["messenger"]
+    general_client.call_tool.assert_not_awaited()
 
 
 async def test_dispatch_approved_action_mcp_error_returns_none():
@@ -2147,7 +2146,9 @@ def test_first_json_block_handles_json_text_and_empty():
     assert _first_json_block(_mcp_result("oops")) == {"value": "oops"}
 
 
-async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_action_id():
+async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_action_id(
+    caplog: pytest.LogCaptureFixture,
+):
     """Re-gate guard: notify email-guard path keys the phantom id as pending_action_id.
 
     The notify email-guard returns {status: pending_approval, pending_action_id: ...}
@@ -2217,17 +2218,40 @@ async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_
             {"channel": "email", "message": "Hello", "recipient": "someone@example.com"},
         )
 
-    # Must be recorded as failure — the notify email-guard re-parked the action
-    assert captured["success"] is False, "Re-gate via notify email-guard must be a failure"
+    # The failed delivery must leave the action retryable rather than writing a
+    # false terminal result. The log retains the useful phantom-id diagnosis.
+    assert result is None
+    assert captured == {}
+    assert str(phantom_action_id) in caplog.text
+    assert "phantom pending_action=<unknown>" not in caplog.text
 
-    # Error must include the phantom id from pending_action_id (not fall back to <unknown>)
-    error_msg = captured["result"].get("error", "")
-    assert str(phantom_action_id) in error_msg, (
-        f"Error must reference the phantom action id from pending_action_id={phantom_action_id}; "
-        f"got: {error_msg!r}"
-    )
-    assert "<unknown>" not in error_msg, (
-        "Error must NOT fall back to '<unknown>' when pending_action_id is present"
+
+async def test_dispatch_approved_notify_error_payload_stays_retryable():
+    """A delivery error inside a non-error MCP response cannot become executed."""
+    import json
+    from unittest.mock import patch
+
+    import butlers.modules.approvals.operations as approvals_ops
+    from butlers.api.routers.approvals import _dispatch_approved_action
+
+    action_id = uuid4()
+    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
+        action_id=action_id,
+        tool_name="notify",
+        tool_args={"channel": "email", "message": "Hello", "recipient": "owner@example.com"},
+        mcp_text_payload=json.dumps({"status": "failed", "error": "SMTP unavailable"}),
+        mcp_is_error=False,
     )
 
-    assert result is not None
+    with patch.object(approvals_ops, "mark_executed", new_callable=AsyncMock) as mark_executed:
+        result = await _dispatch_approved_action(
+            mock_mcp,
+            mock_db,
+            mock_pool,
+            str(action_id),
+            "notify",
+            {"channel": "email", "message": "Hello", "recipient": "owner@example.com"},
+        )
+
+    assert result is None
+    mark_executed.assert_not_awaited()

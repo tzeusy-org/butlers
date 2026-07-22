@@ -7,10 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp import FastMCP as RuntimeFastMCP
 
 from butlers.config import load_config
 from butlers.daemon import ButlerDaemon
+from butlers.modules.approvals.module import ApprovalsConfig, ApprovalsModule
 from butlers.modules.base import ToolMeta
+from butlers.modules.memory import MemoryModule, MemoryModuleConfig
+from tests.modules.test_module_approvals import MockDB
 
 pytestmark = pytest.mark.unit
 
@@ -28,13 +32,20 @@ class _ApprovalsModuleProbe:
     name = "approvals"
 
     def __init__(self) -> None:
-        self.tool_metadata: dict[str, ToolMeta] | None = None
+        self.received_tool_metadata: dict[str, ToolMeta] | None = None
+        self.tool_executor = None
 
     def set_tool_metadata(self, metadata: dict[str, ToolMeta]) -> None:
-        self.tool_metadata = metadata
+        self.received_tool_metadata = metadata
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        return {}
 
     def set_approval_policy(self, _policy: object) -> None:
         pass
+
+    def set_tool_executor(self, executor: object) -> None:
+        self.tool_executor = executor
 
 
 class _UnexpectedMetadataModule:
@@ -57,14 +68,16 @@ async def test_disabled_rosters_inject_metadata_for_manual_approvals(
     daemon = SimpleNamespace(
         config=config,
         _active_modules=[_MetadataModule(), approvals],
+        mcp=RuntimeFastMCP(f"test-{roster_name}"),
     )
 
     result = await ButlerDaemon._apply_approval_gates(daemon)
 
     assert result == {}
-    assert approvals.tool_metadata == {
+    assert approvals.received_tool_metadata == {
         "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False})
     }
+    assert approvals.tool_executor is not None
     apply_gates.assert_not_awaited()
 
 
@@ -102,3 +115,66 @@ async def test_enabled_gates_receive_the_deterministic_approval_push_runtime(
 
     assert result == {}
     assert apply_gates.await_args.kwargs["approval_push_runtime"] is push_runtime
+
+
+async def test_relationship_registration_dispatches_legacy_merge_via_memory_callable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real Relationship module registration owns legacy merge recovery.
+
+    Relationship enables the approvals action surface but has no gated tools.
+    Its registered executor must therefore resolve the canonical memory MCP
+    callable directly, rather than re-enter a gate or depend on another
+    butler. The legacy action name is deliberately mapped only at this runtime
+    boundary; the row itself remains untouched until the successful execution
+    transition persists its result and audit event.
+    """
+    config = load_config(_REPO_ROOT / "roster" / "relationship")
+    db = MockDB()
+    db.schema = "relationship"
+    memory = MemoryModule()
+    approvals = ApprovalsModule()
+
+    daemon = ButlerDaemon(_REPO_ROOT / "roster" / "relationship", db=db)
+    daemon.config = config
+    daemon.mcp = RuntimeFastMCP("relationship")
+    daemon._modules = [memory, approvals]
+    daemon._module_configs = {
+        "memory": MemoryModuleConfig(**config.modules["memory"]),
+        "approvals": ApprovalsConfig(**config.modules["approvals"]),
+    }
+
+    await daemon._register_module_tools()
+
+    merge = AsyncMock(
+        return_value={
+            "source_entity_id": "source",
+            "target_entity_id": "target",
+            "facts_repointed": 2,
+        }
+    )
+    monkeypatch.setattr("butlers.modules.memory.tools.entities.entity_merge", merge)
+    monkeypatch.setattr(memory, "_get_or_create_chronicler_pool", AsyncMock(return_value=None))
+    monkeypatch.setattr(memory, "_get_or_create_relationship_pool", AsyncMock(return_value=None))
+
+    originals = await daemon._apply_approval_gates()
+
+    assert originals == {}
+    assert approvals._tool_executor is not None
+
+    action_id = db._insert_action(
+        tool_name="entity_merge",
+        tool_args={"source_entity_id": "source", "target_entity_id": "target"},
+        status="approved",
+    )
+    dispatch_tool = await daemon.mcp.get_tool("dispatch_approved_action")
+
+    result = await dispatch_tool.fn(action_id=str(action_id))
+
+    assert result["status"] == "executed"
+    assert result["tool_name"] == "entity_merge"  # provenance is not rewritten
+    assert result["execution_result"]["success"] is True
+    merge.assert_awaited_once_with(db, "source", "target", chronicler_pool=None)
+    assert db.pending_actions[action_id]["status"] == "executed"
+    event_types = [call["args"][0] for call in db.approval_events]
+    assert "action_execution_succeeded" in event_types

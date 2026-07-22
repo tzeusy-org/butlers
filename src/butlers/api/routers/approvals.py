@@ -968,9 +968,10 @@ async def _dispatch_approved_action(
       ``dispatch_approved_action`` tool, which invokes the *original* tool
       function in-process and marks the action 'executed' itself.
 
-    ``action_butler`` (the butler that owns the action / gated tool) is tried
-    first. If no butler executes it, the action stays 'approved' for retry and
-    this returns ``None``.
+    ``action_butler`` is the only eligible daemon: the approval row belongs to
+    that butler's schema and its executor resolves tools from its registered
+    MCP surface. If it cannot execute the action, the row stays 'approved' for
+    retry; this function never falls back to a different butler.
 
     Returns the updated action dict on success, or None if dispatch failed.
     """
@@ -999,14 +1000,26 @@ async def _dispatch_approved_action(
             )
             return None
 
-        tool_result = _first_json_block(mcp_result)
-        exec_result: dict = {"success": not mcp_result.is_error}
-        if tool_result is not None:
-            exec_result["result"] = tool_result
         if mcp_result.is_error:
-            exec_result["error"] = (
-                tool_result.get("error") if isinstance(tool_result, dict) else None
-            ) or "MCP tool call returned error"
+            logger.warning("Approved notify action %s failed in switchboard deliver", action_id)
+            return None
+
+        tool_result = _first_json_block(mcp_result)
+
+        # A normal MCP transport response can still carry the delivery tool's
+        # structured failure payload. Treat it as a failed dispatch rather
+        # than turning an unsuccessful notification into an executed action.
+        if isinstance(tool_result, dict) and (
+            tool_result.get("error")
+            or tool_result.get("success") is False
+            or tool_result.get("status") == "failed"
+        ):
+            logger.warning(
+                "Approved notify action %s returned an unsuccessful delivery result: %s",
+                action_id,
+                tool_result,
+            )
+            return None
 
         # Re-gate guard: deliver should never re-park, but if it ever does, do
         # not record a phantom pending action as a successful delivery.
@@ -1020,10 +1033,11 @@ async def _dispatch_approved_action(
                 action_id,
                 phantom,
             )
-            exec_result["success"] = False
-            exec_result["error"] = (
-                f"notify re-entered the approval gate (phantom={phantom}); not delivered"
-            )
+            return None
+
+        exec_result: dict = {"success": True}
+        if tool_result is not None:
+            exec_result["result"] = tool_result
 
         mark_kwargs: dict[str, Any] = {
             "action_id": action_id,
@@ -1036,16 +1050,21 @@ async def _dispatch_approved_action(
                 mark_kwargs["decision_memory_writer"] = decision_memory_writer
 
         async with pool.acquire() as conn:
-            return await approvals_ops.mark_executed(conn, **mark_kwargs)
+            marked = await approvals_ops.mark_executed(conn, **mark_kwargs)
+        return None if "error" in marked else marked
 
     # All other gated tools: run the original (un-gated) tool on the owning
     # butler via its dispatch_approved_action tool. The butler marks the action
     # executed and returns its final state, which we relay (skipping butlers
     # that error or decline).
-    target_butlers: list[str] = []
-    if action_butler is not None:
-        target_butlers.append(action_butler)
-    target_butlers.extend(n for n in mcp_mgr.butler_names if n != action_butler)
+    if action_butler is None:
+        logger.warning(
+            "Cannot dispatch approved action %s without its owning butler; action remains approved",
+            action_id,
+        )
+        return None
+
+    target_butlers = [action_butler]
 
     for butler_name in target_butlers:
         try:
@@ -1075,10 +1094,8 @@ async def _dispatch_approved_action(
             )
             continue
         if result.get("error"):
-            # This butler doesn't own the gated tool (no executor / unknown
-            # action) — try the next one.
             logger.info(
-                "Butler %s declined approved action %s: %s; trying next butler",
+                "Owning butler %s declined approved action %s: %s",
                 butler_name,
                 action_id,
                 result.get("error"),

@@ -32,6 +32,7 @@ from butlers.modules.approvals.autonomy_tracker import (
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+from butlers.modules.approvals.executor import _approval_write_transaction
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
 
@@ -116,10 +117,12 @@ async def approve_action(
     create_rule: bool = False,
     decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
-    """Approve a pending action and execute it (status transition only — no tool execution).
+    """Approve a pending action without performing its side effect.
 
-    Transitions the action from 'pending' → 'approved' → 'executed' (no tool_fn
-    is available in the REST context). Returns the updated action dict.
+    Transitions the action from ``pending`` to ``approved``. The API dispatches
+    the side effect through the owning daemon afterwards; only that successful,
+    audited dispatch may transition the row to ``executed``. Returns the updated
+    action dict.
 
     Parameters
     ----------
@@ -250,7 +253,9 @@ async def mark_executed(
     """Transition an approved action to executed with an execution result.
 
     Called after the caller has actually dispatched the tool (e.g. via MCP
-    call_tool). Records the execution outcome and audit event.
+    call_tool). Only a successful dispatch with a persisted result may make
+    the terminal transition; failed or unavailable work stays `approved` and
+    retryable rather than falsely claiming execution.
 
     Returns the final action dict or ``{"error": "<message>"}``.
     """
@@ -258,6 +263,22 @@ async def mark_executed(
         parsed_id = uuid.UUID(action_id)
     except ValueError:
         return {"error": f"Invalid action_id: {action_id}"}
+
+    if not success:
+        return {
+            "error": (
+                "Cannot mark a failed dispatch as executed; action remains approved for retry"
+            )
+        }
+    if execution_result is None:
+        return {"error": "Cannot mark executed without a persisted execution result"}
+    if isinstance(execution_result, dict) and execution_result.get("success") is False:
+        return {
+            "error": (
+                "Cannot mark a failed execution result as executed; "
+                "action remains approved for retry"
+            )
+        }
 
     now = datetime.now(UTC)
     # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
@@ -268,35 +289,44 @@ async def mark_executed(
         json.loads(json.dumps(execution_result, default=str)) if execution_result else None
     )
 
-    executed_row = await pool.fetchrow(
-        "UPDATE pending_actions SET status = $1, execution_result = $2, decided_at = $3 "
-        "WHERE id = $4 AND status = $5 RETURNING *",
-        ActionStatus.EXECUTED.value,
-        safe_execution_result,
-        now,
-        parsed_id,
-        ActionStatus.APPROVED.value,
-    )
-    if executed_row is None:
-        row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if row is None:
-            return {"error": f"Action not found: {action_id}"}
-        return PendingAction.from_row(row).to_dict()
+    try:
+        # The REST notify fast-path performs the irreversible delivery before
+        # arriving here. Its terminal status is therefore trustworthy only if
+        # the result and immutable audit event commit together.
+        async with _approval_write_transaction(pool) as write_target:
+            executed_row = await write_target.fetchrow(
+                "UPDATE pending_actions SET status = $1, execution_result = $2, decided_at = $3 "
+                "WHERE id = $4 AND status = $5 RETURNING *",
+                ActionStatus.EXECUTED.value,
+                safe_execution_result,
+                now,
+                parsed_id,
+                ActionStatus.APPROVED.value,
+            )
+            if executed_row is None:
+                row = await write_target.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+                )
+                if row is None:
+                    return {"error": f"Action not found: {action_id}"}
+                return PendingAction.from_row(row).to_dict()
 
-    event_type = (
-        ApprovalEventType.ACTION_EXECUTION_SUCCEEDED
-        if success
-        else ApprovalEventType.ACTION_EXECUTION_FAILED
-    )
-    await record_approval_event(
-        pool,
-        event_type,
-        actor=f"system:{actor_id}",
-        action_id=parsed_id,
-        reason="executed via REST API dispatch",
-        metadata={"tool_name": PendingAction.from_row(executed_row).tool_name},
-        occurred_at=now,
-    )
+            await record_approval_event(
+                write_target,
+                ApprovalEventType.ACTION_EXECUTION_SUCCEEDED,
+                actor=f"system:{actor_id}",
+                action_id=parsed_id,
+                reason="executed via REST API dispatch",
+                metadata={"tool_name": PendingAction.from_row(executed_row).tool_name},
+                occurred_at=now,
+            )
+    except Exception as exc:  # noqa: BLE001 -- leave the action retryable on audit failure
+        logger.error(
+            "Could not persist REST execution outcome for action %s: %s",
+            action_id,
+            exc,
+        )
+        return {"error": f"Could not persist execution outcome: {exc}"}
 
     executed_action = PendingAction.from_row(executed_row)
     if decision_memory_writer is not None:

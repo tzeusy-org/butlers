@@ -433,6 +433,87 @@ class TestExecutionResultRoundtrip:
         assert stored["success"] is True
         assert stored["result"] == {"message_id": "abc-123", "delivered": True}
 
+        event = await approvals_full_pool.fetchrow(
+            "SELECT event_type, event_metadata FROM approval_events WHERE action_id = $1",
+            action_id,
+        )
+        assert event is not None
+        assert event["event_type"] == "action_execution_succeeded"
+        assert event["event_metadata"] == {"tool_name": "notify"}
+
+    async def test_executor_failure_stays_approved_and_writes_failure_audit(
+        self, approvals_full_pool
+    ) -> None:
+        """A failed handler cannot be recorded as completed execution."""
+        action_id = await _insert_pending_action(
+            approvals_full_pool,
+            tool_name="memory_entity_merge",
+            tool_args={"source_entity_id": "source", "target_entity_id": "target"},
+            status="approved",
+        )
+
+        async def _tool_fn(**kwargs):
+            raise RuntimeError("source entity is already tombstoned")
+
+        outcome = await executor_mod.execute_approved_action(
+            approvals_full_pool,
+            action_id,
+            "memory_entity_merge",
+            {"source_entity_id": "source", "target_entity_id": "target"},
+            _tool_fn,
+        )
+
+        assert outcome.success is False
+        assert outcome.error == "source entity is already tombstoned"
+        row = await approvals_full_pool.fetchrow(
+            "SELECT status, execution_result FROM pending_actions WHERE id = $1", action_id
+        )
+        assert row is not None
+        assert row["status"] == "approved"
+        assert row["execution_result"] is None
+        event = await approvals_full_pool.fetchrow(
+            "SELECT event_type, reason FROM approval_events WHERE action_id = $1",
+            action_id,
+        )
+        assert event is not None
+        assert event["event_type"] == "action_execution_failed"
+        assert event["reason"] == "source entity is already tombstoned"
+
+    async def test_executor_does_not_claim_success_until_audit_persists(
+        self, approvals_full_pool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The successful result/status update rolls back with a failed audit append."""
+        action_id = await _insert_pending_action(
+            approvals_full_pool,
+            tool_name="memory_entity_merge",
+            status="approved",
+        )
+
+        async def _tool_fn(**kwargs):
+            return {"target_entity_id": "target"}
+
+        async def _audit_unavailable(*args, **kwargs):
+            raise RuntimeError("approval audit unavailable")
+
+        monkeypatch.setattr(executor_mod, "record_approval_event", _audit_unavailable)
+
+        outcome = await executor_mod.execute_approved_action(
+            approvals_full_pool,
+            action_id,
+            "memory_entity_merge",
+            {"source_entity_id": "source", "target_entity_id": "target"},
+            _tool_fn,
+        )
+
+        assert outcome.success is False
+        assert "Could not persist execution outcome" in (outcome.error or "")
+        row = await approvals_full_pool.fetchrow(
+            "SELECT status, execution_result FROM pending_actions WHERE id = $1", action_id
+        )
+        assert row is not None
+        assert row["status"] == "approved"
+        assert row["execution_result"] is None
+
     async def test_operations_mark_executed_roundtrips_as_dict(self, approvals_full_pool) -> None:
         action_id = await _insert_pending_action(
             approvals_full_pool,
@@ -459,6 +540,35 @@ class TestExecutionResultRoundtrip:
             "the jsonb column was double-encoded into a string."
         )
         assert stored == {"message_id": "xyz-789"}
+
+    async def test_operations_mark_executed_rolls_back_when_audit_append_fails(
+        self, approvals_full_pool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """REST dispatch must not claim terminal success without its audit event."""
+        action_id = await _insert_pending_action(
+            approvals_full_pool,
+            tool_name="rest_notify",
+            status="approved",
+        )
+
+        async def _audit_unavailable(*args, **kwargs):
+            raise RuntimeError("approval audit unavailable")
+
+        monkeypatch.setattr(operations_mod, "record_approval_event", _audit_unavailable)
+
+        result = await operations_mod.mark_executed(
+            approvals_full_pool,
+            str(action_id),
+            execution_result={"message_id": "xyz-789"},
+        )
+
+        assert "Could not persist execution outcome" in result["error"]
+        row = await approvals_full_pool.fetchrow(
+            "SELECT status, execution_result FROM pending_actions WHERE id = $1", action_id
+        )
+        assert row is not None
+        assert row["status"] == "approved"
+        assert row["execution_result"] is None
 
 
 # ---------------------------------------------------------------------------

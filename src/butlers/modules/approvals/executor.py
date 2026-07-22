@@ -19,6 +19,8 @@ import json
 import logging
 import uuid
 import weakref
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -113,6 +115,37 @@ def _parse_execution_result(raw_payload: Any) -> ExecutionResult | None:
     )
 
 
+@asynccontextmanager
+async def _approval_write_transaction(pool: Any) -> AsyncIterator[Any]:
+    """Yield a write target with a transaction when the runtime exposes one.
+
+    Modules receive either an asyncpg pool/connection or the project's
+    lightweight ``Database`` proxy. Test doubles intentionally need no
+    transaction API, so they keep the same ordered writes while production
+    pools atomically commit the terminal result and immutable audit event.
+    """
+    backing_pool = getattr(pool, "pool", None)
+    target = backing_pool if backing_pool is not None else pool
+    acquire = getattr(target, "acquire", None)
+    if callable(acquire):
+        async with acquire() as connection:
+            transaction = getattr(connection, "transaction", None)
+            if callable(transaction):
+                async with connection.transaction():
+                    yield connection
+            else:
+                yield connection
+        return
+
+    transaction = getattr(target, "transaction", None)
+    if callable(transaction):
+        async with transaction():
+            yield target
+        return
+
+    yield target
+
+
 async def execute_approved_action(
     pool: Any,
     action_id: uuid.UUID,
@@ -181,96 +214,147 @@ async def execute_approved_action(
 
         now = datetime.now(UTC)
 
-        # 1. Call the tool function
+        # 1. Call the tool function. A failed invocation must remain retryable
+        # in `approved` with no execution_result: writing `executed` would
+        # falsely claim an irreversible action completed.
         try:
             raw_result = tool_fn(**tool_args)
-            # Support both sync and async tool functions
             if inspect.isawaitable(raw_result):
                 raw_result = await raw_result
-
-            # Normalise the result to a dict
+            # MCP tool contracts use an error dict for an unsuccessful
+            # operation. Treat it exactly like an exception so a handler that
+            # reports its own failure cannot be recorded as `executed`.
             if isinstance(raw_result, dict):
-                result_dict = raw_result
-            else:
-                result_dict = {"value": raw_result}
-
+                if raw_result.get("error"):
+                    raise RuntimeError(str(raw_result["error"]))
+                if raw_result.get("success") is False:
+                    raise RuntimeError("tool reported unsuccessful execution")
+        except Exception as exc:
             execution_result = ExecutionResult(
-                success=True,
-                result=result_dict,
+                success=False,
+                error=str(exc),
                 executed_at=now,
             )
-        except Exception as exc:
             logger.error(
                 "Tool execution failed for action %s (%s): %s",
                 action_id,
                 tool_name,
                 exc,
             )
-            execution_result = ExecutionResult(
+            try:
+                async with _approval_write_transaction(pool) as write_target:
+                    await record_approval_event(
+                        write_target,
+                        ApprovalEventType.ACTION_EXECUTION_FAILED,
+                        actor="system:executor",
+                        action_id=action_id,
+                        rule_id=approval_rule_id,
+                        reason=execution_result.error,
+                        metadata={"tool_name": tool_name},
+                        occurred_at=now,
+                    )
+            except Exception:  # noqa: BLE001 -- failure audit cannot change queue state
+                logger.warning(
+                    "Could not audit failed execution for action %s; action remains approved",
+                    action_id,
+                    exc_info=True,
+                )
+
+            if approval_rule_id is not None:
+                try:
+                    from butlers.modules.approvals.autonomy_suggestions import (
+                        create_demotion_suggestion,
+                    )
+                    from butlers.modules.approvals.models import PendingAction
+
+                    action_row = await pool.fetchrow(
+                        "SELECT * FROM pending_actions WHERE id = $1", action_id
+                    )
+                    if action_row is not None:
+                        await create_demotion_suggestion(
+                            pool=pool,
+                            action=PendingAction.from_row(action_row),
+                            rule_id=approval_rule_id,
+                            error_details=execution_result.error or "unknown error",
+                        )
+                except Exception:  # noqa: BLE001 -- demotion is best-effort
+                    logger.exception(
+                        "Demotion suggestion hook failed for action %s; action remains approved",
+                        action_id,
+                    )
+            return execution_result
+
+        # 2. Normalise the successful result and persist the result, terminal
+        # status, immutable audit event, and auto-rule use count as one database
+        # transaction where the runtime can provide one. The call is only
+        # reported successful after this durable transition commits.
+        result_dict = raw_result if isinstance(raw_result, dict) else {"value": raw_result}
+        execution_result = ExecutionResult(success=True, result=result_dict, executed_at=now)
+        safe_execution_result = json.loads(json.dumps(execution_result.to_dict(), default=str))
+
+        try:
+            async with _approval_write_transaction(pool) as write_target:
+                transition_result = await write_target.execute(
+                    "UPDATE pending_actions "
+                    "SET status = $1, execution_result = $2, decided_at = $3 "
+                    "WHERE id = $4 AND status = $5",
+                    ActionStatus.EXECUTED.value,
+                    safe_execution_result,
+                    now,
+                    action_id,
+                    ActionStatus.APPROVED.value,
+                )
+                transitioned_to_executed = transition_result is None or str(
+                    transition_result
+                ).endswith(" 1")
+                if not transitioned_to_executed:
+                    return ExecutionResult(
+                        success=False,
+                        error=(
+                            f"Action {action_id} was no longer approved while persisting execution"
+                        ),
+                        executed_at=now,
+                    )
+
+                await record_approval_event(
+                    write_target,
+                    ApprovalEventType.ACTION_EXECUTION_SUCCEEDED,
+                    actor="system:executor",
+                    action_id=action_id,
+                    rule_id=approval_rule_id,
+                    metadata={"tool_name": tool_name},
+                    occurred_at=now,
+                )
+
+                if approval_rule_id is not None:
+                    await write_target.execute(
+                        "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
+                        approval_rule_id,
+                    )
+        except Exception as exc:
+            logger.error(
+                "Could not persist successful execution for action %s (%s): %s",
+                action_id,
+                tool_name,
+                exc,
+            )
+            return ExecutionResult(
                 success=False,
-                error=str(exc),
+                error=f"Could not persist execution outcome: {exc}",
                 executed_at=now,
             )
 
-        # 2. Build the execution_result JSONB payload. Bind the sanitized dict
-        # directly (no json.dumps, no ::jsonb cast) — asyncpg's registered
-        # jsonb codec already serializes once; pre-serializing double-encodes
-        # into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors gate.py's fix,
-        # PR #2924). The json.dumps/loads round-trip also sanitizes any
-        # non-JSON-native values (UUID/datetime) that a tool's raw result may
-        # contain, via default=str.
-        safe_execution_result = json.loads(json.dumps(execution_result.to_dict(), default=str))
-
-        # 3. Update the pending_action row to 'executed' (CAS on approved)
-        transition_result = await pool.execute(
-            "UPDATE pending_actions "
-            "SET status = $1, execution_result = $2, decided_at = $3 "
-            "WHERE id = $4 AND status = $5",
-            ActionStatus.EXECUTED.value,
-            safe_execution_result,
-            now,
-            action_id,
-            ActionStatus.APPROVED.value,
-        )
-
-        # 4. If auto-approved, increment rule use_count
-        if approval_rule_id is not None:
-            await pool.execute(
-                "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
-                approval_rule_id,
-            )
-
-    # asyncpg returns ``UPDATE 1`` for the successful CAS.  Keep compatibility
-    # with lightweight test doubles that return None, but never write a second
-    # tally for an actual database CAS miss.
-    transitioned_to_executed = transition_result is None or str(transition_result).endswith(" 1")
-
     logger.info(
-        "Executed action %s (%s) success=%s rule=%s",
+        "Executed action %s (%s) success=True rule=%s",
         action_id,
         tool_name,
-        execution_result.success,
         approval_rule_id,
-    )
-    await record_approval_event(
-        pool,
-        (
-            ApprovalEventType.ACTION_EXECUTION_SUCCEEDED
-            if execution_result.success
-            else ApprovalEventType.ACTION_EXECUTION_FAILED
-        ),
-        actor="system:executor",
-        action_id=action_id,
-        rule_id=approval_rule_id,
-        reason=execution_result.error,
-        metadata={"tool_name": tool_name},
-        occurred_at=now,
     )
 
     # Decision memory is a best-effort knowledge dividend, not part of the
     # execution transaction. It runs only after the terminal state and audit
     # outcome are durable, and the writer itself fails open.
-    if decision_memory_writer is not None and transitioned_to_executed:
+    if decision_memory_writer is not None:
         try:
             from butlers.modules.approvals.models import PendingAction
 
@@ -286,30 +370,6 @@ async def execute_approved_action(
                 "Decision-memory executor hook failed for action %s; execution remains committed",
                 action_id,
                 exc_info=True,
-            )
-
-    # Post-execution demotion hook (task 7.2):
-    # If execution failed on an auto-approved action, create a demotion suggestion.
-    if not execution_result.success and approval_rule_id is not None:
-        try:
-            from butlers.modules.approvals.autonomy_suggestions import create_demotion_suggestion
-            from butlers.modules.approvals.models import PendingAction
-
-            action_row = await pool.fetchrow(
-                "SELECT * FROM pending_actions WHERE id = $1", action_id
-            )
-            if action_row is not None:
-                action_obj = PendingAction.from_row(action_row)
-                await create_demotion_suggestion(
-                    pool=pool,
-                    action=action_obj,
-                    rule_id=approval_rule_id,
-                    error_details=execution_result.error or "unknown error",
-                )
-        except Exception:
-            logger.exception(
-                "Demotion suggestion hook failed for action %s — execution result not affected",
-                action_id,
             )
 
     return execution_result
