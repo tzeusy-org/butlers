@@ -203,6 +203,20 @@ class DecisionDigest:
     export_as_of: datetime | None = None
 
 
+@dataclass(frozen=True)
+class DecisionLintResult:
+    """Result of the scheduled convention-lint subprocess.
+
+    A clean lint result and an unavailable lint subprocess are intentionally
+    distinct: treating both as an empty violation list would let the weekly
+    digest fabricate a calm audit when its strict migration check never ran.
+    """
+
+    available: bool
+    unavailable_reason: str | None
+    violations: tuple[dict[str, Any], ...]
+
+
 # ---------------------------------------------------------------------------
 # Export parsing
 # ---------------------------------------------------------------------------
@@ -404,20 +418,26 @@ def _compose_escalation_message(hit: EscalationHit) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _run_unlabeled_marker_lint(export_path: Path) -> list[dict[str, Any]]:
+def _run_unlabeled_marker_lint(export_path: Path) -> DecisionLintResult:
     """Run ``scripts/lint_decision_beads.py --check-unlabeled-markers`` against
-    *export_path* and return the failing entries. Never raises.
+    *export_path* and return its availability plus failing entries. Never raises.
 
-    Degraded-honesty contract mirrors the rest of this module: a lint
-    subprocess failure (missing script, unexpected crash, malformed output)
-    is logged and treated as "nothing to report" rather than sinking the
-    weekly digest job -- this check augments the digest, it does not gate
-    it. A real violation is only ever reported when the lint genuinely ran
-    and found one.
+    A clean result is available with no violations. A missing script/input,
+    subprocess failure, unexpected exit, or malformed result is unavailable
+    so the caller can record the existing failed scheduled-audit path rather
+    than fabricating a calm ``no_decisions`` outcome.
     """
-    if not _LINT_SCRIPT_PATH.is_file():
+    try:
+        lint_script_exists = _LINT_SCRIPT_PATH.is_file()
+    except OSError as exc:
+        logger.warning(
+            "decision_review: unable to inspect lint script at %s: %s", _LINT_SCRIPT_PATH, exc
+        )
+        return DecisionLintResult(False, f"lint_script_unavailable:{type(exc).__name__}", ())
+
+    if not lint_script_exists:
         logger.warning("decision_review: lint script not found at %s", _LINT_SCRIPT_PATH)
-        return []
+        return DecisionLintResult(False, "lint_script_missing", ())
 
     cmd = [
         sys.executable,
@@ -431,28 +451,58 @@ def _run_unlabeled_marker_lint(export_path: Path) -> list[dict[str, Any]]:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=_LINT_SUBPROCESS_TIMEOUT_S
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
         logger.warning("decision_review: lint subprocess failed (%s): %s", cmd, exc)
-        return []
+        return DecisionLintResult(False, "lint_subprocess_timeout", ())
+    except UnicodeError as exc:
+        logger.warning("decision_review: lint subprocess returned undecodable output: %s", exc)
+        return DecisionLintResult(False, "lint_subprocess_output_decode_error", ())
+    except OSError as exc:
+        logger.warning("decision_review: lint subprocess failed (%s): %s", cmd, exc)
+        return DecisionLintResult(False, f"lint_subprocess_error:{type(exc).__name__}", ())
 
-    # Exit codes: 0 = clean, 1 = violations found, 2 = could not obtain data
-    # -- both 0 and 1 carry valid --json output on stdout.
+    # Exit codes: 0 = every result is clean, 1 = at least one result has
+    # violations, 2 = could not obtain data. Both 0 and 1 carry valid --json
+    # output on stdout.
+    if proc.returncode == 2:
+        logger.warning(
+            "decision_review: lint subprocess could not obtain input: %s",
+            (proc.stderr or proc.stdout or "").strip()[-2000:],
+        )
+        return DecisionLintResult(False, "lint_input_unavailable", ())
     if proc.returncode not in (0, 1):
         logger.warning(
             "decision_review: lint subprocess exited %d: %s",
             proc.returncode,
             (proc.stderr or proc.stdout or "").strip()[-2000:],
         )
-        return []
+        return DecisionLintResult(False, f"lint_subprocess_exit:{proc.returncode}", ())
 
     try:
         results = json.loads(proc.stdout)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.warning("decision_review: lint subprocess returned non-JSON stdout")
-        return []
-    if not isinstance(results, list):
-        return []
-    return [r for r in results if isinstance(r, dict) and not r.get("ok", True)]
+        return DecisionLintResult(False, "lint_output_non_json", ())
+    if not isinstance(results, list) or any(
+        not isinstance(result, dict)
+        or not isinstance(result.get("id"), str)
+        or not isinstance(result.get("title"), str)
+        or not isinstance(result.get("ok"), bool)
+        or not isinstance(result.get("violations"), list)
+        or any(not isinstance(violation, str) for violation in result["violations"])
+        or result["ok"] != (not result["violations"])
+        for result in results
+    ):
+        logger.warning("decision_review: lint subprocess returned malformed JSON result")
+        return DecisionLintResult(False, "lint_output_invalid_shape", ())
+    if (proc.returncode == 0) != all(result["ok"] for result in results):
+        logger.warning("decision_review: lint subprocess exit code disagreed with JSON results")
+        return DecisionLintResult(False, "lint_output_invalid_shape", ())
+    return DecisionLintResult(
+        True,
+        None,
+        tuple(result for result in results if not result["ok"]),
+    )
 
 
 def _compose_lint_violation_message(violations: list[dict[str, Any]]) -> str:
@@ -640,9 +690,29 @@ async def run_decision_review_digest(
         )
         return {"available": False, "reason": digest.unavailable_reason}
 
-    lint_violations = _run_unlabeled_marker_lint(_DEFAULT_EXPORT_PATH)
+    lint_result = _run_unlabeled_marker_lint(_DEFAULT_EXPORT_PATH)
+    if not lint_result.available:
+        logger.warning(
+            "decision_review_digest: convention lint unavailable (%s) -- skipping digest "
+            "rather than reporting a fabricated all-clear",
+            lint_result.unavailable_reason,
+        )
+        await record_attention_event(
+            pool,
+            origin_butler=_ACTOR,
+            source="notify",
+            outcome="failed",
+            channel="telegram",
+            intent="send",
+            priority="low",
+            reason=f"data_unavailable:{lint_result.unavailable_reason}",
+            dedup_key="decision_review_digest",
+        )
+        return {"available": False, "reason": lint_result.unavailable_reason}
+
+    lint_violations = lint_result.violations
     if lint_violations:
-        lint_message = _compose_lint_violation_message(lint_violations)
+        lint_message = _compose_lint_violation_message(list(lint_violations))
         await _deliver(
             pool, message=lint_message, dedup_key="decision_lint_violations", priority="low"
         )

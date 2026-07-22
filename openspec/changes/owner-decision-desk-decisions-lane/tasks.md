@@ -50,3 +50,14 @@ gap; it does not change the scope above.
   subprocess path.
 - [x] 5.3 Apply the minimal strict-selector/help change, verify the focused
   suites and OpenSpec validation, and preserve unavailable/error behavior.
+
+## 6. bu-kqnum.9.6.3 — Scheduled lint failure propagation
+
+- [x] 6.1 Add RED regressions for missing lint script/input, unreadable input,
+  unexpected nonzero exit, malformed/non-JSON output, and semantically invalid
+  JSON result records (string violations, `ok`/violation coherence, and
+  exit-code/payload coherence); retain the real subprocess live-selection and
+  genuine-zero coverage.
+- [x] 6.2 Carry unavailable lint results through the existing failed
+  attention-ledger and scheduled-result path without crashing the scheduler,
+  while preserving explicit-ID and ordinary all-status forensic lint behavior.

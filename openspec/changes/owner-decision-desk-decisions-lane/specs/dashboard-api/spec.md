@@ -87,8 +87,17 @@ applies equally to decision-labeled issues and to
 unlabeled title-marker matches, so historical closed records cannot create a
 weekly owner-facing migration alert. The scheduled
 `butlers.jobs.decision_review` subprocess invocation SHALL retain its existing
-unavailable/error handling; a failed or unreadable lint input MUST NOT be
-reported as a calm successful audit.
+unavailable/error handling: a missing or unreadable lint script/input, an
+unexpected nonzero exit, or malformed/non-JSON lint output MUST NOT be
+reported as a calm successful audit. A JSON lint payload is valid only when
+every result has string `id` and `title` fields, boolean `ok`, and
+`violations: list[str]`; `ok` SHALL be true exactly when `violations` is empty;
+and exit `0` SHALL occur only when every result is okay while exit `1` SHALL
+occur only when at least one result is not okay. Any mismatch is malformed
+output. The scheduled digest SHALL return an unavailable scheduled result,
+record the existing failed attention-ledger outcome with a `data_unavailable:`
+reason, and continue scheduler processing without raising. A successful
+zero-candidate lint result remains the normal calm `no_decisions` outcome.
 
 Explicit issue IDs SHALL remain forensic input and MUST be linted as supplied,
 even when `--check-unlabeled-markers` is present. An ordinary non-strict
@@ -114,3 +123,31 @@ live-status selection is specific to the scheduled full-export marker mode.
 - **WHEN** an operator runs an ordinary `--status all` audit without
   `--check-unlabeled-markers`
 - **THEN** the linter retains historical records from that input
+
+#### Scenario: Scheduled lint failure is unavailable, not a calm audit
+
+- **WHEN** the scheduled marker-mode lint script or its input is missing or
+  unreadable, the process exits unexpectedly, or its stdout is malformed/non-JSON
+- **THEN** the scheduled digest returns unavailable and records its existing
+  failed attention-ledger path with a `data_unavailable:` reason
+- **AND** the scheduler continues without raising
+- **AND** the digest MUST NOT return `available: true` with
+  `outcome: "no_decisions"`
+
+#### Scenario: Semantically invalid JSON lint output is unavailable
+
+- **WHEN** the scheduled marker-mode lint subprocess returns syntactically JSON
+  that violates the payload contract, such as exit `1` with `[]` or a result
+  with `ok: true` and `violations: [123]`
+- **THEN** the digest returns unavailable with
+  `reason: "lint_output_invalid_shape"` and records the existing failed
+  attention-ledger path with a `data_unavailable:lint_output_invalid_shape`
+  reason
+- **AND** the scheduler continues without raising and MUST NOT return
+  `available: true` with `outcome: "no_decisions"`
+
+#### Scenario: Successful zero-candidate lint remains calm
+
+- **WHEN** the scheduled marker-mode lint subprocess exits successfully with a
+  valid JSON zero-candidate result and the export has zero open decisions
+- **THEN** the digest returns `available: true` with `outcome: "no_decisions"`
