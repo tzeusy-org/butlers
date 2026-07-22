@@ -113,6 +113,7 @@ vi.mock("@/hooks/use-spend", async (importOriginal) => {
 // Imports after mocks
 // ---------------------------------------------------------------------------
 
+import { formatCostDate } from "@/hooks/use-spend"
 import SpendPage from "@/pages/SpendPage"
 
 // ---------------------------------------------------------------------------
@@ -848,6 +849,82 @@ describe("SpendPage — what changed", () => {
     expect(strip.textContent).toContain("excluded from comparison")
     expect(strip.textContent).toContain("finance")
   })
+})
+
+describe("SpendPage — UTC implicit spend windows", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    // This instant is already Aug 1 in the owner timezone (Asia/Singapore),
+    // while the ledger's UTC day and ceiling remain July 31.
+    vi.setSystemTime(new Date("2026-07-31T18:00:00.000Z"))
+    apiFetchMock.mockReset()
+    apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
+    setHooks()
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    cleanup()
+  })
+
+  it("aligns implicit daily, mover, and evidence queries with the ledger UTC day", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    const [dailyFrom, dailyTo, dailyOptions] = mockUseDailySpend.mock.calls.at(-1)!
+    expect(formatCostDate(dailyFrom as Date, "UTC")).toBe("2026-07-25")
+    expect(formatCostDate(dailyTo as Date, "UTC")).toBe("2026-07-31")
+    expect(dailyOptions).toMatchObject({ dateKeyTimezone: "UTC" })
+    expect((screen.getByLabelText("From") as HTMLInputElement).value).toBe("2026-07-25")
+    expect((screen.getByLabelText("To") as HTMLInputElement).value).toBe("2026-07-31")
+    expect(screen.getByRole("button", { name: "Last 7 days" }).getAttribute("aria-pressed")).toBe("true")
+    expect(screen.getByRole("button", { name: "Today" }).getAttribute("aria-pressed")).toBe("false")
+
+    const [currentSummaryCall, priorSummaryCall] = mockUseSpendSummary.mock.calls.slice(-2)
+    const [currentPeriod, currentFrom, currentTo, currentButler, currentTimezone] = currentSummaryCall
+    expect(currentPeriod).toBeUndefined()
+    expect(currentButler).toBeUndefined()
+    expect(formatCostDate(currentFrom as Date, "UTC")).toBe("2026-07-25")
+    expect(formatCostDate(currentTo as Date, "UTC")).toBe("2026-07-31")
+    expect(currentTimezone).toBe("UTC")
+
+    const [, priorFrom, priorTo, priorButler, priorTimezone] = priorSummaryCall
+    expect(priorButler).toBeUndefined()
+    expect(formatCostDate(priorFrom as Date, "UTC")).toBe("2026-07-18")
+    expect(formatCostDate(priorTo as Date, "UTC")).toBe("2026-07-24")
+    expect(priorTimezone).toBe("UTC")
+
+    const [topLimit, topFrom, topTo, topTimezone] = mockUseTopSessions.mock.calls.at(-1)!
+    expect(topLimit).toBe(10)
+    expect(formatCostDate(topFrom as Date, "UTC")).toBe("2026-07-25")
+    expect(formatCostDate(topTo as Date, "UTC")).toBe("2026-07-31")
+    expect(topTimezone).toBe("UTC")
+
+    const [scheduleFrom, scheduleTo, scheduleTimezone] = mockUseCostsBySchedule.mock.calls.at(-1)!
+    expect(formatCostDate(scheduleFrom as Date, "UTC")).toBe("2026-07-25")
+    expect(formatCostDate(scheduleTo as Date, "UTC")).toBe("2026-07-31")
+    expect(scheduleTimezone).toBe("UTC")
+  })
+
+  it("keeps an explicit operator-selected range on the owner-timezone path", async () => {
+    await act(async () => {
+      renderPage(["/?from=2026-08-01&to=2026-08-01"])
+    })
+
+    const [dailyFrom, dailyTo, dailyOptions] = mockUseDailySpend.mock.calls.at(-1)!
+    expect(formatCostDate(dailyFrom as Date)).toBe("2026-08-01")
+    expect(formatCostDate(dailyTo as Date)).toBe("2026-08-01")
+    expect(dailyOptions).not.toHaveProperty("dateKeyTimezone")
+
+    const [currentSummaryCall] = mockUseSpendSummary.mock.calls.slice(-2)
+    const [, currentFrom, currentTo, , currentTimezone] = currentSummaryCall
+    expect(formatCostDate(currentFrom as Date)).toBe("2026-08-01")
+    expect(formatCostDate(currentTo as Date)).toBe("2026-08-01")
+    expect(currentTimezone).toBeUndefined()
+  })
+
 })
 
 describe("SpendPage — spend breakdown", () => {

@@ -21,11 +21,13 @@
 // ---------------------------------------------------------------------------
 
 import { useState, useMemo } from "react";
-import { subDays } from "date-fns";
 
-import { useSpendSummary, useDailySpend } from "@/hooks/use-spend";
-import { startOfDayInTz, endOfDayInTz } from "@/lib/tz-format";
-import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
+import {
+  SPEND_UTC_DATE_KEY_TIMEZONE,
+  utcDateWindow,
+  useSpendSummary,
+  useDailySpend,
+} from "@/hooks/use-spend";
 import { DayBars } from "@/components/butlers/DayBars";
 import { RangeToggle } from "@/components/ui/range-toggle";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -185,10 +187,6 @@ interface ButlerSpendTabProps {
 export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
   const [range, setRange] = useState<RangeValue>("7d");
 
-  // Stable "today" end-of-day in owner TZ — avoids both render-time drift and
-  // the need to suppress react-hooks/exhaustive-deps on the trendFrom memo.
-  const todayEnd = useMemo(() => endOfDayInTz(new Date(), OWNER_TZ_DEFAULT), []);
-
   // "today" period for KPI cell 1 — scoped to this butler via ?butler=
   const {
     data: todaySummary,
@@ -203,18 +201,22 @@ export default function ButlerSpendTab({ butlerName }: ButlerSpendTabProps) {
     isError: error30d,
   } = useSpendSummary("30d", undefined, undefined, butlerName);
 
-  // Date window for the bar trend — owner-TZ day boundaries
-  const trendFrom = useMemo(() => {
-    const days = range === "24h" ? 1 : range === "7d" ? 6 : 29;
-    return startOfDayInTz(subDays(todayEnd, days), OWNER_TZ_DEFAULT);
-  }, [range, todayEnd]);
+  // The trend shares the ledger and monthly-ceiling UTC calendar. Range
+  // selection changes only the number of included UTC days, never its anchor.
+  const trendWindow = useMemo(
+    () => utcDateWindow(range === "24h" ? 1 : range === "7d" ? 7 : 30),
+    [range],
+  );
 
   // Trend — butler param wired for forward compat; /daily filter lands in bu-lryu6
   const {
     data: dailyCostsResp,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailySpend(trendFrom, todayEnd, { butler: butlerName });
+  } = useDailySpend(trendWindow.from, trendWindow.to, {
+    butler: butlerName,
+    dateKeyTimezone: SPEND_UTC_DATE_KEY_TIMEZONE,
+  });
 
   const todaySourceError = todaySummary?.data?.source_error === true;
   const summary30dSourceError = summary30d?.data?.source_error === true;

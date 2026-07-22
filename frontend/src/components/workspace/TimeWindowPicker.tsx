@@ -25,6 +25,8 @@ export type { TimeWindow, UseTimeWindowResult } from "@/hooks/use-time-window"
 interface TimeWindowPickerProps {
   /** Result of useTimeWindow() hoisted to the parent. */
   window: UseTimeWindowResult
+  /** Optional date-key formatter for a surface with a different implicit calendar. */
+  formatDate?: (date: Date) => string
   /** ID for the "from" date input. Defaults to "tw-from". */
   fromInputId?: string
   /** ID for the "to" date input. Defaults to "tw-to". */
@@ -33,6 +35,7 @@ interface TimeWindowPickerProps {
 
 export function TimeWindowPicker({
   window: tw,
+  formatDate = formatWindowDate,
   fromInputId = "tw-from",
   toInputId = "tw-to",
 }: TimeWindowPickerProps) {
@@ -71,8 +74,8 @@ export function TimeWindowPicker({
             id={fromInputId}
             type="date"
             className="h-8 w-36 text-xs"
-            value={formatWindowDate(tw.from)}
-            max={formatWindowDate(tw.to)}
+            value={formatDate(tw.from)}
+            max={formatDate(tw.to)}
             onChange={(e) => {
               const parsed = parseISO(e.target.value)
               if (isValid(parsed)) {
@@ -89,8 +92,8 @@ export function TimeWindowPicker({
             id={toInputId}
             type="date"
             className="h-8 w-36 text-xs"
-            value={formatWindowDate(tw.to)}
-            min={formatWindowDate(tw.from)}
+            value={formatDate(tw.to)}
+            min={formatDate(tw.from)}
             onChange={(e) => {
               const parsed = parseISO(e.target.value)
               if (isValid(parsed)) {

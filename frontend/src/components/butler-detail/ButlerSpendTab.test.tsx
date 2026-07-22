@@ -22,19 +22,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // Mock hooks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/hooks/use-spend", () => ({
-  useSpendSummary: vi.fn(),
-  useDailySpend: vi.fn(),
-  formatCostDate: vi.fn((d: Date) => d.toISOString().slice(0, 10)),
-}));
+vi.mock("@/hooks/use-spend", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-spend")>();
+  return {
+    ...actual,
+    useSpendSummary: vi.fn(),
+    useDailySpend: vi.fn(),
+  };
+});
 
 vi.mock("@/hooks/use-time-window", () => ({
-  OWNER_TZ_DEFAULT: "UTC",
-}));
-
-vi.mock("@/lib/tz-format", () => ({
-  startOfDayInTz: (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()),
-  endOfDayInTz: (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999),
+  OWNER_TZ_DEFAULT: "Asia/Singapore",
 }));
 
 // Mock DayBars to avoid DOM complexity
@@ -657,6 +655,34 @@ describe("ButlerSpendTab — butler-scoped useDailySpend [bu-u1c02]", () => {
     // All calls should include the butler name as the 4th argument
     calls.forEach((args) => {
       expect(args[3]).toBe(BUTLER_NAME);
+    });
+  });
+});
+
+describe("ButlerSpendTab — UTC default trend window", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Singapore has crossed into Aug 1, but the Spend API and ceiling are
+    // still operating on the July 31 UTC ledger day.
+    vi.setSystemTime(new Date("2026-07-31T18:00:00.000Z"));
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    cleanup();
+  });
+
+  it("uses a UTC-keyed seven-day trend window at a non-UTC rollover", () => {
+    renderTab(BUTLER_NAME);
+
+    const [from, to, options] = vi.mocked(useDailySpend).mock.calls.at(-1)!;
+    expect((from as Date).toISOString()).toBe("2026-07-25T00:00:00.000Z");
+    expect((to as Date).toISOString()).toBe("2026-07-31T23:59:59.999Z");
+    expect(options).toMatchObject({
+      butler: BUTLER_NAME,
+      dateKeyTimezone: "UTC",
     });
   });
 });

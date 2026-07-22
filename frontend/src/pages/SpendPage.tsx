@@ -37,7 +37,7 @@
 import { useState, useMemo, useRef } from "react"
 import { Link, useSearchParams } from "react-router"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import { differenceInCalendarDays, subDays } from "date-fns"
+import { differenceInCalendarDays, isValid, parseISO, subDays } from "date-fns"
 
 import { Page } from "@/components/ui/page"
 import { Button } from "@/components/ui/button"
@@ -52,12 +52,15 @@ import { useFleetHaltStatus } from "@/hooks/use-fleet-halt"
 import { useModelCatalog } from "@/hooks/use-model-catalog"
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval"
 import {
+  formatCostDate,
+  SPEND_UTC_DATE_KEY_TIMEZONE,
+  utcDateWindow,
   useSpendSummary,
   useDailySpend,
   useTopSessions,
   useCostsBySchedule,
 } from "@/hooks/use-spend"
-import { useTimeWindow, formatWindowDate, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
+import { isPollingDisabled, useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
 import { CostStripeChart } from "@/components/costs/CostStripeChart"
 import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener"
@@ -82,6 +85,16 @@ interface SpendRule {
   saved_7d: number | null
   created_at: string
   updated_at: string
+}
+
+function hasExplicitSpendRange(searchParams: URLSearchParams): boolean {
+  const from = searchParams.get("from")
+  const to = searchParams.get("to")
+  if (!from || !to) return false
+
+  const parsedFrom = parseISO(from)
+  const parsedTo = parseISO(to)
+  return isValid(parsedFrom) && isValid(parsedTo) && parsedFrom <= parsedTo
 }
 
 interface BreakdownData {
@@ -810,8 +823,16 @@ function BreakdownSection() {
 // (bu-oaiiw).
 // ---------------------------------------------------------------------------
 
-function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
-  const { data, isLoading, isError } = useTopSessions(10, from, to)
+function TopSessionsSection({
+  from,
+  to,
+  dateKeyTimezone,
+}: {
+  from: Date
+  to: Date
+  dateKeyTimezone?: string
+}) {
+  const { data, isLoading, isError } = useTopSessions(10, from, to, dateKeyTimezone)
   const sessions = data?.data ?? []
   // Butlers dropped from the top-sessions fan-out (meta.unavailable_butlers).
   // When non-empty the ranking omits their sessions, so an empty table is an
@@ -824,7 +845,7 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>Most Expensive Sessions</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          Top sessions by cost, {formatWindowDate(from)} – {formatWindowDate(to)}. Click through
+          Top sessions by cost, {formatCostDate(from, dateKeyTimezone)} – {formatCostDate(to, dateKeyTimezone)}. Click through
           to session detail.
         </p>
       </div>
@@ -908,8 +929,16 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
   )
 }
 
-function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
-  const { data, isLoading, isError } = useCostsBySchedule(from, to)
+function ByScheduleSection({
+  from,
+  to,
+  dateKeyTimezone,
+}: {
+  from: Date
+  to: Date
+  dateKeyTimezone?: string
+}) {
+  const { data, isLoading, isError } = useCostsBySchedule(from, to, dateKeyTimezone)
   const schedules = data?.data ?? []
   // Butlers dropped from the by-schedule fan-out (meta.unavailable_butlers).
   // When non-empty the ranking omits their schedules, so an empty table is an
@@ -922,8 +951,8 @@ function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>By Schedule</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          Projected monthly cost per cron job, runs from {formatWindowDate(from)} –{" "}
-          {formatWindowDate(to)}. See which schedule is burning money.
+          Projected monthly cost per cron job, runs from {formatCostDate(from, dateKeyTimezone)} –{" "}
+          {formatCostDate(to, dateKeyTimezone)}. See which schedule is burning money.
         </p>
       </div>
       <div className="p-4">
@@ -1724,17 +1753,32 @@ export default function SpendPage() {
     liveForecast?.ceiling_usd != null &&
     liveForecast.projected_eom_usd > liveForecast.ceiling_usd
 
-  // What changed — explore window (daily stacked chart + movers). Defaults
-  // to the last 7 days via useTimeWindow's "today" preset fallback logic —
-  // callers can widen with the picker below.
+  // What changed — explore window (daily stacked chart + movers). The shared
+  // picker retains owner-timezone semantics after an operator supplies a
+  // range. Its implicit fallback instead follows the Spend ledger's trailing
+  // seven UTC days.
   const timeWindow = useTimeWindow(OWNER_TZ_DEFAULT)
+  const [spendSearchParams] = useSearchParams()
+  const usesImplicitUtcWindow = !hasExplicitSpendRange(spendSearchParams)
+  const implicitUtcWindow = useMemo(() => utcDateWindow(7), [])
+  const spendWindow = usesImplicitUtcWindow
+    ? {
+        ...timeWindow,
+        ...implicitUtcWindow,
+        preset: "week" as const,
+        pollingDisabled: isPollingDisabled(implicitUtcWindow.to),
+      }
+    : timeWindow
+  const spendDateKeyTimezone = usesImplicitUtcWindow
+    ? SPEND_UTC_DATE_KEY_TIMEZONE
+    : undefined
 
   // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
   // Reuses TimeWindowPicker's own preset setters -- "change window" from the
   // dispatch context.
   const spendWindowCommands = useMemo<PaletteCommand[]>(() => {
     const commands: PaletteCommand[] = []
-    if (timeWindow.preset !== "today") {
+    if (spendWindow.preset !== "today") {
       commands.push({
         id: "spend-window-today",
         label: "Change window: today",
@@ -1742,7 +1786,7 @@ export default function SpendPage() {
         perform: () => timeWindow.setPreset("today"),
       })
     }
-    if (timeWindow.preset !== "week") {
+    if (spendWindow.preset !== "week") {
       commands.push({
         id: "spend-window-week",
         label: "Change window: this week",
@@ -1751,16 +1795,17 @@ export default function SpendPage() {
       })
     }
     return commands
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- timeWindow.setPreset is stable (useCallback); timeWindow.preset is what actually varies the resulting command set.
-  }, [timeWindow.preset])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- timeWindow.setPreset is stable (useCallback); spendWindow.preset is what actually varies the resulting command set.
+  }, [spendWindow.preset])
   useRegisterCommands(spendWindowCommands)
 
   const {
     data: dailyResponse,
     isLoading: dailyLoading,
     isError: dailyError,
-  } = useDailySpend(timeWindow.from, timeWindow.to, {
-    refetchInterval: timeWindow.pollingDisabled ? false : 60_000,
+  } = useDailySpend(spendWindow.from, spendWindow.to, {
+    refetchInterval: spendWindow.pollingDisabled ? false : 60_000,
+    ...(spendDateKeyTimezone ? { dateKeyTimezone: spendDateKeyTimezone } : {}),
   })
   const dailySourceError = dailyResponse?.meta?.source_error === true
   const dailyData = useMemo(() => dailyResponse?.data ?? [], [dailyResponse])
@@ -1772,20 +1817,37 @@ export default function SpendPage() {
 
   // Movers — current window vs the immediately preceding window of equal
   // length (e.g. "last 7 days" vs "the 7 days before that").
-  const windowDays = differenceInCalendarDays(timeWindow.to, timeWindow.from) + 1
-  const prevTo = useMemo(() => subDays(timeWindow.from, 1), [timeWindow.from])
-  const prevFrom = useMemo(() => subDays(prevTo, windowDays - 1), [prevTo, windowDays])
+  const windowDays = differenceInCalendarDays(spendWindow.to, spendWindow.from) + 1
+  const previousSpendWindow = useMemo(() => {
+    if (usesImplicitUtcWindow) {
+      return utcDateWindow(windowDays, new Date(implicitUtcWindow.from.getTime() - 1))
+    }
+    const to = subDays(spendWindow.from, 1)
+    return { from: subDays(to, windowDays - 1), to }
+  }, [implicitUtcWindow.from, spendWindow.from, usesImplicitUtcWindow, windowDays])
 
   const {
     data: currentSummary,
     isLoading: currentSummaryLoading,
     isError: currentSummaryError,
-  } = useSpendSummary(undefined, timeWindow.from, timeWindow.to)
+  } = useSpendSummary(
+    undefined,
+    spendWindow.from,
+    spendWindow.to,
+    undefined,
+    spendDateKeyTimezone,
+  )
   const {
     data: priorSummary,
     isLoading: priorSummaryLoading,
     isError: priorSummaryError,
-  } = useSpendSummary(undefined, prevFrom, prevTo)
+  } = useSpendSummary(
+    undefined,
+    previousSpendWindow.from,
+    previousSpendWindow.to,
+    undefined,
+    spendDateKeyTimezone,
+  )
   const currentSummarySourceError = currentSummary?.data?.source_error === true
   const priorSummarySourceError = priorSummary?.data?.source_error === true
   const moversSourceError = currentSummarySourceError || priorSummarySourceError
@@ -1991,7 +2053,10 @@ export default function SpendPage() {
         <section className="border border-border">
           <div className="flex flex-col gap-3 px-4 py-3 border-b border-border">
             <Eyebrow>Daily Spend</Eyebrow>
-            <TimeWindowPicker window={timeWindow} />
+            <TimeWindowPicker
+              window={spendWindow}
+              formatDate={(date) => formatCostDate(date, spendDateKeyTimezone)}
+            />
           </div>
           <div className="p-4">
             <CostStripeChart
@@ -2037,8 +2102,16 @@ export default function SpendPage() {
         </section>
 
         {/* Why: evidence layer, scoped to the same window as the daily chart */}
-        <TopSessionsSection from={timeWindow.from} to={timeWindow.to} />
-        <ByScheduleSection from={timeWindow.from} to={timeWindow.to} />
+        <TopSessionsSection
+          from={spendWindow.from}
+          to={spendWindow.to}
+          dateKeyTimezone={spendDateKeyTimezone}
+        />
+        <ByScheduleSection
+          from={spendWindow.from}
+          to={spendWindow.to}
+          dateKeyTimezone={spendDateKeyTimezone}
+        />
 
         {/* Why: period breakdown */}
         <BreakdownSection />
