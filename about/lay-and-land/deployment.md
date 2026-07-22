@@ -187,6 +187,7 @@ during butler daemon startup.
 | Variable | Default | Purpose |
 |---|---|---|
 | `BUTLERS_MAX_GLOBAL_SESSIONS` | `3` | Process-wide cap on concurrent LLM sessions |
+| `DASHBOARD_URL` | `OAUTH_DASHBOARD_URL`, then `http://localhost:41200` | Public dashboard base for daemon-generated owner links; include any reverse-proxy path prefix. |
 | `ANTHROPIC_API_KEY` | -- | Claude API authentication |
 
 ### Connector-specific
