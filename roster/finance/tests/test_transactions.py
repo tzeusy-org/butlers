@@ -260,7 +260,7 @@ async def test_cross_source_dedup_same_business_identity(pool):
 
     from butlers.tools.finance.transactions import record_transaction
 
-    now = _utcnow()
+    now = datetime(2025, 1, 15, 12, tzinfo=UTC)
     first = await record_transaction(
         pool=pool,
         posted_at=now,
