@@ -356,6 +356,11 @@ export default function DashboardPage() {
           key: "u",
           description: "Undo scheduled decision",
           handler: row.onUndoDecision,
+          command: {
+            id: "undo-attention-decision",
+            label: "Undo selected scheduled decision",
+            keywords: ["undo", "attention"],
+          },
         },
       ];
     }
@@ -365,18 +370,33 @@ export default function DashboardPage() {
         key: "a",
         description: "Approve selected",
         handler: row.onApprove,
+        command: {
+          id: "approve-attention-item",
+          label: "Approve selected attention item",
+          keywords: ["approval", "attention"],
+        },
       });
     if (row.onDeny)
       verbs.push({
         key: "d",
         description: "Deny selected",
         handler: row.onDeny,
+        command: {
+          id: "deny-attention-item",
+          label: "Deny selected attention item",
+          keywords: ["deny", "attention"],
+        },
       });
     if (row.onDefer)
       verbs.push({
         key: "x",
         description: "Defer selected",
         handler: row.onDefer,
+        command: {
+          id: "defer-attention-item",
+          label: "Defer selected attention item",
+          keywords: ["defer", "attention"],
+        },
       });
     return verbs;
   }, [attentionRows, selectedAttentionId]);

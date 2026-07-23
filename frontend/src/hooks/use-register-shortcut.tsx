@@ -159,6 +159,16 @@ export function isShortcutTargetSuspended(target: EventTarget | null): boolean {
   return false;
 }
 
+function isNativeActivationKey(target: EventTarget | null, key: string): boolean {
+  if (key !== "Enter" && key !== " ") return false;
+  const el = target as HTMLElement | null;
+  return Boolean(
+    el &&
+      typeof el.closest === "function" &&
+      el.closest('button, a[href], summary'),
+  );
+}
+
 function matchesBinding(binding: ShortcutBinding, e: KeyboardEvent): boolean {
   return (
     e.key === binding.key &&
@@ -202,7 +212,15 @@ export function useRegisterShortcut(bindings: ShortcutBinding[]): void {
   // tear down and re-add the DOM listener on every render.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (window.__pendingGNav) return;
+      // A focused component may have already claimed this key (for example,
+      // DisclosureRow's Enter/Space contract or RowLink's activation). The
+      // native event reaches this window listener after React's target/root
+      // handlers, so honoring defaultPrevented prevents a second page action.
+      if (e.defaultPrevented || window.__pendingGNav) return;
+      // Native controls own activation, but not the rest of a page's hot loop:
+      // after roving focus moves to a button or link, j/k/arrows must still
+      // reach their declared page shortcut. Only Enter/Space stay native.
+      if (isNativeActivationKey(e.target, e.key)) return;
       const suspended = isShortcutTargetSuspended(e.target);
       for (const binding of bindingsRef.current) {
         if (!matchesBinding(binding, e)) continue;

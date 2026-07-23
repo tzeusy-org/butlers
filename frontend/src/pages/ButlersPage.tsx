@@ -26,7 +26,8 @@
 // window elapses without an undo.
 // ---------------------------------------------------------------------------
 
-import { useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useNavigate } from "react-router";
 import { toast } from "sonner";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -37,6 +38,8 @@ import { NeedsYouStrip } from "@/components/butlers/NeedsYouStrip";
 import { StatusBoardCell } from "@/components/butlers/StatusBoardCell";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useSetEligibility } from "@/hooks/use-general";
+import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,6 +53,17 @@ const REFRESH_INTERVAL_MS = 30_000;
  * (matches ApprovalsPage's UNDO_WINDOW_MS convention, bu-86c4c.14).
  */
 const RESTORE_UNDO_WINDOW_MS = 5_000;
+
+function boardColumnCount(board: HTMLElement): number {
+  const template = getComputedStyle(board).gridTemplateColumns.trim();
+  // Browsers normally resolve repeat() to pixel tracks, but test/layout
+  // environments can expose the authored value instead. Handle both so the
+  // vertical cursor follows the responsive board at every breakpoint.
+  const repeat = /^repeat\(\s*(\d+)\s*,/.exec(template);
+  if (repeat) return Number(repeat[1]);
+  if (!template || template === "none") return 4;
+  return template.split(/\s+/).filter(Boolean).length || 4;
+}
 
 // ---------------------------------------------------------------------------
 // Scheduled-restore store -- MODULE SCOPE, not component state.
@@ -103,6 +117,7 @@ function cancelScheduledRestore(name: string) {
 export default function ButlersPage() {
   const { rows, aggregates, needsYou } = useButlerStatusBoard();
   const setEligibility = useSetEligibility();
+  const navigate = useNavigate();
 
   const { isLoading, isError, error, refetch } = aggregates;
   const hasRows = rows.length > 0;
@@ -115,6 +130,97 @@ export default function ButlersPage() {
   // because the hook sets isError only when there is no cached data; when rows
   // survive from cache the error object is still populated but isError is false.
   const showStaleBanner = error != null && hasRows;
+
+  const boardNames = useMemo(() => rows.map((row) => row.name), [rows]);
+  const [selectedButlerName, setSelectedButlerName] = useState<string | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
+
+  const moveBoardCursor = useCallback(
+    (delta: number) => {
+      if (boardNames.length === 0) return;
+      const currentIndex = selectedButlerName ? boardNames.indexOf(selectedButlerName) : -1;
+      const nextIndex =
+        currentIndex === -1
+          ? delta < 0
+            ? boardNames.length - 1
+            : 0
+          : Math.min(Math.max(currentIndex + delta, 0), boardNames.length - 1);
+      const nextName = boardNames[nextIndex];
+      if (nextName && nextName !== selectedButlerName) setSelectedButlerName(nextName);
+    },
+    [boardNames, selectedButlerName],
+  );
+
+  const moveBoardCursorByRow = useCallback(
+    (direction: 1 | -1) => {
+      const columns = boardRef.current ? boardColumnCount(boardRef.current) : 4;
+      moveBoardCursor(direction * columns);
+    },
+    [moveBoardCursor],
+  );
+
+  const boardShortcuts = useMemo<ShortcutBinding[]>(() => {
+    if (boardNames.length === 0) return [];
+    return [
+      {
+        key: "ArrowRight",
+        display: ["→"],
+        description: "Next butler",
+        handler: () => moveBoardCursor(1),
+      },
+      {
+        key: "ArrowLeft",
+        display: ["←"],
+        description: "Previous butler",
+        handler: () => moveBoardCursor(-1),
+      },
+      {
+        key: "ArrowDown",
+        display: ["↓"],
+        description: "Next board row",
+        handler: () => moveBoardCursorByRow(1),
+      },
+      {
+        key: "ArrowUp",
+        display: ["↑"],
+        description: "Previous board row",
+        handler: () => moveBoardCursorByRow(-1),
+      },
+      ...(selectedButlerName
+        ? [
+            {
+              key: "Enter",
+              display: ["Enter"],
+              description: "Open selected butler",
+              handler: () => navigate(`/butlers/${selectedButlerName}`),
+            },
+          ]
+        : []),
+    ];
+  }, [boardNames.length, moveBoardCursor, moveBoardCursorByRow, navigate, selectedButlerName]);
+  useRegisterShortcut(boardShortcuts);
+
+  const boardCommands = useMemo<PaletteCommand[]>(
+    () =>
+      rows.map((row) => ({
+        id: `open-butler-${row.name}`,
+        label: `Open ${row.name}`,
+        keywords: ["butler", row.name, row.type],
+        perform: () => navigate(`/butlers/${row.name}`),
+      })),
+    [navigate, rows],
+  );
+  useRegisterCommands(boardCommands);
+
+  useEffect(() => {
+    if (!selectedButlerName) return;
+    for (const node of document.querySelectorAll<HTMLElement>("[data-butler-name]")) {
+      if (node.getAttribute("data-butler-name") === selectedButlerName) {
+        node.focus({ preventScroll: true });
+        break;
+      }
+    }
+  }, [selectedButlerName]);
 
   // Butler names with a restore scheduled but not yet fired -- backed by the
   // module-scoped store above (not useState) so a remount mid-window picks up
@@ -197,6 +303,7 @@ export default function ButlersPage() {
       {/* Status-board grid — 4 columns, each cell links to the butler detail page. */}
       {hasRows && (
         <div
+          ref={boardRef}
           role="group"
           aria-label="Butler status board"
           className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60"
@@ -207,6 +314,7 @@ export default function ButlersPage() {
               row={row}
               onRestore={handleRestore}
               isRestorePending={scheduledRestores.has(row.name) || networkPendingName === row.name}
+              isCursorActive={selectedButlerName === row.name}
             />
           ))}
         </div>

@@ -4663,5 +4663,15 @@ describe("CalendarWorkspacePage", () => {
       await pressKey("t");
       expect(getSearchText()).toContain("anchor=2026-05-15");
     });
+
+    it("ArrowLeft and ArrowRight step the active calendar range", async () => {
+      renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+      await pressKey("ArrowRight");
+      expect(getSearchText()).toContain("anchor=2026-03-08");
+
+      await pressKey("ArrowLeft");
+      expect(getSearchText()).toContain("anchor=2026-03-01");
+    });
   });
 });

@@ -25,11 +25,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { toast } from "sonner";
 
 import ButlersPage from "@/pages/ButlersPage";
 import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-status-board";
+import {
+  CommandRegistryProvider,
+  useCommandMenuActions,
+  type PaletteCommand,
+} from "@/lib/command-registry";
+import { ShortcutRegistryProvider } from "@/hooks/use-register-shortcut";
 
 // ---------------------------------------------------------------------------
 // Mocks — same modules as ButlersPage.test.tsx
@@ -216,6 +223,85 @@ function renderPage() {
     </MemoryRouter>,
   );
 }
+
+function renderKeyboardPage() {
+  return render(
+    <CommandRegistryProvider>
+      <ShortcutRegistryProvider>
+        <MemoryRouter>
+          <ButlersPage />
+        </MemoryRouter>
+      </ShortcutRegistryProvider>
+    </CommandRegistryProvider>,
+  );
+}
+
+function CommandReader({ onRead }: { onRead: (commands: PaletteCommand[]) => void }) {
+  onRead(useCommandMenuActions());
+  return null;
+}
+
+describe("ButlersPage — keyboard board cursor", () => {
+  it("moves across board tiles and exposes every butler as a palette destination", () => {
+    const rows = [makeRow({ name: "general" }), makeRow({ name: "health" })];
+    let commands: PaletteCommand[] = [];
+    setHookState(rows, makeAggregates({ total: 2, butlerCount: 2 }));
+
+    render(
+      <CommandRegistryProvider>
+        <ShortcutRegistryProvider>
+          <MemoryRouter>
+            <ButlersPage />
+            <CommandReader onRead={(next) => (commands = next)} />
+          </MemoryRouter>
+        </ShortcutRegistryProvider>
+      </CommandRegistryProvider>,
+    );
+
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    const firstSelected = document.querySelector<HTMLElement>('[data-butler-name="general"]');
+    expect(document.activeElement).toBe(firstSelected);
+    fireEvent.keyDown(firstSelected!, { key: "ArrowRight" });
+
+    const selected = document.querySelector('[data-butler-name="health"]');
+    expect(selected?.getAttribute("data-board-cursor")).toBe("true");
+    expect(document.activeElement).toBe(selected);
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "open-butler-health",
+          label: "Open health",
+          keywords: expect.arrayContaining(["butler", "health"]),
+        }),
+      ]),
+    );
+  });
+
+  it("preserves native Enter activation for a focused Restore button", async () => {
+    vi.useRealTimers();
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+    try {
+      renderKeyboardPage();
+
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      const chip = screen.getByRole("button", { name: /quarantined/i });
+      chip.focus();
+      await userEvent.setup().keyboard("{Enter}");
+
+      expect(toast).toHaveBeenCalledWith(
+        "Restoring quarant",
+        expect.objectContaining({ action: expect.objectContaining({ label: "Undo" }) }),
+      );
+      const toastCall = vi.mocked(toast).mock.calls[0];
+      (toastCall[1] as unknown as { action: { onClick: () => void } }).action.onClick();
+    } finally {
+      vi.useFakeTimers();
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Quarantined restore chip — click interaction

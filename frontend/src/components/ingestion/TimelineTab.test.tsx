@@ -812,6 +812,27 @@ describe("TimelineTab — every row is expandable", () => {
     expect(container.querySelector("[data-testid='event-drawer']")).not.toBeNull();
   });
 
+  it("moves between ledger rows with ArrowDown without expanding either row", () => {
+    render([
+      makeEvent({ id: "arrow-first", source_sender_identity: "first@example.com" }),
+      makeEvent({ id: "arrow-second", source_sender_identity: "second@example.com" }),
+    ]);
+    const triggers = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-testid='ledger-row-trigger']"),
+    );
+    expect(triggers).toHaveLength(2);
+
+    triggers[0].focus();
+    act(() => {
+      triggers[0].dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+      );
+    });
+
+    expect(document.activeElement).toBe(triggers[1]);
+    expect(container.querySelector("[data-testid='event-drawer']")).toBeNull();
+  });
+
   it("Escape inside the drawer closes it and returns focus to the row's trigger", () => {
     render([makeEvent({ id: "escape-evt", status: "ingested" })]);
 

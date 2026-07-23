@@ -140,6 +140,8 @@ export interface StatusBoardCellProps {
   onRestore?: (name: string) => void
   /** True while the restore mutation for this specific butler is in flight. */
   isRestorePending?: boolean
+  /** True when the board's keyboard cursor is currently on this tile. */
+  isCursorActive?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +159,12 @@ export interface StatusBoardCellProps {
  * @example
  *   <StatusBoardCell row={row} onRestore={(name) => setEligibility(name, 'active')} />
  */
-export function StatusBoardCell({ row, onRestore, isRestorePending = false }: StatusBoardCellProps) {
+export function StatusBoardCell({
+  row,
+  onRestore,
+  isRestorePending = false,
+  isCursorActive = false,
+}: StatusBoardCellProps) {
   const {
     name,
     type,
@@ -201,6 +208,7 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
     "transition-colors duration-[120ms] ease-in-out",
     "hover:bg-foreground/[0.025] dark:hover:bg-foreground/[0.025]",
     "no-underline text-inherit cursor-pointer",
+    isCursorActive ? "ring-2 ring-foreground ring-inset" : "",
   ].join(" ")
 
   const innerContent = (
@@ -360,6 +368,8 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
       onActivate={() => navigate(routePath)}
       aria-label={ariaLabel}
       className={containerClass}
+      data-butler-name={name}
+      data-board-cursor={isCursorActive || undefined}
     >
       {innerContent}
     </RowLink>

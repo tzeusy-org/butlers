@@ -17,6 +17,12 @@ import { MemoryRouter } from "react-router";
 
 import IssuesPage from "@/pages/IssuesPage";
 import type { Issue } from "@/api/types";
+import {
+  CommandRegistryProvider,
+  useCommandMenuActions,
+  type PaletteCommand,
+} from "@/lib/command-registry";
+import { ShortcutRegistryProvider } from "@/hooks/use-register-shortcut";
 
 vi.mock("@/hooks/use-issues", () => ({
   useIssues: vi.fn(),
@@ -98,6 +104,11 @@ function renderPage(initialPath = "/issues"): { container: HTMLElement; root: Ro
     );
   });
   return { container, root };
+}
+
+function CommandReader({ onRead }: { onRead: (commands: PaletteCommand[]) => void }) {
+  onRead(useCommandMenuActions());
+  return null;
 }
 
 describe("IssuesPage — ?q= deep-link filter", () => {
@@ -348,6 +359,48 @@ describe("IssuesPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
     expect(dismissMutate).toHaveBeenCalledWith({
       issueKey: issue.issue_key,
       lastSeenAt: issue.last_seen_at,
+    });
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("keeps the palette acknowledge action on the keyboard-selected issue", () => {
+    const first = makeIssue({ issue_key: "first", last_seen_at: "2026-06-14T11:00:00.000Z" });
+    const second = makeIssue({ issue_key: "second", last_seen_at: "2026-06-14T12:00:00.000Z" });
+    const dismissMutate = vi.fn();
+    let commands: PaletteCommand[] = [];
+    setupDefaults([first, second]);
+    vi.mocked(useDismissIssue).mockReturnValue({
+      mutate: dismissMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useDismissIssue>);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <CommandRegistryProvider>
+          <ShortcutRegistryProvider>
+            <MemoryRouter initialEntries={["/issues"]}>
+              <IssuesPage />
+              <CommandReader onRead={(next) => (commands = next)} />
+            </MemoryRouter>
+          </ShortcutRegistryProvider>
+        </CommandRegistryProvider>,
+      );
+    });
+
+    act(() => press("j"));
+    act(() => press("j"));
+    const command = commands.find((item) => item.id === "acknowledge-issue");
+    expect(command?.binding).toEqual(["a"]);
+
+    act(() => command?.perform());
+    expect(dismissMutate).toHaveBeenCalledWith({
+      issueKey: second.issue_key,
+      lastSeenAt: second.last_seen_at,
     });
 
     act(() => root.unmount());

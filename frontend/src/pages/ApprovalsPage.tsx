@@ -45,7 +45,6 @@ import {
   retryApproval,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
-import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
@@ -1641,24 +1640,48 @@ export default function ApprovalsPage() {
     if (!effectiveSelected) return [];
     const id = effectiveSelected;
     if (scheduledDecisions.has(id)) {
-      return [{ key: "u", description: "Undo scheduled decision", handler: () => cancelDecision(id) }];
+      return [{
+        key: "u",
+        description: "Undo scheduled decision",
+        handler: () => cancelDecision(id),
+        command: {
+          id: "undo-approval-decision",
+          label: "Undo selected scheduled decision",
+          keywords: ["undo", "approval"],
+        },
+      }];
     }
     return [
       {
         key: "a",
         description: "Approve selected",
         handler: () => scheduleDecision(id, "approve", () => approve(id)),
+        command: {
+          id: "approve-next",
+          label: "Approve selected approval",
+          keywords: ["approval", "queue"],
+        },
       },
       {
         key: "d",
         description: "Deny selected",
         handler: () => scheduleDecision(id, "deny", () => deny({ id })),
+        command: {
+          id: "deny-selected-approval",
+          label: "Deny selected approval",
+          keywords: ["deny", "approval"],
+        },
       },
       {
         key: "x",
         description: "Defer selected",
         handler: () =>
           scheduleDecision(id, "defer", () => defer({ id, hours: KEYBOARD_DEFER_HOURS })),
+        command: {
+          id: "defer-selected-approval",
+          label: "Defer selected approval",
+          keywords: ["defer", "approval"],
+        },
       },
     ];
   }, [approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions]);
@@ -1693,26 +1716,6 @@ export default function ApprovalsPage() {
   function handleLoadMore() {
     setPendingLimit((prev) => prev + PENDING_PAGE_SIZE);
   }
-
-  // ---------------------------------------------------------------------
-  // Command menu Actions (bu-86c4c.7 — per-page command registration API).
-  // "Approve next" only exists while mounted here and while there's a
-  // pending item to approve; it disappears from the command menu the
-  // moment the owner navigates away or the queue empties.
-  // ---------------------------------------------------------------------
-  const commandMenuCommands = useMemo<PaletteCommand[]>(() => {
-    if (!effectiveSelected) return [];
-    return [
-      {
-        id: "approve-next",
-        label: "Approve next",
-        keywords: ["approval", "queue"],
-        perform: () => approve(effectiveSelected),
-        binding: ["a"],
-      },
-    ];
-  }, [approve, effectiveSelected]);
-  useRegisterCommands(commandMenuCommands);
 
   return (
     <div className="flex flex-col h-full min-h-0">

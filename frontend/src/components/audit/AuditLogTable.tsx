@@ -117,6 +117,12 @@ interface AuditLogTableProps {
   entries: AuditLogEntry[];
   isLoading?: boolean;
   isError?: boolean;
+  /** Controlled expansion state for page-level keyboard triage. */
+  expandedId?: number | null;
+  /** Called by both mouse and keyboard disclosure paths to toggle a row. */
+  onToggleExpanded?: (id: number) => void;
+  /** The roving keyboard cursor, reflected on its summary row. */
+  selectedEntryId?: number | null;
   /**
    * The query's raw error (e.g. TanStack Query's `error`), used to
    * distinguish a deterministic 4xx (a bad/unsupported filter combination --
@@ -155,11 +161,25 @@ function LoadingSkeleton() {
 // AuditLogTable
 // ---------------------------------------------------------------------------
 
-export default function AuditLogTable({ entries, isLoading, isError, error }: AuditLogTableProps) {
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+export default function AuditLogTable({
+  entries,
+  isLoading,
+  isError,
+  error,
+  expandedId: controlledExpandedId,
+  onToggleExpanded,
+  selectedEntryId,
+}: AuditLogTableProps) {
+  const [uncontrolledExpandedId, setUncontrolledExpandedId] = useState<number | null>(null);
+  const expandedId =
+    controlledExpandedId === undefined ? uncontrolledExpandedId : controlledExpandedId;
 
   function toggleExpanded(id: number) {
-    setExpandedId((prev) => (prev === id ? null : id));
+    if (onToggleExpanded) {
+      onToggleExpanded(id);
+      return;
+    }
+    setUncontrolledExpandedId((prev) => (prev === id ? null : id));
   }
 
   // Surface fetch failures (e.g. a 503 from an un-migrated audit table) as an
@@ -211,6 +231,7 @@ export default function AuditLogTable({ entries, isLoading, isError, error }: Au
         {!isLoading &&
           entries.map((entry) => {
             const expanded = expandedId === entry.id;
+            const selected = selectedEntryId === entry.id;
             return (
               // Fragment (not just the summary TableRow) so the detail row
               // renders ADJACENT to its own row -- previously the single
@@ -219,10 +240,12 @@ export default function AuditLogTable({ entries, isLoading, isError, error }: Au
               // regardless of which row was expanded.
               <Fragment key={entry.id}>
                 <TableRow
-                  className="cursor-pointer hover:bg-muted/50"
+                  className="cursor-pointer hover:bg-muted/50 data-[audit-selected=true]:bg-muted/50"
                   onClick={() => toggleExpanded(entry.id)}
                   aria-expanded={expanded}
                   data-testid="audit-log-row"
+                  data-audit-row-id={entry.id}
+                  data-audit-selected={selected || undefined}
                 >
                   <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
                     {/* The row's REAL keyboard-accessible disclosure trigger

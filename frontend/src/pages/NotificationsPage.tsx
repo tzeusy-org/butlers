@@ -306,6 +306,11 @@ export default function NotificationsPage() {
         key: "a",
         description: "Mark read",
         handler: () => handleMarkRead(notification.id),
+        command: {
+          id: "mark-selected-notification-read",
+          label: "Mark selected notification read",
+          keywords: ["notification", "read"],
+        },
       },
     ];
   }, [notifications, selectedNotificationId, handleMarkRead]);

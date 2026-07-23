@@ -9,6 +9,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
+import {
+  CommandRegistryProvider,
+  useCommandMenuActions,
+  type PaletteCommand,
+} from "@/lib/command-registry";
 import { ShortcutRegistryProvider, useShortcutHintEntries } from "@/hooks/use-register-shortcut";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -33,6 +38,11 @@ function Harness({
 }) {
   const { hints } = useListTriage({ ids, selectedId, onSelect, verbs });
   onHints?.(hints.map((h) => h.description));
+  return null;
+}
+
+function CommandReader({ onRead }: { onRead: (commands: PaletteCommand[]) => void }) {
+  onRead(useCommandMenuActions());
   return null;
 }
 
@@ -72,6 +82,31 @@ describe("useListTriage", () => {
     expect(onSelect).toHaveBeenCalledWith("b");
   });
 
+  it("keeps j navigation active from a focused native row button", () => {
+    const onSelect = vi.fn();
+    act(() => {
+      root.render(
+        <>
+          <Harness ids={["a", "b"]} selectedId="a" onSelect={onSelect} />
+          <button type="button" data-testid="focused-row-button">
+            Row action
+          </button>
+        </>,
+      );
+    });
+
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="focused-row-button"]');
+    expect(button).not.toBeNull();
+    button!.focus();
+    act(() => {
+      button!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "j", bubbles: true, cancelable: true }),
+      );
+    });
+
+    expect(onSelect).toHaveBeenCalledWith("b");
+  });
+
   it("k moves the selection to the previous id", () => {
     const onSelect = vi.fn();
     act(() => {
@@ -101,7 +136,14 @@ describe("useListTriage", () => {
 
   it("wires a verb's key to its handler only while its row is selected", () => {
     const handler = vi.fn();
-    const verbs: ListTriageVerb[] = [{ key: "a", description: "Approve selected", handler }];
+    const verbs: ListTriageVerb[] = [
+      {
+        key: "a",
+        description: "Approve selected",
+        handler,
+        command: { id: "approve-selected", label: "Approve selected" },
+      },
+    ];
     act(() => {
       root.render(
         <Harness ids={["1", "2"]} selectedId={null} onSelect={() => {}} verbs={verbs} />,
@@ -120,8 +162,18 @@ describe("useListTriage", () => {
   it("hints reflect j/k plus the active verbs, in order", () => {
     let seen: string[] = [];
     const verbs: ListTriageVerb[] = [
-      { key: "a", description: "Approve selected", handler: () => {} },
-      { key: "d", description: "Deny selected", handler: () => {} },
+      {
+        key: "a",
+        description: "Approve selected",
+        handler: () => {},
+        command: { id: "approve-selected", label: "Approve selected" },
+      },
+      {
+        key: "d",
+        description: "Deny selected",
+        handler: () => {},
+        command: { id: "deny-selected", label: "Deny selected" },
+      },
     ];
     act(() => {
       root.render(
@@ -152,5 +204,64 @@ describe("useListTriage", () => {
       );
     });
     expect(entries).toEqual(["Next item", "Previous item"]);
+  });
+
+  it("keeps pure j/k navigation out of the command palette", () => {
+    let commands: PaletteCommand[] = [];
+    act(() => {
+      root.render(
+        <CommandRegistryProvider>
+          <ShortcutRegistryProvider>
+            <Harness ids={["1"]} selectedId="1" onSelect={() => {}} />
+            <CommandReader onRead={(next) => (commands = next)} />
+          </ShortcutRegistryProvider>
+        </CommandRegistryProvider>,
+      );
+    });
+
+    expect(commands).toEqual([]);
+  });
+
+  it("emits a selected verb as the matching palette command with its binding", () => {
+    const handler = vi.fn();
+    let commands: PaletteCommand[] = [];
+
+    act(() => {
+      root.render(
+        <CommandRegistryProvider>
+          <ShortcutRegistryProvider>
+            <Harness
+              ids={["1"]}
+              selectedId="1"
+              onSelect={() => {}}
+              verbs={[
+                {
+                  key: "a",
+                  description: "Approve selected",
+                  handler,
+                  command: {
+                    id: "approve-selected",
+                    label: "Approve selected",
+                    keywords: ["approval"],
+                  },
+                },
+              ]}
+            />
+            <CommandReader onRead={(next) => (commands = next)} />
+          </ShortcutRegistryProvider>
+        </CommandRegistryProvider>,
+      );
+    });
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      id: "approve-selected",
+      label: "Approve selected",
+      keywords: ["approval"],
+      binding: ["a"],
+    });
+
+    act(() => commands[0]?.perform());
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 });

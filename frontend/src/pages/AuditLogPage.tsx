@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
-import type { AuditLogParams } from "@/api/types";
+import type { AuditLogEntry, AuditLogParams } from "@/api/types";
 import AuditLogTable from "@/components/audit/AuditLogTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,8 +9,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
+import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { useDebounce } from "@/hooks/use-debounce";
+import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -18,6 +20,7 @@ import { useDebounce } from "@/hooks/use-debounce";
 
 const PAGE_SIZE = 20;
 const FREE_TEXT_DEBOUNCE_MS = 300;
+const EMPTY_AUDIT_ENTRIES: AuditLogEntry[] = [];
 
 // ---------------------------------------------------------------------------
 // Filter state
@@ -57,6 +60,9 @@ function filtersFromSearchParams(searchParams: URLSearchParams): FilterState {
 export default function AuditLogPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [page, setPage] = useState(0);
+  const [expandedAuditId, setExpandedAuditId] = useState<number | null>(null);
+  const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
+  const auditTableRef = useRef<HTMLDivElement>(null);
 
   // Single URL-serialized filter state (bu-qvnce.13) — no local mirror.
   const filters = filtersFromSearchParams(searchParams);
@@ -109,11 +115,54 @@ export default function AuditLogPage() {
   };
 
   const { data: auditResponse, isLoading, isFetching, isError, error } = useAuditLog(params);
-  const entries = auditResponse?.data ?? [];
+  const entries = auditResponse?.data ?? EMPTY_AUDIT_ENTRIES;
   const meta = auditResponse?.meta;
   const total = meta?.total ?? 0;
   const hasMore = meta?.has_more ?? false;
   const isListRefreshing = !isLoading && (isFetching || hasPendingFreeTextFilter);
+
+  const toggleExpandedAudit = useCallback((id: number) => {
+    setExpandedAuditId((previous) => (previous === id ? null : id));
+  }, []);
+
+  // Audit rows share the same j/k cursor as the operational lists, while
+  // Enter delegates to the existing DisclosureRow's exact expansion state.
+  // The focused target remains that real disclosure button rather than a
+  // synthetic role on the table row, preserving the links in sibling cells.
+  const auditEntryIds = useMemo(() => entries.map((entry) => String(entry.id)), [entries]);
+  const auditVerbs = useMemo<ListTriageVerb[]>(() => {
+    const id = selectedAuditId ? Number(selectedAuditId) : Number.NaN;
+    if (!Number.isFinite(id) || !entries.some((entry) => entry.id === id)) return [];
+    return [
+      {
+        key: "Enter",
+        description: "Toggle selected entry",
+        handler: () => toggleExpandedAudit(id),
+        command: {
+          id: "toggle-selected-audit-entry",
+          label: "Toggle selected audit entry",
+          keywords: ["audit", "entry", "expand", "collapse"],
+        },
+      },
+    ];
+  }, [entries, selectedAuditId, toggleExpandedAudit]);
+  const { hints: auditTriageHints } = useListTriage({
+    ids: auditEntryIds,
+    selectedId: selectedAuditId,
+    onSelect: setSelectedAuditId,
+    verbs: auditVerbs,
+  });
+
+  useEffect(() => {
+    if (!selectedAuditId) return;
+    const rows = auditTableRef.current?.querySelectorAll<HTMLElement>("[data-audit-row-id]");
+    const selectedRow = Array.from(rows ?? []).find(
+      (row) => row.dataset.auditRowId === selectedAuditId,
+    );
+    selectedRow
+      ?.querySelector<HTMLElement>('[data-testid="audit-log-row-trigger"]')
+      ?.focus({ preventScroll: true });
+  }, [selectedAuditId]);
 
   // Pagination helpers
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -323,9 +372,20 @@ export default function AuditLogPage() {
       <Card>
         <CardContent>
           <FetchingDim isFetching={isListRefreshing}>
-            <AuditLogTable entries={entries} isLoading={isLoading} isError={isError} error={error} />
+            <div ref={auditTableRef}>
+              <AuditLogTable
+                entries={entries}
+                isLoading={isLoading}
+                isError={isError}
+                error={error}
+                expandedId={expandedAuditId}
+                onToggleExpanded={toggleExpandedAudit}
+                selectedEntryId={selectedAuditId ? Number(selectedAuditId) : null}
+              />
+            </div>
           </FetchingDim>
         </CardContent>
+        <ListTriageFooterHint bindings={auditTriageHints} />
       </Card>
 
       {/* Pagination controls */}

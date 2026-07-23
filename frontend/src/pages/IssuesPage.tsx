@@ -16,7 +16,6 @@ import {
   useIssues,
   useUndismissIssue,
 } from "@/hooks/use-issues";
-import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import type { Issue } from "@/api/types";
 
@@ -234,6 +233,11 @@ export default function IssuesPage() {
           key: "a",
           description: "Restore selected",
           handler: () => handleUndismiss(issue.issue_key),
+          command: {
+            id: "restore-issue",
+            label: "Restore selected issue",
+            keywords: ["restore", "issue"],
+          },
         },
       ];
     }
@@ -242,6 +246,11 @@ export default function IssuesPage() {
         key: "a",
         description: "Acknowledge selected",
         handler: () => handleDismiss(issue),
+        command: {
+          id: "acknowledge-issue",
+          label: "Acknowledge selected issue",
+          keywords: ["dismiss", "issue"],
+        },
       },
     ];
   }, [handleDismiss, handleUndismiss, issues, selectedIssueKey, showDismissed]);
@@ -307,28 +316,6 @@ export default function IssuesPage() {
       },
     });
   }
-
-  // -------------------------------------------------------------------
-  // Command menu Actions (bu-86c4c.7 — per-page command registration API).
-  // "Acknowledge issue" acks the newest active issue — acknowledgment is
-  // this page's existing triage mechanism (acknowledge-until-recurrence, not
-  // a separate permanent state), so the command reuses it rather than
-  // inventing a parallel one.
-  // -------------------------------------------------------------------
-  const commandMenuCommands = useMemo<PaletteCommand[]>(() => {
-    if (showDismissed || issues.length === 0) return [];
-    const nextIssue = issues[0];
-    return [
-      {
-        id: "acknowledge-issue",
-        label: "Acknowledge issue",
-        keywords: ["dismiss", "issue"],
-        perform: () =>
-          dismiss.mutate({ issueKey: nextIssue.issue_key, lastSeenAt: nextIssue.last_seen_at }),
-      },
-    ];
-  }, [showDismissed, issues, dismiss]);
-  useRegisterCommands(commandMenuCommands);
 
   return (
     <Page

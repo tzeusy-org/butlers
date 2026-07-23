@@ -290,6 +290,20 @@ const FORMAT_CLONE_SELECTORS = [
   },
 ]
 
+// Keyboard handling belongs to the two registries: the app-wide shell map
+// and the page-scoped shortcut registry. A third listener would drift from
+// their shared editable-field, dialog, and pending-chord protections.
+const KEYDOWN_LISTENER_SELECTORS = [
+  {
+    selector:
+      'CallExpression[callee.property.name="addEventListener"][arguments.0.value=/^key(?:down|up)$/]',
+    message:
+      'Raw keydown listeners are forbidden outside use-keyboard-shortcuts.ts and ' +
+      'use-register-shortcut.tsx. Register the binding through the appropriate keyboard registry ' +
+      'so editable-field and dialog suspension stay consistent.',
+  },
+]
+
 export default defineConfig([
   globalIgnores(['dist']),
   {
@@ -390,6 +404,7 @@ export default defineConfig([
         ...STATUS_COLOR_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
       ],
     },
   },
@@ -408,6 +423,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
       ],
     },
   },
@@ -424,6 +440,7 @@ export default defineConfig([
         ...HEX_COLOR_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
       ],
     },
   },
@@ -444,6 +461,7 @@ export default defineConfig([
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
       ],
     },
   },
@@ -463,6 +481,37 @@ export default defineConfig([
         ...PRIMITIVE_REDECLARATION_SELECTORS,
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
+      ],
+    },
+  },
+  {
+    // These are the only two homes allowed to own DOM key listeners. Their
+    // full selector lists deliberately omit KEYDOWN_LISTENER_SELECTORS while
+    // retaining every other matching invariant from the generic file blocks.
+    files: ['src/hooks/use-keyboard-shortcuts.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
+      ],
+    },
+  },
+  {
+    files: ['src/hooks/use-register-shortcut.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...HEX_COLOR_SELECTORS,
+        ...PRIMITIVE_REDECLARATION_SELECTORS,
+        ...HANDROLLED_OVERLAY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
       ],

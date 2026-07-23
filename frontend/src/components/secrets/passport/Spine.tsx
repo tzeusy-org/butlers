@@ -138,6 +138,10 @@ export function SpineRow({
   n,
   active,
   onClick,
+  rowId,
+  isRovingTabStop,
+  onFocus,
+  onKeyDown,
   providerGlyph,
   providerLabel,
 }: {
@@ -145,6 +149,12 @@ export function SpineRow({
   n: number;
   active: boolean;
   onClick: () => void;
+  /** Unique DOM identity for the roving focus ring (may qualify duplicate keys). */
+  rowId?: string;
+  /** When supplied by Spine, makes this row the sole Tab stop in the index. */
+  isRovingTabStop?: boolean;
+  onFocus?: React.FocusEventHandler<HTMLButtonElement>;
+  onKeyDown?: React.KeyboardEventHandler<HTMLButtonElement>;
   providerGlyph?: string;
   providerLabel?: string;
 }) {
@@ -152,7 +162,11 @@ export function SpineRow({
     <button
       type="button"
       onClick={onClick}
+      onFocus={onFocus}
+      onKeyDown={onKeyDown}
+      tabIndex={isRovingTabStop === undefined ? undefined : isRovingTabStop ? 0 : -1}
       data-spine-row="true"
+      data-spine-row-id={rowId}
       data-family={entry.family}
       data-key={entry.key}
       data-state={entry.state}
@@ -227,6 +241,10 @@ export function SpineRow({
   );
 }
 
+function spineRowId(entry: SpineEntry): string {
+  return entry.identity ? `${entry.key}:${entry.identity}` : entry.key;
+}
+
 // ── SpineGroup ───────────────────────────────────────────────────────────────
 
 /** SpineGroup: section eyebrow + rows. Hidden when empty (calm-day invariant). */
@@ -237,6 +255,9 @@ export function SpineGroup({
   n0,
   activeKey,
   onSelect,
+  rovingRowId,
+  onRowFocus,
+  onRowKeyDown,
   providers,
 }: {
   eyebrow: string;
@@ -245,6 +266,9 @@ export function SpineGroup({
   n0: number;
   activeKey: string;
   onSelect: (key: string) => void;
+  rovingRowId: string | null;
+  onRowFocus: (rowId: string) => void;
+  onRowKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
   providers?: Record<string, { glyph: string; label: string }>;
 }) {
   if (items.length === 0) return null;
@@ -264,6 +288,7 @@ export function SpineGroup({
       </div>
       {items.map((entry, i) => {
         const providerInfo = entry.provider ? providers?.[entry.provider] : undefined;
+        const rowId = spineRowId(entry);
         return (
           <SpineRow
             // `entry.key` (`u:<provider>`) is the focus/selection key and is NOT
@@ -275,6 +300,10 @@ export function SpineGroup({
             n={n0 + i + 1}
             active={activeKey === entry.key}
             onClick={() => onSelect(entry.key)}
+            rowId={rowId}
+            isRovingTabStop={rovingRowId === rowId}
+            onFocus={() => onRowFocus(rowId)}
+            onKeyDown={onRowKeyDown}
             providerGlyph={providerInfo?.glyph}
             providerLabel={providerInfo?.label}
           />
@@ -342,6 +371,8 @@ export function Spine({
   onIdentityChange: (id: string) => void;
   providers?: Record<string, { glyph: string; label: string }>;
 }) {
+  const spineRef = React.useRef<HTMLElement>(null);
+  const [rovingRowId, setRovingRowId] = React.useState<string | null>(null);
   const cmp = SORTERS[sortMode] ?? SORTERS.severity;
 
   const filtered = React.useMemo(
@@ -394,11 +425,49 @@ export function Spine({
   const n0Sys = n0Cli + restCli.length;
   const n0Usr = n0Sys + restSys.length;
 
+  // Rows span several visual groups but form one review order. Keep a single
+  // native Tab stop and move that focus with arrows; this is local to the
+  // credential buttons, so the search input and all other page controls keep
+  // their normal keyboard behavior.
+  const visibleEntries = React.useMemo(
+    () => [...needsHandGroup, ...staleGroup, ...restCli, ...restSys, ...restUsr],
+    [needsHandGroup, staleGroup, restCli, restSys, restUsr],
+  );
+  const visibleRowIds = React.useMemo(
+    () => visibleEntries.map(spineRowId),
+    [visibleEntries],
+  );
+  const selectedRowId = React.useMemo(() => {
+    const selected = visibleEntries.find((entry) => entry.key === activeKey);
+    return selected ? spineRowId(selected) : null;
+  }, [activeKey, visibleEntries]);
+  const activeRovingRowId = visibleRowIds.includes(rovingRowId ?? "")
+    ? rovingRowId
+    : selectedRowId ?? visibleRowIds[0] ?? null;
+
+  const handleRowKeyDown = React.useCallback<
+    React.KeyboardEventHandler<HTMLButtonElement>
+  >((event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+
+    const rows = Array.from(
+      spineRef.current?.querySelectorAll<HTMLButtonElement>('[data-spine-row="true"]') ?? [],
+    );
+    const currentIndex = rows.indexOf(event.currentTarget);
+    if (currentIndex === -1) return;
+
+    event.preventDefault();
+    const delta = event.key === "ArrowDown" ? 1 : -1;
+    const nextIndex = Math.min(Math.max(currentIndex + delta, 0), rows.length - 1);
+    rows[nextIndex]?.focus({ preventScroll: true });
+  }, []);
+
   const activeIdentity = identities.find((i) => i.id === activeIdentityId);
   const showSwitcher = identities.length > 1;
 
   return (
     <nav
+      ref={spineRef}
       className="flex flex-col overflow-y-auto"
       style={{
         background: "var(--bg-deep)",
@@ -452,6 +521,9 @@ export function Spine({
           n0={n0NeedsHand}
           activeKey={activeKey}
           onSelect={onSelect}
+          rovingRowId={activeRovingRowId}
+          onRowFocus={setRovingRowId}
+          onRowKeyDown={handleRowKeyDown}
           providers={providers}
         />
         {needsHandGroup.length > 0 && (
@@ -475,6 +547,9 @@ export function Spine({
           n0={n0Stale}
           activeKey={activeKey}
           onSelect={onSelect}
+          rovingRowId={activeRovingRowId}
+          onRowFocus={setRovingRowId}
+          onRowKeyDown={handleRowKeyDown}
           providers={providers}
         />
         {staleGroup.length > 0 && (
@@ -491,6 +566,9 @@ export function Spine({
           n0={n0Cli}
           activeKey={activeKey}
           onSelect={onSelect}
+          rovingRowId={activeRovingRowId}
+          onRowFocus={setRovingRowId}
+          onRowKeyDown={handleRowKeyDown}
           providers={providers}
         />
         <SpineGroup
@@ -499,6 +577,9 @@ export function Spine({
           n0={n0Sys}
           activeKey={activeKey}
           onSelect={onSelect}
+          rovingRowId={activeRovingRowId}
+          onRowFocus={setRovingRowId}
+          onRowKeyDown={handleRowKeyDown}
           providers={providers}
         />
         <SpineGroup
@@ -507,6 +588,9 @@ export function Spine({
           n0={n0Usr}
           activeKey={activeKey}
           onSelect={onSelect}
+          rovingRowId={activeRovingRowId}
+          onRowFocus={setRovingRowId}
+          onRowKeyDown={handleRowKeyDown}
           providers={providers}
         />
       </div>

@@ -851,6 +851,8 @@ interface LedgerRowProps {
   onOptimisticUpdate: (id: string, newStatus: IngestionEventStatus) => void;
   /** Add this row's channel to the active channel filter (click-to-filter). */
   onChannelClick: (channel: string) => void;
+  /** Local ArrowUp/ArrowDown movement between the ledger's disclosure triggers. */
+  onRowNavigationKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
 }
 
 function LedgerRow({
@@ -862,6 +864,7 @@ function LedgerRow({
   onToggleSelect,
   onOptimisticUpdate,
   onChannelClick,
+  onRowNavigationKeyDown,
 }: LedgerRowProps) {
   const eligible = isBulkEligible(event.status);
   const ineligibleReason = bulkIneligibleReason(event.status);
@@ -1015,6 +1018,8 @@ function LedgerRow({
         className="min-w-0 pr-2 flex items-baseline gap-2 rounded-sm"
         data-testid="ledger-row-trigger"
         data-event-id={event.id}
+        aria-keyshortcuts="ArrowUp ArrowDown"
+        onKeyDown={onRowNavigationKeyDown}
         // The drawer is URL-backed as /ingestion?event=<id>; this maps to
         // useIngestionEventDetail's exact cache key via the shared registry.
         prefetchTo={`/ingestion?event=${encodeURIComponent(event.id)}`}
@@ -1115,6 +1120,7 @@ interface HourGroupProps {
   onRetryHistogram: () => void;
   /** Minute has no loaded ledger row in view — scope the range/filters to it (URL-backed). */
   onScopeToMinute: (minuteIso: string, bucketMinutes: number) => void;
+  onRowNavigationKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
 }
 
 function HourGroup({
@@ -1135,6 +1141,7 @@ function HourGroup({
   histogramError,
   onRetryHistogram,
   onScopeToMinute,
+  onRowNavigationKeyDown,
 }: HourGroupProps) {
   const hourStart = hourKey !== "unknown" ? hourKey + ":00:00Z" : "";
 
@@ -1282,6 +1289,7 @@ function HourGroup({
               onToggleSelect={() => onToggleSelect(event.id)}
               onOptimisticUpdate={onOptimisticUpdate}
               onChannelClick={onChannelClick}
+              onRowNavigationKeyDown={onRowNavigationKeyDown}
             />
 
             {/* Inline drawer below this row when it's the focused event */}
@@ -1450,6 +1458,7 @@ export function TimelineTab({
   onRangeReport,
 }: TimelineTabProps) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const ledgerRef = useRef<HTMLDivElement>(null);
 
   // ?event=<id> — drawer URL state
   const { eventId: drawerEventId, openDrawer, closeDrawer } = useEventDrawerState();
@@ -2184,6 +2193,34 @@ export function TimelineTab({
     setSelectedIds(new Set(ids.slice(0, MAX_BULK_RETRY_BATCH)));
   }, []);
 
+  // Keep rapid row scanning inside the ledger's existing DisclosureRow
+  // triggers. This deliberately is not a page/global shortcut: focus in the
+  // toolbar's input, a dialog, or a row's separate checkbox/filter/replay
+  // controls retains that control's native keyboard behavior.
+  const handleLedgerRowNavigation = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+
+      const triggers = Array.from(
+        ledgerRef.current?.querySelectorAll<HTMLElement>(
+          '[data-testid="ledger-row-trigger"]',
+        ) ?? [],
+      );
+      const currentIndex = triggers.indexOf(event.currentTarget);
+      if (currentIndex === -1) return;
+
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = Math.min(
+        Math.max(currentIndex + delta, 0),
+        triggers.length - 1,
+      );
+      triggers[nextIndex]?.focus({ preventScroll: true });
+    },
+    [],
+  );
+
   return (
     <div className="space-y-3" data-testid="timeline-tab">
       {/* Toolbar */}
@@ -2317,7 +2354,7 @@ export function TimelineTab({
 
       {/* Ledger */}
       <FetchingDim isFetching={isFetching && !isLoading && !isError && !isFetchingNextPage}>
-      <div className="border border-border rounded" data-testid="timeline-ledger">
+      <div ref={ledgerRef} className="border border-border rounded" data-testid="timeline-ledger">
         <LedgerColumnHeaders />
 
         {isError ? (
@@ -2366,6 +2403,7 @@ export function TimelineTab({
                 histogramError={histogramError}
                 onRetryHistogram={() => void refetchHistogram()}
                 onScopeToMinute={handleScopeToMinute}
+                onRowNavigationKeyDown={handleLedgerRowNavigation}
               />
             ))}
           </>

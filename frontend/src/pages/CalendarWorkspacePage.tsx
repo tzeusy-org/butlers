@@ -4626,11 +4626,15 @@ export default function CalendarWorkspacePage() {
     openButlerCreateDialog,
     openUserCreateDialog,
     updateQuery,
+    anchor,
+    range,
   });
   calendarActionsRef.current = {
     openButlerCreateDialog,
     openUserCreateDialog,
     updateQuery,
+    anchor,
+    range,
   };
 
   const calendarCommands = useMemo<PaletteCommand[]>(() => {
@@ -4656,6 +4660,28 @@ export default function CalendarWorkspacePage() {
         binding: ["t"],
       },
       {
+        id: "calendar-previous-range",
+        label: "Previous range",
+        keywords: ["calendar", "previous", "range"],
+        perform: () => {
+          const { anchor: currentAnchor, range: currentRange, updateQuery } =
+            calendarActionsRef.current;
+          updateQuery({ anchor: shiftAnchor(currentAnchor, currentRange, -1) });
+        },
+        binding: ["←"],
+      },
+      {
+        id: "calendar-next-range",
+        label: "Next range",
+        keywords: ["calendar", "next", "range"],
+        perform: () => {
+          const { anchor: currentAnchor, range: currentRange, updateQuery } =
+            calendarActionsRef.current;
+          updateQuery({ anchor: shiftAnchor(currentAnchor, currentRange, 1) });
+        },
+        binding: ["→"],
+      },
+      {
         id: "calendar-search-events",
         label: "Search events",
         keywords: ["find", "search"],
@@ -4673,6 +4699,26 @@ export default function CalendarWorkspacePage() {
         display: ["t"],
         description: "Jump to today",
         handler: () => calendarActionsRef.current.updateQuery({ anchor: new Date() }),
+      },
+      {
+        key: "ArrowLeft",
+        display: ["←"],
+        description: "Previous range",
+        handler: () => {
+          const { anchor: currentAnchor, range: currentRange, updateQuery } =
+            calendarActionsRef.current;
+          updateQuery({ anchor: shiftAnchor(currentAnchor, currentRange, -1) });
+        },
+      },
+      {
+        key: "ArrowRight",
+        display: ["→"],
+        description: "Next range",
+        handler: () => {
+          const { anchor: currentAnchor, range: currentRange, updateQuery } =
+            calendarActionsRef.current;
+          updateQuery({ anchor: shiftAnchor(currentAnchor, currentRange, 1) });
+        },
       },
     ];
     if (canCreateEvent) {
