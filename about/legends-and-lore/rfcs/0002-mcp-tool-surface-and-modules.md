@@ -15,7 +15,7 @@ The tool surface defines the contract between a butler and the LLM instances it 
 
 ### FastMCP SSE Server
 
-At startup (RFC 0001, phase 14), the daemon binds a `FastMCP` instance to an SSE HTTP server on the butler's configured port. The server remains running for the daemon's lifetime. All tool registrations complete before the server begins accepting connections.
+At startup, the daemon creates the `FastMCP` instance and registers core tools in RFC 0001 phase 13, registers module tools and gates in phase 14, then starts the SSE HTTP server on the butler's configured port in phase 15. The server remains running for the daemon's lifetime. All tool registrations complete before the server begins accepting connections.
 
 ### Core Tools
 
@@ -99,7 +99,7 @@ class ToolMeta:
     arg_sensitivities: dict[str, bool] = field(default_factory=dict)
 ```
 
-Modules return a `dict[str, ToolMeta]` from `tool_metadata()`. The approvals module (RFC 0001, phase 13b) uses this metadata to determine which tool calls require human approval. Arguments not explicitly listed fall back to a heuristic-based sensitivity classifier.
+Modules return a `dict[str, ToolMeta]` from `tool_metadata()`. The approvals module (RFC 0001, phase 14) uses this metadata to determine which tool calls require human approval. Arguments not explicitly listed fall back to a heuristic-based sensitivity classifier.
 
 ### Skills Infrastructure
 
@@ -125,7 +125,7 @@ The LLM is sandboxed to its own butler's tools. It cannot reach other butlers di
 
 ### Approval Gates
 
-During phase 13b, the daemon applies approval gates to configured tools. The `apply_approval_gates()` function wraps designated tool handlers with an approval check that:
+During phase 14, the daemon applies approval gates to configured tools. The `apply_approval_gates()` function wraps designated tool handlers with an approval check that:
 
 1. Evaluates the tool call against standing approval rules.
 2. If no rule matches, creates a pending approval action and blocks execution.
@@ -293,7 +293,7 @@ applied once per process from `ButlerDaemon._build_mcp_http_app`.
 
 ## Integration
 
-- **RFC 0001:** Tool registration occurs during daemon startup phases 12-13.
+- **RFC 0001:** Tool registration occurs during daemon startup phases 13-14.
 - **RFC 0003:** `route.execute` is a core tool that accepts Switchboard-routed envelopes.
 - **RFC 0005:** All tools are instrumented via the logging proxy with OTel spans.
 - **RFC 0006:** Module migrations are discovered and executed based on `migration_revisions()`.

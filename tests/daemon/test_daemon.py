@@ -505,8 +505,8 @@ async def test_startup_sequence(butler_dir: Path) -> None:
         "connect",
         "run_migrations(core)",
         "validate_module_credentials_async",
-        "Spawner",
         "sync_schedules",
+        "Spawner",
         "FastMCP",
         "start_mcp_server",
     ]
@@ -607,6 +607,48 @@ async def test_module_lifecycle(butler_dir_with_modules: Path) -> None:
     ]
     assert "core" in migration_chains
     assert "stub_a" in migration_chains
+
+
+async def test_schedule_sync_precedes_enabled_module_startup(tmp_path: Path) -> None:
+    """A module observes the post-sync schedule state when its startup hook runs."""
+    call_order: list[str] = []
+
+    class StartupOrderModule(StubModuleA):
+        @property
+        def name(self) -> str:
+            return "startup_order"
+
+        async def on_startup(
+            self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+        ) -> None:
+            call_order.append("on_startup")
+            self.started = True
+
+    butler_dir = _make_butler_toml(tmp_path, modules={"startup_order": {}})
+    registry = _make_registry(StartupOrderModule)
+    patches = _patch_infra()
+
+    with (
+        patches["db_from_env"],
+        patches["run_migrations"],
+        patches["validate_credentials"],
+        patches["validate_module_credentials"],
+        patches["init_telemetry"],
+        patches["sync_schedules"] as mock_sync,
+        patches["FastMCP"],
+        patches["Spawner"],
+        patches["get_adapter"],
+        patches["shutil_which"],
+        patches["start_mcp_server"],
+        patches["connect_switchboard"],
+        patches["create_audit_pool"],
+        patches["recover_route_inbox"],
+    ):
+        mock_sync.side_effect = lambda *args, **kwargs: call_order.append("sync_schedules")
+        daemon = ButlerDaemon(butler_dir, registry=registry)
+        await daemon.start()
+
+    assert call_order == ["sync_schedules", "on_startup"]
 
 
 # ---------------------------------------------------------------------------

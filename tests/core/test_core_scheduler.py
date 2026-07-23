@@ -14,15 +14,26 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import uuid
+from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
 
 from butlers.core.model_routing import Complexity
-from butlers.db import register_jsonb_codec
+from butlers.daemon import ButlerDaemon
+from butlers.db import Database, register_jsonb_codec
+from butlers.modules import memory as memory_module
+from butlers.modules.memory import MemoryModule
+from butlers.modules.registry import ModuleRegistry
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -75,6 +86,51 @@ class _Dispatch:
 
 def _past(minutes: int = 5) -> datetime:
     return datetime.now(UTC) - timedelta(minutes=minutes)
+
+
+class _InterleavingPool:
+    """Proxy a pool and invoke a callback immediately before one removal write."""
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        before_disable: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._pool = pool
+        self._before_disable = before_disable
+        self._interleaved = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pool, name)
+
+    async def execute(self, query: str, *args: object) -> str:
+        if "UPDATE scheduled_tasks SET enabled = false" in query and not self._interleaved:
+            self._interleaved = True
+            await self._before_disable()
+        return await self._pool.execute(query, *args)
+
+
+class _LifecycleMemoryScheduleModule(MemoryModule):
+    """Exercise the production memory schedule-registration branch in daemon startup."""
+
+    async def on_startup(
+        self,
+        config: Any,
+        db: Any,
+        credential_store: Any = None,
+        blob_store: Any = None,
+    ) -> None:
+        await self._register_default_maintenance_schedules(db)
+
+
+class _NoopButlerDBLogHandler(logging.Handler):
+    """Keep the lifecycle test focused on scheduler recovery, not log persistence."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +186,617 @@ async def test_sync_updates_changed_fields_and_disables_removed(pool):
     all_rows2 = await pool.fetch("SELECT name, enabled FROM scheduled_tasks")
     rows2 = {r["name"]: r for r in all_rows2}
     assert rows2["drop-me"]["enabled"] is True
+
+
+async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default(pool):
+    """A stale TOML-removal snapshot cannot undo an atomic module-default recovery."""
+    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+
+    name = "memory_consolidation_stale_disable"
+    await sync_schedules(
+        pool,
+        [
+            {
+                "name": name,
+                "cron": "0 3 * * *",
+                "dispatch_mode": "job",
+                "job_name": "memory_consolidation",
+            }
+        ],
+    )
+
+    recovered = False
+
+    async def _recover_after_stale_snapshot() -> None:
+        nonlocal recovered
+        assert recovered is False
+        recovered = True
+        await sync_schedules(pool, [])
+        await ensure_module_default_schedule(
+            pool,
+            name=name,
+            cron="0 3 * * *",
+            job_name="memory_consolidation",
+            owner_butler="legacy-general",
+            owner_schema="public",
+        )
+
+    await sync_schedules(
+        _InterleavingPool(pool, _recover_after_stale_snapshot),
+        [],
+    )
+
+    assert recovered is True
+    row = await pool.fetchrow("SELECT source, enabled FROM scheduled_tasks WHERE name = $1", name)
+    assert row is not None
+    assert row["source"] == "db"
+    assert row["enabled"] is True
+
+    # A fresh boot first synchronizes TOML again before its module registers
+    # defaults. That sync must leave the recovered DB-owned row enabled.
+    await sync_schedules(pool, [])
+    row = await pool.fetchrow("SELECT source, enabled FROM scheduled_tasks WHERE name = $1", name)
+    assert row is not None
+    assert row["source"] == "db"
+    assert row["enabled"] is True
+
+    # The subsequent module registration is also a no-op with one audit event.
+    await ensure_module_default_schedule(
+        pool,
+        name=name,
+        cron="0 3 * * *",
+        job_name="memory_consolidation",
+        owner_butler="legacy-general",
+        owner_schema="public",
+    )
+    assert (
+        await pool.fetchval(
+            """
+            SELECT count(*) FROM public.audit_log
+            WHERE action = 'scheduler.module_default_recovered' AND target = $1
+            """,
+            f"schedule:{name}",
+        )
+        == 1
+    )
+
+
+async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
+    pool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A schema-less daemon boot derives the recovery audit identity from lifecycle config."""
+    from butlers.core.scheduler import sync_schedules
+
+    name = f"memory_consolidation_legacy_{uuid.uuid4().hex}"
+    owner_butler = f"legacy_recovery_{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(
+        memory_module,
+        "_DEFAULT_MAINTENANCE_SCHEDULES",
+        (
+            {
+                "name": name,
+                "cron": "0 */6 * * *",
+                "job_name": "memory_consolidation",
+            },
+        ),
+    )
+    await sync_schedules(
+        pool,
+        [
+            {
+                "name": name,
+                "cron": "0 */6 * * *",
+                "dispatch_mode": "job",
+                "job_name": "memory_consolidation",
+            }
+        ],
+    )
+
+    (tmp_path / "butler.toml").write_text(
+        "\n".join(
+            [
+                "[butler]",
+                f'name = "{owner_butler}"',
+                "port = 9199",
+                'description = "Legacy recovery test butler"',
+                "",
+                "[butler.db]",
+                'name = "legacy_recovery_test"',
+                "",
+                "[modules.memory]",
+            ]
+        )
+    )
+
+    db = Database(db_name="legacy_recovery_test")
+    db.pool = pool
+    db.close = AsyncMock()
+    daemon = ButlerDaemon(
+        tmp_path,
+        registry=ModuleRegistry(),
+        db=db,
+    )
+    daemon._registry.register(_LifecycleMemoryScheduleModule)
+
+    credential_store = SimpleNamespace(resolve=AsyncMock(return_value=None), shared_pool=pool)
+    runtime_config = SimpleNamespace(seeded_at=None, updated_at=None)
+    runtime_config_accessor = SimpleNamespace(
+        seed_if_empty=AsyncMock(return_value=runtime_config),
+        _cache=runtime_config,
+    )
+    runtime = SimpleNamespace(binary_name="claude")
+    spawner = SimpleNamespace(stop_accepting=lambda: None, drain=AsyncMock())
+
+    def _discard_background_task(coro: Any, *args: Any, **kwargs: Any) -> None:
+        coro.close()
+
+    lifecycle_patches = (
+        patch("butlers.lifecycle.init_telemetry"),
+        patch("butlers.lifecycle.init_metrics"),
+        patch("butlers.lifecycle.validate_credentials"),
+        patch(
+            "butlers.lifecycle.validate_module_credentials_async",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        patch(
+            "butlers.lifecycle.resolve_general_timezone", new_callable=AsyncMock, return_value="UTC"
+        ),
+        patch("butlers.lifecycle._ensure_owner_entity", new_callable=AsyncMock),
+        patch("butlers.lifecycle.upsert_provider_feature_catalogue", new_callable=AsyncMock),
+        patch(
+            "butlers.cli_auth.persistence.restore_tokens", new_callable=AsyncMock, return_value={}
+        ),
+        patch(
+            "butlers.core.runtime_config.RuntimeConfigAccessor",
+            return_value=runtime_config_accessor,
+        ),
+        patch("butlers.lifecycle.get_adapter", return_value=lambda **kwargs: runtime),
+        patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
+        patch("butlers.lifecycle.Spawner", return_value=spawner),
+        patch("butlers.lifecycle.FastMCP", return_value=MagicMock()),
+        patch("butlers.lifecycle.asyncio.create_task", side_effect=_discard_background_task),
+        patch("butlers.core.butler_logging.ButlerDBLogHandler", _NoopButlerDBLogHandler),
+        patch.object(
+            daemon, "_build_credential_store", new_callable=AsyncMock, return_value=credential_store
+        ),
+        patch.object(daemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None),
+        patch.object(daemon, "_connect_switchboard", new_callable=AsyncMock),
+        patch.object(daemon, "_disconnect_switchboard", new_callable=AsyncMock),
+        patch.object(daemon, "_recover_route_inbox", new_callable=AsyncMock),
+        patch.object(daemon, "_register_core_tools"),
+        patch.object(daemon, "_register_module_tools", new_callable=AsyncMock),
+        patch.object(daemon, "_apply_approval_gates", new_callable=AsyncMock, return_value={}),
+        patch.object(daemon, "_init_module_runtime_states", new_callable=AsyncMock),
+        patch.object(daemon, "_start_mcp_server", new_callable=AsyncMock),
+        patch.object(daemon, "_wire_pipelines"),
+        patch.object(daemon, "_wire_calendar_approval_enqueuer"),
+        patch.object(daemon, "_wire_module_runtime"),
+    )
+    with ExitStack() as stack:
+        for lifecycle_patch in lifecycle_patches:
+            stack.enter_context(lifecycle_patch)
+        try:
+            await daemon.start()
+
+            row = await pool.fetchrow(
+                "SELECT source, enabled FROM scheduled_tasks WHERE name = $1", name
+            )
+            audit_rows = await pool.fetch(
+                """
+                SELECT actor, metadata
+                FROM public.audit_log
+                WHERE action = 'scheduler.module_default_recovered' AND target = $1
+                """,
+                f"schedule:{name}",
+            )
+        finally:
+            await daemon.shutdown()
+
+    assert db.schema is None
+    assert db.owner_butler == owner_butler
+    assert row is not None
+    assert row["source"] == "db"
+    assert row["enabled"] is True
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["actor"] == owner_butler
+    assert audit_rows[0]["metadata"] == {
+        "prior_source": "toml",
+        "prior_enabled": False,
+        "registered_default_name": name,
+        "owner_butler": owner_butler,
+        "owner_schema": "public",
+    }
+
+
+async def test_module_default_recovery_reclaims_only_disabled_toml_orphans_and_audits(pool):
+    """A post-sync TOML orphan is recovered once without rewriting its runtime payload."""
+    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+
+    name = "memory_consolidation_recovery"
+    await sync_schedules(
+        pool,
+        [
+            {
+                "name": name,
+                "cron": "17 4 * * *",
+                "dispatch_mode": "job",
+                "job_name": "memory_consolidation",
+                "job_args": {"batch_size": 17},
+                "complexity": "reasoning",
+            }
+        ],
+    )
+    await sync_schedules(pool, [])
+    before = await pool.fetchrow(
+        """
+        SELECT cron, dispatch_mode, job_name, job_args, complexity, next_run_at, source, enabled
+        FROM scheduled_tasks WHERE name = $1
+        """,
+        name,
+    )
+    assert before is not None
+    assert before["source"] == "toml"
+    assert before["enabled"] is False
+
+    await ensure_module_default_schedule(
+        pool,
+        name=name,
+        cron="0 3 * * *",
+        job_name="memory_consolidation",
+        job_args={"batch_size": 99},
+        owner_butler="general",
+        owner_schema="general",
+    )
+
+    recovered = await pool.fetchrow(
+        """
+        SELECT cron, dispatch_mode, job_name, job_args, complexity, next_run_at, source, enabled
+        FROM scheduled_tasks WHERE name = $1
+        """,
+        name,
+    )
+    assert recovered is not None
+    assert recovered["source"] == "db"
+    assert recovered["enabled"] is True
+    for field in ("cron", "dispatch_mode", "job_name", "job_args", "complexity", "next_run_at"):
+        assert recovered[field] == before[field]
+
+    audit_rows = await pool.fetch(
+        """
+        SELECT actor, action, target, metadata
+        FROM public.audit_log
+        WHERE action = 'scheduler.module_default_recovered' AND target = $1
+        """,
+        f"schedule:{name}",
+    )
+    assert len(audit_rows) == 1
+    audit = audit_rows[0]
+    assert audit["actor"] == "general"
+    assert audit["metadata"] == {
+        "prior_source": "toml",
+        "prior_enabled": False,
+        "registered_default_name": name,
+        "owner_butler": "general",
+        "owner_schema": "general",
+    }
+
+    # A committed recovery is idempotent: the DB-owned row is operator-owned
+    # and no second transition can produce a second audit row.
+    await ensure_module_default_schedule(
+        pool,
+        name=name,
+        cron="0 3 * * *",
+        job_name="memory_consolidation",
+        owner_butler="general",
+        owner_schema="general",
+    )
+    assert (
+        await pool.fetchval(
+            """
+            SELECT count(*) FROM public.audit_log
+            WHERE action = 'scheduler.module_default_recovered' AND target = $1
+            """,
+            f"schedule:{name}",
+        )
+        == 1
+    )
+
+
+async def test_module_default_recovery_rolls_back_when_audit_append_fails(pool, monkeypatch):
+    """A recovery has no observable state transition when its canonical audit cannot commit."""
+    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+
+    name = "memory_decay_sweep_audit_rollback"
+    await sync_schedules(
+        pool,
+        [
+            {
+                "name": name,
+                "cron": "15 3 * * *",
+                "dispatch_mode": "job",
+                "job_name": "memory_decay_sweep",
+            }
+        ],
+    )
+    await sync_schedules(pool, [])
+
+    async def _audit_failure(*args, **kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr("butlers.api.routers.audit.append", _audit_failure)
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await ensure_module_default_schedule(
+            pool,
+            name=name,
+            cron="0 3 * * *",
+            job_name="memory_decay_sweep",
+            owner_butler="general",
+            owner_schema="general",
+        )
+
+    row = await pool.fetchrow("SELECT source, enabled FROM scheduled_tasks WHERE name = $1", name)
+    assert row is not None
+    assert row["source"] == "toml"
+    assert row["enabled"] is False
+    assert (
+        await pool.fetchval(
+            """
+            SELECT count(*) FROM public.audit_log
+            WHERE action = 'scheduler.module_default_recovered' AND target = $1
+            """,
+            f"schedule:{name}",
+        )
+        == 0
+    )
+
+
+async def test_module_default_recovery_concurrently_commits_one_transition_and_audit(pool):
+    """The returned conditional transition is the sole authority for the recovery audit."""
+    import asyncio
+
+    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+
+    name = "memory_purge_superseded_concurrent_recovery"
+    await sync_schedules(
+        pool,
+        [
+            {
+                "name": name,
+                "cron": "30 3 * * *",
+                "dispatch_mode": "job",
+                "job_name": "memory_purge_superseded",
+            }
+        ],
+    )
+    await sync_schedules(pool, [])
+
+    await asyncio.gather(
+        *[
+            ensure_module_default_schedule(
+                pool,
+                name=name,
+                cron="0 3 * * *",
+                job_name="memory_purge_superseded",
+                owner_butler="relationship",
+                owner_schema="relationship",
+            )
+            for _ in range(2)
+        ]
+    )
+
+    row = await pool.fetchrow("SELECT source, enabled FROM scheduled_tasks WHERE name = $1", name)
+    assert row is not None
+    assert row["source"] == "db"
+    assert row["enabled"] is True
+    assert (
+        await pool.fetchval(
+            """
+            SELECT count(*) FROM public.audit_log
+            WHERE action = 'scheduler.module_default_recovered' AND target = $1
+            """,
+            f"schedule:{name}",
+        )
+        == 1
+    )
+
+
+async def test_module_default_recovery_attributes_same_name_across_butler_schemas(
+    migrated_db_url: str,
+):
+    """Same schedule names remain distinguishable by configured butler and schema metadata."""
+    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+
+    name = "memory_consolidation_cross_schema_recovery"
+    schemas = ("scheduler_recovery_general", "scheduler_recovery_relationship")
+    admin = await asyncpg.connect(migrated_db_url)
+    pools: list[asyncpg.Pool] = []
+    try:
+        for schema in schemas:
+            await admin.execute(f"CREATE SCHEMA {schema}")
+            await admin.execute(
+                f"CREATE TABLE {schema}.scheduled_tasks (LIKE public.scheduled_tasks INCLUDING ALL)"
+            )
+            pools.append(
+                await asyncpg.create_pool(
+                    migrated_db_url,
+                    min_size=1,
+                    max_size=1,
+                    init=register_jsonb_codec,
+                    server_settings={"search_path": f"{schema},public"},
+                )
+            )
+
+        for pool, butler, schema in zip(
+            pools,
+            ("general", "relationship"),
+            schemas,
+            strict=True,
+        ):
+            await sync_schedules(
+                pool,
+                [
+                    {
+                        "name": name,
+                        "cron": "45 3 * * *",
+                        "dispatch_mode": "job",
+                        "job_name": "memory_consolidation",
+                    }
+                ],
+            )
+            await sync_schedules(pool, [])
+            await ensure_module_default_schedule(
+                pool,
+                name=name,
+                cron="0 3 * * *",
+                job_name="memory_consolidation",
+                owner_butler=butler,
+                owner_schema=schema,
+            )
+
+        rows = await admin.fetch(
+            """
+            SELECT metadata
+            FROM public.audit_log
+            WHERE action = 'scheduler.module_default_recovered' AND target = $1
+            """,
+            f"schedule:{name}",
+        )
+        assert {
+            (
+                (
+                    json.loads(row["metadata"])
+                    if isinstance(row["metadata"], str)
+                    else row["metadata"]
+                )["owner_butler"],
+                (
+                    json.loads(row["metadata"])
+                    if isinstance(row["metadata"], str)
+                    else row["metadata"]
+                )["owner_schema"],
+            )
+            for row in rows
+        } == {
+            ("general", "scheduler_recovery_general"),
+            ("relationship", "scheduler_recovery_relationship"),
+        }
+    finally:
+        for pool in pools:
+            await pool.close()
+        for schema in schemas:
+            await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await admin.close()
+
+
+async def test_module_default_recovery_leaves_active_toml_db_disable_and_cleanup_fenced(pool):
+    """Only disabled TOML orphans are recoverable; cleanup and DB ownership are hard fences."""
+    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+
+    active_name = "memory_decay_sweep_active_toml"
+    db_name = "memory_purge_superseded_operator_disabled"
+    cleanup_name = "memory_episode_cleanup"
+
+    await sync_schedules(
+        pool,
+        [
+            {
+                "name": active_name,
+                "cron": "5 1 * * *",
+                "dispatch_mode": "job",
+                "job_name": "memory_decay_sweep",
+            },
+            {
+                "name": cleanup_name,
+                "cron": "5 2 * * *",
+                "dispatch_mode": "job",
+                "job_name": cleanup_name,
+            },
+        ],
+    )
+    await ensure_module_default_schedule(
+        pool,
+        name=db_name,
+        cron="5 3 * * *",
+        job_name="memory_purge_superseded",
+        owner_butler="general",
+        owner_schema="general",
+    )
+    await pool.execute(
+        "UPDATE scheduled_tasks SET enabled = false WHERE name = $1",
+        db_name,
+    )
+    await sync_schedules(
+        pool,
+        [
+            {
+                "name": active_name,
+                "cron": "5 1 * * *",
+                "dispatch_mode": "job",
+                "job_name": "memory_decay_sweep",
+            }
+        ],
+    )
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE name = $1",
+        cleanup_name,
+        _past(),
+    )
+
+    await ensure_module_default_schedule(
+        pool,
+        name=active_name,
+        cron="0 0 * * *",
+        job_name="memory_decay_sweep",
+        owner_butler="general",
+        owner_schema="general",
+    )
+    await ensure_module_default_schedule(
+        pool,
+        name=db_name,
+        cron="0 0 * * *",
+        job_name="memory_purge_superseded",
+        owner_butler="general",
+        owner_schema="general",
+    )
+    await ensure_module_default_schedule(
+        pool,
+        name=cleanup_name,
+        cron="0 0 * * *",
+        job_name=cleanup_name,
+        owner_butler="general",
+        owner_schema="general",
+    )
+
+    rows = {
+        row["name"]: row
+        for row in await pool.fetch(
+            "SELECT name, source, enabled FROM scheduled_tasks WHERE name = ANY($1::text[])",
+            [active_name, db_name, cleanup_name],
+        )
+    }
+    assert rows[active_name]["source"] == "toml"
+    assert rows[active_name]["enabled"] is True
+    assert rows[db_name]["source"] == "db"
+    assert rows[db_name]["enabled"] is False
+    assert rows[cleanup_name]["source"] == "toml"
+    assert rows[cleanup_name]["enabled"] is False
+    from butlers.core.scheduler import tick
+
+    dispatch = _Dispatch()
+    assert await tick(pool, dispatch) == 0
+    assert dispatch.calls == []
+    assert (
+        await pool.fetchval(
+            """
+            SELECT count(*) FROM public.audit_log
+            WHERE action = 'scheduler.module_default_recovered'
+              AND target = ANY($1::text[])
+            """,
+            [f"schedule:{active_name}", f"schedule:{db_name}", f"schedule:{cleanup_name}"],
+        )
+        == 0
+    )
 
 
 async def test_sync_default_timezone_pins_cron_to_local(pool):

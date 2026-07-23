@@ -17,7 +17,7 @@ The `butler_name` parameter is the canonical butler identity string, passed by t
 - **THEN** instantiation raises `TypeError` (Python ABC enforcement)
 
 #### Scenario: Daemon passes butler identity to register_tools
-- **WHEN** the daemon calls `register_tools` on each active module during startup phase 13
+- **WHEN** the daemon calls `register_tools` on each active module during startup phase 14
 - **THEN** it passes `self.config.name` as the `butler_name` parameter
 - **AND** the value matches the butler's configured identity from `butler.toml`
 
@@ -51,8 +51,8 @@ The optional `wire_runtime()` method on modules that need runtime dependencies (
 - **AND** it does not accept `butler_name`
 
 #### Scenario: Module identity available before wire_runtime
-- **WHEN** a module stores `butler_name` from `register_tools()` (phase 13)
-- **AND** `wire_runtime()` is called later (phase 13d)
+- **WHEN** a module stores `butler_name` from `register_tools()` (phase 14)
+- **AND** `wire_runtime()` is called later in phase 14, after the Switchboard connection is established in phase 12
 - **THEN** the module already has its identity and can use it in runtime wiring logic
 
 ### Requirement: Module Registry with Auto-Discovery
@@ -241,4 +241,3 @@ Module MCP tool names SHALL use the plain `<channel>_<action>` format (e.g. `tel
 #### Scenario: Module ABC does not require descriptor methods
 - **WHEN** a module class implements the `Module` ABC
 - **THEN** it MUST NOT be required to implement `user_inputs()`, `user_outputs()`, `bot_inputs()`, or `bot_outputs()`
-

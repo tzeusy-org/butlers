@@ -52,7 +52,7 @@ graph LR
 ```
 
 Every non-switchboard butler:
-1. Opens an MCP client connection to the Switchboard on startup (step 11b).
+1. Opens an MCP client connection to the Switchboard during startup phase 12.
 2. Launches a liveness reporter that periodically POSTs to the Switchboard
    heartbeat endpoint (step 17).
 

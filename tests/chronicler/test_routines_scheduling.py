@@ -14,6 +14,7 @@ Pure-unit tests — no Docker / PostgreSQL required.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -134,6 +135,28 @@ async def test_chronicler_module_registers_routines_mine_default_schedule(monkey
     # doesn't need updating every time another default schedule is added.
     routines_call = next(c for c in calls if c["name"] == "chronicler_routines_mine")
     assert routines_call["job_name"] == "chronicler_routines_mine"
+
+
+async def test_chronicler_module_uses_public_schema_for_legacy_database(monkeypatch) -> None:
+    """Legacy per-database schedules remain auditable through their public schema."""
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_ensure(pool, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+
+    module = _load_chronicler_module()
+    legacy_db = SimpleNamespace(
+        pool=object(),
+        owner_butler="legacy-chronicler",
+        schema=None,
+    )
+    await module._register_default_schedules(legacy_db)
+
+    assert {(call["owner_butler"], call["owner_schema"]) for call in calls} == {
+        ("legacy-chronicler", "public")
+    }
 
 
 async def test_chronicler_module_none_db_is_a_noop() -> None:

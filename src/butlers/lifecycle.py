@@ -125,6 +125,7 @@ async def run_startup(daemon: Any) -> None:
         pool = daemon.db.pool
         if pool is None:
             raise RuntimeError("Injected Database must already be connected")
+    daemon.db.owner_butler = daemon.config.name
 
     # 6b. Attach the butler-scoped DB log handler so /api/butlers/{name}/logs
     # surfaces live application logs.  The handler filters by butler context
@@ -300,7 +301,7 @@ async def run_startup(daemon: Any) -> None:
             exc_info=True,
         )
 
-    # 9b. Resolve runtime config from DB (seed from toml on first boot).
+    # 9. Resolve runtime config from DB (seed from toml on first boot).
     # Creates the RuntimeConfigAccessor and seeds the runtime_config table
     # if this is the first boot. The effective RuntimeConfig from DB is used
     # for tool registration and spawner construction.
@@ -321,7 +322,38 @@ async def run_startup(daemon: Any) -> None:
             effective_runtime.updated_at,
         )
 
-    # 9. Call module on_startup (non-fatal per-module)
+    # 10. Sync TOML schedules before modules register their defaults. This makes
+    # the TOML-orphan state observable to the module-default recovery boundary.
+    # Staffer-typed agents skip daily_briefing_contribution schedule entries
+    # per the staffer-archetype spec (briefing exclusion decision point).
+    _is_staffer = daemon.config.type == ButlerType.STAFFER
+    schedules = [
+        {
+            "name": s.name,
+            "cron": s.cron,
+            "dispatch_mode": s.dispatch_mode.value,
+            "prompt": s.prompt,
+            "job_name": s.job_name,
+            "job_args": s.job_args,
+            "max_token_budget": s.max_token_budget,
+            "complexity": s.complexity,
+        }
+        for s in daemon.config.schedules
+        if not (_is_staffer and s.job_name == "daily_briefing_contribution")
+    ]
+    # Interpret hour-pinned crons in the owner's configured timezone (failing
+    # open to UTC) so e.g. a daily "5 1 * * *" fires at 01:05 local, not 01:05
+    # UTC. Resolved from the shared general settings via the credential store.
+    default_timezone = await resolve_general_timezone(credential_store.shared_pool)
+    await sync_schedules(
+        pool,
+        schedules,
+        stagger_key=daemon.config.name,
+        skills_dir=get_skills_dir(daemon.config_dir),
+        default_timezone=default_timezone,
+    )
+
+    # 11. Call module on_startup (non-fatal per-module)
     started_modules: list[Any] = []
     for mod in daemon._modules:
         if mod.name in daemon._module_statuses:
@@ -340,7 +372,7 @@ async def run_startup(daemon: Any) -> None:
             logger.warning("Module '%s' disabled: on_startup failed: %s", mod.name, error_msg)
             daemon._cascade_module_failures()
 
-    # 10. Create Spawner with runtime adapter (verify binary on PATH)
+    # 12. Create Spawner with runtime adapter (verify binary on PATH)
     adapter_cls = get_adapter(DEFAULT_RUNTIME_TYPE)
     # ClaudeCodeAdapter accepts butler_name/log_root for CC stderr capture.
     # CodexAdapter accepts credential_store/butler_name for auth.json rotation sync.
@@ -361,14 +393,14 @@ async def run_startup(daemon: Any) -> None:
             f"The {DEFAULT_RUNTIME_TYPE!r} runtime requires {binary!r} to be installed."
         )
 
-    # 10a. Set up audit pool for daemon-side audit logging
+    # 12a. Set up audit pool for daemon-side audit logging
     audit_pool = await daemon._create_audit_pool(pool)
     # Expose the Switchboard-schema pool to the scheduler loop so it can gate
     # scheduled dispatch on butler_registry.eligibility_state (paused/quarantined
     # butlers must not fire cron/deadline ticks).
     daemon._audit_pool = audit_pool
 
-    # 10a-ii. Wire audit pool into modules that emit egress audit entries
+    # 12a-ii. Wire audit pool into modules that emit egress audit entries
     # (telegram_send, gmail_send, google_calendar_write).  This is a post-startup
     # hook so modules receive the pool after it is created, without altering the
     # on_startup signature or ordering.
@@ -391,58 +423,28 @@ async def run_startup(daemon: Any) -> None:
         runtime_config_accessor=daemon._runtime_config_accessor,
     )
 
-    # 10b. Wire message classification pipeline for switchboard modules
+    # 12b. Wire message classification pipeline for switchboard modules
     daemon._wire_pipelines(pool)
 
-    # 11. Sync TOML schedules to DB
-    # Staffer-typed agents skip daily_briefing_contribution schedule entries
-    # per the staffer-archetype spec (briefing exclusion decision point).
-    _is_staffer = daemon.config.type == ButlerType.STAFFER
-    schedules = [
-        {
-            "name": s.name,
-            "cron": s.cron,
-            "dispatch_mode": s.dispatch_mode.value,
-            "prompt": s.prompt,
-            "job_name": s.job_name,
-            "job_args": s.job_args,
-            "max_token_budget": s.max_token_budget,
-            "complexity": s.complexity,
-        }
-        for s in daemon.config.schedules
-        if not (_is_staffer and s.job_name == "daily_briefing_contribution")
-    ]
-    # Interpret hour-pinned crons in the owner's configured timezone (failing
-    # open to UTC) so e.g. a daily "5 1 * * *" fires at 01:05 local, not 01:05
-    # UTC.  Resolved from the shared general settings via the credential store.
-    default_timezone = await resolve_general_timezone(credential_store.shared_pool)
-    await sync_schedules(
-        pool,
-        schedules,
-        stagger_key=daemon.config.name,
-        skills_dir=get_skills_dir(daemon.config_dir),
-        default_timezone=default_timezone,
-    )
-
-    # 11b. Open MCP client connection to Switchboard (non-switchboard butlers)
+    # 12c. Open MCP client connection to Switchboard (non-switchboard butlers)
     await daemon._connect_switchboard()
 
-    # 12. Create FastMCP and register core tools
+    # 13. Create FastMCP and register core tools
     daemon.mcp = FastMCP(daemon.config.name)
     daemon._register_core_tools()
 
-    # 13. Register module MCP tools (non-fatal per-module)
+    # 14. Register module MCP tools (non-fatal per-module)
     await daemon._register_module_tools()
 
-    # 13b. Apply approval gates to configured gated tools
+    # 14b. Apply approval gates to configured gated tools
     daemon._gated_tool_originals = await daemon._apply_approval_gates()
 
-    # 13c. Wire calendar overlap-approval enqueuer when both modules are loaded
+    # 14c. Wire calendar overlap-approval enqueuer when both modules are loaded
     daemon._wire_calendar_approval_enqueuer()
 
-    # 13d. Wire spawner + switchboard_client into modules that define wire_runtime().
-    # Must run after _connect_switchboard() (step 11b) so that switchboard_client
-    # is already set, and after register_tools() (step 13) so that module state
+    # 14d. Wire spawner + switchboard_client into modules that define wire_runtime().
+    # Must run after _connect_switchboard() (step 12c) so that switchboard_client
+    # is already set, and after register_tools() (step 14) so that module state
     # is fully initialised before the runtime references are injected.
     daemon._wire_module_runtime()
 
@@ -451,13 +453,13 @@ async def run_startup(daemon: Any) -> None:
         if mod.name not in daemon._module_statuses:
             daemon._module_statuses[mod.name] = ModuleStartupStatus(status="active")
 
-    # 13e. Initialize module runtime states (enabled/disabled) from state store
+    # 14e. Initialize module runtime states (enabled/disabled) from state store
     await daemon._init_module_runtime_states(pool)
 
-    # 14. Start FastMCP SSE server on configured port
+    # 15. Start FastMCP SSE server on configured port
     await daemon._start_mcp_server()
 
-    # 14b. Warm up MCP endpoints (best-effort, non-blocking for daemon boot).
+    # 15b. Warm up MCP endpoints (best-effort, non-blocking for daemon boot).
     # Fires initialize + tools/list against the butler's own endpoint (and any
     # extra endpoints) so the first real Codex spawn hits warm server-side
     # caches/pools instead of cold ones.  Failures are logged at WARNING level
@@ -468,11 +470,11 @@ async def run_startup(daemon: Any) -> None:
         name=f"mcp-warmup-{daemon.config.name}",
     )
 
-    # 14c. Start durable buffer workers and scanner (switchboard only)
+    # 15c. Start durable buffer workers and scanner (switchboard only)
     if daemon._buffer is not None:
         await daemon._buffer.start()
 
-    # 14d. Recover unprocessed route_inbox rows (non-staffer butlers only)
+    # 16a. Recover unprocessed route_inbox rows (non-staffer butlers only)
     # Rows that were accepted but never processed due to a crash are re-dispatched
     # as a background task so that long-running LLM sessions don't block startup
     # (and therefore don't prevent other butlers from starting in `butlers up`).
@@ -481,13 +483,13 @@ async def run_startup(daemon: Any) -> None:
     if daemon.config.type != ButlerType.STAFFER and daemon.spawner is not None:
         daemon._route_inbox_recovery_task = asyncio.create_task(daemon._recover_route_inbox(pool))
 
-    # 15. Launch switchboard heartbeat (non-switchboard butlers only)
+    # 16b. Launch switchboard heartbeat (non-switchboard butlers only)
     if daemon.config.switchboard_url is not None:
         daemon._switchboard_heartbeat_task = asyncio.create_task(
             daemon._switchboard_heartbeat_loop()
         )
 
-    # 16. Start internal scheduler loop
+    # 16c. Start internal scheduler loop
     daemon._scheduler_loop_task = asyncio.create_task(daemon._scheduler_loop())
 
     # 17. Start liveness reporter (all butlers, including switchboard)

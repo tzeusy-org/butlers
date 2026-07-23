@@ -155,7 +155,7 @@ asynchronously. Crash recovery re-dispatches `accepted`-state rows on startup.
 
 **Transport**: MCP over streamable HTTP (`/mcp`) or SSE (`/sse`)
 
-**Server**: Butler's FastMCP server (created during daemon startup step 12)
+**Server**: Butler's FastMCP instance (created with core tools in daemon startup phase 13; its SSE server starts in phase 15)
 
 **Available tools**: Core tools (status, trigger, state_*, schedule_*,
 sessions_*, notify, remind, get_attachment, module.states, module.set_enabled)
@@ -210,7 +210,7 @@ registered domain butlers for route dispatch.
 **Transport**: MCP client connection + HTTP POST
 
 On startup, each non-switchboard butler:
-1. Opens an MCP client to `{switchboard_url}/mcp` (step 11b in daemon startup).
+1. Opens an MCP client to `{switchboard_url}/mcp` during daemon startup phase 12.
 2. Launches a liveness reporter that POSTs to
    `{switchboard_url}/api/switchboard/heartbeat` every
    `heartbeat_interval_seconds` (default 120s).

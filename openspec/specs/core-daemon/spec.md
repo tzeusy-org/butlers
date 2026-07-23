@@ -105,12 +105,12 @@ Scope: v1-mandatory
 - **THEN** a `RuntimeSeedConfig` with all default values SHALL be returned (backward compat for minimal tomls)
 
 ### Requirement: Boot sequence seeds and reads runtime config from DB
-The daemon boot sequence SHALL create a `RuntimeConfigAccessor`, seed the DB from toml on first boot, and use the DB-backed config for tool registration and spawner construction. This inserts a new phase between RFC 0001 phases 8b (credential store) and 10 (spawner creation).
+The daemon boot sequence SHALL create a `RuntimeConfigAccessor`, seed the DB from toml on first boot, and use the DB-backed config for tool registration and spawner construction. This is RFC 0001 phase 9, after phase 8 module dependency/bootstrap work and before phase 10 TOML schedule synchronization.
 
-New phase: **9b — Resolve runtime config from DB (seed if first boot).**
+Phase: **9 — Resolve runtime config from DB (seed if first boot).**
 Failure mode: Fatal — cannot operate without runtime config.
 
-Source: RFC 0001 §Startup Phases (new phase 9b, between 8b and 10)
+Source: RFC 0001 §Startup Phases (phase 9, between phases 8 and 10)
 Scope: v1-mandatory
 
 #### Scenario: First boot seeds from toml
@@ -124,11 +124,11 @@ Scope: v1-mandatory
 - **AND** log "Using runtime config from DB for {name} (seeded {date}, updated {date})"
 
 #### Scenario: Accessor passed to spawner
-- **WHEN** the daemon constructs the Spawner (phase 10)
+- **WHEN** the daemon constructs the Spawner (phase 12)
 - **THEN** it SHALL pass the `RuntimeConfigAccessor` instance so the spawner can read hot fields per-spawn
 
 #### Scenario: core_groups read at tool registration time
-- **WHEN** the daemon calls `_register_core_tools()` (phase 12)
+- **WHEN** the daemon calls `_register_core_tools()` (phase 13)
 - **THEN** it SHALL read `core_groups` from the effective RuntimeConfig (from accessor), not from the toml seed
 
 ### Requirement: Blob storage initialization at startup phase 8c
@@ -140,7 +140,7 @@ Scope: v1-mandatory
 #### Scenario: Phase ordering
 - **WHEN** the daemon starts
 - **THEN** phase 8c (blob store init) SHALL execute after phase 8b (credential store build) and before phase 8c2 (CLI auth token restore)
-- **AND** the blob store SHALL be available to module `on_startup` hooks (phase 9) as `daemon.blob_store`
+- **AND** the blob store SHALL be available to module `on_startup` hooks (phase 11) as `daemon.blob_store`
 
 #### Scenario: Credential resolution is DB-only
 - **WHEN** the daemon initializes the blob store

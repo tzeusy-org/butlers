@@ -374,6 +374,9 @@ class Database:
     ) -> None:
         self.db_name = db_name
         self.schema = _normalize_schema_name(schema)
+        # Set by daemon lifecycle from the loaded ButlerConfig. Modules use it
+        # when a scheduler recovery needs an auditable configured identity.
+        self.owner_butler: str | None = None
         self.role = role
         self.host = host
         self.port = port

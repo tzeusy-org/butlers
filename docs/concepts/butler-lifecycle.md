@@ -14,69 +14,73 @@ A butler daemon goes through distinct phases during its lifetime: a multi-step s
 
 The `ButlerDaemon.start()` method executes a carefully ordered startup sequence. Each step depends on the success of previous steps, though module-specific failures are non-fatal --- a failing module is recorded as failed and skipped in later phases while the butler continues with its remaining healthy modules.
 
-### Step 1: Load Configuration
+### Step 1: Load Configuration and Logging
 
-The daemon reads `butler.toml` from the config directory, parsing identity (name, port, description), database settings, schedules, runtime configuration, and module declarations. Structured logging is then configured based on the butler's logging settings.
+The daemon reads `butler.toml` from the config directory, parsing identity, database settings, schedules, runtime configuration, and module declarations. It then configures structured logging for that butler.
 
-### Step 1c: Initialize Blob Storage
+### Step 2: Initialize Telemetry and Scan Config
 
-A local blob store is set up for file attachments at the configured storage path.
-
-### Step 2: Initialize Telemetry and Metrics
-
-OpenTelemetry tracing and Prometheus-compatible metrics are initialized with a service name derived from the butler name (e.g., `butler.general`). An inline secret scan runs against the flattened config values to detect accidentally embedded credentials.
+OpenTelemetry tracing and Prometheus-compatible metrics are initialized with a service name derived from the butler name (for example, `butler.general`). An inline secret scan warns about accidentally embedded credentials without blocking startup.
 
 ### Step 3: Initialize Modules (Topological Order)
 
-The module registry instantiates all built-in modules, then the daemon filters down to those that are declared in `[modules.*]` config sections. Modules declare dependencies on other modules, so initialization follows a topological sort --- a module is only initialized after all its dependencies.
+The module registry instantiates modules in dependency order. The daemon skips a module only when its required `[modules.*]` configuration is omitted; optional-config modules may still start with defaults. A dependency cycle blocks startup.
 
 ### Step 4: Validate Module Configs
 
-Each module declares a `config_schema` (a Pydantic model). The daemon validates the module-specific configuration from `butler.toml` against this schema. Validation failures are non-fatal: the module is marked as failed with phase `config` and skipped in subsequent steps.
+Each module declares a `config_schema` (a Pydantic model). The daemon validates the module-specific configuration from `butler.toml` against this schema. Validation failures are non-fatal: the module is marked failed with phase `config` and skipped in subsequent steps.
 
 ### Step 5: Validate Butler-Level Credentials
 
-Environment variables declared in `[butler.env].required` and `[butler.env].optional` are checked. Missing required variables cause a hard startup failure. Missing optional variables produce warnings.
+Environment variables declared in `[butler.env].required` and `[butler.env].optional` are checked. Missing required variables cause a hard startup failure. Module credentials are resolved later through the DB-backed credential store.
 
-### Step 6: Provision Database
+### Step 6: Provision Database and Set Butler Identity
 
-The daemon creates a `Database` instance from environment variables, sets the butler's schema, provisions the database (creating the database and schema if they do not exist), and opens a connection pool.
+The daemon creates or receives a connected `Database` and assigns `db.owner_butler` from the configured butler name. This identity is available before module startup, including for auditable schedule recovery. A schema-less legacy database continues to use its unqualified `public` schema.
 
-### Step 7: Run Migrations
+### Step 7: Run Core and Butler Migrations
 
-Core Alembic migrations run first (schema-scoped), followed by butler-specific migrations if the butler has its own migration chain. This creates the state store, session log, scheduled tasks, and other core tables.
+Core Alembic migrations run first (schema-scoped), followed by a butler-specific chain when one exists. This creates the state store, session log, scheduled tasks, and other core tables.
 
-### Step 8: Run Module Migrations
+### Step 8: Prepare Module Dependencies and Bootstrap State
 
-Each module that declares `migration_revisions()` gets its Alembic chain run. Module migration failures are non-fatal --- the module is marked failed with phase `migration` and its dependents are cascade-failed.
+Module migration chains run, then the daemon creates a layered `CredentialStore`, validates module credentials, initializes optional blob storage, restores CLI auth, bootstraps owner/catalogue records, and recovers orphaned sessions. Module migration and credential failures remain non-fatal and cascade to dependents.
 
-### Step 8b: Credential Store and Module Credential Validation
+### Step 9: Resolve Runtime Config
 
-A layered `CredentialStore` is created with access to the database pool, enabling DB-first credential resolution with environment variable fallback. Module credentials are validated asynchronously against this store. Missing credentials mark the module as failed.
+The DB-backed runtime config is seeded from `[butler.runtime_seed]` on first boot and then becomes the source of truth for operational limits used by core-tool registration and the Spawner.
 
-### Step 8d: Bootstrap Owner Entity
+### Step 10: Sync Schedules
 
-An idempotent operation ensures the owner entity exists in `public.entities`. This is the identity anchor for the system's user.
+Scheduled tasks declared in `butler.toml` are synchronized to the database before any module starts. New tasks become TOML-owned, changed tasks update, and removed TOML tasks are disabled. This ordering lets a module-default registration observe a disabled TOML orphan while leaving DB-owned operator schedules untouched.
 
-### Step 9: Module on_startup
+### Step 11: Module on_startup
 
-Each healthy module's `on_startup()` method is called in topological order. This is where modules perform post-migration initialization: opening connections, starting background tasks, loading cached data. Failures are non-fatal and trigger cascade failures for dependent modules.
+Each healthy module's `on_startup()` method is called in topological order after schedule synchronization. This is where modules perform post-migration initialization, open connections, start background resources, load cached data, and register provenance-aware defaults. Failures are non-fatal and trigger cascade failures for dependent modules.
 
-### Step 10: Create Spawner
+### Step 12: Create Spawner and Runtime Wiring
 
-The daemon creates a `Spawner` instance with the configured runtime adapter (Claude Code, Codex, or Gemini). The adapter's binary is verified to be on `PATH`. If the binary is missing, startup fails with a `RuntimeBinaryNotFoundError`.
+The daemon creates a `Spawner` with the configured runtime adapter (Claude Code, Codex, or Gemini), verifies the adapter binary is on `PATH`, configures audit/runtime wiring, and opens the Switchboard client connection.
 
-### Step 11: Sync Schedules
+### Step 13: Create FastMCP and Register Core Tools
 
-Scheduled tasks declared in `butler.toml` are synchronized to the database, creating or updating schedule records. This ensures the scheduler has an accurate view of what to run and when.
+A FastMCP server is created and core tools are registered: status, trigger, state operations, session queries, schedule management, notify, and remind.
 
-### Step 12--14: MCP Server and Tool Registration
+### Step 14: Register Module Tools and Gates
 
-A FastMCP server is created and core tools are registered (status, trigger, state operations, session queries, schedule management, notify, remind). Then module tools are registered for each healthy module. Approval gates are applied to configured gated tools. Finally, the MCP SSE server starts listening on the butler's configured port.
+Each healthy module registers its MCP tools. Approval gates and module runtime wiring are then applied; a module tool failure remains isolated to that module.
 
-### Step 15--17: Background Services
+### Step 15: Start the FastMCP Server
 
-Non-switchboard butlers open an MCP client connection to the Switchboard for inter-butler communication and start a liveness reporter that periodically POSTs heartbeats. The internal scheduler loop begins calling `tick()` at the configured interval, which checks for due scheduled tasks and fires them.
+The MCP SSE server starts listening on the configured port, followed by best-effort endpoint warm-up.
+
+### Step 16: Start Recovery, Heartbeat, and Scheduler Services
+
+The daemon launches route-inbox recovery, non-switchboard Switchboard heartbeats, and the internal scheduler loop. The scheduler calls `tick()` at the configured interval to dispatch due tasks.
+
+### Step 17: Start Liveness Reporting
+
+The liveness reporter starts periodic health pings and the daemon begins accepting connections.
 
 ## Running State
 

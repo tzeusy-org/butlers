@@ -34,7 +34,7 @@ The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors the
 
 A `RuntimeConfigAccessor` class SHALL provide TTL-cached read access to the `runtime_config` table. The default TTL is 30 seconds.
 
-Source: RFC 0001 §Startup Phases (phase 10 — spawner creation)
+Source: RFC 0001 §Startup Phases (phase 9 — runtime config resolution)
 Scope: v1-mandatory
 
 #### Scenario: Cached read within TTL

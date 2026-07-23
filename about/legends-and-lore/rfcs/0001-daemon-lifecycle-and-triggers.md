@@ -15,32 +15,27 @@ A butler must initialize database connections, telemetry, modules, migrations, t
 
 ### Startup Phases
 
-The daemon executes these phases in strict order. A failure at a fatal phase aborts startup. Module-phase failures (phase 9) are non-fatal — the butler continues with the failed module marked unavailable and its dependents cascade-failed.
+The daemon executes these phases in strict order. A failure at a fatal phase aborts startup. Module-phase failures (phases 8, 11, and 14) are non-fatal — the butler continues with the failed module marked unavailable and its dependents cascade-failed.
 
 | Phase | Action | Failure Mode |
 |-------|--------|--------------|
-| 1 | Load config from `butler.toml` | Fatal -- no config, no butler |
-| 2 | Initialize telemetry (`init_telemetry`, `init_metrics`) | Non-fatal -- falls back to no-op providers |
-| 3 | Initialize modules via topological sort of declared dependencies | Fatal if dependency cycle detected |
-| 4 | Validate module config schemas (Pydantic) | Fatal on validation error |
+| 1 | Load config from `butler.toml` and configure structured logging | Fatal -- no config, no butler |
+| 2 | Initialize telemetry/metrics and scan config values for inline secrets | Telemetry falls back to no-op providers; secret findings warn |
+| 3 | Initialize modules via topological sort and skip modules whose required config is omitted | Fatal if dependency cycle detected |
+| 4 | Validate module config schemas (Pydantic) | Non-fatal per module |
 | 5 | Validate `butler.env` credentials (env-only fast-fail for non-secret config) | Fatal on missing required env vars |
-| 6 | Provision database (create schema, connect pool) | Fatal |
-| 7 | Run core Alembic migrations | Fatal |
-| 8 | Run module Alembic migrations | Fatal |
-| 8b | Create CredentialStore; validate module credentials via DB-first resolution | Non-fatal -- logs warnings |
-| 8c | Initialize S3-compatible blob storage from CredentialStore | Non-fatal -- disables blob operations if absent or validation fails |
-| 9 | Module `on_startup()` in topological order | Non-fatal (degraded -- failed module + dependents marked unavailable) |
-| 9b | Resolve runtime config from DB (seed from `[butler.runtime_seed]` on first boot) | Fatal -- cannot operate without runtime config |
-| 10 | Create Spawner with runtime adapter; verify LLM binary on PATH | Fatal if binary missing |
-| 10b | Wire message classification pipeline (switchboard only) | Fatal for switchboard |
-| 11 | Sync TOML schedules to DB | Non-fatal -- logs errors |
-| 11b | Open MCP client connection to Switchboard (non-switchboard butlers) | Non-fatal -- retries |
-| 12 | Create FastMCP server and register core tools | Fatal |
-| 13 | Register module MCP tools; apply approval gates | Fatal |
-| 14 | Start FastMCP SSE server on configured port | Fatal |
-| 15 | Launch Switchboard heartbeat (non-switchboard butlers) | Non-fatal |
-| 16 | Start internal scheduler loop (`tick()` every `tick_interval_seconds`) | Non-fatal |
-| 17 | Start liveness reporter (POST to Switchboard heartbeat endpoint) | Non-fatal |
+| 6 | Provision or receive the database pool and assign `db.owner_butler` from configured identity | Fatal |
+| 7 | Run core and butler-specific Alembic migrations | Fatal |
+| 8 | Run module migrations; build CredentialStore; validate module credentials; initialize storage and bootstrap state | Module migration/credential failures are non-fatal; storage/bootstrap work is best-effort |
+| 9 | Resolve runtime config from DB (seed from `[butler.runtime_seed]` on first boot) | Fatal -- cannot operate without runtime config |
+| 10 | Sync TOML schedules to DB **before module startup** | Fatal -- establishes schedule provenance before recovery is evaluated |
+| 11 | Call module `on_startup()` in topological order | Non-fatal (degraded -- failed module + dependents marked unavailable) |
+| 12 | Create Spawner, audit/runtime wiring, and Switchboard client connection | Runtime setup is fatal; connection retry is non-fatal |
+| 13 | Create FastMCP server and register core tools | Fatal |
+| 14 | Register module MCP tools; apply approval gates; wire module runtime | Module tool failures are non-fatal |
+| 15 | Start FastMCP SSE server on configured port | Fatal |
+| 16 | Launch route recovery, Switchboard heartbeat, and internal scheduler loop | Background services are non-fatal |
+| 17 | Start liveness reporter and mark the daemon accepting connections | Non-fatal |
 
 ### Graceful Shutdown
 
@@ -139,7 +134,7 @@ Every session carries a `request_id` in UUIDv7 format. Connector-sourced session
 
 ## Integration
 
-- **RFC 0002:** Core and module tools are registered during phases 12-13.
+- **RFC 0002:** Core and module tools are registered during phases 13-14.
 - **RFC 0003:** `route.execute` triggers arrive from the Switchboard via the route inbox.
 - **RFC 0005:** Telemetry is initialized at phase 2; trace context is injected into spawned processes.
 - **RFC 0006:** Database provisioning and migrations execute at phases 6-8.

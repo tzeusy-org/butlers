@@ -33,7 +33,7 @@ A butler SHALL be a long-lived MCP server daemon backed by a dedicated PostgreSQ
 
 #### Scenario: Butler daemon lifecycle phases
 - **WHEN** the butler starts up
-- **THEN** it progresses through phases in order: config loading → telemetry init → module loading (topological sort) → config validation → env validation → database provisioning → core migrations → butler-specific migrations → module migrations → credential store setup → core credential validation → module startup → spawner creation → pipeline wiring (switchboard only) → schedule sync → switchboard connection (non-switchboard only) → FastMCP server start → approval gate application → buffer start (switchboard only) → route inbox recovery → heartbeat task → scheduler loop → liveness reporter
+- **THEN** it progresses through RFC 0001 phases 1–17 in order: config/logging → telemetry and secret scan → module loading (topological sort) → config validation → env validation → database provisioning and identity → core and butler migrations → module migration, credential, storage, and bootstrap work → runtime config → TOML schedule sync → module startup → Spawner, audit/runtime, pipeline, and Switchboard wiring → FastMCP and core tools → module tools and gates → FastMCP SSE server → route recovery, heartbeat, and scheduler services → liveness and accepting connections
 - **AND** module failures during any phase are non-fatal — a failed module is marked as unavailable while the butler continues operating
 
 #### Scenario: Graceful shutdown
@@ -88,7 +88,7 @@ Modules SHALL be pluggable units that add domain-specific MCP tools and database
 - **WHEN** a module is implemented
 - **THEN** it extends the `Module` abstract base class providing: `name` (unique string identifier), `config_schema` (Pydantic model for `[modules.{name}]` TOML section), `dependencies` (list of module names this module depends on)
 - **AND** it implements: `register_tools(mcp, config, db, butler_name)` to add MCP tools, `migration_revisions()` returning an Alembic branch label or None, `on_startup(config, db, credential_store=None, blob_store=None)` for initialization, `on_shutdown()` for cleanup
-- **AND** modules that need inter-butler communication (e.g., self_healing QA relay) implement the optional `wire_runtime()` hook, which the daemon calls after `on_startup()` and after the Switchboard connection is established (lifecycle step 13d) to inject the spawner and the daemon's Switchboard MCPClient (or None when switchboard is not configured); the module uses that client to relay findings via Switchboard's `route()` tool. The Switchboard client is NOT passed as an `on_startup()` kwarg
+- **AND** modules that need inter-butler communication (e.g., self_healing QA relay) implement the optional `wire_runtime()` hook, which the daemon calls in phase 14 after `on_startup()` and after the Switchboard connection is established in phase 12, to inject the spawner and the daemon's Switchboard MCPClient (or None when switchboard is not configured); the module uses that client to relay findings via Switchboard's `route()` tool. The Switchboard client is NOT passed as an `on_startup()` kwarg
 
 #### Scenario: Module tool metadata
 - **WHEN** a module has tools with safety-sensitive arguments

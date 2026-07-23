@@ -500,12 +500,12 @@ class MemoryModule(Module):
         #3: only 5 of 9 memory-enabled butlers had any of these scheduled, and
         none had `memory_decay_sweep` — it had no handler at all).
 
-        This runs *before* `sync_schedules()` syncs TOML (lifecycle.py steps 9
-        vs. 11): TOML may still declare a `[[butler.schedule]]` block reusing
-        one of these names to override cadence, and TOML sync reclaims that
-        row afterwards — existence is the module's job, cadence is TOML's to
-        override. See `ensure_module_default_schedule` for the exact
-        idempotency/reclaim semantics.
+        This runs *after* `sync_schedules()` syncs TOML (lifecycle.py steps 10
+        and 11): an active `[[butler.schedule]]` block remains TOML-owned and
+        controls cadence, while a removed block is first made visible as a
+        disabled TOML orphan. `ensure_module_default_schedule` can then
+        recover only an eligible registered default without rewriting its
+        stored cadence or runtime payload.
 
         Best-effort per schedule: a failure (e.g. `scheduled_tasks` not yet
         migrated in some harness) is logged and does not fail module startup
@@ -515,6 +515,9 @@ class MemoryModule(Module):
             return
         from butlers.core.scheduler import ensure_module_default_schedule
 
+        owner_butler = getattr(db, "owner_butler", None) or getattr(db, "schema", None)
+        # Legacy per-butler databases use their unqualified public schema.
+        owner_schema = getattr(db, "schema", None) or "public"
         for entry in _DEFAULT_MAINTENANCE_SCHEDULES:
             try:
                 await ensure_module_default_schedule(
@@ -523,6 +526,8 @@ class MemoryModule(Module):
                     cron=entry["cron"],
                     job_name=entry["job_name"],
                     job_args=entry.get("job_args"),
+                    owner_butler=owner_butler,
+                    owner_schema=owner_schema,
                 )
             except Exception:
                 logger.warning(

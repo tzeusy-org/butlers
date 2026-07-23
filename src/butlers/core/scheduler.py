@@ -867,6 +867,8 @@ async def sync_schedules(
                 """
                 UPDATE scheduled_tasks SET enabled = false, updated_at = now()
                 WHERE id = $1
+                  AND source = 'toml'
+                  AND enabled = true
                 """,
                 row["id"],
             )
@@ -881,37 +883,32 @@ async def ensure_module_default_schedule(
     job_name: str,
     job_args: dict[str, Any] | None = None,
     complexity: str = _DEFAULT_COMPLEXITY,
+    owner_butler: str | None = None,
+    owner_schema: str | None = None,
 ) -> None:
     """Idempotently ensure a module-default deterministic job schedule exists.
 
     Intended for modules (e.g. the memory module) that self-register default
-    maintenance schedules from ``on_startup`` — which runs *before*
-    :func:`sync_schedules` syncs ``[[butler.schedule]]`` TOML entries (see
-    ``lifecycle.py`` steps 9 and 11). Safe to call on every daemon boot:
+    maintenance schedules from ``on_startup`` after :func:`sync_schedules`
+    establishes which TOML entries are currently active. Safe to call on every
+    daemon boot:
 
     - **First boot** (no row named *name* exists): inserts a new
       ``source='db'`` row with a freshly computed ``next_run_at`` in UTC —
       the schedule becomes live on the very next tick. (``tick()``
       recomputes ``next_run_at`` in the owner's effective timezone after the
       first dispatch, so a UTC bootstrap value is only ever used once.)
-    - **Later boots** (row already exists): a no-op beyond a possible
-      ``source`` flip (see below) — cron, job_args, enabled, and
+    - **Later boots** (row already exists): a no-op unless the row is an
+      eligible disabled TOML orphan (see below) — cron, job_args, enabled, and
       next_run_at are left untouched so this never clobbers an operator's
       DB-level cadence customization (e.g. via the ``schedule_update`` tool)
       or a cadence already computed by an earlier startup.
-    - **Reclaiming from a deleted TOML block**: if the row exists with
-      ``source='toml'`` (created by a ``[[butler.schedule]]`` block that has
-      since been removed from ``butler.toml``), this flips it to
-      ``source='db'``. Because this runs before ``sync_schedules()``, that
-      function's "disable schedules removed from TOML" pass — which only
-      targets ``source='toml'`` rows — no longer sees this row as an
-      orphaned TOML schedule, so it stays enabled at its last-known cadence
-      instead of being silently disabled.
-    - **Operator keeps the TOML block**: if a ``[[butler.schedule]]`` entry
-      of the same *name* still exists in TOML, the subsequent
-      ``sync_schedules()`` call reclaims the row back to ``source='toml'``
-      and applies the TOML cron — i.e. "TOML overrides cadence, not
-      existence."
+    - **Reclaiming a removed TOML block**: only a disabled
+      ``source='toml'`` row is reclaimed. The conditional transition and its
+      canonical audit entry share one transaction. A DB-owned row remains
+      operator-owned even when disabled. ``memory_episode_cleanup`` is
+      explicitly excluded from this recovery path to prevent generic startup
+      handling from becoming a destructive catch-up mechanism.
 
     Raises ``ValueError`` for an invalid cron expression. Does not validate
     or touch the cron of a pre-existing row — cron validation only applies
@@ -920,25 +917,69 @@ async def ensure_module_default_schedule(
     if not croniter.is_valid(cron):
         raise ValueError(f"ensure_module_default_schedule: invalid cron {cron!r} for {name!r}")
 
+    normalized_owner_butler = (owner_butler or "").strip()
+    normalized_owner_schema = (owner_schema or "").strip()
     next_run_at = _next_run(cron)
-    await pool.execute(
-        """
-        INSERT INTO scheduled_tasks (
-            name, cron, dispatch_mode, job_name, job_args, complexity,
-            source, enabled, next_run_at
-        )
-        VALUES ($1, $2, 'job', $3, $4, $5, 'db', true, $6)
-        ON CONFLICT (name) DO UPDATE
-            SET source = 'db'
-            WHERE scheduled_tasks.source = 'toml'
-        """,
-        name,
-        cron,
-        job_name,
-        _dict_to_jsonb(job_args),
-        complexity,
-        next_run_at,
-    )
+
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            inserted = await connection.fetchrow(
+                """
+                INSERT INTO scheduled_tasks (
+                    name, cron, dispatch_mode, job_name, job_args, complexity,
+                    source, enabled, next_run_at
+                )
+                VALUES ($1, $2, 'job', $3, $4, $5, 'db', true, $6)
+                ON CONFLICT (name) DO NOTHING
+                RETURNING id
+                """,
+                name,
+                cron,
+                job_name,
+                _dict_to_jsonb(job_args),
+                complexity,
+                next_run_at,
+            )
+            if inserted is not None or name == "memory_episode_cleanup":
+                return
+
+            recovered = await connection.fetchrow(
+                """
+                UPDATE scheduled_tasks
+                SET source = 'db', enabled = true, updated_at = now()
+                WHERE name = $1
+                  AND source = 'toml'
+                  AND enabled = false
+                RETURNING id
+                """,
+                name,
+            )
+            if recovered is None:
+                return
+
+            if not normalized_owner_butler or not normalized_owner_schema:
+                raise ValueError(
+                    "ensure_module_default_schedule requires non-empty owner_butler and "
+                    "owner_schema to recover a TOML-owned schedule"
+                )
+
+            # Import lazily so normal scheduler use does not load the API
+            # router layer unless a recovery actually transitions a row.
+            from butlers.api.routers.audit import append as append_audit
+
+            await append_audit(
+                connection,
+                actor=normalized_owner_butler,
+                action="scheduler.module_default_recovered",
+                target=f"schedule:{name}",
+                metadata={
+                    "prior_source": "toml",
+                    "prior_enabled": False,
+                    "registered_default_name": name,
+                    "owner_butler": normalized_owner_butler,
+                    "owner_schema": normalized_owner_schema,
+                },
+            )
 
 
 async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
