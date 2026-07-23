@@ -569,6 +569,12 @@ Contact-related hooks MUST be provided with the following behaviors:
 | `useLabels()` | No | Fetch all labels |
 | `useUpcomingDates(days)` | No | Fetch upcoming important dates |
 
+#### Scenario: Contact detail hook waits for an ID
+
+- **GIVEN** no contact ID is available
+- **WHEN** `useContact` renders
+- **THEN** its query MUST remain disabled
+
 ---
 
 ### Requirement: Entity browser for general butler data
@@ -731,6 +737,12 @@ The calendar workspace MUST use the following TanStack Query hooks:
 | `useMutateCalendarWorkspaceButlerEvent()` | Mutation | Invalidates workspace + meta |
 
 All mutation hooks MUST invalidate both `calendar-workspace` and `calendar-workspace-meta` query keys on success.
+
+#### Scenario: Calendar workspace mutation refreshes both query keys
+
+- **GIVEN** a calendar workspace mutation succeeds
+- **WHEN** its success handler runs
+- **THEN** it MUST invalidate both `calendar-workspace` and `calendar-workspace-meta`
 
 ---
 
@@ -1405,6 +1417,12 @@ The memory domain MUST use the following TanStack Query hooks:
 | `useEpisode(id)` | `memory-episode` | None | `enabled: !!episodeId` |
 | `useMemoryActivity(limit)` | `memory-activity` | 15s | No |
 
+#### Scenario: Fact detail hook waits for an ID
+
+- **GIVEN** no fact ID is available
+- **WHEN** `useFact` renders
+- **THEN** its query MUST remain disabled
+
 ---
 
 ### Requirement: Costs page with summary stats and chart
@@ -1495,6 +1513,12 @@ The costs domain MUST use the following TanStack Query hooks:
 | `useDailySpend()` | `daily-costs` | 60s |
 | `useTopSessions(limit)` | `top-sessions` | 60s |
 
+#### Scenario: Spend summary refreshes after one minute
+
+- **GIVEN** `useSpendSummary` has fetched a period
+- **WHEN** 60 seconds elapse
+- **THEN** it MUST refresh that period's cost summary
+
 ---
 
 ### Requirement: Cross-butler global search
@@ -1533,6 +1557,12 @@ All paginated domain pages MUST follow a consistent pagination pattern:
 - A "Showing X-Y of Z" text indicator.
 - Changing any filter parameter MUST reset the page to 0.
 
+#### Scenario: Filter change resets pagination
+
+- **GIVEN** a paginated domain page is displaying a page after page 0
+- **WHEN** the user changes a filter parameter
+- **THEN** the page MUST reset to page 0
+
 ---
 
 ### Requirement: Consistent loading and empty states
@@ -1541,6 +1571,12 @@ All domain pages MUST implement:
 - **Loading state**: Skeleton rows matching the table column count, or skeleton cards matching the card grid layout. Skeletons MUST use the `Skeleton` component with appropriate widths.
 - **Empty state**: An `EmptyState` component with a title and description explaining where the data comes from (e.g., "No conditions found" / "Health conditions will appear here as they are tracked by the Health butler."). Empty states MUST only render when `isLoading` is false and the data array is empty.
 - Loading and empty states MUST be mutually exclusive: skeletons during loading, empty state after loading completes with zero results.
+
+#### Scenario: Loading does not show the empty state
+
+- **GIVEN** a domain page is loading an empty result set
+- **WHEN** it renders its loading state
+- **THEN** it MUST render skeletons and MUST NOT render `EmptyState`
 
 ---
 
