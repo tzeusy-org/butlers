@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { InlineActionLink } from "@/components/ui/inline-action-link";
 import {
   Select,
   SelectContent,
@@ -43,6 +44,14 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -329,36 +338,39 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
   }
 
   return (
-    <div className="overflow-x-auto border-t border-l border-border/60">
-      <table className="text-sm border-collapse min-w-max w-full">
-        <thead>
-          <tr>
-            <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-3 py-2 border-r border-b border-border/60">
+    <div className="border-t border-l border-border/60">
+      <Table className="border-collapse min-w-max">
+        <TableHeader>
+          <TableRow>
+            <TableHead className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-3 py-2 border-r border-b border-border/60">
               permission
-            </th>
+            </TableHead>
             {matrix.butlers.map((b) => (
-              <th
+              <TableHead
                 key={b}
                 className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-3 py-2 border-r border-b border-border/60 text-center"
               >
                 {b}
-              </th>
+              </TableHead>
             ))}
-          </tr>
-        </thead>
-        <tbody>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {matrix.permissions.map((perm) => (
-            <tr key={perm}>
-              <td className="font-mono text-xs px-3 py-2 pr-6 whitespace-nowrap border-r border-b border-border/60">
+            <TableRow key={perm}>
+              <TableHead
+                scope="row"
+                className="font-mono text-xs px-3 py-2 pr-6 whitespace-nowrap border-r border-b border-border/60"
+              >
                 {perm}
-              </td>
+              </TableHead>
               {matrix.butlers.map((butler) => {
                 const cell = matrix.cells[butler]?.[perm];
                 const inherited = cell?.inherited ?? true;
                 const granted = cell?.granted ?? false;
 
                 return (
-                  <td
+                  <TableCell
                     key={butler}
                     className="px-3 py-2 text-center border-r border-b border-border/60"
                   >
@@ -367,7 +379,7 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
                       className={cn(
                         "inline-flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs leading-none transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/50",
                         inherited
-                          ? "opacity-40 hover:opacity-100 hover:bg-muted/40"
+                          ? "opacity-60 hover:opacity-100 hover:bg-muted/40"
                           : granted
                             ? "text-[var(--green)] hover:bg-muted/40"
                             : "text-muted-foreground hover:bg-muted/40",
@@ -378,13 +390,13 @@ function PermissionsMatrixSection({ matrix, onCellFlip }: PermissionsMatrixSecti
                     >
                       {granted ? "●" : "○"}
                     </button>
-                  </td>
+                  </TableCell>
                 );
               })}
-            </tr>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -443,12 +455,13 @@ function AuditReelSection() {
               </p>
             </div>
           )}
-          <a
+          <InlineActionLink
+            as="a"
             href="/audit-log?kind=privileged"
-            className="border-r border-b border-border/60 px-4 py-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1"
+            className="border-r border-b border-border/60 px-4 py-2 inline-flex items-center gap-1"
           >
             Full audit log <ExternalLink className="h-3 w-3" />
-          </a>
+          </InlineActionLink>
         </>
       )}
     </div>
@@ -1027,12 +1040,12 @@ function WebhooksSection() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex justify-end">
-        <button
+        <InlineActionLink
           onClick={() => setAddOpen(true)}
-          className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
+          className="text-[10px] tracking-widest"
         >
           Add webhook →
-        </button>
+        </InlineActionLink>
       </div>
 
       {loading ? (
@@ -1048,40 +1061,40 @@ function WebhooksSection() {
           No webhooks registered.
         </p>
       ) : (
-        <div className="overflow-x-auto border-t border-l border-border/60">
-          <table className="text-sm border-collapse w-full min-w-max">
-            <thead>
-              <tr>
-                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+        <div className="border-t border-l border-border/60">
+          <Table className="border-collapse min-w-max">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
                   Endpoint
-                </th>
-                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                </TableHead>
+                <TableHead className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
                   Events
-                </th>
-                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                </TableHead>
+                <TableHead className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
                   Status
-                </th>
-                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                </TableHead>
+                <TableHead className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
                   Secret
-                </th>
-                <th className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                </TableHead>
+                <TableHead className="text-left font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
                   Last test
-                </th>
-                <th className="text-right font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
+                </TableHead>
+                <TableHead className="text-right font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground px-4 py-2 border-r border-b border-border/60">
                   Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {webhooks.map((wh) => (
-                <tr key={wh.id} data-testid={`webhook-row-${wh.id}`}>
-                  <td className="font-mono text-xs max-w-xs truncate px-4 py-2 border-r border-b border-border/60">
+                <TableRow key={wh.id} data-testid={`webhook-row-${wh.id}`}>
+                  <TableCell className="font-mono text-xs max-w-xs truncate px-4 py-2 border-r border-b border-border/60">
                     {wh.endpoint}
-                  </td>
-                  <td className="text-xs px-4 py-2 border-r border-b border-border/60">
+                  </TableCell>
+                  <TableCell className="text-xs px-4 py-2 border-r border-b border-border/60">
                     {wh.events.length > 0 ? wh.events.join(", ") : "—"}
-                  </td>
-                  <td
+                  </TableCell>
+                  <TableCell
                     className="text-xs px-4 py-2 border-r border-b border-border/60"
                     data-testid={`webhook-enabled-${wh.id}`}
                     data-enabled={wh.enabled ? "true" : "false"}
@@ -1101,8 +1114,8 @@ function WebhooksSection() {
                         {wh.enabled ? "Active" : "Disabled"}
                       </span>
                     </span>
-                  </td>
-                  <td
+                  </TableCell>
+                  <TableCell
                     className="font-mono text-xs px-4 py-2 border-r border-b border-border/60"
                     data-testid={`webhook-secret-prefix-${wh.id}`}
                   >
@@ -1111,8 +1124,8 @@ function WebhooksSection() {
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
-                  </td>
-                  <td
+                  </TableCell>
+                  <TableCell
                     className="text-xs px-4 py-2 border-r border-b border-border/60"
                     data-testid={`webhook-last-test-${wh.id}`}
                   >
@@ -1138,54 +1151,54 @@ function WebhooksSection() {
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
-                  </td>
-                  <td className="text-right px-4 py-2 border-r border-b border-border/60">
+                  </TableCell>
+                  <TableCell className="text-right px-4 py-2 border-r border-b border-border/60">
                     <div className="flex justify-end gap-3">
-                      <button
+                      <InlineActionLink
                         onClick={() => setEditing(wh)}
                         title="Edit webhook"
                         data-testid={`webhook-edit-${wh.id}`}
-                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap"
+                        className="text-[10px] tracking-widest whitespace-nowrap"
                       >
                         Edit →
-                      </button>
-                      <button
+                      </InlineActionLink>
+                      <InlineActionLink
                         onClick={() => handleToggle(wh)}
                         disabled={togglingId === wh.id}
                         title={wh.enabled ? "Disable webhook" : "Enable webhook"}
                         data-testid={`webhook-toggle-${wh.id}`}
-                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 whitespace-nowrap"
+                        className="text-[10px] tracking-widest whitespace-nowrap"
                       >
                         {togglingId === wh.id
                           ? "Saving…"
                           : wh.enabled
                             ? "Disable →"
                             : "Enable →"}
-                      </button>
-                      <button
+                      </InlineActionLink>
+                      <InlineActionLink
                         onClick={() => handleTest(wh.id)}
                         disabled={testingId === wh.id}
                         title="Test webhook"
                         data-testid={`webhook-test-${wh.id}`}
-                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 whitespace-nowrap"
+                        className="text-[10px] tracking-widest whitespace-nowrap"
                       >
                         {testingId === wh.id ? "Testing…" : "Test →"}
-                      </button>
-                      <button
+                      </InlineActionLink>
+                      <InlineActionLink
                         onClick={() => handleDelete(wh.id)}
                         disabled={deletingId === wh.id}
                         title="Delete webhook"
                         data-testid={`webhook-delete-${wh.id}`}
-                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-[var(--red-text)] transition-colors disabled:opacity-40 whitespace-nowrap"
+                        className="text-[10px] tracking-widest hover:text-[var(--red-text)] whitespace-nowrap"
                       >
                         {deletingId === wh.id ? "Deleting…" : "Delete →"}
-                      </button>
+                      </InlineActionLink>
                     </div>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
 

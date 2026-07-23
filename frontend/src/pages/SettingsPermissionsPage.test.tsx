@@ -16,7 +16,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, cleanup, screen, act, fireEvent, waitFor } from "@testing-library/react";
+import { render, cleanup, screen, act, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -251,6 +251,20 @@ describe("SettingsPermissionsPage — inherited cell semantics [bu-9q1dx.3]", ()
     expect(notifyCell.getAttribute("aria-label")).toContain("(inherited)");
   });
 
+  it("associates matrix columns and permission row headers", async () => {
+    await act(async () => {
+      renderPage();
+    });
+
+    const matrix = await screen.findByRole("table");
+    expect(
+      within(matrix).getByRole("columnheader", { name: "permission" }).getAttribute("scope"),
+    ).toBe("col");
+    expect(
+      within(matrix).getByRole("rowheader", { name: "notify" }).getAttribute("scope"),
+    ).toBe("row");
+  });
+
   it("lets an inherited cell create an optimistic explicit revoke with a reason", async () => {
     const updates: Array<{ url: string; init?: RequestInit }> = [];
     let resolvePut: (() => void) | undefined;
@@ -335,7 +349,7 @@ describe("SettingsPermissionsPage — inherited cell semantics [bu-9q1dx.3]", ()
     await waitFor(() => {
       const restoredCell = screen.getByTestId("perm-cell-chronicler-notify");
       expect(restoredCell.getAttribute("aria-label")).toContain("(inherited)");
-      expect(restoredCell.className).toContain("opacity-40");
+      expect(restoredCell.className).toContain("opacity-60");
       expect(restoredCell.textContent).toBe("●");
     });
   });

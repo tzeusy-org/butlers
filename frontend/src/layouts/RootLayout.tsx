@@ -95,6 +95,12 @@ function RootLayoutInner() {
               floating chat widget (which snapshots route/query/entity_ref at
               send time via usePageContextCapture()). */}
           <PageContextProvider>
+            <a
+              href="#main-content"
+              className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:flex focus:min-h-11 focus:items-center focus:border focus:border-border-strong focus:bg-background focus:px-3 focus:text-sm focus:text-foreground"
+            >
+              Skip to main content
+            </a>
             <Shell header={<PageHeader liveStatus={eventStreamStatus} />}>
               <ErrorBoundary>
                 <Outlet />

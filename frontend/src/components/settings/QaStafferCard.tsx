@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { InlineActionLink } from "@/components/ui/inline-action-link";
 import { cn } from "@/lib/utils";
 import {
   useAddQaAllowedRepo,
@@ -217,13 +218,11 @@ export default function QaStafferCard() {
         ) : repoConfig.isError ? (
           <p className="text-sm text-muted-foreground">
             Could not load repository configuration.{" "}
-            <button
-              type="button"
+            <InlineActionLink
               onClick={() => repoConfig.refetch()}
-              className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
             >
               Retry →
-            </button>
+            </InlineActionLink>
           </p>
         ) : (
           <>
@@ -351,13 +350,11 @@ export default function QaStafferCard() {
         ) : allowedRepos.isError ? (
           <p className="text-sm text-muted-foreground">
             Could not load the allowed-repositories whitelist.{" "}
-            <button
-              type="button"
+            <InlineActionLink
               onClick={() => allowedRepos.refetch()}
-              className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
             >
               Retry →
-            </button>
+            </InlineActionLink>
           </p>
         ) : repos.length === 0 ? (
           <p className="font-serif italic text-sm text-muted-foreground">
@@ -388,15 +385,14 @@ export default function QaStafferCard() {
                     }
                     aria-label={`Toggle ${r.owner}/${r.repo}`}
                   />
-                  <button
-                    type="button"
+                  <InlineActionLink
                     disabled={deleteRepo.isPending || patchRepo.isPending}
                     onClick={() => deleteRepo.mutate({ owner: r.owner, repo: r.repo })}
-                    className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground underline underline-offset-2 hover:text-[var(--red-text)] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="hover:text-[var(--red-text)]"
                     aria-label={`Remove ${r.owner}/${r.repo}`}
                   >
                     Remove
-                  </button>
+                  </InlineActionLink>
                 </div>
               </li>
             ))}

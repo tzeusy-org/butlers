@@ -37,6 +37,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { InlineActionLink } from "@/components/ui/inline-action-link";
 import { Mono } from "@/components/ui/Mono";
 import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Row } from "@/components/ui/Row";
@@ -138,20 +139,19 @@ function RowAction({
   disabled?: boolean;
 }) {
   return (
-    <button
-      type="button"
+    <InlineActionLink
       onClick={onClick}
       aria-label={ariaLabel}
       disabled={disabled}
       className={cn(
-        "shrink-0 font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 transition-colors cursor-pointer disabled:cursor-default disabled:opacity-50",
+        "shrink-0",
         tone === "danger"
           ? "text-muted-foreground hover:text-[var(--red-text)]"
           : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}
-    </button>
+    </InlineActionLink>
   );
 }
 
@@ -412,30 +412,27 @@ export default function MealTracker({
             />
           </div>
           {(typeFilter || since || until) && (
-            <button
-              type="button"
+            <InlineActionLink
               onClick={() => {
                 setTypeFilter("");
                 setSince("");
                 setUntil("");
                 setPage(0);
               }}
-              className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors cursor-pointer"
             >
               Clear
-            </button>
+            </InlineActionLink>
           )}
         </div>
 
         {/* Add meal affordance */}
-        <button
-          type="button"
+        <InlineActionLink
           onClick={() => setFormTarget(undefined)}
-          className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          className="underline-offset-4"
           aria-label="Log meal"
         >
           Log meal
-        </button>
+        </InlineActionLink>
       </div>
 
       {/* Day-grouped rule-list */}
@@ -483,22 +480,18 @@ export default function MealTracker({
             {rangeStart}–{rangeEnd} of {total.toLocaleString()}
           </Mono>
           <div className="flex gap-3">
-            <button
-              type="button"
+            <InlineActionLink
               disabled={page === 0}
               onClick={() => setPage((p) => Math.max(0, p - 1))}
-              className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
             >
               Previous
-            </button>
-            <button
-              type="button"
+            </InlineActionLink>
+            <InlineActionLink
               disabled={!hasMore}
               onClick={() => setPage((p) => p + 1)}
-              className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
             >
               Next
-            </button>
+            </InlineActionLink>
           </div>
         </div>
       )}

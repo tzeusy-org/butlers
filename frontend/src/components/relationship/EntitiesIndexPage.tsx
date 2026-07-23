@@ -66,6 +66,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Time } from "@/components/ui/time";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import {
@@ -661,23 +669,23 @@ function EntityTable({
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm" data-testid="entity-table">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pb-2 pr-2 font-medium w-8" aria-label="Select" />
-            <th className="pb-2 pr-2 font-medium w-8" aria-label="Type" />
-            <th className="pb-2 pr-4 font-medium">Name</th>
-            <th className="pb-2 pr-4 font-medium">Tier</th>
-            <th className="pb-2 pr-4 font-medium">Last seen</th>
-            <th className="pb-2 pr-4 font-medium text-right tabular-nums">Contacts</th>
-            <th className="pb-2 font-medium">Aliases</th>
-            <th className="pb-2 pl-4 font-medium text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
+    <div>
+      <Table data-testid="entity-table">
+        <TableHeader>
+          <TableRow className="text-left text-muted-foreground">
+            <TableHead className="pb-2 pr-2 font-medium w-8" aria-label="Select" />
+            <TableHead className="pb-2 pr-2 font-medium w-8" aria-label="Type" />
+            <TableHead className="pb-2 pr-4 font-medium">Name</TableHead>
+            <TableHead className="pb-2 pr-4 font-medium">Tier</TableHead>
+            <TableHead className="pb-2 pr-4 font-medium">Last seen</TableHead>
+            <TableHead className="pb-2 pr-4 font-medium text-right tabular-nums">Contacts</TableHead>
+            <TableHead className="pb-2 font-medium">Aliases</TableHead>
+            <TableHead className="pb-2 pl-4 font-medium text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {entities.map((entity, index) => (
-            <tr
+            <TableRow
               key={entity.id}
               aria-selected={index === cursor || undefined}
               data-cursor={index === cursor || undefined}
@@ -685,29 +693,29 @@ function EntityTable({
               // "Keyboard maps per view": "Focus states MUST be visible per the
               // design language (2px left border, no glow)"). The transparent
               // border on non-cursored rows keeps the table from reflowing.
-              className={`border-b border-l-2 last:border-b-0 hover:bg-muted/50 ${
+              className={`border-l-2 last:border-b-0 hover:bg-muted/50 ${
                 index === cursor
                   ? "border-l-foreground bg-muted/40"
                   : "border-l-transparent"
               }`}
             >
-              <td className="py-2.5 pr-2">
+              <TableCell className="py-2.5 pr-2">
                 <input
                   type="checkbox"
                   aria-label={`Select ${entity.canonical_name}`}
                   checked={selectedIds.has(entity.id)}
                   onChange={() => onToggleSelect(entity.id)}
                 />
-              </td>
-              <td className="py-2.5 pr-2">
+              </TableCell>
+              <TableCell className="py-2.5 pr-2">
                 <EntityMark
                   name={entity.canonical_name}
                   entityType={entity.entity_type}
                   isOwner={entity.roles?.includes("owner")}
                   isUnidentified={entity.metadata?.["unidentified"] === "true"}
                 />
-              </td>
-              <td className="py-2.5 pr-4">
+              </TableCell>
+              <TableCell className="py-2.5 pr-4">
                 <span className="inline-flex items-center gap-2">
                   <Link
                     to={`/entities/${entity.id}`}
@@ -735,8 +743,8 @@ function EntityTable({
                     </Badge>
                   )}
                 </span>
-              </td>
-              <td className="py-2.5 pr-4">
+              </TableCell>
+              <TableCell className="py-2.5 pr-4">
                 {entity.tier != null ? (
                   <Badge variant="outline" className="text-xs tabular-nums">
                     {entity.tier}: {DUNBAR_TIER_LABELS[entity.tier] ?? `Tier ${entity.tier}`}
@@ -744,21 +752,21 @@ function EntityTable({
                 ) : (
                   <span className="text-muted-foreground text-xs">—</span>
                 )}
-              </td>
-              <td className="py-2.5 pr-4 text-muted-foreground">
+              </TableCell>
+              <TableCell className="py-2.5 pr-4 text-muted-foreground">
                 {entity.last_seen ? (
                   <Time value={entity.last_seen} mode="relative" />
                 ) : (
                   <span className="text-xs text-muted-foreground">—</span>
                 )}
-              </td>
-              <td className="py-2.5 pr-4 text-right tabular-nums text-muted-foreground">
+              </TableCell>
+              <TableCell className="py-2.5 pr-4 text-right tabular-nums text-muted-foreground">
                 {entity.contact_fact_count}
-              </td>
-              <td className="py-2.5 text-muted-foreground text-xs">
+              </TableCell>
+              <TableCell className="py-2.5 text-muted-foreground text-xs">
                 {entity.aliases.length > 0 ? entity.aliases.join(", ") : "—"}
-              </td>
-              <td className="py-2.5 pl-4">
+              </TableCell>
+              <TableCell className="py-2.5 pl-4">
                 <div className="flex justify-end gap-1">
                   {entity.metadata?.["unidentified"] === "true" && (
                     <PromoteEntityButton entity={entity} />
@@ -767,11 +775,11 @@ function EntityTable({
                   <ArchiveEntityButton entity={entity} />
                   <ForgetEntityButton entity={entity} onSelect={onForgetEntity} />
                 </div>
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }

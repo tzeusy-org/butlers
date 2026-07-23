@@ -27,6 +27,7 @@ import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { InlineActionLink } from "@/components/ui/inline-action-link";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { ButlerPanelGrid, ErrorLine, KV, Panel } from "./atoms";
@@ -319,7 +320,10 @@ function AccordionItem({
       className="group border-b border-border/60 last:border-b-0"
       data-testid="accordion-item"
     >
-      <summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-xs font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground select-none list-none">
+      <InlineActionLink
+        as="summary"
+        className="flex justify-between px-4 py-3 text-xs no-underline select-none"
+      >
         <span>{title}</span>
         {/* Chevron indicator */}
         <span
@@ -328,7 +332,7 @@ function AccordionItem({
         >
           &#x25BE;
         </span>
-      </summary>
+      </InlineActionLink>
       <div className="px-4 pb-4" data-testid="accordion-item-content">
         {children}
       </div>

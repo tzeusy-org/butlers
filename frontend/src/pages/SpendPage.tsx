@@ -41,6 +41,14 @@ import { differenceInCalendarDays, isValid, parseISO, subDays } from "date-fns"
 
 import { Page } from "@/components/ui/page"
 import { Button } from "@/components/ui/button"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { SpendUnavailableFootnote } from "@/components/spend/SpendUnavailableFootnote"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -888,33 +896,33 @@ function TopSessionsSection({
             No session data available.
           </p>
         ) : (
-          <div className="overflow-x-auto flex flex-col gap-3">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                  <th className="text-left py-2 px-2 font-normal">Butler</th>
-                  <th className="text-left py-2 px-2 font-normal">Model</th>
-                  <th className="text-right py-2 px-2 font-normal">Tokens</th>
-                  <th className="text-right py-2 px-2 font-normal">Cost</th>
-                  <th className="text-right py-2 px-2 font-normal">When</th>
-                </tr>
-              </thead>
-              <tbody>
+          <div className="flex flex-col gap-3">
+            <Table>
+              <TableHeader>
+                <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
+                  <TableHead className="text-left py-2 px-2 font-normal">Model</TableHead>
+                  <TableHead className="text-right py-2 px-2 font-normal">Tokens</TableHead>
+                  <TableHead className="text-right py-2 px-2 font-normal">Cost</TableHead>
+                  <TableHead className="text-right py-2 px-2 font-normal">When</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {sessions.map((s) => (
-                  <tr key={s.session_id} className="border-b border-border/60 hover:bg-muted/30">
-                    <td className="py-2 px-2">
+                  <TableRow key={s.session_id} className="border-border/60 hover:bg-muted/30">
+                    <TableCell className="py-2 px-2">
                       <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
                         {s.butler}
                       </Link>
-                    </td>
-                    <td className="py-2 px-2 text-muted-foreground text-xs">{s.model}</td>
-                    <td className="py-2 px-2 text-right tabular-nums text-xs">
+                    </TableCell>
+                    <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.model}</TableCell>
+                    <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                       {s.input_tokens.toLocaleString()} / {s.output_tokens.toLocaleString()}
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums font-medium">
+                    </TableCell>
+                    <TableCell className="py-2 px-2 text-right tabular-nums font-medium">
                       {formatCostUsd(s.cost_usd)}
-                    </td>
-                    <td className="py-2 px-2 text-right text-xs text-muted-foreground">
+                    </TableCell>
+                    <TableCell className="py-2 px-2 text-right text-xs text-muted-foreground">
                       <Link to={`/sessions/${s.session_id}`} className="hover:underline">
                         {new Date(s.started_at).toLocaleString("en-US", {
                           month: "short",
@@ -923,11 +931,11 @@ function TopSessionsSection({
                           minute: "2-digit",
                         })}
                       </Link>
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
             {unavailableButlers.length > 0 && (
               // Populated but partial: some butlers' sessions are absent from
               // the ranking.
@@ -994,42 +1002,42 @@ function ByScheduleSection({
             No scheduled-task cost data available.
           </p>
         ) : (
-          <div className="overflow-x-auto flex flex-col gap-3">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                  <th className="text-left py-2 px-2 font-normal">Schedule</th>
-                  <th className="text-left py-2 px-2 font-normal">Butler</th>
-                  <th className="text-left py-2 px-2 font-normal">Cron</th>
-                  <th className="text-right py-2 px-2 font-normal">Runs</th>
-                  <th className="text-right py-2 px-2 font-normal">Avg/run</th>
-                  <th className="text-right py-2 px-2 font-normal">Projected/mo</th>
-                </tr>
-              </thead>
-              <tbody>
+          <div className="flex flex-col gap-3">
+            <Table>
+              <TableHeader>
+                <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  <TableHead className="text-left py-2 px-2 font-normal">Schedule</TableHead>
+                  <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
+                  <TableHead className="text-left py-2 px-2 font-normal">Cron</TableHead>
+                  <TableHead className="text-right py-2 px-2 font-normal">Runs</TableHead>
+                  <TableHead className="text-right py-2 px-2 font-normal">Avg/run</TableHead>
+                  <TableHead className="text-right py-2 px-2 font-normal">Projected/mo</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {schedules.map((s) => (
-                  <tr
+                  <TableRow
                     key={`${s.butler}-${s.schedule_name}`}
-                    className="border-b border-border/60 hover:bg-muted/30"
+                    className="border-border/60 hover:bg-muted/30"
                   >
-                    <td className="py-2 px-2 font-mono text-xs">{s.schedule_name}</td>
-                    <td className="py-2 px-2">
+                    <TableCell className="py-2 px-2 font-mono text-xs">{s.schedule_name}</TableCell>
+                    <TableCell className="py-2 px-2">
                       <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
                         {s.butler}
                       </Link>
-                    </td>
-                    <td className="py-2 px-2 text-muted-foreground text-xs">{s.cron}</td>
-                    <td className="py-2 px-2 text-right tabular-nums text-xs">{s.total_runs}</td>
-                    <td className="py-2 px-2 text-right tabular-nums text-xs">
+                    </TableCell>
+                    <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.cron}</TableCell>
+                    <TableCell className="py-2 px-2 text-right tabular-nums text-xs">{s.total_runs}</TableCell>
+                    <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                       {formatCostUsd(s.avg_cost_per_run)}
-                    </td>
-                    <td className="py-2 px-2 text-right tabular-nums font-medium">
+                    </TableCell>
+                    <TableCell className="py-2 px-2 text-right tabular-nums font-medium">
                       {formatCostUsd(s.projected_monthly_usd)}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
             {unavailableButlers.length > 0 && (
               // Populated but partial: some butlers' schedules are absent from
               // the ranking (bu-h3ej9).
@@ -1143,38 +1151,38 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-            <th className="text-left py-2 px-2 w-8 font-normal">Pos</th>
-            <th className="text-left py-2 px-2 font-normal">Condition</th>
-            <th className="text-left py-2 px-2 font-normal">Action</th>
-            <th className="text-right py-2 px-2 font-normal">Saved 7d</th>
-            <th className="text-right py-2 px-2 w-16 font-normal"></th>
-          </tr>
-        </thead>
-        <tbody>
+    <div>
+      <Table>
+        <TableHeader>
+          <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            <TableHead className="text-left py-2 px-2 w-8 font-normal">Pos</TableHead>
+            <TableHead className="text-left py-2 px-2 font-normal">Condition</TableHead>
+            <TableHead className="text-left py-2 px-2 font-normal">Action</TableHead>
+            <TableHead className="text-right py-2 px-2 font-normal">Saved 7d</TableHead>
+            <TableHead className="text-right py-2 px-2 w-16 font-normal" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {rules.map((rule) => (
-            <tr
+            <TableRow
               key={rule.id}
               draggable
               onDragStart={(e) => handleDragStart(e, rule.id)}
               onDrop={(e) => handleDrop(e, rule.position)}
               onDragOver={handleDragOver}
-              className="border-b border-border/60 hover:bg-muted/30 cursor-grab active:cursor-grabbing"
+              className="border-border/60 hover:bg-muted/30 cursor-grab active:cursor-grabbing"
             >
-              <td className="py-2 px-2 text-muted-foreground tabular-nums">{rule.position}</td>
-              <td className="py-2 px-2">
+              <TableCell className="py-2 px-2 text-muted-foreground tabular-nums">{rule.position}</TableCell>
+              <TableCell className="py-2 px-2">
                 <RuleChips entries={conditionChips(rule.condition)} emptyLabel="any dispatch" />
-              </td>
-              <td className="py-2 px-2">
+              </TableCell>
+              <TableCell className="py-2 px-2">
                 <RuleChips entries={actionChips(rule.action)} emptyLabel="—" />
-              </td>
-              <td className="py-2 px-2 text-right tabular-nums text-xs">
+              </TableCell>
+              <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                 {rule.saved_7d != null ? fmtUsdPrecise(rule.saved_7d) : "—"}
-              </td>
-              <td className="py-2 px-2 text-right">
+              </TableCell>
+              <TableCell className="py-2 px-2 text-right">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -1183,11 +1191,11 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
                 >
                   Remove
                 </Button>
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   )
 }
@@ -1623,31 +1631,31 @@ function FleetHaltBanner() {
               No recent denied attempts loaded.
             </p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                    <th className="text-left py-2 px-2 font-normal">Butler</th>
-                    <th className="text-left py-2 px-2 font-normal">When</th>
-                    <th className="text-left py-2 px-2 font-normal">Reason</th>
-                    <th className="text-right py-2 px-2 font-normal">Session</th>
-                  </tr>
-                </thead>
-                <tbody>
+            <div>
+              <Table>
+                <TableHeader>
+                  <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                    <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
+                    <TableHead className="text-left py-2 px-2 font-normal">When</TableHead>
+                    <TableHead className="text-left py-2 px-2 font-normal">Reason</TableHead>
+                    <TableHead className="text-right py-2 px-2 font-normal">Session</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {halt.recentAttempts.map((a, i) => (
-                    <tr
+                    <TableRow
                       key={`${a.session_id ?? a.logical_session_id ?? "none"}-${a.ts}-${i}`}
-                      className="border-b border-border/60"
+                      className="border-border/60"
                       data-testid="fleet-halt-attempt-row"
                     >
-                      <td className="py-2 px-2">{a.butler}</td>
-                      <td className="py-2 px-2 text-xs text-muted-foreground">
+                      <TableCell className="py-2 px-2">{a.butler}</TableCell>
+                      <TableCell className="py-2 px-2 text-xs text-muted-foreground">
                         {formatAttemptTimestamp(a.ts)}
-                      </td>
-                      <td className="py-2 px-2 text-xs text-muted-foreground">
+                      </TableCell>
+                      <TableCell className="py-2 px-2 text-xs text-muted-foreground">
                         {a.failure_reason ?? "—"}
-                      </td>
-                      <td className="py-2 px-2 text-right text-xs">
+                      </TableCell>
+                      <TableCell className="py-2 px-2 text-right text-xs">
                         {/* Session door (bu-7o89u.3): pre-session ceiling denials
                             have no session_id yet -- render a plain dash instead
                             of a dead link (mirrors TopSessionsSection's pattern). */}
@@ -1658,11 +1666,11 @@ function FleetHaltBanner() {
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             </div>
           )}
         </div>

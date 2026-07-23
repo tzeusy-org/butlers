@@ -86,7 +86,9 @@ export default function Shell({ header, children }: ShellProps) {
         </header>
 
         {/* Content */}
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto p-6">
+          {children}
+        </main>
       </div>
     </div>
   )

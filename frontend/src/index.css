@@ -612,7 +612,11 @@ body {
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
+  }
+  :where(a, button, [role='button'], [tabindex]):focus-visible {
+    outline: 2px solid var(--fg);
+    outline-offset: 2px;
   }
   /* Tell the browser which palette to render native UI (scrollbars, form
      controls) in, so the default white scrollbar follows the theme. */

@@ -41,6 +41,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { InlineActionLink } from "@/components/ui/inline-action-link";
 import { Mono } from "@/components/ui/Mono";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Row } from "@/components/ui/Row";
@@ -77,20 +78,19 @@ function RowAction({
   disabled?: boolean;
 }) {
   return (
-    <button
-      type="button"
+    <InlineActionLink
       onClick={onClick}
       aria-label={ariaLabel}
       disabled={disabled}
       className={cn(
-        "shrink-0 font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 transition-colors cursor-pointer disabled:cursor-default disabled:opacity-50",
+        "shrink-0",
         tone === "danger"
           ? "text-muted-foreground hover:text-[var(--red-text)]"
           : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}
-    </button>
+    </InlineActionLink>
   );
 }
 
@@ -442,13 +442,12 @@ export default function MedicationTracker() {
             All
           </button>
         </div>
-        <button
-          type="button"
+        <InlineActionLink
           onClick={() => setFormTarget(undefined)}
-          className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          className="underline-offset-4"
         >
           Add medication
-        </button>
+        </InlineActionLink>
       </div>
 
       <div className="flex flex-col gap-8 md:flex-row md:items-start md:gap-10">

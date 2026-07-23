@@ -30,6 +30,7 @@ import { apiFetch } from "@/api/client";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { InlineActionLink } from "@/components/ui/inline-action-link";
 import { cn } from "@/lib/utils";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { useSettingsConsoleLive } from "@/hooks/use-settings-console-live";
@@ -161,24 +162,24 @@ function AttentionStrip({
             />
             <p className="text-sm truncate">{item.text}</p>
           </div>
-          <button
+          <InlineActionLink
             onClick={() => onNavigate(item.action_route)}
-            className="shrink-0 font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            className="shrink-0"
             aria-label={`Go to ${item.action_route}`}
           >
             Review →
-          </button>
+          </InlineActionLink>
         </div>
       ))}
       {truncatedCount > 0 && (
         <div className="px-4 py-2 font-mono text-[11px] text-muted-foreground border-t border-border flex items-center justify-between">
           <span>{truncatedCount} more item{truncatedCount !== 1 ? "s" : ""} not shown.</span>
-          <button
+          <InlineActionLink
             onClick={() => onNavigate("/audit-log")}
-            className="uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
+            className="text-[11px]"
           >
             ...{truncatedCount} more →
-          </button>
+          </InlineActionLink>
         </div>
       )}
     </div>
@@ -350,15 +351,14 @@ function ModelsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
       ) : isError ? (
         <p className="text-sm text-muted-foreground">
           Failed to load.{" "}
-          <button
+          <InlineActionLink
             onClick={(e) => {
               e.stopPropagation();
               refetch();
             }}
-            className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
           >
             Retry →
-          </button>
+          </InlineActionLink>
         </p>
       ) : (
         <div className="flex items-baseline gap-2">
@@ -398,15 +398,14 @@ function SpendPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
       ) : isError ? (
         <p className="text-sm text-muted-foreground">
           Failed to load.{" "}
-          <button
+          <InlineActionLink
             onClick={(e) => {
               e.stopPropagation();
               refetch();
             }}
-            className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
           >
             Retry →
-          </button>
+          </InlineActionLink>
         </p>
       ) : data?.data.ceiling_source_error ? (
         // Ledger/gate source degraded (bu-7o89u.1): mtd_usd is a fabricated
@@ -457,15 +456,14 @@ function ApprovalsPanel({ onNavigate }: { onNavigate: (route: string) => void })
       ) : isError ? (
         <p className="text-sm text-muted-foreground">
           Failed to load.{" "}
-          <button
+          <InlineActionLink
             onClick={(e) => {
               e.stopPropagation();
               refetch();
             }}
-            className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 hover:text-foreground transition-colors cursor-pointer"
           >
             Retry →
-          </button>
+          </InlineActionLink>
         </p>
       ) : (
         <div className="flex items-baseline gap-2">
@@ -600,12 +598,11 @@ export default function SettingsConsolePage() {
           role="alert"
         >
           <p className="text-sm">Could not load console status.</p>
-          <button
+          <InlineActionLink
             onClick={() => consoleRefetch()}
-            className="font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
           >
             Retry →
-          </button>
+          </InlineActionLink>
         </div>
       ) : consoleData ? (
         <AttentionStrip
