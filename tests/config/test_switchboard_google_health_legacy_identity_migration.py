@@ -6,9 +6,9 @@ import asyncio
 import shutil
 
 import pytest
-from alembic import command
 from sqlalchemy import create_engine, text
 
+from alembic import command
 from butlers.testing.migration import create_migration_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None

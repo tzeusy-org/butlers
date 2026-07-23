@@ -68,6 +68,8 @@ def test_upgrade_sql_is_guarded_and_uses_structural_pattern() -> None:
     assert "deleted_at IS NULL" in update_sql
     assert "connector_type = 'google_health'" in update_sql
     assert "endpoint_identity = ANY(:identities)" in update_sql
+    assert "endpoint_identity ~" not in select_sql
+    assert "endpoint_identity ~" not in update_sql
 
 
 def test_upgrade_filters_candidates_and_updates_exact_legacy_identities(
