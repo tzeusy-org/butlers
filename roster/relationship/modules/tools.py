@@ -1000,7 +1000,16 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
     from butlers.tools.relationship import relationship_assert_fact as _raf
 
-    @_tool("entity")
+    # Registered UNCONDITIONALLY (not gated on the "entity" group): this is the
+    # central writer that owner carve-out (RFC 0017 §2.3) and the family-
+    # confidence gate stamp as ``tool_name="relationship_assert_fact"`` on the
+    # pending_actions rows they create. The daemon's approval-dispatch executor
+    # resolves that name against this daemon's MCP registry (see
+    # daemon.py::_execute_approved_tool), so the tool MUST stay registered here
+    # regardless of the pruned LLM tool surface — otherwise approving/retrying
+    # an owner fact fails with "No registered handler for approved tool:
+    # relationship_assert_fact". Do NOT re-gate this behind a group.
+    @mcp.tool()
     async def relationship_assert_fact(
         subject: uuid.UUID,
         predicate: str,
