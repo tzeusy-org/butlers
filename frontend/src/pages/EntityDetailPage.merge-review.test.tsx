@@ -16,6 +16,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+const routerSpies = vi.hoisted(() => ({
+  announce: vi.fn(),
+  navigate: vi.fn(),
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -25,11 +29,13 @@ vi.mock("react-router", async (importOriginal) => {
   return {
     ...actual,
     useParams: vi.fn(() => ({ entityId: "entity-001" })),
-    useNavigate: vi.fn(() => vi.fn()),
+    useNavigate: vi.fn(() => routerSpies.navigate),
   };
 });
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+
+vi.mock("@/lib/shell-announcer", () => ({ announce: routerSpies.announce }));
 
 vi.mock("@/hooks/use-memory", () => ({
   useEntity: vi.fn(),
@@ -141,9 +147,9 @@ const MULTI_PEER_QUEUE = {
 let container: HTMLDivElement;
 let root: Root;
 
-function render(initialUrl = "/entities/entity-001") {
+function render(initialUrl = "/entities/entity-001", entity = ENTITY) {
   vi.mocked(useEntity).mockReturnValue({
-    data: { data: ENTITY },
+    data: { data: entity },
     isLoading: false,
     error: null,
   } as unknown as ReturnType<typeof useEntity>);
@@ -259,5 +265,76 @@ describe("EntityDetailPage — merge-review entry points", () => {
     const shares = container.querySelectorAll("[data-testid='workbench-shares-identifiers']");
     act(() => (shares[1] as HTMLButtonElement).click());
     expect(document.querySelector("[data-testid='merge-compare-dialog']")).toBeTruthy();
+  });
+});
+
+describe("EntityDetailPage — tombstoned entity navigation", () => {
+  it("replace-navigates to a valid survivor with an accessible announcement and no source controls", () => {
+    useRelationshipEntityQueue.mockReturnValue(EMPTY_QUEUE);
+    render("/entities/entity-001", {
+      ...ENTITY,
+      metadata: { merged_into: "survivor-002" },
+    });
+
+    expect(routerSpies.navigate).toHaveBeenCalledWith("/entities/survivor-002", {
+      replace: true,
+    });
+    expect(routerSpies.announce).toHaveBeenCalledWith(
+      "This entity was merged. Opening its surviving record.",
+    );
+    const redirectStatus = container.querySelector("[data-testid='entity-merge-redirect']");
+    expect(redirectStatus?.getAttribute("role")).toBe("status");
+    expect(redirectStatus?.getAttribute("aria-live")).toBe("polite");
+    expect(container.querySelector("[data-testid='entity-detail-root']")).toBeNull();
+    expect(container.querySelector("[data-testid='forget-entity-button']")).toBeNull();
+    expect(container.textContent).not.toContain("Test Person");
+  });
+
+  it("does not redirect a normal entity", () => {
+    useRelationshipEntityQueue.mockReturnValue(EMPTY_QUEUE);
+    render();
+
+    expect(routerSpies.navigate).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-testid='entity-detail-root']")).toBeTruthy();
+  });
+
+  it("does not redirect an archived entity without a merge target", () => {
+    useRelationshipEntityQueue.mockReturnValue(EMPTY_QUEUE);
+    render("/entities/entity-001", { ...ENTITY, archived: true, metadata: {} });
+
+    expect(routerSpies.navigate).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-testid='entity-detail-root']")).toBeTruthy();
+  });
+
+  it("keeps malformed merge metadata in place and names the inconsistency", () => {
+    useRelationshipEntityQueue.mockReturnValue(EMPTY_QUEUE);
+    render("/entities/entity-001", { ...ENTITY, metadata: { merged_into: 42 } });
+
+    expect(routerSpies.navigate).not.toHaveBeenCalled();
+    const inconsistency = container.querySelector(
+      "[data-testid='entity-merge-metadata-inconsistency']",
+    );
+    expect(inconsistency?.getAttribute("role")).toBe("alert");
+    expect(inconsistency?.textContent).toContain("Merge metadata inconsistency");
+  });
+
+  it("keeps a blank merge target in place and names the inconsistency", () => {
+    useRelationshipEntityQueue.mockReturnValue(EMPTY_QUEUE);
+    render("/entities/entity-001", { ...ENTITY, metadata: { merged_into: "   " } });
+
+    expect(routerSpies.navigate).not.toHaveBeenCalled();
+    expect(
+      container.querySelector("[data-testid='entity-merge-metadata-inconsistency']"),
+    ).toBeTruthy();
+  });
+
+  it("keeps self-referential merge metadata in place and names the inconsistency", () => {
+    useRelationshipEntityQueue.mockReturnValue(EMPTY_QUEUE);
+    render("/entities/entity-001", { ...ENTITY, metadata: { merged_into: "entity-001" } });
+
+    expect(routerSpies.navigate).not.toHaveBeenCalled();
+    expect(
+      container.querySelector("[data-testid='entity-merge-metadata-inconsistency']"),
+    ).toBeTruthy();
   });
 });

@@ -28,6 +28,16 @@ import type { CompareEntitiesResponse, CompareEntityBlock, CompareFact } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -245,15 +255,20 @@ export function MergeCompareDialog({
   const [diff, setDiff] = useState<CompareEntitiesResponse | null>(null);
   const [keepAs, setKeepAs] = useState<"A" | "B">("A");
   const [error, setError] = useState<string | null>(null);
+  const [mergeConfirmationOpen, setMergeConfirmationOpen] = useState(false);
 
   const compareReset = compare.reset;
   // Fetch the structural diff whenever a new pair opens. The compare view MUST
   // render before any merge can be committed (spec: "no merge bypasses review").
   useEffect(() => {
-    if (!pair) return;
+    if (!pair) {
+      setMergeConfirmationOpen(false);
+      return;
+    }
     setDiff(null);
     setKeepAs("A");
     setError(null);
+    setMergeConfirmationOpen(false);
     let cancelled = false;
     compare
       .mutateAsync({ entity_a: pair.entityA, entity_b: pair.entityB })
@@ -274,6 +289,7 @@ export function MergeCompareDialog({
   }, [pair?.entityA, pair?.entityB]);
 
   function handleClose(open: boolean) {
+    if (!open) setMergeConfirmationOpen(false);
     onOpenChange(open);
   }
 
@@ -304,8 +320,12 @@ export function MergeCompareDialog({
   }
 
   const pending = merge.isPending || dismiss.isPending;
+  const survivor =
+    diff && keepAs === "A" ? diff.a.entity.canonical_name : diff?.b.entity.canonical_name;
+  const absorbed =
+    diff && keepAs === "A" ? diff.b.entity.canonical_name : diff?.a.entity.canonical_name;
 
-  return (
+  const reviewDialog = (
     <Dialog open={pair !== null} onOpenChange={handleClose}>
       <DialogContent className="max-w-3xl" data-testid="merge-compare-dialog">
         <DialogHeader>
@@ -385,7 +405,7 @@ export function MergeCompareDialog({
           <Button
             type="button"
             disabled={pending || !diff}
-            onClick={handleMerge}
+            onClick={() => setMergeConfirmationOpen(true)}
             data-testid="compare-merge"
           >
             {merge.isPending ? (
@@ -398,5 +418,47 @@ export function MergeCompareDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+
+  return (
+    <>
+      {reviewDialog}
+      <AlertDialog open={mergeConfirmationOpen} onOpenChange={setMergeConfirmationOpen}>
+        <AlertDialogContent
+          data-testid="merge-confirmation"
+          onEscapeKeyDown={(event) => {
+            event.preventDefault();
+            setMergeConfirmationOpen(false);
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>Merge {absorbed} into {survivor}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {absorbed} will be merged into {survivor}. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              data-testid="merge-confirm-cancel"
+              disabled={pending}
+              onClick={() => setMergeConfirmationOpen(false)}
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="merge-confirm"
+              disabled={pending}
+              onClick={(event) => {
+                event.preventDefault();
+                setMergeConfirmationOpen(false);
+                void handleMerge();
+              }}
+            >
+              Confirm merge
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

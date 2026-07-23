@@ -46,6 +46,7 @@ import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionS
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { usePageContext } from "@/lib/page-context.tsx";
+import { announce } from "@/lib/shell-announcer";
 import { Row } from "@/components/ui/Row";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { FetchingDim } from "@/components/ui/fetching-dim";
@@ -120,6 +121,28 @@ export const ENTITY_MODE_STORAGE_KEY = "entities.detail.mode";
 
 /** URL search-param name for per-link mode override. */
 const ENTITY_MODE_PARAM = "mode";
+
+type MergeMetadataState =
+  | { kind: "normal" }
+  | { kind: "redirect"; survivorId: string }
+  | { kind: "inconsistent" };
+
+function resolveMergeMetadata(
+  entityId: string | undefined,
+  metadata: Record<string, unknown> | null | undefined,
+): MergeMetadataState {
+  if (!metadata || !Object.prototype.hasOwnProperty.call(metadata, "merged_into")) {
+    return { kind: "normal" };
+  }
+
+  const mergedInto = metadata.merged_into;
+  if (typeof mergedInto !== "string") return { kind: "inconsistent" };
+
+  const survivorId = mergedInto.trim();
+  if (!survivorId || survivorId === entityId) return { kind: "inconsistent" };
+
+  return { kind: "redirect", survivorId };
+}
 
 /**
  * Reads the persisted mode from localStorage, defaulting to "editorial".
@@ -2272,6 +2295,9 @@ export default function EntityDetailPage() {
     facts_limit: factsLimit,
   });
   const entity = data?.data;
+  const mergeMetadata = resolveMergeMetadata(entity?.id ?? entityId, entity?.metadata);
+  const mergedSurvivorId =
+    mergeMetadata.kind === "redirect" ? mergeMetadata.survivorId : null;
 
   // Page-context enrichment (bu-p6ey8.4 reference implementation): the chat
   // widget's default capture only sees route + query params, so it can't
@@ -2283,9 +2309,15 @@ export default function EntityDetailPage() {
   // attached to messages sent from a later, unrelated page.
   const setPageContext = usePageContext().set;
   useEffect(() => {
-    if (!entityId) return;
+    if (!entityId || mergedSurvivorId) return;
     setPageContext({ entity_ref: entity?.canonical_name ?? entityId });
-  }, [entityId, entity?.canonical_name, setPageContext]);
+  }, [entityId, entity?.canonical_name, mergedSurvivorId, setPageContext]);
+
+  useEffect(() => {
+    if (!mergedSurvivorId) return;
+    announce("This entity was merged. Opening its surviving record.");
+    void navigate(`/entities/${encodeURIComponent(mergedSurvivorId)}`, { replace: true });
+  }, [mergedSurvivorId, navigate]);
 
   const updateEntity = useUpdateEntity();
   const promoteEntity = usePromoteEntity();
@@ -2700,6 +2732,23 @@ export default function EntityDetailPage() {
     </div>
   );
 
+  if (mergedSurvivorId) {
+    return (
+      <Page
+        archetype={pageArchetype}
+        title="Merged entity"
+        breadcrumbs={[
+          { label: "Index", href: "/entities" },
+          { label: "Merged entity" },
+        ]}
+      >
+        <p className="sr-only" role="status" aria-live="polite" data-testid="entity-merge-redirect">
+          This entity was merged. Opening its surviving record.
+        </p>
+      </Page>
+    );
+  }
+
   return (
     <>
     <Page
@@ -2720,6 +2769,18 @@ export default function EntityDetailPage() {
           className="outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
           {/* eslint-enable jsx-a11y/no-static-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
+          {mergeMetadata.kind === "inconsistent" && (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"
+              data-testid="entity-merge-metadata-inconsistency"
+              role="alert"
+            >
+              <p className="font-medium text-destructive">Merge metadata inconsistency</p>
+              <p className="mt-1 text-destructive/80">
+                The merged-into target is invalid. This entity was not redirected.
+              </p>
+            </div>
+          )}
           {/* Duplicate-warning panel — "shares identifiers with" hint. Its merge
               action opens the compare view; `m` is the keyboard equivalent. */}
           {duplicatePeerId && (

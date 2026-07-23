@@ -7,7 +7,7 @@
  *
  * Flows covered end-to-end (against the built bundle served by `vite preview`):
  *   1. Queue duplicate card → compare → dismiss (pair leaves queue) AND merge
- *      (merge POST fires with survivor, dialog closes, survivor detail reachable).
+ *      (final confirmation gates the merge POST, dialog closes, survivor detail reachable).
  *   2. Detail: delta banner after facts change between visits; sparkline renders
  *      exactly 90 sticks; core-dates + latest-interactions blocks present.
  *   3. Workbench toggle → three rails render; provenance grid sortable;
@@ -627,13 +627,21 @@ test.describe("entity-v3: queue → compare → dismiss/merge", () => {
       timeout: TIMEOUT_MS,
     });
 
-    // Survivor radio defaults to A (the triggering entity). Commit the merge.
+    // Survivor radio defaults to A (the triggering entity). The first action
+    // only opens the final accessible confirmation; it must not commit yet.
     await page.getByTestId("compare-merge").click();
+    const confirmation = page.getByTestId("merge-confirmation");
+    await expect(confirmation).toBeVisible({ timeout: TIMEOUT_MS });
+    await expect(confirmation).toHaveAttribute("role", "alertdialog");
+    expect(mergeBodies).toHaveLength(0);
+
+    await page.getByTestId("merge-confirm").click();
+    await expect(confirmation).not.toBeVisible({ timeout: TIMEOUT_MS });
     await expect(page.getByTestId("merge-compare-dialog")).not.toBeVisible({
       timeout: TIMEOUT_MS,
     });
     // The merge POST fired against the survivor's id, keeping A.
-    expect(mergeBodies.length).toBe(1);
+    await expect.poll(() => mergeBodies.length, { timeout: TIMEOUT_MS }).toBe(1);
     expect(mergeBodies[0]).toContain(ENTITY_ID);
     expect(mergeBodies[0]).toContain('"keepAs":"A"');
 

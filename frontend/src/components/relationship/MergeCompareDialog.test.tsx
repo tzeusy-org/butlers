@@ -5,7 +5,7 @@
  *
  * Covers:
  * - opening the dialog POSTs compare and renders a/b blocks + shared/divergent;
- * - the merge action POSTs /merge with the chosen survivor and handles the result;
+ * - the merge action requires an accessible final confirmation before POSTing /merge;
  * - the dismiss-pair action POSTs dismiss-pair;
  * - commit buttons are disabled until the compare diff has rendered
  *   (no merge bypasses the compare view).
@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { toast } from "sonner";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -180,7 +181,7 @@ describe("MergeCompareDialog", () => {
     expect(text).toContain("has birthday");
   });
 
-  it("merges with the chosen survivor (keepAs reflects selected column)", async () => {
+  it("requires an accessible final confirmation before merging with the chosen survivor", async () => {
     await act(async () => {
       root.render(
         <MergeCompareDialog pair={{ entityA: "a1", entityB: "b1" }} onOpenChange={() => {}} />,
@@ -202,7 +203,105 @@ describe("MergeCompareDialog", () => {
     });
     await flush();
 
+    expect(mergeMutate).not.toHaveBeenCalled();
+    const confirmation = document.querySelector(
+      '[data-testid="merge-confirmation"]',
+    ) as HTMLElement;
+    expect(confirmation).not.toBeNull();
+    expect(confirmation.getAttribute("role")).toBe("alertdialog");
+    expect(confirmation.getAttribute("aria-labelledby")).toBeTruthy();
+    expect(confirmation.getAttribute("aria-describedby")).toBeTruthy();
+    expect(confirmation.textContent).toContain("Alice Two");
+    expect(confirmation.textContent).toContain("Alice One");
+
+    const confirmBtn = document.querySelector(
+      '[data-testid="merge-confirm"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      confirmBtn.click();
+    });
+    await flush();
+
     expect(mergeMutate).toHaveBeenCalledWith({ entityA: "a1", entityB: "b1", keepAs: "B" });
+  });
+
+  it("cancels the final confirmation without requesting a merge", async () => {
+    await act(async () => {
+      root.render(
+        <MergeCompareDialog pair={{ entityA: "a1", entityB: "b1" }} onOpenChange={() => {}} />,
+      );
+    });
+    await flush();
+
+    const mergeBtn = document.querySelector('[data-testid="compare-merge"]') as HTMLButtonElement;
+    await act(async () => {
+      mergeBtn.click();
+    });
+    await flush();
+
+    const cancelBtn = document.querySelector(
+      '[data-testid="merge-confirm-cancel"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      cancelBtn.click();
+    });
+    await flush();
+
+    expect(mergeMutate).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="merge-confirmation"]')).toBeNull();
+  });
+
+  it("Escape cancels the final confirmation without requesting a merge", async () => {
+    await act(async () => {
+      root.render(
+        <MergeCompareDialog pair={{ entityA: "a1", entityB: "b1" }} onOpenChange={() => {}} />,
+      );
+    });
+    await flush();
+
+    const mergeBtn = document.querySelector('[data-testid="compare-merge"]') as HTMLButtonElement;
+    await act(async () => {
+      mergeBtn.click();
+    });
+    await flush();
+
+    const confirmation = document.querySelector(
+      '[data-testid="merge-confirmation"]',
+    ) as HTMLElement;
+    await act(async () => {
+      confirmation.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await flush();
+
+    expect(mergeMutate).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="merge-confirmation"]')).toBeNull();
+  });
+
+  it("retains merge error handling after confirmation", async () => {
+    mergeMutate.mockRejectedValueOnce(new Error("merge service unavailable"));
+    await act(async () => {
+      root.render(
+        <MergeCompareDialog pair={{ entityA: "a1", entityB: "b1" }} onOpenChange={() => {}} />,
+      );
+    });
+    await flush();
+
+    const mergeBtn = document.querySelector('[data-testid="compare-merge"]') as HTMLButtonElement;
+    await act(async () => {
+      mergeBtn.click();
+    });
+    await flush();
+
+    const confirmBtn = document.querySelector(
+      '[data-testid="merge-confirm"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      confirmBtn.click();
+    });
+    await flush();
+
+    expect(mergeMutate).toHaveBeenCalledWith({ entityA: "a1", entityB: "b1", keepAs: "A" });
+    expect(toast.error).toHaveBeenCalledWith("Merge failed: merge service unavailable");
   });
 
   it("dismiss action POSTs dismiss-pair", async () => {
