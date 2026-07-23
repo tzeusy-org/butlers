@@ -921,7 +921,7 @@ class ActivityWatchConnector:
                         external_thread_id=self._endpoint_identity,
                         observed_at=observed_at,
                         sender_identity=self._endpoint_identity,
-                        raw=raw_event,
+                        raw={},
                     ),
                 )
                 return

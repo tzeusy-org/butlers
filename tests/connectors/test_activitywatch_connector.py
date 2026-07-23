@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 
 from butlers.connectors.activitywatch import (
+    ActivityWatchConnector,
     ActivityWatchConnectorConfig,
     build_activity_envelope,
     build_afk_intervals,
@@ -28,6 +30,7 @@ from butlers.connectors.activitywatch import (
     find_bucket_id,
     lookup_afk_status,
 )
+from butlers.ingestion_policy import PolicyDecision
 
 _MACHINE_ID = "desktop"
 _ENDPOINT = f"activitywatch:{_MACHINE_ID}"
@@ -284,3 +287,50 @@ def test_build_afk_intervals_skips_malformed_events() -> None:
         {"duration": 60, "data": {"status": "afk"}},  # missing timestamp
     ]
     assert build_afk_intervals(afk_events) == []
+
+
+# ---------------------------------------------------------------------------
+# Filtered-content privacy tier (bu-apzqs)
+# ---------------------------------------------------------------------------
+
+
+async def test_policy_denied_event_scrubs_title_from_filtered_full_payload() -> None:
+    """A policy-denied event keeps operational metadata but no provider raw payload."""
+    connector = ActivityWatchConnector(
+        ActivityWatchConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            machine_id=_MACHINE_ID,
+        )
+    )
+    connector._ingestion_policy = MagicMock()  # type: ignore[assignment]
+    connector._ingestion_policy.evaluate.return_value = PolicyDecision(
+        action="block",
+        matched_rule_type="app_class",
+    )
+    title = "Sensitive project roadmap"
+    raw_event = {
+        "timestamp": _TS.isoformat(),
+        "duration": 42,
+        "data": {"app": "Code", "title": title},
+    }
+
+    await connector._process_window_event(
+        bucket_id=_BUCKET_ID,
+        ts=_TS,
+        duration_seconds=42,
+        app="Code",
+        window_title=title,
+        app_class="ide",
+        is_afk=False,
+        raw_event=raw_event,
+    )
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[7] == "connector_rule:block:app_class"
+    assert row[6] == "ActivityWatch ide activity"
+    assert row[9]["payload"]["raw"] == {}
+    serialized_payload = json.dumps(row[9]).lower()
+    assert title.lower() not in serialized_payload
+    assert "title" not in serialized_payload
