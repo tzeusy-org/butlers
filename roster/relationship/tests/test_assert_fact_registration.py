@@ -17,6 +17,9 @@ breaking dispatch. It is now registered unconditionally; this test guards that.
 
 from __future__ import annotations
 
+import uuid
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from fastmcp import FastMCP
 
@@ -66,6 +69,45 @@ async def test_pruned_entity_reads_stay_pruned():
     # module's ``memory_entity_*`` tools; the writer is the only exception.
     assert "entity_resolve" not in names
     assert "relationship_lookup" not in names
+
+
+async def test_assert_fact_closure_invokes_library_writer(monkeypatch):
+    """Invoking the registered tool must reach the library writer.
+
+    Guards the closure body: ``butlers.tools.relationship`` re-exports the
+    ``relationship_assert_fact`` *function* at package level, so the old
+    ``_raf.relationship_assert_fact(...)`` access raised ``'function' object has
+    no attribute 'relationship_assert_fact'`` at dispatch time — the exact
+    failure that surfaced as a 502 on approval retry. A registration-only test
+    does not catch this; the closure must actually be called.
+    """
+    outcome = MagicMock()
+    outcome.as_dict.return_value = {"outcome": "inserted", "fact_id": str(uuid.uuid4())}
+    writer = AsyncMock(return_value=outcome)
+
+    # Patch the source function BEFORE registration so the closure's local
+    # import binds the mock. Patch the module object directly (not a dotted
+    # string) — ``butlers.tools.relationship`` is a roster-loaded package whose
+    # submodules live in ``sys.modules`` but are not reachable via attribute
+    # traversal, which monkeypatch's string form requires.
+    import importlib
+
+    writer_mod = importlib.import_module("butlers.tools.relationship.relationship_assert_fact")
+    monkeypatch.setattr(writer_mod, "relationship_assert_fact", writer)
+
+    mod = RelationshipModule()
+    mod._db = MagicMock()  # _get_pool() returns self._db.pool
+    cfg = RelationshipModuleConfig(groups=_PRODUCTION_GROUPS)
+    mcp = FastMCP("test-relationship")
+    await mod.register_tools(mcp, cfg, db=mod._db, butler_name="relationship")
+
+    tool = await mcp.get_tool("relationship_assert_fact")
+    subject = uuid.uuid4()
+    result = await tool.fn(subject=subject, predicate="has-email", object="a@b.com")
+
+    writer.assert_awaited_once()
+    assert writer.await_args.kwargs.get("src") == "relationship"
+    assert result == outcome.as_dict.return_value
 
 
 if __name__ == "__main__":  # pragma: no cover

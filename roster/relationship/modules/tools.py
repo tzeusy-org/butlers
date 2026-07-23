@@ -998,7 +998,15 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     # Facts triple-store tools (group: entity — central writer)
     # =================================================================
 
-    from butlers.tools.relationship import relationship_assert_fact as _raf
+    # Import the library WRITER FUNCTION directly. Note ``butlers.tools.
+    # relationship`` re-exports the ``relationship_assert_fact`` *function* at
+    # package level (roster/relationship/tools/__init__.py), which shadows the
+    # submodule of the same name — so ``from ...relationship import
+    # relationship_assert_fact`` binds the function, not the module. Import from
+    # the submodule path explicitly to make that unambiguous.
+    from butlers.tools.relationship.relationship_assert_fact import (
+        relationship_assert_fact as _assert_fact_lib,
+    )
 
     # Registered UNCONDITIONALLY (not gated on the "entity" group): this is the
     # central writer that owner carve-out (RFC 0017 §2.3) and the family-
@@ -1056,7 +1064,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         from internal daemon/bootstrap code that calls the underlying
         :func:`relationship_assert_fact` library function directly.
         """
-        result = await _raf.relationship_assert_fact(
+        result = await _assert_fact_lib(
             module._get_pool(),
             subject,
             predicate,
