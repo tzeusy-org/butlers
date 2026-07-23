@@ -190,6 +190,7 @@ def test_downgrade_drops_both_views(postgres_container) -> None:
     affects the other tests in this module.
     """
     from alembic import command
+
     from butlers.migrations import _build_alembic_config
 
     db_url = create_migrated_test_db(
