@@ -113,7 +113,20 @@ class ContextSignal(str, Enum):
 | `away` | general | General butler handles availability |
 | `dnd` | general, switchboard | User-initiated; switchboard enforces |
 
-Write permissions are enforced at the application layer. The `set_context()` function validates `(butler_name, signal_type)` against the permissions table and raises `PermissionError` on unauthorized writes.
+Write permissions for every **non-DND** signal remain enforced at the application
+layer. The normal `set_context()` function validates `(butler_name,
+signal_type)` against the permissions table and raises `PermissionError` on
+unauthorized writes. The existing broad `public.user_context` runtime grants are
+therefore preserved for ordinary authorized context paths; this RFC does not
+turn every signal into a database row-level authorization model.
+
+`dnd` is a safety-critical exception. General and Switchboard must use the
+canonical DND operation below, and a database-enforced DND RLS/ACL boundary
+rejects direct DND DML even from a runtime role with the ordinary table grant.
+That exception prevents an unversioned DND transition from bypassing the guard;
+it does not grant any butler a peer-schema read or change non-DND permissions.
+The RLS exception constrains writes only: all butlers retain the public DND read
+path required for RFC 0009 context checks and guarded snapshots.
 
 ### TTL Semantics
 
@@ -239,6 +252,123 @@ async def clear_context(
     """, signal_type, butler_name)
 ```
 
+### Canonical DND Generation Guard
+
+`dnd` is a safety-critical exception to the ordinary row-upsert examples
+above. Its logical state is the OR of active General and Switchboard DND rows;
+no individual `user_context` row version is a sufficient DND admission fence.
+Every canonical DND mutation therefore uses one durable singleton generation
+guard in the `public` context-bus boundary.
+
+The guard has a non-negative, monotonic `BIGINT` generation and a mutation
+audit keyed by immutable `mutation_id`. A canonical DND request carries its
+writer, operation (`set` or `clear`), affected writer row, opaque stable
+correlation reference, and complete DND payload. Each audit row and returned
+receipt persist `mutation_id`, generation, verified writer, affected row,
+operation, opaque correlation, requested/effective expiry, a semantic
+fingerprint version/digest, and commit timestamp. General's explicit-context
+MCP tools and every future Switchboard DND path are the only canonical writers.
+Health, Messenger, connectors, and other domain butlers may read a DND snapshot
+but may not mutate DND.
+
+The semantic fingerprint is SHA-256 over a versioned canonical document. It
+includes the protocol/signal, verified writer, affected row, operation, opaque
+correlation, requested and effective expiry normalized to UTC at PostgreSQL
+timestamp precision, effective confidence, and canonicalized metadata. The
+optional DND value participates without being retained: null and empty are
+distinct, while a present value is Unicode-NFC normalized and represented only
+by its SHA-256 digest. Metadata is canonicalized and digested before inclusion.
+No raw optional value, metadata, user message text, notification content, or
+provider payload is placed in the audit or receipt. A clear uses null expiry
+and set-only payload fields.
+
+Timestamp normalization renders the stored UTC instant at PostgreSQL microsecond
+precision; confidence uses the validated stored `REAL` binary32 representation.
+Canonical metadata JSON sorts Unicode-NFC object keys, preserves array order,
+distinguishes null from empty values, uses finite canonical numeric forms, and
+rejects unrepresentable input. The correlation reference is a normalized opaque
+identifier, never a user-text surrogate.
+
+This unkeyed SHA-256 digest is a content-minimizing replay identity, not a
+secrecy primitive. No runtime role may directly read the mutation audit; the
+canonical operation reads it only to deduplicate and returns a receipt only to
+its canonical writer. Snapshot/admission readers receive neither the digest nor
+audit rows. The contract does not claim resistance to a reader who can obtain a
+digest and test low-entropy candidate payloads, so the digest must never be
+exposed to broad context readers or treated as a credential.
+
+The DND mutation transaction MUST:
+
+1. lock the singleton guard with `FOR UPDATE`;
+2. deduplicate `mutation_id`, returning an exact prior receipt only when the
+   persisted semantic fingerprint matches and rejecting conflicting replays;
+3. validate the effective writer and mutate only that writer's DND context row;
+4. advance the guard exactly once and persist a minimal mutation receipt; and
+5. commit the row change, generation, and receipt atomically.
+
+For a new set, one database timestamp inside the mutation transaction applies
+the existing TTL default/max normalization and persists its effective expiry.
+For a retry, the candidate fingerprint combines the retry's normalized inputs
+with that persisted effective expiry, so a later database clock cannot silently
+turn a defaulted or clamped retry into a different semantic mutation. A changed
+requested/effective expiry, optional value, confidence, metadata, writer,
+operation, or correlation for the same mutation ID fails closed as
+`idempotency_conflict` without changing the row, guard, audit, or prior receipt.
+If the persisted row lacks its fingerprint version/digest, uses an unsupported
+fingerprint version, or has expiry fields incompatible with its operation
+(including a set without an effective expiry), the replay identity is unprovable:
+the operation returns `replay_identity_unprovable` before DND DML and never
+infers a replacement identity, guesses a receipt, or applies a second mutation.
+
+Direct DND DML that bypasses this path is forbidden by the database security
+boundary. `FORCE ROW LEVEL SECURITY` preserves existing direct runtime access
+to non-DND rows but denies DND and DND-crossing updates; a narrowly owned,
+pinned `SECURITY DEFINER` operation is executable only by the General and
+Switchboard runtime roles. It validates the active `SET ROLE` identity rather
+than trusting a caller-supplied writer or `session_user`, and it fails closed if
+that role/ACL/guard boundary is not provable. A counter that would exceed
+`BIGINT` maximum fails closed before changing DND; it never wraps, resets, or
+reuses a generation.
+
+The policy is command-specific rather than a blanket `FOR ALL` restriction: it
+must not hide DND rows from the shared public read path used by snapshots and
+ordinary context checks.
+
+#### DND snapshots and admission
+
+A DND snapshot contains `{generation, dnd_active, observed_at,
+revalidate_at}` and is evidence rather than an egress authorization.
+`observed_at` and active-state evaluation use database time. For an active
+snapshot, `revalidate_at` is the earliest active DND expiry, the first
+time-based state transition that can happen without a writer transaction. An
+inactive snapshot has no expiry-driven activation: any future set or refresh
+must advance generation.
+
+A consumer turning an inactive snapshot into a durable local effect MUST
+revalidate it inside the same database transaction that writes that effect. It
+takes `FOR SHARE` on the same guard, requires the captured generation and an
+inactive current DND state, then commits or rolls back its own record before
+releasing the lock. Because writers take the conflicting `FOR UPDATE` lock
+first, a DND mutation either advances the generation before admission (which
+makes the admission reject) or waits until the local admission boundary is
+durable. The lock is never held across MCP or provider I/O.
+
+Health owns its policy/wake decision and Messenger owns final egress admission;
+both are future consumers of this contract. Messenger repeats the guarded
+check in the transaction that persists its own egress intent. Switchboard only
+carries generation/correlation through authenticated MCP packets and never
+substitutes a peer-schema SQL check. A DND change after a durable local
+admission invalidates later or retry admission; it cannot retract an already
+admitted external effect.
+
+TTL expiry does not itself increment generation. Consumers cannot rely on an
+active snapshot at or after `revalidate_at`; they re-read current DND under the
+guard using database time. A later DND refresh or reactivation after clear or
+expiry is a new mutation with a new ID and advances generation exactly once.
+Restart recovery uses the durable guard, mutation audit (including fingerprint
+and effective expiry), and canonical context rows only. Missing, stale,
+malformed, or otherwise unprovable evidence fails closed for an admission.
+
 ### How Butlers Use Context
 
 Context checking is **pull-based**. Butlers query context at decision points, not via push notifications. This keeps the system simple and avoids coupling between butlers.
@@ -316,7 +446,12 @@ def downgrade() -> None:
 - **RFC 0001:** Context query functions are initialized at daemon startup (phase 8b, alongside credential store). No background tasks are required for the pull-based model.
 - **RFC 0002:** Butlers MAY expose MCP tools for setting and querying context. A `check_context` tool gives LLM sessions direct access to situational awareness.
 - **RFC 0004:** Context preamble complements the identity preamble. Both are prepended to routed messages when available.
-- **RFC 0006:** The `public.user_context` table follows the existing public schema pattern. All butlers read it via their `search_path`. Write access is enforced at the application level, not the database level, consistent with the current public schema access model.
+- **RFC 0006:** The `public.user_context` table follows the existing public
+  schema pattern. All butlers read it via their `search_path`. Non-DND writes
+  retain the current application-level authorization and broad runtime grant
+  model. DND is the documented narrow exception: forced RLS plus a dedicated
+  security-definer mutation operation prevent direct DND DML, while preserving
+  schema isolation and the database-security role matrix.
 - **RFC 0007:** The dashboard can expose a context timeline view showing active and historical signals.
 - **Owner Attention Policy:** The deterministic health sleep producer uses the
   shared exact-end policy anchor; this is a read/TTL projection, not a new
