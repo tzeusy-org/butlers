@@ -77,6 +77,29 @@ describe("CostWidget — trend sparkline", () => {
     expect(screen.queryByTestId("cost-widget-sparkline")).toBeNull();
   });
 
+  it("renders a direct summary failure as unavailable instead of a fallback total or top butler", () => {
+    renderWidget({
+      totalCostUsd: 0,
+      topButler: "general",
+      topButlerCost: 0.9,
+      isUnavailable: true,
+      dailyCosts: DAILY,
+    });
+
+    expect(screen.getByTestId("cost-widget-summary-unavailable")).toBeTruthy();
+    expect(screen.queryByText("$0.00")).toBeNull();
+    expect(screen.queryByText(/Top: general/)).toBeNull();
+    expect(screen.queryByTestId("cost-widget-source-unavailable")).toBeNull();
+  });
+
+  it("keeps a successful zero-cost summary calm", () => {
+    renderWidget({ totalCostUsd: 0, topButler: null, dailyCosts: DAILY });
+
+    expect(screen.getByText("$0.00")).toBeTruthy();
+    expect(screen.queryByTestId("cost-widget-summary-unavailable")).toBeNull();
+    expect(screen.queryByText(/^Top:/)).toBeNull();
+  });
+
   it("never renders a nonzero total as $0.00", () => {
     renderWidget({ totalCostUsd: 0.004 });
 

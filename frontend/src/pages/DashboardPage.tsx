@@ -254,7 +254,7 @@ export default function DashboardPage() {
   // most-expensive butler, derived from the by_butler breakdown; this is a
   // distinct surface from the per-butler subtitles in ButlerIndex, so no
   // aggregate cost figure is double-rendered.
-  const costData = costQuery.isError ? null : costQuery.data?.data;
+  const costData = costQuery.data?.data;
   const costSourceError = costData?.source_error === true;
   const dailyCostSourceError = dailySpendQuery.data?.meta?.source_error === true;
   const [topButler, topButlerCost] = Object.entries(
@@ -263,9 +263,7 @@ export default function DashboardPage() {
     (best, [name, cost]) => (cost > best[1] ? [name, cost] : best),
     [null, 0],
   );
-  const topSessions = topSessionsQuery.isError
-    ? []
-    : (topSessionsQuery.data?.data ?? []);
+  const topSessions = topSessionsQuery.data?.data ?? [];
 
   // Wire live approve/deny/defer handlers onto the individually-actionable
   // approval rows model.ts produced (rows carrying `approvalId`) -- the
@@ -513,6 +511,7 @@ export default function DashboardPage() {
             topButlerCost={topButlerCost}
             unpricedModels={costData?.unpriced_models}
             sourceError={costSourceError}
+            isUnavailable={costQuery.isError}
             isLoading={costQuery.isLoading}
             dailyCosts={
               dailySpendQuery.isError || dailyCostSourceError ? undefined : dailySpendQuery.data?.data
@@ -525,6 +524,7 @@ export default function DashboardPage() {
         <TopSessionsTable
           sessions={topSessions}
           isLoading={topSessionsQuery.isLoading}
+          isUnavailable={topSessionsQuery.isError}
         />
       </div>
     </Page>

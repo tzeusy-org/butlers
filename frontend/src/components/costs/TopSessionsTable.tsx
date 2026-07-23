@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '../ui/table'
+import { SourceDegradedNote } from '@/components/ui/query-boundary'
 import { formatCostUsd } from '@/lib/format-cost'
 
 import type { TopSession } from '../../api/types'
@@ -17,6 +18,8 @@ import type { TopSession } from '../../api/types'
 interface TopSessionsTableProps {
   sessions: TopSession[]
   isLoading?: boolean
+  /** The direct Overview top-sessions query failed before session data was available. */
+  isUnavailable?: boolean
 }
 
 function formatTokens(n: number): string {
@@ -36,7 +39,7 @@ function formatTime(iso: string): string {
   })
 }
 
-export default function TopSessionsTable({ sessions, isLoading }: TopSessionsTableProps) {
+export default function TopSessionsTable({ sessions, isLoading, isUnavailable }: TopSessionsTableProps) {
   if (isLoading) {
     return (
       <Card>
@@ -49,6 +52,22 @@ export default function TopSessionsTable({ sessions, isLoading }: TopSessionsTab
               <div key={i} className="h-10 rounded bg-muted" />
             ))}
           </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (isUnavailable) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Most Expensive Sessions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SourceDegradedNote
+            label="Top sessions"
+            testId="top-sessions-unavailable"
+          />
         </CardContent>
       </Card>
     )

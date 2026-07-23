@@ -17,6 +17,8 @@ interface CostWidgetProps {
   unpricedModels?: UnpricedModelUsage[];
   /** Compatibility summary envelope has placeholder totals rather than evidence. */
   sourceError?: boolean;
+  /** The direct Overview summary query failed before a summary envelope was available. */
+  isUnavailable?: boolean;
   isLoading?: boolean;
   /**
    * Real daily cost series for the trailing 7 days (from GET /api/spend/daily).
@@ -39,6 +41,7 @@ export default function CostWidget({
   topButlerCost,
   unpricedModels = [],
   sourceError = false,
+  isUnavailable = false,
   isLoading,
   dailyCosts,
   dailyCostsError = false,
@@ -48,6 +51,7 @@ export default function CostWidget({
   const unpricedCalls = unpricedModels.reduce((total, model) => total + model.calls, 0);
   const dailyUnpricedCalls = dailyUnpricedModels.reduce((total, model) => total + model.calls, 0);
   const hasUnpricedModels = unpricedModels.length > 0;
+  const summaryUnavailable = isUnavailable || sourceError;
 
   if (isLoading) {
     return (
@@ -71,7 +75,12 @@ export default function CostWidget({
         </Button>
       </CardHeader>
       <CardContent>
-        {sourceError ? (
+        {isUnavailable ? (
+          <SourceDegradedNote
+            label="Cost summary"
+            testId="cost-widget-summary-unavailable"
+          />
+        ) : sourceError ? (
           <SourceDegradedNote
             label="Cost source unavailable"
             detail="compatibility total hidden"
@@ -84,11 +93,11 @@ export default function CostWidget({
         ) : (
           <div className="text-2xl font-bold">{formatCostUsd(totalCostUsd)}</div>
         )}
-        {!sourceError && hasUnpricedModels ? (
+        {!summaryUnavailable && hasUnpricedModels ? (
           <p className="mt-1 text-xs text-muted-foreground">
             {unpricedCalls.toLocaleString()} unpriced {unpricedCalls === 1 ? "call" : "calls"} excluded
           </p>
-        ) : !sourceError && topButler ? (
+        ) : !summaryUnavailable && topButler ? (
           <p className="mt-1 text-xs text-muted-foreground">
             Top: {topButler} ({formatCostUsd(topButlerCost)})
           </p>

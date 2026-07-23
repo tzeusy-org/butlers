@@ -780,6 +780,21 @@ describe("DashboardPage -- cost surface", () => {
     expect(html).not.toContain("Top: general");
   });
 
+  it("renders a direct summary query failure as unavailable instead of a fallback total", () => {
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("summary unavailable"),
+    } as AnyMock);
+
+    const html = renderPage();
+
+    expect(html).toContain("Cost summary: unavailable");
+    expect(html).not.toContain("$0.00");
+    expect(html).not.toContain("Top: general");
+  });
+
   it("shows the most-expensive butler derived from the by_butler breakdown", () => {
     const html = renderPage();
     // by_butler { general: 0.30, health: 0.12 } -> top is general at $0.30
@@ -793,6 +808,20 @@ describe("DashboardPage -- cost surface", () => {
     // 50_000 / 12_000 input/output tokens -> "50.0K / 12.0K"
     expect(html).toContain("50.0K");
     expect(html).toContain("12.0K");
+  });
+
+  it("renders a direct top-sessions query failure as unavailable instead of successful-empty copy", () => {
+    vi.mocked(useTopSessions).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("top sessions unavailable"),
+    } as AnyMock);
+
+    const html = renderPage();
+
+    expect(html).toContain("Top sessions: unavailable");
+    expect(html).not.toContain("No session data available");
   });
 });
 
