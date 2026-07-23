@@ -112,14 +112,19 @@ function fmtAvg(n: number | undefined | null): string {
 export interface ConnectorDetailViewProps {
   connector: ConnectorDetail
   stats: ConnectorStats | undefined
+  /** Query state for the 24h stats reader, independent of connector metadata. */
+  statsReader?: ConnectorDetailReaderState
   /** OAuth scopes from connector-oauth-scope-surface. Null = unavailable. */
   oauthScopes?: OAuthScope[] | null
   /** Recent events response from /connectors/{type}/{identity}/events. [bu-5ywn2] */
   recentEvents?: ConnectorEventsResponse | null
+  recentEventsReader?: ConnectorDetailReaderState
   /** Incident events response from /connectors/{type}/{identity}/incidents. [bu-5ywn2] */
   incidents?: ConnectorIncidentsResponse | null
+  incidentsReader?: ConnectorDetailReaderState
   /** Routing rules response from /connectors/{type}/{identity}/routing-rules. [bu-5ywn2] */
   routingRules?: ConnectorRoutingRulesResponse | null
+  routingRulesReader?: ConnectorDetailReaderState
   /** Called when user clicks re-authorize (auth error / expiring). */
   onReauth?: () => void
   /** Called when user clicks "set primary account" (no_primary_account case). */
@@ -128,6 +133,13 @@ export interface ConnectorDetailViewProps {
   onPause?: () => void
   /** Called when user clicks "run now". */
   onRunNow?: () => void
+}
+
+/** Minimal query state a secondary reader needs to render loading/error honestly. */
+export interface ConnectorDetailReaderState {
+  isLoading?: boolean
+  isError?: boolean
+  onRetry?: () => void
 }
 
 /**
@@ -140,10 +152,14 @@ export interface ConnectorDetailViewProps {
 export function ConnectorDetailView({
   connector,
   stats,
+  statsReader,
   oauthScopes,
   recentEvents,
+  recentEventsReader,
   incidents,
+  incidentsReader,
   routingRules,
+  routingRulesReader,
   onReauth,
   onSetPrimaryAccount,
   onPause,
@@ -151,6 +167,8 @@ export function ConnectorDetailView({
 }: ConnectorDetailViewProps) {
   const info = deriveConnectorDispatchInfo(connector)
   const displayName = connector.connector_type.replace(/_/g, ' ')
+  const statsUnavailable = statsReader?.isError === true
+  const statsLoading = statsReader?.isLoading === true && !stats
 
   // Derive spark data from timeseries (24h hourly buckets)
   const spark24h = deriveSparkline(stats)
@@ -160,7 +178,7 @@ export function ConnectorDetailView({
   // hourly_events_available is false only on a genuine backend DB-query failure;
   // in that case both series fall back to all-zero and the histogram would read
   // as an honest quiet window — surface the degraded source inline instead.
-  const hourlyEventsAvailable = stats?.hourly_events_available !== false
+  const hourlyEventsAvailable = !statsUnavailable && stats?.hourly_events_available !== false
 
   return (
     <div className="space-y-0">
@@ -247,12 +265,12 @@ export function ConnectorDetailView({
               },
               {
                 label: 'error rate',
-                value: fmtPct(stats?.summary?.error_rate_pct),
+                value: statsUnavailable ? '—' : fmtPct(stats?.summary?.error_rate_pct),
                 delta: `${fmtNum(connector.today?.messages_failed)} failed`,
               },
               {
                 label: 'avg · per hour',
-                value: fmtAvg(stats?.summary?.avg_messages_per_hour),
+                value: statsUnavailable ? '—' : fmtAvg(stats?.summary?.avg_messages_per_hour),
                 delta: '24h window',
               },
               {
@@ -292,15 +310,35 @@ export function ConnectorDetailView({
                 ingested per hour · filtered overlay
               </span>
             </div>
-            <ConnectorHistogram data={spark24h} secondaryData={spark24hFiltered} height={96} />
-            {/* Never let a failed hourly query hide behind a quiet histogram (bu-c48im). */}
-            {!hourlyEventsAvailable && (
+            {statsUnavailable ? (
               <SourceDegradedNote
-                label="24h throughput"
-                detail="hourly event source unavailable, the histogram above is incomplete"
+                label="24h statistics"
+                detail="unavailable, rate, average, and throughput cannot be calculated"
+                onRetry={statsReader?.onRetry}
                 className="mt-3"
-                testId="histogram-degraded-note"
+                testId="connector-stats-unavailable"
               />
+            ) : statsLoading ? (
+              <p
+                className="font-mono text-[11px] text-muted-foreground/60 py-8"
+                data-testid="connector-stats-loading"
+              >
+                Loading 24h throughput…
+              </p>
+            ) : (
+              <>
+                <ConnectorHistogram data={spark24h} secondaryData={spark24hFiltered} height={96} />
+                {/* Never let a failed hourly query hide behind a quiet histogram (bu-c48im). */}
+                {!hourlyEventsAvailable && (
+                  <SourceDegradedNote
+                    label="24h throughput"
+                    detail="hourly event source unavailable, the histogram above is incomplete"
+                    onRetry={statsReader?.onRetry}
+                    className="mt-3"
+                    testId="histogram-degraded-note"
+                  />
+                )}
+              </>
             )}
           </div>
 
@@ -338,10 +376,11 @@ export function ConnectorDetailView({
           <RecentEventsList
             events={recentEvents}
             connectorKind={connector.connector_type}
+            reader={recentEventsReader}
           />
 
           {/* Incident list [bu-5ywn2] */}
-          <IncidentList incidents={incidents} />
+          <IncidentList incidents={incidents} reader={incidentsReader} />
         </div>
 
         {/* RIGHT — scopes + schedule + config */}
@@ -445,7 +484,7 @@ export function ConnectorDetailView({
           </div>
 
           {/* Routing rules [bu-5ywn2] */}
-          <RoutingRulesList rules={routingRules} />
+          <RoutingRulesList rules={routingRules} reader={routingRulesReader} />
         </div>
       </div>
     </div>
@@ -474,9 +513,10 @@ function EventStatusPill({ status }: { status: string }) {
 interface RecentEventsListProps {
   events: ConnectorEventsResponse | null | undefined
   connectorKind: string
+  reader?: ConnectorDetailReaderState
 }
 
-function RecentEventsList({ events, connectorKind }: RecentEventsListProps) {
+function RecentEventsList({ events, connectorKind, reader }: RecentEventsListProps) {
   return (
     <div data-testid="recent-events-section">
       <div className="flex items-baseline gap-3 mb-2.5">
@@ -490,7 +530,21 @@ function RecentEventsList({ events, connectorKind }: RecentEventsListProps) {
           view all
         </Link>
       </div>
-      {!events || !events.events || events.events.length === 0 ? (
+      {reader?.isLoading ? (
+        <p
+          className="font-mono text-[11px] text-muted-foreground/60 italic"
+          data-testid="recent-events-loading"
+        >
+          Loading recent events…
+        </p>
+      ) : reader?.isError ? (
+        <SourceDegradedNote
+          label="recent events"
+          detail="unavailable"
+          onRetry={reader.onRetry}
+          testId="recent-events-unavailable"
+        />
+      ) : !events || !events.events || events.events.length === 0 ? (
         <p
           className="font-mono text-[11px] text-muted-foreground/50 italic"
           data-testid="recent-events-empty"
@@ -531,15 +585,30 @@ function RecentEventsList({ events, connectorKind }: RecentEventsListProps) {
 
 interface IncidentListProps {
   incidents: ConnectorIncidentsResponse | null | undefined
+  reader?: ConnectorDetailReaderState
 }
 
-function IncidentList({ incidents }: IncidentListProps) {
+function IncidentList({ incidents, reader }: IncidentListProps) {
   return (
     <div data-testid="incident-list-section">
       <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground mb-2.5">
         incidents
       </div>
-      {!incidents || !incidents.incidents || incidents.incidents.length === 0 ? (
+      {reader?.isLoading ? (
+        <p
+          className="font-mono text-[11px] text-muted-foreground/60 italic"
+          data-testid="incident-list-loading"
+        >
+          Loading incidents…
+        </p>
+      ) : reader?.isError ? (
+        <SourceDegradedNote
+          label="incidents"
+          detail="unavailable"
+          onRetry={reader.onRetry}
+          testId="incidents-unavailable"
+        />
+      ) : !incidents || !incidents.incidents || incidents.incidents.length === 0 ? (
         <p
           className="font-mono text-[11px] text-muted-foreground/50 italic"
           data-testid="incident-list-empty"
@@ -580,15 +649,30 @@ function IncidentList({ incidents }: IncidentListProps) {
 
 interface RoutingRulesListProps {
   rules: ConnectorRoutingRulesResponse | null | undefined
+  reader?: ConnectorDetailReaderState
 }
 
-function RoutingRulesList({ rules }: RoutingRulesListProps) {
+function RoutingRulesList({ rules, reader }: RoutingRulesListProps) {
   return (
     <div data-testid="routing-rules-section">
       <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground mb-2.5">
         routing rules
       </div>
-      {!rules || !rules.rules || rules.rules.length === 0 ? (
+      {reader?.isLoading ? (
+        <p
+          className="font-mono text-[11px] text-muted-foreground/60 italic"
+          data-testid="routing-rules-loading"
+        >
+          Loading routing rules…
+        </p>
+      ) : reader?.isError ? (
+        <SourceDegradedNote
+          label="routing rules"
+          detail="unavailable"
+          onRetry={reader.onRetry}
+          testId="routing-rules-unavailable"
+        />
+      ) : !rules || !rules.rules || rules.rules.length === 0 ? (
         <p
           className="font-mono text-[11px] text-muted-foreground/50 italic"
           data-testid="routing-rules-empty"

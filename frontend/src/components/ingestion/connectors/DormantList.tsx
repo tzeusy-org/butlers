@@ -23,6 +23,8 @@ import type { ConnectorProfile } from '@/api/types'
 
 interface DormantListProps {
   profiles: ConnectorProfile[]
+  /** False when the active roster reader failed, so connection state cannot be inferred. */
+  connectionStateAvailable?: boolean
 }
 
 /**
@@ -33,7 +35,7 @@ interface DormantListProps {
  * page for that provider lives. Collapsed by default; toggled by clicking
  * the eyebrow row.
  */
-export function DormantList({ profiles }: DormantListProps) {
+export function DormantList({ profiles, connectionStateAvailable = true }: DormantListProps) {
   const [expanded, setExpanded] = useState(false)
 
   if (profiles.length === 0) return null
@@ -49,7 +51,9 @@ export function DormantList({ profiles }: DormantListProps) {
         className="flex items-baseline gap-3 mb-2.5 cursor-pointer group w-full text-left"
       >
         <span className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground group-hover:text-foreground transition-colors">
-          available · not connected
+          {connectionStateAvailable
+            ? 'available · not connected'
+            : 'available · connection state unavailable'}
         </span>
         <span className="font-mono text-[9.5px] text-muted-foreground/50">
           {profiles.length} connector{profiles.length !== 1 ? 's' : ''}
@@ -90,7 +94,7 @@ export function DormantList({ profiles }: DormantListProps) {
                 data-testid={`dormant-connect-${profile.connector_type}`}
                 className="font-mono text-[11px] text-foreground border border-border px-2.5 py-1 hover:bg-foreground/5 transition-colors whitespace-nowrap"
               >
-                connect →
+                {connectionStateAvailable ? 'connect →' : 'configure →'}
               </Link>
             </div>
           ))}

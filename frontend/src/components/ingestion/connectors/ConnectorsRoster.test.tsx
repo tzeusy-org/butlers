@@ -977,3 +977,76 @@ describe('archived connectors section (bu-33dm2)', () => {
     expect(row?.getAttribute('href')).toBe('/ingestion/connectors/google_health/degraded')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Query failures must not fall through to the same calm states as a genuinely
+// empty roster or catalog (bu-xdjoq).
+// ---------------------------------------------------------------------------
+
+describe('connector roster source failures are named and retryable', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('keeps a successful dormant catalog visible when the active roster reader fails', () => {
+    const retryRoster = vi.fn()
+    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('connector summaries offline'),
+      refetch: retryRoster,
+    } as unknown as ReturnType<typeof useConnectorSummariesWithAggregates>)
+    vi.mocked(useAvailableConnectors).mockReturnValue(
+      makeResult({ data: [DORMANT_PROFILE] }) as ReturnType<typeof useAvailableConnectors>,
+    )
+
+    renderRoster(container, root)
+
+    expect(container.querySelector('[data-testid="connectors-roster-unavailable"]')).not.toBeNull()
+    expect(container.textContent).toContain('connector roster')
+    expect(container.textContent).not.toContain('No connectors registered.')
+    expect(container.querySelector('[data-testid="dormant-section"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="connectors-kpi-footer"]')).toBeNull()
+
+    act(() => {
+      ;(
+        container.querySelector('[data-testid="connectors-roster-unavailable"] button') as HTMLButtonElement
+      ).click()
+    })
+    expect(retryRoster).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not present a failed available-catalog reader as an empty dormant catalog', () => {
+    const retryCatalog = vi.fn()
+    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
+      makeResult({ data: { connectors: [HEALTHY_CONNECTOR] } }) as ReturnType<
+        typeof useConnectorSummariesWithAggregates
+      >,
+    )
+    vi.mocked(useAvailableConnectors).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('connector catalog offline'),
+      refetch: retryCatalog,
+    } as unknown as ReturnType<typeof useAvailableConnectors>)
+
+    renderRoster(container, root)
+
+    expect(container.querySelector('[data-testid="connector-row-gmail"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="connector-catalog-unavailable"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="dormant-section"]')).toBeNull()
+
+    act(() => {
+      ;(
+        container.querySelector('[data-testid="connector-catalog-unavailable"] button') as HTMLButtonElement
+      ).click()
+    })
+    expect(retryCatalog).toHaveBeenCalledTimes(1)
+  })
+})

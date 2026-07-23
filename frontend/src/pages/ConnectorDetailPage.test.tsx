@@ -344,6 +344,24 @@ describe("ConnectorDetailPage — error state", () => {
     // The Page shell owns the empty state — check for the title/description text.
     expect(html).toContain("Connector not found");
   });
+
+  it("keeps the connector detail shell available when only the stats reader fails", () => {
+    setConnectorState(BASE_CONNECTOR);
+    setStatsState({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("stats reader unavailable"),
+      refetch: vi.fn(),
+    });
+
+    const html = renderPage();
+
+    expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("gmail");
+    expect(html).toContain("connector-stats-unavailable");
+    expect(html).not.toContain("Loading");
+  });
 });
 
 // ---------------------------------------------------------------------------

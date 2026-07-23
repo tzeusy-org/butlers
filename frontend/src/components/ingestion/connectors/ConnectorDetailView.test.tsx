@@ -12,7 +12,7 @@
  * scope list with data shows correct verdicts.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router'
@@ -103,6 +103,10 @@ function renderDetail(
     incidents?: ConnectorIncidentsResponse | null
     routingRules?: ConnectorRoutingRulesResponse | null
     stats?: ConnectorStats
+    statsReader?: { isLoading?: boolean; isError?: boolean; onRetry?: () => void }
+    recentEventsReader?: { isLoading?: boolean; isError?: boolean; onRetry?: () => void }
+    incidentsReader?: { isLoading?: boolean; isError?: boolean; onRetry?: () => void }
+    routingRulesReader?: { isLoading?: boolean; isError?: boolean; onRetry?: () => void }
   } = {},
 ) {
   act(() => {
@@ -116,6 +120,10 @@ function renderDetail(
           recentEvents={opts.recentEvents}
           incidents={opts.incidents}
           routingRules={opts.routingRules}
+          statsReader={opts.statsReader}
+          recentEventsReader={opts.recentEventsReader}
+          incidentsReader={opts.incidentsReader}
+          routingRulesReader={opts.routingRulesReader}
         />
       </MemoryRouter>,
     )
@@ -585,5 +593,65 @@ describe('[bu-5ywn2] Routing rules section', () => {
     expect(
       container.querySelector('[data-testid="histogram-degraded-note"]'),
     ).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Secondary query failures must remain distinct from genuine empty sections.
+// ---------------------------------------------------------------------------
+
+describe('connector detail secondary reader failures (bu-xdjoq)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('names failed stats and secondary feeds, keeps the loaded detail usable, and retries only those readers', () => {
+    const retryStats = vi.fn()
+    const retryEvents = vi.fn()
+    const retryIncidents = vi.fn()
+    const retryRules = vi.fn()
+
+    renderDetail(root, BASE_CONNECTOR, {
+      recentEvents: null,
+      incidents: null,
+      routingRules: null,
+      statsReader: { isError: true, onRetry: retryStats },
+      recentEventsReader: { isError: true, onRetry: retryEvents },
+      incidentsReader: { isError: true, onRetry: retryIncidents },
+      routingRulesReader: { isError: true, onRetry: retryRules },
+    })
+
+    // Primary connector metadata remains useful under partial failure.
+    expect(container.querySelector('h1')?.textContent).toContain('spotify')
+    expect(container.textContent).toContain('me')
+
+    for (const testId of [
+      'connector-stats-unavailable',
+      'recent-events-unavailable',
+      'incidents-unavailable',
+      'routing-rules-unavailable',
+    ]) {
+      expect(container.querySelector(`[data-testid="${testId}"]`)).not.toBeNull()
+    }
+    expect(container.querySelector('[data-testid="histogram-empty"]')).toBeNull()
+    expect(container.querySelector('[data-testid="recent-events-empty"]')).toBeNull()
+    expect(container.querySelector('[data-testid="incident-list-empty"]')).toBeNull()
+    expect(container.querySelector('[data-testid="routing-rules-empty"]')).toBeNull()
+
+    act(() => {
+      ;(container.querySelector('[data-testid="connector-stats-unavailable"] button') as HTMLButtonElement).click()
+      ;(container.querySelector('[data-testid="recent-events-unavailable"] button') as HTMLButtonElement).click()
+      ;(container.querySelector('[data-testid="incidents-unavailable"] button') as HTMLButtonElement).click()
+      ;(container.querySelector('[data-testid="routing-rules-unavailable"] button') as HTMLButtonElement).click()
+    })
+
+    expect(retryStats).toHaveBeenCalledTimes(1)
+    expect(retryEvents).toHaveBeenCalledTimes(1)
+    expect(retryIncidents).toHaveBeenCalledTimes(1)
+    expect(retryRules).toHaveBeenCalledTimes(1)
   })
 })

@@ -196,6 +196,7 @@ function setupDefaultMocks() {
     data: { events: 0, sessions: 0, cost: null, window: { from: null, to: null } },
     isLoading: false,
     isError: false,
+    refetch: vi.fn(),
   } as unknown as ReturnType<typeof useIngestionWindowRollup>);
 
   // Default: empty histogram (bu-4utdw.7 hour strip data source)
@@ -203,6 +204,7 @@ function setupDefaultMocks() {
     data: { buckets: [], bucket: "1m" },
     isLoading: false,
     isError: false,
+    refetch: vi.fn(),
   } as unknown as ReturnType<typeof useIngestionEventsHistogram>);
 }
 
@@ -2531,5 +2533,77 @@ describe("TimelineTab — ?trace= drill-down spine filter", () => {
     expect(lastFilters.statuses).toBeDefined();
     expect(lastFilters.statuses).not.toContain("filtered");
     expect(lastFilters.statuses).not.toContain("skipped");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Histogram and footer readers are independent from the ledger. Their failure
+// must be named rather than read as an empty hour or a zero rollup (bu-xdjoq).
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — histogram and footer failure honesty (bu-xdjoq)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([makeEvent()]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  it("keeps ledger rows visible while failed histogram and footer readers are named and retryable", () => {
+    const retryHistogram = vi.fn();
+    const retryRollup = vi.fn();
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("histogram unavailable"),
+      refetch: retryHistogram,
+    } as unknown as ReturnType<typeof useIngestionEventsHistogram>);
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("window rollup unavailable"),
+      refetch: retryRollup,
+    } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="ledger-row-trigger"]')).not.toBeNull();
+    const summary = container.querySelector('[data-testid="hour-group-summary"]');
+    expect(summary?.textContent).toContain("histogram unavailable");
+    expect(summary?.textContent).not.toContain("0 events");
+    expect(container.querySelector('[data-testid="hour-histogram-unavailable"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="footer-rollup-unavailable"]')).not.toBeNull();
+
+    act(() => {
+      ;(container.querySelector('[data-testid="hour-histogram-unavailable"] button') as HTMLButtonElement).click();
+      ;(container.querySelector('[data-testid="footer-rollup-unavailable"] button') as HTMLButtonElement).click();
+    });
+    expect(retryHistogram).toHaveBeenCalledTimes(1);
+    expect(retryRollup).toHaveBeenCalledTimes(1);
   });
 });

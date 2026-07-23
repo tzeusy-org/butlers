@@ -24,6 +24,7 @@
 import { useState } from 'react'
 import type { IngestionRule } from '@/api/types'
 import type { ChannelDefaultPolicy, ChannelDefaultPriorityAction } from '@/api/index.ts'
+import { SourceDegradedNote } from '@/components/ui/query-boundary'
 
 // ---------------------------------------------------------------------------
 // Runtime vocabulary
@@ -252,6 +253,7 @@ export interface ChannelDefaultsBlockProps {
   rules: IngestionRule[]
   loaded: boolean
   error: boolean
+  onRetry?: () => void
   mutationError?: string | null
   /** Channel currently open for editing (null = none). */
   editingChannel?: string | null
@@ -268,6 +270,7 @@ export function ChannelDefaultsBlock({
   rules,
   loaded,
   error,
+  onRetry,
   mutationError,
   editingChannel = null,
   editingState,
@@ -319,12 +322,12 @@ export function ChannelDefaultsBlock({
 
       {/* Error */}
       {loaded && error && (
-        <p
-          className="font-serif italic text-sm text-muted-foreground py-5"
-          data-testid="channel-defaults-error"
-        >
-          Channel defaults unavailable. Check connectivity and reload.
-        </p>
+        <SourceDegradedNote
+          label="Channel defaults"
+          detail="unavailable"
+          onRetry={onRetry}
+          testId="channel-defaults-error"
+        />
       )}
 
       {/* Empty */}

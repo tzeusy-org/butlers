@@ -164,9 +164,12 @@ function makeHistogramBucket(ts: string, overrides: Record<string, number> = {})
   return { ts, counts: makeHistogramCounts(overrides) };
 }
 
-function makeHistogramResult(buckets: ReturnType<typeof makeHistogramBucket>[] = []) {
+function makeHistogramResult(
+  buckets: ReturnType<typeof makeHistogramBucket>[] = [],
+  bucket: "1m" | "5m" | "1h" = "1m",
+) {
   return {
-    data: { buckets, bucket: "1m" },
+    data: { buckets, bucket },
     isLoading: false,
     isError: false,
   };
@@ -482,6 +485,75 @@ describe("TimelineTab — hour grouping", () => {
       from: "2026-05-17T14:10:00.000Z",
       to: "2026-05-17T14:11:00.000Z",
     });
+  });
+
+  it("uses a coarsened response bucket to size slots and scope clicks", () => {
+    // The default 24h request asks for 1m data, but a bounded fallback may
+    // return a coarser actual bucket. The response value is authoritative for
+    // both strip controls and the URL-backed scope range.
+    const events = [makeEvent({ id: "id-1", received_at: "2026-05-17T14:00:00Z" })];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+      makeHistogramResult(
+        [makeHistogramBucket("2026-05-17T14:00:00Z", { ingested: 1 })],
+        "5m",
+      ) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelectorAll("[data-testid='hour-strip-minute']")).toHaveLength(12);
+    const emptyBucket = container.querySelector(
+      "[data-testid='hour-strip-minute'][data-minute-iso='2026-05-17T14:05:00.000Z']",
+    ) as HTMLElement;
+    expect(emptyBucket).not.toBeNull();
+
+    act(() => {
+      emptyBucket.click();
+    });
+
+    const lastCall = vi.mocked(useIngestionEvents).mock.calls.at(-1);
+    expect(lastCall?.[0]).toMatchObject({
+      from: "2026-05-17T14:05:00.000Z",
+      to: "2026-05-17T14:10:00.000Z",
+    });
+  });
+
+  it("uses a server-returned hourly bucket as one 60-minute slot", () => {
+    const events = [makeEvent({ id: "id-1", received_at: "2026-05-17T14:00:00Z" })];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+      makeHistogramResult(
+        [makeHistogramBucket("2026-05-17T14:00:00Z", { ingested: 1 })],
+        "1h",
+      ) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const buttons = container.querySelectorAll("[data-testid='hour-strip-minute']");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].getAttribute("data-minute-iso")).toBe("2026-05-17T14:00:00.000Z");
   });
 });
 

@@ -54,6 +54,7 @@ import type { IngestionRule, PipelineStats } from '@/api/types'
 import type { ChannelDefaultPolicy } from '@/api/index.ts'
 import { ApiError } from '@/api/index.ts'
 import { getAvailablePipelineBacklog } from './backlog-state'
+import { SourceDegradedNote } from '@/components/ui/query-boundary'
 
 // ---------------------------------------------------------------------------
 // Rule classification helpers
@@ -69,10 +70,24 @@ function isChannelDefault(rule: IngestionRule): boolean {
 interface ExecutionBacklogProps {
   stats: PipelineStats | undefined
   loading: boolean
+  statsError: boolean
+  onRetry: () => void
 }
 
-function ExecutionBacklog({ stats, loading }: ExecutionBacklogProps) {
+function ExecutionBacklog({ stats, loading, statsError, onRetry }: ExecutionBacklogProps) {
   if (loading) return null
+
+  if (statsError) {
+    return (
+      <SourceDegradedNote
+        className="mt-6"
+        label="execution backlog"
+        detail="unavailable after refresh failed"
+        onRetry={onRetry}
+        testId="pipeline-execution-backlog-unavailable"
+      />
+    )
+  }
 
   const backlog = getAvailablePipelineBacklog(stats)
   if (!backlog) {
@@ -170,13 +185,19 @@ export function FiltersPipeline() {
   } | null>(null)
 
   // Pipeline stats
-  const { data: statsData, isLoading: statsLoading } = usePipelineStats('24h')
+  const {
+    data: statsData,
+    isLoading: statsLoading,
+    isError: statsError,
+    refetch: refetchStats,
+  } = usePipelineStats('24h')
 
   // Active rules
   const {
     data: activeRulesResp,
     isLoading: rulesLoading,
     isError: rulesError,
+    refetch: refetchRules,
   } = useIngestionRules({ enabled: true })
 
   // Archived rules (soft-deleted = deleted_at is set). The backend returns these
@@ -240,7 +261,8 @@ export function FiltersPipeline() {
     ? deriveGateCounts(pipelineStats)
     : GATE_DEFS.map((g) => ({ key: g.key as GateKey, in: 0, out: 0, preserved: 0, dropped: 0 }))
 
-  const statsAvailable = pipelineStats?.aggregates_available ?? false
+  const statsAvailable = !statsError && pipelineStats?.aggregates_available === true
+  const statsInitialLoading = statsLoading && !pipelineStats
   const totalReceived = pipelineStats
     ? pipelineStats.ingested + pipelineStats.filtered
     : 0
@@ -408,15 +430,27 @@ export function FiltersPipeline() {
         <span className="font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/70">
           {statsAvailable
             ? `${totalReceived.toLocaleString()} events · last 24h`
-            : 'metrics unavailable'}
+            : statsInitialLoading
+              ? 'loading metrics'
+              : 'metrics unavailable'}
         </span>
       </div>
 
       {/* Five-gate diagram */}
-      <PipelineGateDiagram counts={gateCounts} available={statsAvailable} />
+      <PipelineGateDiagram
+        counts={gateCounts}
+        loading={statsInitialLoading}
+        available={statsAvailable}
+        onRetry={() => void refetchStats()}
+      />
 
       {/* DB-backed execution backlog: independent of Prometheus funnel metrics. */}
-      <ExecutionBacklog stats={pipelineStats} loading={statsLoading} />
+      <ExecutionBacklog
+        stats={pipelineStats}
+        loading={statsLoading}
+        statsError={statsError}
+        onRetry={() => void refetchStats()}
+      />
 
       {/* Gate sections */}
       <div className="mt-14">
@@ -427,6 +461,11 @@ export function FiltersPipeline() {
             count={gateCounts[i] ?? { key: def.key, in: 0, out: 0, preserved: 0, dropped: 0 }}
             index={i}
             rules={rulesByGate[def.key] ?? []}
+            metricsLoading={statsInitialLoading}
+            metricsAvailable={statsAvailable}
+            rulesLoading={rulesLoading}
+            rulesError={rulesError}
+            onRetryRules={() => void refetchRules()}
             onToggleRule={handleToggleRule}
             onEditRule={handleEditRule}
             onDeleteRule={handleDeleteRule}
@@ -453,6 +492,7 @@ export function FiltersPipeline() {
           rules={channelDefaultRules}
           loaded={!rulesLoading}
           error={rulesError}
+          onRetry={() => void refetchRules()}
           mutationError={channelMutationError}
           editingChannel={editingChannel}
           editingState={editingState}

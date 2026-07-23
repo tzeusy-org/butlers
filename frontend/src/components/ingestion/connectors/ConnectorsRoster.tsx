@@ -121,9 +121,22 @@ function formatNum(n: number): string {
  * does not add new backend endpoints.
  */
 export function ConnectorsRoster() {
-  const { data: connectorsResp, isLoading: connectorsLoading } =
-    useConnectorSummariesWithAggregates()
-  const { data: availableResp } = useAvailableConnectors()
+  const {
+    data: connectorsResp,
+    isLoading: connectorsLoading,
+    isError: connectorsError,
+    refetch: refetchConnectors,
+  } = useConnectorSummariesWithAggregates()
+  const {
+    data: availableResp,
+    isLoading: availableLoading,
+    isError: availableError,
+    refetch: refetchAvailable,
+  } = useAvailableConnectors()
+
+  const hasRosterData = connectorsResp?.data !== undefined
+  const rosterUnavailable = connectorsError && !hasRosterData
+  const hasCatalogData = availableResp?.data !== undefined
 
   // The endpoint returns { connectors: [...] } (all fields DB-sourced).
   // Archived identities (bu-33dm2) are returned in the same list but are
@@ -162,7 +175,12 @@ export function ConnectorsRoster() {
   // Available dormant profiles (catalog entries not yet registered)
   const catalogProfiles = availableResp?.data ?? []
   const registeredTypes = new Set(allConnectors.map((c) => c.connector_type))
-  const dormantProfiles = catalogProfiles.filter((p) => !registeredTypes.has(p.connector_type))
+  // A successful catalog cannot truthfully classify profiles as unconnected
+  // without a roster. Preserve the catalog, but make that missing connection
+  // state explicit instead of inventing an empty dormant section.
+  const dormantProfiles = rosterUnavailable
+    ? catalogProfiles
+    : catalogProfiles.filter((p) => !registeredTypes.has(p.connector_type))
 
   // connector_type -> real channel, from the discovery catalog. Used so the
   // roster only ever shows a known kind — never a guess from name substrings.
@@ -194,7 +212,29 @@ export function ConnectorsRoster() {
     0,
   )
 
-  if (connectorsLoading) {
+  const catalogSection = availableError ? (
+    <SourceDegradedNote
+      label="available connector catalog"
+      detail="unavailable, unconnected connectors cannot be determined"
+      onRetry={() => void refetchAvailable()}
+      className="mt-9"
+      testId="connector-catalog-unavailable"
+    />
+  ) : availableLoading && !hasCatalogData ? (
+    <p
+      className="mt-9 font-mono text-[11px] text-muted-foreground/60"
+      data-testid="connector-catalog-loading"
+    >
+      Loading available connector catalog…
+    </p>
+  ) : (
+    <DormantList
+      profiles={dormantProfiles}
+      connectionStateAvailable={!rosterUnavailable}
+    />
+  )
+
+  if (connectorsLoading && !hasRosterData) {
     return (
       <div className="space-y-3 py-4">
         {Array.from({ length: 3 }).map((_, i) => (
@@ -206,110 +246,134 @@ export function ConnectorsRoster() {
 
   return (
     <div data-testid="connectors-roster">
-      {/* Attention strip — only when issues present */}
-      <AttentionStrip connectors={allConnectors} />
-
-      {/* Column headers */}
-      <div
-        className="grid gap-x-4 py-2.5 border-b border-border"
-        style={{ gridTemplateColumns: CONNECTOR_ROSTER_GRID_COLUMNS }}
-      >
-        {COLUMN_LABELS.map((label, i) => (
-          <span
-            key={i}
-            className={`font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70 ${i === 5 ? 'text-right' : ''}`}
-          >
-            {label}
-          </span>
-        ))}
-      </div>
-
-      {/* Roster rows */}
-      {allConnectors.length === 0 ? (
-        <p className="font-serif italic text-[14px] text-muted-foreground py-8">
-          No connectors registered.
-        </p>
-      ) : (
-        <div data-testid="roster-rows">
-          {sorted.map((c) => (
-            <ConnectorRosterRow
-              key={`${c.connector_type}:${c.endpoint_identity}`}
-              connector={c}
-              spark24h={c.hourly_events}
-              spark24hFiltered={c.hourly_filtered_events}
-              catalogChannel={catalogChannelByType.get(c.connector_type)}
-              rosterSparkMax={rosterSparkMax}
-            />
-          ))}
-        </div>
+      {connectorsError && (
+        <SourceDegradedNote
+          label="connector roster"
+          detail={
+            hasRosterData
+              ? 'refresh unavailable, showing the last loaded roster below'
+              : 'unavailable'
+          }
+          onRetry={() => void refetchConnectors()}
+          className="mb-4"
+          testId="connectors-roster-unavailable"
+        />
       )}
 
-      {/* Dormant / available connectors */}
-      <DormantList profiles={dormantProfiles} />
+      {!rosterUnavailable && (
+        <>
+          {/* Attention strip — only when issues present */}
+          <AttentionStrip connectors={allConnectors} />
 
-      {/* Archive review queue (bu-u19yv) — active identities flagged
+          {/* Column headers */}
+          <div
+            className="grid gap-x-4 py-2.5 border-b border-border"
+            style={{ gridTemplateColumns: CONNECTOR_ROSTER_GRID_COLUMNS }}
+          >
+            {COLUMN_LABELS.map((label, i) => (
+              <span
+                key={i}
+                className={`font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70 ${i === 5 ? 'text-right' : ''}`}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+
+          {/* Roster rows */}
+          {allConnectors.length === 0 ? (
+            <p className="font-serif italic text-[14px] text-muted-foreground py-8">
+              No connectors registered.
+            </p>
+          ) : (
+            <div data-testid="roster-rows">
+              {sorted.map((c) => (
+                <ConnectorRosterRow
+                  key={`${c.connector_type}:${c.endpoint_identity}`}
+                  connector={c}
+                  spark24h={c.hourly_events}
+                  spark24hFiltered={c.hourly_filtered_events}
+                  catalogChannel={catalogChannelByType.get(c.connector_type)}
+                  rosterSparkMax={rosterSparkMax}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Dormant / available connectors */}
+          {catalogSection}
+
+          {/* Archive review queue (bu-u19yv) — active identities flagged
           `archive_candidate` (offline >30d + a newer online sibling). A
           SUGGESTION overlay: these rows also remain in the active roster above
           with their true offline liveness/KPIs; this queue only offers a
           one-click archive reusing the audit-logged archive endpoint. */}
-      <ArchiveCandidatesList connectors={allConnectors} />
+          <ArchiveCandidatesList connectors={allConnectors} />
 
-      {/* Archived / superseded connector identities (bu-33dm2) — collapsed,
+          {/* Archived / superseded connector identities (bu-33dm2) — collapsed,
           excluded from the active roster + KPIs above, history still reachable. */}
-      <ArchivedConnectorsList connectors={archivedConnectors} />
+          <ArchivedConnectorsList connectors={archivedConnectors} />
 
-      {/* KPI footer band */}
-      <div
-        className="mt-9 pt-4 border-t border-border grid gap-6"
-        style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}
-      >
-        {[
-          { label: 'connectors · live', value: formatNum(totalConnectors) },
-          { label: 'healthy', value: formatNum(healthyCount) },
-          { label: 'needs attention', value: formatNum(attentionNeededCount) },
-          { label: 'auth · error', value: formatNum(authNeededCount) },
-          { label: 'events · 24h', value: formatNum(totalEvents24h) },
-        ].map(({ label, value }) => (
-          <div key={label}>
-            <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground">
-              {label}
-            </div>
-            <div className="mt-1.5 font-mono text-[22px] font-medium tracking-[-0.02em] tabular-nums">
-              {value}
-            </div>
+          {/* KPI footer band */}
+          <div
+            className="mt-9 pt-4 border-t border-border grid gap-6"
+            style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}
+            data-testid="connectors-kpi-footer"
+          >
+            {[
+              { label: 'connectors · live', value: formatNum(totalConnectors) },
+              { label: 'healthy', value: formatNum(healthyCount) },
+              { label: 'needs attention', value: formatNum(attentionNeededCount) },
+              { label: 'auth · error', value: formatNum(authNeededCount) },
+              { label: 'events · 24h', value: formatNum(totalEvents24h) },
+            ].map(({ label, value }) => (
+              <div key={label}>
+                <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground">
+                  {label}
+                </div>
+                <div className="mt-1.5 font-mono text-[22px] font-medium tracking-[-0.02em] tabular-nums">
+                  {value}
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
 
       {/* Hourly events source degraded note -- never let a failed hourly query hide
           behind a quiet "events · 24h" total or empty-looking sparklines (bu-scyro). */}
-      {!hourlyEventsAvailable && (
-        <SourceDegradedNote
-          label="24h activity"
-          detail="hourly event source unavailable, sparklines and events · 24h above are incomplete"
-          className="mt-4"
-        />
-      )}
+          {!hourlyEventsAvailable && (
+            <SourceDegradedNote
+              label="24h activity"
+              detail="hourly event source unavailable, sparklines and events · 24h above are incomplete"
+              onRetry={() => void refetchConnectors()}
+              className="mt-4"
+            />
+          )}
 
       {/* Per-device liveness source degraded note -- a failed per-device query
           falls back to devices:null for every connector, which is otherwise
           indistinguishable from "no multi-device connectors" and would hide a
           silently-dead sibling device (bu-e16to/bu-fm3my). */}
-      {!deviceLivenessAvailable && (
-        <SourceDegradedNote
-          label="device liveness"
-          detail="per-device liveness source unavailable, multi-device connectors may be missing sibling device badges"
-          className="mt-4"
-        />
+          {!deviceLivenessAvailable && (
+            <SourceDegradedNote
+              label="device liveness"
+              detail="per-device liveness source unavailable, multi-device connectors may be missing sibling device badges"
+              onRetry={() => void refetchConnectors()}
+              className="mt-4"
+            />
+          )}
+
+          {!owntracksCadenceAvailable && (
+            <SourceDegradedNote
+              label="OwnTracks cadence"
+              detail="durable location-point cadence unavailable, movement evidence warnings may be incomplete"
+              onRetry={() => void refetchConnectors()}
+              className="mt-4"
+            />
+          )}
+        </>
       )}
 
-      {!owntracksCadenceAvailable && (
-        <SourceDegradedNote
-          label="OwnTracks cadence"
-          detail="durable location-point cadence unavailable, movement evidence warnings may be incomplete"
-          className="mt-4"
-        />
-      )}
+      {rosterUnavailable && catalogSection}
 
       {/* Actions */}
       <div className="mt-8 flex gap-2.5">

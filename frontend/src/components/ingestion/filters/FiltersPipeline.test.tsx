@@ -319,15 +319,90 @@ describe('PipelineGateDiagram — AC1: five gates render with correct labels', (
     expect(segments.length).toBe(5)
   })
 
-  it('shows metrics unavailable label when aggregates_available is false', () => {
+  it('names unavailable metrics instead of rendering zero-valued gate counts', () => {
     const counts = deriveGateCounts(makeStats({ aggregates_available: false }))
 
     renderComponent(container, root, (
       <PipelineGateDiagram counts={counts} available={false} />
     ))
 
-    const unavailableNote = container.querySelector('[data-testid="funnel-bar-unavailable"]')
+    const unavailableNote = container.querySelector('[data-testid="pipeline-metrics-unavailable"]')
     expect(unavailableNote).not.toBeNull()
+    expect(unavailableNote?.textContent).toContain('pipeline metrics')
+    expect(container.querySelector('[data-testid^="gate-node-"]')).toBeNull()
+    expect(container.textContent).not.toContain('received · 0')
+  })
+
+  it('keeps an initial metrics load distinct from an unavailable reader', () => {
+    const counts = deriveGateCounts(makeStats())
+
+    renderComponent(container, root, (
+      <PipelineGateDiagram counts={counts} loading={true} available={false} />
+    ))
+
+    expect(container.querySelector('[data-testid="pipeline-metrics-loading"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="pipeline-metrics-unavailable"]')).toBeNull()
+    expect(container.querySelector('[data-testid^="gate-node-"]')).toBeNull()
+  })
+})
+
+// ============================================================================
+// Query failure states must not become zero metrics or code-policy-by-omission.
+// ============================================================================
+
+describe('FiltersPipeline reader failures (bu-xdjoq)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    setupDefaultMocks()
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('keeps successful neighbouring sections usable while metrics and rules readers are unavailable', () => {
+    const retryMetrics = vi.fn()
+    const retryRules = vi.fn()
+    mockUsePipelineStats.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('pipeline metrics offline'),
+      refetch: retryMetrics,
+    })
+    mockUseIngestionRules.mockImplementation(
+      (params?: { enabled?: boolean; archived?: boolean }) => ({
+        data: params?.archived ? { data: [] } : undefined,
+        isLoading: false,
+        isError: !params?.archived,
+        error: params?.archived ? null : new Error('rules reader offline'),
+        refetch: retryRules,
+      }),
+    )
+    mockUsePriorityContacts.mockReturnValue({
+      data: { data: [makePriorityContact()] },
+      isLoading: false,
+      isError: false,
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    expect(container.querySelector('[data-testid="pipeline-metrics-unavailable"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="priority-sender-row-contact-001"]')).not.toBeNull()
+    for (const key of ['accept', 'dedupe', 'tier', 'route', 'execute']) {
+      const section = container.querySelector(`[data-testid="gate-section-${key}"]`)
+      expect(section?.querySelector(`[data-testid="gate-rules-unavailable-${key}"]`)).not.toBeNull()
+      expect(section?.textContent).not.toContain('Policy lives in code.')
+      expect(section?.textContent).toContain('in —')
+    }
+    expect(container.querySelector('[data-testid="channel-defaults-error"]')).not.toBeNull()
+
+    act(() => {
+      ;(container.querySelector('[data-testid="pipeline-metrics-unavailable"] button') as HTMLButtonElement).click()
+      ;(container.querySelector('[data-testid="gate-rules-unavailable-accept"] button') as HTMLButtonElement).click()
+    })
+    expect(retryMetrics).toHaveBeenCalledTimes(1)
+    expect(retryRules).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -383,6 +458,36 @@ describe('FiltersPipeline: execution backlog status', () => {
     expect(unavailable, 'backlog unavailable state missing').not.toBeNull()
     expect(unavailable?.textContent).toContain('backlog unavailable')
     expect(container.querySelector('[data-testid="pipeline-execution-backlog"]')).toBeNull()
+  })
+
+  it('does not label cached execution counts as current after a failed stats refresh and retries', () => {
+    const retry = vi.fn()
+    mockUsePipelineStats.mockReturnValue({
+      data: makeStats({
+        failed_total: 7,
+        replay_pending_total: 2,
+        written_off_total: 11,
+        backlog_available: true,
+      }),
+      isLoading: false,
+      isError: true,
+      error: new Error('pipeline metrics refresh failed'),
+      refetch: retry,
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const unavailable = container.querySelector('[data-testid="pipeline-execution-backlog-unavailable"]')
+    expect(unavailable, 'stale execution backlog must be named unavailable').not.toBeNull()
+    expect(unavailable?.textContent).toContain('execution backlog')
+    expect(unavailable?.textContent).toContain('unavailable')
+    expect(container.querySelector('[data-testid="pipeline-execution-backlog"]')).toBeNull()
+    expect(container.textContent).not.toContain('execution backlog · current ledger')
+
+    act(() => {
+      ;(unavailable?.querySelector('button') as HTMLButtonElement).click()
+    })
+    expect(retry).toHaveBeenCalledTimes(1)
   })
 })
 

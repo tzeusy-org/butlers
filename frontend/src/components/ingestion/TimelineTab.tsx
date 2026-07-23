@@ -98,6 +98,7 @@ import { EventDrawer } from "./timeline/EventDrawer";
 import { useEventDrawerState } from "./timeline/useEventDrawerState";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { formatCostUsdPrecise } from "@/lib/format-cost";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -134,7 +135,14 @@ function histogramBucketForRange(range: IngestionRange): IngestionHistogramBucke
 }
 
 function histogramBucketMinutes(bucket: IngestionHistogramBucketSize): number {
-  return bucket === "5m" ? 5 : 1;
+  switch (bucket) {
+    case "1h":
+      return 60;
+    case "5m":
+      return 5;
+    case "1m":
+      return 1;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,6 +1110,9 @@ interface HourGroupProps {
   bucketMinutes: number;
   /** True until the histogram query's first response for the active window has arrived. */
   histogramLoading: boolean;
+  /** True when the histogram reader failed and its totals cannot be trusted. */
+  histogramError: boolean;
+  onRetryHistogram: () => void;
   /** Minute has no loaded ledger row in view — scope the range/filters to it (URL-backed). */
   onScopeToMinute: (minuteIso: string, bucketMinutes: number) => void;
 }
@@ -1121,6 +1132,8 @@ function HourGroup({
   histogramBuckets,
   bucketMinutes,
   histogramLoading,
+  histogramError,
+  onRetryHistogram,
   onScopeToMinute,
 }: HourGroupProps) {
   const hourStart = hourKey !== "unknown" ? hourKey + ":00:00Z" : "";
@@ -1187,7 +1200,9 @@ function HourGroup({
           {hourStart ? <Time value={hourStart} mode="absolute" precision="hour" compact /> : "Unknown time"}
         </span>
         <span className="font-mono text-[10px] text-muted-foreground" data-testid="hour-group-summary">
-          {histogramLoading && histogramBuckets.length === 0 ? (
+          {histogramError ? (
+            "histogram unavailable"
+          ) : histogramLoading && histogramBuckets.length === 0 ? (
             "…"
           ) : (
             <>
@@ -1214,14 +1229,23 @@ function HourGroup({
           )}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <HourFlameStrip
-            hourStart={hourStart}
-            buckets={histogramBuckets}
-            bucketMinutes={bucketMinutes}
-            height={16}
-            onMinuteClick={handleMinuteClick}
-            data-testid="hour-flame-strip"
-          />
+          {histogramError ? (
+            <SourceDegradedNote
+              label="hour histogram"
+              detail="unavailable"
+              onRetry={onRetryHistogram}
+              testId="hour-histogram-unavailable"
+            />
+          ) : (
+            <HourFlameStrip
+              hourStart={hourStart}
+              buckets={histogramBuckets}
+              bucketMinutes={bucketMinutes}
+              height={16}
+              onMinuteClick={handleMinuteClick}
+              data-testid="hour-flame-strip"
+            />
+          )}
         </div>
       </div>
 
@@ -1321,6 +1345,8 @@ interface FooterRollupBandProps {
   cost: number | null | undefined;
   unpricedSessionCount: number | undefined;
   isLoading: boolean;
+  isError: boolean;
+  onRetry: () => void;
 }
 
 function formatCostEvidence(
@@ -1338,7 +1364,26 @@ function FooterRollupBand({
   cost,
   unpricedSessionCount,
   isLoading,
+  isError,
+  onRetry,
 }: FooterRollupBandProps) {
+  if (isError) {
+    return (
+      <div
+        className="border-t border-border py-2 bg-muted/5"
+        data-testid="footer-rollup-band"
+        aria-label="Filter window aggregate counts"
+      >
+        <SourceDegradedNote
+          label="window rollup"
+          detail="unavailable"
+          onRetry={onRetry}
+          testId="footer-rollup-unavailable"
+        />
+      </div>
+    );
+  }
+
   const cell = (label: string, value: string) => (
     <div className="flex flex-col items-center gap-0.5 min-w-[80px]">
       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
@@ -1980,7 +2025,6 @@ export function TimelineTab({
   // (not `effectiveWindow`) so the strip keeps showing full-range context
   // even while the ledger itself is minute-scoped.
   const histogramBucket = histogramBucketForRange(range);
-  const histogramBucketMinutesValue = histogramBucketMinutes(histogramBucket);
   const histogramParams = useMemo(() => ({
     // A trace-scoped hour strip must not be silently clipped by the range
     // picker's window either — same reasoning as eventsFilters above. The
@@ -2002,10 +2046,18 @@ export function TimelineTab({
     urlTrace,
   ]);
 
-  const { data: histogramResp, isLoading: histogramLoading } = useIngestionEventsHistogram(
-    histogramParams,
-    { enabled: isActive },
-  );
+  const {
+    data: histogramResp,
+    isLoading: histogramLoading,
+    isError: histogramError,
+    refetch: refetchHistogram,
+  } = useIngestionEventsHistogram(histogramParams, { enabled: isActive });
+
+  // The server can return a coarser actual bucket after its bounded fallback
+  // or trace-scoped auto-widening. That response bucket is authoritative for
+  // both strip slots and the range scoped by a strip click.
+  const actualHistogramBucket = histogramResp?.bucket ?? histogramBucket;
+  const histogramBucketMinutesValue = histogramBucketMinutes(actualHistogramBucket);
 
   const histogramByHour = useMemo(() => {
     const map = new Map<string, IngestionHistogramBucket[]>();
@@ -2026,6 +2078,8 @@ export function TimelineTab({
   const {
     data: rollupData,
     isLoading: rollupLoading,
+    isError: rollupError,
+    refetch: refetchRollup,
   } = useIngestionWindowRollup(
     {
       // A trace-scoped footer rollup must not be silently clipped by the
@@ -2309,6 +2363,8 @@ export function TimelineTab({
                 histogramBuckets={histogramByHour.get(group.key) ?? []}
                 bucketMinutes={histogramBucketMinutesValue}
                 histogramLoading={histogramLoading}
+                histogramError={histogramError}
+                onRetryHistogram={() => void refetchHistogram()}
                 onScopeToMinute={handleScopeToMinute}
               />
             ))}
@@ -2324,6 +2380,8 @@ export function TimelineTab({
         cost={rollupData?.cost}
         unpricedSessionCount={rollupData?.unpriced_session_count}
         isLoading={rollupLoading}
+        isError={rollupError}
+        onRetry={() => void refetchRollup()}
       />
 
       {/* Load more footer */}

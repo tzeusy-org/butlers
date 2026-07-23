@@ -101,27 +101,32 @@ export default function ConnectorDetailPage() {
     error: detailError,
   } = useConnectorDetail(connectorType ?? null, endpointIdentity ?? null)
 
-  const { data: statsResp, isLoading: statsLoading } = useConnectorStats(
-    connectorType ?? null,
-    endpointIdentity ?? null,
-    '24h',
-  )
+  const {
+    data: statsResp,
+    isLoading: statsLoading,
+    isError: statsError,
+    refetch: refetchStats,
+  } = useConnectorStats(connectorType ?? null, endpointIdentity ?? null, '24h')
 
   // Connector-scoped event, incident, and routing rule data [bu-5ywn2]
-  const { data: eventsResp } = useConnectorEvents(
-    connectorType ?? null,
-    endpointIdentity ?? null,
-    20,
-  )
-  const { data: incidentsResp } = useConnectorIncidents(
-    connectorType ?? null,
-    endpointIdentity ?? null,
-    10,
-  )
-  const { data: routingRulesResp } = useConnectorRoutingRules(
-    connectorType ?? null,
-    endpointIdentity ?? null,
-  )
+  const {
+    data: eventsResp,
+    isLoading: eventsLoading,
+    isError: eventsError,
+    refetch: refetchEvents,
+  } = useConnectorEvents(connectorType ?? null, endpointIdentity ?? null, 20)
+  const {
+    data: incidentsResp,
+    isLoading: incidentsLoading,
+    isError: incidentsError,
+    refetch: refetchIncidents,
+  } = useConnectorIncidents(connectorType ?? null, endpointIdentity ?? null, 10)
+  const {
+    data: routingRulesResp,
+    isLoading: routingRulesLoading,
+    isError: routingRulesError,
+    refetch: refetchRoutingRules,
+  } = useConnectorRoutingRules(connectorType ?? null, endpointIdentity ?? null)
 
   const connector = detailResp?.data
   const stats = statsResp?.data
@@ -194,7 +199,7 @@ export default function ConnectorDetailPage() {
   // The Page shell handles these via its loading / error / empty props, replacing
   // the bespoke inline LoadingSkeleton / ErrorState / NotFoundState components.
 
-  if (detailLoading || statsLoading) {
+  if (detailLoading) {
     return (
       <Page
         archetype="detail"
@@ -246,10 +251,30 @@ export default function ConnectorDetailPage() {
         <ConnectorDetailView
           connector={connector}
           stats={stats}
+          statsReader={{
+            isLoading: statsLoading,
+            isError: statsError,
+            onRetry: () => void refetchStats(),
+          }}
           oauthScopes={_toOAuthScopes(connector.scopes)}
           recentEvents={eventsResp ?? null}
+          recentEventsReader={{
+            isLoading: eventsLoading,
+            isError: eventsError,
+            onRetry: () => void refetchEvents(),
+          }}
           incidents={incidentsResp ?? null}
+          incidentsReader={{
+            isLoading: incidentsLoading,
+            isError: incidentsError,
+            onRetry: () => void refetchIncidents(),
+          }}
           routingRules={routingRulesResp ?? null}
+          routingRulesReader={{
+            isLoading: routingRulesLoading,
+            isError: routingRulesError,
+            onRetry: () => void refetchRoutingRules(),
+          }}
           onReauth={handleReauth}
           onSetPrimaryAccount={handleSetPrimaryAccount}
         />

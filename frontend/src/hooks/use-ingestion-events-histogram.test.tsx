@@ -155,4 +155,51 @@ describe("useIngestionEventsHistogram", () => {
       expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(2),
     );
   });
+
+  it("coarsens a 422 histogram request once before succeeding", async () => {
+    const Wrapper = makeWrapper();
+    const params = {
+      from: "2026-01-01T00:00:00Z",
+      to: "2026-01-04T00:00:00Z",
+      bucket: "1m" as const,
+    };
+    mockGetIngestionEventsHistogram
+      .mockRejectedValueOnce(Object.assign(new Error("range too wide"), { status: 422 }))
+      .mockResolvedValueOnce({ buckets: [], bucket: "5m" });
+
+    const { result } = renderHook(() => useIngestionEventsHistogram(params), {
+      wrapper: Wrapper,
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(2);
+    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(1, params);
+    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(2, {
+      ...params,
+      bucket: "5m",
+    });
+  });
+
+  it("does not make a second coarsening attempt when the fallback also returns 422", async () => {
+    const Wrapper = makeWrapper();
+    const params = {
+      from: "2026-01-01T00:00:00Z",
+      to: "2026-01-04T00:00:00Z",
+      bucket: "1m" as const,
+    };
+    mockGetIngestionEventsHistogram
+      .mockRejectedValueOnce(Object.assign(new Error("range too wide"), { status: 422 }))
+      .mockRejectedValueOnce(Object.assign(new Error("still too wide"), { status: 422 }));
+
+    const { result } = renderHook(() => useIngestionEventsHistogram(params), {
+      wrapper: Wrapper,
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(2);
+    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(2, {
+      ...params,
+      bucket: "5m",
+    });
+  });
 });

@@ -15,6 +15,7 @@
  */
 
 import type { IngestionRule } from '@/api/types'
+import { SourceDegradedNote } from '@/components/ui/query-boundary'
 import type { GateDefinition, GateCount } from './gate-state'
 import { RuleRow } from './RuleRow'
 
@@ -37,6 +38,13 @@ export interface GateSectionProps {
   count: GateCount
   index: number
   rules: IngestionRule[]
+  /** True while the first metrics response for this view is pending. */
+  metricsLoading?: boolean
+  /** False when the metrics reader is unavailable; counts must not render as zero. */
+  metricsAvailable?: boolean
+  rulesLoading?: boolean
+  rulesError?: boolean
+  onRetryRules?: () => void
   onToggleRule?: (id: string, enabled: boolean) => void
   onEditRule?: (id: string) => void
   onDeleteRule?: (id: string) => void
@@ -47,6 +55,11 @@ export function GateSection({
   count,
   index,
   rules,
+  metricsLoading = false,
+  metricsAvailable = true,
+  rulesLoading = false,
+  rulesError = false,
+  onRetryRules,
   onToggleRule,
   onEditRule,
   onDeleteRule,
@@ -81,25 +94,47 @@ export function GateSection({
 
         {/* Right: counts */}
         <div className="text-right font-mono text-[10px] text-muted-foreground/70">
-          <span>in {fmt(count.in)}</span>
-          <span className="mx-1">·</span>
-          <span>out {fmt(count.out)}</span>
-          {hasDrop && (
-            <span className="ml-1.5 text-[var(--red-text)]">
-              · −{fmt(count.dropped)}
-            </span>
-          )}
-          {hasPreserved && (
-            <span className="ml-1.5 text-[var(--amber-text)]">
-              · −{fmt(count.preserved)} pres.
-            </span>
+          {metricsLoading ? (
+            <span data-testid={`gate-metrics-loading-${def.key}`}>loading…</span>
+          ) : metricsAvailable ? (
+            <>
+              <span>in {fmt(count.in)}</span>
+              <span className="mx-1">·</span>
+              <span>out {fmt(count.out)}</span>
+              {hasDrop && (
+                <span className="ml-1.5 text-[var(--red-text)]">
+                  · −{fmt(count.dropped)}
+                </span>
+              )}
+              {hasPreserved && (
+                <span className="ml-1.5 text-[var(--amber-text)]">
+                  · −{fmt(count.preserved)} pres.
+                </span>
+              )}
+            </>
+          ) : (
+            <span data-testid={`gate-metrics-unavailable-${def.key}`}>in {'—'} · out {'—'}</span>
           )}
         </div>
       </div>
 
       {/* Rules or code-policy */}
       <div className="mt-1">
-        {rules.length > 0 ? (
+        {rulesLoading ? (
+          <p
+            className="font-mono text-[11px] text-muted-foreground/60 py-5"
+            data-testid={`gate-rules-loading-${def.key}`}
+          >
+            Loading {def.label} rules…
+          </p>
+        ) : rulesError ? (
+          <SourceDegradedNote
+            label={`${def.label} rules`}
+            detail="unavailable"
+            onRetry={onRetryRules}
+            testId={`gate-rules-unavailable-${def.key}`}
+          />
+        ) : rules.length > 0 ? (
           rules.map((rule) => (
             <RuleRow
               key={rule.id}

@@ -34,6 +34,7 @@ import type {
   CursorPaginatedResponse,
   IngestionEventsParams,
   IngestionEventSummary,
+  IngestionHistogramBucketSize,
   IngestionHistogramParams,
   IngestionHistogramResponse,
   IngestionWindowRollup,
@@ -273,6 +274,29 @@ export function useIngestionWindowRollup(
   });
 }
 
+const NEXT_HISTOGRAM_BUCKET: Record<IngestionHistogramBucketSize, IngestionHistogramBucketSize | null> = {
+  "1m": "5m",
+  "5m": "1h",
+  "1h": null,
+};
+
+function isHistogramRangeError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    (error as { status?: unknown }).status === 422
+  );
+}
+
+function coarserHistogramParams(
+  params: IngestionHistogramParams,
+): IngestionHistogramParams | null {
+  const bucket = params.bucket ?? "1m";
+  const nextBucket = NEXT_HISTOGRAM_BUCKET[bucket];
+  return nextBucket ? { ...params, bucket: nextBucket } : null;
+}
+
 /**
  * Per-minute (or coarser) ingestion event counts by status for a time window.
  *
@@ -286,10 +310,10 @@ export function useIngestionWindowRollup(
  * unbounded aggregate scan.
  *
  * The backend enforces a bucket-count guardrail and returns 422 when the
- * range/bucket combination is too wide (e.g. '1m' over >48h) — callers
- * should retry with a coarser `bucket` on error rather than treating it as a
- * generic failure. (Trace-scoped queries auto-escalate the bucket
- * server-side instead of 422ing — see the endpoint docstring.)
+ * range/bucket combination is too wide (e.g. '1m' over >48h). The hook makes
+ * one bounded retry at the next coarser bucket, then surfaces the failure
+ * honestly if that fallback also fails. (Trace-scoped queries auto-escalate
+ * the bucket server-side instead of 422ing — see the endpoint docstring.)
  */
 export function useIngestionEventsHistogram(
   params: IngestionHistogramParams,
@@ -297,8 +321,23 @@ export function useIngestionEventsHistogram(
 ) {
   return useQuery<IngestionHistogramResponse>({
     queryKey: ingestionEventKeys.histogram(params),
-    queryFn: () => getIngestionEventsHistogram(params),
+    queryFn: async () => {
+      try {
+        return await getIngestionEventsHistogram(params);
+      } catch (error) {
+        const fallbackParams = isHistogramRangeError(error)
+          ? coarserHistogramParams(params)
+          : null;
+        if (!fallbackParams) throw error;
+
+        // Intentionally one request only: a second 422 must remain an
+        // unavailable histogram, not fan out through progressively coarser
+        // guesses or React Query's generic retry loop.
+        return getIngestionEventsHistogram(fallbackParams);
+      }
+    },
     staleTime: 30_000,
+    retry: false,
     enabled:
       (!!params.trace_id || (!!params.from && !!params.to)) && options?.enabled !== false,
   });

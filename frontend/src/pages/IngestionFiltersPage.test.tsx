@@ -114,6 +114,35 @@ describe('FiltersHeaderAside — degraded-mode KPI handling', () => {
     expect(container.querySelector('[data-testid="filters-header-backlog"]')).toBeNull()
   })
 
+  it('does not label cached backlog counts current after a failed stats refresh and retries', () => {
+    const retry = vi.fn()
+    mockUsePipelineStats.mockReturnValue({
+      data: makeStats({
+        failed_total: 3,
+        replay_pending_total: 2,
+        written_off_total: 8,
+        backlog_available: true,
+      }),
+      isError: true,
+      error: new Error('pipeline metrics refresh failed'),
+      refetch: retry,
+    })
+
+    act(() => { root.render(<FiltersHeaderAside />) })
+
+    const unavailable = container.querySelector('[data-testid="filters-header-backlog-unavailable"]')
+    expect(unavailable, 'stale header backlog must be named unavailable').not.toBeNull()
+    expect(unavailable?.textContent).toContain('active backlog')
+    expect(unavailable?.textContent).toContain('unavailable')
+    expect(container.querySelector('[data-testid="filters-header-backlog"]')).toBeNull()
+    expect(container.textContent).not.toContain('active backlog · current')
+
+    act(() => {
+      ;(unavailable?.querySelector('button') as HTMLButtonElement).click()
+    })
+    expect(retry).toHaveBeenCalledTimes(1)
+  })
+
   it('shows a "metrics unavailable" note (not bare em-dashes) when degraded', () => {
     mockUsePipelineStats.mockReturnValue({
       data: makeStats({ aggregates_available: false }),
@@ -136,5 +165,26 @@ describe('FiltersHeaderAside — degraded-mode KPI handling', () => {
     act(() => { root.render(<FiltersHeaderAside />) })
 
     expect(container.textContent).toBe('')
+  })
+
+  it('names a failed metrics reader and offers a scoped retry instead of vanishing', () => {
+    const retry = vi.fn()
+    mockUsePipelineStats.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('pipeline metrics offline'),
+      refetch: retry,
+    })
+
+    act(() => { root.render(<FiltersHeaderAside />) })
+
+    const note = container.querySelector('[data-testid="filters-header-metrics-unavailable"]')
+    expect(note).not.toBeNull()
+    expect(note?.textContent).toContain('pipeline metrics')
+    act(() => {
+      ;(note?.querySelector('button') as HTMLButtonElement).click()
+    })
+    expect(retry).toHaveBeenCalledTimes(1)
   })
 })

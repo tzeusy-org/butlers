@@ -21,6 +21,7 @@
 
 import type { GateCount, GateDefinition } from './gate-state'
 import { GATE_DEFS } from './gate-state'
+import { SourceDegradedNote } from '@/components/ui/query-boundary'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -178,24 +179,54 @@ function FunnelBar({ counts, totalIn }: FunnelBarProps) {
 
 export interface PipelineGateDiagramProps {
   counts: GateCount[]
+  /** True while the first metrics response for this view is pending. */
+  loading?: boolean
   /** Whether the backend metrics are available. */
   available: boolean
+  /** Re-runs the metrics reader when its source is unavailable. */
+  onRetry?: () => void
 }
 
-export function PipelineGateDiagram({ counts, available }: PipelineGateDiagramProps) {
+export function PipelineGateDiagram({ counts, loading = false, available, onRetry }: PipelineGateDiagramProps) {
   const totalIn = counts[0]?.in ?? 0
+
+  if (loading) {
+    return (
+      <div
+        className="border-t border-b border-border py-6"
+        data-testid="pipeline-gate-diagram"
+      >
+        <p
+          className="font-mono text-[11px] text-muted-foreground/60"
+          data-testid="pipeline-metrics-loading"
+        >
+          Loading pipeline metrics…
+        </p>
+      </div>
+    )
+  }
+
+  if (!available) {
+    return (
+      <div
+        className="border-t border-b border-border py-6"
+        data-testid="pipeline-gate-diagram"
+      >
+        <SourceDegradedNote
+          label="pipeline metrics"
+          detail="unavailable, gate counts cannot be calculated"
+          onRetry={onRetry}
+          testId="pipeline-metrics-unavailable"
+        />
+      </div>
+    )
+  }
 
   return (
     <div
       className="border-t border-b border-border py-6"
       data-testid="pipeline-gate-diagram"
     >
-      {!available && (
-        <p className="font-mono text-[10px] tracking-[0.14em] uppercase text-muted-foreground/60 mb-4">
-          metrics unavailable · counts are zero
-        </p>
-      )}
-
       {/* Gate row */}
       <div className="flex gap-0">
         {GATE_DEFS.map((def, i) => (
