@@ -17,8 +17,10 @@ import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-ve
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import {
   useBackupFacts,
+  useDatabaseFacts,
   useDeploymentFacts,
   useDriftFacts,
+  useEgressFacts,
   useHealthPosture,
   useInsightDeliveryState,
   useInstanceFacts,
@@ -58,7 +60,9 @@ function bindMountedWorktreeTruth(current: {
 export function SystemVerdictBanner() {
   const { aggregates: board } = useButlerStatusBoard();
   const instance = useInstanceFacts();
+  const database = useDatabaseFacts();
   const backups = useBackupFacts();
+  const egress = useEgressFacts();
   const insights = useInsightDeliveryState();
   const posture = useHealthPosture();
   const drift = useDriftFacts();
@@ -67,7 +71,13 @@ export function SystemVerdictBanner() {
   const sources = [
     { label: "fleet status", isLoading: board.isLoading, isError: board.isError, href: "/butlers" },
     { label: "instance facts", isLoading: instance.isLoading, isError: instance.isError },
+    { label: "database facts", isLoading: database.isLoading, isError: database.isError },
     { label: "backup facts", isLoading: backups.isLoading, isError: backups.isError },
+    {
+      label: "data egress catalog",
+      isLoading: egress.isLoading,
+      isError: egress.isError && !egress.isForbidden,
+    },
     { label: "insight delivery status", isLoading: insights.isPending, isError: insights.isError },
     { label: "security posture", isLoading: posture.isPending, isError: posture.isError },
     { label: "migration drift status", isLoading: drift.isPending, isError: drift.isError },

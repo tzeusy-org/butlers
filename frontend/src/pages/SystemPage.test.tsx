@@ -171,6 +171,7 @@ function setAllLoading() {
   vi.mocked(useDatabaseFacts).mockReturnValue({
     data: undefined,
     isLoading: true,
+    isError: false,
     error: null,
   } as AnyMock);
 
@@ -183,6 +184,7 @@ function setAllLoading() {
   vi.mocked(useEgressFacts).mockReturnValue({
     data: undefined,
     isLoading: true,
+    isError: false,
     error: null,
     isForbidden: false,
   } as AnyMock);
@@ -235,6 +237,7 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   vi.mocked(useDatabaseFacts).mockReturnValue({
     data: { data: { total_size_bytes: 1024, schemas: [], largest_tables: [], growth_rate_bytes_per_day: null }, meta: {} },
     isLoading: false,
+    isError: false,
     error: null,
   } as AnyMock);
 
@@ -258,6 +261,7 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   vi.mocked(useEgressFacts).mockReturnValue({
     data: { data: { actors: [{ actor_id: "anthropic.claude", display_name: "Anthropic Claude API", last_seen_at: "2026-01-01T00:00:00Z", total_calls: 5, data_types: ["session_prompt"] }], catalog_covers_from: null }, meta: {} },
     isLoading: false,
+    isError: false,
     error: null,
     isForbidden: false,
   } as AnyMock);
@@ -593,6 +597,79 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
     expect(html).toContain("Instance healthy");
     expect(html).toContain("v1.0.0");
     expect(html).toContain("all 1 beating");
+  });
+
+  it("keeps the verdict loading while database facts load", () => {
+    setAllSuccess();
+    vi.mocked(useDatabaseFacts).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="system-verdict-skeleton"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
+  });
+
+  it("names unavailable database facts instead of rendering all-clear", () => {
+    setAllSuccess();
+    vi.mocked(useDatabaseFacts).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("database unavailable"),
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("database facts unavailable");
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
+  });
+
+  it("keeps the verdict loading while the egress catalog loads", () => {
+    setAllSuccess();
+    vi.mocked(useEgressFacts).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+      isForbidden: false,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="system-verdict-skeleton"');
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
+  });
+
+  it("names unavailable egress catalog on a non-forbidden error", () => {
+    setAllSuccess();
+    vi.mocked(useEgressFacts).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("egress unavailable"),
+      isForbidden: false,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("data egress catalog unavailable");
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
+  });
+
+  it("keeps owner-only egress denial settled and non-failing", () => {
+    setAllSuccess();
+    vi.mocked(useEgressFacts).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new ApiError("forbidden", "Owner contact not found", 403),
+      isForbidden: true,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="system-verdict-all-clear"');
+    expect(html).not.toContain("data egress catalog unavailable");
   });
 
   it("renders a ranked problem list when butlers are offline/quarantined/overdue", () => {

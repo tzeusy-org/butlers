@@ -169,7 +169,8 @@ escalate the same drift composition more than once.
 
 The `/system` dashboard page SHALL surface migration drift as a distinct,
 visually red clause when drifted, and SHALL fold it into the page's overall
-verdict banner.
+verdict banner. The banner SHALL also apply the same source-honesty settlement
+rule to the System Overview's database and data-egress sources.
 
 #### Scenario: Drift renders as a red tile
 
@@ -186,6 +187,15 @@ verdict banner.
   chain count, annotated with "escalated to QA" once `escalated` is `true`
 - **AND** the banner never renders its "all clear" state while the drift
   source is still loading or has failed to load
+
+#### Scenario: Verdict source settlement includes database and egress
+
+- **WHEN** the computed verdict receives database or egress query state
+- **THEN** it remains unsettled while either source is loading
+- **AND** it names a settled database failure or non-403 egress failure as an
+  unavailable source instead of rendering all clear
+- **AND** an egress `isForbidden` HTTP 403 remains settled owner-only limited
+  visibility, not a failure
 
 ### Requirement: `butlers deploy` — Idempotent Production Deploy Verb
 
@@ -315,4 +325,3 @@ in which case both rejections are downgraded to loud warnings.
   or through the programmatic `run_deploy` entry point
 - **THEN** the same preflight guard runs in both paths — the CLI does not carry
   a guard the library entry point lacks
-
