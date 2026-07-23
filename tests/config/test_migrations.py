@@ -251,9 +251,8 @@ def test_core_only_migrations_keep_session_stubs_in_sync(postgres_container):
     assert drift == {}, f"core-only sessions stub drift: {drift}"
 
 
-def test_core_migrations_seed_permissions_vocabulary(postgres_container):
-    """core@head seeds public.permissions so the matrix renders non-empty, and the
-    runtime enforcer (check_permission) honours a revoked grant against real rows."""
+def test_core_migrations_retire_legacy_permission_default_seeds(postgres_container):
+    """core@head leaves defaults inherited and honours explicit overrides."""
     import asyncpg
 
     from butlers.core.permissions import (
@@ -267,42 +266,30 @@ def test_core_migrations_seed_permissions_vocabulary(postgres_container):
     db_url = create_migration_db(postgres_container, db_name)
     asyncio.run(run_migrations(db_url, chain="core"))
 
-    # Matrix vocabulary is seeded (non-empty): both axes have real options.
+    # core_121 initially seeded defaults, but final core head retires those rows
+    # so inherited state remains distinguishable from an operator decision.
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM public.permissions")).scalar_one()
-            assert total > 0, "permissions matrix must be seeded non-empty"
-            distinct_butlers = conn.execute(
-                text("SELECT COUNT(DISTINCT butler) FROM public.permissions")
-            ).scalar_one()
-            distinct_perms = conn.execute(
-                text("SELECT COUNT(DISTINCT permission) FROM public.permissions")
-            ).scalar_one()
-            assert distinct_butlers >= 2
-            assert distinct_perms >= 1
-            # The enforced spawn permission is part of the seeded vocabulary.
-            spawn_rows = conn.execute(
-                text("SELECT COUNT(*) FROM public.permissions WHERE permission = :p"),
-                {"p": SPAWN_PERMISSION},
-            ).scalar_one()
-            assert spawn_rows >= 2
+            assert total == 0, "legacy default seeds must not survive at final core head"
     finally:
         engine.dispose()
 
-    # Runtime enforcer against a real asyncpg pool: seeded grant allows, an explicit
-    # revoke denies (deny BLOCKS), and an unknown butler default-allows.
+    # Runtime enforcer against a real asyncpg pool: absent rows default-allow,
+    # an explicit revoke denies (deny BLOCKS), and unknown butlers stay inherited.
     async def _exercise_enforcer() -> None:
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
         try:
-            # Seeded default → allowed.
+            # No persisted row → inherited system default allows.
             allowed = await check_permission(pool, "chronicler", SPAWN_PERMISSION)
             assert allowed.allowed is True
+            assert allowed.explicit is False
 
-            # Revoke chronicler's spawn grant; enforcer must now deny + require_permission raises.
+            # Explicit revoke must deny + require_permission raises.
             await pool.execute(
-                "UPDATE public.permissions SET granted = FALSE, reason = 'test-revoke' "
-                "WHERE butler = 'chronicler' AND permission = $1",
+                "INSERT INTO public.permissions (butler, permission, granted, reason) "
+                "VALUES ('chronicler', $1, FALSE, 'test-revoke')",
                 SPAWN_PERMISSION,
             )
             denied = await check_permission(pool, "chronicler", SPAWN_PERMISSION)
