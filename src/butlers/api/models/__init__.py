@@ -517,6 +517,7 @@ from butlers.api.models.memory import (  # noqa: E402
     Fact,
     MemoryActivity,
     MemoryStats,
+    RetentionSourceObservation,
 )
 from butlers.api.models.memory import (  # noqa: E402
     Rule as MemoryRule,
@@ -588,6 +589,7 @@ __all__ = [
     "Fact",
     "MemoryActivity",
     "MemoryStats",
+    "RetentionSourceObservation",
     "MemoryRule",
     "MessageCreateRequest",
     "ErrorDetail",

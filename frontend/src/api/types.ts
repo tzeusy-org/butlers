@@ -2738,6 +2738,21 @@ export interface MemoryStats {
   last_consolidation_at: string | null;
   last_consolidation_facts_produced: number | null;
   dead_letter_episodes: number;
+  /** Null when expired-retention coverage is incomplete. */
+  expired_retained_episodes: number | null;
+  /** Null when expired-retention coverage is incomplete. */
+  retention_eligible_episodes: number | null;
+  /** Null for incomplete coverage or a zero eligible denominator. */
+  expired_retained_ratio: number | null;
+}
+
+/** Read-only expired-retention observation for one completed memory source. */
+export interface RetentionSourceObservation {
+  source_butler: string;
+  source_schema: string | null;
+  expired_retained_episodes: number;
+  retention_eligible_episodes: number;
+  expired_retained_ratio: number | null;
 }
 
 /**
@@ -2768,6 +2783,12 @@ export interface MemoryStatsMeta extends ApiMeta {
    * clean gauge.
    */
   catalog_pools_failed?: string[];
+  /** Fleet verdict for the complete-or-unknown expired-retention observation. */
+  retention_status?: "healthy" | "degraded" | "unknown";
+  /** Completed sources only; rows remain useful lower-bound diagnostics on failure. */
+  retention_sources?: RetentionSourceObservation[];
+  /** Sources whose retention query failed, distinct from ordinary stats failures. */
+  retention_pools_failed?: string[];
 }
 
 /** GET /api/memory/stats response: aggregate totals + degraded-pool meta. */

@@ -42,7 +42,8 @@ _STATS_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS episodes (
     id                   BIGSERIAL PRIMARY KEY,
     consolidated         BOOLEAN NOT NULL DEFAULT false,
-    consolidation_status TEXT    NOT NULL DEFAULT 'pending'
+    consolidation_status TEXT    NOT NULL DEFAULT 'pending',
+    expires_at           TIMESTAMPTZ
 );
 CREATE TABLE IF NOT EXISTS facts (
     id       BIGSERIAL PRIMARY KEY,
@@ -150,3 +151,36 @@ async def test_consolidation_run_populates_stats_fields(provisioned_postgres_poo
         # Stable counts are unchanged by recording a run.
         assert after["dead_letter_episodes"] == 1
         assert after["total_episodes"] == 3
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_stats_reports_complete_expired_retention_observation(
+    provisioned_postgres_pool,
+) -> None:
+    """The read-only stats route uses the cleanup population, not a new expiry rule."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_STATS_SCHEMA_SQL)
+        await pool.execute(
+            "INSERT INTO episodes (expires_at) VALUES "
+            "(now() - interval '1 hour'), (now() + interval '1 hour'), (NULL)"
+        )
+        db = _SinglePoolDB("memory", pool)
+
+        async with _app_client(db) as client:
+            resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["expired_retained_episodes"] == 1
+    assert body["data"]["retention_eligible_episodes"] == 2
+    assert body["data"]["expired_retained_ratio"] == 0.5
+    assert body["meta"]["retention_status"] == "degraded"
+    assert body["meta"]["retention_sources"] == [
+        {
+            "source_butler": "memory",
+            "source_schema": None,
+            "expired_retained_episodes": 1,
+            "retention_eligible_episodes": 2,
+            "expired_retained_ratio": 0.5,
+        }
+    ]

@@ -54,6 +54,9 @@ function healthyStats(overrides: Partial<MemoryStats> = {}): MemoryStats {
     last_consolidation_at: "2026-06-12T18:00:00Z",
     last_consolidation_facts_produced: 12,
     dead_letter_episodes: 0,
+    expired_retained_episodes: 0,
+    retention_eligible_episodes: 0,
+    expired_retained_ratio: null,
     ...overrides,
   };
 }

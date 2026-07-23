@@ -438,11 +438,15 @@ class _StatsPool:
         last_runs: dict[str, dict | None] | None = None,
         schema: str | None = None,
         drift: dict[str, int] | None = None,
+        retention: dict[str, int] | None = None,
+        retention_exc: Exception | None = None,
     ) -> None:
         self._counts = counts or {}
         self._last_runs = last_runs or {}
         self._schema = schema
         self._drift = drift or {}
+        self._retention = retention or {}
+        self._retention_exc = retention_exc
 
     async def fetchval(self, query: str, *args: object) -> int:
         if "current_schema()" in query:
@@ -453,6 +457,13 @@ class _StatsPool:
         return 0
 
     async def fetchrow(self, query: str, *args: object) -> dict | None:
+        if "expired_retained_episodes" in query:
+            if self._retention_exc is not None:
+                raise self._retention_exc
+            return {
+                "expired_retained_episodes": self._retention.get("expired", 0),
+                "retention_eligible_episodes": self._retention.get("eligible", 0),
+            }
         if "consolidation_runs" in query:
             butler = args[0]
             return self._last_runs.get(butler)
@@ -484,10 +495,110 @@ class _StatsDB:
             raise KeyError(f"No pool for butler: {name}")
         return self._pools[name]
 
+    def memory_schema_for_butler(self, name: str) -> str | None:
+        return getattr(self.pool(name), "_schema", None)
+
     def relation_observed_since_start(self, name: str, relation: str) -> bool | None:
         if name in self._memory_schema_absent:
             return False
         return None
+
+
+async def test_stats_retention_healthy_with_zero_eligible_denominator(app):
+    """Completed zero coverage has no fabricated retention ratio."""
+    db = _StatsDB({"atlas": _StatsPool(schema="atlas")})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["expired_retained_episodes"] == 0
+    assert body["data"]["retention_eligible_episodes"] == 0
+    assert body["data"]["expired_retained_ratio"] is None
+    assert body["meta"]["retention_status"] == "healthy"
+    assert body["meta"]["retention_sources"] == [
+        {
+            "source_butler": "atlas",
+            "source_schema": "atlas",
+            "expired_retained_episodes": 0,
+            "retention_eligible_episodes": 0,
+            "expired_retained_ratio": None,
+        }
+    ]
+    assert "retention_pools_failed" not in body["meta"]
+
+
+async def test_stats_retention_failure_is_unknown_without_discarding_ordinary_stats(app):
+    """A retention-only fault must not manufacture a zero or drop other gauges."""
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(
+                counts={"consolidation_status = 'dead_letter'": 3},
+                schema="atlas",
+                drift={"live": 2},
+                retention={"expired": 1, "eligible": 2},
+            ),
+            "finance": _StatsPool(
+                schema="finance",
+                retention_exc=RuntimeError("connection reset by peer"),
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["dead_letter_episodes"] == 3
+    assert body["meta"]["catalog_live"] == 2
+    assert body["data"]["expired_retained_episodes"] is None
+    assert body["data"]["retention_eligible_episodes"] is None
+    assert body["data"]["expired_retained_ratio"] is None
+    assert body["meta"]["retention_status"] == "unknown"
+    assert body["meta"]["retention_pools_failed"] == ["finance"]
+    assert body["meta"]["retention_sources"] == [
+        {
+            "source_butler": "atlas",
+            "source_schema": "atlas",
+            "expired_retained_episodes": 1,
+            "retention_eligible_episodes": 2,
+            "expired_retained_ratio": 0.5,
+        }
+    ]
+
+
+async def test_stats_retention_omits_pool_without_memory_schema(app):
+    """A known absent memory schema is not a retention coverage failure."""
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(schema="atlas"),
+            "switchboard": _StatsPool(
+                schema="switchboard",
+                retention_exc=UndefinedTableError("relation does not exist"),
+            ),
+        },
+        memory_schema_absent={"switchboard"},
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["retention_status"] == "healthy"
+    assert [source["source_butler"] for source in body["meta"]["retention_sources"]] == ["atlas"]
+    assert "retention_pools_failed" not in body["meta"]
 
 
 async def test_stats_consolidation_fields_aggregate_across_pools(app):

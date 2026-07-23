@@ -49,6 +49,9 @@ function makeStats(overrides: Partial<MemoryStats> = {}): MemoryStats {
     last_consolidation_at: "2026-06-12T06:00:00+08:00",
     last_consolidation_facts_produced: 12,
     dead_letter_episodes: 0,
+    expired_retained_episodes: 0,
+    retention_eligible_episodes: 0,
+    expired_retained_ratio: null,
     ...overrides,
   };
 }
@@ -261,6 +264,82 @@ describe("MemoryOverture", () => {
       container.querySelector('[data-testid="memory-overture-pools-degraded"]'),
     ).toBeNull();
     expect(container.textContent).toContain("dead letters");
+  });
+
+  it("names an expired-retention source and its retained count when degraded", () => {
+    setStats(makeStats(), {
+      retention_status: "degraded",
+      retention_sources: [
+        {
+          source_butler: "relationship",
+          source_schema: "relationship",
+          expired_retained_episodes: 2,
+          retention_eligible_episodes: 5,
+          expired_retained_ratio: 0.4,
+        },
+      ],
+    });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    const note = container.querySelector('[data-testid="memory-overture-retention-degraded"]');
+    expect(note).not.toBeNull();
+    expect(note!.getAttribute("role")).toBe("alert");
+    expect(note!.textContent).toContain("relationship");
+    expect(note!.textContent).toContain("2 expired episodes");
+  });
+
+  it("does not render a retention alarm for a complete healthy observation", () => {
+    setStats(makeStats(), {
+      retention_status: "healthy",
+      retention_sources: [
+        {
+          source_butler: "relationship",
+          source_schema: "relationship",
+          expired_retained_episodes: 0,
+          retention_eligible_episodes: 3,
+          expired_retained_ratio: 0,
+        },
+      ],
+    });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    expect(container.querySelector('[data-testid="memory-overture-retention-degraded"]')).toBeNull();
+    expect(container.querySelector('[data-testid="memory-overture-retention-unknown"]')).toBeNull();
+  });
+
+  it("names incomplete expired-retention coverage without a healthy claim", () => {
+    setStats(makeStats(), {
+      retention_status: "unknown",
+      retention_sources: [],
+      retention_pools_failed: ["relationship", "finance"],
+    });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    const note = container.querySelector('[data-testid="memory-overture-retention-unknown"]');
+    expect(note).not.toBeNull();
+    expect(note!.getAttribute("role")).toBe("alert");
+    expect(note!.textContent).toContain("relationship, finance");
+    expect(note!.textContent).toContain("coverage is incomplete");
+    expect(note!.textContent).not.toContain("healthy");
+  });
+
+  it("renders retention coverage separately from ordinary and catalog degradation", () => {
+    setStats(makeStats(), {
+      pools_failed: ["general"],
+      catalog_pools_failed: ["atlas"],
+      retention_status: "unknown",
+      retention_sources: [],
+      retention_pools_failed: ["relationship"],
+    });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    expect(container.querySelector('[data-testid="memory-overture-pools-degraded"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="memory-overture-catalog-degraded"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="memory-overture-retention-unknown"]')).not.toBeNull();
   });
 
   // -------------------------------------------------------------------------

@@ -234,6 +234,12 @@ export default function MemoryOverture() {
   const catalogStale = catalogMeta?.catalog_stale ?? 0;
   const catalogDrifted = catalogMeta?.catalog_drifted ?? 0;
   const catalogPoolsFailed = catalogMeta?.catalog_pools_failed ?? [];
+  const retentionStatus = catalogMeta?.retention_status;
+  const retentionSources = catalogMeta?.retention_sources ?? [];
+  const retentionPoolsFailed = catalogMeta?.retention_pools_failed ?? [];
+  const degradedRetentionSources = retentionSources.filter(
+    (source) => source.expired_retained_episodes > 0,
+  );
 
   // Stats down with nothing cached: the Voice/KPI/pipeline bands would
   // otherwise render blank forever, reading as still-loading when the source
@@ -287,6 +293,27 @@ export default function MemoryOverture() {
           {stats != null && <PipelineBand stats={stats} />}
         </div>
       )}
+
+      {/* Retention is a separate complete-or-unknown observation. Its named
+          coverage must remain visible alongside ordinary and catalog fan-out
+          notes, and this read-only surface deliberately offers no mutation. */}
+      {!statsUnavailable && retentionStatus === "unknown" && retentionPoolsFailed.length > 0 && (
+        <SourceDegradedNote
+          label="Expired retention"
+          detail={`${retentionPoolsFailed.join(", ")} unreachable, retention coverage is incomplete`}
+          onRetry={() => void refetch()}
+          testId="memory-overture-retention-unknown"
+        />
+      )}
+      {!statsUnavailable && retentionStatus === "degraded" && degradedRetentionSources.map((source) => (
+        <SourceDegradedNote
+          key={source.source_butler}
+          label="Expired retention"
+          detail={`${source.source_butler}: ${source.expired_retained_episodes} expired episodes retained`}
+          onRetry={() => void refetch()}
+          testId="memory-overture-retention-degraded"
+        />
+      ))}
 
       {/* Band 3: Catalog-drift gauge. Reserve the band height so the page below
           does not jump when stats arrive. When one or more butler pools dropped

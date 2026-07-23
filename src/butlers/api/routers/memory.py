@@ -43,6 +43,7 @@ from butlers.api.models.memory import (
     ReembedPendingCounts,
     ReembedRunRequest,
     ReembedRunResult,
+    RetentionSourceObservation,
     Rule,
     UpdateEntityRequest,
     UpdateRetentionPoliciesRequest,
@@ -307,6 +308,7 @@ async def get_memory_stats(
     from butlers.modules.memory import storage as _storage
 
     catalog_tracker = DegradedSources(logger)
+    retention_tracker = DegradedSources(logger)
 
     async def _catalog_drift_for_pool(butler_name: str, pool: object) -> dict[str, int]:
         # public.memory_catalog tags rows with the owning butler's schema
@@ -444,6 +446,36 @@ async def get_memory_stats(
             "last_consolidation_facts_produced": (last_run["facts_produced"] if last_run else None),
         }
 
+    async def _retention_for_pool(butler_name: str, pool: object) -> RetentionSourceObservation:
+        """Observe the cleanup population without changing it.
+
+        Keep this predicate byte-for-byte aligned with ``run_episode_cleanup``:
+        the observation is deliberately a read-only deadman, never a cleanup
+        trigger or an alternate definition of expiry.
+        """
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
+        row = await pool.fetchrow(
+            f"SELECT "
+            f"count(*) FILTER (WHERE expires_at < now()) AS expired_retained_episodes, "
+            f"count(*) FILTER (WHERE expires_at IS NOT NULL) AS retention_eligible_episodes "
+            f"FROM {episodes_relation}"
+        )
+        if row is None:
+            raise RuntimeError("expired-retention aggregate query returned no row")
+        expired_retained_episodes = int(row["expired_retained_episodes"] or 0)
+        retention_eligible_episodes = int(row["retention_eligible_episodes"] or 0)
+        return RetentionSourceObservation(
+            source_butler=butler_name,
+            source_schema=_memory_source_schema(db, butler_name),
+            expired_retained_episodes=expired_retained_episodes,
+            retention_eligible_episodes=retention_eligible_episodes,
+            expired_retained_ratio=(
+                expired_retained_episodes / retention_eligible_episodes
+                if retention_eligible_episodes
+                else None
+            ),
+        )
+
     tracker = DegradedSources(logger)
     per_pool = await _fan_out_memory_queries(
         db,
@@ -459,6 +491,12 @@ async def get_memory_stats(
         query_name="catalog_drift",
         query_fn=_catalog_drift_for_pool,
         tracker=catalog_tracker,
+    )
+    retention_sources = await _fan_out_memory_queries(
+        db,
+        query_name="expired_retention",
+        query_fn=_retention_for_pool,
+        tracker=retention_tracker,
     )
 
     totals = MemoryStats()
@@ -497,15 +535,35 @@ async def get_memory_stats(
     catalog_stale = sum(row["stale"] for row in catalog_per_pool)
     catalog_drifted = sum(row["drifted"] for row in catalog_per_pool)
 
+    if retention_tracker.failed:
+        retention_status = "unknown"
+    else:
+        totals.expired_retained_episodes = sum(
+            source.expired_retained_episodes for source in retention_sources
+        )
+        totals.retention_eligible_episodes = sum(
+            source.retention_eligible_episodes for source in retention_sources
+        )
+        totals.expired_retained_ratio = (
+            totals.expired_retained_episodes / totals.retention_eligible_episodes
+            if totals.retention_eligible_episodes
+            else None
+        )
+        retention_status = "degraded" if totals.expired_retained_episodes > 0 else "healthy"
+
     meta_fields: dict[str, object] = {
         "catalog_live": catalog_live,
         "catalog_stale": catalog_stale,
         "catalog_drifted": catalog_drifted,
+        "retention_status": retention_status,
+        "retention_sources": retention_sources,
     }
     if tracker.failed:
         meta_fields["pools_failed"] = tracker.names
     if catalog_tracker.failed:
         meta_fields["catalog_pools_failed"] = catalog_tracker.names
+    if retention_tracker.failed:
+        meta_fields["retention_pools_failed"] = retention_tracker.names
 
     meta = ApiMeta(**meta_fields)
     return ApiResponse[MemoryStats](data=totals, meta=meta)

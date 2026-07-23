@@ -129,6 +129,22 @@ class MemoryStats(BaseModel):
     last_consolidation_at: str | None = None
     last_consolidation_facts_produced: int | None = None
     dead_letter_episodes: int = 0
+    # Expired-retention observation. These are null whenever one or more
+    # relevant memory sources did not complete, so a partial result cannot
+    # masquerade as a fleet-wide all-clear.
+    expired_retained_episodes: int | None = None
+    retention_eligible_episodes: int | None = None
+    expired_retained_ratio: float | None = None
+
+
+class RetentionSourceObservation(BaseModel):
+    """Read-only expired-retention observation for one completed memory source."""
+
+    source_butler: str
+    source_schema: str | None
+    expired_retained_episodes: int
+    retention_eligible_episodes: int
+    expired_retained_ratio: float | None
 
 
 class EntitySummary(BaseModel):

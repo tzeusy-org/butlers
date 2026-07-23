@@ -424,6 +424,26 @@ def _case_memory_stats() -> DegradedCase:
     return DegradedCase("memory_stats", _run)
 
 
+def _case_memory_retention_stats() -> DegradedCase:
+    async def _run() -> None:
+        db = _StatsDB(
+            {
+                "atlas": _StatsPool(retention={"expired": 0, "eligible": 1}),
+                "finance": _StatsPool(retention_exc=RuntimeError("connection reset by peer")),
+            }
+        )
+        app = create_app()
+        app.dependency_overrides[_memory_get_db] = lambda: db
+        resp = await _request(app, "GET", "/api/memory/stats")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["meta"]["retention_pools_failed"] == ["finance"]
+        assert body["meta"]["retention_status"] == "unknown"
+        assert body["data"]["expired_retained_episodes"] is None
+
+    return DegradedCase("memory_retention_stats", _run)
+
+
 def _case_memory_list(endpoint: str, name: str) -> DegradedCase:
     async def _run() -> None:
         db = _MemoryFanOutDB(
@@ -707,6 +727,7 @@ REGISTRY: list[DegradedCase] = [
     _case_notifications_list(),
     _case_notifications_stats(),
     _case_memory_stats(),
+    _case_memory_retention_stats(),
     _case_memory_list("/api/memory/episodes", "memory_episodes"),
     _case_memory_list("/api/memory/facts", "memory_facts"),
     _case_memory_list("/api/memory/rules", "memory_rules"),
