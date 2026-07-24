@@ -164,6 +164,7 @@ def _registry_row(
     eligibility_state: str = "active",
     quarantined_at: datetime | None = None,
     quarantine_reason: str | None = None,
+    liveness_ttl_seconds: int = 300,
 ) -> dict:
     return {
         "name": name,
@@ -171,6 +172,7 @@ def _registry_row(
         "eligibility_state": eligibility_state,
         "quarantined_at": quarantined_at,
         "quarantine_reason": quarantine_reason,
+        "liveness_ttl_seconds": liveness_ttl_seconds,
     }
 
 
@@ -458,3 +460,46 @@ async def test_board_preserves_stable_roster_order_regardless_of_activity():
     resp = await _get_board(_build_app(configs, db))
     names = [r["name"] for r in resp.json()["data"]["rows"]]
     assert names == ["zeta", "alpha", "mid"]
+
+
+async def test_board_frozen_stale_butler_ignores_stored_eligibility_state():
+    """A butler whose last_seen_at is stale (exceeds TTL) must read as 'stale'
+    on the board, even if its stored eligibility_state claims 'active' — this
+    prevents fabricated calm from a stale stored value. Derives eligibility
+    from freshness, not raw stored state (bu-cjk60)."""
+    now = _now()
+    configs = [ButlerConnectionInfo(name="finance", port=41105)]
+    # Set up a butler with:
+    # - stored eligibility_state = "active" (the raw stale value)
+    # - last_seen_at = 10 minutes ago (exceeds the 300s default TTL)
+    # Expected: board row should derive eligibility as "stale", not pass through "active"
+    db = _FakeDb(
+        switchboard=_FakeSwitchboardPool(
+            rows=[
+                _registry_row(
+                    "finance",
+                    last_seen_at=now - timedelta(minutes=10),
+                    eligibility_state="active",  # stale stored value, should NOT be used
+                    liveness_ttl_seconds=300,  # default TTL
+                )
+            ]
+        ),
+        butlers={
+            "finance": _FakeButlerPool(
+                crons=["*/15 * * * *"],
+                active_count=0,
+                max_concurrent=3,
+            )
+        },
+    )
+    resp = await _get_board(_build_app(configs, db))
+    assert resp.status_code == 200
+    row = resp.json()["data"]["rows"][0]
+
+    # The board row's eligibility must show "stale" (derived from freshness),
+    # not "active" (the raw stored state). This prevents fabricated calm from
+    # using a stale stored eligibility_state value.
+    assert row["eligibility"] == "stale"
+    # Heartbeat is available; the liveness verdict is downgraded by freshness.
+    assert row["heartbeat_unavailable"] is False
+    assert row["heartbeat_age_seconds"] > 0

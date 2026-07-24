@@ -53,6 +53,9 @@ from butlers.api.read_models.butlers_v1 import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
 from butlers.core.sessions import sessions_summary
+from butlers.tools.switchboard.registry.registry import (
+    _derive_eligibility_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -631,12 +634,9 @@ async def _fetch_board_row(
     if registry_source_error or reg is None:
         eligibility = "unavailable"
     else:
-        raw_eligibility = reg["eligibility_state"]
-        eligibility = (
-            raw_eligibility
-            if raw_eligibility in ("active", "quarantined", "stale")
-            else "unavailable"
-        )
+        # Derive eligibility from freshness (TTL staleness) rather than raw stored state.
+        # This mirrors the freshness rule used in _derive_eligibility_state.
+        eligibility = _derive_eligibility_state(reg, now=now)
 
     quarantine_reason = reg["quarantine_reason"] if reg else None
     quarantined_dt = (
@@ -829,7 +829,8 @@ async def get_butlers_board(
         sw_pool = db.pool("switchboard")
         registry_rows = await asyncio.wait_for(
             sw_pool.fetch(
-                "SELECT name, last_seen_at, eligibility_state, quarantined_at, quarantine_reason"
+                "SELECT name, last_seen_at, eligibility_state, quarantined_at, quarantine_reason,"
+                " liveness_ttl_seconds"
                 " FROM butler_registry"
             ),
             timeout=_STATUS_TIMEOUT_S,
