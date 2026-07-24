@@ -215,11 +215,19 @@ authority from an arbitrary target callback payload.
 
 ### Requirement: Asker-owned Deterministic Return Task
 
-delegate_wake SHALL be a server-to-server endpoint callable only through the
-trusted Switchboard route path. It SHALL independently re-read the ledger,
-verify that its local butler name equals asking_butler, verify the answered
-target/answering identities and wake key, and create or reconcile work only in
-its own schema.
+delegate_wake SHALL enforce its admission boundary through ledger
+re-verification rather than through the caller channel, even though in normal
+operation it is reached only through the trusted Switchboard route path. The
+framework has no LLM-hidden-but-registered tool tier (known framework
+limitation — see core-daemon's "Delegation Core Tool Inventory And Admission
+Boundary"), so delegate_wake is necessarily registered as an ordinary
+LLM-visible MCP tool and no admission-layer signal distinguishes a
+Switchboard-routed call from a direct same-butler invocation. It SHALL
+independently re-read the ledger, verify that its local butler name equals
+asking_butler, verify the answered target/answering identities and immutable
+wake key, and create or reconcile work only in its own schema. A direct or
+forged call that fails any of those checks SHALL be rejected with no local
+task created and no sibling-schema write.
 
 The one logical return task SHALL be named delegate-return-<ledger_id>. Its
 metadata SHALL bind ledger_id, wake_key, answer_digest, and

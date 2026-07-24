@@ -177,19 +177,30 @@ The core-tool inventory SHALL reserve a delegation group for non-staffer
 butlers. Its tool inventory is delegate_ask, delegate_receive, delegate_answer,
 and delegate_wake.
 
-delegate_wake is a server-to-server return endpoint, not a user-delivery or
-free-form peer control surface. Even when registered, it SHALL require the
-trusted Switchboard route caller and the authoritative ledger checks defined by
-the cross-butler-delegation specification. Registration alone SHALL not grant a
-domain butler authority to create work in a sibling schema.
+delegate_wake SHALL remain a server-to-server return endpoint, not a
+user-delivery or free-form peer control surface, and its admission boundary is
+enforced by ledger re-verification rather than by the caller channel. In
+normal operation delegate_wake is reached only through the trusted Switchboard
+route path, but the framework has no LLM-hidden-but-registered tool tier
+(known framework limitation): delegate_wake is necessarily registered the same
+as its delegation-group siblings, as an ordinary LLM-visible MCP tool, so no
+admission-layer signal distinguishes a Switchboard-routed call from a direct
+same-butler invocation. delegate_wake SHALL independently re-verify, on every
+invocation regardless of how it was reached, that the ledger row exists, is
+answered, carries the exact immutable wake_key, and names the calling butler
+as its authoritative asking_butler, before creating or reconciling any work —
+and SHALL write only to the calling butler's own schema. Registration alone
+SHALL not grant a domain butler authority to create work in a sibling schema.
 
 #### Scenario: Non-staffer delegation inventory is explicit
 
 - **WHEN** a butler-type daemon has the delegation core group enabled by its
   effective runtime configuration
 - **THEN** its MCP inventory SHALL include the four delegation tools
-- **AND** delegate_wake SHALL remain constrained to the Switchboard-routed
-  server-to-server admission path
+- **AND** delegate_wake SHALL reject any invocation whose ledger_id, wake_key,
+  or asking_butler do not match an answered ledger row's immutable wake
+  identity, independent of whether the call arrived via the Switchboard route
+  or directly
 
 #### Scenario: Staffers do not gain delegation tools
 
