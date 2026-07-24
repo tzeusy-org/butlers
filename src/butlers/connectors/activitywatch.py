@@ -36,6 +36,11 @@ Key behaviors:
 - Filtered event batch flush to connectors.filtered_events
 - Replay queue drain loop each poll cycle
 - IngestionPolicyEvaluator source filter gate
+- Scheduled data retention purge (every 6 hours, DELETE from
+  connectors.activitywatch_events) — mirrors the OwnTracks connector's
+  retention task (bu-il04h). Window titles are privacy=sensitive durable
+  evidence with no other TTL, so this table defaults to a shorter retention
+  window than OwnTracks' 30-day location default.
 - Graceful shutdown on SIGTERM/SIGINT
 
 Privacy:
@@ -61,6 +66,10 @@ Environment variables:
   back the very first poll (no checkpoint yet) looks for history.
 - ACTIVITYWATCH_MIN_EVENT_DURATION_S (optional, default 0): skip window
   events shorter than this many seconds (noise reduction).
+- ACTIVITYWATCH_RETENTION_DAYS (optional, default 14): data retention in
+  days for connectors.activitywatch_events. Rows older than this are
+  purged every 6 hours. Defaults shorter than OwnTracks' 30-day location
+  retention because this table durably stores window titles (sensitive).
 - CONNECTOR_INGESTION_TIER (optional, default "metadata"): "metadata" or
   "full" — controls whether the raw ``app`` process name is included in
   ``payload.raw``. Window titles are never included regardless of tier.
@@ -131,6 +140,20 @@ _DEFAULT_HEALTH_PORT = 40092
 _DEFAULT_MAX_BACKFILL_DAYS = 30
 _DEFAULT_MIN_EVENT_DURATION_S = 0.0
 _DEFAULT_EVENT_LIMIT = 2000
+
+# Retention (bu-il04h): connectors.activitywatch_events durably stores
+# window titles (privacy=sensitive) with no other TTL. Default is shorter
+# than OwnTracks' 30-day location retention (owntracks.py) since title text
+# is more sensitive than app-class buckets; owner can widen/narrow via
+# ACTIVITYWATCH_RETENTION_DAYS.
+_DEFAULT_RETENTION_DAYS = 14
+_MIN_RETENTION_DAYS = 1
+_RETENTION_PURGE_INTERVAL_S = 6 * 60 * 60  # 6 hours
+
+# Public aliases for use by standalone ActivityWatchRetentionConfig / ActivityWatchRetention
+DEFAULT_RETENTION_DAYS = _DEFAULT_RETENTION_DAYS
+MIN_RETENTION_DAYS = _MIN_RETENTION_DAYS
+RETENTION_PURGE_INTERVAL_S = _RETENTION_PURGE_INTERVAL_S
 
 _TIER_METADATA = "metadata"
 _TIER_FULL = "full"
@@ -268,6 +291,7 @@ class ActivityWatchConnectorConfig:
     max_backfill_days: int = _DEFAULT_MAX_BACKFILL_DAYS
     min_event_duration_s: float = _DEFAULT_MIN_EVENT_DURATION_S
     ingestion_tier: Literal["metadata", "full"] = _TIER_METADATA
+    retention_days: int = _DEFAULT_RETENTION_DAYS
 
     health_port: int = _DEFAULT_HEALTH_PORT
 
@@ -318,6 +342,13 @@ class ActivityWatchConnectorConfig:
             raw_tier = _TIER_METADATA
         ingestion_tier: Literal["metadata", "full"] = raw_tier  # type: ignore[assignment]
 
+        retention_days = _int("ACTIVITYWATCH_RETENTION_DAYS", _DEFAULT_RETENTION_DAYS)
+        if retention_days < _MIN_RETENTION_DAYS:
+            raise ValueError(
+                f"ACTIVITYWATCH_RETENTION_DAYS={retention_days} is below minimum "
+                f"{_MIN_RETENTION_DAYS}"
+            )
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             machine_id=machine_id,
@@ -330,8 +361,270 @@ class ActivityWatchConnectorConfig:
                 "ACTIVITYWATCH_MIN_EVENT_DURATION_S", _DEFAULT_MIN_EVENT_DURATION_S
             ),
             ingestion_tier=ingestion_tier,
+            retention_days=retention_days,
             health_port=_int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT),
         )
+
+
+# ---------------------------------------------------------------------------
+# Retention configuration (standalone, reusable)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ActivityWatchRetentionConfig:
+    """Configuration for ActivityWatch data retention.
+
+    Attributes:
+        retention_days: Number of days to retain window-focus events (including
+            sensitive window titles). Rows older than this threshold are deleted
+            from connectors.activitywatch_events on each purge cycle. Must be an
+            integer >= ``MIN_RETENTION_DAYS`` (1).
+    """
+
+    retention_days: int = DEFAULT_RETENTION_DAYS
+
+    def __post_init__(self) -> None:
+        """Validate retention_days on construction regardless of how the config is built.
+
+        Raises:
+            TypeError: If ``retention_days`` is not an ``int``.
+            ValueError: If ``retention_days`` is less than ``MIN_RETENTION_DAYS``.
+        """
+        if not isinstance(self.retention_days, int):
+            raise TypeError(
+                f"retention_days must be an int, got {type(self.retention_days).__name__!r}: "
+                f"{self.retention_days!r}"
+            )
+        if self.retention_days < MIN_RETENTION_DAYS:
+            raise ValueError(
+                f"retention_days must be >= {MIN_RETENTION_DAYS}, got {self.retention_days}. "
+                "A value of 0 or negative would delete all activity history immediately."
+            )
+
+    @classmethod
+    def from_env(cls) -> ActivityWatchRetentionConfig:
+        """Load retention configuration from environment variables.
+
+        Reads ``ACTIVITYWATCH_RETENTION_DAYS``. If the value is set to a number
+        less than ``MIN_RETENTION_DAYS`` (1), a ``ValueError`` is raised to
+        prevent accidental mass-deletion of fresh data.
+
+        Returns:
+            ActivityWatchRetentionConfig with resolved settings.
+
+        Raises:
+            ValueError: If ``ACTIVITYWATCH_RETENTION_DAYS`` is set to a value < 1.
+        """
+        raw = os.environ.get("ACTIVITYWATCH_RETENTION_DAYS")
+        if raw is None:
+            return cls(retention_days=DEFAULT_RETENTION_DAYS)
+
+        try:
+            days = int(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"ACTIVITYWATCH_RETENTION_DAYS must be a positive integer, got: {raw!r}"
+            ) from exc
+
+        if days < MIN_RETENTION_DAYS:
+            raise ValueError(
+                f"ACTIVITYWATCH_RETENTION_DAYS must be >= {MIN_RETENTION_DAYS}, got {days}. "
+                "Setting 0 or a negative value would delete all activity history immediately."
+            )
+
+        return cls(retention_days=days)
+
+
+# ---------------------------------------------------------------------------
+# Retention purge SQL (parameterized — no interpolation footgun)
+# ---------------------------------------------------------------------------
+
+_PURGE_SQL = f"""\
+DELETE FROM {_EVIDENCE_TABLE}
+WHERE ts < NOW() - $1 * INTERVAL '1 day'
+"""
+
+
+# ---------------------------------------------------------------------------
+# Retention background task (standalone, reusable)
+# ---------------------------------------------------------------------------
+
+
+class ActivityWatchRetention:
+    """Background data retention task for the ActivityWatch connector.
+
+    Runs a purge cycle every ``RETENTION_PURGE_INTERVAL_S`` seconds (6 hours)
+    that deletes expired rows from ``connectors.activitywatch_events`` where
+    ``ts`` is older than the configured retention period. This is the durable
+    evidence table that stores window titles (privacy=sensitive); see the
+    module docstring.
+
+    Purge failures are logged at WARNING level and never crash the connector.
+
+    Usage::
+
+        pool = await asyncpg.create_pool(...)
+        config = ActivityWatchRetentionConfig.from_env()
+        retention = ActivityWatchRetention(config, pool)
+        retention.start()
+        ...
+        await retention.stop()
+    """
+
+    def __init__(
+        self,
+        config: ActivityWatchRetentionConfig,
+        pool: asyncpg.Pool,
+        *,
+        purge_interval_s: int = RETENTION_PURGE_INTERVAL_S,
+    ) -> None:
+        """Initialise the retention task.
+
+        Args:
+            config: Retention configuration (retention_days, etc.).
+            pool: asyncpg connection pool that can reach the ``connectors`` schema.
+            purge_interval_s: Interval between purge cycles in seconds.
+                Defaults to ``RETENTION_PURGE_INTERVAL_S`` (6 hours). Exposed as
+                a parameter for unit testing so tests do not have to wait 6 hours.
+                Must be >= 1; a value of 0 would spin the purge loop without pause
+                and hammer the DB. A negative value would cause ``asyncio.sleep``
+                to raise immediately, killing the background task.
+        """
+        if purge_interval_s < 1:
+            raise ValueError(
+                f"purge_interval_s must be >= 1, got {purge_interval_s}. "
+                "A value of 0 would spin the purge loop without pause; "
+                "a negative value would raise in asyncio.sleep."
+            )
+        self._config = config
+        self._pool = pool
+        self._purge_interval_s = purge_interval_s
+        self._task: asyncio.Task | None = None
+        self._consecutive_failures = 0
+
+    @property
+    def retention_days(self) -> int:
+        """Return the active retention period in days."""
+        return self._config.retention_days
+
+    @property
+    def health_degradation_message(self) -> str | None:
+        """Return a sanitized health diagnostic for consecutive purge failures."""
+        failures = self._consecutive_failures
+        if failures == 0:
+            return None
+        occurrence = "time" if failures == 1 else "times"
+        return f"ActivityWatch retention purge has failed {failures} consecutive {occurrence}"
+
+    def start(self) -> None:
+        """Schedule the background purge loop as an asyncio task.
+
+        Must be called from within a running event loop. Calling ``start()``
+        while a task is already running is a no-op with a warning log.
+        """
+        if self._task is not None:
+            logger.warning(
+                "ActivityWatch retention task already running; ignoring duplicate start call."
+            )
+            return
+
+        self._task = asyncio.create_task(self._purge_loop())
+        logger.info(
+            "ActivityWatch retention task started: retention_days=%d, interval_s=%d",
+            self._config.retention_days,
+            self._purge_interval_s,
+        )
+
+    async def stop(self) -> None:
+        """Cancel the background purge loop and wait for it to exit."""
+        if self._task is None:
+            return
+
+        logger.info("Stopping ActivityWatch retention task.")
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._task = None
+
+        logger.info("ActivityWatch retention task stopped.")
+
+    async def purge_once(self) -> int:
+        """Execute a single purge cycle immediately.
+
+        Deletes rows from ``connectors.activitywatch_events`` where ``ts`` is
+        older than the configured retention period.
+
+        Returns:
+            Number of rows deleted.
+
+        Raises:
+            Exception: Re-raises any database exceptions so that ``_purge_loop``
+                can catch and log them without crashing the connector.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(_PURGE_SQL, self._config.retention_days)
+
+        # asyncpg returns a status string like "DELETE 42"
+        deleted = _parse_delete_count(result)
+        return deleted
+
+    async def _purge_loop(self) -> None:
+        """Repeat purge cycles forever, separated by ``_purge_interval_s``.
+
+        Failures are logged at WARNING and the loop continues.
+        """
+        try:
+            while True:
+                await asyncio.sleep(self._purge_interval_s)
+                await self._run_purge()
+        except asyncio.CancelledError:
+            logger.debug("ActivityWatch retention purge loop cancelled.")
+            raise
+
+    async def _run_purge(self) -> None:
+        """Execute one purge cycle with error handling and logging."""
+        try:
+            deleted = await self.purge_once()
+            self._consecutive_failures = 0
+            logger.info(
+                "ActivityWatch retention purge complete: deleted %d rows (retention_days=%d)",
+                deleted,
+                self._config.retention_days,
+            )
+        except Exception:
+            self._consecutive_failures += 1
+            logger.warning(
+                "ActivityWatch retention purge failed (retention_days=%d). Will retry on next "
+                "cycle.",
+                self._config.retention_days,
+                exc_info=True,
+            )
+
+
+def _parse_delete_count(status: str) -> int:
+    """Parse the row count from an asyncpg DELETE status string.
+
+    asyncpg returns a string such as ``"DELETE 42"`` after ``conn.execute()``.
+    This helper extracts the integer count. Returns 0 if the string cannot
+    be parsed.
+
+    Args:
+        status: Status string returned by ``asyncpg.Connection.execute()``.
+
+    Returns:
+        Number of deleted rows, or 0 if parsing fails.
+    """
+    try:
+        parts = status.split()
+        if len(parts) == 2 and parts[0] == "DELETE":
+            return int(parts[1])
+    except (ValueError, AttributeError):
+        pass
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +912,10 @@ class ActivityWatchConnector:
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
 
+        # Retention purge (ActivityWatchRetention; initialized in start() when
+        # db_pool is available)
+        self._retention: ActivityWatchRetention | None = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -678,7 +975,15 @@ class ActivityWatchConnector:
                     "ActivityWatchConnector: initial heartbeat failed (non-fatal): %s", exc
                 )
 
-            # Phase 7: Main poll loop
+            # Phase 7: Start retention purge task
+            if self._db_pool is not None:
+                retention_config = ActivityWatchRetentionConfig(
+                    retention_days=self._config.retention_days
+                )
+                self._retention = ActivityWatchRetention(retention_config, self._db_pool)
+                self._retention.start()
+
+            # Phase 8: Main poll loop
             await self._poll_loop()
         finally:
             await self._shutdown()
@@ -696,6 +1001,9 @@ class ActivityWatchConnector:
     async def _shutdown(self) -> None:
         logger.info("ActivityWatchConnector: shutting down")
         self._running = False
+
+        if self._retention is not None:
+            await self._retention.stop()
 
         if self._db_pool is not None:
             try:
@@ -1032,6 +1340,10 @@ class ActivityWatchConnector:
     def _get_health_state(self) -> tuple[str, str | None]:
         if self._health_error:
             return "degraded", self._health_error
+        if self._retention is not None:
+            retention_message = self._retention.health_degradation_message
+            if retention_message is not None:
+                return "degraded", retention_message
         return "healthy", None
 
     # ------------------------------------------------------------------

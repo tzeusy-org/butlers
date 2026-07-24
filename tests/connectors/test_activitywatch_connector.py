@@ -24,6 +24,8 @@ import pytest
 from butlers.connectors.activitywatch import (
     ActivityWatchConnector,
     ActivityWatchConnectorConfig,
+    ActivityWatchRetention,
+    ActivityWatchRetentionConfig,
     build_activity_envelope,
     build_afk_intervals,
     classify_app,
@@ -104,6 +106,7 @@ def test_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "ACTIVITYWATCH_BASE_URL",
         "ACTIVITYWATCH_POLL_INTERVAL_S",
         "ACTIVITYWATCH_MAX_BACKFILL_DAYS",
+        "ACTIVITYWATCH_RETENTION_DAYS",
         "CONNECTOR_INGESTION_TIER",
         "CONNECTOR_HEALTH_PORT",
     ):
@@ -115,7 +118,18 @@ def test_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.poll_interval_s == 60
     assert config.max_backfill_days == 30
     assert config.ingestion_tier == "metadata"
+    assert config.retention_days == 14
     assert config.health_port == 40092
+
+
+def test_config_from_env_retention_days_below_minimum_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/mcp")
+    monkeypatch.setenv("ACTIVITYWATCH_MACHINE_ID", _MACHINE_ID)
+    monkeypatch.setenv("ACTIVITYWATCH_RETENTION_DAYS", "0")
+    with pytest.raises(ValueError, match="ACTIVITYWATCH_RETENTION_DAYS"):
+        ActivityWatchConnectorConfig.from_env()
 
 
 def test_config_from_env_base_url_trailing_slash_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -334,3 +348,142 @@ async def test_policy_denied_event_scrubs_title_from_filtered_full_payload() -> 
     serialized_payload = json.dumps(row[9]).lower()
     assert title.lower() not in serialized_payload
     assert "title" not in serialized_payload
+
+
+# ---------------------------------------------------------------------------
+# Retention purge (bu-il04h)
+# ---------------------------------------------------------------------------
+#
+# connectors.activitywatch_events durably stores window titles (sensitive)
+# with no other TTL. Mirrors the OwnTracks connector's fake-pool retention
+# test pattern (tests/connectors/test_owntracks_connector.py).
+
+
+class _PurgeConnection:
+    """Small asyncpg boundary fake that returns or raises queued purge results."""
+
+    def __init__(self, outcomes: list[str | Exception]) -> None:
+        self._outcomes = outcomes
+        self.calls: list[tuple[object, ...]] = []
+
+    async def execute(self, *args: object) -> str:
+        self.calls.append(args)
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class _PurgeAcquire:
+    def __init__(self, connection: _PurgeConnection) -> None:
+        self._connection = connection
+
+    async def __aenter__(self) -> _PurgeConnection:
+        return self._connection
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _PurgePool:
+    def __init__(self, outcomes: list[str | Exception]) -> None:
+        self.connection = _PurgeConnection(outcomes)
+
+    def acquire(self) -> _PurgeAcquire:
+        return _PurgeAcquire(self.connection)
+
+
+def _make_retention(*outcomes: str | Exception, retention_days: int = 14) -> ActivityWatchRetention:
+    return ActivityWatchRetention(
+        ActivityWatchRetentionConfig(retention_days=retention_days),
+        _PurgePool(list(outcomes)),
+    )
+
+
+def _make_connector(retention: ActivityWatchRetention) -> ActivityWatchConnector:
+    connector = ActivityWatchConnector(
+        ActivityWatchConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            machine_id=_MACHINE_ID,
+        )
+    )
+    connector._retention = retention
+    return connector
+
+
+def test_retention_config_rejects_non_positive_days() -> None:
+    with pytest.raises(ValueError, match="retention_days must be >= 1"):
+        ActivityWatchRetentionConfig(retention_days=0)
+
+
+async def test_purge_once_queries_activitywatch_events_by_ts_with_configured_days() -> None:
+    """The purge query targets the sensitive evidence table's ts column and
+    is parameterized by the configured retention_days (rows older than the
+    TTL are the ones matched for deletion; newer rows are outside the WHERE
+    clause and therefore retained)."""
+    retention = _make_retention("DELETE 5", retention_days=21)
+
+    deleted = await retention.purge_once()
+
+    assert deleted == 5
+    pool = retention._pool
+    assert isinstance(pool, _PurgePool)
+    ((sql, retention_days_arg),) = pool.connection.calls
+    assert "connectors.activitywatch_events" in sql
+    assert "ts <" in sql
+    assert "NOW()" in sql
+    assert retention_days_arg == 21
+
+
+async def test_retention_purge_failures_stay_retryable_and_degrade_connector_health() -> None:
+    retention = _make_retention(RuntimeError("first failure"), RuntimeError("second failure"))
+    connector = _make_connector(retention)
+
+    await retention._run_purge()
+
+    assert connector._get_health_state() == (
+        "degraded",
+        "ActivityWatch retention purge has failed 1 consecutive time",
+    )
+
+    await retention._run_purge()
+
+    assert connector._get_health_state() == (
+        "degraded",
+        "ActivityWatch retention purge has failed 2 consecutive times",
+    )
+
+
+async def test_successful_retention_purge_resets_degraded_connector_health() -> None:
+    retention = _make_retention(RuntimeError("temporary failure"), "DELETE 3")
+    connector = _make_connector(retention)
+
+    await retention._run_purge()
+    await retention._run_purge()
+
+    assert connector._get_health_state() == ("healthy", None)
+
+
+async def test_connector_health_error_outranks_retention_degradation() -> None:
+    retention = _make_retention(RuntimeError("retention failure"))
+    connector = _make_connector(retention)
+
+    await retention._run_purge()
+    connector._health_error = "Switchboard ingest unavailable"
+
+    assert connector._get_health_state() == ("degraded", "Switchboard ingest unavailable")
+
+
+async def test_retention_health_diagnostic_does_not_leak_exception_details() -> None:
+    retention = _make_retention(RuntimeError("database password=swordfish traceback details"))
+    connector = _make_connector(retention)
+
+    await retention._run_purge()
+
+    state, diagnostic = connector._get_health_state()
+
+    assert state == "degraded"
+    assert diagnostic == "ActivityWatch retention purge has failed 1 consecutive time"
+    assert diagnostic is not None
+    assert "swordfish" not in diagnostic
+    assert "traceback" not in diagnostic
