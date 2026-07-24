@@ -36,12 +36,16 @@ Four checks, one discovery source
 2. **heartbeat-stale** — reads ``public.v_qa_butler_heartbeat`` (same
    migration, over ``switchboard.butler_registry``). Recomputes staleness
    independently from ``last_seen_at`` + the per-butler
-   ``liveness_ttl_seconds`` (mirroring the formula in
-   ``roster/switchboard/tools/registry/registry.py::_derive_eligibility_state``)
-   rather than trusting the stored ``eligibility_state`` column, which is
-   only reconciled lazily on routing calls (``_reconcile_eligibility_state``)
-   and can sit stale forever for a butler nobody routes to anymore — exactly
-   the "dead and nobody noticed" failure mode this bead exists to close.
+   ``liveness_ttl_seconds`` via the shared
+   ``butlers.core.liveness.is_liveness_stale`` formula (the same canonical
+   staleness sub-computation
+   ``roster/switchboard/tools/registry/registry.py::_derive_eligibility_state``
+   uses, see ``butlers.core.liveness`` module docstring for the layering
+   rationale) rather than trusting the stored ``eligibility_state`` column,
+   which is only reconciled lazily on routing calls
+   (``_reconcile_eligibility_state``) and can sit stale forever for a butler
+   nobody routes to anymore — exactly the "dead and nobody noticed" failure
+   mode this bead exists to close.
 3. **backup-stale** — reuses
    ``butlers.api.routers.system.read_backup_facts_from_dir`` (the same
    recency/reachability facts ``GET /api/system/backups`` surfaces) against
@@ -115,6 +119,7 @@ import asyncpg
 
 from butlers.core.healing.fingerprint import _compute_hash, _sanitize_message
 from butlers.core.infra_conditions import Observation, reconcile_snapshot
+from butlers.core.liveness import CLOCK_SKEW_TOLERANCE, is_liveness_stale
 from butlers.core.qa.models import QaFinding
 
 logger = logging.getLogger(__name__)
@@ -154,11 +159,10 @@ SOURCE_NAME: Final[str] = "infra_state"
 #: first patrol tick after a fresh registration.
 _NEVER_SEEN_GRACE = timedelta(minutes=15)
 # Tolerance for a heartbeat timestamp reported in the future (clock skew / bad
-# writer). Beyond this the timestamp is untrustworthy, so a future-dated
-# heartbeat must be flagged stale rather than silently evading the staleness
-# detector. Mirrors _CLOCK_SKEW_TOLERANCE_SECONDS in
-# src/butlers/api/routers/butlers.py (PR #3167).
-_CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
+# writer). Reuses the same canonical tolerance is_liveness_stale() applies
+# (butlers.core.liveness), which registry.py's _derive_eligibility_state also
+# uses -- see that module's docstring for the shared-formula rationale.
+_CLOCK_SKEW_TOLERANCE = CLOCK_SKEW_TOLERANCE
 
 #: How many missed external-deadman ping intervals to tolerate before
 #: flagging staleness -- absorbs a transient network blip without noise.
@@ -385,7 +389,6 @@ class InfraStateSource:
             quarantined_at = _as_aware(row["quarantined_at"])
             last_seen_at = _as_aware(row["last_seen_at"])
             registered_at = _as_aware(row["registered_at"])
-            ttl_seconds = row["liveness_ttl_seconds"] or 300
 
             # The grace window only applies to a butler that has genuinely
             # never checked in yet (last_seen_at is None) -- a butler that
@@ -406,21 +409,22 @@ class InfraStateSource:
             if quarantined_at is not None:
                 stale = True
             else:
-                # Mirrors registry.py's _derive_eligibility_state formula
-                # (last_seen_at + ttl >= now => active), recomputed
+                # Canonical last_seen_at + liveness_ttl_seconds staleness
+                # formula (butlers.core.liveness.is_liveness_stale), shared
+                # with registry.py's _derive_eligibility_state, recomputed
                 # independently rather than trusting the stored
                 # eligibility_state column: that column is only reconciled
                 # lazily on routing calls and can freeze stale forever for a
-                # butler nobody routes to anymore.
-                #
-                # A heartbeat further in the future than the skew tolerance is
-                # untrustworthy (clock skew / bad writer) — treat it as stale so
-                # a future-dated timestamp cannot evade the detector via the
-                # unbounded TTL window.
-                stale = (
-                    anchor is None
-                    or anchor > now + _CLOCK_SKEW_TOLERANCE
-                    or (anchor + timedelta(seconds=ttl_seconds)) < now
+                # butler nobody routes to anymore. A heartbeat further in the
+                # future than the skew tolerance is untrustworthy (clock skew
+                # / bad writer) -- the shared formula treats that as stale too,
+                # so a future-dated timestamp cannot evade the detector via
+                # the unbounded TTL window.
+                stale = is_liveness_stale(
+                    anchor,
+                    ttl_seconds=row["liveness_ttl_seconds"],
+                    now=now,
+                    clock_skew_tolerance=_CLOCK_SKEW_TOLERANCE,
                 )
 
             if not stale:

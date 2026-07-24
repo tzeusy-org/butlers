@@ -345,6 +345,100 @@ async def test_never_seen_butler_past_grace_trips_a_finding(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# cross-consumer parity (bu-dvzya)
+#
+# registry.py's _derive_eligibility_state and InfraStateSource's
+# heartbeat-stale check both now delegate to the single canonical
+# butlers.core.liveness.is_liveness_stale() formula. These cases hold
+# last_seen_at, liveness_ttl_seconds, and quarantined_at identical across
+# both consumers and assert they always agree -- this would fail if either
+# call site's ttl/clock-skew handling ever drifted from the shared formula.
+# registered_at is fixed far enough in the past that InfraStateSource's own
+# never-seen grace window (which registry.py has no equivalent of) never
+# interferes.
+# ---------------------------------------------------------------------------
+
+_PARITY_REGISTERED_AT = datetime.now(UTC) - timedelta(days=30)
+
+
+@pytest.mark.parametrize(
+    "last_seen_at,liveness_ttl_seconds",
+    [
+        (datetime.now(UTC) - timedelta(seconds=100), 300),  # fresh
+        (datetime.now(UTC) - timedelta(seconds=300), 300),  # exactly at TTL boundary
+        (datetime.now(UTC) - timedelta(seconds=301), 300),  # just past TTL boundary
+        (datetime.now(UTC) - timedelta(hours=1), 300),  # long stale
+        (datetime.now(UTC) + timedelta(minutes=1), 300),  # future, within skew tolerance
+        (datetime.now(UTC) + timedelta(minutes=4), 300),  # future, just within 5min skew tolerance
+        (datetime.now(UTC) + timedelta(minutes=6), 300),  # future, just past 5min skew tolerance
+        (datetime.now(UTC) + timedelta(minutes=10), 300),  # future, beyond skew tolerance
+        (datetime.now(UTC) - timedelta(seconds=1000), 3600),  # custom ttl keeps it fresh
+        (None, 300),  # never seen (registered long ago, past infra_state's grace window)
+    ],
+)
+async def test_registry_and_infra_state_agree_on_staleness(
+    monkeypatch, last_seen_at, liveness_ttl_seconds
+):
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+
+    from butlers.tools.switchboard.registry.registry import _derive_eligibility_state
+
+    now = datetime.now(UTC)
+    registry_row = {
+        "eligibility_state": "active",
+        "quarantined_at": None,
+        "last_seen_at": last_seen_at,
+        "liveness_ttl_seconds": liveness_ttl_seconds,
+    }
+    registry_stale = _derive_eligibility_state(registry_row, now=now) == "stale"
+
+    heartbeat_row = _heartbeat_row(
+        name="finance",
+        last_seen_at=last_seen_at,
+        registered_at=_PARITY_REGISTERED_AT,
+        liveness_ttl_seconds=liveness_ttl_seconds,
+    )
+    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[heartbeat_row])).discover(
+        lookback_minutes=15
+    )
+    infra_stale = any(f.exception_type == "ButlerHeartbeatStale" for f in findings)
+
+    assert registry_stale == infra_stale
+
+
+async def test_registry_and_infra_state_agree_quarantine_always_stale(monkeypatch):
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+
+    from butlers.tools.switchboard.registry.registry import _derive_eligibility_state
+
+    now = datetime.now(UTC)
+    last_seen_at = now - timedelta(seconds=10)  # well within TTL on its own
+    quarantined_at = now - timedelta(minutes=5)
+
+    registry_row = {
+        "eligibility_state": "active",
+        "quarantined_at": quarantined_at,
+        "last_seen_at": last_seen_at,
+        "liveness_ttl_seconds": 300,
+    }
+    assert _derive_eligibility_state(registry_row, now=now) == "quarantined"
+
+    heartbeat_row = _heartbeat_row(
+        name="finance",
+        last_seen_at=last_seen_at,
+        registered_at=_PARITY_REGISTERED_AT,
+        liveness_ttl_seconds=300,
+        quarantined_at=quarantined_at,
+    )
+    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[heartbeat_row])).discover(
+        lookback_minutes=15
+    )
+    assert any(f.exception_type == "ButlerHeartbeatStale" for f in findings)
+
+
+# ---------------------------------------------------------------------------
 # backup-stale
 # ---------------------------------------------------------------------------
 
