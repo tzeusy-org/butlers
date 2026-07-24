@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -21,6 +21,7 @@ import MasteryTrendChart from "@/components/education/MasteryTrendChart";
 import CrossTopicChart from "@/components/education/CrossTopicChart";
 import StrugglingNodesCard from "@/components/education/StrugglingNodesCard";
 import QuizHistoryList from "@/components/education/QuizHistoryList";
+import type { EducationNodeSelection } from "@/components/education/types";
 
 export default function EducationPage() {
   const { data: mindMapsResponse, isLoading, isError, refetch } = useMindMaps({ status: "active" });
@@ -40,6 +41,16 @@ export default function EducationPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const selectedMap = mindMaps.find((m) => m.id === selectedMapId) ?? null;
+
+  const handleNodeSelection = useCallback((selection: EducationNodeSelection) => {
+    setSelectedMapId(selection.mindMapId);
+    setSelectedNodeId(selection.nodeId);
+  }, []);
+
+  const handleMindMapSelection = useCallback((mindMapId: string) => {
+    setSelectedMapId(mindMapId);
+    setSelectedNodeId(null);
+  }, []);
 
   // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). The
   // one page-level action here; registered before any early return so the
@@ -131,7 +142,7 @@ export default function EducationPage() {
       </div>
 
       {/* Mind map selector */}
-      <Select value={selectedMapId ?? ""} onValueChange={setSelectedMapId}>
+      <Select value={selectedMapId ?? ""} onValueChange={handleMindMapSelection}>
         <SelectTrigger className="w-64">
           <SelectValue placeholder="Select a curriculum" />
         </SelectTrigger>
@@ -153,17 +164,10 @@ export default function EducationPage() {
         </TabsList>
 
         <TabsContent value="curriculum" className="space-y-4 pt-4">
-          <div className="grid gap-4 lg:grid-cols-[1fr_350px]">
-            <MindMapGraph
-              mindMapId={selectedMapId}
-              onNodeClick={setSelectedNodeId}
-            />
-            <NodeDetailPanel
-              mindMapId={selectedMapId}
-              nodeId={selectedNodeId}
-              onClose={() => setSelectedNodeId(null)}
-            />
-          </div>
+          <MindMapGraph
+            mindMapId={selectedMapId}
+            onSelectNode={handleNodeSelection}
+          />
           {selectedMap && (
             <CurriculumActions
               mindMapId={selectedMap.id}
@@ -176,7 +180,7 @@ export default function EducationPage() {
         </TabsContent>
 
         <TabsContent value="reviews" className="pt-4">
-          <ReviewTimeline />
+          <ReviewTimeline onSelectNode={handleNodeSelection} />
         </TabsContent>
 
         <TabsContent value="analytics" className="space-y-4 pt-4">
@@ -185,10 +189,18 @@ export default function EducationPage() {
           <CrossTopicChart />
           <StrugglingNodesCard
             mindMapId={selectedMapId}
-            onNodeClick={setSelectedNodeId}
+            onSelectNode={handleNodeSelection}
           />
         </TabsContent>
       </Tabs>
+
+      {selectedMap && selectedNodeId && (
+        <NodeDetailPanel
+          mindMapId={selectedMap.id}
+          nodeId={selectedNodeId}
+          onClose={() => setSelectedNodeId(null)}
+        />
+      )}
 
       <RequestCurriculumDialog
         open={requestDialogOpen}

@@ -29,13 +29,7 @@ export default function NodeDetailPanel({
   const node = mindMap?.nodes?.find((n) => n.id === nodeId);
 
   if (!nodeId || !node) {
-    return (
-      <Card>
-        <CardContent className="flex h-96 items-center justify-center text-muted-foreground">
-          Click a node to view details
-        </CardContent>
-      </Card>
-    );
+    return null;
   }
 
   return (
@@ -47,7 +41,12 @@ export default function NodeDetailPanel({
             {node.mastery_status}
           </Badge>
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose}>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Close node details"
+          onClick={onClose}
+        >
           <X className="h-4 w-4" />
         </Button>
       </CardHeader>

@@ -1,10 +1,12 @@
 import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useAllPendingReviews, useMindMaps } from "@/hooks/use-education";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { classifyReviewBucket, type ReviewBucket } from "@/lib/review-buckets";
 import type { PendingReviewNode } from "@/api/index.ts";
+import type { EducationNodeSelection } from "./types";
 
 interface ReviewEntry extends PendingReviewNode {
   mind_map_title: string;
@@ -37,14 +39,31 @@ function groupByTimePeriod(entries: ReviewEntry[], now: Date, tz: string) {
   return groups.filter((g) => g.entries.length > 0);
 }
 
-function ReviewEntryRow({ entry }: { entry: ReviewEntry }) {
+function ReviewEntryRow({
+  entry,
+  onSelectNode,
+}: {
+  entry: ReviewEntry;
+  onSelectNode: (selection: EducationNodeSelection) => void;
+}) {
   return (
-    <div className="flex items-center justify-between py-2">
-      <div>
-        <p className="text-sm font-medium">{entry.label}</p>
-        <p className="text-xs text-muted-foreground">{entry.mind_map_title}</p>
-      </div>
-      <div className="flex items-center gap-2">
+    <Button
+      type="button"
+      variant="ghost"
+      className="h-auto w-full justify-between rounded-none px-3 py-2 text-left"
+      aria-label={`Open ${entry.label} in ${entry.mind_map_title}`}
+      onClick={() =>
+        onSelectNode({
+          mindMapId: entry.mind_map_id,
+          nodeId: entry.node_id,
+        })
+      }
+    >
+      <span className="flex flex-col">
+        <span className="text-sm font-medium">{entry.label}</span>
+        <span className="text-xs text-muted-foreground">{entry.mind_map_title}</span>
+      </span>
+      <span className="flex items-center gap-2">
         {entry.mastery_score != null ? (
           <Badge variant="outline" className="text-xs">
             {Math.round(entry.mastery_score * 100)}%
@@ -57,12 +76,16 @@ function ReviewEntryRow({ entry }: { entry: ReviewEntry }) {
         <span className="text-xs text-muted-foreground">
           {new Date(entry.next_review_at).toLocaleDateString()}
         </span>
-      </div>
-    </div>
+      </span>
+    </Button>
   );
 }
 
-export default function ReviewTimeline() {
+interface ReviewTimelineProps {
+  onSelectNode: (selection: EducationNodeSelection) => void;
+}
+
+export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
   const { data: mindMapsResponse } = useMindMaps({ status: "active" });
   // Stable reference for the data array so the inner useMemo doesn't refire on
   // every render (TanStack Query returns a fresh response object each render).
@@ -126,6 +149,7 @@ export default function ReviewTimeline() {
               <ReviewEntryRow
                 key={`${entry.mind_map_id}-${entry.node_id}`}
                 entry={entry}
+                onSelectNode={onSelectNode}
               />
             ))}
           </CardContent>

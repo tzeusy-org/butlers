@@ -11,6 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import ReviewTimeline from "./ReviewTimeline";
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
@@ -21,10 +22,10 @@ import type { MindMap, PendingReviewNode } from "@/api/index.ts";
  * relative fixtures below keep their intended buckets. Owner-tz-varying
  * bucketing is covered in lib/review-buckets.test.ts.
  */
-function renderTimeline() {
+function renderTimeline(onSelectNode = vi.fn()) {
   return render(
     <AppTimezoneProvider timezone="UTC">
-      <ReviewTimeline />
+      <ReviewTimeline onSelectNode={onSelectNode} />
     </AppTimezoneProvider>,
   );
 }
@@ -226,5 +227,39 @@ describe("ReviewTimeline — mastery badge", () => {
 
     expect(screen.queryByText(/%/)).toBeNull();
     expect(screen.getByText("learning")).toBeTruthy();
+  });
+});
+
+describe("ReviewTimeline — actionable review controls", () => {
+  it("uses a native keyboard-accessible control that emits the owning map and node", async () => {
+    const onSelectNode = vi.fn();
+    const maps = [makeMap("map-a", "Alpha")];
+    mockUseMindMaps.mockReturnValue({
+      data: { data: maps },
+    } as unknown as ReturnType<typeof useMindMaps>);
+    mockUseAllPendingReviews.mockImplementation((mapIds: string[]) =>
+      mapIds.map(
+        () =>
+          ({
+            data: [makeReview("node-closures", "Closures")],
+            isLoading: false,
+          }) as unknown as ReviewResult,
+      ),
+    );
+
+    renderTimeline(onSelectNode);
+
+    const review = screen.getByRole("button", {
+      name: "Open Closures in Alpha",
+    });
+    expect(review.tagName).toBe("BUTTON");
+
+    review.focus();
+    await userEvent.keyboard("{Enter}");
+
+    expect(onSelectNode).toHaveBeenCalledWith({
+      mindMapId: "map-a",
+      nodeId: "node-closures",
+    });
   });
 });

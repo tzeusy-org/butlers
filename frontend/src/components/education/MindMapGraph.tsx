@@ -13,6 +13,7 @@ import "@xyflow/react/dist/style.css";
 import dagre from "@dagrejs/dagre";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useMindMap, useFrontierNodes } from "@/hooks/use-education";
+import type { EducationNodeSelection } from "./types";
 
 // bu-86c4c.6: mastery-progression scale, not the tri-state (red/amber/green)
 // system — mastered/learning map onto the real success/needs-work states;
@@ -88,10 +89,10 @@ function layoutGraph(
 
 interface MindMapGraphProps {
   mindMapId: string | null;
-  onNodeClick: (nodeId: string) => void;
+  onSelectNode: (selection: EducationNodeSelection) => void;
 }
 
-export default function MindMapGraph({ mindMapId, onNodeClick }: MindMapGraphProps) {
+export default function MindMapGraph({ mindMapId, onSelectNode }: MindMapGraphProps) {
   const { data: mindMap, isLoading } = useMindMap(mindMapId);
   const { data: frontierNodes } = useFrontierNodes(mindMapId);
 
@@ -128,9 +129,11 @@ export default function MindMapGraph({ mindMapId, onNodeClick }: MindMapGraphPro
 
   const handleNodeClick: NodeMouseHandler = useCallback(
     (_, node) => {
-      onNodeClick(node.id);
+      if (mindMapId) {
+        onSelectNode({ mindMapId, nodeId: node.id });
+      }
     },
-    [onNodeClick],
+    [mindMapId, onSelectNode],
   );
 
   if (!mindMapId) return null;

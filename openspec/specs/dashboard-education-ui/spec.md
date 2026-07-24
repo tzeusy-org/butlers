@@ -31,6 +31,8 @@ The education page SHALL display a page header with title "Education" and a desc
 
 The page SHALL maintain a "selected mind map" state. When the page loads, it SHALL fetch the list of active mind maps and auto-select the first one. A mind map selector (dropdown) SHALL be visible above the tab panels, allowing the user to switch between mind maps.
 
+The page SHALL coordinate node selection through one page-level `{mindMapId, nodeId}` handler shared by the Curriculum graph, Reviews timeline, and Analytics struggling-node callout. A selection for a different mind map SHALL update the selected map and node together. One shared node-detail panel SHALL render only when the selected map and node resolve together, SHALL remain visible when the user changes tabs, and SHALL not show a placeholder or details from another map when the node is unavailable. Closing the panel SHALL clear only the node selection, preserving the selected map and active tab.
+
 The Curriculum tab SHALL be the default active tab.
 
 #### Scenario: Page loads with active mind maps
@@ -54,6 +56,11 @@ The Curriculum tab SHALL be the default active tab.
 - **AND** switches from the Curriculum tab to the Analytics tab
 - **THEN** the Analytics tab SHALL display data for the "Python" mind map
 
+#### Scenario: Unavailable selected node does not render mismatched details
+
+- **WHEN** a selected node no longer belongs to the selected mind map
+- **THEN** the shared node-detail panel SHALL NOT render a placeholder or details for another node
+
 ---
 
 ### Requirement: Mind map graph visualization in Curriculum tab
@@ -71,7 +78,7 @@ Edges of type `prerequisite` SHALL render as solid arrows. Edges of type `relate
 
 Frontier nodes (from the `/frontier` endpoint) SHALL have a pulsing ring indicator to highlight them as next teachable concepts.
 
-Clicking a node SHALL open a detail panel beside the graph showing: node label, description, mastery score, mastery status, next review date (if scheduled), effort estimate, the spaced-repetition internals `ease_factor` and `repetitions`, and a link to view quiz history for that node.
+Clicking a node SHALL select it through the shared page-level handler and reveal the shared detail panel showing: node label, description, mastery score, mastery status, next review date (if scheduled), effort estimate, the spaced-repetition internals `ease_factor` and `repetitions`, and a link to view quiz history for that node.
 
 #### Scenario: Render a mind map with mixed mastery statuses
 
@@ -141,6 +148,8 @@ The Reviews tab SHALL display pending and upcoming spaced repetition reviews as 
 
 Each review entry SHALL display: node label, parent mind map title, mastery score badge, and the scheduled review date/time.
 
+Each review entry SHALL be a native keyboard-accessible button that emits its owning `{mindMapId, nodeId}` selection to the page-level handler.
+
 The Overdue and Today sections SHALL be visually distinct (e.g., Overdue has a red left border, Today has an amber left border).
 
 Reviews SHALL be fetched by iterating all active mind maps and calling the pending reviews endpoint for each. The pending reviews query SHALL refetch every 15 seconds.
@@ -167,6 +176,14 @@ When there are no pending reviews across any mind map, the Reviews tab SHALL dis
 - **THEN** reviews from both mind maps SHALL appear in the timeline
 - **AND** each entry SHALL show its parent mind map title
 
+#### Scenario: Cross-map review selection preserves Reviews context
+
+- **WHEN** map "Python" is selected and the Reviews tab is active
+- **AND** the user activates a review for a node in map "Rust"
+- **THEN** the selected map and node SHALL change to the "Rust" review together
+- **AND** the shared node-detail panel SHALL show the selected "Rust" node
+- **AND** the Reviews tab SHALL remain active
+
 ---
 
 ### Requirement: Mastery analytics in Analytics tab
@@ -179,7 +196,7 @@ The Analytics tab SHALL display mastery analytics for the selected mind map, con
 
 3. **Cross-topic portfolio view**: When viewing analytics without a specific mind map selected (or via a "Portfolio" toggle), the tab SHALL display a comparative bar chart of `mastery_pct` across all active mind maps, plus the portfolio-level `portfolio_mastery` score. Data SHALL come from the `/analytics/cross-topic` endpoint.
 
-4. **Struggling nodes callout**: If the analytics snapshot contains `struggling_nodes` (node IDs with 5+ reviews averaging quality < 2.5), the tab SHALL display a warning card listing these nodes by label with a link to view their quiz history.
+4. **Struggling nodes callout**: If the analytics snapshot contains `struggling_nodes` (node IDs with 5+ reviews averaging quality < 2.5), the tab SHALL display a warning card listing these nodes by label as controls that select the node through the shared page-level handler, exposing its quiz history in the shared detail panel.
 
 #### Scenario: Analytics for a mind map with trend data
 
@@ -192,7 +209,7 @@ The Analytics tab SHALL display mastery analytics for the selected mind map, con
 
 - **WHEN** the analytics snapshot contains 2 struggling node IDs
 - **THEN** a warning card SHALL appear listing those 2 nodes by label
-- **AND** each node label SHALL be clickable to view its quiz history
+- **AND** selecting a node label SHALL keep the Analytics tab active and show that node in the shared detail panel
 
 #### Scenario: Cross-topic portfolio view
 
