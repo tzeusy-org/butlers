@@ -24,10 +24,12 @@ ROSTER_DIR = REPO_ROOT / "roster"
 SHARED_SKILL = ROSTER_DIR / "shared" / "skills" / "cross-butler-delegation"
 
 # Non-staffer rosters that symlink the shared skill (mirrors butler-memory /
-# butler-notifications / routed-message-safety). Excludes travel (local copy)
-# and chronicler (no .agents/skills directory at all — pre-existing gap,
-# tracked separately, not introduced by this change).
+# butler-notifications / routed-message-safety). Excludes travel (local copy).
+# Chronicler's `.agents/skills` directory was wired up in bu-fuuwp — it was
+# previously missing entirely (a pre-existing gap), so it now follows the same
+# symlink convention as its siblings.
 SYMLINKED_ROSTERS = (
+    "chronicler",
     "education",
     "finance",
     "general",
