@@ -16,6 +16,7 @@ core_groups = [
     "notifications",  # notify, remind
     "media",          # get_attachment
     "temporal",       # deadlines, event_chains, seasonal_periods
+    "delegation",     # delegate_ask/receive/answer/wake — cross-butler questions
 ]
 
 [butler.db]

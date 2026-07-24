@@ -243,6 +243,26 @@ def test_roster_runtime_identity_is_internally_consistent():
     assert parsed_any, "No roster butlers discovered — check tests/config layout"
 
 
+def test_finance_and_relationship_seed_delegation_group():
+    """bu-27dxl.5.3: Finance and Relationship seed 'delegation' additively.
+
+    The delegation core group is activated for these two butlers by seeding
+    it alongside their existing runtime_seed.core_groups, not by replacing
+    the list.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    for butler in ("finance", "relationship"):
+        cfg = load_config(repo_root / "roster" / butler)
+        core_groups = cfg.runtime_seed.core_groups
+        assert core_groups is not None
+        assert "delegation" in core_groups
+        for existing_group in ("infra", "state", "scheduling", "notifications"):
+            assert existing_group in core_groups, (
+                f"{butler}: expected pre-existing group {existing_group!r} preserved, "
+                f"found {core_groups!r}"
+            )
+
+
 def test_missing_runtime_seed_section_defaults(tmp_path: Path):
     """Missing [butler.runtime_seed] section returns defaults."""
     minimal_toml = '[butler]\nname = "m"\nport = 7018\n'

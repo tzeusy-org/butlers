@@ -62,3 +62,4 @@ For the travel domain taxonomy (subjects, predicates, permanence levels, tags, a
 - **`tool-reference`**: Full parameter reference for all travel domain tools (`record_booking`, `update_itinerary`, `list_trips`, `trip_summary`, `upcoming_travel`, `add_document`, `health_medication_snapshot`) and the memory classification taxonomy (subjects, predicates, permanence, example facts).
 - **`trip-planner`**: Guided workflow for planning a new trip from scratch: destination, dates, flights, hotels, ground transport, documents, and gap detection.
 - **`pre-trip-checklist`**: Pre-departure preparation workflow triggered 5 days before travel: documents, confirmations, logistics, and packing.
+- **`cross-butler-delegation`**: How to ask another butler's domain a question via `delegate_ask` and how to answer one routed to you. Only present when the `delegation` core group is enabled for this butler; consult this skill before calling `delegate_ask`/`delegate_answer`.

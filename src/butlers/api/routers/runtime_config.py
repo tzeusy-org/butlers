@@ -34,6 +34,7 @@ KNOWN_CORE_GROUPS: frozenset[str] = frozenset(
         "module_mgmt",
         "switchboard_routing",
         "switchboard_backfill",
+        "delegation",
     }
 )
 
