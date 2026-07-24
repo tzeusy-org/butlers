@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from alembic.config import Config
@@ -87,31 +89,72 @@ def _discover_butler_chains() -> list[str]:
     return chains
 
 
+@dataclass(frozen=True)
+class _ChainRootFamily:
+    """One discoverable shape of migration-chain root directory.
+
+    Pairs the filesystem resolution rule with the GitHub Actions path-filter
+    glob (relative to the repo root) that must cover it in the post-merge
+    migration-chain workflow (``.github/workflows/migration-chain-main.yml``).
+    This is the single source of truth for both ``_resolve_chain_dir``'s
+    resolution order and the CI-coverage guard test in
+    ``tests/config/test_migration_chain_head.py`` — adding a new root shape
+    here without a matching workflow glob update fails that guard test
+    instead of letting migrations land with the "Migration Chain Integrity
+    (main)" check silently absent.
+    """
+
+    workflow_path_filter: str
+    dir_for_chain: Callable[[str], Path]
+    applies_to_chain: Callable[[str], bool] = lambda chain: True  # noqa: E731
+
+
+_CHAIN_ROOT_FAMILIES: tuple[_ChainRootFamily, ...] = (
+    _ChainRootFamily(
+        workflow_path_filter="alembic/versions/**",
+        applies_to_chain=lambda chain: chain in _SHARED_CHAINS,
+        dir_for_chain=lambda chain: ALEMBIC_DIR / "versions" / chain,
+    ),
+    _ChainRootFamily(
+        workflow_path_filter="src/butlers/modules/*/migrations/**",
+        dir_for_chain=lambda chain: MODULES_DIR / chain / "migrations",
+    ),
+    _ChainRootFamily(
+        workflow_path_filter="roster/*/migrations/**",
+        dir_for_chain=lambda chain: ROSTER_DIR / chain / "migrations",
+    ),
+)
+
+
+def chain_root_workflow_path_filters() -> tuple[str, ...]:
+    """Return the workflow path-filter globs required to cover every migration-root family.
+
+    Derived from ``_CHAIN_ROOT_FAMILIES`` — the same data ``_resolve_chain_dir``
+    resolves against — so the CI-coverage guard test can assert workflow
+    coverage against this instead of restating the globs as test-local
+    literals that could silently drift from the resolver.
+    """
+    return tuple(family.workflow_path_filter for family in _CHAIN_ROOT_FAMILIES)
+
+
 def _resolve_chain_dir(chain: str) -> Path | None:
     """Resolve the filesystem path for a given chain name.
 
-    Shared chains (core) live in ``alembic/versions/<chain>/``.
-    Module chains live in ``src/butlers/modules/<chain>/migrations/``.
-    Butler-specific chains live in ``roster/<chain>/migrations/``.
+    Tries each recognized root family in ``_CHAIN_ROOT_FAMILIES`` (shared
+    chains under ``alembic/versions/<chain>/``, module chains under
+    ``src/butlers/modules/<chain>/migrations/``, then butler-specific chains
+    under ``roster/<chain>/migrations/``) and returns the first directory
+    that exists.
 
     Returns:
         The chain directory Path if it exists, otherwise None.
     """
-    if chain in _SHARED_CHAINS:
-        chain_dir = ALEMBIC_DIR / "versions" / chain
+    for family in _CHAIN_ROOT_FAMILIES:
+        if not family.applies_to_chain(chain):
+            continue
+        chain_dir = family.dir_for_chain(chain)
         if chain_dir.is_dir():
             return chain_dir
-
-    # Check module-local migrations
-    module_chain_dir = MODULES_DIR / chain / "migrations"
-    if module_chain_dir.is_dir():
-        return module_chain_dir
-
-    # Check butler-specific migrations
-    butler_chain_dir = ROSTER_DIR / chain / "migrations"
-    if butler_chain_dir.is_dir():
-        return butler_chain_dir
-
     return None
 
 

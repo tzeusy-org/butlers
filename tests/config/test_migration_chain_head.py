@@ -20,6 +20,7 @@ import yaml
 
 from butlers.migrations import (
     _resolve_chain_dir,
+    chain_root_workflow_path_filters,
     get_all_chains,
     get_chain_head,
     get_chain_revision_ids,
@@ -29,11 +30,6 @@ pytestmark = pytest.mark.unit
 
 _MIGRATION_CHAIN_WORKFLOW_PATH = (
     Path(__file__).resolve().parents[2] / ".github" / "workflows" / "migration-chain-main.yml"
-)
-_MIGRATION_ROOT_PATH_FILTERS = (
-    "alembic/versions/**",
-    "src/butlers/modules/*/migrations/**",
-    "roster/*/migrations/**",
 )
 
 
@@ -115,23 +111,37 @@ def test_every_recognized_chain_resolves_exactly_one_head():
         assert head in get_chain_revision_ids(chain)
 
 
-@pytest.mark.parametrize(
-    "changed_path",
-    (
-        "alembic/versions/core/core_999.py",
-        "src/butlers/modules/future_module/migrations/001_future.py",
-        "roster/future_butler/migrations/001_future.py",
-    ),
-)
-def test_post_merge_migration_chain_workflow_covers_all_discovered_root_families(
-    changed_path: str,
-):
-    """Every root family get_all_chains() discovers must select the main-chain gate."""
-    path_filters = _migration_chain_workflow_push_paths()
-    assert set(path_filters) == set(_MIGRATION_ROOT_PATH_FILTERS)
+def _representative_changed_path(path_filter: str) -> str:
+    """Build one concrete changed-file path that should match ``path_filter``.
 
-    assert _workflow_selects_path(changed_path, path_filters), (
-        f"Migration change {changed_path!r} does not select the post-merge chain workflow"
+    ``**`` is substituted first (with a filename) so the subsequent
+    single-segment ``*`` substitution doesn't also match inside it.
+    """
+    path = path_filter.replace("**", "001_future.py")
+    return path.replace("*", "future_module")
+
+
+@pytest.mark.parametrize("path_filter", chain_root_workflow_path_filters())
+def test_post_merge_migration_chain_workflow_covers_all_discovered_root_families(
+    path_filter: str,
+):
+    """Every root family migrations.py declares must select the main-chain gate.
+
+    ``chain_root_workflow_path_filters()`` is the single source of truth that
+    ``_resolve_chain_dir`` also resolves against, so a fourth migration-root
+    shape added to ``_CHAIN_ROOT_FAMILIES`` without a matching workflow
+    path-filter glob makes this test fail instead of landing with the
+    "Migration Chain Integrity (main)" check silently absent — the same
+    silent-absence failure mode behind the core_164 duplicate-revision
+    incident.
+    """
+    workflow_path_filters = _migration_chain_workflow_push_paths()
+    assert set(workflow_path_filters) == set(chain_root_workflow_path_filters())
+
+    changed_path = _representative_changed_path(path_filter)
+    assert _workflow_selects_path(changed_path, workflow_path_filters), (
+        f"Migration change {changed_path!r} (root family {path_filter!r}) does not "
+        "select the post-merge chain workflow"
     )
 
 
