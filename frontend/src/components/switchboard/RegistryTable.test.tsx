@@ -35,15 +35,26 @@ function extractBadgeTexts(html: string): string[] {
 // Fixtures
 // ---------------------------------------------------------------------------
 
+const REGISTRY_ENTRY_DEFAULTS = {
+  capabilities: [] as string[],
+  last_seen_at: null,
+  eligibility_state: "eligible",
+  derived_eligibility_state: "active" as const,
+  liveness_ttl_seconds: 300,
+  quarantined_at: null,
+  quarantine_reason: null,
+  route_contract_min: 1,
+  route_contract_max: 1,
+  eligibility_updated_at: null,
+  agent_type: "butler" as const,
+};
+
 const SAMPLE_REGISTRY_ENTRY = {
+  ...REGISTRY_ENTRY_DEFAULTS,
   name: "switchboard",
   endpoint_url: "http://localhost:40100/sse",
   description: "Route messages",
   modules: [] as unknown[],
-  last_seen_at: null,
-  eligibility_state: "eligible",
-  quarantined_at: null,
-  quarantine_reason: null,
   registered_at: "2026-02-13T00:00:00Z",
 };
 
@@ -57,14 +68,11 @@ describe("RegistryTable", () => {
       data: {
         data: [
           {
+            ...REGISTRY_ENTRY_DEFAULTS,
             name: "switchboard",
             endpoint_url: "http://localhost:40100/sse",
             description: "Route messages",
             modules: "telegram, email" as unknown as unknown[],
-            last_seen_at: null,
-            eligibility_state: "eligible",
-            quarantined_at: null,
-            quarantine_reason: null,
             registered_at: "2026-02-13T00:00:00Z",
           },
         ],
@@ -81,25 +89,19 @@ describe("RegistryTable", () => {
       data: {
         data: [
           {
+            ...REGISTRY_ENTRY_DEFAULTS,
             name: "empty",
             endpoint_url: "http://localhost:40101/sse",
             description: null,
             modules: [],
-            last_seen_at: null,
-            eligibility_state: "eligible",
-            quarantined_at: null,
-            quarantine_reason: null,
             registered_at: "2026-02-13T00:00:00Z",
           },
           {
+            ...REGISTRY_ENTRY_DEFAULTS,
             name: "single",
             endpoint_url: "http://localhost:40102/sse",
             description: null,
             modules: "telegram" as unknown as unknown[],
-            last_seen_at: null,
-            eligibility_state: "eligible",
-            quarantined_at: null,
-            quarantine_reason: null,
             registered_at: "2026-02-13T00:00:00Z",
           },
         ],
@@ -117,14 +119,11 @@ describe("RegistryTable", () => {
       data: {
         data: [
           {
+            ...REGISTRY_ENTRY_DEFAULTS,
             name: "legacy",
             endpoint_url: "http://localhost:40103/sse",
             description: null,
             modules: "[telegram, email]" as unknown as unknown[],
-            last_seen_at: null,
-            eligibility_state: "eligible",
-            quarantined_at: null,
-            quarantine_reason: null,
             registered_at: "2026-02-13T00:00:00Z",
           },
         ],
@@ -146,14 +145,11 @@ describe("RegistryTable", () => {
       data: {
         data: [
           {
+            ...REGISTRY_ENTRY_DEFAULTS,
             name: "nested",
             endpoint_url: "http://localhost:40104/sse",
             description: null,
             modules: deeplyNestedModules as unknown as unknown[],
-            last_seen_at: null,
-            eligibility_state: "eligible",
-            quarantined_at: null,
-            quarantine_reason: null,
             registered_at: "2026-02-13T00:00:00Z",
           },
         ],
@@ -176,6 +172,7 @@ describe("RegistryTable", () => {
       data: {
         data: [
           {
+            ...REGISTRY_ENTRY_DEFAULTS,
             name: "switchboard",
             endpoint_url: "http://localhost:40100/sse",
             description: null,
@@ -183,10 +180,6 @@ describe("RegistryTable", () => {
             // string instead of a native array — the payload shape that triggers
             // the char-splitting regression.
             modules: '["telegram","email"]' as unknown as unknown[],
-            last_seen_at: null,
-            eligibility_state: "eligible",
-            quarantined_at: null,
-            quarantine_reason: null,
             registered_at: "2026-02-13T00:00:00Z",
           },
         ],
@@ -289,14 +282,11 @@ describe("RegistryTable", () => {
       data: {
         data: [
           {
+            ...REGISTRY_ENTRY_DEFAULTS,
             name: "broken",
             endpoint_url: "http://localhost:40105/sse",
             description: null,
             modules: charSplitModules as unknown as unknown[],
-            last_seen_at: null,
-            eligibility_state: "eligible",
-            quarantined_at: null,
-            quarantine_reason: null,
             registered_at: "2026-02-13T00:00:00Z",
           },
         ],
