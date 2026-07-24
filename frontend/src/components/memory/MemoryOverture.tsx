@@ -305,12 +305,17 @@ export default function MemoryOverture() {
           testId="memory-overture-retention-unknown"
         />
       )}
+      {/* The per-scope "degraded" note reports a genuine, persistent DB state
+          (episodes past their TTL still retained until the cleanup sweep reaps
+          them), not a transient read failure. Re-running the same stats fetch
+          returns byte-identical data, so a Retry action here is a guaranteed
+          no-op — deliberately omit `onRetry`. Contrast the "unknown" note
+          above, whose unreachable pools genuinely can recover on refetch. */}
       {!statsUnavailable && retentionStatus === "degraded" && degradedRetentionSources.map((source) => (
         <SourceDegradedNote
           key={source.source_butler}
           label="Expired retention"
           detail={`${source.source_butler}: ${source.expired_retained_episodes} expired episodes retained`}
-          onRetry={() => void refetch()}
           testId="memory-overture-retention-degraded"
         />
       ))}

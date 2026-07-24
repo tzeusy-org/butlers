@@ -287,6 +287,26 @@ describe("MemoryOverture", () => {
     expect(note!.getAttribute("role")).toBe("alert");
     expect(note!.textContent).toContain("relationship");
     expect(note!.textContent).toContain("2 expired episodes");
+    // No Retry affordance: the retained-episode count is a persistent DB state,
+    // not a transient read failure, so re-fetching cannot clear it. A Retry
+    // button here would be a guaranteed no-op.
+    expect(note!.querySelector("button")).toBeNull();
+  });
+
+  it("keeps a Retry affordance on the retryable unknown-coverage note", () => {
+    // Contrast with the degraded note above: unreachable pools genuinely can
+    // recover on refetch, so this note must keep its Retry button.
+    setStats(makeStats(), {
+      retention_status: "unknown",
+      retention_sources: [],
+      retention_pools_failed: ["relationship"],
+    });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    const note = container.querySelector('[data-testid="memory-overture-retention-unknown"]');
+    expect(note).not.toBeNull();
+    expect(note!.querySelector("button")).not.toBeNull();
   });
 
   it("does not render a retention alarm for a complete healthy observation", () => {
