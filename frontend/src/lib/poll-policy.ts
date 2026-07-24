@@ -20,6 +20,14 @@
  * (currently small) set of files this is enforced on, and the bu-qvnce.14
  * worker report for the follow-up to broaden it.
  */
+
+/**
+ * Explicit escape hatch for a query whose hidden-tab freshness is intentional.
+ * A hook opting in must import this token (rather than use a bare `true`) and
+ * document why its work must continue after the owner leaves the tab.
+ */
+export const POLL_IN_BACKGROUND = true;
+
 export const POLL_BUS_RECONCILE_MS = 5 * 60_000;
 
 /**

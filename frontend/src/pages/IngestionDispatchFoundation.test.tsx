@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router'
+import { waitFor } from '@testing-library/react'
 
 // ---------------------------------------------------------------------------
 // Mocks — must be before any router/page imports
@@ -115,7 +116,7 @@ describe('§1 /ingestion renders Dispatch shell without legacy TabsTrigger', () 
   })
   afterEach(() => cleanup(root, container))
 
-  it('renders the ingestion page without any [role="tab"] elements', () => {
+  it('renders the ingestion page without any [role="tab"] elements', async () => {
     act(() => {
       root.render(
         <MemoryRouter initialEntries={['/ingestion']}>
@@ -124,6 +125,9 @@ describe('§1 /ingestion renders Dispatch shell without legacy TabsTrigger', () 
           </Routes>
         </MemoryRouter>,
       )
+    })
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
     })
     // The Dispatch shell must not contain any TabsTrigger (role=tab)
     const tabTriggers = container.querySelectorAll('[role="tab"]')
@@ -247,7 +251,7 @@ describe('§3–4 Legacy ?tab= redirects', () => {
     expect(container.querySelector('[data-testid="filters-page"]')).not.toBeNull()
   })
 
-  it('§5 redirects /ingestion?tab=history to /ingestion (Timeline, not a history sub-route)', () => {
+  it('§5 redirects /ingestion?tab=history to /ingestion (Timeline, not a history sub-route)', async () => {
     // Per spec: "history SHALL map to the Timeline route … SHALL NOT remain a fourth redesigned tab"
     act(() => {
       root.render(
@@ -262,7 +266,9 @@ describe('§3–4 Legacy ?tab= redirects', () => {
     // Should NOT land on /ingestion/history
     expect(container.querySelector('[data-testid="history-page"]')).toBeNull()
     // Should render Timeline (IngestionTabRedirect with no tab renders timeline)
-    expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
+    })
   })
 
   it('preserves compatible query params (range) when redirecting ?tab=connectors', () => {

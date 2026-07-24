@@ -16,23 +16,29 @@
  * command palette can all call this unconditionally without maintaining a
  * parallel "is this route covered" list.
  *
- * staleTime on every entry uses POLL_BUS_RECONCILE_MS (see lib/poll-policy.ts)
- * -- these are exactly the bus-covered query keys (event-cache-registry.ts's
- * sessionPatch/approvalPatch invalidate them on their respective fleet
- * events), so a prefetch within that window is intentionally skipped rather
- * than fighting the bus with a redundant fetch.
+ * Bus-covered entries retain their POLL_BUS_RECONCILE_MS staleTime (see
+ * lib/poll-policy.ts); ordinary detail routes use the QueryClient's 30-second
+ * freshness window. This keeps a prefetch behaviorally identical to the page
+ * that will consume its cache entry.
  */
 
 import {
   getApprovalDetail,
+  getButler,
+  getEntity,
+  getEpisode,
+  getFact,
   getIngestionEvent,
+  getRule,
   getSession,
   getTimeline,
 } from "@/api/index.ts";
+import { ENTITY_DETAIL_INITIAL_PARAMS } from "@/lib/entity-detail-query";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 
 /** Head-page size used by TimelinePage's own query (use-timeline-ledger.ts). */
 const TIMELINE_HEAD_PAGE_SIZE = 50;
+const DEFAULT_DETAIL_STALE_TIME_MS = 30_000;
 
 export interface PrefetchTarget {
   queryKey: readonly unknown[];
@@ -41,6 +47,80 @@ export interface PrefetchTarget {
 }
 
 type Matcher = (pathname: string) => PrefetchTarget | null;
+
+/** `/butlers/:name` -- ButlerDetailPage's useButler(name). */
+const BUTLER_DETAIL_RE = /^\/butlers\/([^/]+)$/;
+function matchButlerDetail(pathname: string): PrefetchTarget | null {
+  const m = BUTLER_DETAIL_RE.exec(pathname);
+  if (!m) return null;
+  const name = decodeURIComponent(m[1]);
+  return {
+    queryKey: ["butlers", name],
+    queryFn: () => getButler(name),
+    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+  };
+}
+
+/** `/entities/:entityId` -- EntityDetailPage's initial useEntity projection. */
+const ENTITY_DETAIL_RE = /^\/entities\/([^/]+)$/;
+const ENTITY_SUBROUTES = new Set([
+  "index",
+  "concentration",
+  "circles",
+  "hop",
+  "columns",
+  "social-map",
+]);
+function matchEntityDetail(pathname: string): PrefetchTarget | null {
+  const m = ENTITY_DETAIL_RE.exec(pathname);
+  if (!m) return null;
+  const entityId = decodeURIComponent(m[1]);
+  if (ENTITY_SUBROUTES.has(entityId)) return null;
+  return {
+    queryKey: ["memory-entity", entityId, ENTITY_DETAIL_INITIAL_PARAMS],
+    queryFn: () => getEntity(entityId, ENTITY_DETAIL_INITIAL_PARAMS),
+    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+  };
+}
+
+/** `/memory/facts/:factId` -- FactDetailPage's useFact(factId). */
+const FACT_DETAIL_RE = /^\/memory\/facts\/([^/]+)$/;
+function matchFactDetail(pathname: string): PrefetchTarget | null {
+  const m = FACT_DETAIL_RE.exec(pathname);
+  if (!m) return null;
+  const factId = decodeURIComponent(m[1]);
+  return {
+    queryKey: ["memory-fact", factId],
+    queryFn: () => getFact(factId),
+    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+  };
+}
+
+/** `/memory/episodes/:episodeId` -- EpisodeDetailPage's useEpisode(episodeId). */
+const EPISODE_DETAIL_RE = /^\/memory\/episodes\/([^/]+)$/;
+function matchEpisodeDetail(pathname: string): PrefetchTarget | null {
+  const m = EPISODE_DETAIL_RE.exec(pathname);
+  if (!m) return null;
+  const episodeId = decodeURIComponent(m[1]);
+  return {
+    queryKey: ["memory-episode", episodeId],
+    queryFn: () => getEpisode(episodeId),
+    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+  };
+}
+
+/** `/memory/rules/:ruleId` -- RuleDetailPage's useRule(ruleId). */
+const RULE_DETAIL_RE = /^\/memory\/rules\/([^/]+)$/;
+function matchRuleDetail(pathname: string): PrefetchTarget | null {
+  const m = RULE_DETAIL_RE.exec(pathname);
+  if (!m) return null;
+  const ruleId = decodeURIComponent(m[1]);
+  return {
+    queryKey: ["memory-rule", ruleId],
+    queryFn: () => getRule(ruleId),
+    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+  };
+}
 
 /** `/sessions/:id` -- SessionDetailPage's useGlobalSessionDetail(id). */
 const SESSION_DETAIL_RE = /^\/sessions\/([^/]+)$/;
@@ -100,7 +180,16 @@ function matchIngestionEventDetail(to: string): PrefetchTarget | null {
   };
 }
 
-const MATCHERS: Matcher[] = [matchSessionDetail, matchApprovalDetail, matchTimeline];
+const MATCHERS: Matcher[] = [
+  matchButlerDetail,
+  matchEntityDetail,
+  matchFactDetail,
+  matchEpisodeDetail,
+  matchRuleDetail,
+  matchSessionDetail,
+  matchApprovalDetail,
+  matchTimeline,
+];
 
 /**
  * Resolve a navigating row's `to` target to a prefetch descriptor, or `null`

@@ -756,8 +756,8 @@ _LIMIT_LITERAL_PINS: list[tuple[str, str, str, str, str]] = [
     ),
     (
         "entity-facts-initial",
-        "pages/EntityDetailPage.tsx",
-        r"\bFACTS_INITIAL_LIMIT\s*=\s*(\d+)",
+        "lib/entity-detail-query.ts",
+        r"\bENTITY_DETAIL_INITIAL_FACTS_LIMIT\s*=\s*(\d+)",
         "/api/relationship/entities/{entity_id}/facts",
         "limit",
     ),

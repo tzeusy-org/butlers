@@ -52,6 +52,8 @@ The application SHALL boot via a React 18 StrictMode render. The provider hierar
 - **WHEN** the `QueryClient` is created
 - **THEN** the default `staleTime` for all queries is 30 seconds (30,000ms)
 - **AND** the default retry count is 1 (one retry after initial failure)
+- **AND** the default `refetchIntervalInBackground` is false so inactive browser tabs do not poll
+- **AND** intentional hidden-tab polling overrides that default explicitly via the named `POLL_IN_BACKGROUND` policy token
 - **AND** these defaults can be overridden per-query by individual hooks
 
 ### Requirement: Owner Timezone Resolution (cross-cutting shell contract)
@@ -776,4 +778,3 @@ Shared utilities SHALL underpin component styling and settings persistence.
 - `about/heart-and-soul/v1.md` — Per-user OAuth (Google, Spotify, Telegram, Steam, etc.) is explicitly out of v1 system-settings scope; OAuth setup remains on `/secrets` to keep `/settings` system-side only.
 - `about/heart-and-soul/vision.md` Non-Negotiable Rule 1 (composure) and Rule 6 (governing-document-driven scope).
 - Ingestion dispatch console route ownership: `dashboard-ingestion-dispatch-console` capability spec (first-class ingestion child routes; legacy `?tab=` state is compatibility only).
-

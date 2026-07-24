@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router'
+import { waitFor } from '@testing-library/react'
 
 // Mock IngestionTimelinePage so the redirect component renders a testable stub
 // instead of pulling in the real component and its dependencies.
@@ -135,14 +136,16 @@ describe('IngestionTabRedirect', () => {
     expect(container.querySelector('[data-testid="filters-page"]')).not.toBeNull()
   })
 
-  it('redirects ?tab=history to /ingestion (Timeline), not to /ingestion/history', () => {
+  it('redirects ?tab=history to /ingestion (Timeline), not to /ingestion/history', async () => {
     // Spec (complete-ingestion-redesign-parity): "history SHALL map to the Timeline route …
     // it SHALL NOT remain a fourth redesigned tab." No primary /ingestion/history route.
     render('/ingestion?tab=history')
     // Must NOT land on /ingestion/history
     expect(container.querySelector('[data-testid="history-page"]')).toBeNull()
     // Must render Timeline (IngestionTabRedirect with no tab → renders IngestionTimelinePage stub)
-    expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
+    })
   })
 
   // --- Filter param preservation ---
@@ -203,19 +206,23 @@ describe('IngestionTabRedirect', () => {
 
   // --- Fall-through to Timeline ---
 
-  it('renders Timeline for /ingestion with no ?tab= param', () => {
+  it('renders Timeline for /ingestion with no ?tab= param', async () => {
     render('/ingestion')
-    expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
+    })
   })
 
-  it('redirects to /ingestion for unrecognized ?tab=unknown (strips invalid tab param)', () => {
+  it('redirects to /ingestion for unrecognized ?tab=unknown (strips invalid tab param)', async () => {
     // Unknown tab values redirect to /ingestion without the tab param so stale
     // bookmarks do not perpetuate an invalid ?tab= in the URL. The MemoryRouter
     // resolves /ingestion back to IngestionTabRedirect with no tab param, which
     // then renders Timeline directly (tab === null path).
     render('/ingestion?tab=unknown')
     // After the redirect resolves, Timeline is rendered (tab is null on second pass).
-    expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="timeline-page"]')).not.toBeNull()
+    })
   })
 
   it('does not redirect when ?tab= is absent', () => {

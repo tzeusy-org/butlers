@@ -220,8 +220,8 @@ describe("RowLink: prefetch on hover intent (bu-qvnce.14 slice 4)", () => {
     render(
       <QueryClientProvider client={client}>
         <MemoryRouter>
-          <RowLink to="/butlers/general" data-testid="row">
-            general
+          <RowLink to="/not-a-route" data-testid="row">
+            unmapped route
           </RowLink>
         </MemoryRouter>
       </QueryClientProvider>,

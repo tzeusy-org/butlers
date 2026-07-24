@@ -21,6 +21,7 @@ import {
 import { toast } from "sonner";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
+import { ENTITY_DETAIL_INITIAL_FACTS_LIMIT } from "@/lib/entity-detail-query";
 import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES, CURATION_RAIL_GLOSSES } from "@/lib/entity-glosses";
 import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/lib/entity-glosses";
 
@@ -173,11 +174,6 @@ function persistEntityMode(mode: EntityDetailMode): void {
 // ---------------------------------------------------------------------------
 
 const FACTS_PAGE_SIZE = 20;
-// Profile snapshot pulls predicates from recent_facts; profile-relevant facts
-// (birthday, lives_in, works_at, family) are often old and would fall outside
-// a 20-row window. Load a wider initial slice so the snapshot has data to work
-// with; the user can still page further via "Load more facts".
-const FACTS_INITIAL_LIMIT = 200;
 
 function sessionDetailHref(sessionId: string, butler: string | null): string {
   const query = butler ? `?butler=${encodeURIComponent(butler)}` : "";
@@ -2290,7 +2286,7 @@ export default function EntityDetailPage() {
     [setSearchParams],
   );
 
-  const [factsLimit, setFactsLimit] = useState(FACTS_INITIAL_LIMIT);
+  const [factsLimit, setFactsLimit] = useState(ENTITY_DETAIL_INITIAL_FACTS_LIMIT);
   const { data, isLoading, isFetching, error } = useEntity(entityId, {
     facts_limit: factsLimit,
   });

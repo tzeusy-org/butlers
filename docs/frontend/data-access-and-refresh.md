@@ -23,6 +23,11 @@ Default QueryClient behavior (`frontend/src/lib/query-client.ts`):
 
 - `staleTime`: 30s
 - `retry`: 1
+- `refetchIntervalInBackground`: false — interval polls stop while the document is hidden.
+
+Hidden-tab polling requires the explicit `POLL_IN_BACKGROUND` token from
+`frontend/src/lib/poll-policy.ts`, with a local rationale. It is not a default
+freshness mechanism.
 
 Domain hook refetch intervals:
 

@@ -1,5 +1,8 @@
+import { lazy } from 'react'
 import { Navigate, useParams, useSearchParams } from 'react-router'
-import IngestionTimelinePage from './pages/IngestionTimelinePage.tsx'
+import { RouteSuspense } from './components/layout/RouteSuspense.tsx'
+
+const IngestionTimelinePage = lazy(() => import('./pages/IngestionTimelinePage.tsx'))
 
 // ---------------------------------------------------------------------------
 // Private redirect helpers
@@ -81,7 +84,11 @@ export function IngestionTabRedirect() {
   if (tab !== null) {
     return <Navigate to={`/ingestion${qs ? `?${qs}` : ''}`} replace />
   }
-  return <IngestionTimelinePage />
+  return (
+    <RouteSuspense>
+      <IngestionTimelinePage />
+    </RouteSuspense>
+  )
 }
 
 /**
