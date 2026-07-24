@@ -2,12 +2,13 @@
 // ApprovalsVerdictOpener -- /approvals page opener (bu-qvnce.9, JARVIS
 // pursuit move 9, slice 2)
 //
-// Composes the pending queue + decided-history data ApprovalsPage already
-// fetches into one synthesized verdict line via the shared DispatchVerdict
-// primitive: "3 waiting; nearest expires in 40m; one stalled action never
-// ran" -- each clause a real door into the exact row it describes. ("stalled"
-// not "approved": this page never renders the raw "approved" status text
-// anywhere -- see ApprovalsPage's statusLabel doctrine comment.)
+// Composes the pending queue + its whole-population stalled-radar metadata
+// into one synthesized verdict line via the shared DispatchVerdict primitive:
+// "3 waiting; nearest expires in 40m; one stalled action never ran". The
+// stalled aggregate intentionally has no invented row-level link: it can be
+// outside the bounded history window. ("stalled" not "approved": this page
+// never renders the raw "approved" status text anywhere -- see
+// ApprovalsPage's statusLabel doctrine comment.)
 // ---------------------------------------------------------------------------
 
 import type { ApprovalSummary } from "@/api/index.ts";
@@ -32,7 +33,7 @@ function countdownText(expiresAt: string | null | undefined): string | null {
 
 function buildClauses(
   pending: ApprovalSummary[],
-  history: ApprovalSummary[],
+  stalledCount: number,
   sourcesDegraded: string[],
 ): VerdictClause[] {
   const clauses: VerdictClause[] = [];
@@ -66,23 +67,19 @@ function buildClauses(
     }
   }
 
-  // The backend's raw "approved" status always means approved-but-never-
-  // dispatched (see ApprovalsPage's statusColor/statusLabel doctrine
-  // comment) -- rendered everywhere on this page as "stalled", never the
-  // literal word "approved" (JARVIS audit move 9 -- never success-green),
-  // so the clause below follows the same vocabulary.
-  const stalled = history.filter((item) => item.status === "approved");
-  if (stalled.length === 1) {
+  // This value is not inferred from the history page: that page is bounded
+  // and summaries deliberately omit execution_result. The flat endpoint
+  // derives it from ``status = approved AND execution_result IS NULL`` across
+  // the whole eligible pool population.
+  if (stalledCount === 1) {
     clauses.push({
       key: "stalled",
       text: "one stalled action never ran",
-      href: `/approvals/${stalled[0].id}`,
     });
-  } else if (stalled.length > 1) {
+  } else if (stalledCount > 1) {
     clauses.push({
       key: "stalled",
-      text: `${stalled.length} stalled actions never ran`,
-      href: "/approvals",
+      text: `${stalledCount} stalled actions never ran`,
     });
   }
 
@@ -94,7 +91,7 @@ export function ApprovalsVerdictOpener({
   pendingLoading,
   pendingError,
   pendingSourcesDegraded = [],
-  history,
+  stalledCount = 0,
   historyLoading,
   historyError,
   historySourcesDegraded = [],
@@ -104,7 +101,8 @@ export function ApprovalsVerdictOpener({
   pendingError: boolean;
   /** Butler pools dropped from the queue fan-out (queue `meta.sources_degraded`). */
   pendingSourcesDegraded?: string[];
-  history: ApprovalSummary[];
+  /** Whole-population `GET /api/approvals` stalled-radar metadata. */
+  stalledCount?: number;
   historyLoading: boolean;
   historyError: boolean;
   /** Butler pools dropped from the history fan-out (history `meta.sources_degraded`). */
@@ -116,7 +114,7 @@ export function ApprovalsVerdictOpener({
   const sourcesDegraded = [
     ...new Set([...pendingSourcesDegraded, ...historySourcesDegraded]),
   ];
-  const clauses = buildClauses(pending, history, sourcesDegraded);
+  const clauses = buildClauses(pending, stalledCount, sourcesDegraded);
 
   return (
     <DispatchVerdict

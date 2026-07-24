@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import asyncpg
@@ -1758,6 +1758,7 @@ async def get_metrics(
 
 _DECIDED_STATUSES = {"approved", "rejected", "expired", "executed"}
 _WAITING_STATUSES = {"pending"}
+_STALLED_STATUS = "approved"
 
 _ACTOR_DASHBOARD = "dashboard:rest-api"
 _TELEGRAM_CALLBACK_ACTOR = "owner@telegram"
@@ -1788,18 +1789,23 @@ def _decision_audit_actor(actor_id: str) -> str:
 
 @router.get("")
 async def list_approvals_flat(
-    state: str = Query(default="all", description="waiting|decided|all"),
+    state: Literal["waiting", "decided", "stalled", "all"] = Query(
+        default="all", description="waiting|decided|stalled|all"
+    ),
     limit: int = Query(default=100, ge=1, le=500),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[ApprovalSummary]]:
-    """Flat list of approvals — GET /api/approvals?state=waiting|decided|all.
+    """Flat list of approvals — GET /api/approvals?state=waiting|decided|stalled|all.
 
     Complements the existing ``GET /api/approvals/actions`` paginated endpoint.
-    Returns up to ``limit`` summaries ordered ``created_at DESC``.
+    Returns up to ``limit`` summaries ordered ``created_at DESC``. Every
+    response also carries a whole-population ``meta.stalled_count``: approved
+    actions whose execution has never produced a result, independent of the
+    requested list state or page limit.
     """
     named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
     if not named_pools:
-        return ApiResponse(data=[])
+        return ApiResponse(data=[], meta=ApiMeta(stalled_count=0))
 
     status_filter: list[str]
     if state == "waiting":
@@ -1810,11 +1816,32 @@ async def list_approvals_flat(
         status_filter = []
 
     all_rows: list[tuple[str, asyncpg.Record]] = []
+    stalled_count = 0
     tracker = DegradedSources(logger)
     for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
-                if status_filter:
+                # This is deliberately a separate, unbounded aggregate: a
+                # fixed-size flat page (or a different ``state`` filter) is
+                # not evidence that no approved action remains unexecuted.
+                stalled_count += int(
+                    await conn.fetchval(
+                        "SELECT COUNT(*) FROM pending_actions "
+                        "WHERE status = $1 AND execution_result IS NULL",
+                        _STALLED_STATUS,
+                    )
+                    or 0
+                )
+
+                if state == "stalled":
+                    rows = await conn.fetch(
+                        "SELECT * FROM pending_actions "
+                        "WHERE status = $1 AND execution_result IS NULL "
+                        "ORDER BY requested_at DESC LIMIT $2",
+                        _STALLED_STATUS,
+                        limit,
+                    )
+                elif status_filter:
                     rows = await conn.fetch(
                         "SELECT * FROM pending_actions "
                         "WHERE status = ANY($1::text[]) "
@@ -1839,7 +1866,10 @@ async def list_approvals_flat(
         pa = PendingAction.from_row(row)
         summaries.append(_pending_action_to_summary(pa, butler_name))
 
-    meta = ApiMeta(sources_degraded=tracker.names) if tracker.failed else ApiMeta()
+    meta_kwargs: dict[str, Any] = {"stalled_count": stalled_count}
+    if tracker.failed:
+        meta_kwargs["sources_degraded"] = tracker.names
+    meta = ApiMeta(**meta_kwargs)
     return ApiResponse(data=summaries, meta=meta)
 
 

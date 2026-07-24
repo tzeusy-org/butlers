@@ -1470,10 +1470,10 @@ export default function ApprovalsPage() {
   });
 
   // Same queryKey as HistorySection's own useQuery below -- react-query
-  // dedupes by key, so this does not add a second network request. Lifted
-  // here purely so the verdict opener (JARVIS pursuit move 9) can name a
-  // decided-but-never-dispatched approval without HistorySection needing to
-  // thread its data back up.
+  // dedupes by key, so this does not add a second network request. It remains
+  // lifted for source-health honesty in the opener; stalled actions themselves
+  // come from the pending flat endpoint's whole-population metadata instead
+  // of this bounded history window.
   const { data: historyData, isLoading: historyLoading, isError: historyIsError } = useQuery({
     queryKey: Q.history(),
     queryFn: () => getApprovalsHistory(undefined, 30),
@@ -1727,15 +1727,16 @@ export default function ApprovalsPage() {
         <h1 className="text-2xl font-medium">Approvals</h1>
       </div>
 
-      {/* Verdict opener — synthesizes the queue + history data this page
-          already fetches into one line (JARVIS pursuit move 9). */}
+      {/* Verdict opener — synthesizes the queue, whole-population stalled
+          radar, and history source health this page already fetches into one
+          line (JARVIS pursuit move 9). */}
       <div className="px-6 py-3 border-b border-border shrink-0">
         <ApprovalsVerdictOpener
           pending={pending}
           pendingLoading={isLoading}
           pendingError={isError}
           pendingSourcesDegraded={pendingSourcesDegraded}
-          history={historyData?.data ?? []}
+          stalledCount={data?.meta?.stalled_count ?? 0}
           historyLoading={historyLoading}
           historyError={historyIsError}
           historySourcesDegraded={historySourcesDegraded}

@@ -1535,6 +1535,21 @@ describe("ApprovalsPage — stalled (approved-but-undispatched) state (bu-86c4c.
     });
   }
 
+  it("feeds the verdict the flat response's whole-population stalled radar", async () => {
+    // History is deliberately empty: the count must not depend on the
+    // bounded history query, which lacks execution_result in its summaries.
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      Promise.resolve({ data: [], meta: { stalled_count: 2 } }) as AnyMock,
+    );
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("2 stalled actions never ran") ?? false);
+
+    expect(container.textContent).toContain("2 stalled actions never ran");
+    expect(container.textContent).not.toContain("No approvals waiting.");
+  });
+
   it("renders an 'approved' history row as 'stalled', never as green success text", async () => {
     vi.mocked(getApprovalsHistory).mockReturnValue(
       makeApiResponse([

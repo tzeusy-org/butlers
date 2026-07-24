@@ -3122,6 +3122,21 @@ export interface ApprovalsListResponse {
   meta: ApprovalsListMeta;
 }
 
+/**
+ * Metadata unique to the flat GET /api/approvals endpoint. Its stalled count
+ * is always present, including when no approval pool is eligible.
+ */
+export interface ApprovalsFlatListMeta extends ApprovalsListMeta {
+  /** Whole-population approved actions with no execution result, independent of page state/limit. */
+  stalled_count: number;
+}
+
+/** GET /api/approvals response: summaries plus its required stalled radar. */
+export interface ApprovalsFlatListResponse {
+  data: ApprovalSummary[];
+  meta: ApprovalsFlatListMeta;
+}
+
 /** Full dossier for GET /api/approvals/{id}. */
 export interface ApprovalDetail {
   id: string;

@@ -4,8 +4,9 @@
  * slice 2).
  *
  * Verifies the /approvals opener composes the already-fetched pending queue
- * + decided-history data into "N waiting; nearest expires in Xm; N approved
- * actions never ran" -- and honors the isError-suppression contract.
+ * + whole-population stalled-radar metadata into "N waiting; nearest expires
+ * in Xm; N stalled actions never ran" -- and honors the
+ * isError-suppression contract.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,7 +50,6 @@ describe("ApprovalsVerdictOpener -- all clear", () => {
         pending={[]}
         pendingLoading={false}
         pendingError={false}
-        history={[]}
         historyLoading={false}
         historyError={false}
       />,
@@ -60,19 +60,18 @@ describe("ApprovalsVerdictOpener -- all clear", () => {
 });
 
 describe("ApprovalsVerdictOpener -- clauses", () => {
-  it("composes waiting count, nearest expiry, and stalled-approval count as doors", () => {
+  it("composes waiting count, nearest expiry, and whole-population stalled count", () => {
     const pending = [
       summary({ id: "a-1", expires_at: "2026-07-05T05:40:00Z" }),
       summary({ id: "a-2", expires_at: "2026-07-06T05:00:00Z" }),
       summary({ id: "a-3", expires_at: null }),
     ];
-    const history = [summary({ id: "h-1", status: "approved" }), summary({ id: "h-2", status: "executed" })];
     const html = render(
       <ApprovalsVerdictOpener
         pending={pending}
         pendingLoading={false}
         pendingError={false}
-        history={history}
+        stalledCount={1}
         historyLoading={false}
         historyError={false}
       />,
@@ -84,17 +83,49 @@ describe("ApprovalsVerdictOpener -- clauses", () => {
     expect(html).toContain("nearest expires in 40m");
     expect(html).toContain('href="/approvals/a-1"');
     expect(html).toContain("one stalled action never ran");
-    expect(html).toContain('href="/approvals/h-1"');
+    // A whole-population aggregate has no fabricated row-level destination.
+    expect(html).not.toContain('href="/approvals/h-1"');
   });
 
-  it("never renders the literal word 'approved' -- this page renders that status as 'stalled' everywhere (bu-86c4c.12 doctrine)", () => {
-    const history = [summary({ id: "h-1", status: "approved" })];
+  it("renders all-clear when stalled radar metadata is zero", () => {
     const html = render(
       <ApprovalsVerdictOpener
         pending={[]}
         pendingLoading={false}
         pendingError={false}
-        history={history}
+        stalledCount={0}
+        historyLoading={false}
+        historyError={false}
+      />,
+    );
+    // The bounded history is not an input to this component: summaries omit
+    // execution_result, so only the server-derived stalled radar is evidence.
+    expect(html).not.toContain("stalled");
+    expect(html).toContain("No approvals waiting.");
+  });
+
+  it("surfaces a stalled count beyond the bounded history", () => {
+    const html = render(
+      <ApprovalsVerdictOpener
+        pending={[]}
+        pendingLoading={false}
+        pendingError={false}
+        stalledCount={2}
+        historyLoading={false}
+        historyError={false}
+      />,
+    );
+    expect(html).toContain("2 stalled actions never ran");
+    expect(html).not.toContain("No approvals waiting.");
+  });
+
+  it("never renders the literal word 'approved' -- this page renders that status as 'stalled' everywhere (bu-86c4c.12 doctrine)", () => {
+    const html = render(
+      <ApprovalsVerdictOpener
+        pending={[]}
+        pendingLoading={false}
+        pendingError={false}
+        stalledCount={1}
         historyLoading={false}
         historyError={false}
       />,
@@ -104,16 +135,12 @@ describe("ApprovalsVerdictOpener -- clauses", () => {
   });
 
   it("pluralizes the stalled-approval clause when more than one never ran", () => {
-    const history = [
-      summary({ id: "h-1", status: "approved" }),
-      summary({ id: "h-2", status: "approved" }),
-    ];
     const html = render(
       <ApprovalsVerdictOpener
         pending={[]}
         pendingLoading={false}
         pendingError={false}
-        history={history}
+        stalledCount={2}
         historyLoading={false}
         historyError={false}
       />,
@@ -128,7 +155,6 @@ describe("ApprovalsVerdictOpener -- clauses", () => {
         pending={pending}
         pendingLoading={false}
         pendingError={false}
-        history={[]}
         historyLoading={false}
         historyError={false}
       />,
@@ -150,7 +176,6 @@ describe("ApprovalsVerdictOpener -- degraded-source honesty (bu-jad4j.4)", () =>
         pendingLoading={false}
         pendingError={false}
         pendingSourcesDegraded={["finance", "home"]}
-        history={[]}
         historyLoading={false}
         historyError={false}
       />,
@@ -172,7 +197,6 @@ describe("ApprovalsVerdictOpener -- degraded-source honesty (bu-jad4j.4)", () =>
         pendingLoading={false}
         pendingError={false}
         pendingSourcesDegraded={["finance"]}
-        history={[]}
         historyLoading={false}
         historyError={false}
         historySourcesDegraded={["finance", "home"]}
@@ -193,7 +217,6 @@ describe("ApprovalsVerdictOpener -- degraded-source honesty (bu-jad4j.4)", () =>
         pendingLoading={false}
         pendingError={false}
         pendingSourcesDegraded={[]}
-        history={[]}
         historyLoading={false}
         historyError={false}
         historySourcesDegraded={[]}
@@ -213,7 +236,6 @@ describe("ApprovalsVerdictOpener -- degraded-source honesty (bu-jad4j.4)", () =>
         pendingLoading={false}
         pendingError={false}
         pendingSourcesDegraded={["home"]}
-        history={[]}
         historyLoading={false}
         historyError={false}
       />,
@@ -232,7 +254,6 @@ describe("ApprovalsVerdictOpener -- isError-suppression contract", () => {
         pending={[]}
         pendingLoading
         pendingError={false}
-        history={[]}
         historyLoading={false}
         historyError={false}
       />,
@@ -246,7 +267,6 @@ describe("ApprovalsVerdictOpener -- isError-suppression contract", () => {
         pending={[]}
         pendingLoading={false}
         pendingError
-        history={[]}
         historyLoading={false}
         historyError={false}
       />,
@@ -262,7 +282,6 @@ describe("ApprovalsVerdictOpener -- isError-suppression contract", () => {
         pending={[]}
         pendingLoading={false}
         pendingError={false}
-        history={[]}
         historyLoading={false}
         historyError
       />,

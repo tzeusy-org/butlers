@@ -483,6 +483,8 @@ export type {
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
+  ApprovalsFlatListMeta,
+  ApprovalsFlatListResponse,
   ApprovalsListMeta,
   ApprovalsListResponse,
   ApprovalsPolicy,

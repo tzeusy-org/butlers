@@ -279,9 +279,16 @@ def _app_with_one_healthy_one_raising_butler(app, *, healthy_rows=None):
 
     raising_conn = AsyncMock()
     raising_conn.fetch = AsyncMock(side_effect=RuntimeError("connection reset by peer"))
-    raising_conn.fetchval = AsyncMock(
-        side_effect=lambda *a, **k: True if ("to_regclass" in a[0] or "EXISTS" in a[0]) else 0
-    )
+
+    def raising_fetchval_mock(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        # The flat radar's aggregate is just as essential as its rows. A
+        # failed aggregate contribution must be named, not silently become 0.
+        raise RuntimeError("connection reset by peer")
+
+    raising_conn.fetchval = AsyncMock(side_effect=raising_fetchval_mock)
 
     class _MockAcquire:
         def __init__(self, conn):
@@ -327,6 +334,7 @@ async def test_list_approvals_flat_reports_sources_degraded_on_pool_failure(app)
     body = resp.json()
     assert len(body["data"]) == 1
     assert body["meta"]["sources_degraded"] == ["home"]
+    assert body["meta"]["stalled_count"] == 0
 
 
 async def test_list_actions_reports_sources_degraded_on_pool_failure(app):
@@ -373,6 +381,96 @@ async def test_list_approvals_flat_no_sources_degraded_when_all_pools_healthy(ap
     assert resp.status_code == 200
     body = resp.json()
     assert "sources_degraded" not in body["meta"]
+
+
+async def test_list_approvals_flat_stalled_filter_and_count_are_whole_population(app):
+    """The stalled radar is an execution-state predicate, not a history window.
+
+    ``limit=1`` deliberately returns one stalled row while the metadata must
+    still include both stalled actions across the eligible pool. A completed
+    action that retains an ``approved`` status must not leak into the filter.
+    """
+    stalled_one = _make_action(tool_name="stalled-one", status="approved")
+    stalled_two = _make_action(tool_name="stalled-two", status="approved")
+    executed = {
+        **_make_action(tool_name="already-ran", status="approved"),
+        "execution_result": {"success": True},
+    }
+    waiting = _make_action(tool_name="still-waiting", status="pending")
+    observed_sql: list[str] = []
+
+    conn = AsyncMock()
+
+    async def fetch_mock(sql, *args):
+        observed_sql.append(sql)
+        if "status = $1" in sql and "execution_result IS NULL" in sql:
+            assert args[0] == "approved"
+            return [stalled_one, stalled_two]
+        if "status = ANY" in sql:
+            assert args[0] == ["pending"]
+            return [waiting]
+        # This branch makes the pre-radar implementation visibly wrong:
+        # `state=stalled` used to fall through to the unfiltered flat list.
+        return [executed, stalled_one, stalled_two, waiting]
+
+    async def fetchval_mock(sql, *args):
+        if "to_regclass" in sql:
+            return True
+        assert "COUNT(*) FROM pending_actions" in sql
+        assert "status = $1" in sql
+        assert "execution_result IS NULL" in sql
+        assert args == ("approved",)
+        return 2
+
+    conn.fetch = AsyncMock(side_effect=fetch_mock)
+    conn.fetchval = AsyncMock(side_effect=fetchval_mock)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *args):
+            pass
+
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_MockAcquire())
+    db_mgr = MagicMock(spec=DatabaseManager)
+    db_mgr.butler_names = ["general"]
+    db_mgr.pool = MagicMock(return_value=pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db_mgr
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        stalled_response = await client.get("/api/approvals?state=stalled&limit=1")
+        waiting_response = await client.get("/api/approvals?state=waiting&limit=1")
+
+    assert stalled_response.status_code == 200, stalled_response.text
+    stalled_body = stalled_response.json()
+    assert [item["tool_name"] for item in stalled_body["data"]] == ["stalled-one"]
+    assert stalled_body["meta"]["stalled_count"] == 2
+
+    # The count is independent of both filter and page size.
+    assert waiting_response.status_code == 200, waiting_response.text
+    waiting_body = waiting_response.json()
+    assert [item["tool_name"] for item in waiting_body["data"]] == ["still-waiting"]
+    assert waiting_body["meta"]["stalled_count"] == 2
+    assert any("status = $1" in sql and "execution_result IS NULL" in sql for sql in observed_sql)
+
+
+async def test_list_approvals_flat_no_eligible_pools_still_reports_zero_stalled_count(app):
+    """Even an empty flat response carries the radar metadata contract."""
+    app, _ = _app_with_mock_db(app, has_approvals_tables=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals")
+
+    assert response.status_code == 200
+    assert response.json() == {"data": [], "meta": {"stalled_count": 0}}
 
 
 # ---------------------------------------------------------------------------

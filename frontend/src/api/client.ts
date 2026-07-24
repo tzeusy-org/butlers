@@ -18,6 +18,7 @@ import type {
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
+  ApprovalsFlatListResponse,
   ApprovalsListResponse,
   ApprovalsPolicy,
   AutonomySuggestion,
@@ -3376,21 +3377,20 @@ export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
 /**
  * Fetch the flat approvals queue.
  *
- * Returns {@link ApprovalsListResponse} so `meta.sources_degraded` — the
- * backend's degraded-envelope flag naming any butler pool dropped from the
- * fan-out — is typed and consumable (the verdict opener qualifies its
- * all-clear and the queue rail shows a named degraded note when it is
- * non-empty; bu-jad4j.4).
+ * Returns {@link ApprovalsFlatListResponse} so the whole-population
+ * `meta.stalled_count` and `meta.sources_degraded` fan-out health are typed
+ * and consumable. A degraded source makes the aggregate partial, so the
+ * verdict must not read it as an all-clear.
  */
 export function getApprovalsFlat(
-  state?: "waiting" | "decided" | "all",
+  state?: "waiting" | "decided" | "stalled" | "all",
   limit?: number,
-): Promise<ApprovalsListResponse> {
+): Promise<ApprovalsFlatListResponse> {
   const qs = new URLSearchParams();
   if (state) qs.set("state", state);
   if (limit != null) qs.set("limit", String(limit));
   const s = qs.toString();
-  return apiFetch<ApprovalsListResponse>(s ? `/approvals?${s}` : "/approvals");
+  return apiFetch<ApprovalsFlatListResponse>(s ? `/approvals?${s}` : "/approvals");
 }
 
 export function getApprovalDetail(actionId: string): Promise<ApiResponse<ApprovalDetail>> {
