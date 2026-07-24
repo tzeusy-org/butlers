@@ -26,7 +26,21 @@ class RoutingEntry(BaseModel):
 
 
 class RegistryEntry(BaseModel):
-    """A butler entry in the switchboard registry."""
+    """A butler entry in the switchboard registry.
+
+    ``eligibility_state`` is the raw stored ``butler_registry`` column --
+    operational info only. It is reconciled lazily on routing calls
+    (``_reconcile_eligibility_state``) and can sit stale forever for a
+    butler nobody has routed to recently. ``derived_eligibility_state`` is
+    the current-liveness read: recomputed at request time from
+    ``last_seen_at`` + ``liveness_ttl_seconds`` (the same formula
+    ``registry.py::_derive_eligibility_state`` uses to reconcile on write),
+    so a butler with a frozen "active" stored label but an expired TTL
+    reads as "stale" here even though the column has not caught up yet
+    (bu-p7dx8; mirrors the connector list's ``liveness`` vs ``state``
+    split from bu-27dxl.6.6). Consumers that need CURRENT liveness should
+    read ``derived_eligibility_state``, not ``eligibility_state``.
+    """
 
     name: str
     endpoint_url: str
@@ -35,6 +49,7 @@ class RegistryEntry(BaseModel):
     capabilities: list = []
     last_seen_at: str | None = None
     eligibility_state: str = "active"
+    derived_eligibility_state: str = "active"
     liveness_ttl_seconds: int = 300
     quarantined_at: str | None = None
     quarantine_reason: str | None = None

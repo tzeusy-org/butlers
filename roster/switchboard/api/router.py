@@ -44,6 +44,9 @@ from butlers.api.oauth_scope_registry import (
 from butlers.config import load_config
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.modules.metrics.prometheus import async_query
+from butlers.tools.switchboard.registry.registry import (
+    _derive_eligibility_state as _derive_butler_eligibility_state,
+)
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -407,7 +410,15 @@ async def list_routing_log(
 async def list_registry(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[RegistryEntry]]:
-    """List all registered butlers from the switchboard registry."""
+    """List all registered butlers from the switchboard registry.
+
+    ``eligibility_state`` on each entry is the raw stored column (reconciled
+    lazily on routing calls -- see ``RegistryEntry`` docstring).
+    ``derived_eligibility_state`` is recomputed here at request time via the
+    same formula the registry's write path uses to reconcile, so a butler
+    nobody has routed to recently reads as stale/quarantined rather than its
+    last stored (possibly frozen) label (bu-p7dx8).
+    """
     pool = _pool(db)
 
     rows = await pool.fetch(
@@ -419,6 +430,7 @@ async def list_registry(
         " ORDER BY name",
     )
 
+    now = datetime.datetime.now(datetime.UTC)
     data: list[RegistryEntry] = []
     for row in rows:
         r = dict(row)
@@ -431,6 +443,7 @@ async def list_registry(
                 capabilities=_normalize_jsonb_string_list(r.get("capabilities")),
                 last_seen_at=str(r["last_seen_at"]) if r.get("last_seen_at") else None,
                 eligibility_state=str(r.get("eligibility_state") or "active"),
+                derived_eligibility_state=_derive_butler_eligibility_state(r, now=now),
                 liveness_ttl_seconds=int(r.get("liveness_ttl_seconds") or 300),
                 quarantined_at=str(r["quarantined_at"]) if r.get("quarantined_at") else None,
                 quarantine_reason=str(r["quarantine_reason"])

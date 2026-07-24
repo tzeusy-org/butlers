@@ -105,6 +105,97 @@ async def test_routing_log_503_when_pool_unavailable(app):
     assert resp.status_code == 503
 
 
+def _registry_row(
+    *,
+    name: str,
+    last_seen_at,
+    eligibility_state: str = "active",
+    quarantined_at=None,
+    liveness_ttl_seconds: int = 300,
+):
+    return {
+        "name": name,
+        "endpoint_url": f"http://localhost:9000/mcp?butler={name}",
+        "description": None,
+        "modules": [],
+        "capabilities": [],
+        "last_seen_at": last_seen_at,
+        "eligibility_state": eligibility_state,
+        "liveness_ttl_seconds": liveness_ttl_seconds,
+        "quarantined_at": quarantined_at,
+        "quarantine_reason": None,
+        "route_contract_min": 1,
+        "route_contract_max": 1,
+        "eligibility_updated_at": None,
+        "registered_at": last_seen_at or datetime.datetime.now(datetime.UTC),
+        "agent_type": "butler",
+    }
+
+
+async def test_registry_list_marks_stale_butler_despite_frozen_active_label(app):
+    """bu-p7dx8: eligibility_state is only reconciled lazily on routing calls,
+    so a butler nobody has routed to recently can keep a frozen 'active' label
+    forever. derived_eligibility_state must recompute freshness independently
+    and read 'stale' here even though the stored column still says 'active'.
+    """
+    long_silent = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
+    row = _make_row(
+        _registry_row(name="silent-butler", last_seen_at=long_silent, eligibility_state="active")
+    )
+    _app_with_mock(app, fetch_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/switchboard/registry")
+
+    assert resp.status_code == 200
+    entry = resp.json()["data"][0]
+    assert entry["eligibility_state"] == "active"  # raw stored label, unchanged
+    assert entry["derived_eligibility_state"] == "stale"  # freshness-derived, current
+
+
+async def test_registry_list_reports_active_for_recently_seen_butler(app):
+    just_now = datetime.datetime.now(datetime.UTC)
+    row = _make_row(
+        _registry_row(name="live-butler", last_seen_at=just_now, eligibility_state="active")
+    )
+    _app_with_mock(app, fetch_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/switchboard/registry")
+
+    assert resp.status_code == 200
+    entry = resp.json()["data"][0]
+    assert entry["eligibility_state"] == "active"
+    assert entry["derived_eligibility_state"] == "active"
+
+
+async def test_registry_list_derives_quarantined_regardless_of_stored_state(app):
+    """An explicit quarantine (quarantined_at set) must derive as quarantined
+    even if the stored eligibility_state column has not caught up."""
+    row = _make_row(
+        _registry_row(
+            name="quarantined-butler",
+            last_seen_at=datetime.datetime.now(datetime.UTC),
+            eligibility_state="active",
+            quarantined_at=datetime.datetime.now(datetime.UTC),
+        )
+    )
+    _app_with_mock(app, fetch_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/switchboard/registry")
+
+    assert resp.status_code == 200
+    entry = resp.json()["data"][0]
+    assert entry["derived_eligibility_state"] == "quarantined"
+
+
 async def test_register_missing_butler_uses_mcp_url(tmp_path):
     module = _get_router_module()
     config_dir = tmp_path / "demo"
