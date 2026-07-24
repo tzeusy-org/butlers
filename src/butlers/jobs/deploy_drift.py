@@ -36,22 +36,33 @@ read *other* butlers' ``alembic_version`` tables at all; (b) this mirrors the
 established precedent in ``butlers.jobs.secrets_lifecycle`` for "a periodic,
 deterministic, zero-LLM check that doesn't belong to any single butler."
 
-Escalation reuses existing primitives, no new table
-----------------------------------------------------
-"First detected" / "already escalated" debounce state is persisted in
-``public.audit_log`` (no new migration) -- the exact pattern
-``secrets_lifecycle.py`` already established for its own state-transition
-debounce. When drift has persisted more than
-:data:`DRIFT_ESCALATION_THRESHOLD_HOURS`, this module escalates to QA by
-writing directly to ``public.healing_attempts`` via the existing
-``core.healing.tracking`` primitives (:func:`create_or_join_attempt` /
-:func:`update_attempt_status`) -- the same table and API the self-healing
-``report_error`` MCP tool and QA patrol dispatch use. The row is created and
-immediately transitioned to the terminal ``unfixable`` status with an
-``error_detail`` carrying a human-action marker (see
-``core.qa.severity.failed_with_human_action`` / ``state_of_case``), which is
-exactly how this codebase already distinguishes "needs a human, not a code
-fix" cases from ones the self-healing dispatcher should attempt a PR against.
+Escalation: durable condition lifecycle, not a one-shot marker
+-----------------------------------------------------------------
+bu-27dxl.6.3 migrated this module off its original one-shot
+``public.audit_log`` "first detected"/"already escalated" debounce (marker
+absence is not durable current-state authority -- a degraded or partial
+comparison had no safe way to distinguish "unknown" from "recovered") onto
+``butlers.core.infra_conditions.reconcile_snapshot`` (bu-27dxl.6.2), the
+shared durable condition ledger and lifecycle service. Every drifted
+``(schema, chain)`` pair is now its own ``deployment_drift`` condition
+episode, identified by that stable pair alone (never the mutable
+``expected_head``/``actual_revision`` values, which stay evidence -- see
+:func:`_drift_fingerprint`). A complete successful comparison resolves any
+active episode absent from the current drifted set; a degraded/failed
+comparison only confirms evidence for what it did see and never resolves by
+omission (AC2 of bu-27dxl.6.3 / the ``infrastructure-reliability`` spec's
+"Episode lifecycle and complete-snapshot resolution").
+
+L1 (the episode's first due escalation) still opens a QA-visible case via the
+existing self-healing case-tracking primitives (:func:`create_or_join_attempt`
+/ :func:`update_attempt_status` against ``public.healing_attempts``) -- the
+same table and API the self-healing ``report_error`` MCP tool and QA patrol
+dispatch use -- created and immediately transitioned to the terminal
+``unfixable`` status with an ``error_detail`` carrying a human-action marker
+(see ``core.qa.severity.failed_with_human_action`` / ``state_of_case``).
+L2 and every subsequent due level (including the seven-day L3 repeat) record
+a distinct re-escalation ``public.audit_log`` marker instead, and deliberately
+do NOT create another ``healing_attempts`` row for the same episode (AC4).
 Nothing polls ``healing_attempts`` for new ``investigating`` rows outside the
 explicit ``dispatch_healing``/QA-dispatch call sites, so writing (and
 immediately closing) a row here never triggers an unwanted healing-agent
@@ -61,11 +72,10 @@ spawn.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -74,6 +84,13 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import discover_butlers
 from butlers.api.routers import audit as audit_router
 from butlers.core.healing.tracking import create_or_join_attempt, update_attempt_status
+from butlers.core.infra_conditions import (
+    ConditionTransition,
+    Observation,
+    compute_fingerprint,
+    get_active_condition,
+    reconcile_snapshot,
+)
 from butlers.migrations import (
     get_all_chains,
     get_chain_head,
@@ -87,12 +104,22 @@ logger = logging.getLogger(__name__)
 # criteria ("/system shows a red clause within an hour of ... drift").
 DEFAULT_DRIFT_CHECK_INTERVAL_S = 3600
 
-# How long drift may persist before this module escalates to QA.
+# How long drift may persist before this module's episode reaches its first
+# (L1) escalation -- the producer-owned "initial grace" the shared lifecycle
+# service requires (it has no global default; see infra_conditions.py).
 DRIFT_ESCALATION_THRESHOLD_HOURS = 24
 
 _FIRST_DETECTED_ACTION = "migration_drift_first_detected"
 _ESCALATED_ACTION = "migration_drift_escalated"
+_REESCALATED_ACTION = "migration_drift_reescalated"
 _DRIFT_ACTOR = "migration_drift_sentinel"
+
+# Canonical infra_conditions ledger source for this producer -- the
+# deployment-and-drift spec's "QA Escalation After Sustained Drift"
+# requirement names this exact string. Distinct from _DRIFT_ACTOR, which is
+# only the public.audit_log actor for this module's own writes.
+_DRIFT_CONDITION_SOURCE = "deployment_drift"
+_DRIFT_IDENTITY_VERSION = 1
 
 
 # ---------------------------------------------------------------------------
@@ -207,20 +234,22 @@ async def compute_drift_report(db: DatabaseManager) -> DriftReport:
         return DriftReport(checked_at=checked_at, drifted=(), check_error=str(exc))
 
 
-def drift_fingerprint(drifted: tuple[ChainDrift, ...]) -> str:
-    """Stable SHA-256 fingerprint for one drift *composition*.
+def _drift_fingerprint(drift: ChainDrift) -> str:
+    """Stable per-``(schema, chain)`` condition fingerprint (Decision #1).
 
-    Changing which schemas/chains are drifted (partial resolution, a new
-    chain drifting) yields a new fingerprint, which resets the "first
-    detected" clock for that new composition -- an accepted simplification: a
-    partially-changing drift episode is treated as a new episode rather than
-    tracked continuously.
+    Deliberately excludes ``expected_head``/``actual_revision`` -- the
+    deployment-and-drift spec's "Mutable drift revisions remain evidence"
+    scenario requires the SAME episode (and escalation clock) to continue as
+    those values change during one ongoing outage, not a fresh episode every
+    time a revision changes. They are still carried as the Observation's
+    evidence/metadata (see :func:`reconcile_drift_conditions`), just never
+    hashed into identity.
     """
-    canonical = "|".join(
-        f"{d.schema}:{d.chain}:{d.expected_head}:{d.actual_revision or ''}"
-        for d in sorted(drifted, key=lambda d: (d.schema, d.chain))
+    return compute_fingerprint(
+        _DRIFT_CONDITION_SOURCE,
+        _DRIFT_IDENTITY_VERSION,
+        {"schema": drift.schema, "chain": drift.chain},
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _summarize(drifted: tuple[ChainDrift, ...]) -> str:
@@ -238,130 +267,185 @@ def _as_aware_utc(value: datetime) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Escalation state (read-only lookups shared by the API endpoint and the loop)
+# Escalation state (read-only lookup shared by the API endpoint and the loop)
 # ---------------------------------------------------------------------------
 
 
 async def get_drift_escalation_state(
-    pool: asyncpg.Pool, fingerprint: str
+    pool: asyncpg.Pool, drifted: tuple[ChainDrift, ...]
 ) -> tuple[datetime | None, bool]:
-    """Return ``(first_detected_at, escalated)`` for one drift fingerprint.
+    """Aggregate ``(first_detected_at, escalated)`` across every currently
+    drifted ``(schema, chain)`` pair's active condition-lifecycle episode.
 
     Read-only -- safe to call from the ``/api/system/drift`` GET handler as
-    well as the escalation loop below. Both markers live in
-    ``public.audit_log``, keyed by ``target=<fingerprint>``.
+    well as the escalation loop below. ``first_detected_at`` is the earliest
+    active episode's detection time across the current drifted set;
+    ``escalated`` is True once ANY of them has moved past ``L0`` -- per the
+    deployment-and-drift spec's ``GET /api/system/drift`` contract, this
+    "SHALL NOT mean a permanent already-escalated latch".
     """
-    first_row = await pool.fetchrow(
-        """
-        SELECT ts FROM public.audit_log
-        WHERE target = $1 AND action = $2
-        ORDER BY ts ASC LIMIT 1
-        """,
-        fingerprint,
-        _FIRST_DETECTED_ACTION,
-    )
-    if first_row is None:
-        return None, False
-
-    escalated_row = await pool.fetchrow(
-        """
-        SELECT 1 FROM public.audit_log
-        WHERE target = $1 AND action = $2
-        LIMIT 1
-        """,
-        fingerprint,
-        _ESCALATED_ACTION,
-    )
-    return _as_aware_utc(first_row["ts"]), escalated_row is not None
-
-
-async def maybe_escalate_drift(pool: asyncpg.Pool, report: DriftReport) -> dict[str, Any]:
-    """Record first-detection and escalate to QA once drift has persisted >24h.
-
-    Idempotent per drift composition: writes the ``migration_drift_first_detected``
-    marker at most once per fingerprint, and the ``migration_drift_escalated``
-    marker (plus the ``public.healing_attempts`` case) at most once per
-    fingerprint. Never raises -- an escalation failure is logged and reported
-    back in the returned summary rather than crashing the sentinel loop.
-    """
-    if not report.is_drifted:
-        return {"escalated": False, "reason": "no_drift"}
-
-    fingerprint = drift_fingerprint(report.drifted)
-    first_detected_at, already_escalated = await get_drift_escalation_state(pool, fingerprint)
-
-    if first_detected_at is None:
-        await audit_router.append(
-            pool,
-            _DRIFT_ACTOR,
-            _FIRST_DETECTED_ACTION,
-            target=fingerprint,
-            note=_summarize(report.drifted),
-            result="detected",
+    first_detected_at: datetime | None = None
+    escalated = False
+    for drift in drifted:
+        condition = await get_active_condition(
+            pool, source=_DRIFT_CONDITION_SOURCE, fingerprint=_drift_fingerprint(drift)
         )
-        return {
-            "escalated": False,
-            "reason": "newly_detected",
-            "first_detected_at": report.checked_at.isoformat(),
-        }
+        if condition is None:
+            continue
+        detected = _as_aware_utc(condition["first_detected_at"])
+        if first_detected_at is None or detected < first_detected_at:
+            first_detected_at = detected
+        if condition["escalation_level"] != "L0":
+            escalated = True
+    return first_detected_at, escalated
 
-    age = report.checked_at - first_detected_at
-    if age < timedelta(hours=DRIFT_ESCALATION_THRESHOLD_HOURS):
-        return {
-            "escalated": False,
-            "reason": "within_threshold",
-            "first_detected_at": first_detected_at.isoformat(),
-        }
 
-    if already_escalated:
-        return {
-            "escalated": False,
-            "reason": "already_escalated",
-            "first_detected_at": first_detected_at.isoformat(),
-        }
+# ---------------------------------------------------------------------------
+# Condition-lifecycle reconciliation (bu-27dxl.6.3)
+# ---------------------------------------------------------------------------
 
+
+async def _escalate_drift_l1(
+    pool: asyncpg.Pool, transition: ConditionTransition, summary: str
+) -> dict[str, Any]:
+    """Open the terminal human-action QA case for one episode's first (L1) due transition."""
     try:
         attempt_id, _is_new = await create_or_join_attempt(
             pool,
-            fingerprint=fingerprint,
+            fingerprint=transition.fingerprint,
             butler_name="switchboard",
             severity=1,  # "high" -- see core.qa.severity.map_severity
             exception_type="MigrationDriftDetected",
             call_site="butlers.jobs.deploy_drift:migration_drift_sentinel",
             session_id=uuid.uuid4(),
-            sanitized_msg=_summarize(report.drifted),
+            sanitized_msg=summary,
         )
         await update_attempt_status(
             pool,
             attempt_id,
             "unfixable",
             error_detail=(
-                "Escalated: human action required — migration drift persisted more than "
-                f"{DRIFT_ESCALATION_THRESHOLD_HOURS}h without resolution. "
-                f"{_summarize(report.drifted)}"
+                "Escalated: human action required — migration drift persisted past its "
+                f"initial {DRIFT_ESCALATION_THRESHOLD_HOURS}h grace period. {summary}"
             ),
         )
         await audit_router.append(
             pool,
             _DRIFT_ACTOR,
             _ESCALATED_ACTION,
-            target=fingerprint,
+            target=transition.fingerprint,
             note=str(attempt_id),
             result="escalated",
         )
     except Exception:
         logger.exception("migration drift sentinel: QA escalation failed")
         return {
+            "fingerprint": transition.fingerprint,
+            "transition": transition.transition,
             "escalated": False,
             "reason": "escalation_failed",
-            "first_detected_at": first_detected_at.isoformat(),
         }
-
     return {
+        "fingerprint": transition.fingerprint,
+        "transition": transition.transition,
         "escalated": True,
         "healing_attempt_id": str(attempt_id),
-        "first_detected_at": first_detected_at.isoformat(),
     }
+
+
+async def _apply_drift_transition(
+    pool: asyncpg.Pool, transition: ConditionTransition, drift: ChainDrift | None
+) -> dict[str, Any]:
+    """Apply one episode's producer-owned audit side effect for a lifecycle transition.
+
+    ``opened``/``reopened`` record first-detection evidence (preserving the
+    direct-audit-result attribution bu-27dxl.3.2 / PR #3516 established). The
+    episode's first due transition (``L1``) opens the terminal human-action QA
+    case exactly once; every later due transition (``L2``, ``L3``, and the
+    seven-day ``L3`` repeat) records a distinct re-escalation marker WITHOUT
+    creating another healing attempt (AC4). Ordinary confirmations and
+    resolutions have no side effect of their own here -- the ledger row is
+    already the durable evidence for those.
+    """
+    summary = _summarize((drift,)) if drift is not None else transition.fingerprint
+
+    if transition.transition in ("opened", "reopened"):
+        await audit_router.append(
+            pool,
+            _DRIFT_ACTOR,
+            _FIRST_DETECTED_ACTION,
+            target=transition.fingerprint,
+            note=summary,
+            result="detected",
+        )
+        return {"fingerprint": transition.fingerprint, "transition": transition.transition}
+
+    if transition.transition == "escalation_due" and transition.escalation_level == "L1":
+        return await _escalate_drift_l1(pool, transition, summary)
+
+    if transition.transition == "escalation_due":
+        await audit_router.append(
+            pool,
+            _DRIFT_ACTOR,
+            _REESCALATED_ACTION,
+            target=transition.fingerprint,
+            note=f"{transition.escalation_level}: {summary}",
+            result="reescalated",
+        )
+        return {
+            "fingerprint": transition.fingerprint,
+            "transition": transition.transition,
+            "escalation_level": transition.escalation_level,
+        }
+
+    return {"fingerprint": transition.fingerprint, "transition": transition.transition}
+
+
+async def reconcile_drift_conditions(
+    pool: asyncpg.Pool, report: DriftReport
+) -> list[dict[str, Any]]:
+    """Reconcile this tick's drift report against the shared condition lifecycle.
+
+    One :class:`~butlers.core.infra_conditions.Observation` per drifted
+    ``(schema, chain)`` pair. A complete successful comparison
+    (``report.is_available``) resolves any active drift condition absent from
+    this tick's drifted set (AC1/AC3, per ``reconcile_snapshot``'s
+    ``snapshot_complete``); a degraded/failed comparison only confirms
+    evidence for what it did observe and never resolves by omission (AC2).
+    ``compute_drift_report`` is already all-or-nothing (any schema-read
+    failure aborts the whole comparison and sets ``check_error``), so
+    ``snapshot_complete`` maps directly onto ``report.is_available`` -- there
+    is no partial-fan-out case to fold in here the way calendar has.
+    """
+    by_fingerprint: dict[str, ChainDrift] = {}
+    observations: list[Observation] = []
+    for drift in report.drifted:
+        fp = _drift_fingerprint(drift)
+        by_fingerprint[fp] = drift
+        observations.append(
+            Observation(
+                fingerprint=fp,
+                summary=_summarize((drift,)),
+                metadata={
+                    "schema": drift.schema,
+                    "chain": drift.chain,
+                    "expected_head": drift.expected_head,
+                    "actual_revision": drift.actual_revision,
+                },
+            )
+        )
+
+    transitions = await reconcile_snapshot(
+        pool,
+        source=_DRIFT_CONDITION_SOURCE,
+        observations=observations,
+        snapshot_complete=report.is_available,
+        initial_grace_seconds=DRIFT_ESCALATION_THRESHOLD_HOURS * 3600,
+    )
+    return [
+        await _apply_drift_transition(pool, t, by_fingerprint.get(t.fingerprint))
+        for t in transitions
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -370,24 +454,31 @@ async def maybe_escalate_drift(pool: asyncpg.Pool, report: DriftReport) -> dict[
 
 
 async def run_migration_drift_check(db: DatabaseManager) -> dict[str, Any]:
-    """Run one drift-check tick: compute drift, maybe escalate. Never raises."""
+    """Run one drift-check tick: compare, then reconcile the condition lifecycle. Never raises.
+
+    Reconciliation runs even when nothing is currently drifted -- a complete
+    clean comparison is exactly what resolves a previously active drift
+    condition (AC3); returning early here would leave a recovered chain's
+    episode open forever.
+    """
     report = await compute_drift_report(db)
     if not report.is_available:
         logger.warning("migration drift sentinel: check degraded: %s", report.check_error)
         return {"available": False, "drifted": False}
-    if not report.is_drifted:
-        return {"available": True, "drifted": False}
 
     try:
         pool = db.pool("switchboard")
     except KeyError:
-        logger.warning(
-            "migration drift sentinel: switchboard pool unavailable for escalation check"
-        )
-        return {"available": True, "drifted": True, "escalated": False, "reason": "no_pool"}
+        logger.warning("migration drift sentinel: switchboard pool unavailable for reconciliation")
+        return {
+            "available": True,
+            "drifted": report.is_drifted,
+            "reconciled": False,
+            "reason": "no_pool",
+        }
 
-    escalation = await maybe_escalate_drift(pool, report)
-    return {"available": True, "drifted": True, **escalation}
+    conditions = await reconcile_drift_conditions(pool, report)
+    return {"available": True, "drifted": report.is_drifted, "conditions": conditions}
 
 
 async def run_migration_drift_loop(

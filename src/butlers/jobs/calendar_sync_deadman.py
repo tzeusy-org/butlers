@@ -44,27 +44,38 @@ configures a custom interval, this constant needs to become a per-butler
 lookup (parsing each ``roster/*/butler.toml``, mirroring
 ``butlers.api.deps.discover_butlers``) instead of the flat constant used here.
 
-Escalation, no storm
----------------------
-Follows the exact ``first_detected`` / ``escalated`` ``public.audit_log``
-debounce shape ``butlers.jobs.deploy_drift`` established (itself the same
-"once per state transition" pattern
-``butlers.core.fleet_halt_attention`` / ``butlers.core.model_breaker_attention``
-use for their own owner-facing pushes): the first tick that observes staleness
-only records a marker; escalation to a QA case
-(``public.healing_attempts``, terminal ``unfixable`` with a human-action
-``error_detail`` -- the same "QA discovery" shape ``deploy_drift`` uses) only
-fires once the SAME stale-source composition has persisted past
-:data:`CALENDAR_DEADMAN_ESCALATION_DELAY_S` (one more check tick), and then at
-most once per composition (a resolved-then-different set of stale sources gets
-a fresh fingerprint and its own one-time escalation). A single blip that
-clears before the next tick never reaches QA at all.
+Escalation: durable condition lifecycle, not a one-shot marker
+-----------------------------------------------------------------
+bu-27dxl.6.3 migrated this module off its original one-shot
+``public.audit_log`` "first detected"/"escalated" debounce -- keyed by a
+hash of the whole *composition* of currently-stale sources, so any change to
+that set (one source resolving, a new one going stale) reset the escalation
+clock for every source still stale -- onto
+``butlers.core.infra_conditions.reconcile_snapshot`` (bu-27dxl.6.2), the
+shared durable condition ledger and lifecycle service. Every stale provider
+source is now its own ``calendar_sync_deadman`` condition episode, identified
+by ``(db_butler, source_key)`` alone (never the mutable ``last_synced_at``
+evidence -- see :func:`_condition_fingerprint`), so one provider's outage
+neither masks nor resets another's independently progressing escalation.
+
+A complete successful check (every enabled provider source actually
+observed) resolves any active episode absent from the current stale set; a
+degraded check (the whole fan-out failed) or a partial one (some butler
+schemas' fan-out failed while others succeeded --
+:attr:`CalendarSyncDeadmanReport.failed_butlers`) only confirms evidence for
+what it did observe and never resolves anything by omission (AC2). Escalation
+to a QA case (``public.healing_attempts``, terminal ``unfixable`` with a
+human-action ``error_detail`` -- the same "QA discovery" shape
+``deploy_drift`` uses) fires once per episode at its first (L1) due
+transition, after :data:`CALENDAR_DEADMAN_ESCALATION_DELAY_S` (one more check
+tick) of persistence; L2+ due transitions record a distinct re-escalation
+audit marker without creating another healing attempt (AC4). A single blip
+that clears before the next tick never reaches QA at all.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
@@ -80,6 +91,12 @@ from butlers.api.read_models.calendar_workspace_v1 import (
 )
 from butlers.api.routers import audit as audit_router
 from butlers.core.healing.tracking import create_or_join_attempt, update_attempt_status
+from butlers.core.infra_conditions import (
+    ConditionTransition,
+    Observation,
+    compute_fingerprint,
+    reconcile_snapshot,
+)
 from butlers.modules.calendar import (
     DEFAULT_SYNC_INTERVAL_MINUTES,
     PROJECTION_STALENESS_MULTIPLIER,
@@ -94,15 +111,24 @@ logger = logging.getLogger(__name__)
 # cheap (one cross-schema fan-out query per tick).
 DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S = 1800
 
-# A stale-composition must persist across at least one more check tick before
-# escalating to QA -- absorbs a single-tick fan-out hiccup or a source mid-way
-# through its very first sync without inventing a second, harder-to-reason-
-# about time constant.
+# A condition must persist across at least one more check tick before
+# escalating to QA (the producer-owned L1 grace the shared lifecycle service
+# requires -- it has no global default; see infra_conditions.py) -- absorbs a
+# single-tick fan-out hiccup or a source mid-way through its very first sync
+# without inventing a second, harder-to-reason-about time constant.
 CALENDAR_DEADMAN_ESCALATION_DELAY_S = DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S
 
 _FIRST_DETECTED_ACTION = "calendar_sync_deadman_first_detected"
 _ESCALATED_ACTION = "calendar_sync_deadman_escalated"
+_REESCALATED_ACTION = "calendar_sync_deadman_reescalated"
 _DEADMAN_ACTOR = "calendar_sync_deadman"
+
+# Canonical infra_conditions ledger source for this producer. Distinct from
+# _DEADMAN_ACTOR (which happens to share the same string) in purpose: this is
+# the (source, fingerprint) identity namespace key, _DEADMAN_ACTOR is only
+# the public.audit_log actor for this module's own writes.
+_CALENDAR_CONDITION_SOURCE = "calendar_sync_deadman"
+_CALENDAR_IDENTITY_VERSION = 1
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +155,11 @@ class CalendarSyncDeadmanReport:
     #: Non-None when the check itself failed (fan-out unavailable, etc.) -- a
     #: degraded check, never silently reported as clean.
     check_error: str | None = None
+    #: Butler schemas whose fan-out query failed this tick (a PARTIAL
+    #: failure -- distinct from ``check_error``, a TOTAL failure). Sources
+    #: belonging to these schemas were never observed, so they must not
+    #: factor into resolution-by-omission either -- see ``snapshot_complete``.
+    failed_butlers: tuple[str, ...] = ()
 
     @property
     def is_stale(self) -> bool:
@@ -137,6 +168,18 @@ class CalendarSyncDeadmanReport:
     @property
     def is_available(self) -> bool:
         return self.check_error is None
+
+    @property
+    def snapshot_complete(self) -> bool:
+        """True only when every enabled provider source was actually observed this tick.
+
+        Both a total check failure (``check_error``) and a partial fan-out
+        failure (``failed_butlers`` non-empty) mean some provider sources
+        were never observed -- reconciliation must not resolve any condition
+        by omission when this is False (AC2), even though the sources that
+        WERE observed still get their evidence confirmed.
+        """
+        return self.check_error is None and not self.failed_butlers
 
 
 def _is_sync_disabled(source: CalendarSourceRow) -> bool:
@@ -159,9 +202,11 @@ async def compute_calendar_sync_report(db: DatabaseManager) -> CalendarSyncDeadm
     threshold = timedelta(minutes=DEFAULT_SYNC_INTERVAL_MINUTES * PROJECTION_STALENESS_MULTIPLIER)
 
     try:
-        # This monitoring job inspects per-source sync staleness, not fan-out
-        # transport health, so the degraded-butler list is not consumed here.
-        sources, _failed_butlers = await query_calendar_sources(db)
+        # bu-27dxl.6.3: the degraded-butler list IS now consumed (below, as
+        # CalendarSyncDeadmanReport.failed_butlers) -- lifecycle reconciliation
+        # needs it to know a butler's sources went unobserved this tick, not
+        # just whether the fan-out call raised outright.
+        sources, failed_butlers = await query_calendar_sources(db)
     except Exception as exc:
         logger.warning("calendar sync deadman: source query failed", exc_info=True)
         return CalendarSyncDeadmanReport(
@@ -186,22 +231,25 @@ async def compute_calendar_sync_report(db: DatabaseManager) -> CalendarSyncDeadm
             )
         )
 
-    return CalendarSyncDeadmanReport(checked_at=checked_at, stale_sources=tuple(stale))
-
-
-def _fingerprint(stale_sources: tuple[StaleCalendarSource, ...]) -> str:
-    """Stable SHA-256 fingerprint for one stale-source *composition*.
-
-    A changing composition (a source resolves, a new one goes stale) is
-    treated as a new episode with its own first-detected/escalation clock --
-    the same accepted simplification ``butlers.jobs.deploy_drift`` makes for
-    migration-chain drift.
-    """
-    canonical = "|".join(
-        f"{s.db_butler}:{s.source_key}"
-        for s in sorted(stale_sources, key=lambda s: (s.db_butler, s.source_key))
+    return CalendarSyncDeadmanReport(
+        checked_at=checked_at, stale_sources=tuple(stale), failed_butlers=tuple(failed_butlers)
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _condition_fingerprint(stale: StaleCalendarSource) -> str:
+    """Stable per-provider-source condition fingerprint (Decision #1).
+
+    Identity is ``(db_butler, source_key)`` alone -- deliberately excluding
+    the mutable ``last_synced_at`` evidence -- so one provider's outage
+    neither masks nor resets another's independently progressing escalation
+    clock, and a provider's own episode survives its diagnostic text
+    changing tick to tick.
+    """
+    return compute_fingerprint(
+        _CALENDAR_CONDITION_SOURCE,
+        _CALENDAR_IDENTITY_VERSION,
+        {"db_butler": stale.db_butler, "source_key": stale.source_key},
+    )
 
 
 def _summarize(stale_sources: tuple[StaleCalendarSource, ...]) -> str:
@@ -213,102 +261,25 @@ def _summarize(stale_sources: tuple[StaleCalendarSource, ...]) -> str:
     return "; ".join(parts)
 
 
-def _as_aware_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value
-
-
 # ---------------------------------------------------------------------------
-# Escalation
+# Condition-lifecycle reconciliation (bu-27dxl.6.3)
 # ---------------------------------------------------------------------------
 
 
-async def get_deadman_escalation_state(
-    pool: asyncpg.Pool, fingerprint: str
-) -> tuple[datetime | None, bool]:
-    """Return ``(first_detected_at, escalated)`` for one stale-composition fingerprint."""
-    first_row = await pool.fetchrow(
-        """
-        SELECT ts FROM public.audit_log
-        WHERE target = $1 AND action = $2
-        ORDER BY ts ASC LIMIT 1
-        """,
-        fingerprint,
-        _FIRST_DETECTED_ACTION,
-    )
-    if first_row is None:
-        return None, False
-
-    escalated_row = await pool.fetchrow(
-        """
-        SELECT 1 FROM public.audit_log
-        WHERE target = $1 AND action = $2
-        LIMIT 1
-        """,
-        fingerprint,
-        _ESCALATED_ACTION,
-    )
-    return _as_aware_utc(first_row["ts"]), escalated_row is not None
-
-
-async def maybe_escalate_calendar_sync_deadman(
-    pool: asyncpg.Pool, report: CalendarSyncDeadmanReport
+async def _escalate_calendar_l1(
+    pool: asyncpg.Pool, transition: ConditionTransition, summary: str
 ) -> dict[str, Any]:
-    """Record first-detection and escalate to QA once staleness persists past one tick.
-
-    Idempotent per stale-source composition: writes the first-detected marker
-    at most once per fingerprint, and the escalated marker (plus the
-    ``public.healing_attempts`` case) at most once per fingerprint. Never
-    raises -- an escalation failure is logged and reported back in the
-    returned summary rather than crashing the deadman loop.
-    """
-    if not report.is_stale:
-        return {"escalated": False, "reason": "no_stale_sources"}
-
-    fingerprint = _fingerprint(report.stale_sources)
-    first_detected_at, already_escalated = await get_deadman_escalation_state(pool, fingerprint)
-
-    if first_detected_at is None:
-        await audit_router.append(
-            pool,
-            _DEADMAN_ACTOR,
-            _FIRST_DETECTED_ACTION,
-            target=fingerprint,
-            note=_summarize(report.stale_sources),
-            result="detected",
-        )
-        return {
-            "escalated": False,
-            "reason": "newly_detected",
-            "first_detected_at": report.checked_at.isoformat(),
-        }
-
-    age = report.checked_at - first_detected_at
-    if age < timedelta(seconds=CALENDAR_DEADMAN_ESCALATION_DELAY_S):
-        return {
-            "escalated": False,
-            "reason": "within_grace",
-            "first_detected_at": first_detected_at.isoformat(),
-        }
-
-    if already_escalated:
-        return {
-            "escalated": False,
-            "reason": "already_escalated",
-            "first_detected_at": first_detected_at.isoformat(),
-        }
-
+    """Open the terminal human-action QA case for one episode's first (L1) due transition."""
     try:
         attempt_id, _is_new = await create_or_join_attempt(
             pool,
-            fingerprint=fingerprint,
+            fingerprint=transition.fingerprint,
             butler_name="switchboard",
             severity=1,  # "high" -- see core.qa.severity.map_severity
             exception_type="CalendarSyncDeadman",
             call_site="butlers.jobs.calendar_sync_deadman:calendar_sync_deadman",
             session_id=uuid.uuid4(),
-            sanitized_msg=_summarize(report.stale_sources),
+            sanitized_msg=summary,
         )
         await update_attempt_status(
             pool,
@@ -317,30 +288,123 @@ async def maybe_escalate_calendar_sync_deadman(
             error_detail=(
                 "Escalated: human action required — calendar provider sync has not "
                 f"stamped a cursor within {PROJECTION_STALENESS_MULTIPLIER}x the poll "
-                f"interval, persisting past a second check. {_summarize(report.stale_sources)}"
+                f"interval, persisting past its initial grace period. {summary}"
             ),
         )
         await audit_router.append(
             pool,
             _DEADMAN_ACTOR,
             _ESCALATED_ACTION,
-            target=fingerprint,
+            target=transition.fingerprint,
             note=str(attempt_id),
             result="escalated",
         )
     except Exception:
         logger.exception("calendar sync deadman: QA escalation failed")
         return {
+            "fingerprint": transition.fingerprint,
+            "transition": transition.transition,
             "escalated": False,
             "reason": "escalation_failed",
-            "first_detected_at": first_detected_at.isoformat(),
         }
-
     return {
+        "fingerprint": transition.fingerprint,
+        "transition": transition.transition,
         "escalated": True,
         "healing_attempt_id": str(attempt_id),
-        "first_detected_at": first_detected_at.isoformat(),
     }
+
+
+async def _apply_calendar_transition(
+    pool: asyncpg.Pool, transition: ConditionTransition, stale: StaleCalendarSource | None
+) -> dict[str, Any]:
+    """Apply one episode's producer-owned audit side effect for a lifecycle transition.
+
+    ``opened``/``reopened`` record first-detection evidence (preserving the
+    direct-audit-result attribution bu-27dxl.3.2 / PR #3516 established). The
+    episode's first due transition (``L1``) opens the terminal human-action QA
+    case exactly once; every later due transition (``L2``, ``L3``, and the
+    seven-day ``L3`` repeat) records a distinct re-escalation marker WITHOUT
+    creating another healing attempt (AC4). Ordinary confirmations and
+    resolutions have no side effect of their own here -- the ledger row is
+    already the durable evidence for those.
+    """
+    summary = _summarize((stale,)) if stale is not None else transition.fingerprint
+
+    if transition.transition in ("opened", "reopened"):
+        await audit_router.append(
+            pool,
+            _DEADMAN_ACTOR,
+            _FIRST_DETECTED_ACTION,
+            target=transition.fingerprint,
+            note=summary,
+            result="detected",
+        )
+        return {"fingerprint": transition.fingerprint, "transition": transition.transition}
+
+    if transition.transition == "escalation_due" and transition.escalation_level == "L1":
+        return await _escalate_calendar_l1(pool, transition, summary)
+
+    if transition.transition == "escalation_due":
+        await audit_router.append(
+            pool,
+            _DEADMAN_ACTOR,
+            _REESCALATED_ACTION,
+            target=transition.fingerprint,
+            note=f"{transition.escalation_level}: {summary}",
+            result="reescalated",
+        )
+        return {
+            "fingerprint": transition.fingerprint,
+            "transition": transition.transition,
+            "escalation_level": transition.escalation_level,
+        }
+
+    return {"fingerprint": transition.fingerprint, "transition": transition.transition}
+
+
+async def reconcile_calendar_conditions(
+    pool: asyncpg.Pool, report: CalendarSyncDeadmanReport
+) -> list[dict[str, Any]]:
+    """Reconcile this tick's staleness observations against the shared condition lifecycle.
+
+    One :class:`~butlers.core.infra_conditions.Observation` per currently
+    stale provider source. ``report.snapshot_complete`` folds in both a total
+    check failure and a partial fan-out failure: either way, some enabled
+    provider sources were never observed this tick, so resolution-by-omission
+    must not fire (AC2) even though the sources that WERE observed still get
+    their evidence confirmed.
+    """
+    by_fingerprint: dict[str, StaleCalendarSource] = {}
+    observations: list[Observation] = []
+    for stale in report.stale_sources:
+        fp = _condition_fingerprint(stale)
+        by_fingerprint[fp] = stale
+        observations.append(
+            Observation(
+                fingerprint=fp,
+                summary=_summarize((stale,)),
+                metadata={
+                    "db_butler": stale.db_butler,
+                    "source_key": stale.source_key,
+                    "last_synced_at": (
+                        stale.last_synced_at.isoformat() if stale.last_synced_at else None
+                    ),
+                },
+            )
+        )
+
+    transitions = await reconcile_snapshot(
+        pool,
+        source=_CALENDAR_CONDITION_SOURCE,
+        observations=observations,
+        snapshot_complete=report.snapshot_complete,
+        initial_grace_seconds=CALENDAR_DEADMAN_ESCALATION_DELAY_S,
+    )
+    return [
+        await _apply_calendar_transition(pool, t, by_fingerprint.get(t.fingerprint))
+        for t in transitions
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -349,22 +413,31 @@ async def maybe_escalate_calendar_sync_deadman(
 
 
 async def run_calendar_sync_deadman_check(db: DatabaseManager) -> dict[str, Any]:
-    """Run one deadman-check tick: compute staleness, maybe escalate. Never raises."""
+    """Run one deadman-check tick: compute staleness, reconcile the condition lifecycle.
+
+    Never raises. Reconciliation runs even when nothing is currently stale --
+    a complete clean snapshot is exactly what resolves a previously active
+    condition (AC3); returning early here would leave a recovered provider's
+    episode open forever.
+    """
     report = await compute_calendar_sync_report(db)
     if not report.is_available:
         logger.warning("calendar sync deadman: check degraded: %s", report.check_error)
         return {"available": False, "stale": False}
-    if not report.is_stale:
-        return {"available": True, "stale": False}
 
     try:
         pool = db.pool("switchboard")
     except KeyError:
-        logger.warning("calendar sync deadman: switchboard pool unavailable for escalation check")
-        return {"available": True, "stale": True, "escalated": False, "reason": "no_pool"}
+        logger.warning("calendar sync deadman: switchboard pool unavailable for reconciliation")
+        return {
+            "available": True,
+            "stale": report.is_stale,
+            "reconciled": False,
+            "reason": "no_pool",
+        }
 
-    escalation = await maybe_escalate_calendar_sync_deadman(pool, report)
-    return {"available": True, "stale": True, **escalation}
+    conditions = await reconcile_calendar_conditions(pool, report)
+    return {"available": True, "stale": report.is_stale, "conditions": conditions}
 
 
 async def run_calendar_sync_deadman_loop(

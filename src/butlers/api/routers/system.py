@@ -543,7 +543,6 @@ async def get_drift_facts(
 
     from butlers.jobs.deploy_drift import (
         compute_drift_report,
-        drift_fingerprint,
         get_drift_escalation_state,
     )
 
@@ -566,8 +565,7 @@ async def get_drift_facts(
     if report.is_drifted:
         try:
             pool = db.pool("switchboard")
-            fingerprint = drift_fingerprint(report.drifted)
-            first, escalated = await get_drift_escalation_state(pool, fingerprint)
+            first, escalated = await get_drift_escalation_state(pool, report.drifted)
             first_detected_at = first.isoformat() if first is not None else None
         except Exception:
             logger.warning("drift facts: escalation-state lookup failed", exc_info=True)

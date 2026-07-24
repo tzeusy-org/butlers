@@ -1,4 +1,4 @@
-"""Tests for butlers.jobs.deploy_drift — migration-drift sentinel (bu-9r3hd.1).
+"""Tests for butlers.jobs.deploy_drift — migration-drift sentinel (bu-9r3hd.1, bu-27dxl.6.3).
 
 Covers:
 - _expected_chains_by_schema: resolves core + butler + module chains per schema.
@@ -6,20 +6,38 @@ Covers:
   with the correct schema/chain/expected/actual; a check failure (pool
   exception, missing switchboard pool) -> degraded (check_error set), never a
   false all-clear.
-- drift_fingerprint: stable regardless of input ordering.
-- get_drift_escalation_state: reads the first-detected/escalated debounce
-  markers from public.audit_log.
-- maybe_escalate_drift: writes first-detected marker on first sight; does not
-  escalate within the 24h threshold; escalates exactly once past the
-  threshold (creates + immediately closes a public.healing_attempts case);
-  never re-escalates once already escalated.
+- _drift_fingerprint: stable per (schema, chain) regardless of the mutable
+  expected_head/actual_revision evidence; different pairs get different
+  fingerprints.
+- get_drift_escalation_state: aggregates (first_detected_at, escalated)
+  across every currently drifted pair's active condition-lifecycle episode.
+- reconcile_drift_conditions / _apply_drift_transition: opened/reopened write
+  the first-detected marker with result="detected" (preserving the
+  bu-27dxl.3.2 / PR #3516 direct-audit-result attribution); the L1
+  escalation_due transition opens exactly one terminal healing_attempts case
+  and writes the escalated marker with result="escalated"; L2+ due
+  transitions write a distinct reescalated marker and do NOT touch
+  healing_attempts (AC4); confirmed/resolved transitions have no audit side
+  effect of their own.
+- run_migration_drift_check: never raises; reconciles even when nothing is
+  currently drifted (AC3 -- a clean comparison is what resolves a prior
+  episode).
 
-No real database required — pools are faked/mocked.
+No real database required — pools are faked/mocked; the underlying
+reconcile_snapshot lifecycle behavior itself (open/confirm/escalate/resolve,
+concurrency) is covered against real Postgres by
+tests/core/test_infra_conditions.py and
+tests/integration/test_infra_conditions_roundtrip.py (bu-27dxl.6.2). This
+producer's own real-Postgres wiring (race and recovery through the actual
+ledger + healing_attempts + audit_log tables) is covered by
+tests/integration/test_deploy_drift_lifecycle_roundtrip.py; compute_drift_report
+against a real migrated schema remains covered by
+tests/integration/test_deploy_drift_roundtrip.py (unchanged by this child).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -27,15 +45,16 @@ import asyncpg
 import pytest
 
 from butlers.api.deps import ButlerConnectionInfo
+from butlers.core.infra_conditions import ConditionTransition
 from butlers.jobs.deploy_drift import (
     ChainDrift,
     DriftReport,
     _actual_revisions,
+    _drift_fingerprint,
     _expected_chains_by_schema,
     compute_drift_report,
-    drift_fingerprint,
     get_drift_escalation_state,
-    maybe_escalate_drift,
+    reconcile_drift_conditions,
     run_migration_drift_check,
 )
 
@@ -232,34 +251,38 @@ async def test_compute_drift_report_is_degraded_when_a_schema_query_raises(monke
 
 
 # ---------------------------------------------------------------------------
-# drift_fingerprint
+# _drift_fingerprint
 # ---------------------------------------------------------------------------
 
 
-def test_drift_fingerprint_stable_regardless_of_ordering():
+def test_drift_fingerprint_stable_regardless_of_mutable_evidence():
+    """expected_head/actual_revision are evidence, not identity -- the SAME
+    (schema, chain) pair must fingerprint identically even as those mutable
+    values change tick to tick during one ongoing outage."""
+    a = ChainDrift(
+        schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
+    )
+    b = ChainDrift(
+        schema="finance", chain="core", expected_head="core_006", actual_revision="core_004"
+    )
+
+    assert _drift_fingerprint(a) == _drift_fingerprint(b)
+    assert len(_drift_fingerprint(a)) == 64  # sha256 hex digest
+
+
+def test_drift_fingerprint_distinguishes_schema_chain_pairs():
     a = ChainDrift(
         schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
     )
     b = ChainDrift(
         schema="health", chain="core", expected_head="core_005", actual_revision="core_003"
     )
-
-    fp1 = drift_fingerprint((a, b))
-    fp2 = drift_fingerprint((b, a))
-
-    assert fp1 == fp2
-    assert len(fp1) == 64  # sha256 hex digest
-
-
-def test_drift_fingerprint_changes_when_composition_changes():
-    a = ChainDrift(
-        schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
-    )
     c = ChainDrift(
-        schema="finance", chain="core", expected_head="core_005", actual_revision="core_004"
+        schema="finance", chain="finance", expected_head="finance_002", actual_revision=None
     )
 
-    assert drift_fingerprint((a,)) != drift_fingerprint((c,))
+    assert _drift_fingerprint(a) != _drift_fingerprint(b)
+    assert _drift_fingerprint(a) != _drift_fingerprint(c)
 
 
 # ---------------------------------------------------------------------------
@@ -267,118 +290,118 @@ def test_drift_fingerprint_changes_when_composition_changes():
 # ---------------------------------------------------------------------------
 
 
-class _FakeAuditPool:
-    """Fake pool answering the two audit_log lookups get_drift_escalation_state issues."""
+async def test_get_drift_escalation_state_no_active_conditions(monkeypatch):
+    drifted = (
+        ChainDrift(
+            schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
+        ),
+    )
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.get_active_condition", AsyncMock(return_value=None)
+    )
 
-    def __init__(self, *, first_detected_at: datetime | None, escalated: bool):
-        self._first_detected_at = first_detected_at
-        self._escalated = escalated
+    first, escalated = await get_drift_escalation_state(object(), drifted)
 
-    async def fetchrow(self, sql: str, *args):
-        if "migration_drift_first_detected" in args:
-            return {"ts": self._first_detected_at} if self._first_detected_at is not None else None
-        if "migration_drift_escalated" in args:
-            return {"dummy": 1} if self._escalated else None
-        raise AssertionError(f"Unexpected query: {sql} {args}")
-
-
-async def test_get_drift_escalation_state_never_detected():
-    pool = _FakeAuditPool(first_detected_at=None, escalated=False)
-    first, escalated = await get_drift_escalation_state(pool, "fp")
     assert first is None
     assert escalated is False
 
 
-async def test_get_drift_escalation_state_detected_not_escalated():
-    ts = datetime(2026, 7, 10, 0, 0, tzinfo=UTC)
-    pool = _FakeAuditPool(first_detected_at=ts, escalated=False)
-    first, escalated = await get_drift_escalation_state(pool, "fp")
-    assert first == ts
-    assert escalated is False
-
-
-async def test_get_drift_escalation_state_detected_and_escalated():
-    ts = datetime(2026, 7, 10, 0, 0, tzinfo=UTC)
-    pool = _FakeAuditPool(first_detected_at=ts, escalated=True)
-    first, escalated = await get_drift_escalation_state(pool, "fp")
-    assert first == ts
-    assert escalated is True
-
-
-# ---------------------------------------------------------------------------
-# maybe_escalate_drift
-# ---------------------------------------------------------------------------
-
-
-def _report(drifted: tuple[ChainDrift, ...], checked_at: datetime) -> DriftReport:
-    return DriftReport(checked_at=checked_at, drifted=drifted)
-
-
-async def test_maybe_escalate_drift_no_drift_is_a_no_op():
-    result = await maybe_escalate_drift(object(), _report((), datetime.now(UTC)))
-    assert result == {"escalated": False, "reason": "no_drift"}
-
-
-async def test_maybe_escalate_drift_first_sighting_writes_marker_no_escalation(monkeypatch):
-    drift = (
-        ChainDrift(
-            schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
-        ),
+async def test_get_drift_escalation_state_aggregates_earliest_and_any_escalated(monkeypatch):
+    a = ChainDrift(
+        schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
     )
-    now = datetime.now(UTC)
+    b = ChainDrift(
+        schema="health", chain="core", expected_head="core_005", actual_revision="core_003"
+    )
+    earlier = datetime(2026, 7, 1, tzinfo=UTC)
+    later = datetime(2026, 7, 10, tzinfo=UTC)
+
+    async def _fake_get_active_condition(pool, *, source, fingerprint):
+        if fingerprint == _drift_fingerprint(a):
+            return {"first_detected_at": later, "escalation_level": "L0"}
+        if fingerprint == _drift_fingerprint(b):
+            return {"first_detected_at": earlier, "escalation_level": "L2"}
+        raise AssertionError("unexpected fingerprint")
 
     monkeypatch.setattr(
-        "butlers.jobs.deploy_drift.get_drift_escalation_state",
-        AsyncMock(return_value=(None, False)),
+        "butlers.jobs.deploy_drift.get_active_condition", _fake_get_active_condition
+    )
+
+    first, escalated = await get_drift_escalation_state(object(), (a, b))
+
+    assert first == earlier
+    assert escalated is True  # b is past L0 even though a is not
+
+
+# ---------------------------------------------------------------------------
+# reconcile_drift_conditions / _apply_drift_transition
+# ---------------------------------------------------------------------------
+
+
+_DRIFT = (
+    ChainDrift(
+        schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
+    ),
+)
+
+
+def _report(drifted: tuple[ChainDrift, ...] = (), *, check_error: str | None = None) -> DriftReport:
+    return DriftReport(checked_at=datetime.now(UTC), drifted=drifted, check_error=check_error)
+
+
+def _transition(
+    fingerprint: str, transition: str, escalation_level: str = "L0"
+) -> ConditionTransition:
+    return ConditionTransition(
+        condition_id=uuid4(),
+        source="deployment_drift",
+        fingerprint=fingerprint,
+        episode=1,
+        state="open" if transition != "resolved" else "resolved",
+        transition=transition,
+        escalation_level=escalation_level,
+        next_reescalate_at=None,
+    )
+
+
+async def test_reconcile_no_drift_still_calls_lifecycle_for_resolution(monkeypatch):
+    """AC3: a clean comparison must still reconcile (with zero observations)
+    so a previously active episode can resolve by omission."""
+    reconcile_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr("butlers.jobs.deploy_drift.reconcile_snapshot", reconcile_mock)
+
+    result = await reconcile_drift_conditions(object(), _report())
+
+    assert result == []
+    reconcile_mock.assert_awaited_once()
+    assert reconcile_mock.await_args.kwargs["observations"] == []
+    assert reconcile_mock.await_args.kwargs["snapshot_complete"] is True
+
+
+async def test_reconcile_opened_writes_first_detected_marker(monkeypatch):
+    fp = _drift_fingerprint(_DRIFT[0])
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.reconcile_snapshot",
+        AsyncMock(return_value=[_transition(fp, "opened")]),
     )
     append_mock = AsyncMock()
     monkeypatch.setattr("butlers.jobs.deploy_drift.audit_router.append", append_mock)
 
-    result = await maybe_escalate_drift(object(), _report(drift, now))
+    result = await reconcile_drift_conditions(object(), _report(_DRIFT))
 
-    assert result["escalated"] is False
-    assert result["reason"] == "newly_detected"
+    assert result == [{"fingerprint": fp, "transition": "opened"}]
     append_mock.assert_awaited_once()
     assert append_mock.await_args.args[2] == "migration_drift_first_detected"
+    assert append_mock.await_args.kwargs["result"] == "detected"
 
 
-async def test_maybe_escalate_drift_within_threshold_does_not_escalate(monkeypatch):
-    drift = (
-        ChainDrift(
-            schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
-        ),
-    )
-    now = datetime.now(UTC)
-    first_detected = now - timedelta(hours=1)
-
+async def test_reconcile_l1_escalation_due_opens_healing_case(monkeypatch):
+    fp = _drift_fingerprint(_DRIFT[0])
     monkeypatch.setattr(
-        "butlers.jobs.deploy_drift.get_drift_escalation_state",
-        AsyncMock(return_value=(first_detected, False)),
+        "butlers.jobs.deploy_drift.reconcile_snapshot",
+        AsyncMock(return_value=[_transition(fp, "escalation_due", escalation_level="L1")]),
     )
-    create_mock = AsyncMock()
-    monkeypatch.setattr("butlers.jobs.deploy_drift.create_or_join_attempt", create_mock)
-
-    result = await maybe_escalate_drift(object(), _report(drift, now))
-
-    assert result["escalated"] is False
-    assert result["reason"] == "within_threshold"
-    create_mock.assert_not_awaited()
-
-
-async def test_maybe_escalate_drift_past_threshold_escalates_via_healing_attempts(monkeypatch):
-    drift = (
-        ChainDrift(
-            schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
-        ),
-    )
-    now = datetime.now(UTC)
-    first_detected = now - timedelta(hours=25)
     attempt_id = uuid4()
-
-    monkeypatch.setattr(
-        "butlers.jobs.deploy_drift.get_drift_escalation_state",
-        AsyncMock(return_value=(first_detected, False)),
-    )
     create_mock = AsyncMock(return_value=(attempt_id, True))
     update_mock = AsyncMock(return_value=True)
     append_mock = AsyncMock()
@@ -386,69 +409,110 @@ async def test_maybe_escalate_drift_past_threshold_escalates_via_healing_attempt
     monkeypatch.setattr("butlers.jobs.deploy_drift.update_attempt_status", update_mock)
     monkeypatch.setattr("butlers.jobs.deploy_drift.audit_router.append", append_mock)
 
-    result = await maybe_escalate_drift(object(), _report(drift, now))
+    result = await reconcile_drift_conditions(object(), _report(_DRIFT))
 
-    assert result["escalated"] is True
-    assert result["healing_attempt_id"] == str(attempt_id)
+    assert result == [
+        {
+            "fingerprint": fp,
+            "transition": "escalation_due",
+            "escalated": True,
+            "healing_attempt_id": str(attempt_id),
+        }
+    ]
     create_mock.assert_awaited_once()
+    assert create_mock.await_args.kwargs["fingerprint"] == fp
     assert create_mock.await_args.kwargs["exception_type"] == "MigrationDriftDetected"
     update_mock.assert_awaited_once()
     assert update_mock.await_args.args[1] == attempt_id
     assert update_mock.await_args.args[2] == "unfixable"
     assert "human action required" in update_mock.await_args.kwargs["error_detail"]
-    # Escalation marker written, not the first-detected marker (already exists).
     append_mock.assert_awaited_once()
     assert append_mock.await_args.args[2] == "migration_drift_escalated"
+    assert append_mock.await_args.kwargs["result"] == "escalated"
 
 
-async def test_maybe_escalate_drift_does_not_re_escalate(monkeypatch):
-    drift = (
-        ChainDrift(
-            schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
-        ),
-    )
-    now = datetime.now(UTC)
-    first_detected = now - timedelta(hours=48)
-
+async def test_reconcile_l2_reescalation_does_not_open_new_healing_case(monkeypatch):
+    """AC4: L2+ due transitions must write a distinct marker WITHOUT creating
+    another healing_attempts row."""
+    fp = _drift_fingerprint(_DRIFT[0])
     monkeypatch.setattr(
-        "butlers.jobs.deploy_drift.get_drift_escalation_state",
-        AsyncMock(return_value=(first_detected, True)),
+        "butlers.jobs.deploy_drift.reconcile_snapshot",
+        AsyncMock(return_value=[_transition(fp, "escalation_due", escalation_level="L3")]),
     )
     create_mock = AsyncMock()
+    append_mock = AsyncMock()
     monkeypatch.setattr("butlers.jobs.deploy_drift.create_or_join_attempt", create_mock)
+    monkeypatch.setattr("butlers.jobs.deploy_drift.audit_router.append", append_mock)
 
-    result = await maybe_escalate_drift(object(), _report(drift, now))
+    result = await reconcile_drift_conditions(object(), _report(_DRIFT))
 
-    assert result == {
-        "escalated": False,
-        "reason": "already_escalated",
-        "first_detected_at": first_detected.isoformat(),
-    }
+    assert result == [{"fingerprint": fp, "transition": "escalation_due", "escalation_level": "L3"}]
     create_mock.assert_not_awaited()
+    append_mock.assert_awaited_once()
+    assert append_mock.await_args.args[2] == "migration_drift_reescalated"
+    assert append_mock.await_args.kwargs["result"] == "reescalated"
 
 
-async def test_maybe_escalate_drift_reports_degraded_not_crash_on_escalation_failure(monkeypatch):
-    drift = (
-        ChainDrift(
-            schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
-        ),
-    )
-    now = datetime.now(UTC)
-    first_detected = now - timedelta(hours=48)
-
+async def test_reconcile_confirmed_has_no_audit_side_effect(monkeypatch):
+    fp = _drift_fingerprint(_DRIFT[0])
     monkeypatch.setattr(
-        "butlers.jobs.deploy_drift.get_drift_escalation_state",
-        AsyncMock(return_value=(first_detected, False)),
+        "butlers.jobs.deploy_drift.reconcile_snapshot",
+        AsyncMock(return_value=[_transition(fp, "confirmed")]),
+    )
+    append_mock = AsyncMock()
+    monkeypatch.setattr("butlers.jobs.deploy_drift.audit_router.append", append_mock)
+
+    result = await reconcile_drift_conditions(object(), _report(_DRIFT))
+
+    assert result == [{"fingerprint": fp, "transition": "confirmed"}]
+    append_mock.assert_not_awaited()
+
+
+async def test_reconcile_resolved_has_no_audit_side_effect(monkeypatch):
+    fp = "some-retired-fingerprint"
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.reconcile_snapshot",
+        AsyncMock(return_value=[_transition(fp, "resolved")]),
+    )
+    append_mock = AsyncMock()
+    monkeypatch.setattr("butlers.jobs.deploy_drift.audit_router.append", append_mock)
+
+    result = await reconcile_drift_conditions(object(), _report())
+
+    assert result == [{"fingerprint": fp, "transition": "resolved"}]
+    append_mock.assert_not_awaited()
+
+
+async def test_reconcile_escalation_failure_degrades_not_crash(monkeypatch):
+    fp = _drift_fingerprint(_DRIFT[0])
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.reconcile_snapshot",
+        AsyncMock(return_value=[_transition(fp, "escalation_due", escalation_level="L1")]),
     )
     monkeypatch.setattr(
         "butlers.jobs.deploy_drift.create_or_join_attempt",
         AsyncMock(side_effect=RuntimeError("db down")),
     )
 
-    result = await maybe_escalate_drift(object(), _report(drift, now))
+    result = await reconcile_drift_conditions(object(), _report(_DRIFT))
 
-    assert result["escalated"] is False
-    assert result["reason"] == "escalation_failed"
+    assert result == [
+        {
+            "fingerprint": fp,
+            "transition": "escalation_due",
+            "escalated": False,
+            "reason": "escalation_failed",
+        }
+    ]
+
+
+async def test_reconcile_snapshot_complete_follows_report_availability(monkeypatch):
+    reconcile_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr("butlers.jobs.deploy_drift.reconcile_snapshot", reconcile_mock)
+
+    await reconcile_drift_conditions(object(), _report(_DRIFT, check_error="boom"))
+
+    assert reconcile_mock.await_args.kwargs["snapshot_complete"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -456,16 +520,7 @@ async def test_maybe_escalate_drift_reports_degraded_not_crash_on_escalation_fai
 # ---------------------------------------------------------------------------
 
 
-async def test_run_migration_drift_check_available_no_drift(monkeypatch):
-    monkeypatch.setattr(
-        "butlers.jobs.deploy_drift.compute_drift_report",
-        AsyncMock(return_value=DriftReport(checked_at=datetime.now(UTC), drifted=())),
-    )
-    result = await run_migration_drift_check(_FakeDatabaseManager())
-    assert result == {"available": True, "drifted": False}
-
-
-async def test_run_migration_drift_check_degraded_check_never_raises(monkeypatch):
+async def test_run_migration_drift_check_degraded_never_raises(monkeypatch):
     monkeypatch.setattr(
         "butlers.jobs.deploy_drift.compute_drift_report",
         AsyncMock(
@@ -476,22 +531,38 @@ async def test_run_migration_drift_check_degraded_check_never_raises(monkeypatch
     assert result == {"available": False, "drifted": False}
 
 
-async def test_run_migration_drift_check_drifted_runs_escalation(monkeypatch):
-    drift = (
-        ChainDrift(
-            schema="finance", chain="core", expected_head="core_005", actual_revision="core_003"
-        ),
-    )
+async def test_run_migration_drift_check_not_drifted_still_reconciles(monkeypatch):
+    """AC3: even a fully clean tick must reconcile -- it's the only path that
+    resolves a leftover active condition."""
     monkeypatch.setattr(
         "butlers.jobs.deploy_drift.compute_drift_report",
-        AsyncMock(return_value=DriftReport(checked_at=datetime.now(UTC), drifted=drift)),
+        AsyncMock(return_value=DriftReport(checked_at=datetime.now(UTC), drifted=())),
+    )
+    reconcile_mock = AsyncMock(return_value=[{"fingerprint": "fp", "transition": "resolved"}])
+    monkeypatch.setattr("butlers.jobs.deploy_drift.reconcile_drift_conditions", reconcile_mock)
+
+    result = await run_migration_drift_check(_FakeDatabaseManager(pools={"switchboard": object()}))
+
+    assert result == {
+        "available": True,
+        "drifted": False,
+        "conditions": [{"fingerprint": "fp", "transition": "resolved"}],
+    }
+    reconcile_mock.assert_awaited_once()
+
+
+async def test_run_migration_drift_check_drifted_reconciles(monkeypatch):
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.compute_drift_report",
+        AsyncMock(return_value=DriftReport(checked_at=datetime.now(UTC), drifted=_DRIFT)),
     )
     monkeypatch.setattr(
-        "butlers.jobs.deploy_drift.maybe_escalate_drift",
-        AsyncMock(return_value={"escalated": False, "reason": "newly_detected"}),
+        "butlers.jobs.deploy_drift.reconcile_drift_conditions",
+        AsyncMock(return_value=[{"fingerprint": "fp", "transition": "opened"}]),
     )
-    pool = object()
-    result = await run_migration_drift_check(_FakeDatabaseManager(pools={"switchboard": pool}))
-    assert result["available"] is True
-    assert result["drifted"] is True
-    assert result["reason"] == "newly_detected"
+    result = await run_migration_drift_check(_FakeDatabaseManager(pools={"switchboard": object()}))
+    assert result == {
+        "available": True,
+        "drifted": True,
+        "conditions": [{"fingerprint": "fp", "transition": "opened"}],
+    }
