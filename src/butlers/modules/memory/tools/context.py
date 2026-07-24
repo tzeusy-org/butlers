@@ -84,6 +84,7 @@ async def _fetch_recent_episodes(
         FROM episodes
         WHERE butler = $1
           AND tenant_id = $2
+          AND metadata->>'provenance_placeholder' IS DISTINCT FROM 'true'
         ORDER BY created_at DESC
         LIMIT $3
     """

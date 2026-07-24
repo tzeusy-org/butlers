@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core.tool_call_capture import (
+    reset_current_runtime_butler_name,
+    reset_current_runtime_session_id,
+    reset_current_runtime_trigger_source,
+    set_current_runtime_butler_name,
+    set_current_runtime_session_id,
+    set_current_runtime_trigger_source,
+)
 from butlers.modules.memory import storage
+from butlers.modules.memory.tools import context
 
 pytestmark = pytest.mark.unit
 
@@ -18,6 +27,19 @@ class _PoolStub:
     @asynccontextmanager
     async def acquire(self):
         yield self._conn
+
+
+@contextmanager
+def _runtime_write_context(*, butler: str, session_id: uuid.UUID, trigger_source: str):
+    butler_token = set_current_runtime_butler_name(butler)
+    session_token = set_current_runtime_session_id(str(session_id))
+    trigger_token = set_current_runtime_trigger_source(trigger_source)
+    try:
+        yield
+    finally:
+        reset_current_runtime_trigger_source(trigger_token)
+        reset_current_runtime_session_id(session_token)
+        reset_current_runtime_butler_name(butler_token)
 
 
 class TestResolveWriteProvenance:
@@ -53,6 +75,118 @@ class TestResolveWriteProvenance:
         assert isinstance(source_episode_id, uuid.UUID)
         assert conn.execute.await_count == 1
         assert "INSERT INTO episodes" in conn.execute.await_args.args[0]
+
+    async def test_exact_consolidation_trigger_skips_automatic_placeholder(self) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)
+        pool = _PoolStub(conn)
+        engine = MagicMock()
+        engine.embed.return_value = [0.1] * 384
+
+        with _runtime_write_context(
+            butler="health",
+            session_id=uuid.uuid4(),
+            trigger_source="schedule:consolidation",
+        ):
+            source_butler, source_episode_id = await storage.resolve_write_provenance(
+                pool,
+                engine,
+                tenant_id="shared",
+                request_id="req-consolidation",
+            )
+
+        assert source_butler == "health"
+        assert source_episode_id is None
+        conn.execute.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "trigger_source",
+        ["schedule:daily_digest", "schedule:consolidation:retry", "trigger"],
+    )
+    async def test_non_exact_consolidation_triggers_keep_automatic_placeholder(
+        self, trigger_source: str
+    ) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)
+        pool = _PoolStub(conn)
+        engine = MagicMock()
+        engine.embed.return_value = [0.1] * 384
+
+        with _runtime_write_context(
+            butler="health",
+            session_id=uuid.uuid4(),
+            trigger_source=trigger_source,
+        ):
+            source_butler, source_episode_id = await storage.resolve_write_provenance(
+                pool,
+                engine,
+                tenant_id="shared",
+                request_id="req-positive-control",
+            )
+
+        assert source_butler == "health"
+        assert isinstance(source_episode_id, uuid.UUID)
+        assert conn.execute.await_count == 1
+        assert "INSERT INTO episodes" in conn.execute.await_args.args[0]
+
+    async def test_explicit_source_episode_is_preserved_during_consolidation(self) -> None:
+        explicit_episode_id = uuid.uuid4()
+        conn = AsyncMock()
+        pool = _PoolStub(conn)
+        engine = MagicMock()
+
+        with _runtime_write_context(
+            butler="health",
+            session_id=uuid.uuid4(),
+            trigger_source="schedule:consolidation",
+        ):
+            source_butler, source_episode_id = await storage.resolve_write_provenance(
+                pool,
+                engine,
+                source_episode_id=explicit_episode_id,
+                tenant_id="shared",
+                request_id="req-explicit",
+            )
+
+        assert source_butler == "health"
+        assert source_episode_id == explicit_episode_id
+        conn.fetchrow.assert_not_awaited()
+        conn.execute.assert_not_awaited()
+
+    async def test_existing_same_session_episode_is_preserved_during_consolidation(self) -> None:
+        existing_episode_id = uuid.uuid4()
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value={"id": existing_episode_id})
+        pool = _PoolStub(conn)
+        engine = MagicMock()
+
+        with _runtime_write_context(
+            butler="health",
+            session_id=uuid.uuid4(),
+            trigger_source="schedule:consolidation",
+        ):
+            source_butler, source_episode_id = await storage.resolve_write_provenance(
+                pool,
+                engine,
+                tenant_id="shared",
+                request_id="req-existing",
+            )
+
+        assert source_butler == "health"
+        assert source_episode_id == existing_episode_id
+        conn.execute.assert_not_awaited()
+
+
+class TestRecentEpisodeFiltering:
+    async def test_excludes_provenance_placeholders_with_a_null_safe_predicate(self) -> None:
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        result = await context._fetch_recent_episodes(pool, "health", "shared")
+
+        assert result == []
+        query = pool.fetch.await_args.args[0]
+        assert "metadata->>'provenance_placeholder' IS DISTINCT FROM 'true'" in query
 
 
 class TestStoreEpisode:

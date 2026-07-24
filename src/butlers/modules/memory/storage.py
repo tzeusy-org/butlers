@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from butlers.core.tool_call_capture import (
     get_current_runtime_butler_name,
     get_current_runtime_session_id,
+    get_current_runtime_trigger_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -1058,6 +1059,9 @@ async def _resolve_write_provenance_with_conn(
     )
     if existing_episode_id is not None:
         return effective_source_butler, existing_episode_id
+
+    if get_current_runtime_trigger_source() == "schedule:consolidation":
+        return effective_source_butler, None
 
     placeholder_now = now or datetime.now(UTC)
     ttl_days = _DEFAULT_EPISODE_TTL_DAYS

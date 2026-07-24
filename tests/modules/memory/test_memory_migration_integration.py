@@ -22,12 +22,22 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import uuid
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
+from butlers.core.tool_call_capture import (
+    reset_current_runtime_butler_name,
+    reset_current_runtime_session_id,
+    reset_current_runtime_trigger_source,
+    set_current_runtime_butler_name,
+    set_current_runtime_session_id,
+    set_current_runtime_trigger_source,
+)
 from butlers.db import register_jsonb_codec
 from butlers.migrations import run_migrations
 from butlers.testing.migration import create_migration_db, migration_db_name
@@ -103,6 +113,19 @@ def _fake_embedding_engine() -> MagicMock:
     engine.embed.return_value = [0.0] * 384
     engine.model_name = "test-model"
     return engine
+
+
+@contextmanager
+def _runtime_provenance_context(*, butler: str, session_id: uuid.UUID, trigger_source: str):
+    butler_token = set_current_runtime_butler_name(butler)
+    session_token = set_current_runtime_session_id(str(session_id))
+    trigger_token = set_current_runtime_trigger_source(trigger_source)
+    try:
+        yield
+    finally:
+        reset_current_runtime_trigger_source(trigger_token)
+        reset_current_runtime_session_id(session_token)
+        reset_current_runtime_butler_name(butler_token)
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +285,172 @@ def test_fact_write_and_read_round_trip(memory_migrated_db: str) -> None:
     assert result["validity"] == "active"
     assert result["scope"] == "global"
     assert abs(result["importance"] - 7.0) < 1e-6
+
+
+async def _assert_runtime_fact_provenance_guard(db_url: str) -> None:
+    """Exercise runtime fact writes and Recent Episodes against real Postgres."""
+    from butlers.modules.memory.storage import store_episode, store_fact
+    from butlers.modules.memory.tools.context import _fetch_recent_episodes
+    from butlers.modules.memory.tools.writing import memory_store_fact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+        tenant_id = "health"
+        butler = "health"
+        case_prefix = uuid.uuid4().hex
+
+        async def store_runtime_fact(
+            label: str,
+            trigger_source: str,
+            *,
+            session_id: uuid.UUID | None = None,
+            source_episode_id: uuid.UUID | None = None,
+        ) -> tuple[uuid.UUID, uuid.UUID, dict]:
+            runtime_session_id = session_id or uuid.uuid4()
+            with _runtime_provenance_context(
+                butler=butler,
+                session_id=runtime_session_id,
+                trigger_source=trigger_source,
+            ):
+                if source_episode_id is None:
+                    response = await memory_store_fact(
+                        pool,
+                        engine,
+                        subject=f"runtime-{case_prefix}-{label}",
+                        predicate="preference",
+                        content=f"{label} provenance regression",
+                        request_context={"tenant_id": tenant_id},
+                    )
+                    fact_id = uuid.UUID(response["id"])
+                else:
+                    response = await store_fact(
+                        pool,
+                        subject=f"runtime-{case_prefix}-{label}",
+                        predicate="preference",
+                        content=f"{label} provenance regression",
+                        embedding_engine=engine,
+                        tenant_id=tenant_id,
+                        source_episode_id=source_episode_id,
+                    )
+                    fact_id = response["id"]
+            fact = await pool.fetchrow(
+                "SELECT source_butler, source_episode_id FROM facts WHERE id = $1",
+                fact_id,
+            )
+            assert fact is not None
+            return runtime_session_id, fact_id, dict(fact)
+
+        consolidation_session_id, _, consolidation_fact = await store_runtime_fact(
+            "consolidation",
+            "schedule:consolidation",
+        )
+        consolidation_episodes = await pool.fetch(
+            "SELECT id FROM episodes WHERE tenant_id = $1 AND session_id = $2",
+            tenant_id,
+            consolidation_session_id,
+        )
+        assert consolidation_fact == {"source_butler": butler, "source_episode_id": None}
+        assert consolidation_episodes == []
+
+        positive_placeholder_ids: set[uuid.UUID] = set()
+        for label, trigger_source in (
+            ("daily", "schedule:daily_digest"),
+            ("retry", "schedule:consolidation:retry"),
+            ("trigger", "trigger"),
+        ):
+            session_id, _, fact = await store_runtime_fact(label, trigger_source)
+            placeholder = await pool.fetchrow(
+                """
+                SELECT id, metadata
+                FROM episodes
+                WHERE tenant_id = $1 AND session_id = $2
+                """,
+                tenant_id,
+                session_id,
+            )
+            assert placeholder is not None
+            assert placeholder["metadata"] == {"provenance_placeholder": True}
+            assert fact == {"source_butler": butler, "source_episode_id": placeholder["id"]}
+            positive_placeholder_ids.add(placeholder["id"])
+
+        explicit_episode_id = await store_episode(
+            pool,
+            "explicit source episode",
+            butler,
+            engine,
+            tenant_id=tenant_id,
+        )
+        explicit_session_id, _, explicit_fact = await store_runtime_fact(
+            "explicit",
+            "schedule:consolidation",
+            source_episode_id=explicit_episode_id,
+        )
+        explicit_session_episodes = await pool.fetch(
+            "SELECT id FROM episodes WHERE tenant_id = $1 AND session_id = $2",
+            tenant_id,
+            explicit_session_id,
+        )
+        assert explicit_fact == {"source_butler": butler, "source_episode_id": explicit_episode_id}
+        assert explicit_session_episodes == []
+
+        existing_session_id = uuid.uuid4()
+        existing_episode_id = await store_episode(
+            pool,
+            "existing same-session source episode",
+            butler,
+            engine,
+            session_id=existing_session_id,
+            tenant_id=tenant_id,
+        )
+        _, _, existing_fact = await store_runtime_fact(
+            "existing",
+            "schedule:consolidation",
+            session_id=existing_session_id,
+        )
+        existing_session_episodes = await pool.fetch(
+            "SELECT id FROM episodes WHERE tenant_id = $1 AND session_id = $2",
+            tenant_id,
+            existing_session_id,
+        )
+        assert existing_fact == {"source_butler": butler, "source_episode_id": existing_episode_id}
+        assert [row["id"] for row in existing_session_episodes] == [existing_episode_id]
+
+        visible_false_id = await store_episode(
+            pool,
+            "non-placeholder false metadata",
+            butler,
+            engine,
+            metadata={"provenance_placeholder": False},
+            tenant_id=tenant_id,
+        )
+        visible_absent_id = await store_episode(
+            pool,
+            "non-placeholder absent metadata",
+            butler,
+            engine,
+            metadata={},
+            tenant_id=tenant_id,
+        )
+        recent_episode_ids = {
+            row["id"] for row in await _fetch_recent_episodes(pool, butler, tenant_id, limit=20)
+        }
+        assert positive_placeholder_ids.isdisjoint(recent_episode_ids)
+        assert {visible_false_id, visible_absent_id, explicit_episode_id, existing_episode_id} <= (
+            recent_episode_ids
+        )
+    finally:
+        await pool.close()
+
+
+def test_runtime_fact_provenance_guard_and_recent_episode_filter(memory_migrated_db: str) -> None:
+    """Consolidation fact writes must not create recallable placeholder episodes."""
+    asyncio.run(_assert_runtime_fact_provenance_guard(memory_migrated_db))
 
 
 async def _supersede_and_search_catalog(db_url: str) -> dict:
