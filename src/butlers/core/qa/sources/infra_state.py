@@ -54,12 +54,49 @@ Four checks, one discovery source
    genuine failure.
 4. **external-deadman-stale** — reads the last successful ping recorded by
    ``butlers.jobs.external_deadman`` (``EXTERNAL_DEADMAN_URL`` env var). Also
-   a legitimate absence when unconfigured.
+   a legitimate absence when unconfigured -- but see "Condition-ledger
+   reconciliation" below: unconfigured is durably tracked as its own
+   condition even though it never becomes a QA finding.
 
 ``lookback_minutes`` is accepted (protocol conformance) but ignored: every
 check here is a point-in-time liveness/staleness comparison against a fixed
 cadence, not a scan over a rolling log/session window (mirrors
 ``ButlerReportsSource``, which ignores it for the same reason).
+
+Condition-ledger reconciliation (bu-27dxl.6.4)
+------------------------------------------------
+Every ``discover()`` call reconciles this tick's complete set of findings
+into the shared durable condition ledger
+(``butlers.core.infra_conditions.reconcile_snapshot``, source ``"infra_state"``)
+-- the SAME stable per-identity fingerprint each finding already carries
+(``QaFinding.fingerprint``, computed below via ``_compute_hash`` /
+``_sanitize_message`` exactly as before) is reused as the ledger's
+``Observation.fingerprint``, so ``core.qa.dispatch.dispatch_qa_investigation``
+can look an active condition up by ``(source="infra_state", fingerprint)``
+without any extra identity-mapping layer.
+
+Reconciliation only ever runs after ALL four checks complete without
+raising -- ``discover()``'s existing propagate-on-failure behavior (the
+health check, and any per-check query failure) means a degraded tick simply
+never reaches the reconcile call at all, which is this bead's chosen
+"skip reconciliation" half of the anti-fabricated-calm guarantee: a failed
+or partial observation can never resolve an active condition by omission,
+because it is never treated as a complete snapshot in the first place.  A
+reconciliation call that itself fails (a DB write error) is caught and
+logged, never allowed to break this source's primary findings-return
+contract.
+
+An unconfigured external deadman (``EXTERNAL_DEADMAN_URL`` unset) is
+deliberately never a ``QaFinding`` -- there is nothing for an investigation
+agent to fix; acquiring a monitoring account is an operator action outside
+this repo (see ``butlers.jobs.external_deadman``'s module docstring).  It IS
+still folded into the reconciliation snapshot as its own
+``ExternalDeadmanUnconfigured`` condition identity, so it stays durably
+visible in the condition ledger/dashboard without ever triggering LLM
+execution (AC4) -- the same "known, not fresh work" treatment this bead
+gives every other infra_state condition, just skipping the QA
+patrol/triage/dispatch pipeline entirely since there was never a finding to
+dispatch.
 
 Spec reference
 --------------
@@ -72,10 +109,12 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Final
 
 import asyncpg
 
 from butlers.core.healing.fingerprint import _compute_hash, _sanitize_message
+from butlers.core.infra_conditions import Observation, reconcile_snapshot
 from butlers.core.qa.models import QaFinding
 
 logger = logging.getLogger(__name__)
@@ -98,6 +137,17 @@ _HEALTH_CHECK_SQL = (
 #: imported, to avoid a hard import-time dependency on the api.routers module
 #: for a single string constant).
 _BACKUP_DIR_ENV = "BUTLERS_BACKUP_DIR"
+
+#: Env var read by butlers.jobs.external_deadman (kept in sync here rather
+#: than imported, mirroring _BACKUP_DIR_ENV above -- a single string constant
+#: does not justify a hard import-time dependency on that module).
+_DEADMAN_URL_ENV = "EXTERNAL_DEADMAN_URL"
+
+#: infra_conditions ledger identity for this DiscoverySource (bu-27dxl.6.4).
+#: Both ``_reconcile_conditions`` (below) and
+#: ``core.qa.dispatch.dispatch_qa_investigation``'s suppression gate key off
+#: this exact string.
+SOURCE_NAME: Final[str] = "infra_state"
 
 #: A connector/butler with no liveness signal yet gets this much grace from
 #: its registration time before being flagged -- avoids firing on the very
@@ -122,6 +172,29 @@ _SEVERITY_CONNECTOR_OFFLINE = 1
 _SEVERITY_BUTLER_HEARTBEAT_STALE = 1
 _SEVERITY_BACKUP_STALE = 2
 _SEVERITY_DEADMAN_STALE = 1
+
+#: How long a freshly-opened infra_state condition waits before its first
+#: re-escalation (L0 -> L1) in the shared condition ledger. This paces only
+#: the ledger's own dashboard-visible aging/escalation display -- it does
+#: NOT gate QA dispatch suppression, which (core.qa.dispatch Gate 5.5)
+#: suppresses on ANY active condition regardless of escalation level.
+_CONDITION_INITIAL_GRACE_S = 3600.0
+
+#: Identity for the "external deadman is not configured" condition -- a
+#: durable ledger entry, never a QaFinding (see module docstring). Fully
+#: static (no dynamic content), so this fingerprint is precomputed once and
+#: never changes across ticks.
+_DEADMAN_UNCONFIGURED_EXCEPTION_TYPE = "ExternalDeadmanUnconfigured"
+_DEADMAN_UNCONFIGURED_CALL_SITE = "external_deadman:unconfigured"
+_DEADMAN_UNCONFIGURED_SUMMARY = (
+    f"External deadman monitor is not configured ({_DEADMAN_URL_ENV} unset) -- "
+    "no outside party is independently verifying this host's egress path is alive."
+)
+_DEADMAN_UNCONFIGURED_FINGERPRINT = _compute_hash(
+    _DEADMAN_UNCONFIGURED_EXCEPTION_TYPE,
+    _DEADMAN_UNCONFIGURED_CALL_SITE,
+    _sanitize_message(_DEADMAN_UNCONFIGURED_SUMMARY),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +236,7 @@ class InfraStateSource:
     @property
     def name(self) -> str:
         """Source identifier: ``"infra_state"``."""
-        return "infra_state"
+        return SOURCE_NAME
 
     async def discover(self, lookback_minutes: int) -> list[QaFinding]:
         """Check connector/butler/backup/deadman staleness and return findings.
@@ -186,7 +259,75 @@ class InfraStateSource:
         findings.extend(await self._check_butler_heartbeats(now))
         findings.extend(self._check_backup(now))
         findings.extend(await self._check_external_deadman(now))
+
+        # bu-27dxl.6.4: only reached when every check above completed without
+        # raising -- a degraded/partial tick returns (propagates) before this
+        # line, so reconciliation never observes anything but a genuinely
+        # complete snapshot (see module docstring).
+        await self._reconcile_conditions(findings, now)
         return findings
+
+    # ------------------------------------------------------------------
+    # condition-ledger reconciliation (bu-27dxl.6.4)
+    # ------------------------------------------------------------------
+
+    async def _reconcile_conditions(self, findings: list[QaFinding], now: datetime) -> None:
+        """Reconcile this tick's complete snapshot into the durable condition ledger.
+
+        Reuses each ``QaFinding.fingerprint`` unchanged as the ledger's
+        ``Observation.fingerprint`` (see module docstring) so
+        ``core.qa.dispatch.dispatch_qa_investigation`` can match an active
+        condition by the exact same identity a finding already carries.
+
+        An unconfigured external deadman contributes its own static
+        ``ExternalDeadmanUnconfigured`` observation even though it is never a
+        ``QaFinding`` -- durably visible in the ledger without ever entering
+        the QA dispatch pipeline (AC4).
+
+        Never raises: this is a best-effort ledger write layered on top of
+        this source's primary findings-detection contract. A failure here
+        (e.g. a transient DB error) is logged at ERROR and swallowed --
+        ``discover()`` still returns this tick's findings either way, and a
+        stale ledger degrades suppression (an extra investigation may run)
+        rather than ever fabricating a resolution.
+        """
+        observations = [
+            Observation(
+                fingerprint=finding.fingerprint,
+                summary=finding.event_summary,
+                metadata={
+                    "exception_type": finding.exception_type,
+                    "source_butler": finding.source_butler,
+                    "call_site": finding.call_site,
+                },
+            )
+            for finding in findings
+        ]
+        if not os.environ.get(_DEADMAN_URL_ENV, "").strip():
+            observations.append(
+                Observation(
+                    fingerprint=_DEADMAN_UNCONFIGURED_FINGERPRINT,
+                    summary=_DEADMAN_UNCONFIGURED_SUMMARY,
+                    metadata={
+                        "exception_type": _DEADMAN_UNCONFIGURED_EXCEPTION_TYPE,
+                        "call_site": _DEADMAN_UNCONFIGURED_CALL_SITE,
+                    },
+                )
+            )
+
+        try:
+            await reconcile_snapshot(
+                self._pool,
+                source=SOURCE_NAME,
+                observations=observations,
+                snapshot_complete=True,
+                initial_grace_seconds=_CONDITION_INITIAL_GRACE_S,
+            )
+        except Exception:
+            logger.exception(
+                "InfraStateSource: condition-ledger reconciliation failed (source=%s)",
+                SOURCE_NAME,
+            )
 
     # ------------------------------------------------------------------
     # connector-offline

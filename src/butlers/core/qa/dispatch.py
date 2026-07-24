@@ -12,6 +12,8 @@ but with QA-specific wiring:
  - Gate 3: Fingerprint (pre-computed from QaFinding)
  - Gate 4: Fingerprint persistence (skipped — no session_id in QA path)
  - Gate 5: Severity gate
+ - Gate 5.5: Infra condition suppression (bu-27dxl.6.4 — infra_state findings
+   only; suppressed before any healing_attempts row is ever created)
  - Gate 6: Novelty gate (atomic check+insert via create_or_join_attempt)
  - Gate 7: Cooldown gate
  - Gate 8: Concurrency cap
@@ -21,6 +23,19 @@ but with QA-specific wiring:
 Note: triage performs a fast non-atomic dedup check (gates 1-3 above) to
 filter obvious duplicates early.  This dispatcher applies the authoritative
 atomic claim via create_or_join_attempt (gate 6).
+
+Gate 5.5 exists because ``core.qa.sources.infra_state.InfraStateSource``
+reconciles every patrol tick's findings into the durable
+``public.infra_conditions`` ledger (``butlers.core.infra_conditions``,
+bu-27dxl.6.2/.6.4) using the SAME fingerprint a finding already carries. A
+still-active condition means the underlying infra problem is already known
+and aging in that ledger — dispatching yet another investigation agent for
+it would just re-diagnose (and, per the "no-commits-produced" safety net,
+re-conclude unfixable for) a failure that is not a code bug in the first
+place. Gate 5.5 matches on the ledger's ``(source, fingerprint)`` identity
+and, when active, records a decision-only ``healing_dispatch_events`` row
+(no ``healing_attempts`` row, no LLM session, no worktree) instead of
+proceeding to Gate 6.
 
 Investigation agents run in sandboxed worktree environments with only
 GH_TOKEN (from CredentialStore), PATH, and build-tool variables.
@@ -65,6 +80,7 @@ from butlers.core.healing.worktree import (
     create_healing_worktree,
     remove_healing_worktree,
 )
+from butlers.core.infra_conditions import get_active_condition
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model
 from butlers.core.qa.diff import parse_unified_diff
@@ -85,6 +101,7 @@ from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investi
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
 from butlers.core.qa.severity import failed_with_human_action
+from butlers.core.qa.sources.infra_state import SOURCE_NAME as INFRA_STATE_SOURCE_NAME
 from butlers.core.qa.triage import TriagedFinding
 
 logger = logging.getLogger(__name__)
@@ -3340,6 +3357,58 @@ async def dispatch_qa_investigation(
                 fingerprint=fp,
                 reason="severity_above_threshold",
             )
+
+        # ---------------------------------------------------------------
+        # Gate 5.5: Infra condition suppression (bu-27dxl.6.4)
+        # ---------------------------------------------------------------
+        # Only infra_state findings carry a fingerprint that means anything
+        # to the infra_conditions ledger (source="infra_state" reuses the
+        # exact same fingerprint — see InfraStateSource's module docstring);
+        # every other discovery source is untouched by this gate.
+        if finding.source_type == INFRA_STATE_SOURCE_NAME:
+            condition = await get_active_condition(
+                pool, source=INFRA_STATE_SOURCE_NAME, fingerprint=fp
+            )
+            if condition is not None:
+                logger.debug(
+                    "QA dispatch skipped: active infra condition fingerprint=%s "
+                    "(state=%s escalation=%s)",
+                    fp[:12],
+                    condition["state"],
+                    condition["escalation_level"],
+                )
+                reason = (
+                    f"Infrastructure condition already active since "
+                    f"{condition['first_detected_at'].isoformat()} "
+                    f"(state={condition['state']}, escalation={condition['escalation_level']}): "
+                    f"{condition['summary'] or finding.event_summary}"
+                )
+                try:
+                    await update_finding_dedup_reason(pool, finding_id, "infra_condition_open")
+                except Exception as _dr_exc:
+                    logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
+                try:
+                    await create_dispatch_event(
+                        pool,
+                        fingerprint=fp,
+                        butler_name=finding.source_butler,
+                        decision="infra_condition_open",
+                        reason=reason,
+                        attempt_id=None,
+                    )
+                except Exception as _evt_exc:
+                    logger.debug(
+                        "QA dispatch: failed to record infra_condition_open event: %s", _evt_exc
+                    )
+                if metrics is not None:
+                    metrics.record_recovery_dispatch_decision(
+                        workflow="qa", decision="infra_condition_open"
+                    )
+                return QaDispatchResult(
+                    accepted=False,
+                    fingerprint=fp,
+                    reason="infra_condition_open",
+                )
 
         # ---------------------------------------------------------------
         # Gate 6: Novelty gate — atomic check+insert

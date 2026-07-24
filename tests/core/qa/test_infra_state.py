@@ -17,12 +17,16 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
 
-from butlers.core.qa.sources.infra_state import InfraStateSource
+from butlers.core.qa.sources.infra_state import (
+    _DEADMAN_UNCONFIGURED_FINGERPRINT,
+    SOURCE_NAME,
+    InfraStateSource,
+)
 from butlers.core.qa.sources.protocol import DiscoverySource
 
 pytestmark = pytest.mark.unit
@@ -472,3 +476,103 @@ async def test_connector_offline_fingerprint_stable_across_ticks(monkeypatch):
         lookback_minutes=15
     )
     assert findings1[0].fingerprint == findings2[0].fingerprint
+
+
+# ---------------------------------------------------------------------------
+# Condition-ledger reconciliation (bu-27dxl.6.4)
+# ---------------------------------------------------------------------------
+
+
+async def test_reconcile_snapshot_called_with_matching_observations(monkeypatch):
+    """Every returned finding's fingerprint is reused, unchanged, as the ledger observation."""
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.setenv("EXTERNAL_DEADMAN_URL", "https://example.com/ping/abc")
+
+    row = _connector_row(
+        state="error",
+        last_heartbeat_at=datetime.now(UTC) - timedelta(minutes=20),
+    )
+    pool = _FakePool(connector_rows=[row], deadman_ts=datetime.now(UTC) - timedelta(minutes=1))
+
+    with patch(
+        "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
+    ) as mock_reconcile:
+        findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
+
+    assert len(findings) == 1
+    mock_reconcile.assert_awaited_once()
+    call_kwargs = mock_reconcile.call_args.kwargs
+    assert call_kwargs["source"] == SOURCE_NAME == "infra_state"
+    assert call_kwargs["snapshot_complete"] is True
+    observations = call_kwargs["observations"]
+    assert [o.fingerprint for o in observations] == [findings[0].fingerprint]
+
+
+async def test_reconcile_includes_deadman_unconfigured_observation_without_a_finding(monkeypatch):
+    """Unconfigured deadman never becomes a QaFinding but IS folded into the ledger snapshot."""
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+
+    with patch(
+        "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
+    ) as mock_reconcile:
+        findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+
+    assert findings == []  # AC4: never a QA finding / never LLM execution
+    observations = mock_reconcile.call_args.kwargs["observations"]
+    assert [o.fingerprint for o in observations] == [_DEADMAN_UNCONFIGURED_FINGERPRINT]
+
+
+async def test_reconcile_omits_deadman_unconfigured_observation_when_configured(monkeypatch):
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.setenv("EXTERNAL_DEADMAN_URL", "https://example.com/ping/abc")
+
+    pool = _FakePool(deadman_ts=datetime.now(UTC) - timedelta(minutes=1))
+    with patch(
+        "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
+    ) as mock_reconcile:
+        await InfraStateSource(pool=pool).discover(lookback_minutes=15)
+
+    observations = mock_reconcile.call_args.kwargs["observations"]
+    assert _DEADMAN_UNCONFIGURED_FINGERPRINT not in {o.fingerprint for o in observations}
+
+
+async def test_reconciliation_failure_never_breaks_findings_return(monkeypatch, caplog):
+    """A degraded/unreachable ledger must never take down the primary findings contract.
+
+    ``_FakePool`` has no ``.acquire()`` (it is not a real asyncpg.Pool), so
+    ``reconcile_snapshot`` raises internally here -- exercising the same
+    "reconciliation write failed" path a real transient DB error would hit.
+    """
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+
+    row = _connector_row(
+        state="error",
+        last_heartbeat_at=datetime.now(UTC) - timedelta(minutes=20),
+    )
+    with caplog.at_level("ERROR"):
+        findings = await InfraStateSource(pool=_FakePool(connector_rows=[row])).discover(
+            lookback_minutes=15
+        )
+
+    assert len(findings) == 1
+    assert findings[0].exception_type == "ConnectorOffline"
+    assert "condition-ledger reconciliation failed" in caplog.text
+
+
+async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch):
+    """A total health-check failure must never reach reconcile_snapshot (skip, never resolve)."""
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+
+    pool = _FakePool(health_check_error=asyncpg.PostgresError("permission denied"))
+    with (
+        patch(
+            "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
+        ) as mock_reconcile,
+        pytest.raises(asyncpg.PostgresError),
+    ):
+        await InfraStateSource(pool=pool).discover(lookback_minutes=15)
+
+    mock_reconcile.assert_not_awaited()

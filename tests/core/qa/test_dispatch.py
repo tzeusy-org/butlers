@@ -42,11 +42,11 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.triage import TriagedFinding
 
 
-def _make_finding(severity: int = 1) -> QaFinding:
+def _make_finding(severity: int = 1, source_type: str = "log_scanner") -> QaFinding:
     now = datetime.now(UTC)
     return QaFinding(
         fingerprint=uuid.uuid4().hex * 2,
-        source_type="log_scanner",
+        source_type=source_type,
         source_butler="finance",
         severity=severity,
         exception_type="ValueError",
@@ -235,6 +235,122 @@ async def test_dispatch_qa_gate_rejections():
             gh_token=None,
         )
     assert r4.accepted is False and r4.reason == "no_model"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_qa_infra_condition_open_suppresses_before_novelty_gate():
+    """bu-27dxl.6.4: an active infra_state condition suppresses before create_or_join_attempt.
+
+    Gate 5.5 must reject and record a decision-only dispatch event WITHOUT
+    ever reaching Gate 6 (create_or_join_attempt) — asserted directly by
+    patching create_or_join_attempt and checking it was never called, per
+    AC2 ("the gate occurs before create_or_join_attempt").
+    """
+    finding = _make_finding(severity=1, source_type="infra_state")
+    active_condition = {
+        "state": "aging",
+        "escalation_level": "L1",
+        "first_detected_at": datetime.now(UTC) - timedelta(hours=2),
+        "summary": "Connector gmail/owner@example.com is offline",
+    }
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.get_active_condition",
+            new_callable=AsyncMock,
+            return_value=active_condition,
+        ) as mock_get_condition,
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock
+        ) as mock_create_or_join,
+        patch(
+            "butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock
+        ) as mock_dispatch_event,
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dedup_reason", new_callable=AsyncMock
+        ) as mock_dedup,
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(finding),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    assert result.accepted is False
+    assert result.reason == "infra_condition_open"
+    assert result.attempt_id is None
+    mock_get_condition.assert_awaited_once_with(
+        ANY, source="infra_state", fingerprint=finding.fingerprint
+    )
+    mock_create_or_join.assert_not_awaited()
+    mock_dedup.assert_awaited_once_with(ANY, ANY, "infra_condition_open")
+    mock_dispatch_event.assert_awaited_once()
+    _, dispatch_kwargs = mock_dispatch_event.call_args
+    assert dispatch_kwargs["decision"] == "infra_condition_open"
+    assert dispatch_kwargs["attempt_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_qa_infra_condition_absent_proceeds_to_novelty_gate():
+    """No active condition for an infra_state finding → Gate 5.5 is a no-op, Gate 6 still runs."""
+    finding = _make_finding(severity=1, source_type="infra_state")
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.get_active_condition",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(uuid.uuid4(), False),
+        ) as mock_create_or_join,
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(finding),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    mock_create_or_join.assert_awaited_once()
+    assert result.reason == "already_investigating"  # exercised gate 6, not gate 5.5
+
+
+@pytest.mark.asyncio
+async def test_dispatch_qa_non_infra_state_finding_never_checks_condition_ledger():
+    """A non-infra_state finding must never consult the condition ledger at all."""
+    finding = _make_finding(severity=1, source_type="log_scanner")
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.get_active_condition", new_callable=AsyncMock
+        ) as mock_get_condition,
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(uuid.uuid4(), False),
+        ),
+    ):
+        await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(finding),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    mock_get_condition.assert_not_awaited()
 
 
 @pytest.mark.asyncio
