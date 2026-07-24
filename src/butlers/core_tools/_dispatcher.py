@@ -41,7 +41,7 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
       12. Memory-access tool (memory_access) — always registered, degrades gracefully
       13. Conversation-reply tool (conversation_reply) — always registered,
           dashboard chat confirm-loop reply channel
-      14. Delegation tools (delegate_ask, delegate_receive, delegate_answer)
+      14. Delegation tools (delegate_ask, delegate_receive, delegate_answer, delegate_wake)
       15. Shutdown tool (shutdown)
     """
     register_state_tools(ctx, mcp, _core_tool)

@@ -15,12 +15,22 @@ import pytest
 from butlers.core import delegation_ledger
 from butlers.core.delegation_ledger import (
     VALID_STATUSES,
+    VALID_WAKE_STATES,
+    advance_wake_callback_routed,
+    classify_unaccepted_answer,
+    compute_answer_digest,
+    compute_wake_key,
     get_delegation,
     list_delegations,
     mark_dispatch_outcome,
+    mark_wake_callback_failed,
     record_answer,
     record_ask,
+    record_wake_attempt,
+    record_wake_task_conflict,
+    record_wake_task_created,
     resolve_target_via_catalog,
+    verify_wake_callback,
 )
 
 pytestmark = pytest.mark.unit
@@ -159,6 +169,256 @@ class TestRecordAnswer:
         result = await record_answer(pool, uuid.uuid4(), answering_butler="finance", answer="nope")
         assert result is None
 
+    async def test_atomic_write_includes_wake_columns(self):
+        """First-answer acceptance must commit answer_digest/wake_key/wake_state
+        together with the answer itself (D2) -- never as a separate write."""
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"id": "row-1"})
+        ledger_id = uuid.uuid4()
+
+        await record_answer(pool, ledger_id, answering_butler="relationship", answer="Acme Corp.")
+
+        query, *params = pool.fetchrow.await_args.args
+        assert "answer_digest = $4" in query
+        assert "wake_key = $5" in query
+        assert "wake_state = 'callback_pending'" in query
+        expected_digest = compute_answer_digest("Acme Corp.")
+        assert params[3] == expected_digest
+        assert params[4] == compute_wake_key(ledger_id, expected_digest)
+
+
+class TestComputeWakeIdentity:
+    def test_digest_is_deterministic_sha256(self):
+        assert compute_answer_digest("Acme Corp.") == compute_answer_digest("Acme Corp.")
+        assert compute_answer_digest("Acme Corp.") != compute_answer_digest("Acme Corp")
+
+    def test_wake_key_format(self):
+        ledger_id = uuid.uuid4()
+        digest = compute_answer_digest("answer")
+        assert compute_wake_key(ledger_id, digest) == f"delegation-wake:v1:{ledger_id}:{digest}"
+
+
+class TestClassifyUnacceptedAnswer:
+    async def test_not_found(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        result = await classify_unaccepted_answer(
+            pool, uuid.uuid4(), answering_butler="finance", answer="x"
+        )
+        assert result.outcome == "not_found"
+        assert result.row is None
+
+    async def test_not_answered_still_pending(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"status": "pending", "target_butler": "finance"})
+        result = await classify_unaccepted_answer(
+            pool, uuid.uuid4(), answering_butler="finance", answer="x"
+        )
+        assert result.outcome == "not_answered"
+
+    async def test_wrong_target_on_routed_row(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"status": "routed", "target_butler": "health"})
+        result = await classify_unaccepted_answer(
+            pool, uuid.uuid4(), answering_butler="finance", answer="x"
+        )
+        assert result.outcome == "wrong_target"
+
+    async def test_legacy_row_has_no_wake_key(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={"status": "answered", "wake_key": None, "answer": "old answer"}
+        )
+        result = await classify_unaccepted_answer(
+            pool, uuid.uuid4(), answering_butler="finance", answer="old answer"
+        )
+        assert result.outcome == "legacy"
+
+    async def test_duplicate_same_answer_digest(self):
+        digest = compute_answer_digest("Acme Corp.")
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "status": "answered",
+                "wake_key": "delegation-wake:v1:x:" + digest,
+                "answer_digest": digest,
+                "answer": "Acme Corp.",
+            }
+        )
+        result = await classify_unaccepted_answer(
+            pool, uuid.uuid4(), answering_butler="relationship", answer="Acme Corp."
+        )
+        assert result.outcome == "duplicate"
+
+    async def test_changed_answer_digest_mismatch(self):
+        original_digest = compute_answer_digest("Acme Corp.")
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "status": "answered",
+                "wake_key": "delegation-wake:v1:x:" + original_digest,
+                "answer_digest": original_digest,
+                "answer": "Acme Corp.",
+            }
+        )
+        result = await classify_unaccepted_answer(
+            pool, uuid.uuid4(), answering_butler="relationship", answer="Globex Inc."
+        )
+        assert result.outcome == "changed"
+
+
+class TestVerifyWakeCallback:
+    async def test_missing_row_rejected(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        reason = await verify_wake_callback(
+            pool, uuid.uuid4(), "key", source_butler="relationship", target_butler="finance"
+        )
+        assert reason is not None
+        assert "No delegation_ledger row" in reason
+
+    async def test_not_answered_rejected(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"status": "routed"})
+        reason = await verify_wake_callback(
+            pool, uuid.uuid4(), "key", source_butler="relationship", target_butler="finance"
+        )
+        assert reason is not None
+        assert "is not answered" in reason
+
+    async def test_legacy_row_rejected(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"status": "answered", "wake_key": None})
+        reason = await verify_wake_callback(
+            pool, uuid.uuid4(), "key", source_butler="relationship", target_butler="finance"
+        )
+        assert reason is not None
+        assert "legacy row" in reason
+
+    async def test_wrong_source_rejected(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "status": "answered",
+                "wake_key": "key",
+                "answering_butler": "health",
+                "asking_butler": "finance",
+            }
+        )
+        reason = await verify_wake_callback(
+            pool, uuid.uuid4(), "key", source_butler="relationship", target_butler="finance"
+        )
+        assert reason is not None
+        assert "answering_butler" in reason
+
+    async def test_wrong_target_rejected(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "status": "answered",
+                "wake_key": "key",
+                "answering_butler": "relationship",
+                "asking_butler": "finance",
+            }
+        )
+        reason = await verify_wake_callback(
+            pool, uuid.uuid4(), "key", source_butler="relationship", target_butler="health"
+        )
+        assert reason is not None
+        assert "asking_butler" in reason
+
+    async def test_wrong_wake_key_rejected(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "status": "answered",
+                "wake_key": "the-real-key",
+                "answering_butler": "relationship",
+                "asking_butler": "finance",
+            }
+        )
+        reason = await verify_wake_callback(
+            pool, uuid.uuid4(), "wrong-key", source_butler="relationship", target_butler="finance"
+        )
+        assert reason is not None
+        assert "wake key" in reason
+
+    async def test_fully_matching_callback_authorized(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "status": "answered",
+                "wake_key": "the-real-key",
+                "answering_butler": "relationship",
+                "asking_butler": "finance",
+            }
+        )
+        reason = await verify_wake_callback(
+            pool,
+            uuid.uuid4(),
+            "the-real-key",
+            source_butler="relationship",
+            target_butler="finance",
+        )
+        assert reason is None
+
+
+class TestWakeStateWriters:
+    async def test_mark_wake_callback_failed_scoped_to_callback_pending(self):
+        pool = AsyncMock()
+        ledger_id = uuid.uuid4()
+        await mark_wake_callback_failed(pool, ledger_id, "wake-key")
+        query, *params = pool.execute.await_args.args
+        assert "wake_state = 'callback_failed'" in query
+        assert "wake_state = 'callback_pending'" in query
+        assert params == [ledger_id, "wake-key"]
+
+    async def test_advance_wake_callback_routed_scoped_to_callback_pending(self):
+        pool = AsyncMock()
+        ledger_id = uuid.uuid4()
+        await advance_wake_callback_routed(pool, ledger_id, "wake-key")
+        query, *_params = pool.execute.await_args.args
+        assert "wake_state = 'callback_routed'" in query
+        assert "wake_state = 'callback_pending'" in query
+
+    async def test_record_wake_task_created_scoped_to_wake_key(self):
+        pool = AsyncMock()
+        ledger_id = uuid.uuid4()
+        task_id = uuid.uuid4()
+        await record_wake_task_created(
+            pool, ledger_id, "wake-key", task_id=task_id, task_name="delegate-return-x"
+        )
+        query, *params = pool.execute.await_args.args
+        assert "wake_state = 'task_created'" in query
+        assert params == [ledger_id, "wake-key", task_id, "delegate-return-x"]
+
+    async def test_record_wake_task_conflict_never_downgrades_task_created(self):
+        pool = AsyncMock()
+        ledger_id = uuid.uuid4()
+        await record_wake_task_conflict(pool, ledger_id, "wake-key")
+        query, *_params = pool.execute.await_args.args
+        assert "wake_state = 'task_conflict'" in query
+        assert "wake_state != 'task_created'" in query
+
+    async def test_record_wake_attempt_inserts_evidence_row(self):
+        pool = AsyncMock()
+        ledger_id = uuid.uuid4()
+        await record_wake_attempt(
+            pool,
+            ledger_id,
+            stage="callback_dispatch",
+            result="failed",
+            actor_butler="relationship",
+            retryable=True,
+            error_message="boom",
+        )
+        query, *params = pool.execute.await_args.args
+        assert "INSERT INTO public.delegation_wake_attempts" in query
+        assert params[1] == "callback_dispatch"
+        assert params[2] == "failed"
+        assert params[3] is True
+        assert params[6] == "relationship"
+
 
 class TestGetAndListDelegations:
     async def test_get_delegation_returns_none_when_absent(self):
@@ -207,6 +467,16 @@ class TestGetAndListDelegations:
 
     async def test_valid_statuses_matches_migration_check_constraint(self):
         assert VALID_STATUSES == {"pending", "routed", "unroutable", "failed", "answered"}
+
+    async def test_valid_wake_states_matches_migration_check_constraint(self):
+        assert VALID_WAKE_STATES == {
+            "not_applicable",
+            "callback_pending",
+            "callback_failed",
+            "callback_routed",
+            "task_created",
+            "task_conflict",
+        }
 
 
 class TestResolveTargetViaCatalog:

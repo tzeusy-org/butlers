@@ -272,18 +272,174 @@ class TestDelegateAnswer:
         result = await registered["delegate_answer"](ledger_id="x", answer="   ")
         assert result["status"] == "error"
 
-    async def test_guard_failure_returns_error(self, monkeypatch):
+    async def test_guard_failure_not_found_returns_error(self, monkeypatch):
+        from butlers.core.delegation_ledger import UnacceptedAnswerClassification
+
         registered = _register(butler_name="relationship")
         monkeypatch.setattr(_delegation, "record_answer", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            _delegation,
+            "classify_unaccepted_answer",
+            AsyncMock(return_value=UnacceptedAnswerClassification("not_found", None)),
+        )
 
         result = await registered["delegate_answer"](ledger_id="ledger-9", answer="Acme Corp.")
         assert result["status"] == "error"
 
-    async def test_success_returns_ok(self, monkeypatch):
+    async def test_changed_answer_is_integrity_conflict(self, monkeypatch):
+        from butlers.core.delegation_ledger import UnacceptedAnswerClassification
+
+        registered = _register(butler_name="relationship")
+        monkeypatch.setattr(_delegation, "record_answer", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            _delegation,
+            "classify_unaccepted_answer",
+            AsyncMock(
+                return_value=UnacceptedAnswerClassification(
+                    "changed", {"status": "answered", "answer": "Acme Corp."}
+                )
+            ),
+        )
+        dispatch_mock = AsyncMock()
+        monkeypatch.setattr(_delegation, "_dispatch_via_switchboard", dispatch_mock)
+
+        result = await registered["delegate_answer"](ledger_id="ledger-9", answer="Globex Inc.")
+        assert result["status"] == "error"
+        assert "integrity conflict" in result["error"]
+        dispatch_mock.assert_not_awaited()
+
+    async def test_legacy_row_reports_ok_without_callback(self, monkeypatch):
+        from butlers.core.delegation_ledger import UnacceptedAnswerClassification
+
+        registered = _register(butler_name="relationship")
+        monkeypatch.setattr(_delegation, "record_answer", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            _delegation,
+            "classify_unaccepted_answer",
+            AsyncMock(
+                return_value=UnacceptedAnswerClassification(
+                    "legacy", {"status": "answered", "wake_key": None}
+                )
+            ),
+        )
+        dispatch_mock = AsyncMock()
+        monkeypatch.setattr(_delegation, "_dispatch_via_switchboard", dispatch_mock)
+
+        result = await registered["delegate_answer"](ledger_id="ledger-9", answer="Acme Corp.")
+        assert result["status"] == "ok"
+        assert result["wake_state"] == "not_applicable"
+        dispatch_mock.assert_not_awaited()
+
+    async def test_success_attempts_callback_and_reports_ok(self, monkeypatch):
         registered = _register(butler_name="relationship")
         monkeypatch.setattr(
-            _delegation, "record_answer", AsyncMock(return_value={"id": "ledger-10"})
+            _delegation,
+            "record_answer",
+            AsyncMock(
+                return_value={
+                    "id": "ledger-10",
+                    "asking_butler": "finance",
+                    "wake_key": "delegation-wake:v1:ledger-10:abc",
+                }
+            ),
         )
+        dispatch_mock = AsyncMock(return_value=(None, False))
+        monkeypatch.setattr(_delegation, "_dispatch_via_switchboard", dispatch_mock)
+        attempt_mock = AsyncMock()
+        monkeypatch.setattr(_delegation, "record_wake_attempt", attempt_mock)
 
         result = await registered["delegate_answer"](ledger_id="ledger-10", answer="Acme Corp.")
-        assert result == {"status": "ok", "ledger_id": "ledger-10"}
+
+        assert result == {"status": "ok", "ledger_id": "ledger-10", "answer_recorded": True}
+        dispatch_mock.assert_awaited_once()
+        kwargs = dispatch_mock.await_args.kwargs
+        assert kwargs["target_butler"] == "finance"
+        assert kwargs["tool_name"] == "delegate_wake"
+        assert kwargs["args"] == {
+            "ledger_id": "ledger-10",
+            "wake_key": "delegation-wake:v1:ledger-10:abc",
+        }
+        attempt_mock.assert_awaited_once()
+        assert attempt_mock.await_args.kwargs["result"] == "routed"
+
+    async def test_callback_failure_reports_honest_partial_success(self, monkeypatch):
+        registered = _register(butler_name="relationship")
+        monkeypatch.setattr(
+            _delegation,
+            "record_answer",
+            AsyncMock(
+                return_value={
+                    "id": "ledger-11",
+                    "asking_butler": "finance",
+                    "wake_key": "delegation-wake:v1:ledger-11:abc",
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            _delegation,
+            "_dispatch_via_switchboard",
+            AsyncMock(return_value=("Switchboard unreachable: boom", True)),
+        )
+        monkeypatch.setattr(_delegation, "record_wake_attempt", AsyncMock())
+        mark_failed_mock = AsyncMock()
+        monkeypatch.setattr(_delegation, "mark_wake_callback_failed", mark_failed_mock)
+
+        result = await registered["delegate_answer"](ledger_id="ledger-11", answer="Acme Corp.")
+
+        assert result["status"] == "ok"
+        assert result["answer_recorded"] is True
+        assert result["wake_state"] == "callback_failed"
+        assert result["callback_retryable"] is True
+        assert "unreachable" in result["callback_error"]
+        mark_failed_mock.assert_awaited_once()
+
+    async def test_duplicate_same_answer_replays_existing_wake_key(self, monkeypatch):
+        from butlers.core.delegation_ledger import UnacceptedAnswerClassification
+
+        registered = _register(butler_name="relationship")
+        monkeypatch.setattr(_delegation, "record_answer", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            _delegation,
+            "classify_unaccepted_answer",
+            AsyncMock(
+                return_value=UnacceptedAnswerClassification(
+                    "duplicate",
+                    {
+                        "asking_butler": "finance",
+                        "wake_key": "delegation-wake:v1:ledger-12:abc",
+                    },
+                )
+            ),
+        )
+        dispatch_mock = AsyncMock(return_value=(None, False))
+        monkeypatch.setattr(_delegation, "_dispatch_via_switchboard", dispatch_mock)
+        monkeypatch.setattr(_delegation, "record_wake_attempt", AsyncMock())
+
+        result = await registered["delegate_answer"](ledger_id="ledger-12", answer="Acme Corp.")
+
+        assert result["status"] == "ok"
+        dispatch_mock.assert_awaited_once()
+        assert dispatch_mock.await_args.kwargs["args"]["wake_key"] == (
+            "delegation-wake:v1:ledger-12:abc"
+        )
+
+
+class TestDelegateWake:
+    async def test_delegates_to_handle_delegate_wake(self, monkeypatch):
+        registered = _register(butler_name="finance")
+        handle_mock = AsyncMock(
+            return_value={"status": "ok", "ledger_id": "ledger-13", "wake_state": "task_created"}
+        )
+        monkeypatch.setattr(_delegation, "handle_delegate_wake", handle_mock)
+
+        result = await registered["delegate_wake"](
+            ledger_id="ledger-13", wake_key="delegation-wake:v1:ledger-13:abc"
+        )
+
+        assert result["status"] == "ok"
+        handle_mock.assert_awaited_once()
+        assert handle_mock.await_args.kwargs == {
+            "ledger_id": "ledger-13",
+            "wake_key": "delegation-wake:v1:ledger-13:abc",
+            "asking_butler": "finance",
+        }

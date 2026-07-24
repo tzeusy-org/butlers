@@ -1,19 +1,35 @@
-"""Cross-butler delegation tools: delegate_ask, delegate_receive, delegate_answer.
+"""Cross-butler delegation tools: delegate_ask/receive/answer/wake.
 
 bu-gxmfx (2026-07-04 JARVIS pursuit dossier follow-on). See
 ``src/butlers/core/delegation_ledger.py`` for the shared writer/reader and
 design rationale, and ``alembic/versions/core/core_162_delegation_ledger.py``
 for the table.
 
+``delegate_wake`` (bu-27dxl.5.2) implements the durable delegated-answer wake
+path defined by the merged ``activate-delegation-wake-loop`` OpenSpec change:
+on first valid answer, ``delegate_answer`` commits an immutable wake identity
+and attempts a Switchboard-routed callback so the original asker can create
+its own bounded return task. See ``src/butlers/core/delegation_wake.py`` for
+the asker-local task reconciliation ``delegate_wake`` delegates to.
+
 Registered fleet-wide (non-STAFFER only, mirroring ``notify``/``remind`` in
-``_notifications.py``) so any domain butler can both ask a question that
-another butler's domain covers, and receive/answer one routed to it.
+``_notifications.py``) so any domain butler can ask a question that another
+butler's domain covers, receive/answer one routed to it, and receive the
+wake callback for one it asked. Per the merged core-daemon spec ("Delegation
+Core Tool Inventory"), all four tools share the one reserved ``delegation``
+core group -- ``delegate_wake``'s security boundary is NOT the group gate (the
+framework has no LLM-hidden-but-registered tier) but the ledger
+re-verification Switchboard and ``delegate_wake`` itself perform before any
+local write (see ``delegation_ledger.verify_wake_callback`` and
+``delegation_wake.handle_delegate_wake``).
 
 Routing always goes through the Switchboard's existing ``route()`` primitive
 -- via ``daemon.switchboard_client.call_tool("route", ...)`` for every butler
 except Switchboard itself, which calls the underlying ``route()`` function
 directly in-process (it already owns the pool ``route()`` needs), exactly
-mirroring ``notify()``'s client-vs-self-delivery split.
+mirroring ``notify()``'s client-vs-self-delivery split. ``_dispatch_via_switchboard``
+below is the shared helper for that split, used by both ``delegate_ask``'s
+dispatch to a target and ``delegate_answer``'s wake callback to an asker.
 """
 
 from __future__ import annotations
@@ -28,12 +44,16 @@ from pydantic import Field
 
 from butlers.config import ButlerType
 from butlers.core.delegation_ledger import (
+    classify_unaccepted_answer,
     get_delegation,
     mark_dispatch_outcome,
+    mark_wake_callback_failed,
     record_answer,
     record_ask,
+    record_wake_attempt,
     resolve_target_via_catalog,
 )
+from butlers.core.delegation_wake import handle_delegate_wake
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
@@ -52,12 +72,85 @@ def _extract_mcp_error_text(result: Any) -> str:
     return "route tool returned an error"
 
 
+async def _dispatch_via_switchboard(
+    daemon: Any,
+    pool: Any,
+    butler_name: str,
+    *,
+    target_butler: str,
+    tool_name: str,
+    args: dict[str, Any],
+) -> tuple[str | None, bool]:
+    """Dispatch one tool call through the Switchboard's ``route()`` primitive.
+
+    Mirrors ``notify()``'s client-vs-self-delivery split: every butler except
+    Switchboard itself calls ``daemon.switchboard_client.call_tool("route", ...)``;
+    Switchboard calls the underlying ``route()`` function directly in-process
+    (it already owns the pool ``route()`` needs). Shared by ``delegate_ask``'s
+    dispatch to a target and ``delegate_answer``'s wake callback to an asker.
+
+    Returns ``(error_text, retryable)`` -- ``error_text`` is ``None`` on a
+    successful dispatch (a route()-level success; it says nothing about what
+    the target tool itself returned as its logical result).
+    """
+    route_tool_args = {
+        "target_butler": target_butler,
+        "tool_name": tool_name,
+        "args": args,
+        "source_butler": butler_name,
+    }
+
+    client = daemon.switchboard_client
+    if client is not None:
+        try:
+            result = await asyncio.wait_for(
+                client.call_tool("route", route_tool_args),
+                timeout=_ROUTE_TIMEOUT_S,
+            )
+        except TimeoutError:
+            return f"Switchboard route() call timed out after {_ROUTE_TIMEOUT_S}s.", True
+        except (ConnectionError, OSError) as exc:
+            return f"Switchboard unreachable: {exc}", True
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}", False
+
+        if result.is_error:
+            return _extract_mcp_error_text(result), False
+        data = result.data
+        if isinstance(data, dict) and data.get("error"):
+            return str(data["error"]), False
+        return None, False
+
+    if butler_name == "switchboard":
+        from butlers.tools.switchboard.routing.route import route as _switchboard_route
+
+        try:
+            raw = await _switchboard_route(
+                pool,
+                target_butler,
+                tool_name,
+                args,
+                source_butler=butler_name,
+            )
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}", False
+
+        if isinstance(raw, dict) and raw.get("error"):
+            return str(raw["error"]), False
+        return None, False
+
+    return (
+        "Switchboard is not connected. Cannot route the delegated call. "
+        "This is a transient infrastructure issue — retry after a delay."
+    ), True
+
+
 def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
-    """Register delegation-ledger tools: delegate_ask, delegate_receive, delegate_answer.
+    """Register delegation-ledger tools: delegate_ask/receive/answer/wake.
 
     Registered for every non-STAFFER butler (same gate as ``notify``) since any
-    domain butler may ask a cross-butler question or be the resolved target of
-    one.
+    domain butler may ask a cross-butler question, be the resolved target of
+    one, or receive the wake callback for one it asked.
     """
     if ctx.butler_type == ButlerType.STAFFER:
         return
@@ -150,17 +243,6 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             catalog_score=catalog_score,
         )
 
-        route_tool_args = {
-            "target_butler": target_butler,
-            "tool_name": "delegate_receive",
-            "args": {
-                "ledger_id": ledger_id,
-                "question": question,
-                "asking_butler": butler_name,
-            },
-            "source_butler": butler_name,
-        }
-
         async def _fail(error_text: str, *, retryable: bool = False) -> dict:
             try:
                 await mark_dispatch_outcome(pool, ledger_id, status="failed", reason=error_text)
@@ -180,55 +262,18 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                 result["retryable"] = True
             return result
 
-        client = daemon.switchboard_client
-        route_error: str | None = None
-        retryable = False
-
-        if client is not None:
-            try:
-                result = await asyncio.wait_for(
-                    client.call_tool("route", route_tool_args),
-                    timeout=_ROUTE_TIMEOUT_S,
-                )
-            except TimeoutError:
-                route_error = f"Switchboard route() call timed out after {_ROUTE_TIMEOUT_S}s."
-                retryable = True
-            except (ConnectionError, OSError) as exc:
-                route_error = f"Switchboard unreachable: {exc}"
-                retryable = True
-            except Exception as exc:
-                route_error = f"{type(exc).__name__}: {exc}"
-
-            if route_error is None:
-                if result.is_error:
-                    route_error = _extract_mcp_error_text(result)
-                else:
-                    data = result.data
-                    if isinstance(data, dict) and data.get("error"):
-                        route_error = str(data["error"])
-        elif butler_name == "switchboard":
-            from butlers.tools.switchboard.routing.route import route as _switchboard_route
-
-            try:
-                raw = await _switchboard_route(
-                    pool,
-                    target_butler,
-                    "delegate_receive",
-                    route_tool_args["args"],
-                    source_butler=butler_name,
-                )
-            except Exception as exc:
-                route_error = f"{type(exc).__name__}: {exc}"
-
-            if route_error is None and isinstance(raw, dict) and raw.get("error"):
-                route_error = str(raw["error"])
-        else:
-            route_error = (
-                "Switchboard is not connected. Cannot route the delegated question. "
-                "This is a transient infrastructure issue — retry after a delay."
-            )
-            retryable = True
-
+        route_error, retryable = await _dispatch_via_switchboard(
+            daemon,
+            pool,
+            butler_name,
+            target_butler=target_butler,
+            tool_name="delegate_receive",
+            args={
+                "ledger_id": ledger_id,
+                "question": question,
+                "asking_butler": butler_name,
+            },
+        )
         if route_error is not None:
             return await _fail(route_error, retryable=retryable)
 
@@ -338,6 +383,16 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         Only succeeds for a ``'routed'`` row whose ``target_butler`` matches
         this butler — never records an answer against a question asked of a
         different butler.
+
+        On the first valid answer, durably commits an immutable wake identity
+        and attempts a Switchboard-routed callback (``delegate_wake``) so the
+        original asking butler can create its own bounded return task. The
+        answer's durability never depends on that callback: a callback
+        failure is reported as an honest ``wake_state="callback_failed"``
+        partial success, never fabricated as complete. A resubmission of the
+        exact same answer replays the same wake identity (safe to retry); a
+        resubmission with different text is an integrity conflict and
+        schedules nothing.
         """
         if not answer or not answer.strip():
             return {"status": "error", "error": "answer must not be empty."}
@@ -350,14 +405,125 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             return {"status": "error", "error": f"Failed to record answer: {exc}"}
 
         if updated is None:
+            classification = await classify_unaccepted_answer(
+                pool, ledger_id, answering_butler=butler_name, answer=answer
+            )
+            if classification.outcome == "duplicate":
+                # Same text resubmitted — a legitimate replay of the existing
+                # wake identity (D2), not a new answer. Fall through to the
+                # callback-attempt path below using the row already on file.
+                updated = classification.row
+            elif classification.outcome == "legacy":
+                return {
+                    "status": "ok",
+                    "ledger_id": ledger_id,
+                    "answer_recorded": True,
+                    "wake_state": "not_applicable",
+                    "note": (
+                        "This row predates the delegated-answer wake protocol; no callback "
+                        "was attempted."
+                    ),
+                }
+            elif classification.outcome == "changed":
+                return {
+                    "status": "error",
+                    "error": (
+                        f"ledger_id={ledger_id!r} was already answered with different text. "
+                        "The original answer is immutable — resubmitting a changed answer is "
+                        "an integrity conflict, not a retry."
+                    ),
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Could not record an answer for ledger_id={ledger_id!r} on butler "
+                        f"{butler_name!r}: no matching 'routed' row targeted at this butler "
+                        "(already answered, never routed, unroutable/failed, or the id does "
+                        "not exist)."
+                    ),
+                }
+
+        wake_key = updated.get("wake_key")
+        asking_butler = updated.get("asking_butler")
+        if not wake_key or not asking_butler:
+            # Unreachable given record_answer's atomic write, but never
+            # fabricate a callback attempt against an incomplete row.
+            return {"status": "ok", "ledger_id": ledger_id, "answer_recorded": True}
+
+        route_error, retryable = await _dispatch_via_switchboard(
+            daemon,
+            pool,
+            butler_name,
+            target_butler=asking_butler,
+            tool_name="delegate_wake",
+            args={"ledger_id": ledger_id, "wake_key": wake_key},
+        )
+
+        try:
+            await record_wake_attempt(
+                pool,
+                ledger_id,
+                stage="callback_dispatch",
+                result="failed" if route_error is not None else "routed",
+                actor_butler=butler_name,
+                retryable=retryable if route_error is not None else None,
+                error_message=route_error,
+            )
+        except Exception:
+            logger.warning(
+                "delegate_answer: failed to record wake-attempt evidence for ledger_id=%s",
+                ledger_id,
+                exc_info=True,
+            )
+
+        if route_error is not None:
+            try:
+                await mark_wake_callback_failed(pool, ledger_id, wake_key)
+            except Exception:
+                logger.warning(
+                    "delegate_answer: failed to mark wake_state=callback_failed for ledger_id=%s",
+                    ledger_id,
+                    exc_info=True,
+                )
             return {
-                "status": "error",
-                "error": (
-                    f"Could not record an answer for ledger_id={ledger_id!r} on butler "
-                    f"{butler_name!r}: no matching 'routed' row targeted at this butler "
-                    "(already answered, never routed, unroutable/failed, or the id does "
-                    "not exist)."
-                ),
+                "status": "ok",
+                "ledger_id": ledger_id,
+                "answer_recorded": True,
+                "wake_state": "callback_failed",
+                "callback_retryable": retryable,
+                "callback_error": route_error,
             }
 
-        return {"status": "ok", "ledger_id": ledger_id}
+        return {"status": "ok", "ledger_id": ledger_id, "answer_recorded": True}
+
+    @_core_tool("delegation")
+    @tool_span("delegate_wake", butler_name=butler_name)
+    async def delegate_wake(
+        ledger_id: Annotated[
+            str, Field(description="delegation_ledger row id from the delegated-answer callback.")
+        ],
+        wake_key: Annotated[
+            str,
+            Field(description="Immutable wake key from the delegation ledger; must match exactly."),
+        ],
+    ) -> dict:
+        """Server-to-server delegated-answer wake callback.
+
+        Reachable only through the Switchboard's ``route()`` callback path for
+        a row this butler asked and that has already been answered —
+        Switchboard independently re-verifies the ledger row before ever
+        dispatching this call, and this tool repeats every check itself
+        rather than trusting that upstream gate. Never call this directly.
+
+        Independently re-reads the ledger row (never trusts ``ledger_id`` or
+        ``wake_key`` as anything but a lookup/replay key — the question and
+        answer text are treated as untrusted reference data) before creating
+        or reconciling its own bounded one-shot return task
+        (``delegate-return-<ledger_id>``) in this butler's own schema. Never
+        writes to a sibling schema. Duplicate delivery, reconnect, and replay
+        all converge on the same single logical task.
+        """
+        return await handle_delegate_wake(
+            pool, ledger_id=ledger_id, wake_key=wake_key, asking_butler=butler_name
+        )

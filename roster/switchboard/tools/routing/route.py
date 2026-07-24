@@ -153,6 +153,41 @@ def _extract_mcp_error_text(result: Any) -> str:
     return ""
 
 
+async def _verify_delegate_wake_callback(
+    pool: asyncpg.Pool,
+    route_args: dict[str, Any],
+    *,
+    source_butler: str,
+    target_butler: str,
+) -> str | None:
+    """D3 pre-dispatch authorization for a ``delegate_wake`` callback.
+
+    Returns ``None`` when authorized, else a rejection reason. Delegates the
+    actual ledger re-verification to
+    ``butlers.core.delegation_ledger.verify_wake_callback`` (bu-27dxl.5.2) —
+    this wrapper only extracts/validates the two allowed callback fields
+    (D4: ``ledger_id`` and ``wake_key`` are the ONLY callback authority).
+    """
+    from butlers.core.delegation_ledger import verify_wake_callback
+
+    unknown_fields = set(route_args) - {"ledger_id", "wake_key"}
+    if unknown_fields:
+        return (
+            "delegate_wake callback carries unknown field(s) "
+            f"{sorted(unknown_fields)!r} — only ledger_id and wake_key are permitted callback "
+            "authority."
+        )
+    ledger_id = route_args.get("ledger_id")
+    wake_key = route_args.get("wake_key")
+    if not ledger_id or not isinstance(ledger_id, str):
+        return "delegate_wake callback requires a non-empty ledger_id."
+    if not wake_key or not isinstance(wake_key, str):
+        return "delegate_wake callback requires a non-empty wake_key."
+    return await verify_wake_callback(
+        pool, ledger_id, wake_key, source_butler=source_butler, target_butler=target_butler
+    )
+
+
 def _extract_route_context(args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Split route args into transport args and reserved switchboard context."""
     copied_args = dict(args)
@@ -256,6 +291,36 @@ async def route(
             )
 
             t0 = time.monotonic()
+
+            # Delegated-answer wake callback (bu-27dxl.5.2): before any normal
+            # route eligibility resolution, independently re-verify the
+            # delegation_ledger row per D3 of the activate-delegation-wake-loop
+            # OpenSpec change. delegate_wake is a server-to-server return
+            # endpoint — this is the ONLY authorization gate Switchboard
+            # applies before invoking it; it never forwards a callback whose
+            # source/target/wake_key do not match the ledger's authoritative
+            # identities.
+            if tool_name == "delegate_wake":
+                wake_error = await _verify_delegate_wake_callback(
+                    pool, route_args, source_butler=source_butler, target_butler=target_butler
+                )
+                if wake_error is not None:
+                    span.set_status(trace.StatusCode.ERROR, wake_error)
+                    legacy_span.set_status(trace.StatusCode.ERROR, wake_error)
+                    span.set_attribute("routing.outcome", "wake_callback_rejected")
+                    span.set_attribute("error.class", "PermissionError")
+                    telemetry.subroute_result.add(
+                        1,
+                        {
+                            **metric_base_attrs,
+                            "outcome": "wake_callback_rejected",
+                            "error_class": "PermissionError",
+                        },
+                    )
+                    await _log_routing(
+                        pool, source_butler, target_butler, tool_name, False, 0, wake_error
+                    )
+                    return {"error": wake_error}
 
             # Resolve target with registry validation
             target_row, resolve_error = await resolve_routing_target(

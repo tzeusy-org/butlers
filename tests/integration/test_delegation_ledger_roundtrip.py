@@ -81,6 +81,13 @@ async def test_delegation_ledger_table_exists_with_expected_columns(pool: asyncp
         "answered_at",
         "answering_butler",
         "metadata",
+        # bu-27dxl.5.2 (core_181) — delegated-answer wake protocol columns.
+        "answer_digest",
+        "wake_key",
+        "wake_state",
+        "wake_task_id",
+        "wake_task_name",
+        "wake_updated_at",
     }
 
 

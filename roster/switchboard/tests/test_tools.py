@@ -412,6 +412,215 @@ async def test_route_allows_quarantined_target_with_explicit_override(pool):
 
 
 # ------------------------------------------------------------------
+# delegate_wake callback authorization (bu-27dxl.5.2, D3)
+# ------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pool_with_delegation_ledger(pool):
+    """Extend ``pool`` with a minimal ``public.delegation_ledger`` mirror.
+
+    Hand-rolled (not via ``create_migrated_test_db``) to match this file's
+    existing hand-rolled-table convention rather than restructuring its
+    switchboard-schema-scoped fixture; only the columns
+    ``verify_wake_callback`` reads are needed here.
+    """
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS public.delegation_ledger (
+            id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            asked_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+            asking_butler     TEXT NOT NULL,
+            question          TEXT NOT NULL,
+            target_butler     TEXT,
+            catalog_match_id  UUID,
+            catalog_score     DOUBLE PRECISION,
+            status            TEXT NOT NULL DEFAULT 'pending',
+            reason            TEXT,
+            answer            TEXT,
+            answered_at       TIMESTAMPTZ,
+            answering_butler  TEXT,
+            metadata          JSONB,
+            answer_digest     TEXT,
+            wake_key          TEXT,
+            wake_state        TEXT NOT NULL DEFAULT 'not_applicable',
+            wake_task_id      UUID,
+            wake_task_name    TEXT,
+            wake_updated_at   TIMESTAMPTZ
+        )
+    """)
+    return pool
+
+
+async def _insert_answered_ledger_row(
+    pool,
+    *,
+    asking_butler: str,
+    answering_butler: str,
+    wake_key: str = "delegation-wake:v1:ledger-x:digest-x",
+) -> str:
+    return await pool.fetchval(
+        """
+        INSERT INTO public.delegation_ledger
+            (asking_butler, question, target_butler, status, answer, answered_at,
+             answering_butler, answer_digest, wake_key, wake_state)
+        VALUES ($1, 'q', $2, 'answered', 'a', now(), $2, 'digest-x', $3, 'callback_pending')
+        RETURNING id
+        """,
+        asking_butler,
+        answering_butler,
+        wake_key,
+    )
+
+
+async def test_delegate_wake_callback_authorized_reaches_target(pool_with_delegation_ledger):
+    from butlers.tools.switchboard import register_butler, route
+
+    pool = pool_with_delegation_ledger
+    await register_butler(pool, "asker", "http://localhost:9400/sse")
+    ledger_id = await _insert_answered_ledger_row(
+        pool, asking_butler="asker", answering_butler="target"
+    )
+
+    captured: dict = {}
+
+    async def mock_call(endpoint_url, tool_name, args):
+        captured["tool_name"] = tool_name
+        captured["args"] = args
+        return {"status": "ok", "wake_state": "task_created"}
+
+    result = await route(
+        pool,
+        "asker",
+        "delegate_wake",
+        {"ledger_id": str(ledger_id), "wake_key": "delegation-wake:v1:ledger-x:digest-x"},
+        source_butler="target",
+        call_fn=mock_call,
+    )
+
+    assert result == {"result": {"status": "ok", "wake_state": "task_created"}}
+    assert captured["tool_name"] == "delegate_wake"
+
+
+async def test_delegate_wake_callback_wrong_source_rejected_before_dispatch(
+    pool_with_delegation_ledger,
+):
+    from butlers.tools.switchboard import register_butler, route
+
+    pool = pool_with_delegation_ledger
+    await register_butler(pool, "asker2", "http://localhost:9401/sse")
+    ledger_id = await _insert_answered_ledger_row(
+        pool, asking_butler="asker2", answering_butler="target"
+    )
+
+    called = False
+
+    async def mock_call(endpoint_url, tool_name, args):
+        nonlocal called
+        called = True
+        return {"status": "ok"}
+
+    result = await route(
+        pool,
+        "asker2",
+        "delegate_wake",
+        {"ledger_id": str(ledger_id), "wake_key": "delegation-wake:v1:ledger-x:digest-x"},
+        source_butler="an-impostor",
+        call_fn=mock_call,
+    )
+
+    assert "error" in result
+    assert called is False  # Switchboard must reject before ever dispatching
+
+
+async def test_delegate_wake_callback_wrong_wake_key_rejected_before_dispatch(
+    pool_with_delegation_ledger,
+):
+    from butlers.tools.switchboard import register_butler, route
+
+    pool = pool_with_delegation_ledger
+    await register_butler(pool, "asker3", "http://localhost:9402/sse")
+    ledger_id = await _insert_answered_ledger_row(
+        pool, asking_butler="asker3", answering_butler="target"
+    )
+
+    called = False
+
+    async def mock_call(endpoint_url, tool_name, args):
+        nonlocal called
+        called = True
+        return {"status": "ok"}
+
+    result = await route(
+        pool,
+        "asker3",
+        "delegate_wake",
+        {"ledger_id": str(ledger_id), "wake_key": "wrong-key"},
+        source_butler="target",
+        call_fn=mock_call,
+    )
+
+    assert "error" in result
+    assert called is False
+
+
+async def test_delegate_wake_callback_unknown_field_rejected(pool_with_delegation_ledger):
+    """D4: only ledger_id and wake_key are permitted callback authority."""
+    from butlers.tools.switchboard import register_butler, route
+
+    pool = pool_with_delegation_ledger
+    await register_butler(pool, "asker4", "http://localhost:9403/sse")
+    ledger_id = await _insert_answered_ledger_row(
+        pool, asking_butler="asker4", answering_butler="target"
+    )
+
+    called = False
+
+    async def mock_call(endpoint_url, tool_name, args):
+        nonlocal called
+        called = True
+        return {"status": "ok"}
+
+    result = await route(
+        pool,
+        "asker4",
+        "delegate_wake",
+        {
+            "ledger_id": str(ledger_id),
+            "wake_key": "delegation-wake:v1:ledger-x:digest-x",
+            "answer": "an attacker-supplied answer override",
+        },
+        source_butler="target",
+        call_fn=mock_call,
+    )
+
+    assert "error" in result
+    assert called is False
+
+
+async def test_delegate_wake_callback_missing_ledger_row_rejected(pool_with_delegation_ledger):
+    import uuid as _uuid
+
+    from butlers.tools.switchboard import register_butler, route
+
+    pool = pool_with_delegation_ledger
+    await register_butler(pool, "asker5", "http://localhost:9404/sse")
+
+    async def must_not_be_called(endpoint_url, tool_name, args):
+        raise AssertionError("must not dispatch for a missing ledger row")
+
+    result = await route(
+        pool,
+        "asker5",
+        "delegate_wake",
+        {"ledger_id": str(_uuid.uuid4()), "wake_key": "delegation-wake:v1:ledger-x:digest-x"},
+        source_butler="target",
+        call_fn=must_not_be_called,
+    )
+
+    assert "error" in result
+
+
+# ------------------------------------------------------------------
 # routing_log
 # ------------------------------------------------------------------
 

@@ -146,6 +146,7 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "delegate_ask",
         "delegate_receive",
         "delegate_answer",
+        "delegate_wake",
     }
 )
 
