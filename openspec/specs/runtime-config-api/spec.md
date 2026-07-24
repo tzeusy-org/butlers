@@ -2,9 +2,7 @@
 
 ## Purpose
 Defines the dashboard API surface for reading and updating each butler's runtime config row in the per-butler `runtime_config` DB table. These endpoints are core (cross-butler) routes — not auto-discovered butler-specific routes — because they read from any butler's schema.
-
 ## Requirements
-
 ### Requirement: GET runtime config endpoint
 
 The dashboard API SHALL expose `GET /api/butlers/{name}/runtime-config` returning the current runtime config from the DB. This is a core API route in `src/butlers/api/routers/` (not an auto-discovered butler-specific route per RFC 0007 §Auto-Discovered Butler Routes), because it is cross-butler infrastructure that reads from any butler's schema.
@@ -51,7 +49,11 @@ Scope: v1-mandatory
 #### Scenario: Invalid core_groups — unknown group name
 - **WHEN** a PATCH request sets `core_groups` to `["infra", "foo"]`
 - **THEN** the response SHALL return HTTP 422 with a validation error listing `"foo"` as an unknown group
-- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`
+- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`
+
+#### Scenario: delegation is a known core group
+- **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
+- **THEN** validation SHALL accept it like any other known group and the DB row SHALL be updated accordingly
 
 #### Scenario: Empty PATCH body
 - **WHEN** a PATCH request has an empty body or no changed fields
@@ -60,3 +62,4 @@ Scope: v1-mandatory
 #### Scenario: Butler not found
 - **WHEN** a PATCH request targets a non-existent butler
 - **THEN** the response SHALL return HTTP 404
+
