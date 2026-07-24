@@ -5,7 +5,11 @@
  * ConnectorSummary/ConnectorDetail shape (liveness + state + error_message).
  *
  * Auth-error signal comes from two places:
- *   1. `state === 'error'` — hard error; always auth/config issue.
+ *   1. `state === 'error'` while the connector is live (online or stale) —
+ *      hard error; auth/config issue. If the connector is OFFLINE, that same
+ *      `error` state is a frozen label from the last heartbeat before the
+ *      process died: it is a connectivity problem, not an auth diagnosis, so
+ *      liveness is checked first (see mapping table below).
  *   2. `state === 'degraded'` + auth-flavored error_message:
  *        - error_message contains "api_forbidden"    → needs_reauth
  *        - error_message contains "no_primary_account" → needs_primary_account
@@ -23,8 +27,8 @@
  * - liveness "online"  + state "degraded" + "api_forbidden"       → auth "needs_reauth",         health "degraded"
  * - liveness "online"  + state "degraded" + "no_primary_account"  → auth "needs_primary_account",health "degraded"
  * - liveness "stale"   + state "healthy"                          → auth "ok",                  health "degraded"
- * - liveness "offline" + state "healthy"                          → auth "ok",                  health "error" (connectivity)
- * - liveness *         + state "error"                            → auth "needs_reauth",         health "error"
+ * - liveness "offline" + state * (incl. frozen "error")           → auth "ok",                  health "error" (connectivity)
+ * - liveness "online"/"stale" + state "error"                     → auth "needs_reauth",         health "error"
  * - liveness "online"  + state "healthy" + any devices[].stale     → auth "ok",                  health "degraded"
  *   (bu-e16to: a multi-device connector_type's shared heartbeat only reflects ONE
  *   device, so a stale sibling device must still surface as needing attention.)
@@ -65,7 +69,20 @@ export interface ConnectorDispatchInfo {
  * function so the status label and color are consistent.
  */
 export function deriveConnectorDispatchInfo(c: ConnectorSummary): ConnectorDispatchInfo {
-  // Explicit error state takes priority regardless of liveness
+  // Offline takes priority over a stored `error` state: a dead process's last
+  // heartbeat can freeze `state: 'error'` indefinitely, and that frozen label
+  // must not be read as a live auth/config diagnosis. Offline is always a
+  // connectivity problem, regardless of what state it died in.
+  if (c.liveness === 'offline') {
+    return {
+      authStatus: 'ok',
+      health: 'error',
+      needsAttention: true,
+      authNote: 'connector offline · check connectivity',
+    }
+  }
+
+  // Explicit error state while live (online or stale) — a genuine auth/config issue
   if (c.state === 'error') {
     const authNote = c.error_message
       ? truncate(c.error_message, 48)
@@ -75,16 +92,6 @@ export function deriveConnectorDispatchInfo(c: ConnectorSummary): ConnectorDispa
       health: 'error',
       needsAttention: true,
       authNote,
-    }
-  }
-
-  // Offline + healthy state: connectivity issue (not auth)
-  if (c.liveness === 'offline') {
-    return {
-      authStatus: 'ok',
-      health: 'error',
-      needsAttention: true,
-      authNote: 'connector offline · check connectivity',
     }
   }
 

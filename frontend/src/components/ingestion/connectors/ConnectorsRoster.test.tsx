@@ -73,18 +73,30 @@ const HEALTHY_CONNECTOR: ConnectorSummary = {
   hourly_events: Array(24).fill(0),
 }
 
+// Live (online) + state=error: a genuine auth/config failure — needs_reauth.
+// bu-14gso: liveness must be 'online' here, not 'offline' — an offline connector's
+// frozen error label is a connectivity issue, not a live auth diagnosis (see
+// OFFLINE_FROZEN_ERROR_CONNECTOR below for that case).
 const REAUTH_CONNECTOR: ConnectorSummary = {
   connector_type: 'spotify',
   endpoint_identity: 'me',
-  liveness: 'offline',
+  liveness: 'online',
   state: 'error',
   error_message: '401 Unauthorized — token expired',
   version: null,
   uptime_s: null,
-  last_heartbeat_at: new Date(Date.now() - 3_600_000).toISOString(),
+  last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
   first_seen_at: '2026-01-01T00:00:00Z',
   today: { messages_ingested: 0, messages_failed: 8, uptime_pct: null },
   hourly_events: Array(24).fill(0),
+}
+
+// bu-14gso: offline connector whose last heartbeat froze state='error' before the
+// process died. Must report as a connectivity problem, NOT needs_reauth.
+const OFFLINE_FROZEN_ERROR_CONNECTOR: ConnectorSummary = {
+  ...REAUTH_CONNECTOR,
+  liveness: 'offline',
+  last_heartbeat_at: new Date(Date.now() - 3_600_000).toISOString(),
 }
 
 const GMAIL_REAUTH_CONNECTOR: ConnectorSummary = {
@@ -486,8 +498,41 @@ describe('AC3: single health verdict per row (dot + word)', () => {
   })
 
   it('offline+error connector reports the "offline" verdict word', () => {
-    // REAUTH_CONNECTOR: liveness=offline, state=error
-    mockHooks([REAUTH_CONNECTOR])
+    // OFFLINE_FROZEN_ERROR_CONNECTOR: liveness=offline, state=error
+    mockHooks([OFFLINE_FROZEN_ERROR_CONNECTOR])
+    renderRoster(container, root)
+
+    const verdict = container.querySelector('[data-testid="health-verdict-spotify"]')
+    expect(verdict?.textContent?.trim()).toBe('offline')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// bu-14gso: offline connector with a frozen error label is a connectivity
+// problem, not needs_reauth
+// ---------------------------------------------------------------------------
+
+describe('bu-14gso: offline connector with frozen error state', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('does not render the reauth pill for an offline connector with a frozen error label', () => {
+    mockHooks([OFFLINE_FROZEN_ERROR_CONNECTOR])
+    renderRoster(container, root)
+
+    const status = container.querySelector('[data-testid="auth-status-spotify"]')
+    // Not a reauth link — plain-text 'authorized'/ok rendering, same as a healthy connector.
+    expect(status?.tagName).not.toBe('A')
+    expect(status?.textContent?.toLowerCase()).not.toContain('reauth')
+  })
+
+  it('still reports the "offline" verdict word (connectivity), not "error"', () => {
+    mockHooks([OFFLINE_FROZEN_ERROR_CONNECTOR])
     renderRoster(container, root)
 
     const verdict = container.querySelector('[data-testid="health-verdict-spotify"]')

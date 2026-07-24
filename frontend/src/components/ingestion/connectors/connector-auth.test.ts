@@ -3,7 +3,9 @@
  * connector auth/health status derivation.
  *
  * Key invariants:
- *  - state='error' always → needs_reauth regardless of liveness
+ *  - state='error' while live (online/stale) → needs_reauth
+ *  - state='error' while liveness='offline' → ok auth (frozen error label from a
+ *    dead process is a connectivity issue, not an auth diagnosis)
  *  - state='degraded' + error_message 'api_forbidden' → needs_reauth
  *  - state='degraded' + error_message 'no_primary_account' → needs_primary_account
  *  - state='degraded' (other error_message) → ok (not an auth issue)
@@ -76,6 +78,13 @@ describe('deriveConnectorDispatchInfo — state=error', () => {
     const c: ConnectorSummary = { ...BASE, liveness: 'online', state: 'error', error_message: null }
     const result = deriveConnectorDispatchInfo(c)
     expect(result.authStatus).toBe('needs_reauth')
+  })
+
+  it('returns needs_reauth when liveness is stale (still live, not offline)', () => {
+    const c: ConnectorSummary = { ...BASE, liveness: 'stale', state: 'error', error_message: null }
+    const result = deriveConnectorDispatchInfo(c)
+    expect(result.authStatus).toBe('needs_reauth')
+    expect(result.health).toBe('error')
   })
 })
 
@@ -161,6 +170,35 @@ describe('deriveConnectorDispatchInfo — liveness', () => {
     expect(result.authStatus).toBe('ok')
     expect(result.health).toBe('degraded')
     expect(result.needsAttention).toBe(true)
+  })
+
+  // bu-14gso: a dead process's last-reported state can freeze at 'error'. An
+  // offline connector must not have that stale label read as a live auth/config
+  // diagnosis — it stays a connectivity problem, same as offline+healthy.
+  it('returns ok auth (not needs_reauth) for offline liveness with a frozen error state', () => {
+    const c: ConnectorSummary = {
+      ...BASE,
+      liveness: 'offline',
+      state: 'error',
+      error_message: '401 Unauthorized — token expired',
+    }
+    const result = deriveConnectorDispatchInfo(c)
+    expect(result.authStatus).toBe('ok')
+    expect(result.health).toBe('error')
+    expect(result.needsAttention).toBe(true)
+    expect(result.authNote).toContain('offline')
+  })
+
+  it('still returns needs_reauth for the same frozen error state when liveness is online', () => {
+    const c: ConnectorSummary = {
+      ...BASE,
+      liveness: 'online',
+      state: 'error',
+      error_message: '401 Unauthorized — token expired',
+    }
+    const result = deriveConnectorDispatchInfo(c)
+    expect(result.authStatus).toBe('needs_reauth')
+    expect(result.health).toBe('error')
   })
 })
 

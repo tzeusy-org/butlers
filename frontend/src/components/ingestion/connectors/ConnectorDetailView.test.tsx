@@ -64,9 +64,13 @@ const BASE_CONNECTOR: ConnectorDetail = {
   scopes: null,
 }
 
+// Live (online) + state=error: a genuine auth/config failure — needs_reauth.
+// bu-14gso: liveness must be 'online' here, not 'offline' — an offline
+// connector's frozen error label is a connectivity issue, not a live auth
+// diagnosis (see deriveConnectorDispatchInfo / connector-auth.test.ts).
 const REAUTH_CONNECTOR: ConnectorDetail = {
   ...BASE_CONNECTOR,
-  liveness: 'offline',
+  liveness: 'online',
   state: 'error',
   error_message: '401 Unauthorized — oauth token expired',
   today: { messages_ingested: 0, messages_failed: 8, uptime_pct: null },
