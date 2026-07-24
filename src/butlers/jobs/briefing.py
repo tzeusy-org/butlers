@@ -28,6 +28,8 @@ import asyncpg
 
 from butlers.config import ButlerType, list_butlers
 from butlers.core.state import state_delete, state_list, state_set
+from butlers.core.tool_call_capture import get_current_switchboard_client
+from butlers.core_tools._delegation import dispatch_delegated_ask
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,17 @@ SPECIALIST_BUTLERS: tuple[str, ...] = (
 CONTRIBUTION_KEY_PREFIX = "briefing/daily/"
 COMBINED_KEY_PREFIX = "briefing/combined/"
 CONTRIBUTION_RETENTION_DAYS = 7
+
+# --- Relationship -> Finance birthday-gift delegation seed (bu-27dxl.5.4) ---
+# Bounded, deterministic proof-of-loop producer: NOT part of the briefing
+# envelope/composer (see openspec cross-butler-briefing-contribution:
+# "Delegated Return Wakes Are Not Briefing Contributions" -> "Later bounded
+# briefing producer stays independent"). Days-ahead window and the ledger
+# metadata origin-key prefix used to dedupe across repeated job runs for the
+# same target date.
+DELEGATION_GIFT_ASK_DAYS_AHEAD = 3
+DELEGATION_GIFT_ASK_TARGET_BUTLER = "finance"
+_DELEGATION_GIFT_ASK_ORIGIN_PREFIX = "relationship-birthday-gift-ask:v1"
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +552,154 @@ async def run_finance_briefing_contribution(
 # ---------------------------------------------------------------------------
 
 
+def _delegation_gift_ask_origin_key(target_date: str) -> str:
+    """Deterministic dedup key for one target date's birthday-gift ask.
+
+    Stamped into ``public.delegation_ledger.metadata`` so a duplicate job run
+    for the same target date is detected by reading it back rather than
+    re-asking (bu-27dxl.5.4 AC2). Scoped per-date, not per-contact: the seed
+    is bounded to at most one ask per run regardless of how many birthdays
+    happen to land on the same target date.
+    """
+    return f"{_DELEGATION_GIFT_ASK_ORIGIN_PREFIX}:{target_date}"
+
+
+async def _count_birthdays_on(pool: asyncpg.Pool, target_date: date_cls) -> int:
+    """Count contacts whose birthday falls exactly on target_date's (month, day).
+
+    Mirrors the dual-arm (contact-anchored / entity-anchored) UNION used by
+    the 7-day birthday highlight query above, narrowed to one exact (month,
+    day) pair and returning only a count — no names, no content. The
+    delegation seed's Finance-directed question never carries contact PII
+    (bu-27dxl.5.4 non-goal: no arbitrary profile-content leak).
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT COUNT(*) AS cnt FROM (
+            SELECT 1
+            FROM important_dates id
+            JOIN contact_entity_map cem ON cem.contact_id = id.contact_id
+            JOIN public.entities e ON e.id = cem.entity_id
+            WHERE LOWER(id.label) LIKE '%birthday%'
+              AND id.contact_id IS NOT NULL
+              AND e.listed = true
+              AND id.month = $1 AND id.day = $2
+
+            UNION ALL
+
+            SELECT 1
+            FROM important_dates id
+            JOIN public.entities e ON e.id = id.local_entity_id
+            WHERE LOWER(id.label) LIKE '%birthday%'
+              AND id.contact_id IS NULL
+              AND id.local_entity_id IS NOT NULL
+              AND e.listed = true
+              AND id.month = $1 AND id.day = $2
+        ) matches
+        """,
+        target_date.month,
+        target_date.day,
+    )
+    return int(row["cnt"]) if row is not None else 0
+
+
+async def _relationship_finance_birthday_gift_ask(
+    pool: asyncpg.Pool,
+    *,
+    today_dt: date_cls,
+) -> dict[str, Any]:
+    """Bounded, deterministic Relationship -> Finance delegation seed (bu-27dxl.5.4).
+
+    For a qualifying birthday exactly ``DELEGATION_GIFT_ASK_DAYS_AHEAD`` days
+    ahead, issues at most one factual gift/discretionary-budget delegation ask
+    to Finance through the same Switchboard ``route()`` path the
+    ``delegate_ask`` MCP tool uses
+    (``butlers.core_tools._delegation.dispatch_delegated_ask``) — never a
+    direct Finance schema/API call.
+
+    Deterministic per target date, not per-contact: dedupes via an
+    ``origin_key`` stamped on ``public.delegation_ledger.metadata`` so
+    duplicate job runs for the same target date never create a second ask.
+    The existing-row check and the dispatch's ledger writes run on one
+    connection under a transaction-scoped ``pg_advisory_xact_lock`` keyed on
+    ``origin_key`` (same idiom as ``infra_conditions._reconcile_source_locked``,
+    ``pipeline``'s ``ingest_v1`` dedup, and
+    ``decision_memory._write_terminal_decision``): two overlapping job runs for
+    the same target date serialize on the lock, so the second always observes
+    the first's row instead of racing it (bu-27dxl.5.4 AC2 — a duplicate job
+    run must never produce a duplicate ask).
+
+    Never raises: any failure (query error, route failure, ledger-write
+    failure) is caught and reported in the returned dict rather than
+    propagated, so this can never corrupt or block the caller's primary
+    briefing contribution write (bu-27dxl.5.4 AC3). Does not touch the
+    ``BriefingContribution`` envelope or ``has_updates``/``highlights``/
+    ``summary`` — its outcome is observable only via this function's own
+    return value, folded into the job's return dict, never into the written
+    envelope (AC4: no same-day composition/envelope change).
+    """
+    target_date = today_dt + timedelta(days=DELEGATION_GIFT_ASK_DAYS_AHEAD)
+    target_date_str = target_date.isoformat()
+
+    try:
+        birthday_count = await _count_birthdays_on(pool, target_date)
+        if birthday_count == 0:
+            return {"status": "no_qualifying_birthday", "target_date": target_date_str}
+
+        origin_key = _delegation_gift_ask_origin_key(target_date_str)
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Serialize concurrent job runs for this target date so the
+                # existing-row check below is atomic with the dispatch's
+                # ledger writes (bu-27dxl.5.4 AC2).
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", origin_key)
+
+                existing_id = await conn.fetchval(
+                    """
+                    SELECT id FROM public.delegation_ledger
+                    WHERE asking_butler = 'relationship'
+                      AND metadata->>'origin_key' = $1
+                    LIMIT 1
+                    """,
+                    origin_key,
+                )
+                if existing_id is not None:
+                    return {
+                        "status": "already_asked",
+                        "ledger_id": str(existing_id),
+                        "target_date": target_date_str,
+                    }
+
+                question = (
+                    f"A household birthday is coming up in {DELEGATION_GIFT_ASK_DAYS_AHEAD} "
+                    f"days ({target_date_str}). What is the household's typical gift or "
+                    "discretionary-budget guidance for a birthday like this?"
+                )
+                result = await dispatch_delegated_ask(
+                    conn,
+                    get_current_switchboard_client(),
+                    asking_butler="relationship",
+                    target_butler=DELEGATION_GIFT_ASK_TARGET_BUTLER,
+                    question=question,
+                    metadata={
+                        "origin_key": origin_key,
+                        "seed": "birthday_gift_budget_ask",
+                        "target_date": target_date_str,
+                    },
+                )
+
+        result["target_date"] = target_date_str
+        return result
+    except Exception:
+        logger.warning(
+            "relationship briefing: birthday-gift delegation seed failed for target_date=%s",
+            target_date_str,
+            exc_info=True,
+        )
+        return {"status": "error", "target_date": target_date_str}
+
+
 async def run_relationship_briefing_contribution(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -745,6 +906,12 @@ async def run_relationship_briefing_contribution(
     }
 
     await _write_contribution(pool, envelope)
+
+    # Delegation seed (bu-27dxl.5.4) runs strictly after the primary
+    # contribution write and never raises, so a route/seed failure can never
+    # leave the primary contribution un-written or corrupt it (AC3).
+    delegation_ask = await _relationship_finance_birthday_gift_ask(pool, today_dt=today_dt)
+
     return {
         "butler": "relationship",
         "date": today_str,
@@ -753,6 +920,7 @@ async def run_relationship_briefing_contribution(
         "follow_ups_due": due_count,
         "follow_ups_overdue": overdue_count,
         "interaction_gaps": len(gap_rows),
+        "delegation_ask": delegation_ask,
     }
 
 

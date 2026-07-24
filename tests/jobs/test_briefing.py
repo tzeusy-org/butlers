@@ -27,6 +27,12 @@ from butlers.jobs.briefing import (
     validate_contribution,
 )
 
+# Existing relationship-briefing tests (birthday highlight coverage etc.) do
+# not exercise the bu-27dxl.5.4 delegation seed and use pool mocks that don't
+# model its extra fetchrow/fetchval calls -- patch it to a fixed no-op result
+# so those pools' side_effect lists stay untouched.
+_NO_QUALIFYING_BIRTHDAY_ASK = {"status": "no_qualifying_birthday", "target_date": "2099-01-01"}
+
 pytestmark = pytest.mark.unit
 
 _DATE_2026_03_25 = date(2026, 3, 25)
@@ -422,6 +428,10 @@ async def test_run_relationship_briefing_birthday_sql_contains_both_paths():
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing._write_contribution", mock_write),
+        patch(
+            "butlers.jobs.briefing._relationship_finance_birthday_gift_ask",
+            AsyncMock(return_value=_NO_QUALIFYING_BIRTHDAY_ASK),
+        ),
     ):
         await run_relationship_briefing_contribution(pool, None)
 
@@ -469,6 +479,10 @@ async def test_run_relationship_briefing_birthday_highlight(name, year):
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing._write_contribution", mock_write),
+        patch(
+            "butlers.jobs.briefing._relationship_finance_birthday_gift_ask",
+            AsyncMock(return_value=_NO_QUALIFYING_BIRTHDAY_ASK),
+        ),
     ):
         result = await run_relationship_briefing_contribution(pool, None)
 
@@ -486,8 +500,166 @@ async def test_run_relationship_briefing_no_birthdays():
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing._write_contribution", mock_write),
+        patch(
+            "butlers.jobs.briefing._relationship_finance_birthday_gift_ask",
+            AsyncMock(return_value=_NO_QUALIFYING_BIRTHDAY_ASK),
+        ),
     ):
         result = await run_relationship_briefing_contribution(pool, None)
 
     assert result["birthdays_upcoming"] == 0
     assert result["butler"] == "relationship"
+
+
+# ---------------------------------------------------------------------------
+# Relationship -> Finance birthday-gift delegation seed (bu-27dxl.5.4)
+# ---------------------------------------------------------------------------
+
+
+class _NullAsyncCtx:
+    """No-op async context manager standing in for ``conn.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class _FakeAcquireCtx:
+    """Async context manager standing in for ``pool.acquire()``."""
+
+    def __init__(self, conn: MagicMock) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> MagicMock:
+        return self._conn
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
+def _delegation_pool(*, fetchrow_value=None, fetchval_value=None) -> MagicMock:
+    """A pool double for _relationship_finance_birthday_gift_ask in isolation.
+
+    ``fetchrow`` backs the birthday-count query (``_count_birthdays_on``),
+    still issued directly against ``pool``. The origin-key dedup lookup and
+    the dispatch's ledger writes now run against a connection acquired via
+    ``pool.acquire()`` (under the advisory-lock transaction, bu-27dxl.5.4
+    AC2) -- ``conn.fetchval`` backs that dedup lookup, exposed on the
+    returned pool as ``.conn`` for tests that want to assert against it.
+    """
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=fetchval_value)
+    conn.transaction = MagicMock(return_value=_NullAsyncCtx())
+
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=fetchrow_value)
+    pool.acquire = MagicMock(return_value=_FakeAcquireCtx(conn))
+    pool.conn = conn
+    return pool
+
+
+class TestRelationshipFinanceBirthdayGiftAskSeed:
+    async def test_no_qualifying_birthday_skips_ask(self):
+        from butlers.jobs.briefing import _relationship_finance_birthday_gift_ask
+
+        pool = _delegation_pool(fetchrow_value={"cnt": 0})
+        result = await _relationship_finance_birthday_gift_ask(pool, today_dt=_DATE_2026_03_25)
+
+        assert result["status"] == "no_qualifying_birthday"
+        # No qualifying birthday short-circuits before ever acquiring the
+        # advisory-lock connection.
+        pool.acquire.assert_not_called()
+
+    async def test_qualifying_birthday_dispatches_one_ask(self, monkeypatch):
+        import butlers.jobs.briefing as briefing_mod
+
+        pool = _delegation_pool(fetchrow_value={"cnt": 1}, fetchval_value=None)
+        monkeypatch.setattr(briefing_mod, "get_current_switchboard_client", lambda: "client")
+        dispatch_mock = AsyncMock(
+            return_value={"status": "routed", "ledger_id": "ledger-1", "target_butler": "finance"}
+        )
+        monkeypatch.setattr(briefing_mod, "dispatch_delegated_ask", dispatch_mock)
+
+        result = await briefing_mod._relationship_finance_birthday_gift_ask(
+            pool, today_dt=_DATE_2026_03_25
+        )
+
+        assert result["status"] == "routed"
+        assert result["ledger_id"] == "ledger-1"
+        dispatch_mock.assert_awaited_once()
+        # Dispatched on the acquired connection (same transaction/lock as
+        # the dedup check), not the raw pool.
+        assert dispatch_mock.await_args.args[0] is pool.conn
+        kwargs = dispatch_mock.await_args.kwargs
+        assert kwargs["asking_butler"] == "relationship"
+        assert kwargs["target_butler"] == "finance"
+        assert kwargs["metadata"]["origin_key"].startswith("relationship-birthday-gift-ask:v1:")
+        # No PII in the question text.
+        assert "Alice" not in kwargs["question"]
+        # The advisory lock is acquired before the dedup check.
+        pool.conn.execute.assert_awaited_once()
+        assert "pg_advisory_xact_lock" in pool.conn.execute.await_args.args[0]
+
+    async def test_duplicate_run_dedupes_via_origin_key(self, monkeypatch):
+        import butlers.jobs.briefing as briefing_mod
+
+        pool = _delegation_pool(fetchrow_value={"cnt": 1}, fetchval_value="existing-ledger-id")
+        dispatch_mock = AsyncMock()
+        monkeypatch.setattr(briefing_mod, "dispatch_delegated_ask", dispatch_mock)
+
+        result = await briefing_mod._relationship_finance_birthday_gift_ask(
+            pool, today_dt=_DATE_2026_03_25
+        )
+
+        assert result["status"] == "already_asked"
+        assert result["ledger_id"] == "existing-ledger-id"
+        dispatch_mock.assert_not_awaited()
+        # The lock is still acquired before the (successful) dedup hit.
+        pool.conn.execute.assert_awaited_once()
+
+    async def test_route_failure_is_caught_and_reported(self, monkeypatch):
+        import butlers.jobs.briefing as briefing_mod
+
+        pool = _delegation_pool(fetchrow_value={"cnt": 1}, fetchval_value=None)
+        monkeypatch.setattr(briefing_mod, "get_current_switchboard_client", lambda: None)
+        monkeypatch.setattr(
+            briefing_mod,
+            "dispatch_delegated_ask",
+            AsyncMock(side_effect=RuntimeError("route boom")),
+        )
+
+        result = await briefing_mod._relationship_finance_birthday_gift_ask(
+            pool, today_dt=_DATE_2026_03_25
+        )
+
+        assert result["status"] == "error"
+
+    async def test_primary_contribution_write_unaffected_by_seed_failure(self, monkeypatch):
+        """A raising delegation seed must never block/corrupt the primary write (AC3)."""
+        birthday_row = {
+            "name": "Alice Smith",
+            "label": "birthday",
+            "month": _DATE_2026_03_25.month,
+            "day": _DATE_2026_03_25.day,
+            "year": 1990,
+        }
+        pool = MagicMock()
+        pool.fetch = AsyncMock(side_effect=[[birthday_row], [], []])
+        mock_write = AsyncMock()
+        monkeypatch.setattr(
+            "butlers.jobs.briefing._relationship_finance_birthday_gift_ask",
+            AsyncMock(return_value={"status": "error", "target_date": "2099-01-01"}),
+        )
+        with (
+            patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+            patch("butlers.jobs.briefing._write_contribution", mock_write),
+        ):
+            result = await run_relationship_briefing_contribution(pool, None)
+
+        mock_write.assert_awaited_once()
+        envelope = mock_write.call_args[0][1]
+        assert envelope["has_updates"] is True
+        assert result["delegation_ask"]["status"] == "error"

@@ -96,7 +96,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 
 
 async def record_ask(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection,
     *,
     asking_butler: str,
     question: str,
@@ -145,7 +145,7 @@ async def record_ask(
 
 
 async def mark_dispatch_outcome(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection,
     ledger_id: uuid.UUID | str,
     *,
     status: str,

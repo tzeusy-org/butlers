@@ -30,6 +30,15 @@ directly in-process (it already owns the pool ``route()`` needs), exactly
 mirroring ``notify()``'s client-vs-self-delivery split. ``_dispatch_via_switchboard``
 below is the shared helper for that split, used by both ``delegate_ask``'s
 dispatch to a target and ``delegate_answer``'s wake callback to an asker.
+
+``dispatch_delegated_ask`` (bu-27dxl.5.4) is the record-then-dispatch
+sequence factored out of the ``delegate_ask`` tool closure so a deterministic
+job -- not just the LLM-facing MCP tool -- can post one delegated ask through
+the exact same ledger-write-then-Switchboard-route path with an
+already-resolved ``target_butler`` (skipping ``resolve_target_via_catalog``,
+which only makes sense for a free-text question with no known domain owner).
+See ``butlers.jobs.briefing``'s bounded Relationship-to-Finance birthday-gift
+seed for the only current caller outside the MCP tool itself.
 """
 
 from __future__ import annotations
@@ -73,7 +82,7 @@ def _extract_mcp_error_text(result: Any) -> str:
 
 
 async def _dispatch_via_switchboard(
-    daemon: Any,
+    client: Any,
     pool: Any,
     butler_name: str,
     *,
@@ -84,10 +93,13 @@ async def _dispatch_via_switchboard(
     """Dispatch one tool call through the Switchboard's ``route()`` primitive.
 
     Mirrors ``notify()``'s client-vs-self-delivery split: every butler except
-    Switchboard itself calls ``daemon.switchboard_client.call_tool("route", ...)``;
-    Switchboard calls the underlying ``route()`` function directly in-process
-    (it already owns the pool ``route()`` needs). Shared by ``delegate_ask``'s
-    dispatch to a target and ``delegate_answer``'s wake callback to an asker.
+    Switchboard itself calls ``client.call_tool("route", ...)`` (``client`` is
+    the caller's live ``daemon.switchboard_client``, or the deterministic-job
+    equivalent recovered via ``get_current_switchboard_client()``); Switchboard
+    calls the underlying ``route()`` function directly in-process (it already
+    owns the pool ``route()`` needs). Shared by ``delegate_ask``'s dispatch to
+    a target, ``delegate_answer``'s wake callback to an asker, and
+    ``dispatch_delegated_ask`` below.
 
     Returns ``(error_text, retryable)`` -- ``error_text`` is ``None`` on a
     successful dispatch (a route()-level success; it says nothing about what
@@ -100,7 +112,6 @@ async def _dispatch_via_switchboard(
         "source_butler": butler_name,
     }
 
-    client = daemon.switchboard_client
     if client is not None:
         try:
             result = await asyncio.wait_for(
@@ -143,6 +154,112 @@ async def _dispatch_via_switchboard(
         "Switchboard is not connected. Cannot route the delegated call. "
         "This is a transient infrastructure issue — retry after a delay."
     ), True
+
+
+async def dispatch_delegated_ask(
+    pool: Any,
+    switchboard_client: Any,
+    *,
+    asking_butler: str,
+    target_butler: str,
+    question: str,
+    catalog_match_id: Any = None,
+    catalog_score: float | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    """Record one ``pending`` ledger row and dispatch it via the Switchboard.
+
+    The record-then-dispatch-then-mark-outcome sequence shared by the
+    ``delegate_ask`` MCP tool (which resolves ``target_butler`` from the
+    catalog first) and a deterministic caller that already knows its target
+    (e.g. ``butlers.jobs.briefing``'s bounded Relationship-to-Finance seed,
+    which asks Finance directly without a catalog lookup). ``metadata`` lets a
+    deterministic caller stamp a dedup/origin key so a duplicate dispatch
+    attempt can be detected by reading it back rather than re-asking.
+
+    ``pool`` accepts either an ``asyncpg.Pool`` or an already-acquired
+    ``asyncpg.Connection`` -- ``record_ask``/``mark_dispatch_outcome`` only
+    call generic query methods both implement. A caller that needs the
+    existing-row dedup check and this dispatch's ledger writes to be atomic
+    against concurrent runs (e.g. the birthday-gift seed, under a transaction-
+    scoped ``pg_advisory_xact_lock``) passes its already-open ``Connection``
+    so every write here lands on the same transaction as that check.
+
+    Returns the same ``{"status": ...}`` shapes ``delegate_ask`` has always
+    returned: ``routed`` (dispatch acknowledged), ``failed`` (route error,
+    ``retryable`` set when transient), or ``error`` (dispatch succeeded but
+    the ledger write recording that could not be confirmed).
+    """
+    ledger_id = await record_ask(
+        pool,
+        asking_butler=asking_butler,
+        question=question,
+        status="pending",
+        target_butler=target_butler,
+        catalog_match_id=catalog_match_id,
+        catalog_score=catalog_score,
+        metadata=metadata,
+    )
+
+    async def _fail(error_text: str, *, retryable: bool = False) -> dict:
+        try:
+            await mark_dispatch_outcome(pool, ledger_id, status="failed", reason=error_text)
+        except Exception:
+            logger.warning(
+                "dispatch_delegated_ask: failed to record 'failed' outcome for ledger_id=%s",
+                ledger_id,
+                exc_info=True,
+            )
+        result = {
+            "status": "failed",
+            "ledger_id": ledger_id,
+            "target_butler": target_butler,
+            "error": error_text,
+        }
+        if retryable:
+            result["retryable"] = True
+        return result
+
+    route_error, retryable = await _dispatch_via_switchboard(
+        switchboard_client,
+        pool,
+        asking_butler,
+        target_butler=target_butler,
+        tool_name="delegate_receive",
+        args={
+            "ledger_id": ledger_id,
+            "question": question,
+            "asking_butler": asking_butler,
+        },
+    )
+    if route_error is not None:
+        return await _fail(route_error, retryable=retryable)
+
+    try:
+        await mark_dispatch_outcome(pool, ledger_id, status="routed")
+    except Exception as exc:
+        # Dispatch itself succeeded (the target already scheduled its
+        # answer) but we could not persist that outcome. Surface this as
+        # its own honest state rather than claiming a confirmed "routed"
+        # we cannot back up, or silently swallowing the inconsistency.
+        logger.warning(
+            "dispatch_delegated_ask: dispatch to %s succeeded but failed to mark "
+            "ledger_id=%s as 'routed'",
+            target_butler,
+            ledger_id,
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "ledger_id": ledger_id,
+            "target_butler": target_butler,
+            "error": (
+                f"Question was routed to {target_butler!r} but recording the ledger "
+                f"outcome failed: {exc}"
+            ),
+        }
+
+    return {"status": "routed", "ledger_id": ledger_id, "target_butler": target_butler}
 
 
 def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -233,75 +350,15 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                 "reason": "self_target",
             }
 
-        ledger_id = await record_ask(
+        return await dispatch_delegated_ask(
             pool,
+            daemon.switchboard_client,
             asking_butler=butler_name,
-            question=question,
-            status="pending",
             target_butler=target_butler,
+            question=question,
             catalog_match_id=catalog_match_id,
             catalog_score=catalog_score,
         )
-
-        async def _fail(error_text: str, *, retryable: bool = False) -> dict:
-            try:
-                await mark_dispatch_outcome(pool, ledger_id, status="failed", reason=error_text)
-            except Exception:
-                logger.warning(
-                    "delegate_ask: failed to record 'failed' outcome for ledger_id=%s",
-                    ledger_id,
-                    exc_info=True,
-                )
-            result = {
-                "status": "failed",
-                "ledger_id": ledger_id,
-                "target_butler": target_butler,
-                "error": error_text,
-            }
-            if retryable:
-                result["retryable"] = True
-            return result
-
-        route_error, retryable = await _dispatch_via_switchboard(
-            daemon,
-            pool,
-            butler_name,
-            target_butler=target_butler,
-            tool_name="delegate_receive",
-            args={
-                "ledger_id": ledger_id,
-                "question": question,
-                "asking_butler": butler_name,
-            },
-        )
-        if route_error is not None:
-            return await _fail(route_error, retryable=retryable)
-
-        try:
-            await mark_dispatch_outcome(pool, ledger_id, status="routed")
-        except Exception as exc:
-            # Dispatch itself succeeded (the target already scheduled its
-            # answer) but we could not persist that outcome. Surface this as
-            # its own honest state rather than claiming a confirmed "routed"
-            # we cannot back up, or silently swallowing the inconsistency.
-            logger.warning(
-                "delegate_ask: dispatch to %s succeeded but failed to mark "
-                "ledger_id=%s as 'routed'",
-                target_butler,
-                ledger_id,
-                exc_info=True,
-            )
-            return {
-                "status": "error",
-                "ledger_id": ledger_id,
-                "target_butler": target_butler,
-                "error": (
-                    f"Question was routed to {target_butler!r} but recording the ledger "
-                    f"outcome failed: {exc}"
-                ),
-            }
-
-        return {"status": "routed", "ledger_id": ledger_id, "target_butler": target_butler}
 
     @_core_tool("delegation")
     @tool_span("delegate_receive", butler_name=butler_name)
@@ -452,7 +509,7 @@ def register_delegation_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             return {"status": "ok", "ledger_id": ledger_id, "answer_recorded": True}
 
         route_error, retryable = await _dispatch_via_switchboard(
-            daemon,
+            daemon.switchboard_client,
             pool,
             butler_name,
             target_butler=asking_butler,
