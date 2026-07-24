@@ -145,7 +145,10 @@ async def _find_approvals_pool(db_mgr: DatabaseManager, table_name: str = "pendi
 
 
 async def _find_all_approvals_pools(
-    db_mgr: DatabaseManager, table_name: str = "pending_actions"
+    db_mgr: DatabaseManager,
+    table_name: str = "pending_actions",
+    *,
+    tracker: DegradedSources | None = None,
 ) -> list[asyncpg.Pool]:
     """Find ALL butler pools that have the specified approvals table.
 
@@ -155,17 +158,33 @@ async def _find_all_approvals_pools(
     butlers (e.g. switchboard vs home) may each have their own copy of the
     table in their respective schemas.
     """
-    return [pool for _name, pool in await _find_named_approvals_pools(db_mgr, table_name)]
+    return [
+        pool
+        for _name, pool in await _find_named_approvals_pools(db_mgr, table_name, tracker=tracker)
+    ]
 
 
 async def _find_named_approvals_pools(
-    db_mgr: DatabaseManager, table_name: str = "pending_actions"
+    db_mgr: DatabaseManager,
+    table_name: str = "pending_actions",
+    *,
+    tracker: DegradedSources | None = None,
 ) -> list[tuple[str, asyncpg.Pool]]:
     """Find ALL butler pools that have the specified approvals table, with butler names.
 
     Returns a list of ``(butler_name, pool)`` pairs so callers can associate
     each result row with the owning butler.  Uses the same ``to_regclass``
     cache as ``_find_all_approvals_pools``.
+
+    Classify before flagging: a ``KeyError`` from ``db_mgr.pool()`` means the
+    butler simply has no registered pool — legitimate absence, not a fan-out
+    failure, so it is skipped silently exactly as before.  Any other
+    exception during the catalog probe (dropped connection, timeout,
+    permission error) is a genuine source failure: it must not propagate
+    unhandled out of every caller (that would hard-500 the whole
+    ``/api/approvals`` surface), so it is swallowed here and, when the caller
+    supplies a *tracker*, named in the fleet-wide ``meta.sources_degraded``
+    envelope instead of being silently dropped.
     """
     named_pools: list[tuple[str, asyncpg.Pool]] = []
     seen: set[int] = set()  # track pool identity to avoid duplicates
@@ -197,6 +216,23 @@ async def _find_named_approvals_pools(
                     named_pools.append((butler_name, pool))
                     seen.add(id(pool))
         except KeyError:
+            # No pool registered for this butler — legitimate absence.
+            continue
+        except Exception:
+            # Genuine catalog-probe failure — degrade gracefully instead of
+            # raising unhandled out of every caller.
+            if tracker is not None:
+                tracker.mark(
+                    butler_name,
+                    msg=f"Could not probe for {table_name} table (catalog probe failed)",
+                )
+            else:
+                logger.warning(
+                    "Could not probe %s for %s table (catalog probe failed)",
+                    butler_name,
+                    table_name,
+                    exc_info=True,
+                )
             continue
     return named_pools
 
@@ -620,17 +656,20 @@ async def list_actions(
             data=[],
             meta=PaginationMeta(total=0, offset=offset, limit=limit),
         )
-    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    tracker = DegradedSources(logger)
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions", tracker=tracker)
     if butler is not None:
         named_target_pools = [(n, p) for n, p in named_pools if n == butler]
     else:
         named_target_pools = named_pools
 
     if not named_target_pools:
-        return PaginatedResponse(
-            data=[],
-            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        meta = (
+            PaginationMeta(total=0, offset=offset, limit=limit, sources_degraded=tracker.names)
+            if tracker.failed
+            else PaginationMeta(total=0, offset=offset, limit=limit)
         )
+        return PaginatedResponse(data=[], meta=meta)
 
     # Build query with filters
     conditions = []
@@ -670,7 +709,6 @@ async def list_actions(
     # Aggregate across target pools, tracking butler name per row
     all_rows: list[tuple[str, asyncpg.Record]] = []
     total = 0
-    tracker = DegradedSources(logger)
     for butler_name, pool in named_target_pools:
         try:
             async with pool.acquire() as conn:
@@ -1439,8 +1477,8 @@ async def list_gated_tools(
     }
 
     try:
-        named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
-    except Exception:  # noqa: BLE001 -- preserve baseline and name the failure
+        named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules", tracker=tracker)
+    except Exception:  # noqa: BLE001 -- belt-and-suspenders; preserve baseline and name it
         tracker.mark("approval_rules", msg="Could not discover approval rule sources")
         named_pools = []
 
@@ -1803,9 +1841,13 @@ async def list_approvals_flat(
     actions whose execution has never produced a result, independent of the
     requested list state or page limit.
     """
-    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    tracker = DegradedSources(logger)
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions", tracker=tracker)
     if not named_pools:
-        return ApiResponse(data=[], meta=ApiMeta(stalled_count=0))
+        meta_kwargs: dict[str, Any] = {"stalled_count": 0}
+        if tracker.failed:
+            meta_kwargs["sources_degraded"] = tracker.names
+        return ApiResponse(data=[], meta=ApiMeta(**meta_kwargs))
 
     status_filter: list[str]
     if state == "waiting":
@@ -1817,7 +1859,6 @@ async def list_approvals_flat(
 
     all_rows: list[tuple[str, asyncpg.Record]] = []
     stalled_count = 0
-    tracker = DegradedSources(logger)
     for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
@@ -1884,9 +1925,11 @@ async def list_approvals_history(
     Returns up to ``limit`` decided (approved|rejected|expired|executed) approvals
     ordered ``decided_at DESC``.
     """
-    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    tracker = DegradedSources(logger)
+    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions", tracker=tracker)
     if not named_pools:
-        return ApiResponse(data=[])
+        meta = ApiMeta(sources_degraded=tracker.names) if tracker.failed else ApiMeta()
+        return ApiResponse(data=[], meta=meta)
 
     since_dt: datetime | None = None
     if since is not None:
@@ -1897,7 +1940,6 @@ async def list_approvals_history(
 
     decided_statuses = list(_DECIDED_STATUSES)
     all_rows: list[tuple[str, asyncpg.Record]] = []
-    tracker = DegradedSources(logger)
 
     for butler_name, pool in named_pools:
         try:

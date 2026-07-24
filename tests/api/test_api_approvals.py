@@ -10,6 +10,7 @@ Extended (bu-5xiu9): defer bounds, policy round-trip, audit.append on verbs.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -18,9 +19,11 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.routers.approvals import (
     _clear_table_cache,
+    _find_named_approvals_pools,
     _get_db_manager,
     _row_to_autonomy_suggestion,
 )
@@ -381,6 +384,135 @@ async def test_list_approvals_flat_no_sources_degraded_when_all_pools_healthy(ap
     assert resp.status_code == 200
     body = resp.json()
     assert "sources_degraded" not in body["meta"]
+
+
+# ---------------------------------------------------------------------------
+# Catalog-probe failure (bu-g9rth): a genuine DB connectivity failure during
+# _find_named_approvals_pools' to_regclass probe must degrade gracefully,
+# not hard-500 the whole /api/approvals surface. Distinct from the "one pool
+# raises mid-query" fixture above -- this failure happens *before* any query,
+# while resolving which pools even own the table.
+# ---------------------------------------------------------------------------
+
+
+def _app_with_one_healthy_one_catalog_probe_failing_butler(app, *, healthy_rows=None):
+    """Two named approvals pools: 'general' answers normally (including its
+    own catalog probe); 'home' fails to even acquire a connection for its
+    catalog probe -- simulating a dropped connection / timeout, not an
+    absent table.
+    """
+    healthy_rows = healthy_rows or []
+
+    healthy_conn = AsyncMock()
+    healthy_conn.fetch = AsyncMock(return_value=healthy_rows)
+    healthy_conn.fetchval = AsyncMock(
+        side_effect=lambda *a, **k: True if ("to_regclass" in a[0] or "EXISTS" in a[0]) else 0
+    )
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return healthy_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    healthy_pool = AsyncMock()
+    healthy_pool.acquire = MagicMock(side_effect=lambda: _MockAcquire())
+
+    class _FailingAcquire:
+        async def __aenter__(self):
+            raise RuntimeError("connection reset by peer")
+
+        async def __aexit__(self, *a):
+            return False
+
+    failing_pool = AsyncMock()
+    failing_pool.acquire = MagicMock(side_effect=lambda: _FailingAcquire())
+
+    pools = {"general": healthy_pool, "home": failing_pool}
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general", "home"]
+    mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+    return app
+
+
+async def test_list_approvals_flat_degrades_on_catalog_probe_failure(app):
+    """A dropped connection during the catalog probe must surface 200 +
+    meta.sources_degraded, not an unhandled 500 for the whole endpoint."""
+    row = _make_action(tool_name="notify")
+    app = _app_with_one_healthy_one_catalog_probe_failing_butler(app, healthy_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["meta"]["sources_degraded"] == ["home"]
+
+
+async def test_list_actions_degrades_on_catalog_probe_failure(app):
+    """Same contract for the butler-scoped preview endpoint."""
+    row = _make_action(tool_name="notify")
+    app = _app_with_one_healthy_one_catalog_probe_failing_butler(app, healthy_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["meta"]["sources_degraded"] == ["home"]
+
+
+async def test_find_named_approvals_pools_classifies_absence_vs_genuine_failure():
+    """Regression guard for the classify-before-flagging contract.
+
+    A ``KeyError`` from ``db_mgr.pool()`` (no such pool registered for that
+    butler) is legitimate absence and must NOT be reported as degraded. Any
+    other exception raised while probing (dropped connection, timeout,
+    permission error) is a genuine failure and must be named in the tracker
+    -- and, either way, the probe itself must not raise out to the caller.
+    """
+    healthy_conn = AsyncMock()
+    healthy_conn.fetchval = AsyncMock(return_value=True)
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return healthy_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    healthy_pool = AsyncMock()
+    healthy_pool.acquire = MagicMock(side_effect=lambda: _MockAcquire())
+
+    def _pool(name):
+        if name == "absent":
+            raise KeyError("No pool for butler: absent")
+        if name == "unreachable":
+            raise RuntimeError("connection reset by peer")
+        return healthy_pool
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["absent", "unreachable", "general"]
+    mock_db.pool = MagicMock(side_effect=_pool)
+
+    tracker = DegradedSources(logging.getLogger("test.bu-g9rth"))
+    named_pools = await _find_named_approvals_pools(mock_db, "pending_actions", tracker=tracker)
+
+    assert [name for name, _pool in named_pools] == ["general"]
+    assert tracker.names == ["unreachable"]
 
 
 async def test_list_approvals_flat_stalled_filter_and_count_are_whole_population(app):
