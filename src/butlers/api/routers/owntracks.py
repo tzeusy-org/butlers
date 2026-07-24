@@ -38,11 +38,12 @@ from __future__ import annotations
 import logging
 import os
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from butlers.api.models.connector import derive_liveness
 from butlers.api.models.owntracks import (
     OwnTracksConfigResponse,
     OwnTracksConnectionState,
@@ -63,9 +64,6 @@ router = APIRouter(prefix="/api/connectors/owntracks", tags=["owntracks"])
 _CRED_KEY_TOKEN = "owntracks_webhook_token"
 _DEFAULT_CONNECTOR_HOST = "localhost"
 _DEFAULT_CONNECTOR_PORT = 40083
-
-# A connector is considered "running" if its last heartbeat is within this window.
-_LIVENESS_THRESHOLD_SECONDS = 300  # 5 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +216,7 @@ async def _query_connector_heartbeat(pool: Any) -> dict | None:
     """
     try:
         row = await pool.fetchrow(
-            "SELECT cr.state, cr.last_heartbeat_at, cr.uptime_s,"
+            "SELECT cr.last_heartbeat_at, cr.uptime_s,"
             " cr.counter_messages_ingested,"
             " COALESCE(ts.today_ingested, 0) AS today_messages_ingested"
             " FROM connector_registry cr"
@@ -257,18 +255,21 @@ def _derive_connection_state(
 ) -> tuple[OwnTracksConnectionState, bool, datetime | None, int, float | None]:
     """Derive connection state from token and heartbeat data.
 
+    Liveness (online/stale/offline) is derived via the canonical
+    ``derive_liveness`` helper (``butlers.api.models.connector``) — the same
+    heartbeat-liveness formula used by the connectors, Google Health, and
+    calendar-workspace routers, including its 5-minute clock-skew tolerance
+    for a future-dated heartbeat. This avoids reimplementing a bespoke
+    binary cutoff that lacks a distinct stale bucket and clock-skew handling.
+
     Returns:
         (state, connector_running, last_event_at, events_today, uptime_seconds)
     """
     if not token_configured:
         return OwnTracksConnectionState.not_configured, False, None, 0, None
 
-    if heartbeat_row is None:
-        # Token configured, no heartbeat ever received → connector offline (not started yet)
-        return OwnTracksConnectionState.offline, False, None, 0, None
-
-    last_heartbeat_raw = heartbeat_row.get("last_heartbeat_at")
-    uptime_s = heartbeat_row.get("uptime_s")
+    last_heartbeat_raw = (heartbeat_row or {}).get("last_heartbeat_at")
+    uptime_s = (heartbeat_row or {}).get("uptime_s")
 
     last_heartbeat_at: datetime | None = None
     if last_heartbeat_raw is not None:
@@ -279,18 +280,15 @@ def _derive_connection_state(
                 last_heartbeat_at = datetime.fromisoformat(str(last_heartbeat_raw))
             except (ValueError, TypeError):
                 pass
-
-    # Liveness: heartbeat must be recent
-    connector_running = False
-    if last_heartbeat_at is not None:
-        cutoff = datetime.now(UTC) - timedelta(seconds=_LIVENESS_THRESHOLD_SECONDS)
-        # Ensure both are tz-aware for comparison
-        if last_heartbeat_at.tzinfo is None:
+        # Ensure tz-aware for derive_liveness's comparison against now(UTC)
+        if last_heartbeat_at is not None and last_heartbeat_at.tzinfo is None:
             last_heartbeat_at = last_heartbeat_at.replace(tzinfo=UTC)
-        connector_running = last_heartbeat_at >= cutoff
 
-    events_today = int(heartbeat_row.get("today_messages_ingested") or 0)
-    total_events = int(heartbeat_row.get("counter_messages_ingested") or 0)
+    liveness = derive_liveness(last_heartbeat_at)
+    connector_running = liveness == "online"
+
+    events_today = int((heartbeat_row or {}).get("today_messages_ingested") or 0)
+    total_events = int((heartbeat_row or {}).get("counter_messages_ingested") or 0)
 
     uptime_seconds: float | None = None
     if uptime_s is not None:
@@ -299,11 +297,13 @@ def _derive_connection_state(
         except (ValueError, TypeError):
             pass
 
-    if not connector_running:
-        if last_heartbeat_at:
-            state = OwnTracksConnectionState.stale
-        else:
-            state = OwnTracksConnectionState.offline
+    if liveness == "stale":
+        state = OwnTracksConnectionState.stale
+    elif liveness == "offline":
+        # Either no heartbeat ever received (not started yet) or the last
+        # one is old enough (or clock-skewed far enough into the future)
+        # to no longer be a trustworthy liveness signal.
+        state = OwnTracksConnectionState.offline
     elif total_events == 0:
         state = OwnTracksConnectionState.no_events
     else:
