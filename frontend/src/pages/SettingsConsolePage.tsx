@@ -33,37 +33,17 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { InlineActionLink } from "@/components/ui/inline-action-link";
 import { cn } from "@/lib/utils";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
-import { useSettingsConsoleLive } from "@/hooks/use-settings-console-live";
-import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import {
+  useSettingsConsoleLive,
+  type AttentionItem,
+  type ConsoleData,
+  type HeaderCounts,
+} from "@/hooks/use-settings-console-live";
+import {
+  useRegisterCommands,
+  type PaletteCommand,
+} from "@/lib/command-registry";
 import QaStafferCard from "@/components/settings/QaStafferCard";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface AttentionItem {
-  tone: "red" | "amber";
-  kind: string;
-  text: string;
-  action_route: string;
-}
-
-interface HeaderCounts {
-  // Each field is null when its subsystem aggregation failed -- render "—",
-  // never a confident 0/$0.00 (the corresponding amber attention item names
-  // the failure, but a KPI cell must not fabricate calm on its own).
-  active_butlers: number | null;
-  spend_mtd_usd: number | null;
-  open_approvals: number | null;
-  models_verified: number | null;
-  models_total: number | null;
-}
-
-interface ConsoleData {
-  header_counts: HeaderCounts;
-  attention: AttentionItem[];
-  attention_truncated_count: number;
-}
 
 // Minimal types for per-panel summaries (pulled from their own endpoints)
 
@@ -105,9 +85,9 @@ function fetchSpendSummary(): Promise<{ data: SpendSummary }> {
 }
 
 function fetchModelStats(): Promise<ModelStats> {
-  return apiFetch<{ data: Array<{ last_verified_ok: boolean | null; enabled: boolean }> }>(
-    "/settings/models",
-  ).then((res) => {
+  return apiFetch<{
+    data: Array<{ last_verified_ok: boolean | null; enabled: boolean }>;
+  }>("/settings/models").then((res) => {
     const enabled = res.data.filter((m) => m.enabled);
     const ok = enabled.filter((m) => m.last_verified_ok === true).length;
     const errors = enabled.filter((m) => m.last_verified_ok === false).length;
@@ -116,7 +96,9 @@ function fetchModelStats(): Promise<ModelStats> {
 }
 
 function fetchApprovalMetrics(): Promise<ApprovalMetricsSummary> {
-  return apiFetch<{ data: { total_pending?: number } }>("/approvals/metrics").then((res) => ({
+  return apiFetch<{ data: { total_pending?: number } }>(
+    "/approvals/metrics",
+  ).then((res) => ({
     pending: res.data?.total_pending ?? 0,
   }));
 }
@@ -127,14 +109,19 @@ function fetchApprovalMetrics(): Promise<ApprovalMetricsSummary> {
 
 function AttentionStrip({
   items,
+  allItems,
   truncatedCount,
   onNavigate,
 }: {
   items: AttentionItem[];
+  allItems: AttentionItem[];
   truncatedCount: number;
   onNavigate: (route: string) => void;
 }) {
-  if (items.length === 0) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const visibleItems = isExpanded ? allItems : items;
+
+  if (allItems.length === 0) {
     return (
       <p className="font-serif italic text-muted-foreground text-sm">
         Everything is in hand.
@@ -143,10 +130,13 @@ function AttentionStrip({
   }
 
   return (
-    <div className="flex flex-col gap-0 overflow-hidden border border-border">
-      {items.map((item, idx) => (
+    <div
+      id="settings-console-attention-items"
+      className="flex flex-col gap-0 overflow-hidden border border-border"
+    >
+      {visibleItems.map((item) => (
         <div
-          key={`${item.kind}-${idx}`}
+          key={item.id}
           className="attention-row flex items-center justify-between gap-4 px-4 py-3"
           data-tone={item.tone}
           role="alert"
@@ -173,12 +163,20 @@ function AttentionStrip({
       ))}
       {truncatedCount > 0 && (
         <div className="px-4 py-2 font-mono text-[11px] text-muted-foreground border-t border-border flex items-center justify-between">
-          <span>{truncatedCount} more item{truncatedCount !== 1 ? "s" : ""} not shown.</span>
+          <span>
+            {isExpanded
+              ? `${truncatedCount} item${truncatedCount !== 1 ? "s" : ""} revealed.`
+              : `${truncatedCount} more item${truncatedCount !== 1 ? "s" : ""} not shown.`}
+          </span>
           <InlineActionLink
-            onClick={() => onNavigate("/audit-log")}
+            aria-controls="settings-console-attention-items"
+            aria-expanded={isExpanded}
+            onClick={() => setIsExpanded((expanded) => !expanded)}
             className="text-[11px]"
           >
-            ...{truncatedCount} more →
+            {isExpanded
+              ? `Show ${truncatedCount} fewer →`
+              : `...${truncatedCount} more →`}
           </InlineActionLink>
         </div>
       )}
@@ -193,13 +191,23 @@ function AttentionStrip({
 function ConsoleClock() {
   const [time, setTime] = useState(() => {
     const now = new Date();
-    return now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+    return now.toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
   });
 
   useEffect(() => {
     function tick() {
       const now = new Date();
-      setTime(now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }));
+      setTime(
+        now.toLocaleTimeString("en-GB", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }),
+      );
     }
     // Align to the next minute boundary
     const msUntilNextMinute = (60 - new Date().getSeconds()) * 1000;
@@ -212,7 +220,10 @@ function ConsoleClock() {
   }, []);
 
   return (
-    <span className="font-mono text-sm tabular-nums text-muted-foreground" aria-label="Current time">
+    <span
+      className="font-mono text-sm tabular-nums text-muted-foreground"
+      aria-label="Current time"
+    >
       {time}
     </span>
   );
@@ -253,7 +264,13 @@ function KpiCell({
   );
 }
 
-function KpiStrip({ counts, loading }: { counts: HeaderCounts | undefined; loading: boolean }) {
+function KpiStrip({
+  counts,
+  loading,
+}: {
+  counts: HeaderCounts | undefined;
+  loading: boolean;
+}) {
   const openApprovals = counts?.open_approvals;
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60">
@@ -264,7 +281,11 @@ function KpiStrip({ counts, loading }: { counts: HeaderCounts | undefined; loadi
       />
       <KpiCell
         label="Spend MTD"
-        value={counts?.spend_mtd_usd != null ? `$${counts.spend_mtd_usd.toFixed(2)}` : "—"}
+        value={
+          counts?.spend_mtd_usd != null
+            ? `$${counts.spend_mtd_usd.toFixed(2)}`
+            : "—"
+        }
         loading={loading}
       />
       <KpiCell
@@ -324,7 +345,9 @@ function PanelShell({
             →
           </span>
         </div>
-        <p className="text-xs text-muted-foreground leading-relaxed">{description}</p>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {description}
+        </p>
       </div>
       {children}
     </div>
@@ -362,13 +385,18 @@ function ModelsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
         </p>
       ) : (
         <div className="flex items-baseline gap-2">
-          <span className="text-[22px] font-medium tabular-nums leading-none">{data?.ok ?? 0}</span>
+          <span className="text-[22px] font-medium tabular-nums leading-none">
+            {data?.ok ?? 0}
+          </span>
           <span className="text-xs text-muted-foreground">
             verified / {data?.total ?? 0} enabled
           </span>
           {(data?.errors ?? 0) > 0 && (
             <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-[var(--red-text)]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--red)]" aria-hidden />
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-[var(--red)]"
+                aria-hidden
+              />
               {data!.errors} error{data!.errors !== 1 ? "s" : ""}
             </span>
           )}
@@ -435,7 +463,11 @@ function SpendPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
 }
 
 // Approvals panel — independent fetch
-function ApprovalsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
+function ApprovalsPanel({
+  onNavigate,
+}: {
+  onNavigate: (route: string) => void;
+}) {
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["console-panel-approvals"],
     queryFn: fetchApprovalMetrics,
@@ -485,7 +517,11 @@ function ApprovalsPanel({ onNavigate }: { onNavigate: (route: string) => void })
 }
 
 // Permissions panel — static summary, no sub-fetch needed
-function PermissionsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
+function PermissionsPanel({
+  onNavigate,
+}: {
+  onNavigate: (route: string) => void;
+}) {
   return (
     <PanelShell
       title="Permissions"
@@ -494,7 +530,8 @@ function PermissionsPanel({ onNavigate }: { onNavigate: (route: string) => void 
       onNavigate={onNavigate}
     >
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Manage access policies, webhook integrations, and export or wipe controls.
+        Manage access policies, webhook integrations, and export or wipe
+        controls.
       </p>
     </PanelShell>
   );
@@ -574,10 +611,15 @@ export default function SettingsConsolePage() {
       {/* ------------------------------------------------------------------ */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <Eyebrow as="p" className="mb-2">system · console</Eyebrow>
-          <h1 className="text-3xl font-medium tracking-tight leading-tight">Settings</h1>
+          <Eyebrow as="p" className="mb-2">
+            system · console
+          </Eyebrow>
+          <h1 className="text-3xl font-medium tracking-tight leading-tight">
+            Settings
+          </h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            System configuration, model catalog, spend controls, and access management.
+            System configuration, model catalog, spend controls, and access
+            management.
           </p>
         </div>
         <ConsoleClock />
@@ -607,6 +649,7 @@ export default function SettingsConsolePage() {
       ) : consoleData ? (
         <AttentionStrip
           items={consoleData.attention}
+          allItems={consoleData.attention_all}
           truncatedCount={consoleData.attention_truncated_count}
           onNavigate={handleNavigate}
         />

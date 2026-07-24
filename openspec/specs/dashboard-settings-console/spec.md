@@ -13,13 +13,19 @@ The dashboard SHALL have a top-level page at `/settings` rendered in the Dispatc
 - **WHEN** a user navigates to `/settings`
 - **THEN** the page renders, in vertical order:
   - **Page header**: title "Settings", mono eyebrow "system · console", clock (mono, `HH:MM` 24h, tabular nums).
-  - **AttentionStrip**: a rule-separated list of `{tone: red|amber, kind, text, action_route}` items drawn from `GET /api/settings/console` `attention[]`. Each row uses the attention-tint pattern: 4–7% alpha background in `tone` color, paired with a 2px left rail in the same color. Rows are clickable; click navigates to `action_route`.
+  - **AttentionStrip**: a rule-separated list of `{id, tone: red|amber, kind, text, action_route}` items. It initially renders the capped `attention[]` view from `GET /api/settings/console`; each row uses the attention-tint pattern: 4–7% alpha background in `tone` color, paired with a 2px left rail in the same color. Rows are clickable; click navigates to `action_route`.
   - **Panel grid**: one summary panel per sub-route (`/settings/models`, `/settings/spend`, `/settings/permissions`). Each panel fetches its own summary endpoint in parallel; a slow fetch in one MUST NOT block others.
 - **AND** the page uses Inter Tight (sans), JetBrains Mono (mono), Source Serif 4 (serif), and the OKLCH palette tokens already shipped in `frontend/src/index.css`; no new tokens are introduced.
 - **AND** the page contains no card chrome, no drop shadows, no gradients.
 
+#### Scenario: Inline attention overflow
+- **WHEN** `attention_truncated_count > 0`
+- **THEN** the strip renders an inline native control labelled `"...N more →"` that expands the omitted items from `attention_all[]` in the same strip
+- **AND** the control exposes its state with `aria-expanded`, supports keyboard activation, and collapses the same local list without navigation
+- **AND** the control does NOT navigate to `/audit-log` or any other route.
+
 #### Scenario: Empty attention strip
-- **WHEN** `attention[]` is empty
+- **WHEN** `attention_all[]` is empty
 - **THEN** the strip section renders a single serif-italic line "Everything is in hand." and no rows.
 
 #### Scenario: Panel summary load failure
@@ -34,9 +40,11 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
 - **WHEN** `GET /api/settings/console` is called
 - **THEN** the response is `ApiResponse[SettingsConsole]` where `SettingsConsole` contains:
   - `header_counts: {active_butlers: int | null, spend_mtd_usd: float | null, open_approvals: int | null, models_verified: int | null, models_total: int | null}` — a field is `null`, never a confident `0`, when its subsystem aggregation failed (the failure is always also surfaced as an amber `attention` item, but a header-only consumer must not have to cross-reference that list to tell "genuinely zero" from "unknown")
-  - `attention: AttentionItem[]` where `AttentionItem = {tone: "red"|"amber", kind: str, text: str, action_route: str}`
-  - `attention_truncated_count: int` — items beyond the cap (0 if `attention.length <= 5`)
-- **AND** the server caps `attention[]` at 5 items; items beyond 5 are surfaced via `attention_truncated_count` so the UI can render a `"...N more →"` indicator linking to `/audit-log`.
+  - `attention: AttentionItem[]` — the cap-sized compatibility view
+  - `attention_all: AttentionItem[]` — the complete ordered attention list
+  - `AttentionItem = {id: str, tone: "red"|"amber", kind: str, text: str, action_route: str}` where `id` is stable and unique for each independently actionable item; `kind` is not an identity key
+  - `attention_truncated_count: int` — `max(0, len(attention_all) - len(attention))`
+- **AND** the server caps only `attention[]` at 5 items while returning the complete `attention_all[]`; items beyond 5 are surfaced locally through the inline overflow control.
 - **AND** the response is cached server-side for 10 seconds (revalidated on cache miss). The cache is in-memory keyed by `actor` identity; in single-owner deployments the cache is effectively global.
 - **AND** the response uses tabular-nums-friendly types (integers and floats; never formatted strings).
 
@@ -50,18 +58,18 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
 
 #### Scenario: Sub-system aggregation failure is reported, not propagated
 - **WHEN** one sub-system aggregation fails (e.g., spend backend unavailable) while `GET /api/settings/console` is responding
-- **THEN** the endpoint still returns 200 with the partial header (fields that succeeded) and the partial `attention[]` array
-- **AND** the failed sub-system contributes one `attention` item `{tone: "amber", kind: "system", text: "<subsystem> aggregation failed: <error_id>", action_route: "<subsystem route>"}` so the operator notices.
+- **THEN** the endpoint still returns 200 with the partial header (fields that succeeded) and the partial attention data
+- **AND** the failed sub-system contributes one item `{id: "subsystem_error:<source>", tone: "amber", kind: "subsystem_error", text: "<subsystem> aggregation failed: <error_id>", action_route: "<subsystem route>"}` so the operator notices.
 
 #### Scenario: Attention items composed from sub-systems
 - **WHEN** the aggregator runs
-- **THEN** it composes `attention[]` from:
-  - Open approvals waiting for the owner (kind `approval`, route `/approvals`).
-  - Models with `state ∈ {error, rate-limited}` (kind `model`, route `/settings/models`).
-  - Auth-renewal required for any CLI provider (kind `auth`, route `/secrets`).
-  - Spend within 10% of the monthly ceiling (kind `spend`, route `/settings/spend`).
-  - Failed webhook deliveries in the last 24h (kind `webhook`, route `/settings/permissions`).
-- **AND** items are ordered with `tone="red"` first, then `tone="amber"`.
+- **THEN** it composes `attention_all[]` from:
+  - Open approvals waiting for the owner (kind `open_approvals`, route `/approvals`).
+  - Models with `state ∈ {error, rate-limited}` (kind `model_error`, route `/settings/models`).
+  - Auth-renewal required for any CLI provider (kind `auth_renewal`, route `/secrets?focus=c:cli-auth/<provider>` with the dynamic provider segment URL-encoded as needed). Each provider has its own stable `auth_renewal:<provider>` identity.
+  - Spend within 10% of the monthly ceiling (kind `spend_ceiling`, route `/settings/spend`).
+  - Failed webhook deliveries in the last 24h (kind `webhook_failure`, route `/settings/permissions`).
+- **AND** items are ordered with `tone="red"` first, then `tone="amber"`; `attention[]` is the five-item prefix of that order.
 
 ### Requirement: Settings Console Deltas On The Unified Fleet Event Bus
 The dashboard SHALL fan Settings Console `header_delta` / `attention_add` / `attention_remove` events onto the unified fleet event bus (`WS /api/events/stream`) so a client can receive live console updates via the single shared bus connection (bu-3quv8, completing the settings-console half of bu-qvnce.14's single-socket doctrine; the earlier dedicated `WS /api/settings/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
@@ -69,6 +77,7 @@ The dashboard SHALL fan Settings Console `header_delta` / `attention_add` / `att
 #### Scenario: Deltas are emitted via the shared bus
 - **WHEN** the console payload changes (a header count or an attention item)
 - **THEN** the backend emits the corresponding `header_delta` / `attention_add` / `attention_remove` event via `emit_event` onto `WS /api/events/stream`
+- **AND** `attention_add` is an identity-keyed upsert carrying a complete `AttentionItem`, and `attention_remove` carries its stable `id`; multiple items with the same `kind` remain distinct
 - **AND** this happens via a standalone background aggregation loop, independent of whether any client is connected.
 
 #### Scenario: Dashboard client subscribes via the shared bus, not a second socket
@@ -79,6 +88,7 @@ The dashboard SHALL fan Settings Console `header_delta` / `attention_add` / `att
 #### Scenario: A missed or replayed delta converges rather than drifts
 - **WHEN** a bus event is replayed from the shared bus's ring-buffer snapshot (on initial connect or reconnect), or a delta is missed entirely while disconnected
 - **THEN** the client ignores replayed console-delta events and instead relies on its periodic `GET /api/settings/console` reconciliation poll to reseed the full, authoritative state
+- **AND** live add/remove events update `attention_all[]` by stable identity before deriving its capped `attention[]` view and truncated count
 - **AND** state converges to the server's own aggregation on that fixed cadence rather than silently drifting from an unapplied or double-applied delta.
 
 ## Source References

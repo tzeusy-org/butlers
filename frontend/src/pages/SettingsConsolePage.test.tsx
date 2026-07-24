@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,6 +39,7 @@ function defaultApiFetchImpl(path: string) {
           models_total: 0,
         },
         attention: [],
+        attention_all: [],
         attention_truncated_count: 0,
       },
     });
@@ -102,7 +109,9 @@ describe("SettingsConsolePage", () => {
   it("Spend panel renders the ledger-priced MTD from GET /api/spend/forecast", async () => {
     apiFetchMock.mockImplementation((path: string) => {
       if (path === "/spend/forecast") {
-        return Promise.resolve({ data: { mtd_usd: 42.5, ceiling_source_error: false } });
+        return Promise.resolve({
+          data: { mtd_usd: 42.5, ceiling_source_error: false },
+        });
       }
       return defaultApiFetchImpl(path);
     });
@@ -120,7 +129,9 @@ describe("SettingsConsolePage", () => {
   it("Spend panel renders a degraded note instead of a fabricated $0 when the ledger source failed", async () => {
     apiFetchMock.mockImplementation((path: string) => {
       if (path === "/spend/forecast") {
-        return Promise.resolve({ data: { mtd_usd: 0, ceiling_source_error: true } });
+        return Promise.resolve({
+          data: { mtd_usd: 0, ceiling_source_error: true },
+        });
       }
       return defaultApiFetchImpl(path);
     });
@@ -130,5 +141,53 @@ describe("SettingsConsolePage", () => {
     const panel = await screen.findByLabelText("Go to Spend");
     expect(await within(panel).findByText(/ledger unavailable/i)).toBeTruthy();
     expect(within(panel).queryByText("$0.00")).toBeNull();
+  });
+
+  it("expands and collapses real omitted attention items inline without an audit-log door", async () => {
+    const allAttention = Array.from({ length: 6 }, (_, index) => ({
+      id: `auth_renewal:provider-${index + 1}`,
+      tone: "red" as const,
+      kind: "auth_renewal",
+      text: `Provider ${index + 1} needs auth.`,
+      action_route: `/secrets?focus=c:cli-auth/provider-${index + 1}`,
+    }));
+
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/settings/console") {
+        return Promise.resolve({
+          data: {
+            header_counts: {
+              active_butlers: 0,
+              spend_mtd_usd: 0,
+              open_approvals: 0,
+              models_verified: 0,
+              models_total: 0,
+            },
+            attention: allAttention.slice(0, 5),
+            attention_all: allAttention,
+            attention_truncated_count: 1,
+          },
+        });
+      }
+      return defaultApiFetchImpl(path);
+    });
+
+    renderPageAsync();
+
+    const expand = await screen.findByRole("button", { name: /1 more/i });
+    expect(expand.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Provider 6 needs auth.")).toBeNull();
+    expect(screen.queryByLabelText("Go to /audit-log")).toBeNull();
+
+    const user = userEvent.setup();
+    expand.focus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("Provider 6 needs auth.")).toBeTruthy();
+
+    const collapse = screen.getByRole("button", { name: /show 1 fewer/i });
+    expect(collapse.getAttribute("aria-expanded")).toBe("true");
+    collapse.focus();
+    await user.keyboard(" ");
+    expect(screen.queryByText("Provider 6 needs auth.")).toBeNull();
   });
 });

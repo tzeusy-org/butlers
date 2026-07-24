@@ -40,6 +40,8 @@ import type { FleetEvent } from "@/hooks/event-cache-registry";
 // ---------------------------------------------------------------------------
 
 export interface AttentionItem {
+  /** Stable per-item identity; kind is intentionally non-unique. */
+  id: string;
   tone: "red" | "amber";
   kind: string;
   text: string;
@@ -59,7 +61,10 @@ export interface HeaderCounts {
 
 export interface ConsoleData {
   header_counts: HeaderCounts;
+  /** Capped compatibility view, derived from attention_all. */
   attention: AttentionItem[];
+  /** Complete ordered list used for live convergence and inline reveal. */
+  attention_all: AttentionItem[];
   attention_truncated_count: number;
 }
 
@@ -67,48 +72,93 @@ export interface ConsoleData {
 // Pure reducers -- one per bus event type
 // ---------------------------------------------------------------------------
 
-export function applyHeaderDelta(prev: ConsoleData, delta: Partial<HeaderCounts>): ConsoleData {
+export function applyHeaderDelta(
+  prev: ConsoleData,
+  delta: Partial<HeaderCounts>,
+): ConsoleData {
   return { ...prev, header_counts: { ...prev.header_counts, ...delta } };
 }
 
+export const ATTENTION_CAP = 5;
+
+function sortAttentionItems(items: AttentionItem[]): AttentionItem[] {
+  return [...items].sort((a, b) => {
+    if (a.tone === b.tone) return 0;
+    return a.tone === "red" ? -1 : 1;
+  });
+}
+
+function withAttentionViews(
+  prev: ConsoleData,
+  items: AttentionItem[],
+): ConsoleData {
+  const attention_all = sortAttentionItems(items);
+  return {
+    ...prev,
+    attention: attention_all.slice(0, ATTENTION_CAP),
+    attention_all,
+    attention_truncated_count: Math.max(
+      0,
+      attention_all.length - ATTENTION_CAP,
+    ),
+  };
+}
+
 /**
- * Upsert by `kind` so a repeated add for the same kind does not duplicate,
- * then re-sort red-before-amber to preserve the ordering contract
- * (openspec/specs/dashboard-settings-console/spec.md line 61: "items are
- * ordered with tone=red first, then tone=amber"). The initial REST snapshot
+ * Upsert by stable `id` so a repeated add for the same item does not
+ * duplicate. `kind` is deliberately not unique: two CLI providers can both
+ * surface `auth_renewal`. Re-sort red-before-amber to preserve the ordering
+ * contract in `openspec/specs/dashboard-settings-console/spec.md`. The initial REST snapshot
  * already comes pre-sorted from `_build_console_payload`, but a live add can
  * insert a red item after existing amber ones (or vice versa) -- a plain
  * append would leave the strip out of contract order until the next
  * POLL_BUS_RECONCILE_MS reseed.
  */
-export function applyAttentionAdd(prev: ConsoleData, item: AttentionItem): ConsoleData {
-  const others = prev.attention.filter((it) => it.kind !== item.kind);
-  const merged = [...others, item];
-  const sorted = [...merged].sort((a, b) => {
-    if (a.tone === b.tone) return 0;
-    return a.tone === "red" ? -1 : 1;
-  });
-  return { ...prev, attention: sorted };
+export function applyAttentionAdd(
+  prev: ConsoleData,
+  item: AttentionItem,
+): ConsoleData {
+  const others = prev.attention_all.filter((it) => it.id !== item.id);
+  return withAttentionViews(prev, [...others, item]);
 }
 
-export function applyAttentionRemove(prev: ConsoleData, kind: string): ConsoleData {
-  return { ...prev, attention: prev.attention.filter((it) => it.kind !== kind) };
+export function applyAttentionRemove(
+  prev: ConsoleData,
+  id: string,
+): ConsoleData {
+  return withAttentionViews(
+    prev,
+    prev.attention_all.filter((item) => item.id !== id),
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
-function asPartialHeaderCounts(data: Record<string, unknown>): Partial<HeaderCounts> {
+function asPartialHeaderCounts(
+  data: Record<string, unknown>,
+): Partial<HeaderCounts> {
   return data as Partial<HeaderCounts>;
 }
 
-function asAttentionItem(data: Record<string, unknown>): AttentionItem {
+function asAttentionItem(
+  data: Record<string, unknown>,
+): AttentionItem | undefined {
+  if (
+    typeof data.id !== "string" ||
+    (data.tone !== "red" && data.tone !== "amber") ||
+    typeof data.kind !== "string" ||
+    typeof data.text !== "string" ||
+    typeof data.action_route !== "string"
+  ) {
+    return undefined;
+  }
   return data as unknown as AttentionItem;
 }
 
-function asAttentionKind(data: Record<string, unknown>): string | undefined {
-  return typeof data.kind === "string" ? data.kind : undefined;
+function asAttentionId(data: Record<string, unknown>): string | undefined {
+  return typeof data.id === "string" ? data.id : undefined;
 }
 
 /**
@@ -117,8 +167,12 @@ function asAttentionKind(data: Record<string, unknown>): string | undefined {
  * Returns `undefined` until `initialData` is first defined -- callers should
  * render their own loading state until then, same as before this port.
  */
-export function useSettingsConsoleLive(initialData: ConsoleData | undefined): ConsoleData | undefined {
-  const [liveData, setLiveData] = useState<ConsoleData | undefined>(initialData);
+export function useSettingsConsoleLive(
+  initialData: ConsoleData | undefined,
+): ConsoleData | undefined {
+  const [liveData, setLiveData] = useState<ConsoleData | undefined>(
+    initialData,
+  );
 
   // Reseed on every fresh REST snapshot (first load, or the page's
   // POLL_BUS_RECONCILE_MS reconciliation poll) -- this is what makes a
@@ -131,18 +185,23 @@ export function useSettingsConsoleLive(initialData: ConsoleData | undefined): Co
 
   useBusEvent("header_delta", (event: FleetEvent, meta) => {
     if (meta.replayed) return;
-    setLiveData((prev) => (prev ? applyHeaderDelta(prev, asPartialHeaderCounts(event.data)) : prev));
+    setLiveData((prev) =>
+      prev ? applyHeaderDelta(prev, asPartialHeaderCounts(event.data)) : prev,
+    );
   });
 
   useBusEvent("attention_add", (event: FleetEvent, meta) => {
     if (meta.replayed) return;
-    setLiveData((prev) => (prev ? applyAttentionAdd(prev, asAttentionItem(event.data)) : prev));
+    const item = asAttentionItem(event.data);
+    setLiveData((prev) =>
+      prev && item ? applyAttentionAdd(prev, item) : prev,
+    );
   });
 
   useBusEvent("attention_remove", (event: FleetEvent, meta) => {
     if (meta.replayed) return;
-    const kind = asAttentionKind(event.data);
-    setLiveData((prev) => (prev && kind ? applyAttentionRemove(prev, kind) : prev));
+    const id = asAttentionId(event.data);
+    setLiveData((prev) => (prev && id ? applyAttentionRemove(prev, id) : prev));
   });
 
   return liveData;

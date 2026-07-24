@@ -307,7 +307,44 @@ async def test_console_no_db_returns_zeros():
     assert hc["models_verified"] == 0
     assert hc["models_total"] == 0
     assert body["attention"] == []
+    assert body["attention_all"] == []
     assert body["attention_truncated_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_check_cli_auth_uses_provider_passport_focus_route_and_identity():
+    """Each CLI renewal points at its own Passport runtime row.
+
+    The ``c:cli-auth/<provider>`` focus grammar belongs to the Passport
+    surface; Settings Console only constructs its truthful, provider-specific
+    door and never starts an auth flow itself.
+    """
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+    from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
+
+    provider = CLIAuthProviderDef(
+        name="acme/main",
+        display_name="Acme Main",
+        runtime="codex",
+        binary_name="codex",
+    )
+    health = AuthHealthResult(
+        provider=provider.name,
+        state=AuthHealthState.not_authenticated,
+    )
+
+    with (
+        patch.dict(PROVIDERS, {provider.name: provider}, clear=True),
+        patch.object(CLIAuthProviderDef, "is_available", return_value=True),
+        patch(
+            "butlers.cli_auth.health.probe_all", new=AsyncMock(return_value={provider.name: health})
+        ),
+    ):
+        items = await console_mod._check_cli_auth(None)
+
+    assert [(item.id, item.action_route) for item in items] == [
+        ("auth_renewal:acme/main", "/secrets?focus=c:cli-auth/acme%2Fmain")
+    ]
 
 
 @pytest.mark.asyncio
@@ -449,6 +486,7 @@ async def test_console_partial_failure_subsystem_surfaces_amber():
     app = _make_app(db=None)
 
     spend_err_item = console_mod.AttentionItem(
+        id="subsystem_error:spend",
         tone="amber",
         kind="subsystem_error",
         text="Could not fetch spend data — totals may be unavailable.",
@@ -485,6 +523,7 @@ async def test_console_partial_failure_nulls_only_the_failed_header_count():
     app = _make_app(db=None)
 
     spend_err_item = console_mod.AttentionItem(
+        id="subsystem_error:spend",
         tone="amber",
         kind="subsystem_error",
         text="Could not fetch spend data — totals may be unavailable.",
@@ -520,17 +559,18 @@ async def test_console_partial_failure_nulls_only_the_failed_header_count():
 
 @pytest.mark.asyncio
 async def test_console_attention_truncated_at_five():
-    """When more than 5 attention items exist, truncated_count reflects overflow."""
+    """The compatibility cap keeps the complete, uniquely identified list."""
     app = _make_app(db=None)
 
     from butlers.api.routers.settings_console import AttentionItem as AI
 
     many_cli_items = [
         AI(
+            id=f"auth_renewal:provider-{i}",
             tone="red",
             kind="auth_renewal",
             text=f"Provider {i} needs auth.",
-            action_route="/secrets",
+            action_route=f"/secrets?focus=c:cli-auth/provider-{i}",
         )
         for i in range(6)  # 6 items will hit the cap of 5
     ]
@@ -550,6 +590,10 @@ async def test_console_attention_truncated_at_five():
     assert resp.status_code == 200, resp.text
     body = resp.json()["data"]
     assert len(body["attention"]) == 5
+    assert len(body["attention_all"]) == 6
+    assert [item["id"] for item in body["attention_all"]] == [
+        f"auth_renewal:provider-{i}" for i in range(6)
+    ]
     assert body["attention_truncated_count"] == 1
 
 
@@ -694,8 +738,13 @@ async def test_check_failed_webhooks_swallows_db_errors():
 
 
 def _console_payload(
-    *, active_butlers: int | None = 1, attention: list[dict] | None = None
+    *,
+    active_butlers: int | None = 1,
+    attention: list[dict] | None = None,
+    attention_all: list[dict] | None = None,
 ) -> dict:
+    all_items = attention_all if attention_all is not None else (attention or [])
+    visible_items = attention if attention is not None else all_items[:5]
     return {
         "header_counts": {
             "active_butlers": active_butlers,
@@ -704,8 +753,9 @@ def _console_payload(
             "models_verified": 0,
             "models_total": 0,
         },
-        "attention": attention or [],
-        "attention_truncated_count": 0,
+        "attention": visible_items,
+        "attention_all": all_items,
+        "attention_truncated_count": max(0, len(all_items) - len(visible_items)),
     }
 
 
@@ -739,7 +789,13 @@ def test_compute_console_deltas_header_count_degrades_to_none():
 
 
 def test_compute_console_deltas_attention_add():
-    item = {"tone": "red", "kind": "open_approvals", "text": "x", "action_route": "/approvals"}
+    item = {
+        "id": "open_approvals",
+        "tone": "red",
+        "kind": "open_approvals",
+        "text": "x",
+        "action_route": "/approvals",
+    }
     prev = _console_payload(attention=[])
     new = _console_payload(attention=[item])
     header_delta, added, removed = console_mod._compute_console_deltas(prev, new)
@@ -750,6 +806,7 @@ def test_compute_console_deltas_attention_add():
 
 def test_compute_console_deltas_attention_remove():
     item = {
+        "id": "spend_ceiling",
         "tone": "amber",
         "kind": "spend_ceiling",
         "text": "x",
@@ -761,6 +818,41 @@ def test_compute_console_deltas_attention_remove():
     assert header_delta == {}
     assert added == []
     assert removed == ["spend_ceiling"]
+
+
+def test_compute_console_deltas_keeps_same_kind_items_distinct_by_identity():
+    codex = {
+        "id": "auth_renewal:codex",
+        "tone": "red",
+        "kind": "auth_renewal",
+        "text": "Codex needs auth.",
+        "action_route": "/secrets?focus=c:cli-auth/codex",
+    }
+    opencode = {
+        "id": "auth_renewal:opencode",
+        "tone": "red",
+        "kind": "auth_renewal",
+        "text": "OpenCode needs auth.",
+        "action_route": "/secrets?focus=c:cli-auth/opencode",
+    }
+
+    header_delta, added, removed = console_mod._compute_console_deltas(
+        _console_payload(attention_all=[]),
+        _console_payload(attention_all=[codex, opencode]),
+    )
+
+    assert header_delta == {}
+    assert added == [codex, opencode]
+    assert removed == []
+
+    header_delta, added, removed = console_mod._compute_console_deltas(
+        _console_payload(attention_all=[codex, opencode]),
+        _console_payload(attention_all=[opencode]),
+    )
+
+    assert header_delta == {}
+    assert added == []
+    assert removed == ["auth_renewal:codex"]
 
 
 # ---------------------------------------------------------------------------
@@ -807,19 +899,21 @@ async def test_settings_console_delta_loop_emits_deltas_on_change():
     """A change between tick 1 and tick 2 fans header_delta / attention_add /
     attention_remove onto the fleet event bus via emit_event."""
     added_item = {
+        "id": "open_approvals",
         "tone": "red",
         "kind": "open_approvals",
         "text": "x",
         "action_route": "/approvals",
     }
     removed_item = {
+        "id": "spend_ceiling",
         "tone": "amber",
         "kind": "spend_ceiling",
         "text": "y",
         "action_route": "/settings/spend",
     }
-    payload_1 = _console_payload(active_butlers=1, attention=[removed_item])
-    payload_2 = _console_payload(active_butlers=2, attention=[added_item])
+    payload_1 = _console_payload(active_butlers=1, attention_all=[removed_item])
+    payload_2 = _console_payload(active_butlers=2, attention_all=[added_item])
 
     call_count = 0
     second_tick_done = asyncio.Event()
@@ -853,7 +947,7 @@ async def test_settings_console_delta_loop_emits_deltas_on_change():
     calls = {c.args[0]: c.args[1] for c in mock_emit.call_args_list}
     assert calls["header_delta"] == {"active_butlers": 2}
     assert calls["attention_add"] == added_item
-    assert calls["attention_remove"] == {"kind": "spend_ceiling"}
+    assert calls["attention_remove"] == {"id": "spend_ceiling"}
     assert console_mod._cache_payload == payload_2
 
 

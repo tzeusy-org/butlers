@@ -666,6 +666,7 @@ def _case_settings_console() -> DegradedCase:
             app.dependency_overrides[console_mod._get_db_manager] = lambda: None
 
             spend_err_item = console_mod.AttentionItem(
+                id="subsystem_error:spend",
                 tone="amber",
                 kind="subsystem_error",
                 text="Could not fetch spend data -- totals may be unavailable.",

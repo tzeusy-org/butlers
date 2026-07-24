@@ -5,7 +5,8 @@ Implements §7.1 of the settings-redesign OpenSpec change:
   GET  /api/settings/console
        ├── header_counts: active_butlers, spend_mtd_usd, open_approvals,
        │                  models_verified, models_total
-       └── attention[]: tone, kind, text, action_route
+       └── attention[]: capped compatibility view of attention_all[]
+           Each item has stable id, tone, kind, text, action_route.
            Ordering: red items first, then amber.
            Capped at 5 visible items; remainder counted in attention_truncated_count.
            Cache: 10s in-memory (single-actor, single-owner deployments).
@@ -32,6 +33,7 @@ import asyncio
 import logging
 import time
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -72,6 +74,7 @@ _ATTENTION_TONE = str  # "red" | "amber"
 class AttentionItem(BaseModel):
     """A single attention item surfaced in the console strip."""
 
+    id: str
     tone: str  # "red" | "amber"
     kind: str
     text: str
@@ -100,7 +103,10 @@ class ConsoleResponse(BaseModel):
     """Full response for GET /api/settings/console."""
 
     header_counts: HeaderCounts
+    # ``attention`` remains the cap-sized compatibility view. Consumers that
+    # need correct incremental convergence use the complete, ordered list.
     attention: list[AttentionItem]
+    attention_all: list[AttentionItem]
     attention_truncated_count: int
 
 
@@ -148,6 +154,7 @@ async def _count_active_butlers(
     except Exception as exc:
         logger.warning("console: active-butlers aggregation failed: %s", exc)
         return 0, AttentionItem(
+            id="subsystem_error:butlers",
             tone="amber",
             kind="subsystem_error",
             text="Could not reach the butler roster — status may be stale.",
@@ -183,6 +190,7 @@ async def _get_spend_mtd(
             None,
             None,
             AttentionItem(
+                id="subsystem_error:spend",
                 tone="amber",
                 kind="subsystem_error",
                 text="Could not fetch spend data — totals may be unavailable.",
@@ -206,6 +214,7 @@ async def _get_spend_mtd(
                 None,
                 ceiling_usd,
                 AttentionItem(
+                    id="subsystem_error:spend",
                     tone="amber",
                     kind="subsystem_error",
                     text=(f"Spend pricing is incomplete for executed models: {names}."),
@@ -220,6 +229,7 @@ async def _get_spend_mtd(
             None,
             None,
             AttentionItem(
+                id="subsystem_error:spend",
                 tone="amber",
                 kind="subsystem_error",
                 text="Could not fetch spend data — totals may be unavailable.",
@@ -255,6 +265,7 @@ async def _count_open_approvals(db: DatabaseManager | None) -> tuple[int, Attent
     except Exception as exc:
         logger.warning("console: open-approvals aggregation failed: %s", exc)
         return 0, AttentionItem(
+            id="subsystem_error:approvals",
             tone="amber",
             kind="subsystem_error",
             text="Could not reach the approvals subsystem.",
@@ -289,6 +300,7 @@ async def _count_models(db: DatabaseManager | None) -> tuple[int, int, Attention
             0,
             0,
             AttentionItem(
+                id="subsystem_error:models",
                 tone="amber",
                 kind="subsystem_error",
                 text="Could not read the model catalog.",
@@ -315,10 +327,11 @@ async def _check_cli_auth(db: DatabaseManager | None) -> list[AttentionItem]:
             if health is not None and health.state in ("not_authenticated", "probe_failed"):
                 items.append(
                     AttentionItem(
+                        id=f"auth_renewal:{p.name}",
                         tone="red",
                         kind="auth_renewal",
                         text=f"CLI runtime '{p.display_name}' needs re-authentication.",
-                        action_route="/secrets?tab=runtimes",
+                        action_route=f"/secrets?focus=c:cli-auth/{quote(p.name, safe='')}",
                     )
                 )
     except Exception as exc:
@@ -349,6 +362,7 @@ async def _check_model_errors(db: DatabaseManager | None) -> list[AttentionItem]
             suffix = f" (+{len(rows) - 3} more)" if len(rows) > 3 else ""
             items.append(
                 AttentionItem(
+                    id="model_error",
                     tone="red",
                     kind="model_error",
                     text=f"Model verification failed: {aliases}{suffix}.",
@@ -388,6 +402,7 @@ async def _check_failed_webhooks(db: DatabaseManager | None) -> list[AttentionIt
         if count and count > 0:
             items.append(
                 AttentionItem(
+                    id="webhook_failure",
                     tone="amber",
                     kind="webhook_failure",
                     text=f"{count} webhook endpoint(s) failed in the last 24h.",
@@ -446,6 +461,7 @@ async def _build_console_payload(
     if open_approvals > 0:
         red_items.append(
             AttentionItem(
+                id="open_approvals",
                 tone="red",
                 kind="open_approvals",
                 text=f"{open_approvals} approval(s) are waiting for your review.",
@@ -482,6 +498,7 @@ async def _build_console_payload(
             pct = int(ratio * 100)
             amber_items.append(
                 AttentionItem(
+                    id="spend_ceiling",
                     tone="amber",
                     kind="spend_ceiling",
                     text=f"Monthly spend is at {pct}% of the ${ceiling:.0f} ceiling.",
@@ -496,8 +513,9 @@ async def _build_console_payload(
     amber_items.extend(subsystem_errors)
 
     all_items = red_items + amber_items
-    visible = all_items[:_ATTENTION_CAP]
-    truncated = max(0, len(all_items) - _ATTENTION_CAP)
+    attention_all = [item.model_dump() for item in all_items]
+    visible = attention_all[:_ATTENTION_CAP]
+    truncated = max(0, len(attention_all) - _ATTENTION_CAP)
 
     return {
         "header_counts": {
@@ -509,7 +527,10 @@ async def _build_console_payload(
             "models_verified": None if model_count_err is not None else models_verified,
             "models_total": None if model_count_err is not None else models_total,
         },
-        "attention": [item.model_dump() for item in visible],
+        # Keep the original capped field for existing callers, but publish the
+        # full ordered set for identity-safe bus convergence and local reveal.
+        "attention": visible,
+        "attention_all": attention_all,
         "attention_truncated_count": truncated,
     }
 
@@ -518,7 +539,7 @@ def _compute_console_deltas(
     prev_payload: dict[str, Any],
     new_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
-    """Diff two console payloads into (header_delta, added_items, removed_kinds).
+    """Diff two console payloads into (header_delta, added_items, removed_ids).
 
     Pure, no I/O -- used by the standalone bus-emitting background loop
     (``run_settings_console_delta_loop``).
@@ -527,11 +548,15 @@ def _compute_console_deltas(
     new_counts = new_payload["header_counts"]
     header_delta = {k: v for k, v in new_counts.items() if old_counts.get(k) != v}
 
-    old_items = {item["kind"]: item for item in prev_payload["attention"]}
-    new_items = {item["kind"]: item for item in new_payload["attention"]}
+    # Never key by ``kind``: several independently actionable CLI providers
+    # legitimately share ``kind=auth_renewal``. The full list (rather than
+    # capped ``attention``) keeps a change beyond the visible prefix live.
+    old_items = {item["id"]: item for item in prev_payload["attention_all"]}
+    new_items = {item["id"]: item for item in new_payload["attention_all"]}
 
-    added = [item for kind, item in new_items.items() if kind not in old_items]
-    removed = [kind for kind in old_items if kind not in new_items]
+    # An existing identity whose content changed is an upsert on the bus.
+    added = [item for item_id, item in new_items.items() if old_items.get(item_id) != item]
+    removed = [item_id for item_id in old_items if item_id not in new_items]
 
     return header_delta, added, removed
 
@@ -603,8 +628,8 @@ async def run_settings_console_delta_loop(
                     emit_event("header_delta", header_delta)
                 for item in added:
                     emit_event("attention_add", item)
-                for kind in removed:
-                    emit_event("attention_remove", {"kind": kind})
+                for item_id in removed:
+                    emit_event("attention_remove", {"id": item_id})
             except Exception:
                 logger.debug(
                     "settings_console_delta_loop: emit_event failed (non-fatal)", exc_info=True
