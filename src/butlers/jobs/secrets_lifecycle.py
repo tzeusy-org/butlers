@@ -878,6 +878,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 _LIFECYCLE_NOTIFIED_ACTION,
                 target=snapshot.key,
                 note=snapshot.state,
+                result="delivered",
             )
             # This direct delivery satisfied the state transition. Cancel any
             # pending retry envelope left over from a prior failed tick so

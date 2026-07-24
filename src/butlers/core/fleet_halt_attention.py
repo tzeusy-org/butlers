@@ -313,6 +313,7 @@ async def maybe_push_fleet_halt_attention(
             _HALT_NOTIFIED_ACTION,
             target=_HALT_NOTIFIED_TARGET,
             note=window,
+            result="delivered",
         )
     except Exception:
         logger.warning(

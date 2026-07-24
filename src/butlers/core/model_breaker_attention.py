@@ -280,6 +280,7 @@ async def maybe_push_breaker_open_attention(
             _BREAKER_NOTIFIED_ACTION,
             target=f"{_BREAKER_NOTIFIED_TARGET_PREFIX}{catalog_entry_id}",
             note=str(consecutive_failures),
+            result="delivered",
         )
     except Exception:
         logger.warning(

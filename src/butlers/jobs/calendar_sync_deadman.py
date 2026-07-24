@@ -276,6 +276,7 @@ async def maybe_escalate_calendar_sync_deadman(
             _FIRST_DETECTED_ACTION,
             target=fingerprint,
             note=_summarize(report.stale_sources),
+            result="detected",
         )
         return {
             "escalated": False,
@@ -320,7 +321,12 @@ async def maybe_escalate_calendar_sync_deadman(
             ),
         )
         await audit_router.append(
-            pool, _DEADMAN_ACTOR, _ESCALATED_ACTION, target=fingerprint, note=str(attempt_id)
+            pool,
+            _DEADMAN_ACTOR,
+            _ESCALATED_ACTION,
+            target=fingerprint,
+            note=str(attempt_id),
+            result="escalated",
         )
     except Exception:
         logger.exception("calendar sync deadman: QA escalation failed")

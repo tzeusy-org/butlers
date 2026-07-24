@@ -145,7 +145,13 @@ async def run_external_deadman_check(pool: asyncpg.Pool, url: str) -> dict[str, 
     if not ok:
         return {"success": False}
     try:
-        await audit_router.append(pool, _DEADMAN_ACTOR, _PING_SUCCESS_ACTION, target=url)
+        await audit_router.append(
+            pool,
+            _DEADMAN_ACTOR,
+            _PING_SUCCESS_ACTION,
+            target=url,
+            result="success",
+        )
     except Exception:
         logger.warning("external deadman: failed to record successful ping", exc_info=True)
         return {"success": True, "recorded": False}

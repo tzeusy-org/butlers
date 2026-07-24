@@ -297,6 +297,7 @@ async def maybe_escalate_drift(pool: asyncpg.Pool, report: DriftReport) -> dict[
             _FIRST_DETECTED_ACTION,
             target=fingerprint,
             note=_summarize(report.drifted),
+            result="detected",
         )
         return {
             "escalated": False,
@@ -341,7 +342,12 @@ async def maybe_escalate_drift(pool: asyncpg.Pool, report: DriftReport) -> dict[
             ),
         )
         await audit_router.append(
-            pool, _DRIFT_ACTOR, _ESCALATED_ACTION, target=fingerprint, note=str(attempt_id)
+            pool,
+            _DRIFT_ACTOR,
+            _ESCALATED_ACTION,
+            target=fingerprint,
+            note=str(attempt_id),
+            result="escalated",
         )
     except Exception:
         logger.exception("migration drift sentinel: QA escalation failed")

@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import ast
 import ipaddress
 import re
 import uuid
@@ -60,6 +61,7 @@ _DELETE_PATTERN = re.compile(
 
 # This file itself describes the pattern in comments — skip it.
 _THIS_FILE = Path(__file__).resolve()
+_DIRECT_AUDIT_PRODUCER_ROOT = _REPO_ROOT / "src" / "butlers"
 
 
 def _iter_python_files():
@@ -74,6 +76,35 @@ def _is_comment_or_docstring_line(line: str) -> bool:
     """Heuristic: skip lines that are pure Python comments."""
     stripped = line.strip()
     return stripped.startswith("#")
+
+
+def _direct_audit_result_omissions(source: str, path: Path) -> list[str]:
+    """Return source locations for direct audit writers without an outcome.
+
+    The generic router remains compatible with an omitted result. This guard is
+    deliberately limited to the production convention ``audit_router.append``
+    so direct producers cannot silently lose their own semantic attribution.
+    """
+    tree = ast.parse(source, filename=str(path))
+    omissions: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "audit_router"
+        ):
+            continue
+        result_keyword = next(
+            (keyword for keyword in node.keywords if keyword.arg == "result"), None
+        )
+        if result_keyword is None or (
+            isinstance(result_keyword.value, ast.Constant) and result_keyword.value.value is None
+        ):
+            omissions.append(f"{path}:{node.lineno}")
+    return omissions
 
 
 def test_no_delete_from_audit_log_in_repo():
@@ -97,6 +128,28 @@ def test_no_delete_from_audit_log_in_repo():
         "Found destructive statement(s) targeting public.audit_log — "
         "the table is append-only:\n" + "\n".join(violations)
     )
+
+
+def test_direct_production_audit_writers_supply_explicit_results():
+    """Every direct producer owns an outcome; generic append callers remain optional."""
+    omissions: list[str] = []
+    for path in sorted(_DIRECT_AUDIT_PRODUCER_ROOT.rglob("*.py")):
+        source = path.read_text(encoding="utf-8", errors="replace")
+        omissions.extend(_direct_audit_result_omissions(source, path.relative_to(_REPO_ROOT)))
+
+    assert not omissions, (
+        "Direct production audit writers must pass a producer-meaningful result:\n"
+        + "\n".join(omissions)
+    )
+
+
+def test_direct_audit_result_guard_reports_missing_writer_location():
+    omissions = _direct_audit_result_omissions(
+        "async def writer():\n    await audit_router.append(pool, 'owner', 'action')\n",
+        Path("synthetic_direct_writer.py"),
+    )
+
+    assert omissions == ["synthetic_direct_writer.py:2"]
 
 
 # ---------------------------------------------------------------------------

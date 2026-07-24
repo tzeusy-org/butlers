@@ -221,6 +221,7 @@ async def test_onset_delivers_records_ledger_and_writes_debounce_marker():
     assert audit_append.await_args.args[2] == "model_breaker_open_notified"
     assert audit_append.await_args.kwargs["target"] == f"model_breaker:{_ENTRY_ID}"
     assert audit_append.await_args.kwargs["note"] == "5"
+    assert audit_append.await_args.kwargs["result"] == "delivered"
 
 
 async def test_non_high_priority_is_suppressed_by_quiet_hours():

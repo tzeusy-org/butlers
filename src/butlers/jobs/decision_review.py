@@ -792,6 +792,7 @@ async def run_decision_escalation_check(
                 _ESCALATED_ACTION,
                 target=fingerprint,
                 note=f"blocked {hit.blocked_kind} for {_format_age(hit.block_age)}",
+                result="delivered",
             )
             escalated += 1
         except Exception as exc:  # noqa: BLE001 - one bad escalation must not sink the tick
