@@ -720,11 +720,18 @@ fast smoke-tier framing and the latest-revision round-trip guard.
   provisioning path
 
 #### Scenario: Post-merge migration-chain integrity gate
-- **WHEN** a push to `main` changes a path under `alembic/versions/**`
+- **WHEN** a push to `main` changes a migration under any root family discovered by
+  `get_all_chains()`:
+  - `alembic/versions/**` for shared/core chains
+  - `src/butlers/modules/*/migrations/**` for module chains
+  - `roster/*/migrations/**` for butler-specific chains
 - **THEN** the `Migration Chain Integrity (main)` workflow checks out the pushed
   merged SHA and runs `tests/config/test_migration_chain_head.py`
 - **AND** the GitHub Actions check fails loudly if the merged tree has duplicate
   revisions or more than one Alembic head
+- **AND** a focused workflow-path regression evaluates a representative migration
+  change from each root family, so future chains within those families remain
+  covered without a static chain count
 
 ### Requirement: Daemon Lifecycle Smoke Test
 The project SHALL prove that a butler daemon completes its lifecycle initialization

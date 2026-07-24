@@ -9,6 +9,8 @@ on:
       - main
     paths:
       - "alembic/versions/**"
+      - "src/butlers/modules/*/migrations/**"
+      - "roster/*/migrations/**"
   workflow_dispatch:
 
 permissions:

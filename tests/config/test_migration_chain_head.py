@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import ast
 import textwrap
+from fnmatch import fnmatchcase
+from functools import cache
 from pathlib import Path
 
 import pytest
+import yaml
 
 from butlers.migrations import (
     _resolve_chain_dir,
@@ -23,6 +26,61 @@ from butlers.migrations import (
 )
 
 pytestmark = pytest.mark.unit
+
+_MIGRATION_CHAIN_WORKFLOW_PATH = (
+    Path(__file__).resolve().parents[2] / ".github" / "workflows" / "migration-chain-main.yml"
+)
+_MIGRATION_ROOT_PATH_FILTERS = (
+    "alembic/versions/**",
+    "src/butlers/modules/*/migrations/**",
+    "roster/*/migrations/**",
+)
+
+
+def _migration_chain_workflow_push_paths() -> list[str]:
+    """Load the workflow path filters without YAML 1.1 coercing ``on`` to ``True``."""
+    workflow = yaml.load(
+        _MIGRATION_CHAIN_WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+    )
+    assert isinstance(workflow, dict)
+    push = workflow["on"]["push"]
+    assert "main" in push["branches"]
+    paths = push["paths"]
+    assert isinstance(paths, list)
+    assert all(isinstance(path, str) for path in paths)
+    return paths
+
+
+@cache
+def _github_path_glob_matches(path_parts: tuple[str, ...], pattern_parts: tuple[str, ...]) -> bool:
+    """Match the segment glob semantics used by the workflow's path filters."""
+    if not pattern_parts:
+        return not path_parts
+
+    pattern_part = pattern_parts[0]
+    remaining_patterns = pattern_parts[1:]
+    if pattern_part == "**":
+        return any(
+            _github_path_glob_matches(path_parts[index:], remaining_patterns)
+            for index in range(len(path_parts) + 1)
+        )
+
+    return (
+        bool(path_parts)
+        and fnmatchcase(path_parts[0], pattern_part)
+        and _github_path_glob_matches(path_parts[1:], remaining_patterns)
+    )
+
+
+def _workflow_selects_path(changed_path: str, path_filters: list[str]) -> bool:
+    """Apply the ordered include/exclude behavior of GitHub Actions path filters."""
+    selected = False
+    for path_filter in path_filters:
+        is_exclusion = path_filter.startswith("!")
+        pattern = path_filter.removeprefix("!")
+        if _github_path_glob_matches(tuple(changed_path.split("/")), tuple(pattern.split("/"))):
+            selected = not is_exclusion
+    return selected
 
 
 def test_get_chain_head_returns_the_real_core_head():
@@ -55,6 +113,26 @@ def test_every_recognized_chain_resolves_exactly_one_head():
     for chain in get_all_chains():
         head = get_chain_head(chain)
         assert head in get_chain_revision_ids(chain)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    (
+        "alembic/versions/core/core_999.py",
+        "src/butlers/modules/future_module/migrations/001_future.py",
+        "roster/future_butler/migrations/001_future.py",
+    ),
+)
+def test_post_merge_migration_chain_workflow_covers_all_discovered_root_families(
+    changed_path: str,
+):
+    """Every root family get_all_chains() discovers must select the main-chain gate."""
+    path_filters = _migration_chain_workflow_push_paths()
+    assert set(path_filters) == set(_MIGRATION_ROOT_PATH_FILTERS)
+
+    assert _workflow_selects_path(changed_path, path_filters), (
+        f"Migration change {changed_path!r} does not select the post-merge chain workflow"
+    )
 
 
 def _collect_revision_locations(chain_dirs: dict[str, Path]) -> dict[str, list[str]]:
