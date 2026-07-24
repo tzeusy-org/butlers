@@ -4114,16 +4114,25 @@ interface _BackendStatsRow {
 
 /**
  * Derive liveness string from last heartbeat timestamp.
+ *
+ * Mirrors butlers.api.models.connector.derive_liveness (Python) exactly so
+ * the same connector never disagrees between this switchboard-routed card
+ * and any other reader (bu-27dxl.6.6) -- this was previously a 30-minute
+ * stale cutoff, a full 15 minutes later than the backend's, which could
+ * show "stale" here for a connector every other surface already reports
+ * "offline":
  * - online: heartbeat within the last 5 minutes
- * - stale: heartbeat between 5 and 30 minutes ago
- * - offline: no heartbeat, or more than 30 minutes ago
+ * - stale: heartbeat between 5 and 15 minutes ago
+ * - offline: no heartbeat, more than 15 minutes ago, or a heartbeat more
+ *   than 5 minutes in the future (clock skew is never treated as online)
  */
 function _deriveLiveness(lastHeartbeatAt: string | null): string {
   if (!lastHeartbeatAt) return "offline";
   const ageMs = Date.now() - new Date(lastHeartbeatAt).getTime();
   const ageMins = ageMs / 60_000;
-  if (ageMins < 5) return "online";
-  if (ageMins < 30) return "stale";
+  if (ageMins < -5) return "offline";
+  if (ageMins <= 5) return "online";
+  if (ageMins <= 15) return "stale";
   return "offline";
 }
 

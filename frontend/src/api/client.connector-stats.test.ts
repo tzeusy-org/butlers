@@ -127,15 +127,19 @@ describe("listConnectorSummaries liveness derivation", () => {
     expect(resp.data[0].liveness).toBe("online");
   });
 
-  it("derives liveness=stale when heartbeat is 6-29 minutes ago", async () => {
+  it("derives liveness=stale when heartbeat is 6-15 minutes ago", async () => {
     const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 mins ago
     mockResponse({ data: [makeEntry({ last_heartbeat_at: stale })] });
     const resp = await listConnectorSummaries();
     expect(resp.data[0].liveness).toBe("stale");
   });
 
-  it("derives liveness=offline when heartbeat is 30+ minutes ago", async () => {
-    const old = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1 hour ago
+  it("derives liveness=offline when heartbeat is 16+ minutes ago", async () => {
+    // Regression guard for bu-27dxl.6.6: this window previously used a
+    // 30-minute cutoff here (disagreeing with the backend's 15-minute one),
+    // so a 20-minute-old heartbeat used to render "stale" on this card while
+    // every backend-computed liveness reader already called it "offline".
+    const old = new Date(Date.now() - 20 * 60 * 1000).toISOString(); // 20 mins ago
     mockResponse({ data: [makeEntry({ last_heartbeat_at: old })] });
     const resp = await listConnectorSummaries();
     expect(resp.data[0].liveness).toBe("offline");
@@ -143,6 +147,13 @@ describe("listConnectorSummaries liveness derivation", () => {
 
   it("derives liveness=offline when no heartbeat", async () => {
     mockResponse({ data: [makeEntry({ last_heartbeat_at: null })] });
+    const resp = await listConnectorSummaries();
+    expect(resp.data[0].liveness).toBe("offline");
+  });
+
+  it("derives liveness=offline for a future-dated heartbeat (clock skew)", async () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour ahead
+    mockResponse({ data: [makeEntry({ last_heartbeat_at: future })] });
     const resp = await listConnectorSummaries();
     expect(resp.data[0].liveness).toBe("offline");
   });

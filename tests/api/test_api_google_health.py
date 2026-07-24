@@ -217,11 +217,23 @@ def test_estimate_token_expiry_normalizes_naive_datetime_to_utc():
             GoogleHealthConnectorState.degraded,
             False,
         ),
+        # error/recent: a genuinely live connector reporting error stays error.
+        (
+            {"id": uuid.uuid4()},
+            _ALL_HEALTH_SCOPES,
+            {"state": "error", "last_heartbeat_at": "NOW"},
+            GoogleHealthConnectorState.error,
+            False,
+        ),
+        # missing heartbeat: an 'error' state label with no heartbeat at all
+        # (bu-27dxl.6.6) is untrustworthy as a liveness signal -- degraded,
+        # not error. Regression guard for the pre-fix bug where a stale/
+        # missing heartbeat's stored state was presented as-is.
         (
             {"id": uuid.uuid4()},
             _ALL_HEALTH_SCOPES,
             {"state": "error"},
-            GoogleHealthConnectorState.error,
+            GoogleHealthConnectorState.degraded,
             False,
         ),
         (
@@ -238,14 +250,50 @@ def test_estimate_token_expiry_normalizes_naive_datetime_to_utc():
             GoogleHealthConnectorState.healthy,
             True,
         ),
+        # healthy/stale: a stale heartbeat is offline (degraded) regardless
+        # of the last state written (bu-27dxl.6.6 governing intent).
+        (
+            {"id": uuid.uuid4()},
+            _ALL_HEALTH_SCOPES,
+            {"state": "healthy", "last_heartbeat_at": "STALE"},
+            GoogleHealthConnectorState.degraded,
+            False,
+        ),
+        # future-dated heartbeat: clock skew must never read as online.
+        (
+            {"id": uuid.uuid4()},
+            _ALL_HEALTH_SCOPES,
+            {"state": "healthy", "last_heartbeat_at": "FUTURE"},
+            GoogleHealthConnectorState.degraded,
+            False,
+        ),
+        # paused: explicit operator suppression is never presented as healthy.
+        (
+            {"id": uuid.uuid4()},
+            _ALL_HEALTH_SCOPES,
+            {"state": "paused", "last_heartbeat_at": "NOW"},
+            GoogleHealthConnectorState.degraded,
+            False,
+        ),
     ],
 )
 def test_derive_state(account, granted, heartbeat, exp_state, exp_connected):
-    # Resolve "NOW" sentinel at test-call time to avoid parametrize-eval staleness.
-    # parametrize runs at module import; a stale timestamp causes false degraded→healthy
-    # mismatches when CI takes more than _LIVENESS_THRESHOLD_SECONDS to reach this test.
-    if heartbeat and heartbeat.get("last_heartbeat_at") == "NOW":
-        heartbeat = {**heartbeat, "last_heartbeat_at": datetime.now(UTC)}
+    # Resolve timestamp sentinels at test-call time to avoid parametrize-eval
+    # staleness (parametrize runs at module import).
+    # - "NOW": within the 5-minute online window.
+    # - "STALE": within the 5-15-minute stale window (never "online").
+    # - "FUTURE": beyond the 5-minute clock-skew tolerance ahead of now.
+    sentinel_offsets = {
+        "NOW": timedelta(0),
+        "STALE": timedelta(minutes=10),
+        "FUTURE": -timedelta(minutes=10),
+    }
+    raw_hb_at = heartbeat.get("last_heartbeat_at") if heartbeat else None
+    if raw_hb_at in sentinel_offsets:
+        heartbeat = {
+            **heartbeat,
+            "last_heartbeat_at": datetime.now(UTC) - sentinel_offsets[raw_hb_at],
+        }
     state, connected = _derive_state(
         account=account, granted_health_scopes=granted, heartbeat=heartbeat
     )

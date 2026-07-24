@@ -31,6 +31,7 @@ from butlers.api.models.calendar import (
 from butlers.api.models.calendar_workspace import (
     CalendarAccountEntry,
     CalendarAccountHealth,
+    CalendarAccountHealthState,
     CalendarAccountsResponse,
     CalendarAuditEntry,
     CalendarAuditResponse,
@@ -81,6 +82,7 @@ from butlers.api.models.calendar_workspace import (
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
 )
+from butlers.api.models.connector import derive_liveness
 from butlers.api.read_models.calendar_workspace_v1 import (
     DEDUP_STRATEGIES,
     CalendarDedupRules,
@@ -3519,7 +3521,20 @@ async def _fetch_calendar_heartbeats_by_email(
 def _build_account_health(heartbeat: dict[str, Any] | None) -> CalendarAccountHealth:
     if heartbeat is None:
         return CalendarAccountHealth(state="unknown")
-    state = _map_health_state(heartbeat.get("state"))
+
+    last_heartbeat_at = _coerce_datetime(heartbeat.get("last_heartbeat_at"))
+
+    # A stale or missing heartbeat means the connector's last-written state
+    # is no longer trustworthy as a liveness signal (bu-27dxl.6.6): a
+    # heartbeat that stopped weeks ago while stuck on state='healthy' must
+    # not keep rendering as healthy forever. Liveness (derive_liveness) gates
+    # the presented state; the stored state is only consulted once the
+    # heartbeat itself is confirmed live.
+    if derive_liveness(last_heartbeat_at) != "online":
+        state: CalendarAccountHealthState = "degraded"
+    else:
+        state = _map_health_state(heartbeat.get("state"))
+
     error_message = heartbeat.get("error_message")
     error_message = str(error_message).strip() if error_message else None
     last_ingest_at = None
@@ -3531,7 +3546,7 @@ def _build_account_health(heartbeat: dict[str, Any] | None) -> CalendarAccountHe
         state=state,
         error_kind=classify_sync_error_kind(error_message if state != "healthy" else None),
         error_message=error_message if state != "healthy" else None,
-        last_heartbeat_at=_coerce_datetime(heartbeat.get("last_heartbeat_at")),
+        last_heartbeat_at=last_heartbeat_at,
         last_ingest_at=last_ingest_at,
     )
 

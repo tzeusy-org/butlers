@@ -9,7 +9,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -75,17 +75,29 @@ def _wire(app, *, shared_pool, switchboard_pool=None, butler_pool=None, butler_n
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
 
+def _heartbeat_row(
+    *,
+    state: str = "healthy",
+    last_heartbeat_at: datetime | None,
+    error_message: str | None = None,
+) -> dict:
+    return {
+        "state": state,
+        "last_heartbeat_at": last_heartbeat_at,
+        "endpoint_identity": "google_calendar:user:me@example.com",
+        "metadata": {},
+        "error_message": error_message,
+    }
+
+
 async def test_accounts_returns_accounts_with_health(app):
     shared = _FakePool(conn_fetch=[_account_row(email="me@example.com", is_primary=True)])
     switchboard = _FakePool(
         fetch=[
-            {
-                "state": "healthy",
-                "last_heartbeat_at": datetime(2026, 6, 21, tzinfo=UTC),
-                "endpoint_identity": "google_calendar:user:me@example.com",
-                "metadata": {},
-                "error_message": None,
-            }
+            _heartbeat_row(
+                state="healthy",
+                last_heartbeat_at=datetime.now(UTC) - timedelta(seconds=10),
+            )
         ]
     )
     _wire(app, shared_pool=shared, switchboard_pool=switchboard)
@@ -103,6 +115,117 @@ async def test_accounts_returns_accounts_with_health(app):
     assert acct["email"] == "me@example.com"
     assert acct["is_primary"] is True
     assert acct["health"]["state"] == "healthy"
+
+
+async def test_accounts_health_degraded_when_heartbeat_stale_despite_healthy_state(app):
+    """bu-27dxl.6.6: a stale heartbeat is offline (degraded) regardless of the
+    last state written -- a state='healthy' row that stopped heartbeating
+    weeks ago must not keep rendering as healthy forever. Regression guard
+    for the pre-fix bug this exact fixture (a month-old heartbeat) triggered.
+    """
+    shared = _FakePool(conn_fetch=[_account_row(email="me@example.com", is_primary=True)])
+    switchboard = _FakePool(
+        fetch=[
+            _heartbeat_row(
+                state="healthy",
+                last_heartbeat_at=datetime.now(UTC) - timedelta(days=30),
+            )
+        ]
+    )
+    _wire(app, shared_pool=shared, switchboard_pool=switchboard)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/accounts")
+
+    assert resp.status_code == 200
+    acct = resp.json()["data"]["accounts"][0]
+    assert acct["health"]["state"] == "degraded"
+
+
+async def test_accounts_health_error_when_heartbeat_recent(app):
+    """error/recent: a genuinely live connector reporting error stays error."""
+    shared = _FakePool(conn_fetch=[_account_row(email="me@example.com", is_primary=True)])
+    switchboard = _FakePool(
+        fetch=[
+            _heartbeat_row(
+                state="error",
+                last_heartbeat_at=datetime.now(UTC) - timedelta(seconds=10),
+                error_message="api_forbidden",
+            )
+        ]
+    )
+    _wire(app, shared_pool=shared, switchboard_pool=switchboard)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/accounts")
+
+    acct = resp.json()["data"]["accounts"][0]
+    assert acct["health"]["state"] == "error"
+    assert acct["health"]["error_message"] == "api_forbidden"
+
+
+async def test_accounts_health_degraded_when_no_heartbeat_row(app):
+    """missing heartbeat: no connector_registry row yet -> unknown, not a
+    fabricated health claim (heartbeat=None short-circuits before liveness)."""
+    shared = _FakePool(conn_fetch=[_account_row(email="me@example.com", is_primary=True)])
+    switchboard = _FakePool(fetch=[])
+    _wire(app, shared_pool=shared, switchboard_pool=switchboard)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/accounts")
+
+    acct = resp.json()["data"]["accounts"][0]
+    assert acct["health"]["state"] == "unknown"
+
+
+async def test_accounts_health_degraded_for_future_dated_heartbeat(app):
+    """future-dated heartbeat: clock skew must never read as live/healthy."""
+    shared = _FakePool(conn_fetch=[_account_row(email="me@example.com", is_primary=True)])
+    switchboard = _FakePool(
+        fetch=[
+            _heartbeat_row(
+                state="healthy",
+                last_heartbeat_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        ]
+    )
+    _wire(app, shared_pool=shared, switchboard_pool=switchboard)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/accounts")
+
+    acct = resp.json()["data"]["accounts"][0]
+    assert acct["health"]["state"] == "degraded"
+
+
+async def test_accounts_health_not_healthy_when_paused(app):
+    """paused: explicit operator suppression is never presented as healthy."""
+    shared = _FakePool(conn_fetch=[_account_row(email="me@example.com", is_primary=True)])
+    switchboard = _FakePool(
+        fetch=[
+            _heartbeat_row(
+                state="paused",
+                last_heartbeat_at=datetime.now(UTC) - timedelta(seconds=10),
+            )
+        ]
+    )
+    _wire(app, shared_pool=shared, switchboard_pool=switchboard)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/accounts")
+
+    acct = resp.json()["data"]["accounts"][0]
+    assert acct["health"]["state"] != "healthy"
 
 
 async def test_accounts_degrade_when_health_unavailable(app):

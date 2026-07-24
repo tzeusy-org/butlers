@@ -62,6 +62,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from butlers.api.models.connector import derive_liveness
 from butlers.api.models.google_health import (
     AccountStatus,
     GoogleHealthConnectorState,
@@ -96,12 +97,11 @@ GOOGLE_HEALTH_SCOPE_URLS: frozenset[str] = frozenset(
 
 _CONNECTOR_TYPE = "google_health"
 
-# Liveness threshold for deriving "connected" — keep in sync with the
-# owntracks dashboard's window so the two connectors render comparable
-# freshness semantics. 5 minutes is longer than the 30-min slowest Google
-# Health poll interval on purpose: the heartbeat fires every 2 minutes
-# independently of per-resource poll cadence.
-_LIVENESS_THRESHOLD_SECONDS = 300
+# Liveness (online/stale/offline) is derived via
+# butlers.api.models.connector.derive_liveness — the SAME thresholds the
+# dashboard's connector list and InfraStateSource already use — rather than
+# a second, locally-defined cutoff that could quietly disagree with it
+# (bu-27dxl.6.6).
 
 # Google Health test-mode refresh tokens are documented to expire 7 days
 # after issue/refresh (see GOOGLE_SCOPE_SETS['health'] in oauth.py). Used to
@@ -394,12 +394,21 @@ def _derive_state(
     """Derive the connector state + ``connected`` convenience boolean.
 
     Precedence:
-      1. No primary account                        → not_configured
-      2. Connector heartbeat says error            → error
-      3. Not all three Google Health scopes        → degraded
-      4. Heartbeat missing OR stale                → degraded
-      5. Heartbeat state == 'degraded'             → degraded
-      6. Otherwise                                 → healthy
+      1. No primary account                              → not_configured
+      2. Heartbeat liveness (derive_liveness) not online  → degraded
+      3. Connector explicitly paused                      → degraded
+      4. Connector heartbeat says error                   → error
+      5. Not all three Google Health scopes                → degraded
+      6. Heartbeat state == 'degraded'                     → degraded
+      7. Otherwise                                          → healthy
+
+    Liveness is checked BEFORE the stored heartbeat state (bu-27dxl.6.6): a
+    stale, missing, or future-dated (clock-skew) heartbeat means the last
+    state it wrote is no longer trustworthy as a liveness signal — a
+    connector that died weeks ago while its last heartbeat said 'error' is
+    genuinely offline, not "currently erroring", so it must not keep
+    rendering as ``error`` (or worse, ``healthy``) forever. Only once the
+    heartbeat is confirmed live does the stored state get consulted at all.
 
     Returns (state, connected). ``connected`` is True only when state is
     ``healthy``.
@@ -408,11 +417,6 @@ def _derive_state(
         return GoogleHealthConnectorState.not_configured, False
 
     hb_state_raw = (heartbeat or {}).get("state")
-    if hb_state_raw == "error":
-        return GoogleHealthConnectorState.error, False
-
-    if not has_all_health_scope_families(granted_health_scopes):
-        return GoogleHealthConnectorState.degraded, False
 
     last_heartbeat_at = (heartbeat or {}).get("last_heartbeat_at")
     if isinstance(last_heartbeat_at, str):
@@ -420,15 +424,21 @@ def _derive_state(
             last_heartbeat_at = datetime.fromisoformat(last_heartbeat_at)
         except ValueError:
             last_heartbeat_at = None
-
     if not isinstance(last_heartbeat_at, datetime):
+        last_heartbeat_at = None
+    elif last_heartbeat_at.tzinfo is None:
+        last_heartbeat_at = last_heartbeat_at.replace(tzinfo=UTC)
+
+    if derive_liveness(last_heartbeat_at) != "online":
         return GoogleHealthConnectorState.degraded, False
 
-    # Normalise to tz-aware before comparing.
-    if last_heartbeat_at.tzinfo is None:
-        last_heartbeat_at = last_heartbeat_at.replace(tzinfo=UTC)
-    cutoff = datetime.now(UTC) - timedelta(seconds=_LIVENESS_THRESHOLD_SECONDS)
-    if last_heartbeat_at < cutoff:
+    if hb_state_raw == "paused":
+        return GoogleHealthConnectorState.degraded, False
+
+    if hb_state_raw == "error":
+        return GoogleHealthConnectorState.error, False
+
+    if not has_all_health_scope_families(granted_health_scopes):
         return GoogleHealthConnectorState.degraded, False
 
     if hb_state_raw == "degraded":
