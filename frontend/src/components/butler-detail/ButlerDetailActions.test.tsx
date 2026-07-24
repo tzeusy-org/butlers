@@ -57,11 +57,18 @@ function mockRegistryEntry(overrides: Partial<RegistryEntry> = {}): void {
     endpoint_url: "http://x",
     description: null,
     modules: [],
+    capabilities: [],
     last_seen_at: null,
     eligibility_state: "active",
+    derived_eligibility_state: "active",
+    liveness_ttl_seconds: 300,
     quarantined_at: null,
     quarantine_reason: null,
+    route_contract_min: 1,
+    route_contract_max: 1,
+    eligibility_updated_at: null,
     registered_at: "2026-01-01T00:00:00Z",
+    agent_type: "butler",
     ...overrides,
   };
   vi.mocked(useRegistry).mockReturnValue({

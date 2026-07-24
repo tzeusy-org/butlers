@@ -2611,17 +2611,37 @@ export interface RoutingEntry {
   created_at: string;
 }
 
-/** A butler registry entry from the Switchboard. */
+/**
+ * A butler registry entry from the Switchboard.
+ *
+ * Mirrors `RegistryEntry` in `roster/switchboard/api/models.py` -- keep in sync.
+ *
+ * `eligibility_state` is the raw stored `butler_registry` column: reconciled
+ * lazily on routing calls, so it can sit stale forever for a butler nobody
+ * has routed to recently. `derived_eligibility_state` is the current-liveness
+ * read, recomputed server-side at request time from `last_seen_at` +
+ * `liveness_ttl_seconds` (bu-p7dx8). Surfaces showing CURRENT liveness/health
+ * should read `derived_eligibility_state`; only the immediate-write quarantine
+ * case (e.g. pause/resume state) should read `eligibility_state`.
+ */
 export interface RegistryEntry {
   name: string;
   endpoint_url: string;
   description: string | null;
   modules: unknown[];
+  capabilities: string[];
   last_seen_at: string | null;
   eligibility_state: string;
+  derived_eligibility_state: "active" | "stale" | "quarantined";
+  liveness_ttl_seconds: number;
   quarantined_at: string | null;
   quarantine_reason: string | null;
+  route_contract_min: number;
+  route_contract_max: number;
+  eligibility_updated_at: string | null;
   registered_at: string;
+  /** Agent type: "butler" (user-facing) or "staffer" (infrastructure). */
+  agent_type: "butler" | "staffer";
 }
 
 /** Response from setting a butler's eligibility state. */
