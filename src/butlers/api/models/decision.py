@@ -20,7 +20,9 @@ class DecisionBeadSummary(BaseModel):
     ``escalated_*`` fields are populated from the single longest-blocked
     escalation hit against this decision (``compute_decision_digest``'s
     ``escalations`` are pre-sorted by ``block_age`` descending), or all
-    ``None`` when this decision has not escalated.
+    ``None`` when this decision has not escalated. Structured context fields
+    retain only validated source values; their availability fields distinguish
+    a per-record metadata problem from the digest-wide degraded envelope.
     """
 
     id: str
@@ -33,3 +35,9 @@ class DecisionBeadSummary(BaseModel):
     escalated_blocked_title: str | None = None
     escalated_blocked_kind: str | None = None  # "p1_bug" | "deploy"
     escalated_block_hours: float | None = None
+    description: str | None = None
+    options: list[str] | None = None
+    default: str | None = None
+    due_at: datetime | None = None
+    structured_details_available: bool = False
+    structured_details_unavailable_reason: str | None = None

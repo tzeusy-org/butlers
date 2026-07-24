@@ -26,6 +26,12 @@ function decision(overrides: Partial<DecisionBeadSummary>): DecisionBeadSummary 
     priority: 1,
     created_at: "2026-07-01T00:00:00Z",
     age_hours: 240,
+    description: null,
+    options: null,
+    default: null,
+    due_at: null,
+    structured_details_available: false,
+    structured_details_unavailable_reason: null,
     escalated: false,
     ...overrides,
   };

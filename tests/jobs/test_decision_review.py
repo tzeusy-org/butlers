@@ -162,6 +162,186 @@ def test_digest_genuine_zero_is_available_and_empty(tmp_path):
     assert digest.export_as_of is not None
 
 
+def test_digest_projects_valid_structured_decision_context_in_source_order(tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    due_at = _NOW + timedelta(days=2)
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-context",
+                description="Choose the recovery posture for the next deploy.",
+                metadata={
+                    "decision": {
+                        "options": ["Keep the current posture", "Enable the recovery lane"],
+                        "default": "Keep the current posture",
+                    }
+                },
+                due_at=_iso(due_at),
+            )
+        ],
+    )
+
+    digest = compute_decision_digest(export, now=_NOW)
+
+    bead = digest.open_decisions[0]
+    assert bead.description == "Choose the recovery posture for the next deploy."
+    assert bead.options == ("Keep the current posture", "Enable the recovery lane")
+    assert bead.default == "Keep the current posture"
+    assert bead.due_at == due_at
+    assert bead.structured_details_available is True
+    assert bead.structured_details_unavailable_reason is None
+
+
+def test_digest_names_malformed_metadata_without_hiding_valid_description_or_due_at(tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    due_at = _NOW + timedelta(days=2)
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-malformed",
+                description="The deadline remains meaningful even though choices are invalid.",
+                metadata={
+                    "decision": {
+                        "options": ["Duplicate", "Duplicate"],
+                        "default": "Duplicate",
+                    }
+                },
+                due_at=_iso(due_at),
+            )
+        ],
+    )
+
+    digest = compute_decision_digest(export, now=_NOW)
+
+    bead = digest.open_decisions[0]
+    assert bead.description == "The deadline remains meaningful even though choices are invalid."
+    assert bead.options is None
+    assert bead.default is None
+    assert bead.due_at == due_at
+    assert bead.structured_details_available is False
+    assert bead.structured_details_unavailable_reason == "metadata_malformed"
+
+
+def test_digest_names_missing_metadata_without_hiding_native_deadline(tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    due_at = _NOW + timedelta(days=2)
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-metadata-missing",
+                description="The source description and deadline remain evidence.",
+                due_at=_iso(due_at),
+            )
+        ],
+    )
+
+    digest = compute_decision_digest(export, now=_NOW)
+
+    bead = digest.open_decisions[0]
+    assert bead.description == "The source description and deadline remain evidence."
+    assert bead.options is None
+    assert bead.default is None
+    assert bead.due_at == due_at
+    assert bead.structured_details_available is False
+    assert bead.structured_details_unavailable_reason == "metadata_missing"
+
+
+def test_digest_names_explicit_null_decision_mapping_as_malformed_metadata(tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    due_at = _NOW + timedelta(days=2)
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-metadata-null",
+                description="The valid deadline remains source evidence.",
+                metadata={"decision": None},
+                due_at=_iso(due_at),
+            )
+        ],
+    )
+
+    digest = compute_decision_digest(export, now=_NOW)
+
+    bead = digest.open_decisions[0]
+    assert bead.description == "The valid deadline remains source evidence."
+    assert bead.due_at == due_at
+    assert bead.options is None
+    assert bead.default is None
+    assert bead.structured_details_available is False
+    assert bead.structured_details_unavailable_reason == "metadata_malformed"
+
+
+@pytest.mark.parametrize(
+    ("due_at", "expected_reason"),
+    [
+        (None, "due_at_missing"),
+        ("not-a-native-beads-timestamp", "due_at_malformed"),
+    ],
+)
+def test_digest_names_missing_or_malformed_deadline_without_hiding_valid_metadata(
+    tmp_path, due_at, expected_reason
+):
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-deadline-invalid",
+                description="The options remain visible while the deadline is unavailable.",
+                metadata={
+                    "decision": {
+                        "options": ["Keep paused", "Resume safely"],
+                        "default": "Keep paused",
+                    }
+                },
+                due_at=due_at,
+            )
+        ],
+    )
+
+    digest = compute_decision_digest(export, now=_NOW)
+
+    bead = digest.open_decisions[0]
+    assert bead.description == "The options remain visible while the deadline is unavailable."
+    assert bead.options == ("Keep paused", "Resume safely")
+    assert bead.default == "Keep paused"
+    assert bead.due_at is None
+    assert bead.structured_details_available is False
+    assert bead.structured_details_unavailable_reason == expected_reason
+
+
+def test_digest_names_an_explicit_empty_deadline_as_malformed(tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-deadline-empty",
+                metadata={
+                    "decision": {
+                        "options": ["Keep paused", "Resume safely"],
+                        "default": "Keep paused",
+                    }
+                },
+                due_at="",
+            )
+        ],
+    )
+
+    digest = compute_decision_digest(export, now=_NOW)
+
+    bead = digest.open_decisions[0]
+    assert bead.options == ("Keep paused", "Resume safely")
+    assert bead.default == "Keep paused"
+    assert bead.due_at is None
+    assert bead.structured_details_available is False
+    assert bead.structured_details_unavailable_reason == "due_at_malformed"
+
+
 def test_digest_skips_non_dict_jsonl_lines_instead_of_crashing(tmp_path):
     """A line that parses as valid JSON but isn't an object (e.g. a bare list)
     must be skipped, not crash the whole load with AttributeError on .get()."""

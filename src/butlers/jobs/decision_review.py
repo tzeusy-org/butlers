@@ -166,6 +166,24 @@ class DecisionBead:
     priority: int | None
     created_at: datetime
     age: timedelta
+    description: str | None
+    options: tuple[str, ...] | None
+    default: str | None
+    due_at: datetime | None
+    structured_details_available: bool
+    structured_details_unavailable_reason: str | None
+
+
+@dataclass(frozen=True)
+class StructuredDecisionDetails:
+    """Validated read-only structured context from one exported Beads record."""
+
+    description: str | None
+    options: tuple[str, ...] | None
+    default: str | None
+    due_at: datetime | None
+    available: bool
+    unavailable_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -252,6 +270,59 @@ def _is_decision_bead(issue: dict[str, Any]) -> bool:
     return isinstance(labels, list) and _DECISION_LABEL in labels
 
 
+def _structured_decision_details(issue: dict[str, Any]) -> StructuredDecisionDetails:
+    """Return only trusted decision context without inventing a fallback value."""
+    description = issue.get("description")
+    if not isinstance(description, str):
+        description = None
+
+    raw_due_at = issue.get("due_at")
+    if raw_due_at is None:
+        due_at = None
+        due_at_reason = "due_at_missing"
+    else:
+        due_at = _parse_timestamp(raw_due_at)
+        due_at_reason = "due_at_malformed" if due_at is None else None
+
+    if "metadata" not in issue:
+        return StructuredDecisionDetails(description, None, None, due_at, False, "metadata_missing")
+    metadata = issue["metadata"]
+    if not isinstance(metadata, dict):
+        return StructuredDecisionDetails(
+            description, None, None, due_at, False, "metadata_malformed"
+        )
+
+    if "decision" not in metadata:
+        return StructuredDecisionDetails(description, None, None, due_at, False, "metadata_missing")
+    decision_metadata = metadata["decision"]
+    if not isinstance(decision_metadata, dict):
+        return StructuredDecisionDetails(
+            description, None, None, due_at, False, "metadata_malformed"
+        )
+
+    raw_options = decision_metadata.get("options")
+    if (
+        not isinstance(raw_options, list)
+        or not raw_options
+        or any(not isinstance(option, str) or not option.strip() for option in raw_options)
+        or len(set(raw_options)) != len(raw_options)
+    ):
+        return StructuredDecisionDetails(
+            description, None, None, due_at, False, "metadata_malformed"
+        )
+    options = tuple(raw_options)
+
+    default = decision_metadata.get("default")
+    if not isinstance(default, str) or not default.strip() or default not in options:
+        return StructuredDecisionDetails(
+            description, None, None, due_at, False, "metadata_malformed"
+        )
+    if due_at_reason is not None:
+        return StructuredDecisionDetails(description, options, default, None, False, due_at_reason)
+
+    return StructuredDecisionDetails(description, options, default, due_at, True, None)
+
+
 def _is_p1_bug(issue: dict[str, Any]) -> bool:
     return (
         issue.get("status") in _OPEN_STATUSES
@@ -319,12 +390,19 @@ def compute_decision_digest(
         created_at = _parse_timestamp(issue.get("created_at"))
         if created_at is None:
             continue
+        details = _structured_decision_details(issue)
         decisions[issue_id] = DecisionBead(
             id=issue_id,
             title=issue.get("title") or issue_id,
             priority=issue.get("priority"),
             created_at=created_at,
             age=checked_at - created_at,
+            description=details.description,
+            options=details.options,
+            default=details.default,
+            due_at=details.due_at,
+            structured_details_available=details.available,
+            structured_details_unavailable_reason=details.unavailable_reason,
         )
 
     escalations: list[EscalationHit] = []

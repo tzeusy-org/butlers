@@ -42,6 +42,12 @@ function decision(overrides: Partial<DecisionBeadSummary> = {}): DecisionBeadSum
     priority: 1,
     created_at: "2026-07-01T00:00:00Z",
     age_hours: 240,
+    description: null,
+    options: null,
+    default: null,
+    due_at: null,
+    structured_details_available: false,
+    structured_details_unavailable_reason: null,
     escalated: false,
     ...overrides,
   };
@@ -62,11 +68,11 @@ function mockDecisions(
   } as AnyMock);
 }
 
-async function checkA11y(): Promise<void> {
+async function checkA11y(initialEntry = "/decisions"): Promise<void> {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const { container } = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <DecisionsPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -115,6 +121,40 @@ describe("a11y (real page): Populated with an escalated row", () => {
       }),
     ]);
     await checkA11y();
+  });
+});
+
+describe("a11y (real page): Structured decision context", () => {
+  it("has zero axe violations for a known deep link with ordered options", async () => {
+    mockDecisions([
+      decision({
+        id: "bu-context",
+        description: "Choose the safest recovery posture.",
+        options: ["Keep paused", "Resume safely"],
+        default: "Keep paused",
+        due_at: "2026-07-20T12:00:00Z",
+        structured_details_available: true,
+        structured_details_unavailable_reason: null,
+      }),
+    ]);
+
+    await checkA11y("/decisions?bead=bu-context");
+  });
+
+  it("has zero axe violations for malformed source metadata", async () => {
+    mockDecisions([
+      decision({
+        id: "bu-malformed",
+        description: "The source deadline remains visible.",
+        options: null,
+        default: null,
+        due_at: "2026-07-20T12:00:00Z",
+        structured_details_available: false,
+        structured_details_unavailable_reason: "metadata_malformed",
+      }),
+    ]);
+
+    await checkA11y("/decisions?bead=bu-malformed");
   });
 });
 

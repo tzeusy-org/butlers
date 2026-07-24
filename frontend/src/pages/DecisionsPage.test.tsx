@@ -15,7 +15,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import DecisionsPage from "@/pages/DecisionsPage";
@@ -35,6 +35,12 @@ function decision(overrides: Partial<DecisionBeadSummary> = {}): DecisionBeadSum
     priority: 1,
     created_at: "2026-07-01T00:00:00Z",
     age_hours: 240,
+    description: null,
+    options: null,
+    default: null,
+    due_at: null,
+    structured_details_available: false,
+    structured_details_unavailable_reason: null,
     escalated: false,
     ...overrides,
   };
@@ -55,15 +61,20 @@ function mockDecisions(
   } as AnyMock);
 }
 
-function renderPage(): string {
+function renderPage(initialEntry = "/decisions"): string {
   const queryClient = new QueryClient();
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <DecisionsPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+function SearchProbe() {
+  const { search } = useLocation();
+  return <output data-testid="decision-search">{search}</output>;
 }
 
 describe("DecisionsPage -- verdict opener + row list", () => {
@@ -172,6 +183,69 @@ describe("DecisionsPage -- export as-of plaque (bu-hmdqz.6)", () => {
   });
 });
 
+describe("DecisionsPage -- structured decision context", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("uses a present bead deep link to expand ordered read-only context", () => {
+    mockDecisions([
+      decision({
+        id: "bu-context",
+        description: "Choose the safest recovery posture.",
+        options: ["Keep paused", "Resume safely"],
+        default: "Keep paused",
+        due_at: "2026-07-20T12:00:00Z",
+        structured_details_available: true,
+        structured_details_unavailable_reason: null,
+      }),
+    ]);
+
+    const html = renderPage("/decisions?bead=bu-context");
+
+    expect(html).toContain('data-testid="decision-detail"');
+    expect(html).toContain("Choose the safest recovery posture.");
+    expect(html).toContain("Keep paused");
+    expect(html).toContain("Resume safely");
+    expect(html).toContain("Default: ");
+    expect(html).toContain('data-testid="decision-due-at"');
+    expect(html).not.toContain("Approve decision");
+    expect(html).not.toContain("Close decision");
+  });
+
+  it("names malformed structured metadata instead of implying no options", () => {
+    mockDecisions([
+      decision({
+        id: "bu-malformed",
+        description: "The source deadline remains visible.",
+        options: null,
+        default: null,
+        due_at: "2026-07-20T12:00:00Z",
+        structured_details_available: false,
+        structured_details_unavailable_reason: "metadata_malformed",
+      }),
+    ]);
+
+    const html = renderPage("/decisions?bead=bu-malformed");
+
+    expect(html).toContain('data-testid="decision-structured-details-unavailable"');
+    expect(html).toContain("Structured decision details unavailable");
+    expect(html).toContain("metadata malformed");
+    expect(html).toContain("The source deadline remains visible.");
+    expect(html).not.toContain("No options are available");
+  });
+
+  it("leaves an unknown bead deep link on the normal usable list", () => {
+    mockDecisions([decision({ id: "bu-known", title: "Known decision" })]);
+
+    const html = renderPage("/decisions?bead=bu-unknown");
+
+    expect(html).toContain("Known decision");
+    expect(html).toContain('data-testid="decision-item"');
+    expect(html).not.toContain('data-testid="decision-detail"');
+  });
+});
+
 describe("DecisionsPage -- j/k roving selection expands the door", () => {
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;
@@ -195,7 +269,7 @@ describe("DecisionsPage -- j/k roving selection expands the door", () => {
     root = undefined;
   });
 
-  function renderLive() {
+  function renderLive(initialEntry = "/decisions") {
     const queryClient = new QueryClient();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -204,8 +278,9 @@ describe("DecisionsPage -- j/k roving selection expands the door", () => {
     act(() => {
       r.render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter>
+          <MemoryRouter initialEntries={[initialEntry]}>
             <DecisionsPage />
+            <SearchProbe />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -241,8 +316,24 @@ describe("DecisionsPage -- j/k roving selection expands the door", () => {
     const detailPanels = container!.querySelectorAll('[data-testid="decision-detail"]');
     expect(detailPanels.length).toBe(1);
     expect(secondRow.textContent).toContain("Pick B");
-    expect(secondRow.textContent).toContain("No actions are available in this read-only digest.");
-    expect(secondRow.textContent).toContain("decision label");
-    expect(secondRow.textContent).not.toContain("title marker");
+    expect(container!.querySelector('[data-testid="decision-search"]')?.textContent).toBe(
+      "?bead=bu-b",
+    );
+    expect(detailPanels[0]?.textContent).toContain(
+      "Read-only context: this digest cannot apply a default or close a decision.",
+    );
+    expect(detailPanels[0]?.textContent).not.toContain("title marker");
+  });
+
+  it("keeps an unknown deep link navigable with j", () => {
+    renderLive("/decisions?bead=bu-unknown");
+    expect(container!.querySelector('[data-testid="decision-detail"]')).toBeNull();
+
+    act(() => press("j"));
+
+    expect(container!.querySelector('[data-testid="decision-detail"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="decision-search"]')?.textContent).toBe(
+      "?bead=bu-a",
+    );
   });
 });

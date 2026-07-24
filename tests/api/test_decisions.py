@@ -155,6 +155,65 @@ async def test_list_decisions_returns_oldest_first_with_age_hours(app, tmp_path)
     assert body["data"][0]["escalated_blocked_id"] is None
 
 
+async def test_list_decisions_projects_valid_structured_context(app, tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    due_at = _NOW + timedelta(days=3)
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-context",
+                description="Pick the owner-visible recovery posture.",
+                metadata={
+                    "decision": {
+                        "options": ["Keep paused", "Resume safely"],
+                        "default": "Keep paused",
+                    }
+                },
+                due_at=_iso(due_at),
+            )
+        ],
+    )
+
+    resp = await _get_decisions(app, export)
+
+    assert resp.status_code == 200
+    row = resp.json()["data"][0]
+    assert row["description"] == "Pick the owner-visible recovery posture."
+    assert row["options"] == ["Keep paused", "Resume safely"]
+    assert row["default"] == "Keep paused"
+    assert datetime.fromisoformat(row["due_at"].replace("Z", "+00:00")) == due_at
+    assert row["structured_details_available"] is True
+    assert row["structured_details_unavailable_reason"] is None
+
+
+async def test_list_decisions_names_malformed_structured_metadata(app, tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    due_at = _NOW + timedelta(days=3)
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-malformed",
+                description="The deadline is still source evidence.",
+                metadata={"decision": {"options": ["Same", "Same"], "default": "Same"}},
+                due_at=_iso(due_at),
+            )
+        ],
+    )
+
+    resp = await _get_decisions(app, export)
+
+    assert resp.status_code == 200
+    row = resp.json()["data"][0]
+    assert row["description"] == "The deadline is still source evidence."
+    assert datetime.fromisoformat(row["due_at"].replace("Z", "+00:00")) == due_at
+    assert row["options"] is None
+    assert row["default"] is None
+    assert row["structured_details_available"] is False
+    assert row["structured_details_unavailable_reason"] == "metadata_malformed"
+
+
 # ---------------------------------------------------------------------------
 # Escalation fields
 # ---------------------------------------------------------------------------

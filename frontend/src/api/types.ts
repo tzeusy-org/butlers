@@ -8797,8 +8797,9 @@ export interface InsightCandidatesParams {
  *
  * Detection is resolved server-side: only open, non-epic beads carrying the
  * `decision` label appear. Title text never classifies a decision. This
- * read-only summary intentionally omits per-bead options, defaults,
- * deadlines, and mutation controls.
+ * The digest projects source-authored context when it is valid: description,
+ * ordered options, default, and due-at. It deliberately omits mutation
+ * controls: this remains a read-only source view.
  */
 export interface DecisionBeadSummary {
   id: string;
@@ -8806,6 +8807,18 @@ export interface DecisionBeadSummary {
   priority: number | null;
   created_at: string;
   age_hours: number;
+  /** Source-authored Bead description, when present. */
+  description: string | null;
+  /** Source-authored decision options, preserved in Bead metadata order. */
+  options: string[] | null;
+  /** Source-authored default option, when valid. */
+  default: string | null;
+  /** Source-authored due timestamp, when present and parseable. */
+  due_at: string | null;
+  /** Whether all structured decision metadata projected without degradation. */
+  structured_details_available: boolean;
+  /** A machine-readable reason when structured detail is partial or unavailable. */
+  structured_details_unavailable_reason: string | null;
   /** True when this decision has blocked a P1 bug or a deploy-marked bead for >48h. */
   escalated: boolean;
   escalated_blocked_id?: string | null;

@@ -20,8 +20,9 @@ is NOT flagged.
 Decision-bead detection is label-only: an open, non-epic bead must carry the
 ``decision`` label to enter the digest. Title text alone never creates a
 decision result; the separate strict lint path identifies legacy-shaped
-unlabeled beads for migration. This read-only summary intentionally exposes no
-per-decision options, defaults, deadlines, or mutations.
+unlabeled beads for migration. This read-only summary projects validated,
+source-authored description/options/default/deadline context, but exposes no
+per-decision mutations.
 
 ``meta.export_as_of`` (bu-hmdqz.6) carries the beads export file's own
 mtime, whenever known, so the frontend can render an honest "as of" plaque
@@ -83,6 +84,12 @@ async def list_decisions() -> ApiResponse[list[DecisionBeadSummary]]:
                 escalated_blocked_title=hit.blocked_title if hit else None,
                 escalated_blocked_kind=hit.blocked_kind if hit else None,
                 escalated_block_hours=(hit.block_age.total_seconds() / 3600) if hit else None,
+                description=bead.description,
+                options=list(bead.options) if bead.options is not None else None,
+                default=bead.default,
+                due_at=bead.due_at,
+                structured_details_available=bead.structured_details_available,
+                structured_details_unavailable_reason=bead.structured_details_unavailable_reason,
             )
         )
 

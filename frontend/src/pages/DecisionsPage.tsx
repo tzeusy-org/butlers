@@ -17,12 +17,12 @@
  * a deploy for >48h).
  *
  * There are no approve/deny/close actions here yet. This deliberately
- * read-only digest exposes summary and escalation data only: it lists
- * decision-labeled beads, but carries no per-bead options/defaults or mutation
- * controls.
+ * read-only digest projects source-authored decision context when available,
+ * but never carries mutation controls.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 
 import { useDecisions } from "@/hooks/use-decisions";
 import { useListTriage } from "@/hooks/use-list-triage";
@@ -85,6 +85,10 @@ function blockedKindLabel(kind: string | null | undefined): string {
   return kind === "deploy" ? "a deploy" : "a P1 bug";
 }
 
+function formatStructuredDetailsReason(reason: string | null | undefined): string {
+  return reason ? reason.replaceAll("_", " ") : "source metadata unavailable";
+}
+
 // ---------------------------------------------------------------------------
 // Row -- selection (via j/k or click) doubles as "open the door": the
 // selected row's inline detail panel is the entirety of what the digest
@@ -101,55 +105,99 @@ function DecisionRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const detailId = `decision-detail-${decision.id}`;
+
   return (
-    <button
-      type="button"
-      data-testid="decision-item"
-      data-item-id={decision.id}
-      onClick={onSelect}
+    <div
       className={[
-        "block w-full text-left px-3 py-3 border-b border-border last:border-b-0",
-        "transition-colors focus-visible:outline focus-visible:outline-2",
-        "focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40",
-        selected ? "bg-foreground/5" : "hover:bg-foreground/[0.03]",
+        "border-b border-border last:border-b-0",
+        selected ? "bg-foreground/5" : "",
       ].join(" ")}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-xs text-muted-foreground truncate">{decision.id}</span>
-        <div className="flex items-center gap-2 shrink-0">
-          {decision.priority != null && (
-            <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-              P{decision.priority}
-            </span>
-          )}
+      <button
+        type="button"
+        data-testid="decision-item"
+        data-item-id={decision.id}
+        aria-expanded={selected}
+        aria-controls={selected ? detailId : undefined}
+        onClick={onSelect}
+        className={[
+          "block w-full text-left px-3 py-3 transition-colors",
+          "focus-visible:outline focus-visible:outline-2",
+          "focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40",
+          selected ? "" : "hover:bg-foreground/[0.03]",
+        ].join(" ")}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-xs text-muted-foreground truncate">{decision.id}</span>
+          <div className="flex items-center gap-2 shrink-0">
+            {decision.priority != null && (
+              <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                P{decision.priority}
+              </span>
+            )}
+            {decision.escalated && (
+              <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--red-text)] font-medium">
+                escalated
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="mt-0.5 text-sm font-medium">{decision.title}</div>
+        <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+          <span>waiting {formatAgeHours(decision.age_hours)}</span>
           {decision.escalated && (
-            <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--red-text)] font-medium">
-              escalated
+            <span className="text-[var(--red-text)]">
+              · blocking {blockedKindLabel(decision.escalated_blocked_kind)}{" "}
+              {decision.escalated_blocked_id} for{" "}
+              {formatAgeHours(decision.escalated_block_hours ?? 0)}
             </span>
           )}
         </div>
-      </div>
-      <div className="mt-0.5 text-sm font-medium">{decision.title}</div>
-      <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
-        <span>waiting {formatAgeHours(decision.age_hours)}</span>
-        {decision.escalated && (
-          <span className="text-[var(--red-text)]">
-            · blocking {blockedKindLabel(decision.escalated_blocked_kind)}{" "}
-            {decision.escalated_blocked_id} for{" "}
-            {formatAgeHours(decision.escalated_block_hours ?? 0)}
-          </span>
-        )}
-      </div>
+      </button>
 
       {selected && (
         <div
+          id={detailId}
           data-testid="decision-detail"
-          className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground space-y-1"
+          role="region"
+          aria-label={`Decision context for ${decision.id}`}
+          className="border-t border-border px-3 py-3 text-xs text-muted-foreground space-y-2"
         >
           <div>
             <span className="font-mono uppercase tracking-wide">Created: </span>
             {new Date(decision.created_at).toLocaleString()}
           </div>
+          {decision.description && <p>{decision.description}</p>}
+          {decision.due_at && (
+            <div data-testid="decision-due-at">
+              <span className="font-mono uppercase tracking-wide">Due: </span>
+              <time dateTime={decision.due_at}>{new Date(decision.due_at).toLocaleString()}</time>
+            </div>
+          )}
+          {decision.options && (
+            <section aria-label="Decision options">
+              <div className="font-mono uppercase tracking-wide">Options</div>
+              <ol className="mt-1 list-decimal space-y-1 pl-5 text-foreground">
+                {decision.options.map((option) => (
+                  <li key={option}>{option}</li>
+                ))}
+              </ol>
+            </section>
+          )}
+          {decision.default && (
+            <div>
+              <span className="font-mono uppercase tracking-wide">Default: </span>
+              <span className="text-foreground">{decision.default}</span>
+            </div>
+          )}
+          {!decision.structured_details_available && (
+            <div data-testid="decision-structured-details-unavailable" role="status">
+              Structured decision details unavailable: {formatStructuredDetailsReason(
+                decision.structured_details_unavailable_reason,
+              )}.
+            </div>
+          )}
           {decision.escalated ? (
             <div>
               Blocking{" "}
@@ -161,13 +209,12 @@ function DecisionRow({
             </div>
           ) : (
             <div className="italic">
-              No actions are available in this read-only digest. It lists decisions marked with the
-              {" "}decision label; options and close controls are not included here.
+              Read-only context: this digest cannot apply a default or close a decision.
             </div>
           )}
         </div>
       )}
-    </button>
+    </div>
   );
 }
 
@@ -177,15 +224,39 @@ function DecisionRow({
 
 export default function DecisionsPage() {
   const { data, isLoading, isError, error, refetch } = useDecisions();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedBeadId = searchParams.get("bead");
   const decisions = useMemo(() => data?.data ?? [], [data]);
   const decisionsAvailable = data?.meta.decisions_available;
   const exportAsOf = data?.meta.export_as_of;
   const exportAsOfLabel = formatExportAsOf(exportAsOf);
   const exportAsOfIsWarn = resolveExportAsOfIsWarn(exportAsOf);
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => requestedBeadId);
 
   const ids = useMemo(() => decisions.map((d) => d.id), [decisions]);
+
+  const selectDecision = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.set("bead", id);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // Keep direct URL navigation authoritative. The initial state mirrors the
+  // query so a server-rendered known deep link opens immediately; an unknown
+  // id deliberately has no matching row, leaving the normal list usable.
+  useEffect(() => {
+    setSelectedId(requestedBeadId);
+  }, [requestedBeadId]);
 
   // Pure j/k roving selection -- this read-only summary has no action payload
   // or mutation endpoint. See useListTriage's own doc comment: "Omit or
@@ -193,7 +264,7 @@ export default function DecisionsPage() {
   const { hints } = useListTriage({
     ids,
     selectedId,
-    onSelect: setSelectedId,
+    onSelect: selectDecision,
   });
 
   // Keep DOM focus in sync with the current selection, mirroring
@@ -300,7 +371,7 @@ export default function DecisionsPage() {
                 <DecisionRow
                   decision={decision}
                   selected={decision.id === selectedId}
-                  onSelect={() => setSelectedId(decision.id)}
+                  onSelect={() => selectDecision(decision.id)}
                 />
               </div>
             ))}
