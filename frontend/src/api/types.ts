@@ -4857,8 +4857,14 @@ export interface SpotifyDisconnectResponse {
 // OwnTracks connector types
 // ---------------------------------------------------------------------------
 
-/** Connection state for the OwnTracks webhook connector. */
-export type OwnTracksState = "active" | "idle" | "not_configured";
+/**
+ * Connection state for the OwnTracks webhook connector.
+ *
+ * Mirrors backend `OwnTracksConnectionState`
+ * (src/butlers/api/models/owntracks.py) exactly — keep these literals in
+ * sync with that enum.
+ */
+export type OwnTracksState = "connected" | "no_events" | "stale" | "not_configured" | "offline";
 
 /** Response from GET /api/connectors/owntracks/status */
 export interface OwnTracksStatusResponse {

@@ -479,7 +479,12 @@ export function OwnTracksDrawerContent() {
 
   const status = statusQuery.data;
   const config = configQuery.data;
-  const isActive = status?.state === "active";
+  // "connected" is the only OwnTracksState that means "live and receiving
+  // events" (see OwnTracksConnectionState in
+  // src/butlers/api/models/owntracks.py) — no_events/stale/offline are all
+  // "token configured but not fully healthy", which the amber "idle" dot
+  // below already covers via tokenConfigured.
+  const isActive = status?.state === "connected";
   const tokenConfigured = status?.token_configured ?? false;
 
   function handleGenerate() {

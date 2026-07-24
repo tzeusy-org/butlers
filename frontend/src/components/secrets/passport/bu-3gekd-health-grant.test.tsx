@@ -75,7 +75,7 @@ vi.mock("@/hooks/use-home-assistant.ts", () => ({
 }))
 vi.mock("@/hooks/use-owntracks.ts", () => ({
   useOwnTracksStatus: vi.fn(() => ({
-    data: { state: "active", last_event_at: "2026-06-01T10:00:00Z", events_today: 5, token_configured: true },
+    data: { state: "connected", last_event_at: "2026-06-01T10:00:00Z", events_today: 5, token_configured: true },
     isLoading: false,
     error: null,
   })),

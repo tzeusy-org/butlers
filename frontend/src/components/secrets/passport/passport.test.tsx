@@ -85,7 +85,7 @@ vi.mock("@/hooks/use-home-assistant.ts", () => ({
 }))
 vi.mock("@/hooks/use-owntracks.ts", () => ({
   useOwnTracksStatus: vi.fn(() => ({
-    data: { state: "active", last_event_at: "2026-06-01T10:00:00Z", events_today: 5, token_configured: true },
+    data: { state: "connected", last_event_at: "2026-06-01T10:00:00Z", events_today: 5, token_configured: true },
     isLoading: false,
     error: null,
   })),
@@ -1159,6 +1159,24 @@ describe("OwnTracksDrawer: token generate/regenerate + webhook URL", () => {
   it("renders status dot (not a word) for connection state", () => {
     const html = renderInRouter(<OwnTracksDrawerContent />);
     expect(html).toContain('data-owntracks-status-dot="true"');
+  });
+
+  it("marks the status dot active when state=connected", () => {
+    const html = renderInRouter(<OwnTracksDrawerContent />);
+    expect(html).toContain('aria-label="active"');
+  });
+
+  it("does not mark the status dot active for a non-connected state (e.g. stale)", async () => {
+    const useOwnTracksModule = await import("@/hooks/use-owntracks.ts");
+    vi.mocked(useOwnTracksModule.useOwnTracksStatus).mockReturnValueOnce({
+      data: { state: "stale", last_event_at: "2026-06-01T10:00:00Z", events_today: 5, token_configured: true },
+      isLoading: false,
+      error: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    const html = renderInRouter(<OwnTracksDrawerContent />);
+    expect(html).toContain('aria-label="idle"');
+    expect(html).not.toContain('aria-label="active"');
   });
 
   it("renders webhook URL display", () => {
