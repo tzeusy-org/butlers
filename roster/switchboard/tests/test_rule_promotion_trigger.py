@@ -360,6 +360,42 @@ class TestRunRulePromotionTrigger:
         assert result["skipped_existing_rule"] == 1
         assert result["suggestions_created"] == 0
 
+    async def test_skips_candidate_under_active_dismissal_cooldown(self):
+        """A prior owner Dismiss (status='dismissed' + future cooldown_until)
+        must suppress a fresh proposal for the same sender/channel — the bug
+        that made Dismiss cosmetic and the card reappear every scan."""
+        candidates = [{"sender_key": "declined@sender.com", "source_channel": "google_drive"}]
+        active_cooldown = {"id": uuid4(), "cooldown_until": _ts(day=28)}
+        pool = _FakePool(
+            fetch_results=[candidates],  # returns before any evidence fetch
+            # 1st fetchrow: no pending suggestion; 2nd: an active dismissal cooldown.
+            fetchrow_results=[None, active_cooldown],
+        )
+        evaluator = _FakeEvaluator()
+
+        result = await run_rule_promotion_trigger(pool, evaluator=evaluator)
+
+        assert result["skipped_dismissal_cooldown"] == 1
+        assert result["suggestions_created"] == 0
+
+    async def test_creates_again_once_dismissal_cooldown_expired(self):
+        """An expired/absent dismissal cooldown (query returns no row) does not
+        suppress a re-proposal — the cooldown is a window, not a permanent mute."""
+        candidates = [{"sender_key": "lapsed@sender.com", "source_channel": "email"}]
+        evidence = [_verdict_row(day=3), _verdict_row(day=2), _verdict_row(day=1)]
+        new_id = uuid4()
+        pool = _FakePool(
+            fetch_results=[candidates, evidence, []],
+            fetchrow_results=[None, None],  # no pending, no active cooldown
+            fetchval_results=[new_id],
+        )
+        evaluator = _FakeEvaluator(action="pass_through")
+
+        result = await run_rule_promotion_trigger(pool, evaluator=evaluator)
+
+        assert result["skipped_dismissal_cooldown"] == 0
+        assert result["suggestions_created"] == 1
+
     async def test_skips_when_most_recent_verdicts_disagree(self):
         candidates = [{"sender_key": "flip@sender.com", "source_channel": "email"}]
         evidence = [
@@ -521,6 +557,7 @@ def test_promotion_trigger_result_as_dict_has_all_fields():
         "suggestions_bumped",
         "suggestions_superseded",
         "skipped_existing_rule",
+        "skipped_dismissal_cooldown",
         "skipped_insufficient_evidence",
         "skipped_no_agreement",
         "skipped_no_rule_equivalent",

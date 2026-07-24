@@ -279,6 +279,7 @@ class PromotionTriggerResult:
     suggestions_bumped: int = 0
     suggestions_superseded: int = 0
     skipped_existing_rule: int = 0
+    skipped_dismissal_cooldown: int = 0
     skipped_insufficient_evidence: int = 0
     skipped_no_agreement: int = 0
     skipped_no_rule_equivalent: int = 0
@@ -293,6 +294,7 @@ class PromotionTriggerResult:
             "suggestions_bumped": self.suggestions_bumped,
             "suggestions_superseded": self.suggestions_superseded,
             "skipped_existing_rule": self.skipped_existing_rule,
+            "skipped_dismissal_cooldown": self.skipped_dismissal_cooldown,
             "skipped_insufficient_evidence": self.skipped_insufficient_evidence,
             "skipped_no_agreement": self.skipped_no_agreement,
             "skipped_no_rule_equivalent": self.skipped_no_rule_equivalent,
@@ -339,6 +341,45 @@ async def _fetch_pending_suggestion(
         FROM switchboard.rule_promotion_suggestions
         WHERE sender_key = $1 AND source_channel = $2
           AND status = 'pending_review' AND suggestion_kind = 'promotion'
+        """,
+        sender_key,
+        source_channel,
+    )
+
+
+async def _fetch_active_dismissal_cooldown(
+    pool: asyncpg.Pool, *, sender_key: str, source_channel: str
+) -> asyncpg.Record | None:
+    """The most recent still-active owner dismissal cooldown for this
+    sender/channel, or ``None`` if there is no unexpired dismissal.
+
+    When the owner dismisses a promotion suggestion (approvals surface,
+    ``POST .../dismiss``), the row goes ``status='dismissed'`` and records a
+    ``cooldown_until`` window. That dismissed row is invisible to
+    :func:`_fetch_pending_suggestion` (it only looks at ``pending_review``),
+    so without this check the very next scan would re-propose the same
+    sender/channel and the dismissal would be cosmetic — the exact recurrence
+    the owner is trying to stop by clicking Dismiss. Honoring the cooldown
+    here makes Dismiss mean "leave this sender/channel alone until the window
+    lapses"; after it expires (or if the pattern is later covered by a rule),
+    normal proposal resumes.
+
+    Scoped to ``(sender_key, source_channel)`` — matching the pending-promotion
+    uniqueness granularity — rather than the specific ``proposed_action``: a
+    dismissal is the owner declining to promote *this sender on this channel*,
+    not merely declining one particular target.
+    """
+    return await pool.fetchrow(
+        """
+        SELECT id, cooldown_until
+        FROM switchboard.rule_promotion_suggestions
+        WHERE sender_key = $1 AND source_channel = $2
+          AND suggestion_kind = 'promotion'
+          AND status = 'dismissed'
+          AND cooldown_until IS NOT NULL
+          AND cooldown_until > now()
+        ORDER BY cooldown_until DESC
+        LIMIT 1
         """,
         sender_key,
         source_channel,
@@ -625,6 +666,19 @@ async def _process_candidate(
         return await _bump_existing_suggestion(
             pool, pending, sender_key=sender_key, source_channel=source_channel
         )
+
+    # No pending suggestion. Before proposing a fresh one, honor an active
+    # owner dismissal: a dismissed suggestion sets a cooldown_until window, and
+    # re-proposing this sender/channel before it expires would make the
+    # dismissal cosmetic (every scan would mint a new card). Skip until it
+    # lapses.
+    if (
+        await _fetch_active_dismissal_cooldown(
+            pool, sender_key=sender_key, source_channel=source_channel
+        )
+        is not None
+    ):
+        return "skipped_dismissal_cooldown"
 
     evidence_rows = await _fetch_latest_llm_verdicts(
         pool, sender_key=sender_key, source_channel=source_channel, limit=threshold

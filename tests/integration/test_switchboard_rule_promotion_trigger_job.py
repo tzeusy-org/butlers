@@ -514,6 +514,87 @@ async def test_old_pending_suggestion_is_superseded_after_the_verdict_lookback(
     assert row["decided_by"] == "system:rule_promotion_trigger"
 
 
+async def test_owner_dismissal_suppresses_re_proposal_until_cooldown(pool: asyncpg.Pool) -> None:
+    """Dismissing a suggestion must stop the trigger re-proposing it every scan.
+
+    Regression for the reported bug: the approvals Dismiss endpoint records
+    ``status='dismissed'`` + a ``cooldown_until`` window, but the trigger used
+    to ignore it — so a fresh pending card was minted on the very next scan and
+    the owner had to decline it forever. The trigger now honors the cooldown.
+    """
+    sender_key = "declined@promote-me.com"
+    base = _now() - timedelta(days=3)
+    timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
+    await _seed_evidence(
+        pool,
+        sender_key=sender_key,
+        source_channel="email",
+        timestamps=timestamps,
+        verdict_action="route_to",
+        verdict_target="general",
+    )
+
+    first = await run_rule_promotion_trigger(pool)
+    assert first["suggestions_created"] == 1
+
+    # Owner dismisses via the approvals surface (mirror the dismiss endpoint's
+    # write: terminal 'dismissed' status + a 30-day cooldown window).
+    await pool.execute(
+        """
+        UPDATE rule_promotion_suggestions
+        SET status = 'dismissed', dismissal_reason = 'not wanted',
+            cooldown_until = now() + interval '30 days',
+            decided_at = now(), decided_by = 'owner'
+        WHERE sender_key = $1 AND status = 'pending_review'
+        """,
+        sender_key,
+    )
+
+    # A further agreeing verdict arrives after the dismissal.
+    new_ts = base + timedelta(days=3)
+    new_event_id = uuid.uuid4()
+    await _insert_ingestion_event(
+        pool, event_id=new_event_id, received_at=new_ts, source_channel="email"
+    )
+    await _insert_message_inbox(pool, event_id=new_event_id, received_at=new_ts)
+    await _insert_verdict(
+        pool,
+        ingestion_event_id=new_event_id,
+        sender_key=sender_key,
+        source_channel="email",
+        decided_at=new_ts,
+        verdict_action="route_to",
+        verdict_target="general",
+    )
+
+    second = await run_rule_promotion_trigger(pool)
+    assert second["skipped_dismissal_cooldown"] >= 1
+    # No new pending card minted; the dismissed row stays terminal and alone.
+    rows = await pool.fetch(
+        "SELECT status FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
+    )
+    assert [row["status"] for row in rows] == ["dismissed"]
+
+    # Once the cooldown lapses, a fresh proposal is allowed again.
+    await pool.execute(
+        """
+        UPDATE rule_promotion_suggestions
+        SET cooldown_until = now() - interval '1 day'
+        WHERE sender_key = $1
+        """,
+        sender_key,
+    )
+
+    third = await run_rule_promotion_trigger(pool)
+    pending = await pool.fetch(
+        "SELECT status FROM rule_promotion_suggestions "
+        "WHERE sender_key = $1 AND status = 'pending_review'",
+        sender_key,
+    )
+    assert third["suggestions_created"] >= 1
+    assert len(pending) == 1
+
+
 async def test_insufficient_evidence_count_creates_nothing(pool: asyncpg.Pool) -> None:
     sender_key = "too-few@sparse-sender.com"
     base = _now() - timedelta(days=2)
