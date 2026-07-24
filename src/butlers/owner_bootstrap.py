@@ -105,8 +105,39 @@ async def _seed_owner_telegram_handle(
     indefinitely).  Idempotent: skipped when the triple already exists (partial
     unique index ``uq_ef_spo_active``) or when the prerequisite tables / chat-id
     row are absent.
+
+    Also a quiet no-op for butler roles that cannot see the ``relationship``
+    schema: under SET ROLE isolation each butler reaches only its own schema
+    plus ``public``, so every daemon except ``relationship`` is *expected* to
+    lack USAGE here.  The privilege is probed up front because ``to_regclass``
+    on a qualified name raises ``InsufficientPrivilegeError`` rather than
+    returning NULL — letting it raise logs a traceback per butler on every
+    startup for the designed posture.
     """
     try:
+        # NULL (schema absent) collapses to false.  Written as a subquery rather
+        # than `EXISTS(...) AND has_schema_privilege(...)` because Postgres does
+        # not guarantee AND short-circuits, and the privilege call errors on an
+        # unknown schema.
+        relationship_reachable = await conn.fetchval(
+            """
+            SELECT COALESCE(
+                (
+                    SELECT has_schema_privilege(oid, 'USAGE')
+                    FROM pg_namespace
+                    WHERE nspname = 'relationship'
+                ),
+                false
+            )
+            """
+        )
+        if not relationship_reachable:
+            logger.debug(
+                "Owner Telegram handle seed skipped: butler role has no USAGE on "
+                "schema 'relationship' (expected under schema isolation)"
+            )
+            return
+
         tables_ready = await conn.fetchval(
             "SELECT to_regclass('relationship.entity_facts') IS NOT NULL "
             "AND to_regclass('public.entity_info') IS NOT NULL"

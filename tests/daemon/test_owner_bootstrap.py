@@ -158,8 +158,9 @@ class TestSeedOwnerTelegramHandle:
         from butlers.owner_bootstrap import _seed_owner_telegram_handle
 
         conn = AsyncMock()
-        # 1. tables_ready check → True; 2. chat_id lookup → "206570151"
-        conn.fetchval = AsyncMock(side_effect=[True, "206570151"])
+        # 1. relationship schema reachable → True; 2. tables_ready → True;
+        # 3. chat_id lookup → "206570151"
+        conn.fetchval = AsyncMock(side_effect=[True, True, "206570151"])
         conn.execute = AsyncMock()
 
         await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
@@ -176,7 +177,7 @@ class TestSeedOwnerTelegramHandle:
         from butlers.owner_bootstrap import _seed_owner_telegram_handle
 
         conn = AsyncMock()
-        conn.fetchval = AsyncMock(side_effect=[True, None])
+        conn.fetchval = AsyncMock(side_effect=[True, True, None])
         conn.execute = AsyncMock()
         await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
         conn.execute.assert_not_awaited()
@@ -185,10 +186,36 @@ class TestSeedOwnerTelegramHandle:
         from butlers.owner_bootstrap import _seed_owner_telegram_handle
 
         conn = AsyncMock()
-        conn.fetchval = AsyncMock(side_effect=[False])
+        conn.fetchval = AsyncMock(side_effect=[True, False])
         conn.execute = AsyncMock()
         await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
         conn.execute.assert_not_awaited()
+
+    async def test_inaccessible_relationship_schema_is_quiet_noop(self) -> None:
+        """Butler roles without USAGE on ``relationship`` skip without warning.
+
+        Under SET ROLE schema isolation every butler except ``relationship``
+        lacks USAGE on that schema, so ``to_regclass('relationship.…')`` raises
+        InsufficientPrivilegeError. That is the designed posture, not a failure:
+        probe the privilege first and return quietly instead of logging a
+        traceback on every daemon startup.
+        """
+        from butlers.owner_bootstrap import _seed_owner_telegram_handle
+
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(side_effect=[False])
+        conn.execute = AsyncMock()
+
+        with patch("butlers.owner_bootstrap.logger") as mock_logger:
+            await _seed_owner_telegram_handle(conn, _OWNER_ENTITY_ID)
+
+        conn.execute.assert_not_awaited()
+        mock_logger.warning.assert_not_called()
+        # Only the privilege probe ran — no to_regclass against relationship.
+        assert conn.fetchval.await_count == 1
+        probe_sql = conn.fetchval.await_args.args[0]
+        assert "has_schema_privilege" in probe_sql
+        assert "to_regclass" not in probe_sql
 
 
 class TestConcurrentStartupSafety:
