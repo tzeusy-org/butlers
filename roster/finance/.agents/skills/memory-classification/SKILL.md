@@ -104,6 +104,31 @@ merge, or delete. **Never fall back to bare string subjects.**
 Use tags like: `subscription`, `bill`, `budget`, `account`, `merchant`, `price-change`,
 `cancelled`, `recurring`, `preference`, `housing`, `payment-method`
 
+## Additional Finance Classification Rules
+
+- Subjects: use `"user"` for preferences/habits, merchant name for merchant facts, service name for subscriptions
+- Permanence: `stable` for obligations and account registrations, `standard` for active states, `volatile` for events and anomalies
+- Always pass `source_message_id` when ingesting from email; never discard provenance
+- Precision over estimation: store exact amounts; flag uncertainty in `metadata`
+- Notice patterns: recurring same-merchant charges without a subscription record are an opportunity to create one
+- Currency discipline: never assume USD; read the source signal
+- Scope boundary: tracking, visibility, and reminders only; do not cross into advice or execution
+
+### Analytics-Specific Predicates (store as memory facts)
+
+- `spending_baseline`: Per-merchant or per-category statistical baseline (`stable` permanence); subject is merchant or category name
+- `anomaly_threshold`: Configured sensitivity threshold for anomaly detection (`stable`)
+- `alert_config`: Alert rule configuration (`stable`); created/read by `alert_configure` / `alert_list`
+- `subscription_audit_date`: Date of last subscription audit (`standard`); subject is `"finance_butler"`
+- `price_change`: Detected subscription price change event (`volatile`); subject is service name
+
+### Dedicated Table Storage (do NOT use memory facts for these)
+
+- Merchant category mappings → `finance.merchant_mappings` (use `learn_merchant_categories`, `recall_merchant_mappings`)
+- Budget targets → `finance.budgets` (use `budget_set`, `budget_list`, `budget_status`)
+- Account balance snapshots → `finance.balance_snapshots` (use `net_worth_snapshot`, `net_worth_history`)
+- Recurring charge patterns → `finance.recurring_groups` (populated by `detect_recurring`)
+
 ## Example Facts
 
 ```python
