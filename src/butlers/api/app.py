@@ -34,6 +34,7 @@ from butlers.api.deps import (
     shutdown_dependencies,
     wire_db_dependencies,
 )
+from butlers.api.lifespan_supervisor import supervise_lifespan_loop
 from butlers.api.middleware import ApiKeyMiddleware, register_error_handlers
 from butlers.api.router_discovery import discover_butler_routers
 from butlers.api.routers.activity_feed import router as activity_feed_router
@@ -206,6 +207,13 @@ def _resolve_positive_float_env(env_var: str, default: float) -> float:
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
+def _track_background_task(task: asyncio.Task) -> asyncio.Task:
+    """Register a lifespan background task for the GC-safety keepalive above."""
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle for DB pools and MCP clients.
@@ -246,6 +254,7 @@ async def lifespan(app: FastAPI):
     settings_console_delta_task: asyncio.Task | None = None
     secrets_staleness_task: asyncio.Task | None = None
     migration_drift_task: asyncio.Task | None = None
+    calendar_deadman_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
     restore_drill_task: asyncio.Task | None = None
@@ -302,11 +311,12 @@ async def lifespan(app: FastAPI):
         scan_interval_s = _resolve_positive_float_env(
             _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV, DEFAULT_SCAN_INTERVAL_S
         )
-        secrets_lifecycle_task = asyncio.create_task(
-            run_secrets_lifecycle_loop(get_db_manager(), interval_s=scan_interval_s)
+        secrets_lifecycle_task = _track_background_task(
+            supervise_lifespan_loop(
+                "secrets_lifecycle",
+                lambda: run_secrets_lifecycle_loop(get_db_manager(), interval_s=scan_interval_s),
+            )
         )
-        _BACKGROUND_TASKS.add(secrets_lifecycle_task)
-        secrets_lifecycle_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
         # Hourly automated model-catalog verification sweep (bu-hmdqz.2):
         # closes the loop left open by the manual-only "Verify all" button —
@@ -317,11 +327,12 @@ async def lifespan(app: FastAPI):
         model_verify_interval_s = _resolve_positive_float_env(
             _MODEL_VERIFY_INTERVAL_ENV, DEFAULT_MODEL_VERIFY_INTERVAL_S
         )
-        model_verify_task = asyncio.create_task(
-            run_model_verify_loop(get_db_manager(), interval_s=model_verify_interval_s)
+        model_verify_task = _track_background_task(
+            supervise_lifespan_loop(
+                "model_verify",
+                lambda: run_model_verify_loop(get_db_manager(), interval_s=model_verify_interval_s),
+            )
         )
-        _BACKGROUND_TASKS.add(model_verify_task)
-        model_verify_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
         # Fleet-events NOTIFY bridge (bu-01r64.1): daemon processes publish
         # session/spend/notification/approval/ingestion events via Postgres NOTIFY
@@ -335,9 +346,12 @@ async def lifespan(app: FastAPI):
         try:
             from butlers.api.fleet_events_bridge import run_fleet_events_listener
 
-            fleet_events_bridge_task = asyncio.create_task(run_fleet_events_listener())
-            _BACKGROUND_TASKS.add(fleet_events_bridge_task)
-            fleet_events_bridge_task.add_done_callback(_BACKGROUND_TASKS.discard)
+            fleet_events_bridge_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "fleet_events_bridge",
+                    run_fleet_events_listener,
+                )
+            )
         except Exception:
             logger.warning(
                 "Failed to start fleet-events NOTIFY bridge; daemon-originated live events "
@@ -354,13 +368,14 @@ async def lifespan(app: FastAPI):
         # so a pricing-config load failure can't misleadingly log as a DB
         # init failure; GET /api/settings/console is unaffected either way.
         try:
-            settings_console_delta_task = asyncio.create_task(
-                run_settings_console_delta_loop(
-                    butler_configs, get_mcp_manager(), get_pricing(), get_db_manager()
+            settings_console_delta_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "settings_console_delta",
+                    lambda: run_settings_console_delta_loop(
+                        butler_configs, get_mcp_manager(), get_pricing(), get_db_manager()
+                    ),
                 )
             )
-            _BACKGROUND_TASKS.add(settings_console_delta_task)
-            settings_console_delta_task.add_done_callback(_BACKGROUND_TASKS.discard)
         except Exception:
             logger.warning(
                 "Failed to start settings-console delta loop; header/attention bus events "
@@ -379,15 +394,16 @@ async def lifespan(app: FastAPI):
             _SECRETS_STALENESS_SCAN_INTERVAL_ENV, DEFAULT_STALENESS_SCAN_INTERVAL_S
         )
         staleness_window_s = resolve_staleness_window_s(warn_invalid=True)
-        secrets_staleness_task = asyncio.create_task(
-            run_secrets_staleness_loop(
-                get_db_manager(),
-                interval_s=staleness_interval_s,
-                staleness_s=staleness_window_s,
+        secrets_staleness_task = _track_background_task(
+            supervise_lifespan_loop(
+                "secrets_staleness",
+                lambda: run_secrets_staleness_loop(
+                    get_db_manager(),
+                    interval_s=staleness_interval_s,
+                    staleness_s=staleness_window_s,
+                ),
             )
         )
-        _BACKGROUND_TASKS.add(secrets_staleness_task)
-        secrets_staleness_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
         # Migration-drift sentinel (bu-9r3hd.1): hourly comparison of the
         # codebase's Alembic heads against each butler schema's applied
@@ -401,11 +417,12 @@ async def lifespan(app: FastAPI):
             drift_interval_s = _resolve_positive_float_env(
                 _MIGRATION_DRIFT_CHECK_INTERVAL_ENV, DEFAULT_DRIFT_CHECK_INTERVAL_S
             )
-            migration_drift_task = asyncio.create_task(
-                run_migration_drift_loop(get_db_manager(), interval_s=drift_interval_s)
+            migration_drift_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "migration_drift",
+                    lambda: run_migration_drift_loop(get_db_manager(), interval_s=drift_interval_s),
+                )
             )
-            _BACKGROUND_TASKS.add(migration_drift_task)
-            migration_drift_task.add_done_callback(_BACKGROUND_TASKS.discard)
         except Exception:
             logger.warning(
                 "Failed to start migration-drift sentinel loop; GET /api/system/drift "
@@ -425,13 +442,14 @@ async def lifespan(app: FastAPI):
                 _CALENDAR_SYNC_DEADMAN_CHECK_INTERVAL_ENV,
                 DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
             )
-            calendar_deadman_task = asyncio.create_task(
-                run_calendar_sync_deadman_loop(
-                    get_db_manager(), interval_s=calendar_deadman_interval_s
+            calendar_deadman_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "calendar_sync_deadman",
+                    lambda: run_calendar_sync_deadman_loop(
+                        get_db_manager(), interval_s=calendar_deadman_interval_s
+                    ),
                 )
             )
-            _BACKGROUND_TASKS.add(calendar_deadman_task)
-            calendar_deadman_task.add_done_callback(_BACKGROUND_TASKS.discard)
         except Exception:
             logger.warning("Failed to start calendar-sync-deadman loop", exc_info=True)
 
@@ -448,13 +466,14 @@ async def lifespan(app: FastAPI):
                 deadman_interval_s = _resolve_positive_float_env(
                     _EXTERNAL_DEADMAN_CHECK_INTERVAL_ENV, DEFAULT_DEADMAN_CHECK_INTERVAL_S
                 )
-                external_deadman_task = asyncio.create_task(
-                    run_external_deadman_loop(
-                        get_db_manager(), url=deadman_url, interval_s=deadman_interval_s
+                external_deadman_task = _track_background_task(
+                    supervise_lifespan_loop(
+                        "external_deadman",
+                        lambda: run_external_deadman_loop(
+                            get_db_manager(), url=deadman_url, interval_s=deadman_interval_s
+                        ),
                     )
                 )
-                _BACKGROUND_TASKS.add(external_deadman_task)
-                external_deadman_task.add_done_callback(_BACKGROUND_TASKS.discard)
             except Exception:
                 logger.warning("Failed to start external-deadman ping loop", exc_info=True)
         else:
@@ -475,11 +494,14 @@ async def lifespan(app: FastAPI):
             restore_drill_interval_s = _resolve_positive_float_env(
                 _RESTORE_DRILL_INTERVAL_ENV, DEFAULT_RESTORE_DRILL_INTERVAL_S
             )
-            restore_drill_task = asyncio.create_task(
-                run_restore_drill_loop(get_db_manager(), interval_s=restore_drill_interval_s)
+            restore_drill_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "restore_drill",
+                    lambda: run_restore_drill_loop(
+                        get_db_manager(), interval_s=restore_drill_interval_s
+                    ),
+                )
             )
-            _BACKGROUND_TASKS.add(restore_drill_task)
-            restore_drill_task.add_done_callback(_BACKGROUND_TASKS.discard)
         except Exception:
             logger.warning(
                 "Failed to start backup restore-drill loop; GET /api/system/backups "
@@ -522,6 +544,10 @@ async def lifespan(app: FastAPI):
         migration_drift_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await migration_drift_task
+    if calendar_deadman_task is not None:
+        calendar_deadman_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await calendar_deadman_task
     if external_deadman_task is not None:
         external_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
