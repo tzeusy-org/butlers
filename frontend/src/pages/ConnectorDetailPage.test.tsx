@@ -290,14 +290,14 @@ describe("ConnectorDetailPage — content", () => {
     expect(html).toContain("reauth-button");
   });
 
-  it("renders recovery callout with set-primary-account for degraded+no_primary_account connector", () => {
+  it("renders static primary-account guidance for degraded+no_primary_account connector", () => {
     setConnectorState(NO_PRIMARY_ACCOUNT_CONNECTOR);
     setStatsState();
     const html = renderPage();
     expect(html).toContain("reauth-callout");
     expect(html).toContain("no primary account");
-    // set-primary-account button must be present; re-authorize button must NOT
-    expect(html).toContain("set-primary-account-button");
+    // Only needs_reauth may create a recovery action.
+    expect(html).not.toContain("set-primary-account-button");
     expect(html).not.toContain("reauth-button");
   });
 

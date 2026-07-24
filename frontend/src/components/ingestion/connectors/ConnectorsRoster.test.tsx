@@ -87,6 +87,24 @@ const REAUTH_CONNECTOR: ConnectorSummary = {
   hourly_events: Array(24).fill(0),
 }
 
+const GMAIL_REAUTH_CONNECTOR: ConnectorSummary = {
+  ...REAUTH_CONNECTOR,
+  connector_type: 'gmail',
+  endpoint_identity: 'user@example.com',
+}
+
+const WHATSAPP_REAUTH_CONNECTOR: ConnectorSummary = {
+  ...REAUTH_CONNECTOR,
+  connector_type: 'whatsapp_user_client',
+  endpoint_identity: '+65 5555 0100',
+}
+
+const UNSUPPORTED_REAUTH_CONNECTOR: ConnectorSummary = {
+  ...REAUTH_CONNECTOR,
+  connector_type: 'steam',
+  endpoint_identity: 'owner',
+}
+
 const STALE_CONNECTOR: ConnectorSummary = {
   connector_type: 'telegram',
   endpoint_identity: 'bot_123',
@@ -292,6 +310,33 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     // Both should contain 'reauth' (the consistent label for needs_reauth status)
     expect(rowText).toContain('reauth')
     expect(stripText).toContain('reauth')
+  })
+
+  it('uses the registered Google OAuth route for Gmail reauth', () => {
+    mockHooks([GMAIL_REAUTH_CONNECTOR])
+    renderRoster(container, root)
+
+    const action = container.querySelector('[data-testid="auth-status-gmail"]')
+    expect(action?.getAttribute('href')).toContain('/api/oauth/google/start')
+    expect(action?.getAttribute('href')).toContain('page_of_origin=ingestion')
+  })
+
+  it('routes WhatsApp reauth to Passport pairing instead of OAuth', () => {
+    mockHooks([WHATSAPP_REAUTH_CONNECTOR])
+    renderRoster(container, root)
+
+    const action = container.querySelector('[data-testid="auth-status-whatsapp_user_client"]')
+    expect(action?.getAttribute('href')).toBe('/secrets?focus=u:whatsapp')
+  })
+
+  it('does not create a recovery link for an unsupported connector', () => {
+    mockHooks([UNSUPPORTED_REAUTH_CONNECTOR])
+    renderRoster(container, root)
+
+    const status = container.querySelector('[data-testid="auth-status-steam"]')
+    expect(status?.tagName).toBe('SPAN')
+    expect(status?.textContent).toContain('unavailable')
+    expect(container.textContent).toMatch(/not available/i)
   })
 
   it('surfaces a sparse OwnTracks cadence warning without changing transport health', () => {

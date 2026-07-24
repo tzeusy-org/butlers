@@ -255,9 +255,9 @@ It SHALL include:
 The whole row SHALL be the navigation target to connector detail (click or
 keyboard Enter/Space while the row has focus), with the disclosure chevron
 kept as a visual cue rather than a separate click target. When a row's auth
-pill reads `reauth`, the pill itself SHALL be the reauth action (see
-"Ingestion-Originated OAuth page_of_origin Contract"), and it remains
-independently clickable above the row's navigation target.
+pill reads `reauth`, the pill itself SHALL use the typed connector recovery
+resolver (see "Ingestion-Originated OAuth page_of_origin Contract"), and it
+remains independently clickable above the row's navigation target.
 
 #### Scenario: Connector with auth issue appears in attention strip
 
@@ -330,9 +330,30 @@ It SHALL include:
 
 ### Requirement: Ingestion-Originated OAuth page_of_origin Contract
 
-Any OAuth dance initiated from `/ingestion/connectors` SHALL stamp
-`page_of_origin=ingestion` in the OAuth state token by passing it as a query
-parameter to the begin endpoint (`GET /api/oauth/<provider>/start`).
+Any recovery control initiated from `/ingestion/connectors` SHALL first resolve
+the connector's real recovery capability through one shared typed resolver.
+The resolver SHALL be an allowlist: a `connector_type` is registry data, not an
+OAuth provider identifier, and SHALL NOT be interpolated into an OAuth URL.
+
+The resolver SHALL return exactly one of the following outcomes:
+
+- **OAuth:** `google`, `gmail`, `google_calendar`, `google_drive`, and
+  `google_health` use the registered `google` OAuth provider; `spotify` uses
+  the registered `spotify` OAuth provider. Google Health SHALL include
+  `scope_set=health`.
+- **Passport pairing:** `whatsapp` and `whatsapp_user_client` navigate in-app
+  to `/secrets?focus=u:whatsapp`; they SHALL NOT construct an OAuth URL.
+- **Unsupported:** every other or unknown connector type renders a clear
+  unavailable explanation with no recovery link and no network request.
+
+Only `needs_reauth` SHALL create an interactive recovery control. Other auth
+states remain informational.
+
+An OAuth outcome SHALL stamp `page_of_origin=ingestion` in the OAuth state
+token by passing it as a query parameter to the registered begin endpoint
+(`GET /api/oauth/{google|spotify}/start`). It SHALL preserve an available
+`connector_detail_path`, and it SHALL preserve `force_consent` when the
+initiating surface requests fresh consent.
 
 This requirement is **co-owned** with the in-flight `redesign-secrets-passport` change,
 which defines the `/secrets`-side callback behaviour. This change owns the
@@ -343,7 +364,7 @@ The generalised OAuth callback handler (specified in `redesign-secrets-passport 
 `state.page_of_origin`. For this contract to function:
 
 1. The ingestion reauth initiation MUST pass `page_of_origin=ingestion` as a query
-   parameter to the OAuth start endpoint.
+   parameter to the registered OAuth start endpoint.
 2. The OAuth state token MUST carry `page_of_origin` through the dance (the
    `redesign-secrets-passport` change extends `_StateEntry` and `_store_state` to
    support this field; this change may not land before that extension is in place).
@@ -351,19 +372,40 @@ The generalised OAuth callback handler (specified in `redesign-secrets-passport 
    is `ingestion` (callback routing table is defined in `redesign-secrets-passport
    §dashboard-api`; no duplication required here).
 
-**Implementation gate:** SATISFIED. The generalised `GET /api/oauth/<provider>/start`
-endpoint has landed (`src/butlers/api/routers/oauth.py`) and accepts `page_of_origin`.
-The ingestion reauth callout calls it with `page_of_origin=ingestion`; no Google-only
-fallback remains.
+**Implementation gate:** SATISFIED. The generalised provider start endpoint has landed
+(`src/butlers/api/routers/oauth.py`) and accepts `page_of_origin`. The ingestion
+recovery resolver calls it only for registered `google` and `spotify` providers;
+no connector type is used as an OAuth-provider fallback.
 
 #### Scenario: Ingestion reauth stamps page_of_origin
 
 - **WHEN** the owner clicks the reauthorize action on a connector detail page under
   `/ingestion/connectors`
-- **THEN** the frontend calls `GET /api/oauth/<provider>/start?...&page_of_origin=ingestion`
+- **THEN** a registered OAuth recovery outcome calls
+  `GET /api/oauth/{google|spotify}/start?...&page_of_origin=ingestion`
 - **AND** the OAuth state token carries `page_of_origin=ingestion` through the dance
 - **AND** on successful OAuth callback the browser is redirected to `/ingestion/connectors`
   (NOT to `/secrets`)
+
+#### Scenario: WhatsApp recovery opens Passport pairing
+
+- **WHEN** a `needs_reauth` WhatsApp or WhatsApp user-client connector requests recovery
+- **THEN** the dashboard SHALL navigate in-app to `/secrets?focus=u:whatsapp`
+- **AND** it SHALL NOT construct or request `/api/oauth/whatsapp/start` (or an
+  OAuth URL derived from the connector type)
+
+#### Scenario: Unsupported connector recovery is static and truthful
+
+- **WHEN** a `needs_reauth` connector has no registered OAuth or Passport
+  recovery capability
+- **THEN** the dashboard SHALL render an unavailable explanation
+- **AND** it SHALL render no recovery link or button
+- **AND** it SHALL issue no recovery network request
+
+#### Scenario: Non-reauth status is not a recovery action
+
+- **WHEN** a connector auth state is not `needs_reauth`
+- **THEN** its roster and detail status remain noninteractive
 
 #### Scenario: Post-reauth connector state reflects new credential
 

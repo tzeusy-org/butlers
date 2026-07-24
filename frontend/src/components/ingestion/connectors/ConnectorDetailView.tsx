@@ -6,7 +6,7 @@
  * Header band:
  *   - Large letter-mark glyph (56px) + display headline + mono meta line
  *   - Serif purpose paragraph
- *   - ReauthCallout (conditional — only when auth broken/expiring)
+ *   - ReauthCallout (conditional — actionable only for supported needs-reauth)
  *
  * Left (1.4fr):
  *   - 4-cell KPI strip (events, error rate, avg/hr, last heartbeat)
@@ -44,7 +44,10 @@ import type {
 import { ReauthCallout } from './ReauthCallout'
 import { ScopeList, type OAuthScope } from './ScopeList'
 import { ConnectorHistogram } from './ConnectorHistogram'
-import { deriveConnectorDispatchInfo } from './connector-auth'
+import {
+  deriveConnectorDispatchInfo,
+  type ConnectorRecovery,
+} from './connector-auth'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
 
 // ---------------------------------------------------------------------------
@@ -125,10 +128,10 @@ export interface ConnectorDetailViewProps {
   /** Routing rules response from /connectors/{type}/{identity}/routing-rules. [bu-5ywn2] */
   routingRules?: ConnectorRoutingRulesResponse | null
   routingRulesReader?: ConnectorDetailReaderState
-  /** Called when user clicks re-authorize (auth error / expiring). */
+  /** Called when user clicks a supported needs-reauth recovery action. */
   onReauth?: () => void
-  /** Called when user clicks "set primary account" (no_primary_account case). */
-  onSetPrimaryAccount?: () => void
+  /** Explicit recovery capability resolved from the connector type. */
+  recovery?: ConnectorRecovery
   /** Called when user clicks "pause poll". */
   onPause?: () => void
   /** Called when user clicks "run now". */
@@ -161,7 +164,7 @@ export function ConnectorDetailView({
   routingRules,
   routingRulesReader,
   onReauth,
-  onSetPrimaryAccount,
+  recovery,
   onPause,
   onRunNow,
 }: ConnectorDetailViewProps) {
@@ -240,7 +243,7 @@ export function ConnectorDetailView({
           authNote={info.authNote}
           connectorType={connector.connector_type}
           onReauth={onReauth}
-          onSetPrimaryAccount={onSetPrimaryAccount}
+          recovery={recovery}
         />
       </div>
 

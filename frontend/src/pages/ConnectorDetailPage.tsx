@@ -19,9 +19,9 @@
  * guaranteeing consistent auth label/color treatment across all three surfaces
  * (spec AC2).
  *
- * OAuth reauth deep-link: when the user clicks re-authorize on this page, the
- * OAuth start URL includes connector_detail_path so the callback redirects back
- * to this specific connector detail page instead of the connectors roster.
+ * Recovery routing: the shared capability resolver preserves OAuth return
+ * context for supported providers and routes WhatsApp pairing in-app through
+ * Passport without constructing a provider URL from the connector type.
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connector Detail"
@@ -45,7 +45,10 @@ import {
   useUpdateConnectorSettings,
 } from '@/hooks/use-ingestion'
 import type { ConnectorScopeEntry } from '@/api/types'
-import { getProviderOAuthStartUrl } from '@/api/client'
+import {
+  deriveConnectorDispatchInfo,
+  resolveConnectorRecovery,
+} from '@/components/ingestion/connectors/connector-auth'
 import { Page, type Breadcrumb } from '@/components/ui/page'
 
 /** Map backend ConnectorScopeEntry[] to the OAuthScope[] shape ScopeList consumes. */
@@ -64,22 +67,6 @@ function _toOAuthScopes(scopes: ConnectorScopeEntry[] | null | undefined): OAuth
 // ---------------------------------------------------------------------------
 // ConnectorDetailPage
 // ---------------------------------------------------------------------------
-
-/**
- * Map a connector_type to its OAuth scope set name, if any.
- *
- * The backend ``GOOGLE_SCOPE_SETS`` registry maps named scope sets to actual
- * OAuth scopes.  Connectors that request non-default scopes must pass the
- * correct scope_set so the reauth grants the right permissions.
- *
- * - google_health → "health" (Google Fit / Health Connect scopes)
- * - other google_* → omitted (default Calendar/Drive/Gmail scope composition)
- * - non-google → omitted
- */
-function _scopeSetForConnectorType(connectorType: string): string | undefined {
-  if (connectorType === 'google_health') return 'health'
-  return undefined
-}
 
 /** Breadcrumbs for the connector detail page shell states. */
 const CONNECTOR_BREADCRUMBS: Breadcrumb[] = [
@@ -160,40 +147,30 @@ export default function ConnectorDetailPage() {
     endpointIdentity ?? '',
   )
 
-  // Build the onReauth handler: initiates OAuth reauth for this connector's
-  // provider (derived from connector_type) and carries connector_detail_path
-  // so the callback deep-links back to this specific detail page.
-  // scopeSet is passed so google_health requests health scopes, not the default
-  // Calendar/Drive/Gmail scope composition — without it reauth would stay degraded.
-  const handleReauth = useCallback(() => {
-    if (!connectorType || !endpointIdentity) return
-    // Derive the OAuth provider name from connector_type.  The backend registry
-    // only accepts "google" and "spotify" as provider keys; connector_type values
-    // like "google_health" or "google_drive" must be mapped to "google".
-    const provider = connectorType.startsWith('google') ? 'google' : connectorType
-    // connector_detail_path is "<type>/<identity>" — the backend validates the
-    // format and silently ignores it if it doesn't match, falling back to the
-    // roster.
-    const connectorDetailPath = `${connectorType}/${endpointIdentity}`
-    const url = getProviderOAuthStartUrl(provider, {
-      pageOfOrigin: 'ingestion',
-      connectorDetailPath,
-      forceConsent: true,
-      scopeSet: _scopeSetForConnectorType(connectorType),
-    })
-    window.location.href = url
-  }, [connectorType, endpointIdentity])
+  const recoveryConnectorType = connector?.connector_type ?? connectorType ?? ''
+  const recoveryEndpointIdentity = connector?.endpoint_identity ?? endpointIdentity
+  const connectorDetailPath = recoveryEndpointIdentity
+    ? `${recoveryConnectorType}/${recoveryEndpointIdentity}`
+    : undefined
+  const recovery = resolveConnectorRecovery(recoveryConnectorType, {
+    connectorDetailPath,
+    forceConsent: true,
+  })
+  const canRecover =
+    connector != null &&
+    deriveConnectorDispatchInfo(connector).authStatus === 'needs_reauth' &&
+    recovery.kind !== 'unsupported'
 
-  // Build the onSetPrimaryAccount handler: navigates to the Google account
-  // management surface where the user can set a primary Google account.
-  // no_primary_account is not a reauth issue — the connector has a valid
-  // credential but no account is designated as primary. Per the
-  // dashboard-google-accounts spec, any in-app cross-link to the Google account
-  // management surface targets /secrets?focus=u:google (the canonical deep-link
-  // that opens the PageGoogleAccounts passport page).
-  const handleSetPrimaryAccount = useCallback(() => {
-    navigate('/secrets?focus=u:google')
-  }, [navigate])
+  // The resolver owns provider capability selection. OAuth needs a full-page
+  // redirect, while Passport pairing remains in-app; unsupported recovery is
+  // intentionally never an interactive action.
+  const handleReauth = useCallback(() => {
+    if (recovery.kind === 'oauth') {
+      window.location.href = recovery.href
+    } else if (recovery.kind === 'passport') {
+      navigate(recovery.to)
+    }
+  }, [navigate, recovery])
 
   // --- Shell-owned states (loading, error, not-found) ----------------------
   // The Page shell handles these via its loading / error / empty props, replacing
@@ -275,8 +252,8 @@ export default function ConnectorDetailPage() {
             isError: routingRulesError,
             onRetry: () => void refetchRoutingRules(),
           }}
-          onReauth={handleReauth}
-          onSetPrimaryAccount={handleSetPrimaryAccount}
+          recovery={recovery}
+          onReauth={canRecover ? handleReauth : undefined}
         />
         {BATCH_CONNECTOR_TYPES.has(connector.connector_type) && (
           <div className="mt-8" data-testid="batch-settings-section">

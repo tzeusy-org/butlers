@@ -29,6 +29,8 @@ import type {
   ConnectorStats,
 } from '@/api/types'
 import { ConnectorDetailView } from './ConnectorDetailView'
+import type { ConnectorRecovery } from './connector-auth'
+import { ReauthCallout } from './ReauthCallout'
 import type { OAuthScope } from './ScopeList'
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,7 @@ function renderDetail(
   opts: {
     scopes?: OAuthScope[] | null
     onReauth?: () => void
+    recovery?: ConnectorRecovery
     recentEvents?: ConnectorEventsResponse | null
     incidents?: ConnectorIncidentsResponse | null
     routingRules?: ConnectorRoutingRulesResponse | null
@@ -117,6 +120,7 @@ function renderDetail(
           stats={opts.stats}
           oauthScopes={opts.scopes}
           onReauth={opts.onReauth}
+          recovery={opts.recovery}
           recentEvents={opts.recentEvents}
           incidents={opts.incidents}
           routingRules={opts.routingRules}
@@ -312,6 +316,49 @@ describe('AC4: ReauthCallout appears when auth is broken/expired', () => {
     // Should show "reauth required" label — same label used by roster row and attention strip
     expect(callout?.textContent?.toLowerCase()).toContain('reauth required')
   })
+
+  it('renders unsupported recovery as clear static information', () => {
+    renderDetail(root, { ...REAUTH_CONNECTOR, connector_type: 'steam' }, {
+      onReauth: () => {},
+      recovery: {
+        kind: 'unsupported',
+        reason: 'Recovery is not available because this connector has no supported OAuth or Passport flow in the dashboard.',
+      },
+    })
+
+    const callout = container.querySelector('[data-testid="reauth-callout"]')
+    expect(callout?.textContent?.toLowerCase()).toContain('recovery unavailable')
+    expect(callout?.textContent?.toLowerCase()).toContain('not available')
+    expect(container.querySelector('[data-testid="reauth-button"]')).toBeNull()
+  })
+})
+
+describe('ReauthCallout non-reauth states', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it.each(['expiring', 'needs_primary_account'] as const)(
+    'does not render a recovery action for %s',
+    (authStatus) => {
+      act(() => {
+        root.render(
+          <ReauthCallout
+            authStatus={authStatus}
+            authNote="operator attention needed"
+            connectorType="gmail"
+            onReauth={() => undefined}
+          />,
+        )
+      })
+
+      expect(container.querySelector('[data-testid="reauth-button"]')).toBeNull()
+    },
+  )
 })
 
 // ---------------------------------------------------------------------------

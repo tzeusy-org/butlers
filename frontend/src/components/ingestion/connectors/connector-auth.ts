@@ -33,6 +33,7 @@
  *       dashboard-ingestion-dispatch-console/spec.md §"Reauth callout follows connector auth state"
  */
 
+import { getProviderOAuthStartUrl } from '@/api/client'
 import type { ConnectorSummary } from '@/api/types'
 
 /** Derived auth status — maps onto the Dispatch design language. */
@@ -229,24 +230,74 @@ export function healthVerdictWord(c: ConnectorSummary, info: ConnectorDispatchIn
   return 'online'
 }
 
-/**
- * Map a connector_type to its OAuth provider key.
- *
- * The backend OAuth registry only accepts "google" and "spotify" as
- * provider keys; connector_type values like "google_health" or
- * "google_drive" must collapse onto "google".
- */
-export function oauthProviderForConnectorType(connectorType: string): string {
-  return connectorType.startsWith('google') ? 'google' : connectorType
+/** Context carried into a recovery action from an ingestion connector surface. */
+export interface ConnectorRecoveryOptions {
+  /** Route fragment to restore after an OAuth callback. */
+  connectorDetailPath?: string
+  /** Ask the OAuth provider to re-prompt for consent when recovery requires it. */
+  forceConsent?: boolean
 }
 
+/** A recovery route chosen from an explicit, supported connector capability. */
+export type ConnectorRecovery =
+  | { kind: 'oauth'; href: string }
+  | { kind: 'passport'; to: '/secrets?focus=u:whatsapp' }
+  | { kind: 'unsupported'; reason: string }
+
+const GOOGLE_OAUTH_CONNECTOR_TYPES = new Set([
+  'google',
+  'gmail',
+  'google_calendar',
+  'google_drive',
+  'google_health',
+])
+
+const WHATSAPP_CONNECTOR_TYPES = new Set(['whatsapp', 'whatsapp_user_client'])
+
+const UNSUPPORTED_RECOVERY_REASON =
+  'Recovery is not available because this connector has no supported OAuth or Passport flow in the dashboard.'
+
 /**
- * Map a connector_type to the OAuth scope_set it needs on reauth, for the
- * connectors where the default scope composition is wrong.
+ * Resolve a connector's recovery route from known capabilities.
+ *
+ * This is deliberately an allowlist. Connector type is registry data, not an
+ * OAuth provider identifier: unknown types fail closed instead of becoming a
+ * fabricated `/api/oauth/<connector-type>/start` URL. Every OAuth route keeps
+ * the ingestion origin, while Google Health additionally keeps its restricted
+ * Health scope set.
  */
-export function oauthScopeSetForConnectorType(connectorType: string): string | undefined {
-  if (connectorType === 'google_health') return 'health'
-  return undefined
+export function resolveConnectorRecovery(
+  connectorType: string,
+  options: ConnectorRecoveryOptions = {},
+): ConnectorRecovery {
+  if (GOOGLE_OAUTH_CONNECTOR_TYPES.has(connectorType)) {
+    return {
+      kind: 'oauth',
+      href: getProviderOAuthStartUrl('google', {
+        pageOfOrigin: 'ingestion',
+        connectorDetailPath: options.connectorDetailPath,
+        forceConsent: options.forceConsent,
+        scopeSet: connectorType === 'google_health' ? 'health' : undefined,
+      }),
+    }
+  }
+
+  if (connectorType === 'spotify') {
+    return {
+      kind: 'oauth',
+      href: getProviderOAuthStartUrl('spotify', {
+        pageOfOrigin: 'ingestion',
+        connectorDetailPath: options.connectorDetailPath,
+        forceConsent: options.forceConsent,
+      }),
+    }
+  }
+
+  if (WHATSAPP_CONNECTOR_TYPES.has(connectorType)) {
+    return { kind: 'passport', to: '/secrets?focus=u:whatsapp' }
+  }
+
+  return { kind: 'unsupported', reason: UNSUPPORTED_RECOVERY_REASON }
 }
 
 function truncate(s: string, n: number): string {

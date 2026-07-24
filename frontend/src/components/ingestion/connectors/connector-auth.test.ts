@@ -17,8 +17,7 @@ import { describe, it, expect } from 'vitest'
 import {
   deriveConnectorDispatchInfo,
   healthVerdictWord,
-  oauthProviderForConnectorType,
-  oauthScopeSetForConnectorType,
+  resolveConnectorRecovery,
 } from './connector-auth'
 import type { ConnectorSummary } from '@/api/types'
 
@@ -231,29 +230,79 @@ describe('healthVerdictWord', () => {
 })
 
 // ---------------------------------------------------------------------------
-// oauthProviderForConnectorType / oauthScopeSetForConnectorType
+// resolveConnectorRecovery — registered capability routing
 // ---------------------------------------------------------------------------
 
-describe('oauthProviderForConnectorType', () => {
-  it('collapses any google_* connector_type onto the "google" provider key', () => {
-    expect(oauthProviderForConnectorType('google_health')).toBe('google')
-    expect(oauthProviderForConnectorType('google_drive')).toBe('google')
-    expect(oauthProviderForConnectorType('google_calendar')).toBe('google')
+describe('resolveConnectorRecovery', () => {
+  const detailContext = {
+    connectorDetailPath: 'gmail/user@example.com',
+    forceConsent: true,
+  }
+
+  it('routes Gmail through registered Google OAuth while preserving return and consent context', () => {
+    const recovery = resolveConnectorRecovery('gmail', detailContext)
+
+    expect(recovery.kind).toBe('oauth')
+    if (recovery.kind !== 'oauth') throw new Error('expected OAuth recovery')
+
+    const url = new URL(recovery.href, 'http://localhost')
+    expect(url.pathname).toBe('/api/oauth/google/start')
+    expect(url.searchParams.get('page_of_origin')).toBe('ingestion')
+    expect(url.searchParams.get('connector_detail_path')).toBe('gmail/user@example.com')
+    expect(url.searchParams.get('force_consent')).toBe('true')
   })
 
-  it('passes non-google connector_types through unchanged', () => {
-    expect(oauthProviderForConnectorType('spotify')).toBe('spotify')
-    expect(oauthProviderForConnectorType('gmail')).toBe('gmail')
-  })
-})
+  it('routes Google Health through registered Google OAuth with the Health scope set', () => {
+    const recovery = resolveConnectorRecovery('google_health', detailContext)
 
-describe('oauthScopeSetForConnectorType', () => {
-  it('returns "health" for google_health', () => {
-    expect(oauthScopeSetForConnectorType('google_health')).toBe('health')
+    expect(recovery.kind).toBe('oauth')
+    if (recovery.kind !== 'oauth') throw new Error('expected OAuth recovery')
+
+    const url = new URL(recovery.href, 'http://localhost')
+    expect(url.pathname).toBe('/api/oauth/google/start')
+    expect(url.searchParams.get('scope_set')).toBe('health')
+    expect(url.searchParams.get('force_consent')).toBe('true')
+    expect(url.searchParams.get('connector_detail_path')).toBe('gmail/user@example.com')
   })
 
-  it('returns undefined for connectors with no special scope set', () => {
-    expect(oauthScopeSetForConnectorType('google_drive')).toBeUndefined()
-    expect(oauthScopeSetForConnectorType('spotify')).toBeUndefined()
+  it.each(['google', 'google_calendar', 'google_drive'])(
+    'keeps %s on the registered Google OAuth provider',
+    (connectorType) => {
+      const recovery = resolveConnectorRecovery(connectorType, detailContext)
+
+      expect(recovery.kind).toBe('oauth')
+      if (recovery.kind !== 'oauth') throw new Error('expected OAuth recovery')
+      expect(new URL(recovery.href, 'http://localhost').pathname).toBe('/api/oauth/google/start')
+    },
+  )
+
+  it('routes Spotify through its registered OAuth endpoint', () => {
+    const recovery = resolveConnectorRecovery('spotify', detailContext)
+
+    expect(recovery.kind).toBe('oauth')
+    if (recovery.kind !== 'oauth') throw new Error('expected OAuth recovery')
+
+    const url = new URL(recovery.href, 'http://localhost')
+    expect(url.pathname).toBe('/api/oauth/spotify/start')
+    expect(url.searchParams.get('page_of_origin')).toBe('ingestion')
+    expect(url.searchParams.get('force_consent')).toBe('true')
+  })
+
+  it('routes WhatsApp to Passport pairing instead of an OAuth endpoint', () => {
+    expect(resolveConnectorRecovery('whatsapp_user_client', detailContext)).toEqual({
+      kind: 'passport',
+      to: '/secrets?focus=u:whatsapp',
+    })
+  })
+
+  it('fails closed for unsupported and unknown connector types', () => {
+    for (const connectorType of ['steam', 'unknown_provider']) {
+      const recovery = resolveConnectorRecovery(connectorType, detailContext)
+      expect(recovery.kind).toBe('unsupported')
+      if (recovery.kind !== 'unsupported') throw new Error('expected unsupported recovery')
+      expect(recovery.reason).toMatch(/not available/i)
+      expect('href' in recovery).toBe(false)
+      expect('to' in recovery).toBe(false)
+    }
   })
 })

@@ -7,9 +7,9 @@
  *
  * The auth pill uses the same status label and color as the AttentionStrip
  * and the connector detail ReauthCallout (per spec AC2: consistent treatment).
- * When the status is `needs_reauth`, the pill itself is the reauth action —
- * it links straight into the OAuth start URL with `page_of_origin=ingestion`
- * (the same contract the connector detail ReauthCallout uses).
+ * When the status is `needs_reauth`, the pill uses the shared recovery
+ * resolver: registered OAuth, Passport pairing, or an honest unavailable
+ * explanation (the same contract the connector detail ReauthCallout uses).
  *
  * A left-rail severity indicator appears for non-ok connectors: red for
  * needs_reauth, amber for degraded/expiring.
@@ -31,7 +31,6 @@
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
 import type { ConnectorSummary } from '@/api/types'
-import { getProviderOAuthStartUrl } from '@/api/client'
 import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
 import { Sparkline } from './Sparkline'
 import {
@@ -41,8 +40,7 @@ import {
   healthDotColor,
   healthTextColor,
   healthVerdictWord,
-  oauthProviderForConnectorType,
-  oauthScopeSetForConnectorType,
+  resolveConnectorRecovery,
 } from './connector-auth'
 import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
@@ -115,17 +113,22 @@ export function ConnectorRosterRow({
 
   const displayName = c.connector_type.replace(/_/g, ' ')
 
-  // The reauth pill doubles as the reauth action — it is the only place on
-  // the row that deep-links into the OAuth dance, so it must sit above the
-  // stretched row link (z-10) to remain independently clickable.
-  const reauthUrl =
+  // The reauth pill doubles as the recovery action only for a known recovery
+  // capability. The resolver is an allowlist so arbitrary connector types can
+  // never become fabricated OAuth provider URLs.
+  const recovery =
     info.authStatus === 'needs_reauth'
-      ? getProviderOAuthStartUrl(oauthProviderForConnectorType(c.connector_type), {
-          pageOfOrigin: 'ingestion',
+      ? resolveConnectorRecovery(c.connector_type, {
           connectorDetailPath: `${c.connector_type}/${c.endpoint_identity}`,
-          scopeSet: oauthScopeSetForConnectorType(c.connector_type),
         })
       : null
+  const authDisplayLabel =
+    recovery?.kind === 'passport'
+      ? 'pair'
+      : recovery?.kind === 'unsupported'
+        ? 'unavailable'
+        : authLabel
+  const authNote = recovery?.kind === 'unsupported' ? recovery.reason : info.authNote
 
   return (
     <div
@@ -216,25 +219,34 @@ export function ConnectorRosterRow({
 
       {/* Auth pill — the reauth action when needs_reauth, otherwise a plain label */}
       <div>
-        {reauthUrl ? (
+        {recovery?.kind === 'oauth' ? (
           <a
-            href={reauthUrl}
+            href={recovery.href}
             className={`relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors ${authColorClass}`}
             data-testid={`auth-status-${c.connector_type}`}
             aria-label={`Re-authorize ${displayName}`}
           >
-            {authLabel}
+            {authDisplayLabel}
           </a>
+        ) : recovery?.kind === 'passport' ? (
+          <Link
+            to={recovery.to}
+            className={`relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors ${authColorClass}`}
+            data-testid={`auth-status-${c.connector_type}`}
+            aria-label={`Open ${displayName} pairing`}
+          >
+            {authDisplayLabel}
+          </Link>
         ) : (
           <span
             className={`font-mono text-[10px] tracking-[0.06em] uppercase ${authColorClass}`}
             data-testid={`auth-status-${c.connector_type}`}
           >
-            {authLabel}
+            {authDisplayLabel}
           </span>
         )}
         <div className="font-mono text-[10px] text-muted-foreground/50 mt-0.5 block truncate max-w-[110px]">
-          {info.authNote}
+          {authNote}
         </div>
       </div>
 

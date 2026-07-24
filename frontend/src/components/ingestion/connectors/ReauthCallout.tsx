@@ -4,9 +4,9 @@
  * Appears in the header band of the connector detail page when auth status
  * requires operator action:
  *
- * - 'needs_reauth'          → red border + "reauth required" + re-authorize action
- * - 'expiring'              → amber border + "expiring soon" + re-authorize action
- * - 'needs_primary_account' → amber border + "no primary account" + set-primary guidance
+ * - 'needs_reauth'          → red border + recovery action when supported
+ * - 'expiring'              → amber border + static status
+ * - 'needs_primary_account' → amber border + static guidance
  *
  * Renders null when authStatus is 'ok' or 'unconfigured'.
  *
@@ -18,7 +18,7 @@
  * Reference: docs/redesigns/ingestion-connector-detail.jsx §"reauth call-to-action"
  */
 
-import type { DerivedAuthStatus } from './connector-auth'
+import type { ConnectorRecovery, DerivedAuthStatus } from './connector-auth'
 
 interface ReauthCalloutProps {
   authStatus: DerivedAuthStatus
@@ -26,31 +26,31 @@ interface ReauthCalloutProps {
   authNote: string
   /** Connector type — e.g. "spotify" — for display in the callout text. */
   connectorType: string
-  /** Called when the user clicks re-authorize (auth errors only). */
+  /** Called when the user clicks a supported needs-reauth recovery action. */
   onReauth?: () => void
-  /** Called when the user clicks "set primary account" (needs_primary_account only). */
-  onSetPrimaryAccount?: () => void
+  /** Explicit connector recovery route; unsupported routes render as information. */
+  recovery?: ConnectorRecovery
 }
 
 /**
  * Bordered recovery callout for connector detail.
  *
  * Renders null when authStatus is 'ok' or 'unconfigured'.
- * For 'needs_reauth': red border + "reauth required" + re-authorize button.
- * For 'expiring': amber border + "expiring soon" + re-authorize button.
- * For 'needs_primary_account': amber border + guidance to set a primary account.
+ * Only `needs_reauth` may surface an interactive recovery action. Unsupported
+ * recovery is explicitly explained without a link or network request.
  */
 export function ReauthCallout({
   authStatus,
   authNote,
   connectorType,
   onReauth,
-  onSetPrimaryAccount,
+  recovery,
 }: ReauthCalloutProps) {
   if (authStatus === 'ok' || authStatus === 'unconfigured') return null
 
   const isPrimaryAccount = authStatus === 'needs_primary_account'
   const isError = authStatus === 'needs_reauth'
+  const isUnsupportedRecovery = isError && recovery?.kind === 'unsupported'
 
   // Color: red for hard errors, amber for warnings (expiring / no primary account)
   const isRed = isError
@@ -64,17 +64,21 @@ export function ReauthCallout({
     ? 'text-[color:var(--red,oklch(0.62_0.20_25))]'
     : 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
 
-  const statusLabel = isError
-    ? 'reauth required'
+  const statusLabel = isUnsupportedRecovery
+    ? 'recovery unavailable'
+    : isError
+      ? 'reauth required'
     : isPrimaryAccount
       ? 'no primary account'
       : 'expiring soon'
 
-  const explanation = authNote || (
-    isPrimaryAccount
-      ? `${connectorType} has no primary account. Set one in Secrets to resume ingestion.`
-      : `${connectorType} requires reauthorization to continue ingesting events.`
-  )
+  const explanation = isUnsupportedRecovery
+    ? recovery.reason
+    : authNote || (
+        isPrimaryAccount
+          ? `${connectorType} has no primary account. Set one in Secrets to resume ingestion.`
+          : `${connectorType} requires reauthorization to continue ingesting events.`
+      )
 
   return (
     <div
@@ -98,24 +102,14 @@ export function ReauthCallout({
 
       {/* Actions */}
       <div className="mt-3.5 flex gap-2">
-        {isPrimaryAccount && onSetPrimaryAccount && (
-          <button
-            type="button"
-            onClick={onSetPrimaryAccount}
-            data-testid="set-primary-account-button"
-            className="font-mono text-[11px] border border-foreground px-3 py-1.5 hover:bg-foreground hover:text-background transition-colors"
-          >
-            set primary account
-          </button>
-        )}
-        {!isPrimaryAccount && onReauth && (
+        {isError && !isUnsupportedRecovery && onReauth && (
           <button
             type="button"
             onClick={onReauth}
             data-testid="reauth-button"
             className="font-mono text-[11px] border border-foreground px-3 py-1.5 hover:bg-foreground hover:text-background transition-colors"
           >
-            re-authorize
+            {recovery?.kind === 'passport' ? 'open pairing' : 're-authorize'}
           </button>
         )}
       </div>
