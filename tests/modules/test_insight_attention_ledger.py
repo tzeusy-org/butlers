@@ -216,6 +216,110 @@ class TestContextBusGating:
         assert urgent_row["status"] == "delivered"
         assert routine_row["status"] == "pending"
 
+    async def test_meeting_signal_suppresses_routine_when_no_quiet_hours(self, insight_pool):
+        """bu-ep4ks.9 slice 2: presence-aware delivery extends the shared
+        dnd/sleeping suppression set with meeting/traveling."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
+        """)
+        await _insert_candidate(insight_pool, dedup_key="health:routine:m1:2026", priority=70)
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value="meeting"),
+        ):
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert result["skipped"] is True
+        notify_mock.assert_not_awaited()
+
+    async def test_traveling_signal_suppresses_routine_when_no_quiet_hours(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
+        """)
+        await _insert_candidate(insight_pool, dedup_key="health:routine:t1:2026", priority=70)
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value="traveling"),
+        ):
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert result["skipped"] is True
+        notify_mock.assert_not_awaited()
+
+    async def test_meeting_signal_bypassed_for_urgent_candidate(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
+        """)
+        await _insert_candidate(insight_pool, dedup_key="health:routine:m2:2026", priority=70)
+        await _insert_candidate(insight_pool, dedup_key="health:urgent:m2:2026", priority=93)
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value="meeting"),
+        ):
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert result["skipped"] is False
+        notify_mock.assert_awaited_once()
+        urgent_row = await insight_pool.fetchrow(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'health:urgent:m2:2026'"
+        )
+        routine_row = await insight_pool.fetchrow(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'health:routine:m2:2026'"
+        )
+        assert urgent_row["status"] == "delivered"
+        assert routine_row["status"] == "pending"
+
+    async def test_suppressed_ledger_row_carries_held_by_signal_telemetry(self, insight_pool):
+        """The suppressed attention-ledger row must carry a structured
+        `held_by` field naming the specific signal, not just the free-text
+        `reason` string — see bu-ep4ks.9 slice 2 "held by <signal>" telemetry."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
+        """)
+        await _insert_candidate(insight_pool, dedup_key="health:routine:h1:2026", priority=70)
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                new=AsyncMock(return_value="meeting"),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.record_attention_event",
+                new=AsyncMock(return_value="fake-id"),
+            ) as ledger_mock,
+        ):
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert result["skipped"] is True
+        ledger_mock.assert_awaited_once()
+        _, kwargs = ledger_mock.call_args
+        assert kwargs["outcome"] == "suppressed"
+        assert kwargs["reason"] == "context_bus:meeting"
+        assert kwargs["metadata"] == {"held_by": "meeting"}
+
     async def test_no_context_signal_and_no_quiet_hours_delivers_normally(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 

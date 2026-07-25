@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -27,7 +27,6 @@ from butlers.core.approvals_policy import (
 )
 from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
-    get_suppressing_context_signal,
     record_attention_event,
 )
 
@@ -759,17 +758,205 @@ def _format_standalone(candidate: dict[str, Any]) -> str:
     return f"{prefix}{message}"
 
 
+# ---------------------------------------------------------------------------
+# Correlated-candidate clustering (bu-ep4ks.9 slice 1 — zero-LLM, deterministic)
+# ---------------------------------------------------------------------------
+
+
+def _candidate_entity_key(candidate: dict[str, Any]) -> str | None:
+    """Extract the correlation entity key from a candidate's metadata, if any."""
+    metadata = candidate.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    entity_id = metadata.get("entity_id")
+    return str(entity_id) if entity_id else None
+
+
+def _candidate_time_window(candidate: dict[str, Any]) -> tuple[datetime, datetime] | None:
+    """Extract the candidate's referenced event time window from metadata, if any.
+
+    Supports two producer shapes: an explicit ``event_window: {start, end}``
+    (ISO 8601 timestamps), or a coarser ``event_date`` (ISO date, normalized to
+    a full UTC day). Malformed or partial values fail open to "no correlation
+    data" (returns None) rather than raising — a producer's metadata typo must
+    not break digest formatting.
+    """
+    metadata = candidate.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+
+    window = metadata.get("event_window")
+    if isinstance(window, dict):
+        start_raw, end_raw = window.get("start"), window.get("end")
+        if start_raw and end_raw:
+            try:
+                start = datetime.fromisoformat(str(start_raw))
+                end = datetime.fromisoformat(str(end_raw))
+            except ValueError:
+                return None
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=UTC)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=UTC)
+            if end < start:
+                return None
+            return (start, end)
+
+    event_date = metadata.get("event_date")
+    if isinstance(event_date, str):
+        try:
+            day = date.fromisoformat(event_date)
+        except ValueError:
+            return None
+        start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        return (start, start + timedelta(days=1))
+
+    return None
+
+
+def _cluster_candidates(candidates: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Deterministically group candidates sharing an entity or an overlapping
+    event time window.
+
+    Two candidates link when they share a non-null ``metadata.entity_id``, or
+    when both resolve a time window (``metadata.event_window`` or
+    ``metadata.event_date``) and those windows overlap. Linkage is transitive
+    (union-find), so a chain of pairwise links folds into one group.
+    Candidates with no correlation data of their own remain singleton groups
+    — this is exactly the pre-clustering behaviour, so a digest built from
+    candidates with no correlation metadata (every producer today — see
+    bu-ep4ks.9 follow-up to wire entity_id/event_window into producer
+    metadata) formats identically to before this slice.
+
+    Group order follows each group's earliest-appearing member in
+    ``candidates`` (already priority-ordered by the caller), so both
+    within-cluster and across-group ordering stay deterministic.
+    """
+    n = len(candidates)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[max(ri, rj)] = min(ri, rj)
+
+    entity_keys = [_candidate_entity_key(c) for c in candidates]
+    windows = [_candidate_time_window(c) for c in candidates]
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if entity_keys[i] is not None and entity_keys[i] == entity_keys[j]:
+                union(i, j)
+                continue
+            if windows[i] is not None and windows[j] is not None:
+                (s1, e1), (s2, e2) = windows[i], windows[j]
+                if s1 <= e2 and s2 <= e1:
+                    union(i, j)
+
+    groups: dict[int, list[dict[str, Any]]] = {}
+    for idx, candidate in enumerate(candidates):
+        groups.setdefault(find(idx), []).append(candidate)
+
+    return [groups[root] for root in sorted(groups)]
+
+
 def _format_digest(candidates: list[dict[str, Any]]) -> str:
-    """Format multiple candidates as a digest message."""
+    """Format multiple candidates as a digest message.
+
+    Candidates correlated by shared entity or overlapping event time window
+    (see ``_cluster_candidates``) render as one labeled sub-group instead of
+    unrelated flat bullets. Uncorrelated candidates render exactly as before
+    this slice — a single numbered ``[Butler] message`` line.
+    """
     count = len(candidates)
     header = f"Daily Insights ({count}):"
     lines = [header]
-    for i, c in enumerate(candidates, start=1):
-        butler = c.get("origin_butler", "")
-        msg = c["message"]
-        label = f"[{butler.capitalize()}]" if butler else ""
-        lines.append(f"{i}. {label} {msg}".strip())
+    for i, cluster in enumerate(_cluster_candidates(candidates), start=1):
+        if len(cluster) == 1:
+            c = cluster[0]
+            butler = c.get("origin_butler", "")
+            msg = c["message"]
+            label = f"[{butler.capitalize()}]" if butler else ""
+            lines.append(f"{i}. {label} {msg}".strip())
+        else:
+            lines.append(f"{i}. Correlated ({len(cluster)}):")
+            for c in cluster:
+                butler = c.get("origin_butler", "")
+                msg = c["message"]
+                label = f"[{butler.capitalize()}]" if butler else ""
+                lines.append(f"   - {label} {msg}".strip())
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Context-bus suppression (bu-ep4ks.9 slice 2 — presence-aware delivery)
+# ---------------------------------------------------------------------------
+
+# Precedence when more than one signal is active: dnd (owner's explicit hard
+# stop) wins, then meeting, sleeping, traveling in that order. This is a
+# broker-local extension of the dnd/sleeping-only suppression set in
+# butlers.core.attention_ledger — that shared set is also consumed by
+# decision digests, secrets-lifecycle notifications, and fleet-halt/model-
+# breaker escalations, none of which should start holding on meeting/
+# traveling just because the insight broker now does.
+_CONTEXT_SUPPRESSING_SIGNALS = ("dnd", "meeting", "sleeping", "traveling")
+
+# Max duration a given signal may hold routine insight delivery, independent
+# of the signal's own (much longer) context-bus TTL — e.g. ``traveling`` can
+# stay active for up to 30 days (butlers.context_bus._TTL_CONFIG), but routine
+# insights must not silently queue for a month just because a trip is still
+# technically ongoing. Once a signal has been continuously active longer than
+# its cap, it stops suppressing delivery here (a still-active, shorter-capped
+# signal, or quiet hours, may still apply).
+_CONTEXT_MAX_HOLD: dict[str, timedelta] = {
+    "dnd": timedelta(hours=4),
+    "meeting": timedelta(hours=2),
+    "sleeping": timedelta(hours=10),
+    "traveling": timedelta(hours=6),
+}
+
+
+async def get_suppressing_context_signal(
+    pool: asyncpg.Pool | None, *, now: datetime | None = None
+) -> str | None:
+    """Return the active context-bus signal type currently holding routine
+    (sub-urgent) insight delivery, or None.
+
+    Deterministic, zero-LLM read of ``public.user_context`` via the existing
+    context-bus module. Fails open (returns None) on any error, matching
+    every other context-bus reader in this codebase.
+    """
+    if pool is None:
+        return None
+    if now is None:
+        now = datetime.now(UTC)
+    try:
+        from butlers.context_bus import get_active_context
+
+        signals = await get_active_context(pool)
+    except Exception:
+        logger.debug("insight-delivery-cycle: context bus unavailable; failing open", exc_info=True)
+        return None
+
+    held = [
+        s
+        for s in signals
+        if s.signal_type in _CONTEXT_SUPPRESSING_SIGNALS
+        and (now - s.set_at) < _CONTEXT_MAX_HOLD[s.signal_type]
+    ]
+    if not held:
+        return None
+
+    for signal_type in _CONTEXT_SUPPRESSING_SIGNALS:
+        if any(s.signal_type == signal_type for s in held):
+            return signal_type
+    return None  # pragma: no cover - `held` is filtered to these signals above.
 
 
 # ---------------------------------------------------------------------------
@@ -858,24 +1045,32 @@ async def delivery_cycle(
 
     settings = await get_insight_settings(pool)
 
-    # Step 1: Check Owner Attention Policy + context bus (bu-qvnce.8 slices 1-2). Both are
-    # deterministic, non-LLM reads. Neither suppresses a candidate at or above
-    # URGENT_PRIORITY_THRESHOLD (RFC 0011 Amendment 1: fail-open for urgent,
-    # budgeted for routine) — that check happens below, once pending
-    # candidates are known, so a single urgent candidate doesn't skip the
-    # whole cycle's suppression bookkeeping. In urgent_only mode every
-    # candidate this cycle considers is already >= the urgent threshold, so
-    # the suppression consult is skipped outright rather than computed and
-    # then ignored.
+    # Step 1: Check Owner Attention Policy + context bus (bu-qvnce.8 slices 1-2;
+    # extended to meeting/traveling with per-signal max-hold TTL by
+    # bu-ep4ks.9 slice 2). Both are deterministic, non-LLM reads. Neither
+    # suppresses a candidate at or above URGENT_PRIORITY_THRESHOLD (RFC 0011
+    # Amendment 1: fail-open for urgent, budgeted for routine) — that check
+    # happens below, once pending candidates are known, so a single urgent
+    # candidate doesn't skip the whole cycle's suppression bookkeeping. In
+    # urgent_only mode every candidate this cycle considers is already >= the
+    # urgent threshold, so the suppression consult is skipped outright rather
+    # than computed and then ignored.
     _suppression_reason: str | None = None
+    # The signal that is "holding" this cycle, in isolation from the
+    # human-readable reason string above — recorded as structured
+    # attention-ledger telemetry (bu-ep4ks.9 slice 2) so "held by <signal>"
+    # is queryable without parsing `reason`.
+    _suppression_signal: str | None = None
     if not urgent_only:
         policy = await get_approvals_policy_quiet_hours(pool)
         _quiet_hours_active = is_policy_quiet_now(policy, now=now)
-        _context_signal = await get_suppressing_context_signal(pool)
+        _context_signal = await get_suppressing_context_signal(pool, now=now)
         if _quiet_hours_active:
             _suppression_reason = "quiet_hours"
+            _suppression_signal = "quiet_hours"
         elif _context_signal is not None:
             _suppression_reason = f"context_bus:{_context_signal}"
+            _suppression_signal = _context_signal
 
     # Check verbosity=off early. This is a hard user opt-out (distinct from
     # the time-based quiet-hours/context-bus deferral above), so it applies
@@ -965,6 +1160,7 @@ async def delivery_cycle(
                 outcome="suppressed",
                 intent="insight",
                 reason=_suppression_reason,
+                metadata={"held_by": _suppression_signal},
             )
             result["skipped"] = True
             return result

@@ -1102,6 +1102,213 @@ class TestDigestFormatting:
 
 
 # ===========================================================================
+# Category 9b: Correlated-candidate clustering (bu-ep4ks.9 slice 1, unit, no Docker)
+# ===========================================================================
+
+
+class TestClusteredDigest:
+    """Deterministic zero-LLM clustering by shared entity_id or overlapping
+    event time window (bu-ep4ks.9 slice 1). Candidates without correlation
+    metadata must format exactly as before this slice — see
+    TestDigestFormatting above, which already covers that regression."""
+
+    def test_cluster_candidates_groups_by_shared_entity_id(self):
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {"origin_butler": "travel", "message": "A", "metadata": {"entity_id": "trip-tokyo"}},
+            {"origin_butler": "finance", "message": "B", "metadata": {"entity_id": "trip-tokyo"}},
+            {"origin_butler": "health", "message": "C", "metadata": {"entity_id": "vaccine-1"}},
+        ]
+        clusters = _cluster_candidates(candidates)
+        assert len(clusters) == 2
+        sizes = sorted(len(c) for c in clusters)
+        assert sizes == [1, 2]
+        paired = next(c for c in clusters if len(c) == 2)
+        assert {c["origin_butler"] for c in paired} == {"travel", "finance"}
+
+    def test_cluster_candidates_groups_by_overlapping_event_window(self):
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {
+                "origin_butler": "travel",
+                "message": "Flight departs Tuesday",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-08-04T00:00:00+00:00",
+                        "end": "2026-08-05T00:00:00+00:00",
+                    }
+                },
+            },
+            {
+                "origin_butler": "finance",
+                "message": "Deadline Wed",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-08-04T18:00:00+00:00",
+                        "end": "2026-08-06T00:00:00+00:00",
+                    }
+                },
+            },
+            {
+                "origin_butler": "finance",
+                "message": "Balance low",
+                "metadata": None,
+            },
+        ]
+        clusters = _cluster_candidates(candidates)
+        assert len(clusters) == 2
+        paired = next(c for c in clusters if len(c) == 2)
+        assert {c["message"] for c in paired} == {"Flight departs Tuesday", "Deadline Wed"}
+
+    def test_cluster_candidates_non_overlapping_windows_stay_separate(self):
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {
+                "origin_butler": "travel",
+                "message": "A",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-08-04T00:00:00+00:00",
+                        "end": "2026-08-05T00:00:00+00:00",
+                    }
+                },
+            },
+            {
+                "origin_butler": "finance",
+                "message": "B",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-09-01T00:00:00+00:00",
+                        "end": "2026-09-02T00:00:00+00:00",
+                    }
+                },
+            },
+        ]
+        clusters = _cluster_candidates(candidates)
+        assert len(clusters) == 2
+
+    def test_cluster_candidates_event_date_normalizes_to_full_day_window(self):
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {"origin_butler": "travel", "message": "A", "metadata": {"event_date": "2026-08-04"}},
+            {
+                "origin_butler": "finance",
+                "message": "B",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-08-04T09:00:00+00:00",
+                        "end": "2026-08-04T10:00:00+00:00",
+                    }
+                },
+            },
+        ]
+        clusters = _cluster_candidates(candidates)
+        assert len(clusters) == 1
+        assert len(clusters[0]) == 2
+
+    def test_cluster_candidates_transitive_chain_folds_into_one_group(self):
+        """A links to B via entity_id; B links to C via overlapping window ->
+        A, B, C fold into one connected group even though A and C share
+        neither an entity_id nor an overlapping window directly."""
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {"origin_butler": "travel", "message": "A", "metadata": {"entity_id": "trip-1"}},
+            {
+                "origin_butler": "finance",
+                "message": "B",
+                "metadata": {
+                    "entity_id": "trip-1",
+                    "event_window": {
+                        "start": "2026-08-04T00:00:00+00:00",
+                        "end": "2026-08-05T00:00:00+00:00",
+                    },
+                },
+            },
+            {
+                "origin_butler": "health",
+                "message": "C",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-08-04T12:00:00+00:00",
+                        "end": "2026-08-04T13:00:00+00:00",
+                    }
+                },
+            },
+        ]
+        clusters = _cluster_candidates(candidates)
+        assert len(clusters) == 1
+        assert len(clusters[0]) == 3
+
+    def test_cluster_candidates_no_correlation_data_all_singletons(self):
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {"origin_butler": "relationship", "message": "Alice's birthday"},
+            {"origin_butler": "health", "message": "Log blood pressure"},
+            {"origin_butler": "finance", "message": "Unusual spending detected"},
+        ]
+        clusters = _cluster_candidates(candidates)
+        assert len(clusters) == 3
+        assert all(len(c) == 1 for c in clusters)
+
+    def test_cluster_candidates_malformed_metadata_fails_open_to_singleton(self):
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {"origin_butler": "travel", "message": "A", "metadata": {"event_date": "not-a-date"}},
+            {
+                "origin_butler": "finance",
+                "message": "B",
+                "metadata": {"event_window": {"start": "bogus", "end": "also-bogus"}},
+            },
+        ]
+        clusters = _cluster_candidates(candidates)
+        assert len(clusters) == 2
+
+    def test_format_digest_labels_correlated_cluster_and_keeps_singleton_numbering(self):
+        from butlers.tools.switchboard.insight.broker import _format_digest
+
+        candidates = [
+            {
+                "origin_butler": "travel",
+                "message": "Flight to Tokyo departs Tuesday",
+                "metadata": {"entity_id": "trip-tokyo"},
+            },
+            {
+                "origin_butler": "finance",
+                "message": "Card payment due Tuesday",
+                "metadata": {"entity_id": "trip-tokyo"},
+            },
+            {"origin_butler": "health", "message": "Vaccination due", "metadata": None},
+        ]
+        msg = _format_digest(candidates)
+        assert msg.startswith("Daily Insights (3):")
+        assert "Correlated (2):" in msg
+        assert "- [Travel] Flight to Tokyo departs Tuesday" in msg
+        assert "- [Finance] Card payment due Tuesday" in msg
+        assert "[Health] Vaccination due" in msg
+
+    def test_cluster_candidates_is_deterministic_across_calls(self):
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {"origin_butler": "travel", "message": "A", "metadata": {"entity_id": "x"}},
+            {"origin_butler": "finance", "message": "B", "metadata": {"entity_id": "x"}},
+            {"origin_butler": "health", "message": "C", "metadata": None},
+        ]
+        first = _cluster_candidates(candidates)
+        second = _cluster_candidates(candidates)
+        assert [[c["message"] for c in group] for group in first] == [
+            [c["message"] for c in group] for group in second
+        ]
+
+
+# ===========================================================================
 # Category 10: Budget enforcement (requires Docker)
 # ===========================================================================
 
