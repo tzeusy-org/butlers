@@ -207,7 +207,7 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
     <Page
       archetype="detail"
       title={title}
-      breadcrumbs={[{ label: "ledger", href: "/memory" }]}
+      breadcrumbs={[{ label: "ledger", href: "/memory?register=facts" }]}
       description={fact ? `${fact.subject} · ${fact.predicate}` : undefined}
       status={
         fact ? (

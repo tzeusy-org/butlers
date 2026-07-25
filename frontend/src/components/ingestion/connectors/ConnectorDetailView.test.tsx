@@ -492,9 +492,8 @@ describe('[bu-5ywn2] Recent events section', () => {
     renderDetail(root, BASE_CONNECTOR, { recentEvents: MOCK_EVENTS })
     // MOCK_EVENTS has 2 events — each renders a row inside the list
     const list = container.querySelector('[data-testid="recent-events-list"]')
-    // rows are direct children of the list div
-    const rows = list?.querySelectorAll('div') ?? []
-    expect(rows.length).toBeGreaterThanOrEqual(MOCK_EVENTS.events.length)
+    const rows = list?.querySelectorAll('[data-testid="recent-events-row"]') ?? []
+    expect(rows.length).toBe(MOCK_EVENTS.events.length)
   })
 
   it('renders view-all link when events present', () => {
@@ -503,6 +502,16 @@ describe('[bu-5ywn2] Recent events section', () => {
     const link = section?.querySelector('a')
     expect(link).not.toBeNull()
     expect(link?.getAttribute('href')).toContain('/ingestion')
+  })
+
+  it('links each event row to its own event/trace detail (bu-ep4ks.7)', () => {
+    renderDetail(root, BASE_CONNECTOR, { recentEvents: MOCK_EVENTS })
+    const rows = container.querySelectorAll<HTMLAnchorElement>(
+      '[data-testid="recent-events-row"]',
+    )
+    expect(rows.length).toBe(2)
+    expect(rows[0]?.getAttribute('href')).toBe('/ingestion?event=evt-001&channels=spotify')
+    expect(rows[1]?.getAttribute('href')).toBe('/ingestion?event=evt-002&channels=spotify')
   })
 })
 
@@ -554,6 +563,13 @@ describe('[bu-5ywn2] Incident list section', () => {
   it('shows error detail text for populated incidents', () => {
     renderDetail(root, BASE_CONNECTOR, { incidents: MOCK_INCIDENTS })
     expect(container.textContent).toContain('Rate limit exceeded')
+  })
+
+  it('links each incident row to its own event/trace detail (bu-ep4ks.7)', () => {
+    renderDetail(root, BASE_CONNECTOR, { incidents: MOCK_INCIDENTS })
+    const rows = container.querySelectorAll<HTMLAnchorElement>('[data-testid="incident-row"]')
+    expect(rows.length).toBe(1)
+    expect(rows[0]?.getAttribute('href')).toBe('/ingestion?event=inc-001&channels=spotify')
   })
 })
 

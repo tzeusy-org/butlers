@@ -50,7 +50,7 @@ import {
   useMeasurementSources,
   useMeasurementTypes,
 } from "@/hooks/use-health.ts";
-import { measurementDoorFromInsight, measurementDoorHref } from "@/lib/measurement-door";
+import { insightHref } from "@/lib/health-insight-links";
 import {
   chartableMeasurementTypes,
   selectKpiMeasurementSlots,
@@ -258,40 +258,6 @@ function FreshnessChips({ sources }: FreshnessChipsProps) {
 // ---------------------------------------------------------------------------
 // Insight → AttentionListItem adapter
 // ---------------------------------------------------------------------------
-
-/**
- * Map an InsightCandidate to a signal href.
- * Falls back to null (no link) when the category is not mapped.
- */
-function insightHref(
-  candidate: InsightCandidate,
-  chartEligibleTypes: ReadonlySet<string>,
-): string | null {
-  const { category, metadata } = candidate;
-  const measurementDoor = measurementDoorFromInsight(category, metadata);
-  if (measurementDoor && chartEligibleTypes.has(measurementDoor.type)) {
-    return measurementDoorHref(measurementDoor);
-  }
-
-  // Map known health signal categories to their fixed, same-origin sub-pages.
-  // Untrusted metadata never controls a destination or query parameter.
-  switch (category) {
-    case "medication":
-    case "adherence":
-      return "/health/medications";
-    case "measurement":
-      return "/health/measurements";
-    case "symptom":
-      return "/health/symptoms";
-    case "condition":
-      return "/health/conditions";
-    case "meal":
-    case "nutrition":
-      return "/health/meals";
-    default:
-      return "/health/measurements";
-  }
-}
 
 function toAttentionItems(
   candidates: InsightCandidate[],

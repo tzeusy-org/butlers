@@ -96,6 +96,72 @@ describe("AuditLogTable -- target pivot", () => {
   });
 });
 
+describe("AuditLogTable -- request_id pivot (bu-ep4ks.7)", () => {
+  let container: HTMLElement;
+  let root: Root;
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("links request_id in the expanded detail row to the sessions request filter", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AuditLogTable
+            entries={[entry({ id: 9, request_id: "req-abc123" })]}
+            isLoading={false}
+            isError={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const row = container.querySelector('[data-testid="audit-log-row"]');
+    act(() => {
+      row!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const link = container.querySelector(
+      '[data-testid="audit-log-request-id-link"]',
+    ) as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute("href")).toBe("/sessions?request=req-abc123");
+    expect(link.textContent).toBe("req-abc123");
+  });
+
+  it("omits the Request ID row entirely when request_id is absent", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AuditLogTable
+            entries={[entry({ id: 10, request_id: null })]}
+            isLoading={false}
+            isError={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const row = container.querySelector('[data-testid="audit-log-row"]');
+    act(() => {
+      row!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="audit-log-detail-row"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="audit-log-request-id-link"]')).toBeNull();
+  });
+});
+
 describe("AuditLogTable -- Outcome column (JARVIS audit move 6)", () => {
   it("renders a green Success badge for result=success", () => {
     const html = render([entry({ result: "success" })]);

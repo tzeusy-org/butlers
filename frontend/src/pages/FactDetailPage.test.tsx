@@ -136,6 +136,15 @@ describe("FactDetailPage", () => {
     expect(text).toContain("lifestyle scope");
   });
 
+  it("links the ledger breadcrumb back to the facts register, not the bare /memory route (bu-ep4ks.7)", () => {
+    setFact(makeFact());
+    mounted = render();
+    const links = Array.from(mounted.container.querySelectorAll("a"));
+    const breadcrumb = links.find((a) => a.textContent === "ledger");
+    expect(breadcrumb).toBeDefined();
+    expect(breadcrumb?.getAttribute("href")).toBe("/memory?register=facts");
+  });
+
   it("renders the record-identity subtitle (subject · predicate) below the heading", () => {
     setFact(makeFact({ subject: "Owner", predicate: "preferred_pain_relief" }));
     mounted = render();

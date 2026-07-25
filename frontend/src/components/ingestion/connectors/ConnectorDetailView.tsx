@@ -383,7 +383,11 @@ export function ConnectorDetailView({
           />
 
           {/* Incident list [bu-5ywn2] */}
-          <IncidentList incidents={incidents} reader={incidentsReader} />
+          <IncidentList
+            incidents={incidents}
+            connectorKind={connector.connector_type}
+            reader={incidentsReader}
+          />
         </div>
 
         {/* RIGHT — scopes + schedule + config */}
@@ -557,9 +561,11 @@ function RecentEventsList({ events, connectorKind, reader }: RecentEventsListPro
       ) : (
         <div className="space-y-0" data-testid="recent-events-list">
           {events.events.map((evt) => (
-            <div
+            <Link
               key={evt.id}
-              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0 min-w-0"
+              to={`/ingestion?event=${encodeURIComponent(evt.id)}&channels=${encodeURIComponent(connectorKind)}`}
+              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0 min-w-0 hover:bg-foreground/[0.03] transition-colors -mx-1 px-1"
+              data-testid="recent-events-row"
             >
               <span className="font-mono text-[10px] text-muted-foreground/60 shrink-0 w-[12ch] truncate">
                 {evt.received_at ? (
@@ -574,7 +580,7 @@ function RecentEventsList({ events, connectorKind, reader }: RecentEventsListPro
                   {(evt.error_detail ?? evt.filter_reason ?? '').slice(0, 60)}
                 </span>
               )}
-            </div>
+            </Link>
           ))}
         </div>
       )}
@@ -588,10 +594,11 @@ function RecentEventsList({ events, connectorKind, reader }: RecentEventsListPro
 
 interface IncidentListProps {
   incidents: ConnectorIncidentsResponse | null | undefined
+  connectorKind: string
   reader?: ConnectorDetailReaderState
 }
 
-function IncidentList({ incidents, reader }: IncidentListProps) {
+function IncidentList({ incidents, connectorKind, reader }: IncidentListProps) {
   return (
     <div data-testid="incident-list-section">
       <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground mb-2.5">
@@ -621,9 +628,11 @@ function IncidentList({ incidents, reader }: IncidentListProps) {
       ) : (
         <div className="space-y-0" data-testid="incident-list">
           {incidents.incidents.map((inc) => (
-            <div
+            <Link
               key={inc.id}
-              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0 min-w-0"
+              to={`/ingestion?event=${encodeURIComponent(inc.id)}&channels=${encodeURIComponent(connectorKind)}`}
+              className="flex items-baseline gap-3 py-1.5 border-b border-border/30 last:border-b-0 min-w-0 hover:bg-foreground/[0.03] transition-colors -mx-1 px-1"
+              data-testid="incident-row"
             >
               <span className="font-mono text-[10px] text-muted-foreground/60 shrink-0 w-[12ch] truncate">
                 {inc.received_at ? (
@@ -638,7 +647,7 @@ function IncidentList({ incidents, reader }: IncidentListProps) {
                   {(inc.error_detail ?? inc.filter_reason ?? '').slice(0, 60)}
                 </span>
               )}
-            </div>
+            </Link>
           ))}
         </div>
       )}

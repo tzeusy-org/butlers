@@ -112,7 +112,10 @@ function NotificationDrawerBody({ event }: { event: TimelineEvent }) {
         <dd className={status === "failed" ? "text-destructive" : undefined}>{status ?? "—"}</dd>
       </dl>
       <Button asChild variant="outline" size="sm">
-        <Link to="/notifications" data-testid="drawer-notification-link">
+        <Link
+          to={`/notifications?notification=${encodeURIComponent(event.id)}`}
+          data-testid="drawer-notification-link"
+        >
           View in Notifications
         </Link>
       </Button>

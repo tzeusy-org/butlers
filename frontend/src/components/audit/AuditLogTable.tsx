@@ -62,6 +62,14 @@ function targetHref(target: string): string | null {
   return null;
 }
 
+// request_id: every sibling surface that carries a request_id (SessionDossier,
+// IssuesPanel) links it to the same pre-filtered sessions view -- an audit
+// row's request_id is the same identifier and belongs on the same door
+// (bu-ep4ks.7, last-hop door repair pack).
+function requestIdHref(requestId: string): string {
+  return `/sessions?request=${encodeURIComponent(requestId)}`;
+}
+
 /** Stop the click from bubbling to the row's own toggle-expand handler. */
 function stopRowToggle(e: MouseEvent) {
   e.stopPropagation();
@@ -377,7 +385,16 @@ export default function AuditLogTable({
                               <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
                                 Request ID
                               </span>
-                              <p className="mt-0.5 font-mono text-xs">{entry.request_id}</p>
+                              <p className="mt-0.5 font-mono text-xs">
+                                <Link
+                                  to={requestIdHref(entry.request_id)}
+                                  onClick={stopRowToggle}
+                                  className="hover:underline"
+                                  data-testid="audit-log-request-id-link"
+                                >
+                                  {entry.request_id}
+                                </Link>
+                              </p>
                             </div>
                           )}
                         </div>

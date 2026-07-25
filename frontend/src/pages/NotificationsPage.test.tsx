@@ -178,6 +178,35 @@ describe("NotificationsPage", () => {
     expect(html).toContain("Weekly summary report");
   });
 
+  it("highlights the notification named by ?notification= on first render (bu-ep4ks.7 deep link)", () => {
+    setStatsState({
+      data: {
+        data: {
+          total: 2,
+          sent: 1,
+          failed: 1,
+          by_channel: { telegram: 1, email: 1 },
+          by_butler: {},
+        },
+        meta: {},
+      },
+    });
+    setNotificationsState({
+      data: {
+        data: [NOTIFICATION_1, NOTIFICATION_2],
+        meta: { total: 2, offset: 0, limit: 20, has_more: false },
+      },
+    });
+
+    const html = renderPage("/notifications?notification=notif-bbb");
+
+    // The row-highlight class from NotificationFeed's selectedId prop lands
+    // on the deep-linked row's <tr data-notification-id="notif-bbb">.
+    const row = html.match(/<tr[^>]*data-notification-id="notif-bbb"[^>]*>/);
+    expect(row).not.toBeNull();
+    expect(row![0]).toContain("bg-muted/60");
+  });
+
   it("renders empty state when list returns no rows", () => {
     setStatsState({
       data: {

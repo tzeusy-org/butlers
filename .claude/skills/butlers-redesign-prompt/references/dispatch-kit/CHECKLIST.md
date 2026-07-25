@@ -1,7 +1,7 @@
 # Dispatch — Review Checklist
 
 Run this against any page before merging. If any item fails, the page
-is not in the language yet. Twelve items, no skipping.
+is not in the language yet. Thirteen items, no skipping.
 
 ---
 
@@ -59,6 +59,21 @@ is not in the language yet. Twelve items, no skipping.
       page mentally with: butler down, API timing out, attention list
       empty. Does anything panic visually? (Red banner? Pulsing dot?
       Modal?) If yes, fix.
+
+### Navigation
+
+- [ ] **13. Any rendered identifier with a canonical route is a
+      `Link`, not inert text.** A session id, request id, bead id,
+      butler name, or record id that another page already owns a
+      detail/filtered view for must drill down to it — grep sibling
+      surfaces for the same identifier before assuming no route
+      exists (bu-ep4ks.7, last-hop door repair pack). If the diff
+      renders one of these as a plain `<span>`/`<p>`/text node
+      instead of a `Link`/`RowLink`, it fails this item. The
+      converse also holds: do not fabricate a link to a page that
+      cannot understand the identifier (an honest "no link" beats a
+      link to an empty/irrelevant result) — when that happens, leave
+      it as plain text and note the gap for a follow-up.
 
 ---
 

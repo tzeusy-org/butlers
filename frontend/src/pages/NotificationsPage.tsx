@@ -153,6 +153,13 @@ export default function NotificationsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = parseFilters(searchParams);
   const page = Number.parseInt(searchParams.get("page") ?? "0", 10) || 0;
+  // Deep-link-and-highlight (bu-ep4ks.7): a caller (e.g. TimelineEventDrawer)
+  // that already knows a specific notification's id can land here with
+  // `?notification=<id>` pre-selected/highlighted instead of the bare list.
+  // No backend id filter exists, so this is a best-effort highlight against
+  // whatever page the default filters currently return -- honest, not a
+  // guaranteed scroll-to for a notification off the first page.
+  const requestedNotificationId = searchParams.get("notification");
   // Preserve the URL as the visible/shareable source of truth while avoiding
   // a network request for every keystroke in the butler filter.
   const debouncedButler = useDebounce(filters.butler, FREE_TEXT_DEBOUNCE_MS);
@@ -330,7 +337,13 @@ export default function NotificationsPage() {
   // the URL; a row cursor is not shareable state the way a filter is).
   const [selectedNotificationId, setSelectedNotificationId] = useState<
     string | null
-  >(null);
+  >(() => requestedNotificationId);
+
+  // Keep a direct `?notification=` deep link authoritative if it changes
+  // (mirrors DecisionsPage's identical `requestedBeadId` sync effect).
+  useEffect(() => {
+    setSelectedNotificationId(requestedNotificationId);
+  }, [requestedNotificationId]);
   const notificationIds = useMemo(
     () => notifications.map((n) => n.id),
     [notifications],
