@@ -5,9 +5,17 @@ Covers:
   for a UTC run timestamp.
 - _extract_provenance_refs() extracts source_ref values from
   chronicler_list_episodes / chronicler_list_events tool calls.
+- _extract_date_label() extracts the structured date_label a
+  chronicler_day_close_bundle tool call echoed back.
 - write_day_close_cache() writes the expected row to tier2_cache via
   upsert_tier2_cache() (mock the storage function).
 - write_day_close_cache() is a no-op for non-success results or empty output.
+- write_day_close_cache() records a covered-local-day witness on a successful
+  dispatch (independent of output emptiness) but not on a failed one
+  (bu-ep4ks.1 / clarify-chronicles-narrative-truth).
+- write_day_close_cache() contains an inadmissible-shape or date-mismatched
+  candidate rather than rendering it, and never replaces an existing
+  admissible row with one.
 - Idempotency: calling write_day_close_cache() twice with the same result
   triggers two upsert calls (the storage layer owns idempotency via ON CONFLICT).
 - build_day_close_completion_hooks() returns a dict keyed by DAY_CLOSE_TASK_NAME.
@@ -15,7 +23,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -24,6 +32,7 @@ import pytest
 from butlers.chronicler.day_close_writer import (
     DAY_CLOSE_TASK_NAME,
     _compute_day_window,
+    _extract_date_label,
     _extract_provenance_refs,
     build_day_close_completion_hooks,
     write_day_close_cache,
@@ -244,14 +253,65 @@ def test_extract_provenance_refs_json_string_result() -> None:
     assert refs == ["spotify.session_summary:s1"]
 
 
+def test_extract_date_label_from_bundle_result() -> None:
+    """date_label is read from the bundle result's echoed "date" field."""
+    tool_calls = [
+        {
+            "tool": "chronicler_day_close_bundle",
+            "result": {"date": "2026-04-24", "citations": []},
+        }
+    ]
+    assert _extract_date_label(tool_calls) == "2026-04-24"
+
+
+def test_extract_date_label_none_without_bundle_call() -> None:
+    tool_calls = [
+        {"tool": "chronicler_list_episodes", "result": {"data": []}},
+    ]
+    assert _extract_date_label(tool_calls) is None
+
+
+def test_extract_date_label_handles_json_string_result() -> None:
+    import json
+
+    tool_calls = [
+        {
+            "tool": "chronicler_day_close_bundle",
+            "result": json.dumps({"date": "2026-04-24"}),
+        }
+    ]
+    assert _extract_date_label(tool_calls) == "2026-04-24"
+
+
 # ---------------------------------------------------------------------------
 # write_day_close_cache
 # ---------------------------------------------------------------------------
 
 
+class _AcquireCM:
+    """Minimal async context manager mimicking asyncpg's ``pool.acquire()``."""
+
+    def __init__(self, conn: AsyncMock) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> AsyncMock:
+        return self._conn
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 @pytest.fixture()
 def fake_pool():
-    return MagicMock()
+    """A pool double supporting both the ``.acquire()`` protocol used by
+    ``record_coverage_witness`` and the direct ``.fetchrow()`` used by the
+    invalid-candidate existing-row check. No existing cache row by default."""
+    pool = MagicMock()
+    conn = AsyncMock()
+    pool.acquire = MagicMock(side_effect=lambda: _AcquireCM(conn))
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool._conn = conn  # exposed for tests asserting on the acquired connection
+    return pool
 
 
 @pytest.fixture()
@@ -263,11 +323,21 @@ def mock_upsert():
         yield m
 
 
-def _make_result(*, success: bool = True, output: str | None = "Day summary prose.") -> MagicMock:
+def _bundle_call(date_label: str) -> dict:
+    """A ``chronicler_day_close_bundle`` tool-call entry echoing ``date_label``."""
+    return {"tool": "chronicler_day_close_bundle", "result": {"date": date_label, "citations": []}}
+
+
+def _make_result(
+    *,
+    success: bool = True,
+    output: str | None = "Day summary prose.",
+    date_label: str | None = "2026-04-24",
+) -> MagicMock:
     r = MagicMock()
     r.success = success
     r.output = output
-    r.tool_calls = []
+    r.tool_calls = [_bundle_call(date_label)] if date_label else []
     return r
 
 
@@ -300,7 +370,8 @@ async def test_write_day_close_cache_extracts_provenance(fake_pool, mock_upsert)
         {
             "tool": "chronicler_list_episodes",
             "result": {"data": [{"source_ref": "core.sessions:abc"}]},
-        }
+        },
+        _bundle_call("2026-04-24"),
     ]
 
     await write_day_close_cache(
@@ -312,10 +383,13 @@ async def test_write_day_close_cache_extracts_provenance(fake_pool, mock_upsert)
 
     kwargs = mock_upsert.call_args.kwargs
     assert kwargs["provenance_refs"] == ["core.sessions:abc"]
+    assert kwargs["invalid_reason"] is None
 
 
 async def test_write_day_close_cache_noop_when_not_success(fake_pool, mock_upsert) -> None:
-    """No upsert when result.success is False."""
+    """No upsert when result.success is False, and no coverage witness is
+    recorded either — a failed dispatch cannot prove its evidence reads
+    completed."""
     run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
     result = _make_result(success=False)
 
@@ -327,13 +401,130 @@ async def test_write_day_close_cache_noop_when_not_success(fake_pool, mock_upser
     )
 
     mock_upsert.assert_not_awaited()
+    fake_pool._conn.execute.assert_not_awaited()
+
+
+async def test_write_day_close_cache_records_coverage_witness(fake_pool, mock_upsert) -> None:
+    """A successful dispatch records a covered-local-day witness for the closed day."""
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = _make_result()
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+        tz="UTC",
+    )
+
+    fake_pool._conn.execute.assert_awaited_once()
+    args = fake_pool._conn.execute.call_args.args
+    assert args[1] == date(2026, 4, 24)
+    assert args[2] == "UTC"
+
+
+async def test_write_day_close_cache_contains_inadmissible_shape_candidate(
+    fake_pool, mock_upsert
+) -> None:
+    """A tool-trace-shaped candidate is contained, never rendered."""
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = _make_result(output='```json\n{"tool": "chronicler_list_episodes"}\n```')
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.call_args.kwargs["invalid_reason"] == "inadmissible_prose"
+
+
+async def test_write_day_close_cache_contains_date_mismatch_candidate(
+    fake_pool, mock_upsert
+) -> None:
+    """Prose whose echoed date_label does not match the closed day is contained."""
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = _make_result(date_label="2026-04-23")  # closed day is 2026-04-24
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    mock_upsert.assert_awaited_once()
+    kwargs = mock_upsert.call_args.kwargs
+    assert kwargs["invalid_reason"] == "date_mismatch"
+    assert kwargs["date_label"] == "2026-04-23"
+
+
+async def test_write_day_close_cache_missing_date_label_is_date_mismatch(
+    fake_pool, mock_upsert
+) -> None:
+    """No chronicler_day_close_bundle call at all means the binding is unproven."""
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = _make_result(date_label=None)
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.call_args.kwargs["invalid_reason"] == "date_mismatch"
+
+
+async def test_write_day_close_cache_invalid_candidate_does_not_clobber_valid_row(
+    fake_pool, mock_upsert
+) -> None:
+    """An invalid candidate SHALL NOT replace an existing admissible cache row."""
+    fake_pool.fetchrow = AsyncMock(return_value={"invalid_reason": None})
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = _make_result(date_label="2026-04-23")  # mismatched -> invalid
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    mock_upsert.assert_not_awaited()
+
+
+async def test_write_day_close_cache_invalid_candidate_replaces_prior_invalid_row(
+    fake_pool, mock_upsert
+) -> None:
+    """An invalid candidate MAY replace a prior invalid row (still contained, still audited)."""
+    fake_pool.fetchrow = AsyncMock(return_value={"invalid_reason": "date_mismatch"})
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = _make_result(date_label="2026-04-23")
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.call_args.kwargs["invalid_reason"] == "date_mismatch"
 
 
 async def test_write_day_close_cache_noop_when_output_empty(fake_pool, mock_upsert) -> None:
-    """No upsert when output is empty / whitespace-only."""
+    """No upsert when output is empty / whitespace-only, but the coverage
+    witness IS still recorded: a covered quiet day has no episode, so gating
+    the witness on output emptiness would make a genuinely quiet closed day
+    indistinguishable from one never chronicled."""
     run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
     for empty_output in (None, "", "   \n"):
         mock_upsert.reset_mock()
+        fake_pool._conn.execute.reset_mock()
         result = _make_result(output=empty_output)
         await write_day_close_cache(
             fake_pool,
@@ -342,6 +533,7 @@ async def test_write_day_close_cache_noop_when_output_empty(fake_pool, mock_upse
             run_at=run_at,
         )
         mock_upsert.assert_not_awaited()
+        fake_pool._conn.execute.assert_awaited_once()
 
 
 async def test_write_day_close_cache_noop_when_result_is_none(fake_pool, mock_upsert) -> None:
@@ -376,7 +568,11 @@ async def test_write_day_close_cache_noop_wrong_task_name(fake_pool, mock_upsert
 async def test_write_day_close_cache_accepts_dict_result(fake_pool, mock_upsert) -> None:
     """Plain dict results (from deterministic job path) are also handled."""
     run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
-    result_dict = {"success": True, "output": "Dict-based prose.", "tool_calls": []}
+    result_dict = {
+        "success": True,
+        "output": "Dict-based prose.",
+        "tool_calls": [_bundle_call("2026-04-24")],
+    }
 
     await write_day_close_cache(
         fake_pool,
@@ -470,7 +666,7 @@ async def test_build_day_close_completion_hooks_uses_owner_timezone(fake_pool, m
 
     # 2026-06-22 01:05 SGT == 2026-06-21 17:05 UTC (delivery is 2026-06-22 SGT).
     run_at = datetime(2026, 6, 21, 17, 5, 0, tzinfo=UTC)
-    result = _make_result()
+    result = _make_result(date_label="2026-06-21")
 
     await hook(task_name=DAY_CLOSE_TASK_NAME, result=result, run_at=run_at)
 

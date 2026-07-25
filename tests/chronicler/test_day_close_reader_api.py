@@ -161,6 +161,64 @@ class TestDayCloseReaderCacheMiss:
         assert "2026-04-23" in resp.json()["detail"]
 
 
+class TestDayCloseReaderInvalid:
+    """Invalid-without-prose response (bu-ep4ks.1): admission precedes staleness."""
+
+    async def test_invalid_row_returns_invalid_without_prose(self):
+        """A row with a persisted invalid_reason never returns prose, even fresh."""
+        cr = _row(
+            {
+                "cache_key": "day_close:2026-04-23",
+                "start_at": _CACHE_START,
+                "end_at": _CACHE_END,
+                "cache_built_at": _T_CACHE_BUILT,
+                "prose": '```json\n{"tool": "x"}\n```',
+                "provenance_refs": [],
+                "invalid_reason": "inadmissible_prose",
+            }
+        )
+        # No staleness query is reached: admission is checked first.
+        pool = _mock_pool(fetchrow_side_effect=[cr])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["invalid"] is True
+        assert body["invalid_reason"] == "inadmissible_prose"
+        assert "cache_built_at" in body
+        assert "prose" not in body
+        assert "provenance_refs" not in body
+
+    async def test_invalid_row_takes_precedence_over_staleness(self):
+        """A row that is both stale and invalid returns invalid-without-prose,
+        not the stale marker (admission validation precedes staleness)."""
+        cr = _row(
+            {
+                "cache_key": "day_close:2026-04-23",
+                "start_at": _CACHE_START,
+                "end_at": _CACHE_END,
+                "cache_built_at": _T_CACHE_BUILT,
+                "prose": "stale and invalid prose",
+                "provenance_refs": [],
+                "invalid_reason": "date_mismatch",
+            }
+        )
+        pool = _mock_pool(fetchrow_side_effect=[cr])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["invalid"] is True
+        assert body["invalid_reason"] == "date_mismatch"
+        assert "stale" not in body
+
+
 class TestDayCloseReaderValidation:
     """400 error envelopes for missing / malformed parameters."""
 

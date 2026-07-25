@@ -203,6 +203,108 @@ async def test_briefing_uses_templated_fallback_when_cache_missing(
     templated.assert_called_once()
 
 
+async def test_briefing_uses_templated_fallback_when_cache_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An invalid (bad shape / date-mismatched) cache row is never rendered as
+    prose — admission precedes staleness for the briefing endpoint too, not
+    only GET /aggregate/day-close (bu-ep4ks.1)."""
+
+    monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose)
+    templated = MagicMock(return_value="The day was led by butler_ops.")
+    monkeypatch.setattr(editorial, "templated_voice_paragraph", templated)
+
+    conn = _Conn(
+        fetchrow_returns=[
+            _Row(
+                {
+                    "prose": '```json\n{"tool": "x"}\n```',
+                    "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
+                    "start_at": datetime(2026, 5, 7, 16, 0, tzinfo=UTC),
+                    "end_at": datetime(2026, 5, 8, 16, 0, tzinfo=UTC),
+                    "invalid_reason": "inadmissible_prose",
+                }
+            )
+        ]
+    )
+    app = _make_app(conn)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/chronicler/briefing",
+            params={"date": "2026-05-08", "tz": "Asia/Singapore"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["voice_source"] == "templated"
+    assert body["voice_paragraph"] == "The day was led by butler_ops."
+    templated.assert_called_once()
+    # The staleness fetchval must not even be reached: admission is checked first.
+    assert conn.fetchval_calls == []
+
+
+async def test_briefing_bypasses_cache_entirely_for_non_content_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """no_data/unavailable/degraded never consult the day-close cache, fresh
+    or stale — even one that exists and would otherwise be served
+    (design.md decision 3)."""
+
+    async def _fake_compose_no_data(_pool: Any, _target: Any, _tz: str) -> BriefingPayload:
+        return BriefingPayload(
+            state_class="no_data",
+            headline="Before the chronicled archive.",
+            kpi=KpiSnapshot(
+                hours_by_top_lanes=[],
+                longest_episode_minutes=0,
+                longest_episode_title=None,
+                longest_gap_minutes=0,
+                sleep_minutes=0,
+                streaks=Streaks(),
+            ),
+            attention_items=[],
+            recent_days=[],
+            earliest_date="2026-05-01",
+            covered_and_available=False,
+        )
+
+    monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose_no_data)
+
+    # A row exists in the cache — proof the state check runs BEFORE any read.
+    conn = _Conn(
+        fetchrow_returns=[
+            _Row(
+                {
+                    "prose": "Would render if reached.",
+                    "cache_built_at": datetime(2026, 4, 20, 3, 0, tzinfo=UTC),
+                    "start_at": datetime(2026, 4, 19, 16, 0, tzinfo=UTC),
+                    "end_at": datetime(2026, 4, 20, 16, 0, tzinfo=UTC),
+                    "invalid_reason": None,
+                }
+            )
+        ]
+    )
+    app = _make_app(conn)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/chronicler/briefing",
+            params={"date": "2026-04-15", "tz": "Asia/Singapore"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state_class"] == "no_data"
+    assert body["voice_source"] == "templated"
+    assert body["voice_paragraph"] != "Would render if reached."
+    assert conn.fetchrow_calls == []
+
+
 async def test_attention_and_kpi_endpoints_wrap_payload(monkeypatch: pytest.MonkeyPatch):
     """Standalone endpoints expose the same attention and KPI data as briefing."""
 

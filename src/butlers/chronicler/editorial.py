@@ -98,9 +98,30 @@ class BriefingPayload:
     attention_items: list[AttentionItem]
     recent_days: list[RecentDay]
     earliest_date: str | None = None
+    covered_and_available: bool = True
+    """False for no_data/unavailable/degraded: the caller MUST bypass any
+    day-close cache lookup (fresh or stale) and use deterministic copy
+    (clarify-chronicles-narrative-truth decision 3)."""
 
 
 # ── State classification ───────────────────────────────────────────────────
+
+# Content states: normal editorial classification of a covered, available day.
+STATE_URGENT = "urgent"
+STATE_BUSY = "busy"
+STATE_MILD = "mild"
+STATE_QUIET = "quiet"
+
+# Non-content states: the day's coverage or availability could not be
+# affirmatively established. These MUST NOT be inferred from an empty
+# result, a missing row, or an operational proxy (source registry seeding,
+# current feeder/checkpoint state, trailing daily_rollups) — see
+# clarify-chronicles-narrative-truth design.md decisions 1 and 3.
+STATE_NO_DATA = "no_data"
+STATE_UNAVAILABLE = "unavailable"
+STATE_DEGRADED = "degraded"
+
+NON_CONTENT_STATES = frozenset({STATE_NO_DATA, STATE_UNAVAILABLE, STATE_DEGRADED})
 
 
 def classify_state(items: Sequence[AttentionItem]) -> str:
@@ -120,15 +141,37 @@ def classify_state(items: Sequence[AttentionItem]) -> str:
 
 def headline_for(state_class: str, n_items: int) -> str:
     """Templated headline. Sentence case, no exclamation, no em-dash."""
-    if state_class == "urgent":
+    if state_class == STATE_URGENT:
         if n_items == 1:
             return "One thing needs attention."
         return f"{n_items} things need attention."
-    if state_class == "busy":
+    if state_class == STATE_BUSY:
         return f"A full day, with {n_items} items waiting."
-    if state_class == "mild":
+    if state_class == STATE_MILD:
         return "Mostly quiet, with one note." if n_items == 1 else "Mostly quiet, with two notes."
+    if state_class == STATE_NO_DATA:
+        return "Before the chronicled archive."
+    if state_class == STATE_UNAVAILABLE:
+        return "Coverage for this day could not be confirmed."
+    if state_class == STATE_DEGRADED:
+        return "Coverage for this day is degraded."
     return "Quiet day."
+
+
+def templated_voice_paragraph_for_state(state_class: str) -> str:
+    """Deterministic voice paragraph for a non-content state.
+
+    Used instead of ``templated_voice_paragraph`` (and instead of any
+    cached prose, fresh or stale) whenever ``BriefingPayload.covered_and_available``
+    is False. Never reads the day-close cache.
+    """
+    if state_class == STATE_NO_DATA:
+        return "This day is before the earliest day the archive can confirm was chronicled."
+    if state_class == STATE_UNAVAILABLE:
+        return "Chronicler could not confirm whether this day was chronicled."
+    if state_class == STATE_DEGRADED:
+        return "Chronicler's coverage for this day is degraded and may be incomplete."
+    raise ValueError(f"{state_class!r} is not a non-content state")
 
 
 def templated_voice_paragraph(payload: BriefingPayload) -> str:
@@ -521,25 +564,54 @@ async def _fetch_open_corrections(
         return int(await conn.fetchval(sql, start_utc, end_utc) or 0)
 
 
-async def _fetch_earliest_episode_date(pool: asyncpg.Pool, tz_name: str) -> str | None:
-    """Return the earliest chronicled calendar day (owner-tz) as an ISO string.
+async def _fetch_earliest_covered_date(pool: asyncpg.Pool, tz_name: str) -> date | None:
+    """Return the earliest local date with an authoritative covered-local-day witness.
 
-    Bounds backward archive navigation so the date stepper cannot step before
-    the first day with data. Returns ``None`` when no episodes exist.
+    Reads only the durable ``covered_local_days`` witness table — never
+    source registry seeding, current feeder/checkpoint state, or trailing
+    ``daily_rollups`` (clarify-chronicles-narrative-truth design.md decision
+    1, "prohibited as coverage evidence"). Returns ``None`` when no witness
+    has been recorded yet for ``tz_name``, meaning no authoritative coverage
+    floor is established.
     """
-    sql = """
-    SELECT MIN(start_at) AS min_start
-    FROM episodes
-    WHERE tombstone_at IS NULL
-    """
+    sql = "SELECT MIN(local_date) AS d FROM covered_local_days WHERE timezone = $1"
     try:
         async with pool.acquire() as conn:
-            min_start = await conn.fetchval(sql)
+            result = await conn.fetchval(sql, tz_name)
     except (asyncpg.UndefinedTableError, asyncpg.PostgresError):
         return None
-    if min_start is None:
-        return None
-    return _utc_to_local_date(min_start, tz_name).isoformat()
+    return result
+
+
+async def _is_local_day_covered(pool: asyncpg.Pool, local_date: date, tz_name: str) -> bool:
+    """True when ``local_date`` has an authoritative covered-local-day witness."""
+    sql = "SELECT 1 FROM covered_local_days WHERE local_date = $1 AND timezone = $2"
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchval(sql, local_date, tz_name)
+    except (asyncpg.UndefinedTableError, asyncpg.PostgresError):
+        return False
+    return bool(row)
+
+
+async def record_coverage_witness(pool: asyncpg.Pool, local_date: date, tz_name: str) -> None:
+    """Persist a durable covered-local-day witness.
+
+    Call this ONLY after the owning coverage computation's required
+    Chronicle evidence reads for ``local_date`` have completed without an
+    owned query failure (design decision 1). The ``chronicler_day_close``
+    completion hook is the current sole caller: a successful nightly
+    dispatch — independent of whether it produced non-empty prose, since a
+    covered quiet day has no episode — proves the closed day's evidence was
+    read. Idempotent: recording an already-covered day is a no-op.
+    """
+    sql = """
+        INSERT INTO covered_local_days (local_date, timezone)
+        VALUES ($1, $2)
+        ON CONFLICT (local_date, timezone) DO NOTHING
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(sql, local_date, tz_name)
 
 
 # ── Anomaly detection helpers ──────────────────────────────────────────────
@@ -705,20 +777,51 @@ async def _no_attention_items() -> list[AttentionItem]:
     return []
 
 
-async def compose_briefing_payload(
+def _empty_kpi() -> KpiSnapshot:
+    return KpiSnapshot(
+        hours_by_top_lanes=[],
+        longest_episode_minutes=0,
+        longest_episode_title=None,
+        longest_gap_minutes=0,
+        sleep_minutes=0,
+        streaks=Streaks(),
+    )
+
+
+def _non_content_payload(state_class: str, earliest_date: date | None) -> BriefingPayload:
+    """Build a deterministic no_data/unavailable/degraded payload.
+
+    Bypasses cache lookup entirely (``covered_and_available=False``) and
+    carries no KPI/attention/recent-days content — those all derive from
+    reads that either failed or were never attempted for a day whose
+    coverage/availability could not be affirmed (design decision 3).
+    """
+    return BriefingPayload(
+        state_class=state_class,
+        headline=headline_for(state_class, 0),
+        kpi=_empty_kpi(),
+        attention_items=[],
+        recent_days=[],
+        earliest_date=earliest_date.isoformat() if earliest_date else None,
+        covered_and_available=False,
+    )
+
+
+async def _compose_content_payload(
     pool: asyncpg.Pool,
     target: date,
     tz_name: str,
     *,
-    now: datetime | None = None,
+    now: datetime,
+    earliest_date: date | None,
 ) -> BriefingPayload:
-    """Compose the full editorial briefing payload (without voice paragraph).
+    """Compose the full editorial payload for a covered, available day.
 
-    Reads only from the chronicler schema. NEVER invokes an LLM. ``now`` is
-    injectable so date-relative classification (source-health scoping) is
-    deterministic under test; it defaults to the current instant.
+    Reads only from the chronicler schema. NEVER invokes an LLM.
+    ``earliest_date`` is passed in (rather than re-fetched) so the caller's
+    single coverage-floor read is reused for the response's earliest_date
+    field.
     """
-    now = now or datetime.now(UTC)
     start_utc, end_utc = day_window_utc(target, tz_name)
 
     # All briefing reads are independent (they share only the window/tz inputs),
@@ -737,7 +840,6 @@ async def compose_briefing_payload(
         health_seconds_by_day,
         open_corrections,
         recent_days,
-        earliest_date,
         source_health_items,
     ) = await asyncio.gather(
         _fetch_window_episodes(pool, start_utc, end_utc),
@@ -747,7 +849,6 @@ async def compose_briefing_payload(
         ),
         _fetch_open_corrections(pool, start_utc, end_utc),
         _fetch_recent_days(pool, end_utc, days=7, tz_name=tz_name),
-        _fetch_earliest_episode_date(pool, tz_name),
         source_health_coro,
     )
 
@@ -808,8 +909,88 @@ async def compose_briefing_payload(
         kpi=kpi,
         attention_items=attention_items,
         recent_days=recent_days,
-        earliest_date=earliest_date,
+        earliest_date=earliest_date.isoformat() if earliest_date else None,
+        covered_and_available=True,
     )
+
+
+async def compose_briefing_payload(
+    pool: asyncpg.Pool,
+    target: date,
+    tz_name: str,
+    *,
+    now: datetime | None = None,
+    availability: str | None = None,
+) -> BriefingPayload:
+    """Compose the full editorial briefing payload (without voice paragraph).
+
+    Reads only from the chronicler schema. NEVER invokes an LLM. ``now`` is
+    injectable so date-relative classification (source-health scoping) is
+    deterministic under test; it defaults to the current instant.
+
+    Implements the state precedence from clarify-chronicles-narrative-truth
+    design.md decision 3, scoped to settled (strictly past) days — today and
+    any future date are not yet "closed" and keep the prior unconditional
+    urgent/busy/mild/quiet classification:
+
+    1. An owned coverage-floor query failure, or an ``availability`` input of
+       ``unavailable``/``degraded`` (supplied by the availability-owning lane,
+       ``bu-imsks`` — this function never invents that signal itself), returns
+       the corresponding non-content state. Never ``no_data`` or ``quiet``.
+    2. A positive coverage-floor verdict placing ``target`` before the floor
+       returns ``no_data``.
+    3. A ``target`` on/after the floor but without its own exact-date witness
+       (a coverage-evidence gap, or no floor established yet) returns
+       ``unavailable`` — never inferred from an empty query result.
+    4. Only a covered, available day reaches normal classification and
+       day-close cache selection.
+    """
+    now = now or datetime.now(UTC)
+    today_local = _utc_to_local_date(now, tz_name)
+    settled = target < today_local
+
+    if not settled:
+        # Today/future: coverage witnesses are recorded for closed days only,
+        # so gating "today" against them would always read as ungated. Keep
+        # the live, uncoverage-gated behavior this endpoint always had.
+        earliest_date = await _fetch_earliest_covered_date(pool, tz_name)
+        try:
+            return await _compose_content_payload(
+                pool, target, tz_name, now=now, earliest_date=earliest_date
+            )
+        except (asyncpg.PostgresError, OSError):
+            return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
+
+    try:
+        earliest_date = await _fetch_earliest_covered_date(pool, tz_name)
+    except (asyncpg.PostgresError, OSError):
+        return _non_content_payload(STATE_UNAVAILABLE, None)
+
+    if availability == STATE_UNAVAILABLE:
+        return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
+    if availability == STATE_DEGRADED:
+        return _non_content_payload(STATE_DEGRADED, earliest_date)
+
+    if earliest_date is not None and target < earliest_date:
+        return _non_content_payload(STATE_NO_DATA, earliest_date)
+
+    try:
+        covered = await _is_local_day_covered(pool, target, tz_name)
+    except (asyncpg.PostgresError, OSError):
+        return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
+
+    if not covered:
+        # Either no floor exists yet, or target sits in a coverage-evidence
+        # gap on/after the floor. Neither is proof of absence or of a quiet
+        # day, so this stays unavailable rather than no_data or quiet.
+        return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
+
+    try:
+        return await _compose_content_payload(
+            pool, target, tz_name, now=now, earliest_date=earliest_date
+        )
+    except (asyncpg.PostgresError, OSError):
+        return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
 
 
 __all__ = [
@@ -817,7 +998,15 @@ __all__ = [
     "BriefingPayload",
     "KpiSnapshot",
     "LaneHours",
+    "NON_CONTENT_STATES",
     "RecentDay",
+    "STATE_BUSY",
+    "STATE_DEGRADED",
+    "STATE_MILD",
+    "STATE_NO_DATA",
+    "STATE_QUIET",
+    "STATE_UNAVAILABLE",
+    "STATE_URGENT",
     "STREAK_LOOKBACK_DAYS",
     "SLEEP_ANOMALY_FRACTION",
     "SOURCE_LAST_ERROR_WINDOW_HOURS",
@@ -829,5 +1018,7 @@ __all__ = [
     "compose_briefing_payload",
     "day_window_utc",
     "headline_for",
+    "record_coverage_witness",
     "templated_voice_paragraph",
+    "templated_voice_paragraph_for_state",
 ]

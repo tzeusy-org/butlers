@@ -223,6 +223,22 @@ class DayCloseStaleResponse(BaseModel):
     last_invalidating_event_at: datetime
 
 
+class DayCloseInvalidResponse(BaseModel):
+    """Cache row failed the deterministic day-close admission predicate.
+
+    A successful, explicit cache-state response (clarify-chronicles-narrative-truth
+    design.md decision 4): the row's prose is contained for audit/recovery but
+    is never rendered. Distinct from both a cache miss (404) and a valid-but-stale
+    row (``DayCloseStaleResponse``); admission validation precedes staleness,
+    so a row that is both stale and invalid returns this response.
+    """
+
+    invalid: bool = True
+    invalid_reason: str
+    """``inadmissible_prose`` | ``date_mismatch``."""
+    cache_built_at: datetime
+
+
 class DayCloseRefreshRequest(BaseModel):
     """Request body for POST /aggregate/day-close/refresh."""
 
@@ -339,7 +355,13 @@ class ChroniclesBriefing(BaseModel):
     date: str
     """ISO calendar date (YYYY-MM-DD)."""
     state_class: str
-    """One of 'urgent', 'busy', 'mild', 'quiet'."""
+    """One of 'urgent', 'busy', 'mild', 'quiet', 'no_data', 'unavailable', 'degraded'.
+
+    The last three are non-content states: coverage or availability for this
+    day could not be affirmatively established. ``voice_paragraph`` is
+    deterministic state-specific copy for those three; the day-close cache
+    is never consulted (clarify-chronicles-narrative-truth design.md
+    decision 3)."""
     headline: str
     """Templated, sentence case, no exclamation, no em-dash."""
     voice_paragraph: str

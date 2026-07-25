@@ -89,6 +89,7 @@ if _spec is not None and _spec.loader is not None:
     CategoryBuckets = _models.CategoryBuckets
     DayCloseFreshResponse = _models.DayCloseFreshResponse
     DayCloseStaleResponse = _models.DayCloseStaleResponse
+    DayCloseInvalidResponse = _models.DayCloseInvalidResponse
     DayCloseRefreshRequest = _models.DayCloseRefreshRequest
     DayCloseRefreshResponse = _models.DayCloseRefreshResponse
     EpisodeExplainResponse = _models.EpisodeExplainResponse
@@ -2483,8 +2484,8 @@ async def get_who_you_were_with(
 @router.get(
     "/aggregate/day-close",
     response_model=Annotated[
-        DayCloseFreshResponse | DayCloseStaleResponse,
-        "Fresh prose or stale marker",
+        DayCloseFreshResponse | DayCloseStaleResponse | DayCloseInvalidResponse,
+        "Fresh prose, stale marker, or invalid-without-prose marker",
     ],
 )
 async def get_day_close_cache(
@@ -2492,18 +2493,24 @@ async def get_day_close_cache(
         None, alias="date", description="YYYY-MM-DD date for day-close window"
     ),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> DayCloseFreshResponse | DayCloseStaleResponse:
-    """Return cached day-close prose OR a stale marker.
+) -> DayCloseFreshResponse | DayCloseStaleResponse | DayCloseInvalidResponse:
+    """Return cached day-close prose, a stale marker, or an invalid marker.
 
     Looks up ``tier2_cache`` by ``cache_key=day_close:{YYYY-MM-DD}``.
     Returns 404 if no cache entry exists.
 
-    If a cache entry exists, checks whether any episode, point_event, or
-    override row in the cached window [start_at, end_at) has been modified
-    (tombstoned, updated, or created) after ``cache_built_at``.
+    Admission validation precedes staleness: a row that failed the
+    deterministic day-close admission predicate (bad shape or a mismatched
+    structured ``date_label``) returns invalid-without-prose regardless of
+    its staleness state.
+
+    Otherwise, checks whether any episode, point_event, or override row in
+    the cached window [start_at, end_at) has been modified (tombstoned,
+    updated, or created) after ``cache_built_at``.
 
     - **Fresh:** returns ``{prose, provenance_refs, cache_built_at}``.
     - **Stale:** returns ``{stale: true, cache_built_at, last_invalidating_event_at}``.
+    - **Invalid:** returns ``{invalid: true, invalid_reason, cache_built_at}``.
 
     No LLM is invoked on this path.
     """
@@ -2544,7 +2551,8 @@ async def get_day_close_cache(
         t0 = time.perf_counter()
         cache_row = await pool.fetchrow(
             """
-            SELECT cache_key, start_at, end_at, cache_built_at, prose, provenance_refs
+            SELECT cache_key, start_at, end_at, cache_built_at, prose, provenance_refs,
+                   invalid_reason
             FROM tier2_cache
             WHERE cache_key = $1
               AND superseded_at IS NULL
@@ -2561,6 +2569,18 @@ async def get_day_close_cache(
         start_at = cache_row["start_at"]
         end_at = cache_row["end_at"]
         cache_built_at = cache_row["cache_built_at"]
+
+        # ── Step 1b: admission precedes staleness ────────────────────────────
+        # A row that failed the deterministic day-close admission predicate is
+        # contained regardless of its staleness state (design.md decision 4).
+        invalid_reason = cache_row.get("invalid_reason")
+        if invalid_reason:
+            span.set_attribute("chronicler.day_close.cache_state", "invalid")
+            return DayCloseInvalidResponse(
+                invalid=True,
+                invalid_reason=invalid_reason,
+                cache_built_at=cache_built_at,
+            )
 
         # ── Step 2: query staleness signals in the cached window ─────────────
         # Nine signals:
@@ -2985,14 +3005,16 @@ async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | No
     """Return (paragraph, source) read from the day-close Tier-2 cache.
 
     source is one of 'llm·cached', 'stale', or 'templated'. When the cache
-    is missing entirely, paragraph is None and the caller must produce a
-    templated fallback.
+    is missing entirely, or the row failed the deterministic day-close
+    admission predicate (admission precedes staleness — the same containment
+    rule ``GET /aggregate/day-close`` applies), paragraph is None and the
+    caller must produce a templated fallback.
     """
     cache_key = f"day_close:{target.isoformat()}"
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT prose, cache_built_at, start_at, end_at
+            SELECT prose, cache_built_at, start_at, end_at, invalid_reason
             FROM tier2_cache
             WHERE cache_key = $1
               AND superseded_at IS NULL
@@ -3000,6 +3022,8 @@ async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | No
             cache_key,
         )
     if row is None:
+        return None, "templated"
+    if row.get("invalid_reason"):
         return None, "templated"
     prose = row["prose"]
     cache_built_at = row["cache_built_at"]
@@ -3039,14 +3063,19 @@ async def get_briefing(
 ) -> ChroniclesBriefing:
     """Editorial briefing for a single day window.
 
-    NEVER initiates a new LLM call. ``voice_paragraph`` is sourced from the
-    existing day-close Tier-2 cache when fresh, marked stale when the cache
-    has been invalidated by post-cache changes, or computed from a
-    deterministic templated fallback when no cache row exists.
+    NEVER initiates a new LLM call. For a covered, available day,
+    ``voice_paragraph`` is sourced from the existing day-close Tier-2 cache
+    when fresh, marked stale when the cache has been invalidated by
+    post-cache changes, or computed from a deterministic templated fallback
+    when no cache row exists. For ``no_data``/``unavailable``/``degraded``
+    days, the day-close cache is never consulted (fresh or stale); the
+    response uses deterministic state-specific copy instead
+    (clarify-chronicles-narrative-truth design.md decision 3).
     """
     from butlers.chronicler.editorial import (
         compose_briefing_payload,
         templated_voice_paragraph,
+        templated_voice_paragraph_for_state,
     )
 
     target = _parse_date_param(date_param)
@@ -3054,11 +3083,15 @@ async def get_briefing(
 
     pool = _pool(db)
     payload = await compose_briefing_payload(pool, target, tz_name)
-    cache_paragraph, voice_source = await _voice_paragraph_from_cache(pool, target)
-    if cache_paragraph is None:
-        voice_paragraph = templated_voice_paragraph(payload)
+    if not payload.covered_and_available:
+        voice_paragraph = templated_voice_paragraph_for_state(payload.state_class)
+        voice_source = "templated"
     else:
-        voice_paragraph = cache_paragraph
+        cache_paragraph, voice_source = await _voice_paragraph_from_cache(pool, target)
+        if cache_paragraph is None:
+            voice_paragraph = templated_voice_paragraph(payload)
+        else:
+            voice_paragraph = cache_paragraph
 
     return ChroniclesBriefing(
         date=target.isoformat(),

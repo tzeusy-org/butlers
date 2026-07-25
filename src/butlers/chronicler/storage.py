@@ -909,6 +909,8 @@ async def upsert_tier2_cache(
     prose: str,
     provenance_refs: list[Any],
     cache_built_at: datetime | None = None,
+    date_label: str | None = None,
+    invalid_reason: str | None = None,
 ) -> None:
     """Idempotent INSERT-or-UPDATE for a Tier 2 day-close cache entry.
 
@@ -928,18 +930,28 @@ async def upsert_tier2_cache(
         provenance_refs: List of source_ref strings cited in the prose.
         cache_built_at: Override for the build timestamp (defaults to ``now()``
             inside the DB, useful for testing).
+        date_label: Structured local-day label the candidate claims (day-close
+            admission contract; ``None`` for non-day-close cache keys such as
+            ``episode_explain:*``).
+        invalid_reason: ``inadmissible_prose`` | ``date_mismatch`` when the
+            row failed the deterministic day-close admission predicate.  A
+            non-``None`` row is retained for audit but is never returned as
+            renderable prose by the reader.
     """
     await conn.execute(
         """
         INSERT INTO tier2_cache
-            (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at)
-        VALUES ($1, $2, $3, $4, $5, COALESCE($6, now()))
+            (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at,
+             date_label, invalid_reason)
+        VALUES ($1, $2, $3, $4, $5, COALESCE($6, now()), $7, $8)
         ON CONFLICT (cache_key) DO UPDATE
             SET prose            = EXCLUDED.prose,
                 start_at         = EXCLUDED.start_at,
                 end_at           = EXCLUDED.end_at,
                 provenance_refs  = EXCLUDED.provenance_refs,
                 cache_built_at   = EXCLUDED.cache_built_at,
+                date_label       = EXCLUDED.date_label,
+                invalid_reason   = EXCLUDED.invalid_reason,
                 superseded_at    = NULL
         """,
         cache_key,
@@ -948,6 +960,8 @@ async def upsert_tier2_cache(
         prose,
         provenance_refs,
         cache_built_at,
+        date_label,
+        invalid_reason,
     )
 
 

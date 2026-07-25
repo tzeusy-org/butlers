@@ -59,6 +59,21 @@ def _row(data: dict) -> _Row:
     return _Row(data)
 
 
+class _AcquireCM:
+    """Minimal async context manager mimicking asyncpg's ``pool.acquire()``,
+    used by ``editorial.record_coverage_witness`` (called on every
+    successful refresh dispatch, independent of admission)."""
+
+    def __init__(self, conn: AsyncMock) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> AsyncMock:
+        return self._conn
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 def _mock_pool(
     *,
     fetchrow_side_effect: list | None = None,
@@ -73,6 +88,8 @@ def _mock_pool(
     pool.fetch = AsyncMock(return_value=[])
     pool.fetchval = AsyncMock(return_value=0)
     pool.execute = AsyncMock(return_value=execute_returns)
+    conn = AsyncMock()
+    pool.acquire = MagicMock(side_effect=lambda: _AcquireCM(conn))
     return pool
 
 
@@ -86,11 +103,16 @@ def _make_spawner_result(
     *,
     success: bool = True,
     output: str = "Refreshed day-close summary prose.",
+    date_label: str | None = "2026-04-24",
 ) -> MagicMock:
     r = MagicMock()
     r.success = success
     r.output = output
-    r.tool_calls = []
+    r.tool_calls = (
+        [{"tool": "chronicler_day_close_bundle", "result": {"date": date_label, "citations": []}}]
+        if date_label
+        else []
+    )
     return r
 
 

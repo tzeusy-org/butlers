@@ -385,6 +385,66 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).toContain("Something went wrong");
   });
 
+  // ---------------------------------------------------------------------
+  // Non-content states (bu-ep4ks.1): no_data/unavailable/degraded must never
+  // render with quiet-day copy or the Attention/KPI content -- the exact
+  // fabricated-calm failure clarify-chronicles-narrative-truth exists to
+  // eliminate (an outage or an unproven historical day narrating as a
+  // quiet day).
+  // ---------------------------------------------------------------------
+
+  describe.each([
+    ["no_data", "Before the chronicled archive.", "is before the chronicled archive."],
+    ["unavailable", "Coverage for this day could not be confirmed.", "could not be confirmed."],
+    ["degraded", "Coverage for this day is degraded.", "has degraded coverage."],
+  ] as const)("non-content state %s", (stateClass, headline, predicate) => {
+    it(`renders ${stateClass} distinctly, never as a quiet day`, () => {
+      _briefing = buildBriefing({
+        state_class: stateClass,
+        headline,
+        voice_paragraph: "Deterministic state-specific copy.",
+        voice_source: "templated",
+        attention_items: [],
+        kpi: {
+          hours_by_top_lanes: [],
+          longest_episode_minutes: 0,
+          longest_episode_title: null,
+          longest_gap_minutes: 0,
+          sleep_minutes: 0,
+          streaks: { sleep: 0, exercise: 0 },
+        },
+        recent_days: [],
+      });
+      const html = renderPage();
+
+      expect(html).not.toContain("Quiet day.");
+      expect(html).not.toContain("was quiet.");
+      expect(html).not.toContain("Nothing waiting.");
+      expect(html).toContain(headline);
+      expect(html).toContain(predicate);
+      expect(html).toContain("Deterministic state-specific copy.");
+      expect(html).toContain(stateClass.replace("_", " "));
+    });
+  });
+
+  it("renders the quiet day normally when the state truly is quiet", () => {
+    _briefing = buildBriefing({ state_class: "quiet", headline: "Quiet day." });
+    const html = renderPage();
+    expect(html).toContain("Quiet day.");
+    expect(html).toContain("was quiet.");
+  });
+
+  it("falls back to a neutral predicate for an unrecognized state_class, never quiet", () => {
+    _briefing = buildBriefing({
+      // Cast: simulating a future backend value this build predates.
+      state_class: "mystery" as ChroniclesBriefing["state_class"],
+      headline: "Unrecognized state.",
+    });
+    const html = renderPage();
+    expect(html).not.toContain("was quiet.");
+    expect(html).toContain("could not be classified.");
+  });
+
   describe("palette verbs + bindings (bu-t64p2)", () => {
     function pressKey(key: string): void {
       act(() => {

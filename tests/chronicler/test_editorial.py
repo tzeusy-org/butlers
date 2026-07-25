@@ -22,15 +22,17 @@ from butlers.chronicler.editorial import (
     _compute_kpi,
     _compute_streaks,
     _detect_waking_gaps,
-    _fetch_earliest_episode_date,
+    _fetch_earliest_covered_date,
     _fetch_recent_days,
     _fetch_sleep_median_prior_week,
     _fetch_source_health_items,
+    _is_local_day_covered,
     _target_is_recent,
     _utc_to_local_date,
     classify_state,
     day_window_utc,
     headline_for,
+    record_coverage_witness,
     templated_voice_paragraph,
 )
 
@@ -312,6 +314,7 @@ class _FetchConn:
         self.rows = rows or []
         self.fetch_calls: list[tuple[object, ...]] = []
         self.fetchval_calls: list[tuple[object, ...]] = []
+        self.execute_calls: list[tuple[object, ...]] = []
 
     async def fetch(self, *args: object) -> list[_FakeRow]:
         self.fetch_calls.append(args)
@@ -320,6 +323,10 @@ class _FetchConn:
     async def fetchval(self, *args: object) -> object:
         self.fetchval_calls.append(args)
         return False
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self.execute_calls.append(args)
+        return "INSERT 0 1"
 
 
 class _FetchAcquire:
@@ -532,16 +539,35 @@ def test_target_is_recent_includes_yesterday_and_today_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_earliest_episode_date_converts_to_owner_tz() -> None:
-    conn = _ValConn(fetchval_result=datetime(2026, 1, 1, 18, 0, tzinfo=UTC))
-    earliest = await _fetch_earliest_episode_date(_FetchPool(conn), "Asia/Singapore")
-    assert earliest == "2026-01-02"
+async def test_fetch_earliest_covered_date_returns_min_local_date() -> None:
+    conn = _ValConn(fetchval_result=date(2026, 1, 2))
+    earliest = await _fetch_earliest_covered_date(_FetchPool(conn), "Asia/Singapore")
+    assert earliest == date(2026, 1, 2)
 
 
 @pytest.mark.asyncio
-async def test_fetch_earliest_episode_date_is_none_when_empty() -> None:
+async def test_fetch_earliest_covered_date_is_none_when_empty() -> None:
     conn = _ValConn(fetchval_result=None)
-    assert await _fetch_earliest_episode_date(_FetchPool(conn), "UTC") is None
+    assert await _fetch_earliest_covered_date(_FetchPool(conn), "UTC") is None
+
+
+@pytest.mark.asyncio
+async def test_is_local_day_covered_true_when_witness_exists() -> None:
+    conn = _ValConn(fetchval_result=1)
+    assert await _is_local_day_covered(_FetchPool(conn), date(2026, 1, 2), "UTC") is True
+
+
+@pytest.mark.asyncio
+async def test_is_local_day_covered_false_when_no_witness() -> None:
+    conn = _ValConn(fetchval_result=None)
+    assert await _is_local_day_covered(_FetchPool(conn), date(2026, 1, 2), "UTC") is False
+
+
+@pytest.mark.asyncio
+async def test_record_coverage_witness_executes_upsert() -> None:
+    conn = _FetchConn()
+    await record_coverage_witness(_FetchPool(conn), date(2026, 1, 2), "UTC")
+    assert conn.execute_calls == [(date(2026, 1, 2), "UTC")]
 
 
 @pytest.mark.asyncio
@@ -549,11 +575,15 @@ async def test_compose_excludes_source_health_for_old_archive_date(monkeypatch) 
     async def _fake_health(pool: object, *, now: object = None) -> list[AttentionItem]:
         return [AttentionItem(kind="source_health", severity="high", title="spotify down")]
 
-    async def _fake_earliest(pool: object, tz_name: str) -> str:
-        return "2026-01-01"
+    async def _fake_earliest(pool: object, tz_name: str) -> date:
+        return date(2026, 1, 1)
+
+    async def _fake_covered(pool: object, local_date: date, tz_name: str) -> bool:
+        return True
 
     monkeypatch.setattr(editorial, "_fetch_source_health_items", _fake_health)
-    monkeypatch.setattr(editorial, "_fetch_earliest_episode_date", _fake_earliest)
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _fake_earliest)
+    monkeypatch.setattr(editorial, "_is_local_day_covered", _fake_covered)
     pool = _FetchPool(_FetchConn())
     now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
 
@@ -561,10 +591,138 @@ async def test_compose_excludes_source_health_for_old_archive_date(monkeypatch) 
     assert all(i.kind != "source_health" for i in old.attention_items)
     assert old.state_class == "quiet"
     assert old.earliest_date == "2026-01-01"
+    assert old.covered_and_available is True
 
     recent = await editorial.compose_briefing_payload(pool, date(2026, 5, 8), "UTC", now=now)
     assert any(i.kind == "source_health" for i in recent.attention_items)
     assert recent.state_class == "urgent"
+
+
+# ── Coverage/availability precedence (bu-ep4ks.1) ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_compose_no_data_when_target_before_coverage_floor(monkeypatch) -> None:
+    async def _fake_earliest(pool: object, tz_name: str) -> date:
+        return date(2026, 5, 1)
+
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _fake_earliest)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    payload = await editorial.compose_briefing_payload(pool, date(2026, 4, 20), "UTC", now=now)
+
+    assert payload.state_class == "no_data"
+    assert payload.covered_and_available is False
+    assert payload.earliest_date == "2026-05-01"
+    assert payload.attention_items == []
+    assert payload.headline == headline_for("no_data", 0)
+
+
+@pytest.mark.asyncio
+async def test_compose_unavailable_when_no_coverage_floor_established(monkeypatch) -> None:
+    async def _fake_earliest(pool: object, tz_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _fake_earliest)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    payload = await editorial.compose_briefing_payload(pool, date(2026, 5, 6), "UTC", now=now)
+
+    assert payload.state_class == "unavailable"
+    assert payload.covered_and_available is False
+    assert payload.earliest_date is None
+
+
+@pytest.mark.asyncio
+async def test_compose_unavailable_on_coverage_evidence_gap(monkeypatch) -> None:
+    """target is on/after the floor but has no exact-date witness of its own."""
+
+    async def _fake_earliest(pool: object, tz_name: str) -> date:
+        return date(2026, 5, 1)
+
+    async def _fake_covered(pool: object, local_date: date, tz_name: str) -> bool:
+        return False
+
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _fake_earliest)
+    monkeypatch.setattr(editorial, "_is_local_day_covered", _fake_covered)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    payload = await editorial.compose_briefing_payload(pool, date(2026, 5, 6), "UTC", now=now)
+
+    assert payload.state_class == "unavailable"
+    assert payload.covered_and_available is False
+
+
+@pytest.mark.asyncio
+async def test_compose_unavailable_on_owned_query_failure(monkeypatch) -> None:
+    async def _raise(pool: object, tz_name: str) -> date:
+        raise editorial.asyncpg.PostgresError("connection lost")
+
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _raise)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    payload = await editorial.compose_briefing_payload(pool, date(2026, 5, 6), "UTC", now=now)
+
+    assert payload.state_class == "unavailable"
+    assert payload.covered_and_available is False
+
+
+@pytest.mark.asyncio
+async def test_compose_availability_input_overrides_coverage(monkeypatch) -> None:
+    """An externally-supplied availability signal takes precedence over a
+    positive coverage verdict (design decision 3: never no_data/quiet)."""
+
+    async def _fake_earliest(pool: object, tz_name: str) -> date:
+        return date(2026, 5, 1)
+
+    async def _fake_covered(pool: object, local_date: date, tz_name: str) -> bool:
+        return True
+
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _fake_earliest)
+    monkeypatch.setattr(editorial, "_is_local_day_covered", _fake_covered)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    degraded = await editorial.compose_briefing_payload(
+        pool, date(2026, 5, 6), "UTC", now=now, availability="degraded"
+    )
+    assert degraded.state_class == "degraded"
+    assert degraded.covered_and_available is False
+
+    unavailable = await editorial.compose_briefing_payload(
+        pool, date(2026, 5, 6), "UTC", now=now, availability="unavailable"
+    )
+    assert unavailable.state_class == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_compose_today_and_future_skip_coverage_gating(monkeypatch) -> None:
+    """Today/future dates keep the prior unconditional classification: no
+    coverage witness is recorded for a day that has not closed yet."""
+
+    async def _fake_earliest(pool: object, tz_name: str) -> date:
+        return date(2026, 5, 1)
+
+    called = {"covered": False}
+
+    async def _fake_covered(pool: object, local_date: date, tz_name: str) -> bool:
+        called["covered"] = True
+        return False
+
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _fake_earliest)
+    monkeypatch.setattr(editorial, "_is_local_day_covered", _fake_covered)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    payload = await editorial.compose_briefing_payload(pool, date(2026, 5, 9), "UTC", now=now)
+
+    assert payload.state_class == "quiet"
+    assert payload.covered_and_available is True
+    assert called["covered"] is False
 
 
 # ── _compute_kpi (bu-whhll.1: intent-leak regression) ───────────────────────

@@ -6974,8 +6974,19 @@ export interface Briefing {
 // briefing above. Backed by /api/chronicler/briefing|attention|kpi.
 // ---------------------------------------------------------------------------
 
+/** Content state classes: normal editorial classification of a covered, available day. */
+export type ChroniclesContentStateClass = "urgent" | "busy" | "mild" | "quiet";
+
+/**
+ * Non-content state classes: coverage or availability for this day could not
+ * be affirmatively established. `voice_paragraph` is deterministic
+ * state-specific copy for these three — never a cached (fresh or stale)
+ * day-close summary (clarify-chronicles-narrative-truth design.md decision 3).
+ */
+export type ChroniclesNonContentStateClass = "no_data" | "unavailable" | "degraded";
+
 /** State classes the chronicles briefing classifier produces. */
-export type ChroniclesStateClass = "urgent" | "busy" | "mild" | "quiet";
+export type ChroniclesStateClass = ChroniclesContentStateClass | ChroniclesNonContentStateClass;
 
 /** Source of the voice paragraph in the chronicles briefing. */
 export type ChroniclesVoiceSource = "llm·cached" | "templated" | "stale";
@@ -7016,6 +7027,9 @@ export interface ChroniclesRecentDay {
 
 export interface ChroniclesBriefing {
   date: string;
+  /** `no_data`/`unavailable`/`degraded` are non-content states: this day's
+   * coverage or availability could not be affirmed. Never render them with
+   * the quiet-day copy or treatment. */
   state_class: ChroniclesStateClass;
   headline: string;
   voice_paragraph: string;

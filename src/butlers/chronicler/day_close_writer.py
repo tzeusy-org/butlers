@@ -50,6 +50,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
+from butlers.chronicler.editorial import record_coverage_witness
+from butlers.chronicler.prose_admission import classify_day_close_candidate
 from butlers.chronicler.storage import upsert_tier2_cache
 
 logger = logging.getLogger(__name__)
@@ -127,6 +129,39 @@ def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
     return refs
 
 
+def _extract_date_label(tool_calls: list[dict[str, Any]]) -> str | None:
+    """Extract the structured date_label the day-close prompt bound to.
+
+    Per ``roster/chronicler/AGENTS.md``, the day-close prompt MUST call
+    ``chronicler_day_close_bundle(date_label=...)`` before narrating. The
+    bundle result echoes the requested date back verbatim as ``"date"``
+    (``bundle_assembler.assemble_day_close_bundle``), so recovering it here
+    needs no new tool call and no LLM invocation — only the first bundle
+    call's result is used, matching the once-per-day-close bundle call
+    convention.
+
+    Returns ``None`` when no ``chronicler_day_close_bundle`` call is present
+    (candidate then fails admission as an unbound date_label).
+    """
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        if (call.get("tool") or "") != "chronicler_day_close_bundle":
+            continue
+        result_raw = call.get("result")
+        if isinstance(result_raw, str):
+            try:
+                result_raw = json.loads(result_raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if not isinstance(result_raw, dict):
+            continue
+        date_val = result_raw.get("date")
+        if isinstance(date_val, str) and date_val:
+            return date_val
+    return None
+
+
 def _compute_day_window(
     run_at: datetime, tz: str | ZoneInfo = "UTC"
 ) -> tuple[date, datetime, datetime]:
@@ -162,12 +197,25 @@ async def write_day_close_cache(
     run_at: datetime,
     tz: str | ZoneInfo = "UTC",
 ) -> None:
-    """Post-execution hook: persist day-close prose to tier2_cache.
+    """Post-execution hook: record coverage and persist day-close prose.
 
     Called by the scheduler tick after ``chronicler_day_close`` dispatches.
-    No-op when:
-    - ``result`` has no non-empty ``output`` (nothing to cache).
-    - ``result.success`` is False (error path — do not cache failures).
+
+    Records a covered-local-day witness (``editorial.record_coverage_witness``)
+    for the closed day whenever the dispatch itself succeeded, independent of
+    whether it produced non-empty output — a covered quiet day has no episode
+    and produces no prose, so gating the witness on output emptiness would
+    make a genuinely quiet closed day indistinguishable from one that was
+    never chronicled (clarify-chronicles-narrative-truth design.md decision
+    1). No witness is recorded when the dispatch itself failed or returned no
+    result (its evidence reads cannot be proven to have completed).
+
+    The tier2_cache prose write is separately gated by the deterministic
+    day-close admission predicate (``prose_admission.classify_day_close_candidate``):
+    an inadmissible-shape or date-mismatched candidate is never written over
+    an existing admissible row (it would silently replace a renderable
+    entry); with no existing admissible row, the invalid candidate is still
+    persisted (marked ``invalid_reason``) for audit/recovery, never rendered.
 
     Args:
         pool: asyncpg pool for the chronicler DB (scoped to the chronicler schema).
@@ -202,22 +250,73 @@ async def write_day_close_cache(
         logger.debug("day_close_writer: dispatch was not successful, skipping cache write")
         return
 
+    day_date, start_at, end_at = _compute_day_window(run_at, tz)
+    tz_name = str(tz)
+
+    try:
+        await record_coverage_witness(pool, day_date, tz_name)
+    except Exception:
+        logger.exception(
+            "day_close_writer: failed to record coverage witness for %s", day_date.isoformat()
+        )
+
     if not output or not output.strip():
         logger.debug("day_close_writer: output is empty, skipping cache write")
         return
 
-    day_date, start_at, end_at = _compute_day_window(run_at, tz)
     cache_key = f"day_close:{day_date.isoformat()}"
     provenance_refs = _extract_provenance_refs(tool_calls)
+    date_label = _extract_date_label(tool_calls)
+    prose = output.strip()
+    invalid_reason = classify_day_close_candidate(
+        prose, date_label=date_label, expected_date_iso=day_date.isoformat()
+    )
 
     try:
+        if invalid_reason is not None:
+            existing = await pool.fetchrow(
+                "SELECT invalid_reason FROM tier2_cache"
+                " WHERE cache_key = $1 AND superseded_at IS NULL",
+                cache_key,
+            )
+            if existing is not None and existing["invalid_reason"] is None:
+                # An admissible row already renders for this date; an invalid
+                # candidate SHALL NOT replace it (design.md decision 2).
+                logger.warning(
+                    "day_close_writer: rejected invalid candidate for %s (%s), "
+                    "existing admissible cache row preserved",
+                    cache_key,
+                    invalid_reason,
+                )
+                return
+            # No existing admissible row: persist the invalid candidate for
+            # audit/recovery. The reader never returns its prose.
+            await upsert_tier2_cache(
+                pool,
+                cache_key=cache_key,
+                start_at=start_at,
+                end_at=end_at,
+                prose=prose,
+                provenance_refs=provenance_refs,
+                date_label=date_label,
+                invalid_reason=invalid_reason,
+            )
+            logger.warning(
+                "day_close_writer: contained invalid candidate for %s (%s)",
+                cache_key,
+                invalid_reason,
+            )
+            return
+
         await upsert_tier2_cache(
             pool,
             cache_key=cache_key,
             start_at=start_at,
             end_at=end_at,
-            prose=output.strip(),
+            prose=prose,
             provenance_refs=provenance_refs,
+            date_label=date_label,
+            invalid_reason=None,
         )
         logger.info(
             "day_close_writer: wrote tier2_cache[%s] (%d provenance refs)",

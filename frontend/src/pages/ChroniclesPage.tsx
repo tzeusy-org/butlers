@@ -52,17 +52,34 @@ import type { ChroniclesAttentionItem, ChroniclesKpi } from "@/api/types";
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** State-class predicate for the greeting line. Past tense, sentence case. */
+/** State-class predicate for the greeting line. Past tense, sentence case.
+ *
+ * `no_data` / `unavailable` / `degraded` are non-content states: this day's
+ * coverage or availability could not be affirmed, so they read as an honest
+ * "could not be confirmed" rather than borrowing the quiet-day predicate
+ * (clarify-chronicles-narrative-truth design.md decision 3 -- an outage or
+ * an unproven historical day must never narrate as a quiet day). */
 const STATE_PREDICATE: Record<string, string> = {
   urgent: "had loose ends.",
   busy: "was full.",
   mild: "went mostly to plan.",
   quiet: "was quiet.",
+  no_data: "is before the chronicled archive.",
+  unavailable: "could not be confirmed.",
+  degraded: "has degraded coverage.",
 };
 
-/** Two-line greeting: a date-relative subject plus the briefing headline. */
+/** Non-content states: coverage/availability for the day was not affirmed.
+ * Never render these with quiet-day copy or the Attention/KPI content. */
+const NON_CONTENT_STATES = new Set(["no_data", "unavailable", "degraded"]);
+
+/** Two-line greeting: a date-relative subject plus the briefing headline.
+ *
+ * An unrecognized state_class (a backend value this build predates) falls
+ * back to a neutral "could not be classified" rather than the quiet
+ * predicate -- an unknown state is never presumed calm. */
 function deriveHeadlineLines(stateClass: string, headline: string, subject: string) {
-  const predicate = STATE_PREDICATE[stateClass] ?? STATE_PREDICATE.quiet;
+  const predicate = STATE_PREDICATE[stateClass] ?? "could not be classified.";
   return { greet: `${subject} ${predicate}`, body: headline };
 }
 
@@ -270,6 +287,7 @@ export default function ChroniclesPage() {
     subject,
   );
   const isStale = data?.voice_source === "stale";
+  const isNonContentState = data != null && NON_CONTENT_STATES.has(data.state_class);
 
   return (
     <Page
@@ -321,6 +339,20 @@ export default function ChroniclesPage() {
                 stale
               </span>
             ) : null}
+            {isNonContentState ? (
+              <span
+                style={{
+                  ...EYEBROW_STYLE,
+                  fontSize: "9px",
+                  letterSpacing: "0.08em",
+                  color: "var(--destructive, var(--muted-foreground))",
+                }}
+                title="Coverage or availability for this day could not be affirmed."
+                aria-label="Coverage or availability for this day could not be affirmed"
+              >
+                {data!.state_class.replace("_", " ")}
+              </span>
+            ) : null}
           </div>
 
           {/* Never-blank floor (bu-nhcp5): with placeholderData, `data` keeps
@@ -338,12 +370,26 @@ export default function ChroniclesPage() {
           </FetchingDim>
         </div>
 
-        {/* Right column: attention leads, then KPI strip, then recent days */}
+        {/* Right column: attention leads, then KPI strip, then recent days.
+            A non-content day (no_data/unavailable/degraded) has no reader-
+            visible evidence to show as Attention/KPI content -- rendering
+            "Nothing waiting." there would itself imply a checked-clear day,
+            the same fabricated-calm failure this state exists to prevent. */}
         <FetchingDim isFetching={isFetching} className="space-y-8">
-          <Section eyebrow="Attention">
-            <AttentionList items={adaptAttention(data?.attention_items ?? [])} />
-          </Section>
-          {data?.kpi ? <KpiStrip cells={buildKpiCells(data.kpi)} /> : null}
+          {isNonContentState ? (
+            <Section eyebrow="Coverage">
+              <p className="text-sm text-muted-foreground" role="status">
+                {data!.voice_paragraph}
+              </p>
+            </Section>
+          ) : (
+            <>
+              <Section eyebrow="Attention">
+                <AttentionList items={adaptAttention(data?.attention_items ?? [])} />
+              </Section>
+              {data?.kpi ? <KpiStrip cells={buildKpiCells(data.kpi)} /> : null}
+            </>
+          )}
           <RecentDaysIndex
             days={data?.recent_days ?? []}
             selectedDate={selectedDate}
