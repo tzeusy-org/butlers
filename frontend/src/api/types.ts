@@ -429,6 +429,22 @@ export interface AckFailedResult {
   acknowledged: number;
 }
 
+/**
+ * Result of a manual retry or escalate action on a failed notification
+ * (POST /api/notifications/{id}/retry or .../escalate). The original
+ * notification is flipped to `read`; this describes the new attempt, which
+ * has its own real `sent`/`failed` outcome.
+ */
+export interface NotificationActionResult {
+  original_notification_id: string;
+  new_notification_id: string | null;
+  /** Channel the retry/escalate attempt was delivered on. */
+  channel: string;
+  /** Outcome of the new attempt: "sent" or "failed". */
+  status: string;
+  error: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Attention ledger (bu-tdd4k.4) -- the ledger's first reader.
 // Mirrors src/butlers/api/models/attention_ledger.py.

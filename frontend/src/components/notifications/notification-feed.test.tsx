@@ -247,3 +247,95 @@ describe("NotificationFeed truncated-cell detail affordance (bu-x7z84)", () => {
     expect(screen.queryByTestId("notification-detail-toggle")).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Retry / Escalate (bu-ep4ks.4 -- delivery-receipt spine): a failed
+// notification is not just a dead-end row -- it must offer an actual action
+// to re-attempt delivery, not just prose saying "failed".
+// ---------------------------------------------------------------------------
+
+describe("NotificationFeed retry/escalate controls", () => {
+  afterEach(() => cleanup());
+
+  it("offers Retry and Escalate on a failed row when both handlers are wired", () => {
+    renderFeed({
+      notifications: [
+        makeNotification({ id: "f", status: "failed", effective_status: "failed" }),
+      ],
+      onRetry: vi.fn(),
+      onEscalate: vi.fn(),
+    });
+    expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Escalate" })).toBeDefined();
+  });
+
+  it("does not offer Retry/Escalate on a sent row", () => {
+    renderFeed({
+      notifications: [makeNotification({ status: "sent", effective_status: "sent" })],
+      onRetry: vi.fn(),
+      onEscalate: vi.fn(),
+    });
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Escalate" })).toBeNull();
+  });
+
+  it("hides Retry/Escalate once the row has been actioned (already read)", () => {
+    renderFeed({
+      notifications: [
+        makeNotification({ id: "r", status: "read", effective_status: "retried" }),
+      ],
+      onRetry: vi.fn(),
+      onEscalate: vi.fn(),
+    });
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Escalate" })).toBeNull();
+  });
+
+  it("fires onRetry with the row id when Retry is clicked", () => {
+    const onRetry = vi.fn();
+    renderFeed({
+      notifications: [
+        makeNotification({ id: "wire-retry", status: "failed", effective_status: "failed" }),
+      ],
+      onRetry,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledWith("wire-retry");
+  });
+
+  it("fires onEscalate with the row id when Escalate is clicked", () => {
+    const onEscalate = vi.fn();
+    renderFeed({
+      notifications: [
+        makeNotification({ id: "wire-escalate", status: "failed", effective_status: "failed" }),
+      ],
+      onEscalate,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Escalate" }));
+    expect(onEscalate).toHaveBeenCalledWith("wire-escalate");
+  });
+
+  it("shows a pending label and disables both buttons while a retry is in flight", () => {
+    renderFeed({
+      notifications: [
+        makeNotification({ id: "pending-retry", status: "failed", effective_status: "failed" }),
+      ],
+      onRetry: vi.fn(),
+      onEscalate: vi.fn(),
+      pendingRetryIds: new Set(["pending-retry"]),
+    });
+    const retryButton = screen.getByRole("button", { name: "Retrying…" });
+    expect(retryButton).toBeDefined();
+    expect(retryButton.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Escalate" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("renders the Escalated chip for a manually-escalated row", () => {
+    renderFeed({
+      notifications: [
+        makeNotification({ id: "esc", status: "read", effective_status: "escalated" }),
+      ],
+    });
+    expect(screen.getByText("Escalated")).toBeDefined();
+  });
+});

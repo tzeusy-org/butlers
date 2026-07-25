@@ -22,9 +22,11 @@ import { fireEvent } from "@testing-library/react";
 import NotificationsPage, { STATUS_OPTIONS } from "@/pages/NotificationsPage";
 import {
   useAcknowledgeAllFailed,
+  useEscalateNotification,
   useMarkNotificationRead,
   useNotifications,
   useNotificationStats,
+  useRetryNotification,
 } from "@/hooks/use-notifications";
 
 vi.mock("@/hooks/use-notifications", () => ({
@@ -32,6 +34,8 @@ vi.mock("@/hooks/use-notifications", () => ({
   useNotificationStats: vi.fn(),
   useMarkNotificationRead: vi.fn(),
   useAcknowledgeAllFailed: vi.fn(),
+  useRetryNotification: vi.fn(),
+  useEscalateNotification: vi.fn(),
 }));
 
 type UseNotificationsResult = ReturnType<typeof useNotifications>;
@@ -137,6 +141,14 @@ describe("NotificationsPage", () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
+    vi.mocked(useRetryNotification).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useRetryNotification>);
+    vi.mocked(useEscalateNotification).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useEscalateNotification>);
   });
 
   it("renders notification rows when list returns data", () => {
@@ -451,6 +463,14 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
+    vi.mocked(useRetryNotification).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useRetryNotification>);
+    vi.mocked(useEscalateNotification).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useEscalateNotification>);
     setStatsState({
       data: {
         data: { total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} },
@@ -589,6 +609,14 @@ describe("NotificationsPage — debounced filter feedback", () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
+    vi.mocked(useRetryNotification).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useRetryNotification>);
+    vi.mocked(useEscalateNotification).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useEscalateNotification>);
     setStatsState({
       data: {
         data: { total: 1, sent: 1, failed: 0, by_channel: {}, by_butler: {} },

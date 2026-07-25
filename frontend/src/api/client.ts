@@ -91,6 +91,7 @@ import type {
   Label,
   CursorPaginatedResponse,
   AckFailedResult,
+  NotificationActionResult,
   NotificationListResponse,
   NotificationParams,
   NotificationStats,
@@ -854,6 +855,33 @@ export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
   return apiFetch<ApiResponse<AckFailedResult>>("/notifications/ack-failed", {
     method: "POST",
   });
+}
+
+/**
+ * Manually re-attempt delivery of a failed notification, right now, on the
+ * same channel. Flips the original to `read` on the backend and returns the
+ * new attempt's own outcome.
+ */
+export function retryNotification(
+  notificationId: string,
+): Promise<ApiResponse<NotificationActionResult>> {
+  return apiFetch<ApiResponse<NotificationActionResult>>(
+    `/notifications/${encodeURIComponent(notificationId)}/retry`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * Re-attempt a failed notification on the owner's alternate channel
+ * (telegram<->email). Same forward-link/outcome contract as retryNotification.
+ */
+export function escalateNotification(
+  notificationId: string,
+): Promise<ApiResponse<NotificationActionResult>> {
+  return apiFetch<ApiResponse<NotificationActionResult>>(
+    `/notifications/${encodeURIComponent(notificationId)}/escalate`,
+    { method: "POST" },
+  );
 }
 
 // ---------------------------------------------------------------------------

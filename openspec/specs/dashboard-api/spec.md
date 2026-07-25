@@ -394,6 +394,8 @@ was removed (no compat shim).
 | GET | `/api/notifications` | Cross-butler paginated notification list |
 | GET | `/api/notifications/stats` | Aggregate notification statistics |
 | GET | `/api/butlers/{name}/notifications` | Butler-scoped notification list |
+| POST | `/api/notifications/{id}/retry` | Manually re-attempt a failed notification on the same channel |
+| POST | `/api/notifications/{id}/escalate` | Manually re-attempt a failed notification on the owner's alternate channel |
 
 #### Scenario: Notifications degraded source is named, not rendered as an all-clear
 - **WHEN** `GET /api/notifications` or `GET /api/notifications/stats` returns
@@ -408,6 +410,78 @@ was removed (no compat shim).
   unreachable source rather than the calm "No notifications found" empty state
 - **AND** a reachable-but-empty source (`source_available` absent or `true`
   with genuine zeros) keeps its honest zeros and empty state
+
+#### Scenario: Manual retry re-sends a failed notification and links the new attempt
+- **WHEN** `POST /api/notifications/{id}/retry` is called on a notification
+  whose stored `status` is `failed`
+- **THEN** the backend re-invokes delivery in-process (the same
+  approval-push-runtime pattern the dashboard-API process already uses to
+  call `deliver()` without a `switchboard_client` MCP connection), using the
+  envelope persisted at delivery time (`metadata.notify_request`) or, for
+  older rows that predate it, a synthetic envelope built from the row's own
+  `channel`/`recipient`/`message` columns
+- **AND** the original notification is flipped to `status = 'read'` with a
+  `metadata.retried_to` marker pointing at the new attempt's id, regardless
+  of whether the new attempt itself succeeds or fails again — a human has
+  acted on it either way, and a retry that fails again is its own new,
+  independently actionable row rather than a reason to leave the original
+  stuck in `failed`
+- **AND** the response reports the new attempt's own `status` (`sent` or
+  `failed`) and `error`, never a fabricated success for the original
+- **AND** a best-effort `public.attention_ledger` event is recorded
+  (`source="notify"`, `outcome="delivered"` or `"failed"`,
+  `notification_ref` set to the new attempt's id) so the manual action is
+  traceable the same way an automatic notify() outcome is
+- **AND** `GET /api/notifications?status=terminal_failed` and the aggregate
+  `failed` count in `GET /api/notifications/stats` no longer include the
+  original row afterward, since it is no longer `status = 'failed'`
+- **AND** `effective_status` on the original row reports `"retried"` (not
+  the generic `"read"`) so the UI communicates what happened, not just that
+  it was acknowledged
+
+#### Scenario: Manual retry rejects a non-failed notification
+- **WHEN** `POST /api/notifications/{id}/retry` or `.../escalate` is called
+  on a notification whose stored `status` is not `failed`
+- **THEN** the endpoint returns HTTP 409 without attempting delivery
+- **AND** HTTP 404 is returned when `{id}` does not exist, and HTTP 503 when
+  the Switchboard pool is unavailable
+
+#### Scenario: Concurrent or replayed retry/escalate never double-delivers
+- **WHEN** two `POST .../retry` (or two `.../escalate`) requests for the same
+  `{id}` race — a double-click, two open tabs, or a client resending after a
+  perceived timeout — and both observe `status = 'failed'` on their initial
+  read
+- **THEN** immediately before invoking real delivery, the backend atomically
+  claims the row with a single conditional `UPDATE notifications SET status
+  = 'read' WHERE id = $1 AND status = 'failed' RETURNING *`; only the first
+  request's `UPDATE` can match a `'failed'` row, so exactly one request
+  proceeds to redeliver and the loser's claim affects zero rows
+- **AND** the losing request returns HTTP 409 without invoking delivery — the
+  user is never sent the notification twice
+- **AND** because the claim (not delivery success) is what leaves `'failed'`
+  status, a delivery-adjacent failure after the claim — including
+  `_finalize_manual_action`'s own metadata-merge write failing after a
+  successful send — cannot leave the row re-claimable: a subsequent client
+  retry after such a failure also observes a non-`'failed'` status and gets
+  HTTP 409, never a second real send. The tradeoff is a possible orphaned row
+  (already `status = 'read'` but missing its `retried_to`/`escalated_to`
+  forward-link marker) rather than a duplicate delivery
+
+#### Scenario: Manual escalate re-sends on the owner's alternate channel
+- **WHEN** `POST /api/notifications/{id}/escalate` is called on a failed
+  `telegram` or `email` notification
+- **THEN** the backend swaps to the other channel (`telegram` -> `email`,
+  `email` -> `telegram`) and resolves the owner's contact for it via
+  `resolve_owner_entity_info` — the same owner-credential lookup the
+  dashboard's connector actions already use for owner-directed delivery
+- **AND** HTTP 422 is returned, without attempting delivery, when the
+  channel is neither `telegram` nor `email` (no alternate-channel resolver
+  is wired for other channels), or when the owner has no contact configured
+  for the alternate channel
+- **AND** on success the original notification is flipped to `status =
+  'read'` with a `metadata.escalated_to` marker, following the same
+  forward-link and ledger-recording contract as manual retry, and
+  `effective_status` reports `"escalated"`
 
 #### State Store
 | Method | Path | Purpose |

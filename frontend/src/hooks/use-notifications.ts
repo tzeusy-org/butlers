@@ -2,16 +2,19 @@
  * TanStack Query hooks for the notifications API.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   acknowledgeAllFailed,
+  escalateNotification,
   getButlerNotifications,
   getNotifications,
   getNotificationStats,
   markNotificationRead,
+  retryNotification,
 } from "@/api/index.ts";
 import type {
+  NotificationActionResult,
   NotificationParams,
   NotificationStatsParams,
   NotificationSummary,
@@ -107,5 +110,49 @@ export function useAcknowledgeAllFailed() {
     updateItems: (notifications) =>
       notifications.map((n) => (n.status === "failed" ? { ...n, status: "read" } : n)),
     invalidateQueryKeys: [...NOTIFICATION_LIST_PREFIXES, ["notification-stats"]],
+  });
+}
+
+/**
+ * Manually re-attempt delivery of a failed notification, right now, on the
+ * same channel (HONEST-PENDING: this triggers a real, possibly-slow send —
+ * no optimistic "sent" before the backend confirms it). Invalidates the list
+ * and stats caches on settle so both the retried row's new "retried" chip
+ * and the new attempt's own row appear.
+ */
+export function useRetryNotification() {
+  const queryClient = useQueryClient();
+  return useMutation<NotificationActionResult | undefined, unknown, string>({
+    mutationFn: async (notificationId: string) => {
+      const resp = await retryNotification(notificationId);
+      return resp.data;
+    },
+    onSettled: () => {
+      for (const prefix of NOTIFICATION_LIST_PREFIXES) {
+        void queryClient.invalidateQueries({ queryKey: prefix });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["notification-stats"] });
+    },
+  });
+}
+
+/**
+ * Re-attempt a failed notification on the owner's alternate channel
+ * (telegram<->email). Same HONEST-PENDING/invalidate-on-settle contract as
+ * {@link useRetryNotification}.
+ */
+export function useEscalateNotification() {
+  const queryClient = useQueryClient();
+  return useMutation<NotificationActionResult | undefined, unknown, string>({
+    mutationFn: async (notificationId: string) => {
+      const resp = await escalateNotification(notificationId);
+      return resp.data;
+    },
+    onSettled: () => {
+      for (const prefix of NOTIFICATION_LIST_PREFIXES) {
+        void queryClient.invalidateQueries({ queryKey: prefix });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["notification-stats"] });
+    },
   });
 }

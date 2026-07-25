@@ -36,8 +36,24 @@ export interface NotificationFeedProps {
    * route it through the same mutation while keeping the affordance distinct.
    */
   onDismiss?: (notificationId: string) => void;
+  /**
+   * Called when the user clicks "Retry" on a failed notification row —
+   * re-sends on the same channel right now (bu-ep4ks.4). Only offered when
+   * `displayStatus === "failed"`; a row that has already been retried or
+   * escalated shows its outcome chip instead.
+   */
+  onRetry?: (notificationId: string) => void;
+  /**
+   * Called when the user clicks "Escalate" on a failed notification row —
+   * re-sends on the owner's alternate channel (telegram<->email).
+   */
+  onEscalate?: (notificationId: string) => void;
   /** Set of notification IDs currently being acknowledged (shows loading state). */
   pendingAckIds?: Set<string>;
+  /** Set of notification IDs currently being retried (shows loading state). */
+  pendingRetryIds?: Set<string>;
+  /** Set of notification IDs currently being escalated (shows loading state). */
+  pendingEscalateIds?: Set<string>;
   /**
    * Id of the row currently selected by j/k list-triage (bu-qvnce.11 slice
    * 4, `useListTriage` on NotificationsPage). Highlights that row and gives
@@ -74,6 +90,12 @@ function statusBadge(status: string) {
       return (
         <Badge variant="outline" className="border-[var(--amber)] text-[var(--amber-text)]">
           Retried
+        </Badge>
+      );
+    case "escalated":
+      return (
+        <Badge variant="outline" className="border-primary text-primary">
+          Escalated
         </Badge>
       );
     case "pending":
@@ -139,12 +161,16 @@ export function NotificationFeed({
   hasActiveFilters = false,
   onMarkRead,
   onDismiss,
+  onRetry,
+  onEscalate,
   pendingAckIds,
+  pendingRetryIds,
+  pendingEscalateIds,
   selectedId = null,
   sourceUnavailable = false,
 }: NotificationFeedProps) {
   // Triage controls render whenever a triage handler is wired.
-  const hasTriageControls = Boolean(onMarkRead || onDismiss);
+  const hasTriageControls = Boolean(onMarkRead || onDismiss || onRetry || onEscalate);
   if (isLoading) {
     return <NotificationTableSkeleton hasTriageControls={hasTriageControls} />;
   }
@@ -185,6 +211,8 @@ export function NotificationFeed({
         {notifications.map((n) => {
           const displayStatus = n.effective_status ?? n.status;
           const isPending = pendingAckIds?.has(n.id) ?? false;
+          const isRetryPending = pendingRetryIds?.has(n.id) ?? false;
+          const isEscalatePending = pendingEscalateIds?.has(n.id) ?? false;
           const showError = displayStatus === "failed" && Boolean(n.error);
           // The message/error is clipped in the collapsed preview and exposed in
           // full only via mouse-hover title= today; offer the keyboard-reachable
@@ -273,6 +301,30 @@ export function NotificationFeed({
                     nothing left to triage, so it shows no control. */}
                 {displayStatus !== "read" && (
                   <div className="flex items-center justify-end gap-2">
+                    {/* Retry/Escalate only apply to a genuine failure -- a
+                        "sent" row has nothing to re-deliver. */}
+                    {displayStatus === "failed" && onRetry && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={isRetryPending || isEscalatePending}
+                        onClick={() => onRetry(n.id)}
+                        className="text-xs"
+                      >
+                        {isRetryPending ? "Retrying…" : "Retry"}
+                      </Button>
+                    )}
+                    {displayStatus === "failed" && onEscalate && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={isRetryPending || isEscalatePending}
+                        onClick={() => onEscalate(n.id)}
+                        className="text-xs"
+                      >
+                        {isEscalatePending ? "Escalating…" : "Escalate"}
+                      </Button>
+                    )}
                     {onMarkRead && (
                       <Button
                         variant="ghost"

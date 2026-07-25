@@ -69,3 +69,22 @@ class AckFailedResult(BaseModel):
 
     acknowledged: int
     """Number of notifications that were flipped from ``failed`` to ``read``."""
+
+
+class NotificationActionResult(BaseModel):
+    """Result of a manual retry or escalate action on a failed notification.
+
+    The original notification is flipped to ``status='read'`` (it has been
+    acted upon) and its ``metadata`` records the link forward to the new
+    attempt. The new attempt is delivered as an independent notification row
+    with its own real ``sent``/``failed`` outcome -- a retry that itself fails
+    is not silently swallowed, it shows up as its own actionable row.
+    """
+
+    original_notification_id: UUID
+    new_notification_id: UUID | None
+    channel: str
+    """Channel the retry/escalate attempt was delivered on."""
+    status: str
+    """Outcome of the new attempt: ``sent`` or ``failed``."""
+    error: str | None = None

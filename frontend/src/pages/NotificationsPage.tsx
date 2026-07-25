@@ -26,9 +26,11 @@ import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { useDebounce } from "@/hooks/use-debounce";
 import {
   useAcknowledgeAllFailed,
+  useEscalateNotification,
   useMarkNotificationRead,
   useNotifications,
   useNotificationStats,
+  useRetryNotification,
 } from "@/hooks/use-notifications";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +71,7 @@ export const STATUS_OPTIONS = [
   { value: "pending", label: "Pending" },
   { value: "read", label: "Read" },
   { value: "retried", label: "Retried" },
+  { value: "escalated", label: "Escalated" },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -156,6 +159,10 @@ export default function NotificationsPage() {
   const hasPendingButlerFilter = debouncedButler !== filters.butler;
   // Track which notification IDs are pending individual acks for UX feedback
   const [pendingAckIds, setPendingAckIds] = useState<Set<string>>(new Set());
+  const [pendingRetryIds, setPendingRetryIds] = useState<Set<string>>(new Set());
+  const [pendingEscalateIds, setPendingEscalateIds] = useState<Set<string>>(
+    new Set(),
+  );
 
   // Build API params from filter state
   const params: NotificationParams = {
@@ -197,8 +204,12 @@ export default function NotificationsPage() {
   // Mutation hooks
   const markReadMutation = useMarkNotificationRead();
   const ackAllMutation = useAcknowledgeAllFailed();
+  const retryMutation = useRetryNotification();
+  const escalateMutation = useEscalateNotification();
   const markRead = markReadMutation.mutate;
   const acknowledgeAll = ackAllMutation.mutate;
+  const retry = retryMutation.mutate;
+  const escalate = escalateMutation.mutate;
 
   const notifications = useMemo(
     () => notificationsResponse?.data ?? [],
@@ -275,6 +286,38 @@ export default function NotificationsPage() {
   // PATCH /{id}/read endpoint that sets status='read' for any status, so both
   // affordances route through the same mutation.
   const handleDismiss = handleMarkRead;
+
+  const handleRetry = useCallback(
+    (notificationId: string) => {
+      setPendingRetryIds((prev) => new Set(prev).add(notificationId));
+      retry(notificationId, {
+        onSettled: () => {
+          setPendingRetryIds((prev) => {
+            const next = new Set(prev);
+            next.delete(notificationId);
+            return next;
+          });
+        },
+      });
+    },
+    [retry],
+  );
+
+  const handleEscalate = useCallback(
+    (notificationId: string) => {
+      setPendingEscalateIds((prev) => new Set(prev).add(notificationId));
+      escalate(notificationId, {
+        onSettled: () => {
+          setPendingEscalateIds((prev) => {
+            const next = new Set(prev);
+            next.delete(notificationId);
+            return next;
+          });
+        },
+      });
+    },
+    [escalate],
+  );
 
   const handleAcknowledgeAll = useCallback(() => {
     acknowledgeAll();
@@ -524,7 +567,11 @@ export default function NotificationsPage() {
                 hasActiveFilters={hasActiveFilters}
                 onMarkRead={handleMarkRead}
                 onDismiss={handleDismiss}
+                onRetry={handleRetry}
+                onEscalate={handleEscalate}
                 pendingAckIds={pendingAckIds}
+                pendingRetryIds={pendingRetryIds}
+                pendingEscalateIds={pendingEscalateIds}
                 selectedId={selectedNotificationId}
                 sourceUnavailable={
                   notificationsResponse?.source_available === false
