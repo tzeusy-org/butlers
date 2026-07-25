@@ -60,6 +60,16 @@ vi.mock("react-router", async (importOriginal) => {
   };
 });
 
+// useApprovalMetrics (bu-p5sg6, callback-secret degraded banner) calls
+// useBusAwarePollInterval, which reads the real EventBusProvider context via
+// useContext -- invalid without a provider in this render tree. Stub the bus
+// as always "open" (same pattern as SpendPage.test.tsx / SessionStripeChart
+// .test.tsx), giving this page's other bus-aware hooks the reconciliation
+// cadence too.
+vi.mock("@/lib/event-bus", () => ({
+  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+}));
+
 // Mock the API module — we only need getApprovalsFlat + getApprovalsHistory +
 // getApprovalsPolicy for these tests. Others are stubs to satisfy imports.
 vi.mock("@/api/index.ts", () => ({
@@ -84,6 +94,9 @@ vi.mock("@/api/index.ts", () => ({
   getApprovalRuleSuggestions: vi.fn(),
   createApprovalRuleFromAction: vi.fn(),
   revokeApprovalRule: vi.fn(),
+  // Module-level callback-secret degraded note (bu-p5sg6) -- default stub,
+  // per-test overrides set callback_secret_configured explicitly.
+  getApprovalMetrics: vi.fn(),
 }));
 
 import {
@@ -94,6 +107,7 @@ import {
   dismissAutonomySuggestion,
   getApprovalDetail,
   getApprovalGatedTools,
+  getApprovalMetrics,
   getApprovalRuleSuggestions,
   getApprovalRules,
   getApprovalsFlat,
@@ -153,6 +167,25 @@ function makeEmptyPolicy() {
   });
 }
 
+// Minimal ApprovalMetrics fixture -- only callback_secret_configured varies
+// across the module-banner tests; the rest are filler zeros/defaults so the
+// shape matches the API contract.
+function makeMetrics(callbackSecretConfigured: boolean | null) {
+  return makeApiResponse({
+    total_pending: 0,
+    total_approved_today: 0,
+    total_rejected_today: 0,
+    total_auto_approved_today: 0,
+    total_expired_today: 0,
+    avg_decision_latency_seconds: null,
+    auto_approval_rate: 0,
+    rejection_rate: 0,
+    failure_count_today: 0,
+    active_rules_count: 0,
+    callback_secret_configured: callbackSecretConfigured,
+  });
+}
+
 function resetPageMocks() {
   vi.resetAllMocks();
   vi.mocked(getApprovalGatedTools).mockReturnValue(makeApiResponse([]) as AnyMock);
@@ -165,6 +198,10 @@ function resetPageMocks() {
         suggested_constraints: {},
       })) as AnyMock,
   );
+  // Undetermined by default (null) -- individual tests override to assert
+  // the false/true branches. null must render neither the degraded note nor
+  // a false all-clear.
+  vi.mocked(getApprovalMetrics).mockReturnValue(makeMetrics(null) as AnyMock);
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +571,169 @@ describe("ApprovalsPage — load-more", () => {
 
     // Verify that getApprovalsFlat was called with the bumped limit.
     expect(getApprovalsFlat).toHaveBeenCalledWith("waiting", 200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Failed-push indicator + callback-secret degraded banner (bu-p5sg6)
+//
+// PR #3567 (bu-mda0r) added push_outcome / push_failed / callback_secret_
+// configured to the backend but never wired the frontend -- the owner could
+// not SEE in the dashboard that a parked approval was never delivered. These
+// tests cover: (1) a push_failed pending row renders a clear, distinct
+// indicator; a healthy pending row does not, (2) the module-level degraded
+// banner renders only on a genuine callback_secret_configured===false, never
+// on true or the undetermined null.
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5sg6)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    resetPageMocks();
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
+
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderPage() {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            <ApprovalsPage />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("renders the failed-push indicator on a push_failed pending row", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([
+        { ...makeSummary("a1", "send_email"), push_outcome: "failed", push_failed: true },
+      ]) as AnyMock,
+    );
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    const badge = container.querySelector('[data-testid="rail-item-push-failed"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toContain("Owner not notified");
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-push-failed="true"]'),
+    ).not.toBeNull();
+  });
+
+  it("does NOT render the failed-push indicator on a healthy pending row", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([
+        { ...makeSummary("a1", "send_email"), push_outcome: "delivered", push_failed: false },
+      ]) as AnyMock,
+    );
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="rail-item-push-failed"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-push-failed]'),
+    ).toBeNull();
+  });
+
+  it("renders the dossier push-failed alert when the selected approval's push failed", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([
+        { ...makeSummary("a1", "send_email"), push_outcome: "failed", push_failed: true },
+      ]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        ...(await makePendingDetail("a1")).data,
+        push_outcome: "failed",
+        push_failed: true,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() =>
+      container.querySelector('[data-testid="dossier-push-failed"]') !== null,
+    );
+
+    const alertEl = container.querySelector('[data-testid="dossier-push-failed"]');
+    expect(alertEl).not.toBeNull();
+    expect(alertEl?.textContent).toContain("never notified");
+  });
+
+  it("renders the callback-secret degraded banner when callback_secret_configured is false", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalMetrics).mockReturnValue(makeMetrics(false) as AnyMock);
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    const banner = container.querySelector(
+      '[data-testid="approvals-callback-secret-degraded"]',
+    );
+    expect(banner).not.toBeNull();
+    expect(banner?.textContent).toContain("callback secret not configured");
+  });
+
+  it("does NOT render the callback-secret banner when callback_secret_configured is true", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalMetrics).mockReturnValue(makeMetrics(true) as AnyMock);
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    expect(
+      container.querySelector('[data-testid="approvals-callback-secret-degraded"]'),
+    ).toBeNull();
+  });
+
+  it("does NOT render the callback-secret banner when callback_secret_configured is undetermined (null)", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalMetrics).mockReturnValue(makeMetrics(null) as AnyMock);
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    expect(
+      container.querySelector('[data-testid="approvals-callback-secret-degraded"]'),
+    ).toBeNull();
   });
 });
 

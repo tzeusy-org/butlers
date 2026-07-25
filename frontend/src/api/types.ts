@@ -3062,6 +3062,12 @@ export type ApprovalReversibility =
   | "reversible"
   | "compensable"
   | "irreversible";
+export type ApprovalPushOutcome =
+  | "delivered"
+  | "deferred"
+  | "collapsed"
+  | "duplicate"
+  | "failed";
 
 export interface ApprovalAction {
   id: string;
@@ -3090,6 +3096,18 @@ export interface ApprovalAction {
    * response as success without checking this.
    */
   dispatched?: boolean;
+  /**
+   * Terminal outcome of the owner-facing approval push for this action, or
+   * null if no push was ever attempted.
+   */
+  push_outcome?: ApprovalPushOutcome | null;
+  /**
+   * True when this action is still pending AND the owner was never actually
+   * notified (push_outcome is null or "failed"). Never fabricate calm: a
+   * true value here means this row must not render as an ordinary pending
+   * action (bu-mda0r, bu-p5sg6).
+   */
+  push_failed?: boolean;
 }
 
 /**
@@ -3118,6 +3136,16 @@ export interface ApprovalSummary {
   why?: string | null;
   blast_radius?: ApprovalBlastRadius | null;
   reversibility?: ApprovalReversibility | null;
+  /**
+   * Terminal outcome of the owner-facing approval push for this action, or
+   * null if no push was ever attempted.
+   */
+  push_outcome?: ApprovalPushOutcome | null;
+  /**
+   * True when this action is still pending AND the owner was never actually
+   * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
+   */
+  push_failed?: boolean;
 }
 
 /**
@@ -3191,6 +3219,16 @@ export interface ApprovalDetail {
    * Empty when the action references no known entities or resolution failed.
    */
   referenced_entities?: EntityRef[];
+  /**
+   * Terminal outcome of the owner-facing approval push for this action, or
+   * null if no push was ever attempted.
+   */
+  push_outcome?: ApprovalPushOutcome | null;
+  /**
+   * True when this action is still pending AND the owner was never actually
+   * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
+   */
+  push_failed?: boolean;
 }
 
 /** Quiet-hours policy singleton. */
@@ -3252,6 +3290,14 @@ export interface ApprovalMetrics {
   rejection_rate: number;
   failure_count_today: number;
   active_rules_count: number;
+  /**
+   * Whether APPROVAL_CALLBACK_SECRET resolves via the shared credential
+   * store. False means every approval push is structurally disabled (each
+   * attempt will resolve "failed") until it is provisioned. Null when this
+   * could not be determined (e.g. no approvals pool available) -- never
+   * treat null as a false all-clear.
+   */
+  callback_secret_configured?: boolean | null;
 }
 
 export interface ApprovalActionParams {

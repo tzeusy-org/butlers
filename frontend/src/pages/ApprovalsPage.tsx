@@ -50,6 +50,7 @@ import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
 import {
+  useApprovalMetrics,
   useAutonomySuggestions,
   useConfirmAutonomySuggestion,
   useDismissAutonomySuggestion,
@@ -340,6 +341,11 @@ function RailItem({
 }) {
   const countdown = expiryCountdown(summary.expires_at);
   const isPending = !!pendingVerb;
+  // Owner was never actually notified about this pending decision -- a
+  // genuine finding (not infra-unreachable), so it renders red like the
+  // attention ledger's flagged-source banner, never as an ordinary amber
+  // pending row (bu-mda0r, bu-p5sg6).
+  const pushFailed = summary.push_failed === true;
   const handleClick = useCallback(() => {
     if (isPending) {
       onUndo?.(summary.id);
@@ -353,11 +359,13 @@ function RailItem({
       data-testid="rail-item"
       data-approval-id={summary.id}
       data-pending-verb={pendingVerb ?? undefined}
+      data-push-failed={pushFailed || undefined}
       aria-label={isPending ? `${pendingVerbLabel(pendingVerb!)} Undo` : undefined}
       className={[
         "w-full text-left px-3 py-3 border-b border-border last:border-b-0",
         "transition-colors focus-visible:outline focus-visible:outline-2",
         "focus-visible:outline-offset-[-2px] focus-visible:outline-foreground/40",
+        pushFailed && !isPending ? "border-l-2 border-l-[var(--red)] bg-[var(--red)]/[0.04]" : "",
         isPending
           ? "opacity-50 hover:opacity-70"
           : selected
@@ -378,6 +386,18 @@ function RailItem({
       <div className="mt-0.5 text-sm font-medium truncate">
         {summary.tool_name.replace(/_/g, " ")}
       </div>
+      {pushFailed && (
+        <div
+          data-testid="rail-item-push-failed"
+          className="mt-0.5 flex items-center gap-1 text-[10px] font-mono uppercase tracking-wide text-[var(--red-text)]"
+        >
+          <span
+            className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--red)]"
+            aria-hidden="true"
+          />
+          Owner not notified · push failed
+        </div>
+      )}
       {summary.why && (
         <div className="mt-0.5 text-xs text-muted-foreground line-clamp-1 italic">
           {summary.why}
@@ -683,6 +703,23 @@ function Dossier({
           >
             {statusLabel(detail.status)}
           </span>
+          {detail.push_failed && (
+            <div
+              role="alert"
+              data-testid="dossier-push-failed"
+              className="mt-2 flex items-center gap-2 rounded-sm border border-[var(--red)]/40 bg-[var(--red)]/10 px-3 py-2 text-xs text-[var(--red-text)]"
+            >
+              <span
+                className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--red)]"
+                aria-hidden="true"
+              />
+              <span className="font-medium">
+                Owner was never notified: the approval push
+                {detail.push_outcome ? ` ${detail.push_outcome}` : " was never attempted"}.
+                This is not an ordinary pending action.
+              </span>
+            </div>
+          )}
         </div>
 
         {(detail.decided_by || detail.decided_at) && (
@@ -1479,6 +1516,15 @@ export default function ApprovalsPage() {
     queryFn: () => getApprovalsHistory(undefined, 30),
   });
 
+  // Module-level degraded signal (bu-p5sg6): callback_secret_configured
+  // false means every approval push is structurally disabled -- the queue
+  // may look calm while the owner is never actually being notified. null
+  // means undetermined (e.g. no approvals pool answered) and must not read
+  // as either a false all-clear or a hard error; only render the note on a
+  // genuine false.
+  const { data: metricsData } = useApprovalMetrics();
+  const callbackSecretConfigured = metricsData?.data?.callback_secret_configured;
+
   // `pending` may still carry stale cached rows from before a failed refetch
   // (react-query keeps the last good `data` around). QueryBoundary below
   // checks `isError` BEFORE `isEmpty`, so a fetch failure with zero cached
@@ -1742,6 +1788,19 @@ export default function ApprovalsPage() {
           historySourcesDegraded={historySourcesDegraded}
         />
       </div>
+
+      {/* Callback secret degraded note (bu-p5sg6) -- only a genuine false
+          renders this; undetermined (null) stays silent rather than
+          fabricating either calm or alarm. */}
+      {callbackSecretConfigured === false && (
+        <div className="px-6 py-3 border-b border-border shrink-0">
+          <SourceDegradedNote
+            label="Approval pushes"
+            detail="disabled, callback secret not configured. The owner will not be notified of new pending approvals."
+            testId="approvals-callback-secret-degraded"
+          />
+        </div>
+      )}
 
       {/* Autonomy suggestions — rendered above the two-pane body when pending
           promotion/demotion suggestions exist (returns null otherwise). */}
