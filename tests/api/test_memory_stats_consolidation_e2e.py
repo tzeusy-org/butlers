@@ -157,12 +157,26 @@ async def test_consolidation_run_populates_stats_fields(provisioned_postgres_poo
 async def test_stats_reports_complete_expired_retention_observation(
     provisioned_postgres_pool,
 ) -> None:
-    """The read-only stats route uses the cleanup population, not a new expiry rule."""
+    """The read-only stats route counts exactly the cleanup population.
+
+    ``expired_retained_episodes`` reports genuine un-reaped lag — the same
+    consolidation-aware set ``run_episode_cleanup`` would delete — so an episode
+    the sweep is deliberately still holding (expired but ``pending`` within the
+    grace window) must NOT be counted, even though it is retention-eligible.
+    """
     async with provisioned_postgres_pool() as pool:
         await pool.execute(_STATS_SCHEMA_SQL)
         await pool.execute(
-            "INSERT INTO episodes (expires_at) VALUES "
-            "(now() - interval '1 hour'), (now() + interval '1 hour'), (NULL)"
+            "INSERT INTO episodes (consolidation_status, expires_at) VALUES "
+            # Reapable expired lag (non-pending) → counted.
+            "('consolidated', now() - interval '1 hour'), "
+            "('failed', now() - interval '1 hour'), "
+            # Expired but pending within grace → intentionally retained, NOT counted.
+            "('pending', now() - interval '1 hour'), "
+            # Not expired → eligible but not retained.
+            "('consolidated', now() + interval '1 hour'), "
+            # No TTL → not eligible.
+            "('pending', NULL)"
         )
         db = _SinglePoolDB("memory", pool)
 
@@ -171,16 +185,16 @@ async def test_stats_reports_complete_expired_retention_observation(
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["data"]["expired_retained_episodes"] == 1
-    assert body["data"]["retention_eligible_episodes"] == 2
+    assert body["data"]["expired_retained_episodes"] == 2
+    assert body["data"]["retention_eligible_episodes"] == 4
     assert body["data"]["expired_retained_ratio"] == 0.5
     assert body["meta"]["retention_status"] == "degraded"
     assert body["meta"]["retention_sources"] == [
         {
             "source_butler": "memory",
             "source_schema": None,
-            "expired_retained_episodes": 1,
-            "retention_eligible_episodes": 2,
+            "expired_retained_episodes": 2,
+            "retention_eligible_episodes": 4,
             "expired_retained_ratio": 0.5,
         }
     ]

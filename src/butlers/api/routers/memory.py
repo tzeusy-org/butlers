@@ -449,14 +449,22 @@ async def get_memory_stats(
     async def _retention_for_pool(butler_name: str, pool: object) -> RetentionSourceObservation:
         """Observe the cleanup population without changing it.
 
-        Keep this predicate byte-for-byte aligned with ``run_episode_cleanup``:
-        the observation is deliberately a read-only deadman, never a cleanup
+        ``expired_retained_episodes`` counts exactly the episodes the cleanup
+        sweep is *allowed* to delete but has not yet reaped — genuine cleanup
+        lag — by reusing ``run_episode_cleanup``'s own reap predicate verbatim
+        (:data:`REAPABLE_EXPIRED_EPISODE_SQL`). An expired episode the sweep is
+        deliberately still holding for consolidation (pending, within the grace
+        window) is therefore *not* counted, so a healthy steady state never
+        reads as a degraded source. This is a read-only deadman, never a cleanup
         trigger or an alternate definition of expiry.
         """
+        from butlers.modules.memory.consolidation import REAPABLE_EXPIRED_EPISODE_SQL
+
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         row = await pool.fetchrow(
             f"SELECT "
-            f"count(*) FILTER (WHERE expires_at < now()) AS expired_retained_episodes, "
+            f"count(*) FILTER (WHERE {REAPABLE_EXPIRED_EPISODE_SQL}) "
+            f"    AS expired_retained_episodes, "
             f"count(*) FILTER (WHERE expires_at IS NOT NULL) AS retention_eligible_episodes "
             f"FROM {episodes_relation}"
         )

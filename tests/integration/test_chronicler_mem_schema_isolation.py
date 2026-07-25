@@ -216,10 +216,14 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
         assert {"facts_checked", "rules_checked"} <= set(decay_result)
 
         # Cleanup requires the memory table's ``expires_at`` column, which the
-        # domain's independently-owned ``chronicler.episodes`` table lacks.
+        # domain's independently-owned ``chronicler.episodes`` table lacks. The
+        # episode is seeded ``consolidated`` so it is reapable: the sweep is
+        # consolidation-aware and protects an expired-but-``pending`` episode
+        # within its grace window (see run_episode_cleanup).
         await memory_pool.execute(
-            "INSERT INTO episodes (butler, content, expires_at) "
-            "VALUES ('chronicler', 'expired scheduled maintenance episode', now() - interval '1 day')"
+            "INSERT INTO episodes (butler, content, consolidation_status, expires_at) "
+            "VALUES ('chronicler', 'expired scheduled maintenance episode', "
+            "'consolidated', now() - interval '1 day')"
         )
         cleanup_result = await _dispatch_chronicler_memory_job(
             pool=domain_db.pool,

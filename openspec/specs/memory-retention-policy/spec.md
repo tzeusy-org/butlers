@@ -230,6 +230,57 @@ the schedule is never conditional on a `butler.toml` block, only its cadence.
 - **AND** episodes in `consolidation_status = 'dead_letter'` MUST NOT be
   reclaimed by this or any consolidation pass
 
+### Requirement: Episode cleanup is bounded and consolidation-aware
+
+The `memory_episode_cleanup` sweep deletes expired episodes, but it MUST NOT
+delete an expired episode that is still awaiting consolidation until a grace
+window has elapsed, and it MUST bound every delete so a large accumulated
+backlog drains incrementally rather than in one table-wide-locking statement.
+The set of episodes the sweep is permitted to delete for expiry — expired AND
+(`consolidation_status <> 'pending'` OR expired beyond the grace window) — is
+the single source of truth for what counts as un-reaped cleanup lag; the
+dashboard's expired-retention observation MUST report against that same
+predicate so an episode the sweep is deliberately still holding is never
+surfaced as a degraded/lagging source.
+
+Because the sweep can no longer trigger an unbounded destructive catch-up, a
+disabled `memory_episode_cleanup` schedule is recovered like any other
+module-default schedule per "TOML overrides cadence, not existence" above — it
+is not exempt from module-default recovery.
+
+#### Scenario: Expired-but-pending episode is protected within the grace window
+
+- **WHEN** episode cleanup runs and an episode is past its `expires_at` but is
+  still in `consolidation_status = 'pending'` and within the grace window
+- **THEN** the episode MUST NOT be deleted (a lagging consolidator must never
+  lose an un-extracted observation)
+- **AND** an expired non-pending episode (`consolidated`, `failed`, or
+  `dead_letter`) MUST be deleted as soon as it expires
+
+#### Scenario: Stuck pending episode is reaped past the grace window
+
+- **WHEN** an episode is `consolidation_status = 'pending'` and expired beyond
+  the grace window
+- **THEN** episode cleanup MUST delete it, so the episodes table cannot grow
+  without bound behind a broken or disabled consolidator
+
+#### Scenario: Cleanup drains a large backlog in bounded batches
+
+- **WHEN** episode cleanup runs against a butler holding far more reapable
+  expired episodes than one batch
+- **THEN** it MUST delete them in bounded per-statement batches (never one
+  unbounded delete), draining the full reapable backlog across the run
+
+#### Scenario: A disabled episode-cleanup schedule is recovered
+
+- **WHEN** a butler's `memory_episode_cleanup` schedule is a disabled TOML
+  orphan (its `[[butler.schedule]]` block was removed) and the memory module's
+  `on_startup` runs
+- **THEN** the schedule MUST be re-enabled as a module-registered default,
+  exactly as any other maintenance schedule would be
+- **AND** an operator's explicit DB-level disable (`source='db'`) MUST still be
+  left untouched
+
 ### Requirement: Live-safe local HNSW observability
 
 The `memory_ann_observability` scheduled job SHALL report aggregate health for

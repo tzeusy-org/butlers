@@ -689,8 +689,10 @@ async def test_module_default_recovery_attributes_same_name_across_butler_schema
         await admin.close()
 
 
-async def test_module_default_recovery_leaves_active_toml_db_disable_and_cleanup_fenced(pool):
-    """Only disabled TOML orphans are recoverable; cleanup and DB ownership are hard fences."""
+async def test_module_default_recovery_reclaims_episode_cleanup_but_fences_db_ownership(pool):
+    """A disabled TOML orphan is recovered — including ``memory_episode_cleanup``,
+    now that ``run_episode_cleanup`` is bounded + consolidation-aware and can no
+    longer trigger a destructive catch-up. DB ownership remains a hard fence."""
     from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
 
     active_name = "memory_decay_sweep_active_toml"
@@ -726,6 +728,7 @@ async def test_module_default_recovery_leaves_active_toml_db_disable_and_cleanup
         "UPDATE scheduled_tasks SET enabled = false WHERE name = $1",
         db_name,
     )
+    # Drop the TOML block for cleanup_name → it becomes a disabled TOML orphan.
     await sync_schedules(
         pool,
         [
@@ -736,11 +739,6 @@ async def test_module_default_recovery_leaves_active_toml_db_disable_and_cleanup
                 "job_name": "memory_decay_sweep",
             }
         ],
-    )
-    await pool.execute(
-        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE name = $1",
-        cleanup_name,
-        _past(),
     )
 
     await ensure_module_default_schedule(
@@ -775,28 +773,27 @@ async def test_module_default_recovery_leaves_active_toml_db_disable_and_cleanup
             [active_name, db_name, cleanup_name],
         )
     }
+    # active TOML schedule was never disabled → recovery is a no-op, stays TOML.
     assert rows[active_name]["source"] == "toml"
     assert rows[active_name]["enabled"] is True
+    # DB-owned (operator-disabled) schedule is fenced: never auto-recovered.
     assert rows[db_name]["source"] == "db"
     assert rows[db_name]["enabled"] is False
-    assert rows[cleanup_name]["source"] == "toml"
-    assert rows[cleanup_name]["enabled"] is False
-    from butlers.core.scheduler import tick
+    # episode_cleanup, a disabled TOML orphan, is now reclaimed like any default.
+    assert rows[cleanup_name]["source"] == "db"
+    assert rows[cleanup_name]["enabled"] is True
 
-    dispatch = _Dispatch()
-    assert await tick(pool, dispatch) == 0
-    assert dispatch.calls == []
-    assert (
-        await pool.fetchval(
-            """
-            SELECT count(*) FROM public.audit_log
-            WHERE action = 'scheduler.module_default_recovered'
-              AND target = ANY($1::text[])
-            """,
-            [f"schedule:{active_name}", f"schedule:{db_name}", f"schedule:{cleanup_name}"],
-        )
-        == 0
+    # Exactly one recovery audit row — for episode_cleanup. The active TOML row
+    # and the fenced DB-owned row must not emit a recovery event.
+    audited = await pool.fetch(
+        """
+        SELECT target FROM public.audit_log
+        WHERE action = 'scheduler.module_default_recovered'
+          AND target = ANY($1::text[])
+        """,
+        [f"schedule:{active_name}", f"schedule:{db_name}", f"schedule:{cleanup_name}"],
     )
+    assert [r["target"] for r in audited] == [f"schedule:{cleanup_name}"]
 
 
 async def test_sync_default_timezone_pins_cron_to_local(pool):

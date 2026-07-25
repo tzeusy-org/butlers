@@ -906,9 +906,11 @@ async def ensure_module_default_schedule(
     - **Reclaiming a removed TOML block**: only a disabled
       ``source='toml'`` row is reclaimed. The conditional transition and its
       canonical audit entry share one transaction. A DB-owned row remains
-      operator-owned even when disabled. ``memory_episode_cleanup`` is
-      explicitly excluded from this recovery path to prevent generic startup
-      handling from becoming a destructive catch-up mechanism.
+      operator-owned even when disabled. ``memory_episode_cleanup`` is reclaimed
+      like any other module default: its ``run_episode_cleanup`` handler deletes
+      only *reapable* expired episodes (never an un-consolidated observation
+      inside the grace window) in bounded batches, so recovering it can no
+      longer trigger a destructive unbounded catch-up delete.
 
     Raises ``ValueError`` for an invalid cron expression. Does not validate
     or touch the cron of a pre-existing row — cron validation only applies
@@ -940,7 +942,7 @@ async def ensure_module_default_schedule(
                 complexity,
                 next_run_at,
             )
-            if inserted is not None or name == "memory_episode_cleanup":
+            if inserted is not None:
                 return
 
             recovered = await connection.fetchrow(

@@ -70,6 +70,40 @@ LEASE_DURATION_SECONDS: int = 300  # 5 minutes
 BASE_RETRY_SECONDS: int = 60  # 1 minute base for exponential backoff
 DEFAULT_BATCH_SIZE: int = 100
 
+# Episode-cleanup safety knobs.
+#
+# EPISODE_CLEANUP_BATCH_SIZE bounds every DELETE the sweep issues so re-enabling
+# cleanup on a butler with a large accumulated backlog drains incrementally
+# rather than in one table-wide-locking statement (mirrors the bounded-backlog
+# contract the consolidation backfill follows).
+#
+# EPISODE_PENDING_GRACE_DAYS protects an expired episode that is still
+# ``consolidation_status = 'pending'`` from deletion until it is this many days
+# past ``expires_at`` — a lagging consolidator must never lose an un-extracted
+# observation. A permanently-stuck pending episode is still reaped once past the
+# grace window, so the table can never grow without bound.
+EPISODE_CLEANUP_BATCH_SIZE: int = 1000
+EPISODE_PENDING_GRACE_DAYS: int = 7
+
+# Boolean SQL predicate (no bind parameters) selecting exactly the episodes the
+# cleanup sweep is allowed to delete for expiry: expired AND (already out of
+# consolidation, OR pending but past the grace window). The grace-days value is
+# an int constant interpolated below — never external input, so this is not an
+# injection surface.
+#
+# This predicate is shared verbatim by ``run_episode_cleanup`` (what the sweep
+# deletes) and the dashboard's expired-retention deadman in
+# ``butlers.api.routers.memory`` (what it reports as un-reaped). Keeping them
+# byte-for-byte aligned is a hard contract: the "expired retained" metric must
+# count only episodes the sweep *should* have deleted but has not (genuine
+# cleanup lag), never an episode the sweep is deliberately still holding for
+# consolidation — otherwise a healthy steady state reads as a degraded source.
+REAPABLE_EXPIRED_EPISODE_SQL: str = (
+    "expires_at < now() "
+    "AND (consolidation_status <> 'pending' "
+    f"OR expires_at < now() - make_interval(days => {EPISODE_PENDING_GRACE_DAYS}))"
+)
+
 
 def _worker_id() -> str:
     """Generate a stable-ish worker identifier from hostname + PID."""
@@ -479,20 +513,34 @@ async def run_episode_cleanup(
     pool: Pool,
     *,
     max_entries: int = 10000,
+    batch_size: int = EPISODE_CLEANUP_BATCH_SIZE,
 ) -> dict[str, Any]:
     """Delete expired episodes and enforce a capacity limit.
 
     The cleanup proceeds in three steps:
 
-    1. **Expire** — delete episodes whose ``expires_at`` is in the past.
+    1. **Expire** — delete expired episodes that are safe to reap, in bounded
+       batches. Deletion is *consolidation-aware* (see
+       :data:`REAPABLE_EXPIRED_EPISODE_SQL`): an expired episode still in
+       ``consolidation_status = 'pending'`` is retained until it is
+       :data:`EPISODE_PENDING_GRACE_DAYS` past its ``expires_at`` so a lagging
+       consolidator never loses an un-extracted observation, while a
+       permanently-stuck pending episode is still reaped once past the grace
+       window. Non-pending expired episodes are deleted as soon as they expire.
     2. **Count** — check how many episodes remain.
     3. **Capacity** — if the remaining count exceeds *max_entries*, delete the
        oldest *consolidated* episodes until the count is within budget.
-       Unconsolidated episodes that have not expired are never deleted.
+       Unconsolidated episodes are never deleted for capacity.
+
+    Every ``DELETE`` runs in bounded *batch_size* chunks rather than one
+    unbounded statement, so re-enabling the job on a butler with a large
+    accumulated backlog drains incrementally without a single table-wide lock.
 
     Args:
         pool: asyncpg connection pool for the memory database.
         max_entries: Maximum number of episodes to retain (default 10 000).
+        batch_size: Maximum rows deleted per statement (default
+            :data:`EPISODE_CLEANUP_BATCH_SIZE`).
 
     Returns:
         A stats dict with keys:
@@ -500,18 +548,31 @@ async def run_episode_cleanup(
         - ``capacity_deleted``: consolidated episodes removed for capacity.
         - ``remaining``: total episodes still in the table.
     """
-    # Step 1: delete expired episodes
-    expired_result = await pool.execute("DELETE FROM episodes WHERE expires_at < now()")
-    # asyncpg returns e.g. "DELETE 42"
-    expired_deleted = int(expired_result.split()[-1])
+    # Step 1: delete reapable expired episodes in bounded, consolidation-aware
+    # batches. asyncpg returns e.g. "DELETE 42".
+    expired_deleted = 0
+    while True:
+        expired_result = await pool.execute(
+            "DELETE FROM episodes WHERE id IN ("
+            "  SELECT id FROM episodes "
+            f"  WHERE {REAPABLE_EXPIRED_EPISODE_SQL} "
+            "  LIMIT $1"
+            ")",
+            batch_size,
+        )
+        deleted = int(expired_result.split()[-1])
+        expired_deleted += deleted
+        if deleted < batch_size:
+            break
 
     # Step 2: count remaining episodes
     remaining = await pool.fetchval("SELECT COUNT(*) FROM episodes")
 
-    # Step 3: enforce capacity limit
+    # Step 3: enforce capacity limit, deleting the oldest consolidated episodes
+    # in bounded batches until within budget (or no more consolidated rows).
     capacity_deleted = 0
-    if remaining > max_entries:
-        excess = remaining - max_entries
+    while remaining > max_entries:
+        excess = min(remaining - max_entries, batch_size)
         cap_result = await pool.execute(
             "DELETE FROM episodes WHERE id IN ("
             "  SELECT id FROM episodes "
@@ -521,8 +582,12 @@ async def run_episode_cleanup(
             ")",
             excess,
         )
-        capacity_deleted = int(cap_result.split()[-1])
-        remaining -= capacity_deleted
+        deleted = int(cap_result.split()[-1])
+        capacity_deleted += deleted
+        remaining -= deleted
+        # No further consolidated rows to reclaim — stop rather than spin.
+        if deleted < excess:
+            break
 
     return {
         "expired_deleted": expired_deleted,
