@@ -107,6 +107,19 @@ When a fact or rule is stored or updated, the storage layer SHALL write a corres
 - **AND** the canonical fact/rule in the butler's local schema MUST still be committed successfully
 - **AND** the catalog entry can be reconciled later by a background repair job
 
+#### Scenario: Confidential/pii facts and rules are excluded from the catalog at write time
+
+- **WHEN** `store_fact` or `store_rule` would write a catalog entry for a fact
+  or rule whose `sensitivity` is `pii` or `confidential`
+- **THEN** the catalog write MUST be skipped entirely (no row is inserted or
+  updated); this is a write-time exclusion, not merely a read-time filter
+- **AND** the canonical fact/rule in the butler's local schema MUST still be
+  committed successfully (the exclusion only withholds the discovery-index
+  entry)
+- **AND** a fact or rule whose `sensitivity` is `normal` or unset MUST still
+  be cataloged as before, with its `sensitivity` value stored on the catalog
+  row
+
 ---
 
 ### Requirement: Atomic catalog disownment on forget, expiry, and purge
@@ -305,6 +318,34 @@ requiring a copy-pasted `butler.toml` schedule block per butler.
   `[[butler.schedule]]` block referencing the backfill job
 - **THEN** the backfill job MUST still be scheduled and dispatchable for that
   butler
+
+#### Scenario: Backfill excludes confidential/pii facts and rules
+
+- **WHEN** the backfill runs against a butler's schema containing an active
+  fact or non-forgotten rule whose `sensitivity` is `pii` or `confidential`
+  and which has no corresponding `public.memory_catalog` row
+- **THEN** it MUST NOT receive a `public.memory_catalog` row, matching the
+  write-time exclusion applied to the live write-behind path, so the backfill
+  job can never re-introduce a row the write-time guard (or the one-off purge
+  migration cleaning up rows written before this exclusion existed) keeps out
+
+#### Scenario: The one-off purge recovers rows whose recorded sensitivity cannot be trusted
+
+- **WHEN** the one-off purge migration (core_183) runs against
+  `public.memory_catalog` rows written before write-time exclusion existed
+- **THEN** it MUST delete rows whose own `sensitivity` column is already
+  `pii`/`confidential`
+- **AND** it MUST ALSO delete rows whose `sensitivity` column is NULL but
+  whose canonical source fact/rule (resolved via the catalog row's
+  `source_schema`/`source_table`/`source_id` provenance) is genuinely
+  `pii`/`confidential` -- a catalog row's own `sensitivity` column cannot be
+  trusted in isolation, because the live write-behind path historically
+  dropped it entirely (every such row landed with `sensitivity IS NULL`
+  regardless of the source's true classification, so `COALESCE(sensitivity,
+  'normal')` alone would silently leave those rows in the catalog)
+- **AND** a NULL-sensitivity row whose canonical source is genuinely `normal`
+  (or whose source no longer exists to check) MUST NOT be deleted -- the
+  purge recovers provably-sensitive rows, it is not a blanket NULL purge
 
 ---
 

@@ -52,6 +52,49 @@ EmbeddingEngine = _embedding_mod.EmbeddingEngine
 preprocess_text = _search_mod.preprocess_text
 tsvector_sql = _search_mod.tsvector_sql
 
+# ---------------------------------------------------------------------------
+# Discovery-catalog write-time sensitivity exclusion (defense-in-depth)
+# ---------------------------------------------------------------------------
+#
+# Confidential/PII facts and rules must never be written to the shared,
+# cross-butler-readable public.memory_catalog table at all -- on top of
+# search.py's existing read-time authorization ceiling (which already
+# defaults to sensitivity='normal'-only and only relaxes for callers that
+# explicitly authorize higher levels via max_sensitivity), write-time
+# exclusion means an under-authorized reader can never even race a purge.
+#
+# This vocabulary is intentionally DUPLICATED from
+# search.py::CATALOG_SENSITIVITY_LEVELS / DEFAULT_CATALOG_SENSITIVITY rather
+# than imported: a static import of search.py -- even just for these two
+# constants -- would make search.py's pgvector distance operators reachable
+# from every transitive importer of this module, including relationship's
+# deterministic-Finder endpoint guardrail (see the identical rationale next
+# to `_search_helper.search_catalog` in `__init__.py`, and
+# `roster/relationship/tests/test_finder_no_llm_transitive.py`).
+# `tests/modules/memory/test_catalog_write_time_sensitivity.py` pins parity
+# against the real search.py constants so the two cannot silently drift.
+_CATALOG_SENSITIVITY_LEVELS: tuple[str, ...] = ("normal", "pii", "confidential")
+_DEFAULT_CATALOG_SENSITIVITY = "normal"
+
+# Levels strictly above the default read ceiling: never written to the
+# catalog at all, regardless of who is doing the writing.
+CATALOG_WRITE_EXCLUDED_SENSITIVITIES: frozenset[str] = frozenset(
+    _CATALOG_SENSITIVITY_LEVELS[
+        _CATALOG_SENSITIVITY_LEVELS.index(_DEFAULT_CATALOG_SENSITIVITY) + 1 :
+    ]
+)
+
+
+def _is_catalog_write_excluded(sensitivity: str | None) -> bool:
+    """Return True if *sensitivity* must be excluded from public.memory_catalog writes.
+
+    NULL/absent is treated as ``'normal'`` (never excluded), mirroring the
+    ``COALESCE(sensitivity, 'normal')`` semantics the read-time ceiling
+    already applies in ``search.py``.
+    """
+    return (sensitivity or _DEFAULT_CATALOG_SENSITIVITY) in CATALOG_WRITE_EXCLUDED_SENSITIVITIES
+
+
 # Default episode time-to-live.
 _DEFAULT_EPISODE_TTL_DAYS = 7
 _RUNTIME_PROVENANCE_PLACEHOLDER = "[runtime session provenance placeholder]"
@@ -316,7 +359,21 @@ async def _upsert_catalog(
     importance, retention_class, sensitivity, object_entity_id) map directly
     to the spec-required columns added in core_024.  They are all nullable so
     the call remains backward-compatible before that migration is applied.
+
+    Write-time sensitivity exclusion (defense-in-depth): confidential/pii
+    rows are never written to the catalog at all -- see
+    ``CATALOG_WRITE_EXCLUDED_SENSITIVITIES`` above. This is a silent no-op,
+    matching the best-effort/non-blocking contract of this write-behind path.
     """
+    if _is_catalog_write_excluded(sensitivity):
+        logger.debug(
+            "memory_catalog: write-behind skipped for %s.%s/%s (sensitivity=%r excluded)",
+            source_schema,
+            source_table,
+            source_id,
+            sensitivity,
+        )
+        return
     sql = f"""
         INSERT INTO public.memory_catalog (
             source_schema, source_table, source_id,
@@ -478,6 +535,12 @@ async def _backfill_facts_to_catalog(
     (server-side, via ``INSERT ... SELECT``) rather than recomputing it with
     an ``EmbeddingEngine`` — the original write already generated the vector,
     and this keeps the backfill job free of any embedding-engine dependency.
+
+    Write-time sensitivity exclusion applies here too: confidential/pii facts
+    are never backfilled into the catalog (``CATALOG_WRITE_EXCLUDED_SENSITIVITIES``),
+    matching the live write-behind guard in ``_upsert_catalog`` -- otherwise this
+    job would keep re-introducing rows the write-time guard and the one-off
+    purge migration both exist to keep out.
     """
     search_text_expr = "(c.subject || ' ' || c.predicate || ' ' || c.content)"
     sql = f"""
@@ -488,6 +551,7 @@ async def _backfill_facts_to_catalog(
                    f.source_butler, f.tenant_id
             FROM facts f
             WHERE f.validity IN ('active', 'fading')
+              AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($3))
               AND NOT EXISTS (
                   SELECT 1 FROM public.memory_catalog mc
                   WHERE mc.source_schema = $1
@@ -520,7 +584,9 @@ async def _backfill_facts_to_catalog(
         )
         SELECT COUNT(*) FROM inserted
     """
-    count = await pool.fetchval(sql, source_schema, limit)
+    count = await pool.fetchval(
+        sql, source_schema, limit, list(CATALOG_WRITE_EXCLUDED_SENSITIVITIES)
+    )
     return int(count or 0)
 
 
@@ -534,6 +600,10 @@ async def _backfill_rules_to_catalog(
 
     Excludes rules soft-deleted via ``memory_forget`` (``metadata.forgotten =
     true``) — those should not surface as discoverable cross-butler knowledge.
+
+    Write-time sensitivity exclusion applies here too, matching
+    ``_backfill_facts_to_catalog`` and the live write-behind guard in
+    ``_upsert_catalog`` -- see ``CATALOG_WRITE_EXCLUDED_SENSITIVITIES``.
     """
     sql = f"""
         WITH candidates AS (
@@ -541,6 +611,7 @@ async def _backfill_rules_to_catalog(
                    r.tenant_id, r.source_butler
             FROM rules r
             WHERE COALESCE(r.metadata ->> 'forgotten', 'false') <> 'true'
+              AND NOT (COALESCE(r.sensitivity, 'normal') = ANY($3))
               AND NOT EXISTS (
                   SELECT 1 FROM public.memory_catalog mc
                   WHERE mc.source_schema = $1
@@ -570,7 +641,9 @@ async def _backfill_rules_to_catalog(
         )
         SELECT COUNT(*) FROM inserted
     """
-    count = await pool.fetchval(sql, source_schema, limit)
+    count = await pool.fetchval(
+        sql, source_schema, limit, list(CATALOG_WRITE_EXCLUDED_SENSITIVITIES)
+    )
     return int(count or 0)
 
 
@@ -1849,12 +1922,21 @@ async def store_fact(
                 search_text=search_text,
                 memory_type="fact",
                 # Spec-required enrichment fields from the source fact row.
+                # NOTE: retention_class/sensitivity were missing here from the
+                # original core_024 wiring (bu-195i, commit 08d38a54f) -- the
+                # catalog row's sensitivity was always NULL regardless of the
+                # fact's real classification, silently defeating both the
+                # read-time ceiling in search.py (everything coalesced to
+                # 'normal') and this write-time exclusion guard. Fixed as
+                # part of bu-6gsmh.
                 title=f"{subject} {predicate}",
                 predicate=predicate,
                 scope=scope,
                 valid_at=valid_at,
                 confidence=1.0,
                 importance=importance,
+                retention_class=retention_class,
+                sensitivity=sensitivity,
                 object_entity_id=object_entity_id,
             )
         except Exception:
@@ -2010,8 +2092,13 @@ async def store_rule(
                 search_text=search_text,
                 memory_type="rule",
                 # Spec-required enrichment fields from the source rule row.
+                # NOTE: retention_class/sensitivity were missing here too
+                # (same gap as store_fact's write-behind call, see comment
+                # there) -- fixed as part of bu-6gsmh.
                 title=content[:100],
                 scope=scope,
+                retention_class=retention_class,
+                sensitivity=sensitivity,
             )
         except Exception:
             logger.warning(

@@ -1529,3 +1529,160 @@ def test_supersession_over_fading_fact_still_works(memory_migrated_db: str) -> N
     assert res["old_validity"] == "superseded", "fading fact should be superseded, not left live"
     assert res["new_validity"] == "active"
     assert res["supersedes_id"] == res["old_id"], "new fact must link to the superseded fading fact"
+
+
+# ---------------------------------------------------------------------------
+# bu-6gsmh: write-time sensitivity exclusion for public.memory_catalog
+# ---------------------------------------------------------------------------
+
+
+async def _write_behind_catalog_row(db_url: str, *, sensitivity: str) -> dict:
+    """Store a fact and a rule with the given sensitivity, write-behind ON.
+
+    Returns whether each landed a public.memory_catalog row, and what
+    sensitivity value that row carries (proves the write-behind call now
+    actually forwards sensitivity -- it silently dropped it before bu-6gsmh).
+    """
+    from butlers.modules.memory.storage import store_fact, store_rule
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        unique = uuid.uuid4().hex[:8]
+
+        fact = await store_fact(
+            pool,
+            subject=f"sens_subj_{unique}",
+            predicate=f"sens_pred_{unique}",
+            content="secret value" if sensitivity != "normal" else "ordinary value",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            sensitivity=sensitivity,
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+        rule_id = await store_rule(
+            pool,
+            content=f"sensitivity rule marker {unique}",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            sensitivity=sensitivity,
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+
+        fact_row = await pool.fetchrow(
+            "SELECT sensitivity FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact["id"],
+        )
+        rule_row = await pool.fetchrow(
+            "SELECT sensitivity FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            rule_id,
+        )
+        return {
+            "fact_cataloged": fact_row is not None,
+            "fact_sensitivity": fact_row["sensitivity"] if fact_row else None,
+            "rule_cataloged": rule_row is not None,
+            "rule_sensitivity": rule_row["sensitivity"] if rule_row else None,
+        }
+    finally:
+        await pool.close()
+
+
+@pytest.mark.parametrize("sensitivity", ["pii", "confidential"])
+def test_write_behind_excludes_confidential_and_pii_from_catalog(
+    memory_migrated_db: str, sensitivity: str
+) -> None:
+    """store_fact/store_rule write-behind never catalogs pii/confidential rows.
+
+    Owner ruling (bu-6gsmh): defense-in-depth write-time exclusion on top of
+    the existing read-time authorization ceiling in search.py.
+    """
+    result = asyncio.run(_write_behind_catalog_row(memory_migrated_db, sensitivity=sensitivity))
+    assert result["fact_cataloged"] is False, result
+    assert result["rule_cataloged"] is False, result
+
+
+def test_write_behind_catalogs_normal_sensitivity_and_forwards_the_value(
+    memory_migrated_db: str,
+) -> None:
+    """A 'normal'-sensitivity fact/rule is still cataloged, and the catalog row's
+    sensitivity column now actually reflects it (regression guard for the
+    dropped retention_class/sensitivity kwargs discovered while implementing
+    bu-6gsmh -- store_fact/store_rule's write-behind call never forwarded
+    them, so every catalog row's sensitivity was silently NULL)."""
+    result = asyncio.run(_write_behind_catalog_row(memory_migrated_db, sensitivity="normal"))
+    assert result["fact_cataloged"] is True, result
+    assert result["fact_sensitivity"] == "normal", result
+    assert result["rule_cataloged"] is True, result
+    assert result["rule_sensitivity"] == "normal", result
+
+
+async def _backfill_excludes_sensitive(db_url: str) -> dict:
+    """Store confidential/pii facts+rules WITHOUT write-behind (simulating a
+    pre-existing backlog), then confirm run_memory_catalog_backfill refuses to
+    backfill them -- the guard must hold for the backfill path too, or the
+    backfill job would keep re-introducing rows the write-time guard and the
+    core_183 purge migration both exist to keep out."""
+    from butlers.modules.memory.storage import run_memory_catalog_backfill, store_fact, store_rule
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        unique = uuid.uuid4().hex[:8]
+
+        confidential_fact = await store_fact(
+            pool,
+            subject=f"backfill_sens_subj_{unique}",
+            predicate=f"backfill_sens_pred_{unique}",
+            content="secret backlog value",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            sensitivity="confidential",
+            enable_shared_catalog=False,
+        )
+        pii_rule_id = await store_rule(
+            pool,
+            content=f"pii backlog rule marker {unique}",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            sensitivity="pii",
+            enable_shared_catalog=False,
+        )
+
+        await run_memory_catalog_backfill(pool, source_schema="public", batch_size=200)
+
+        fact_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            confidential_fact["id"],
+        )
+        rule_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            pii_rule_id,
+        )
+        return {
+            "confidential_fact_cataloged": fact_row is not None,
+            "pii_rule_cataloged": rule_row is not None,
+        }
+    finally:
+        await pool.close()
+
+
+def test_backfill_excludes_confidential_and_pii_facts_and_rules(memory_migrated_db: str) -> None:
+    """run_memory_catalog_backfill must not backfill pii/confidential rows,
+    matching the live write-behind guard (bu-6gsmh)."""
+    result = asyncio.run(_backfill_excludes_sensitive(memory_migrated_db))
+    assert result["confidential_fact_cataloged"] is False, result
+    assert result["pii_rule_cataloged"] is False, result
