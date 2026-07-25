@@ -391,20 +391,24 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
 
 
 class _NullEmbeddingEngine:
-    """Sentinel embedding engine that returns zero vectors for deterministic jobs.
+    """Sentinel embedding engine that returns fixed-size zero vectors.
 
     Matches the synchronous ``EmbeddingEngine.embed(text: str) -> list[float]``
-    interface expected by ``store_fact``.  Returns an empty vector so that
-    vector-similarity searches simply skip these facts.
+    interface expected by ``store_fact``.  The memory schema requires 384
+    dimensions even when deterministic jobs use a semantic-search placeholder.
     """
 
     model_name = "deterministic-null"
+    _DIM = 384
 
     def embed(self, text: str) -> list[float]:  # noqa: ARG002
-        return []
+        return [0.0] * self._DIM
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] * self._DIM for _ in texts]
 
 
-class _NoOpEmbeddingEngine:
+class _NoOpEmbeddingEngine(_NullEmbeddingEngine):
     """Minimal embedding engine stub for deterministic jobs.
 
     Returns zero vectors so that store_fact() can be called without loading
@@ -413,13 +417,6 @@ class _NoOpEmbeddingEngine:
     """
 
     model_name = "deterministic-noop"
-    _DIM = 384
-
-    def embed(self, text: str) -> list[float]:  # noqa: ARG002
-        return [0.0] * self._DIM
-
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        return [[0.0] * self._DIM for _ in texts]
 
 
 # ---------------------------------------------------------------------------

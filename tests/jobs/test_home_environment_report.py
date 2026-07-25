@@ -269,7 +269,9 @@ async def test_run_environment_report_no_sensors_and_normal_run():
         result3 = await run_environment_report(pool_crit, None)
     assert result3["deviations_found"] >= 1
     mock_store.assert_awaited()
-    assert mock_store.await_args.kwargs["source_butler"] == "home"
+    store_kwargs = mock_store.await_args.kwargs
+    assert store_kwargs["source_butler"] == "home"
+    assert store_kwargs["embedding_engine"].embed("comfort deviation") == [0.0] * 384
 
 
 # ---------------------------------------------------------------------------
@@ -278,12 +280,13 @@ async def test_run_environment_report_no_sensors_and_normal_run():
 
 
 def test_null_embedding_engine():
-    """_NullEmbeddingEngine exposes the fields store_fact reads from real engines."""
+    """_NullEmbeddingEngine provides the fixed-width vector required by the memory schema."""
     import inspect
 
     eng = _NullEmbeddingEngine()
     assert eng.model_name == "deterministic-null"
-    assert eng.embed("hello") == [] and eng.embed("") == []
+    assert eng.embed("hello") == [0.0] * 384
+    assert eng.embed_batch(["hello", "world"]) == [[0.0] * 384, [0.0] * 384]
     assert not inspect.iscoroutinefunction(eng.embed)
 
 
