@@ -28,6 +28,12 @@ The dashboard SHALL maintain a single, append-only audit log used by every mutat
 - **AND** the calling endpoint propagates the exception; the HTTP response is `503 Service Unavailable` with body `{error: "audit_unavailable"}`
 - **AND** because the transaction includes both the state change and the audit append, the state change is rolled back automatically.
 
+#### Scenario: Fire-and-forget telemetry shim is exempt from propagation
+- **WHEN** a best-effort telemetry call site invokes the `log_audit_entry()` (`butlers.api.routers.audit`) or `write_audit_entry()` (`butlers.core.audit`) compatibility shim rather than calling `audit.append()` directly inside the mutation's own transaction, for example `schedules.py`, `state.py`, `calendar_workspace.py`, `butlers.py` (dashboard butler-run/tick/trigger logging), and the daemon-side `core/audit.py` callers in `telegram.py`, `email.py`, `calendar.py`, and `spawner.py`
+- **THEN** the shim SHALL catch `AuditTableNotAvailableError` and log-and-continue (best-effort, non-blocking) rather than propagate it, and SHALL NOT raise `503 Service Unavailable` to the caller
+- **AND** this is a deliberate carve-out, not an instance of the "audit.append raises on missing table" scenario above: these call sites emit secondary, non-transactional telemetry about an operation that has already succeeded or is orthogonal to the audited state change (e.g. a scheduler tick, a butler-run log line, an inbound-message record), so a missing audit table must never block or roll back the primary operation
+- **AND** this carve-out is distinct from the canonical mutation-endpoint path: the state-changing endpoint that owns the transaction (e.g. permissions, model priority, spend rules, webhook CRUD, approval verbs, data ops) SHALL still call `audit.append()` directly inside its own transaction and propagate `AuditTableNotAvailableError` per the scenario above; a shim call site MUST NOT be introduced as a substitute for that direct, propagating call.
+
 ### Requirement: Audit Log Read API
 The dashboard SHALL expose paginated read access to the audit log.
 
