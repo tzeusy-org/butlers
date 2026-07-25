@@ -158,6 +158,11 @@ export default function DashboardPage() {
     since: notificationSince,
     until: notificationUntil,
   });
+  // The Sessions KPI door (bu-27dxl.8.3) reuses this SAME captured 24-hour
+  // instant rather than deriving its own -- one window, not a fresh
+  // Date.now() recomputed between this render and the eventual click.
+  const sessionsSince = notificationSince;
+  const sessionsUntil = notificationUntil;
   const qaSummaryQuery = useQaSummary();
   const timelineQuery = useTimeline({ limit: 5 });
   // Monthly spend-ceiling fleet-halt state (bu-7o89u.3): the drawer itself
@@ -489,6 +494,8 @@ export default function DashboardPage() {
             pendingApprovalsAvailable={
               !approvalMetricsQuery.isError && approvalMetricsQuery.data != null
             }
+            sessionsSince={sessionsSince}
+            sessionsUntil={sessionsUntil}
           />
         </div>
 

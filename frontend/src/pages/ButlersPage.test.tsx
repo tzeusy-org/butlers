@@ -216,6 +216,11 @@ describe("ButlersPage — stale-fetch banner", () => {
 
 describe("ButlersPage — grid render", () => {
   it("renders a cell per row with name and detail-page link", () => {
+    // StatusBoardCell always nests the activity-stripe door (bu-27dxl.8.3),
+    // so the root tile renders as div[role=link] rather than a real <a> — the
+    // destination route is exercised imperatively (see StatusBoardCell's own
+    // unit tests); here we assert the cell is wired to the right butler via
+    // its data-butler-name identity attribute.
     const rows = [
       makeRow({ name: "health" }),
       makeRow({ name: "finance", type: "butler" }),
@@ -224,8 +229,8 @@ describe("ButlersPage — grid render", () => {
     const html = renderPage();
     expect(html).toContain("health");
     expect(html).toContain("finance");
-    expect(html).toContain('href="/butlers/health"');
-    expect(html).toContain('href="/butlers/finance"');
+    expect(html).toContain('data-butler-name="health"');
+    expect(html).toContain('data-butler-name="finance"');
   });
 
   it("renders all 12 canonical butlers", () => {
@@ -238,7 +243,7 @@ describe("ButlersPage — grid render", () => {
     const html = renderPage();
     for (const name of names) {
       expect(html).toContain(name);
-      expect(html).toContain(`href="/butlers/${name}"`);
+      expect(html).toContain(`data-butler-name="${name}"`);
     }
   });
 
@@ -247,7 +252,7 @@ describe("ButlersPage — grid render", () => {
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
     const html = renderPage();
     expect(html).toContain("future-butler");
-    expect(html).toContain('href="/butlers/future-butler"');
+    expect(html).toContain('data-butler-name="future-butler"');
   });
 
   it("renders description when present", () => {

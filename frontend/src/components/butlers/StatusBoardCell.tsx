@@ -11,9 +11,15 @@
 //   - 24h activity stripe pinned at the bottom
 //
 // Click-to-restore: when activity is 'quarantined' OR eligibility is 'stale',
-// the activity chip becomes a <button> that calls onRestore(name). The outer
-// container switches from <a> to <div role="link"> to avoid nesting interactive
-// content inside a link (invalid HTML per spec).
+// the activity chip becomes a <button> that calls onRestore(name).
+//
+// Activity door (bu-27dxl.8.3): the 24h activity stripe is always its own
+// nested <button> that opens the butler's Activity tab
+// (/butlers/{name}?tab=activity), independent of the root tile's Overview
+// destination. Because the cell always nests at least this one interactive
+// control, the outer container always renders as <div role="link"> (never a
+// real <a>) to avoid nesting interactive content inside a link (invalid HTML
+// per spec).
 //
 // Doctrine:
 //   - NO inline style except inside ActivityStripe (its own typed-primitive exemption).
@@ -151,10 +157,13 @@ export interface StatusBoardCellProps {
 /**
  * Card-like grid tile for a single butler in the status-board grid.
  *
- * When the cell is restorable (quarantined or stale eligibility) and onRestore
- * is provided, the outer container switches from <a> to <div role="link"> so
- * that the restore <button> is not nested inside interactive content (invalid
- * HTML per spec). Navigation is handled via onClick and onKeyDown on the div.
+ * The outer container always renders as <div role="link"> (never a real <a>)
+ * because the cell always nests the activity-stripe door <button>, plus the
+ * restore <button> on restorable (quarantined/stale) rows — nesting either
+ * inside interactive content is invalid HTML per spec. Root-tile navigation
+ * (Overview) is handled via onClick/onKeyDown on the div; the nested activity
+ * button opens the Activity tab instead, stopping propagation so a click on
+ * it never also fires the root's navigation.
  *
  * @example
  *   <StatusBoardCell row={row} onRestore={(name) => setEligibility(name, 'active')} />
@@ -190,6 +199,7 @@ export function StatusBoardCell({
   // react-router Link/navigate handle the path prefix automatically.
   const navigate = useNavigate()
   const routePath = `/butlers/${name}`
+  const activityTabPath = `${routePath}?tab=activity`
 
   // Use the same formatRelativeCompact helper that <Time mode="relative-compact">
   // renders so screen-reader users get the same truthful relative label.
@@ -317,10 +327,26 @@ export function StatusBoardCell({
         />
       </div>
 
-      {/* 24h activity stripe — pinned bottom. The right-side caption swaps from
-          "past 24 h" to the "open →" hover affordance so the click target hint
-          never overlaps the stripe bars below. */}
-      <div className="mt-auto pt-4">
+      {/* 24h activity stripe — pinned bottom, its own nested door to the
+          butler's Activity tab (bu-27dxl.8.3). A sparse/loading/errored
+          stripe stays reachable (no completeness claim implied by the click
+          target itself) -- only the visible content differs. This is a real
+          <button>, not nested inside the outer <a>/<Link>, per the RowLink
+          "no anchor-in-anchor" contract: the outer container below always
+          renders as the accessible div[role=link] fallback so this control
+          is valid HTML. stopPropagation keeps a click here from also
+          triggering the outer tile's Overview navigation. The right-side
+          caption swaps from "past 24 h" to the "open →" hover affordance so
+          the click target hint never overlaps the stripe bars below. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          navigate(activityTabPath)
+        }}
+        aria-label={`Open ${name} activity`}
+        className="mt-auto block w-full appearance-none border-0 bg-transparent p-0 pt-4 text-left cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset rounded-sm"
+      >
         <div className="flex items-center justify-between mb-1">
           <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
             24H ACTIVITY
@@ -352,19 +378,24 @@ export function StatusBoardCell({
         ) : (
           <ActivityStripe counts={hourlyStripe} />
         )}
-      </div>
+      </button>
     </>
   )
 
   // bu-86c4c.16: RowLink supplies the shared navigating-row contract (real
   // <Link> normally; accessible div[role=link] + Enter/Space fallback when a
-  // restore chip is nested — see the primitive's own docs for why the
-  // fallback exists). Recomposed here so every status-board tile enforces
-  // the same pattern the JARVIS audit flagged as ad hoc per-component.
+  // nested interactive control is present — see the primitive's own docs for
+  // why the fallback exists). Every cell now nests the activity-stripe door
+  // (bu-27dxl.8.3, in addition to the restore chip on restorable rows), so
+  // the root always renders the div[role=link] fallback: nesting either
+  // nested control inside a real <a> would be invalid HTML
+  // (anchor-in-anchor / interactive-in-anchor). Root Enter/Space still
+  // activates Overview navigation via onActivate below -- unaffected by the
+  // nested button, which stops propagation on its own click.
   return (
     <RowLink
       to={routePath}
-      hasNestedInteractive={isRestorable && !!onRestore}
+      hasNestedInteractive
       onActivate={() => navigate(routePath)}
       aria-label={ariaLabel}
       className={containerClass}

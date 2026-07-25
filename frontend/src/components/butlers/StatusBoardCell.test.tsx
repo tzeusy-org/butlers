@@ -152,12 +152,17 @@ describe("StatusBoardCell: activity=quarantined", () => {
   })
 
   it("chip is not a button when onRestore is absent", () => {
+    // The cell still renders the unrelated activity-stripe door <button>
+    // (bu-27dxl.8.3), which comes after the KPI quartet in markup order --
+    // scope the assertion to everything up to "SESS 24H" (the chip's region)
+    // so it doesn't false-pass or false-fail on that unrelated button.
     const html = renderToStaticMarkup(
       <StatusBoardCell
         row={makeRow({ activity: "quarantined", cellTone: "red", eligibility: "quarantined" })}
       />,
     )
-    expect(html).not.toContain("<button")
+    const chipRegion = html.slice(0, html.indexOf("SESS 24H"))
+    expect(chipRegion).not.toContain("<button")
   })
 })
 
@@ -356,15 +361,81 @@ describe("StatusBoardCell: hover affordance", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Link href
+// Root tile navigation — div[role=link] fallback (bu-27dxl.8.3: every cell
+// nests the activity-stripe door, so the root is never a real <a>)
 // ---------------------------------------------------------------------------
 
-describe("StatusBoardCell: link href", () => {
-  it("links to /butlers/{name}", () => {
+describe("StatusBoardCell: root tile navigation", () => {
+  it("renders the root container as div[role=link], not a real anchor", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell row={makeRow({ name: "health" })} />,
     )
-    expect(html).toContain('href="/butlers/health"')
+    expect(html).toContain('role="link"')
+    expect(html).not.toMatch(/<a [^>]*>/)
+  })
+
+  it("clicking the root tile navigates to /butlers/{name} (Overview, no tab param)", () => {
+    mockNavigate.mockClear()
+    const { getByRole } = render(
+      <StatusBoardCell row={makeRow({ name: "health" })} />,
+    )
+    fireEvent.click(getByRole("link"))
+    expect(mockNavigate).toHaveBeenCalledWith("/butlers/health")
+  })
+
+  it("Enter on the focused root tile navigates to /butlers/{name}", () => {
+    mockNavigate.mockClear()
+    const { getByRole } = render(
+      <StatusBoardCell row={makeRow({ name: "health" })} />,
+    )
+    fireEvent.keyDown(getByRole("link"), { key: "Enter" })
+    expect(mockNavigate).toHaveBeenCalledWith("/butlers/health")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Activity stripe door (bu-27dxl.8.3)
+// ---------------------------------------------------------------------------
+
+describe("StatusBoardCell: activity stripe door", () => {
+  it("renders a nested <button> for the activity stripe", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ name: "health" })} />,
+    )
+    expect(html).toContain(`aria-label="Open health activity"`)
+  })
+
+  it("clicking the activity stripe navigates to /butlers/{name}?tab=activity", () => {
+    mockNavigate.mockClear()
+    const { getByRole } = render(
+      <StatusBoardCell row={makeRow({ name: "health" })} />,
+    )
+    fireEvent.click(getByRole("button", { name: "Open health activity" }))
+    expect(mockNavigate).toHaveBeenCalledWith("/butlers/health?tab=activity")
+  })
+
+  it("clicking the activity stripe does not also trigger the root tile's Overview navigation", () => {
+    mockNavigate.mockClear()
+    const { getByRole } = render(
+      <StatusBoardCell row={makeRow({ name: "health" })} />,
+    )
+    fireEvent.click(getByRole("button", { name: "Open health activity" }))
+    expect(mockNavigate).toHaveBeenCalledOnce()
+    expect(mockNavigate).toHaveBeenCalledWith("/butlers/health?tab=activity")
+  })
+
+  it("the activity stripe door is present even while loading", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ hourlyStripeLoading: true, name: "health" })} />,
+    )
+    expect(html).toContain(`aria-label="Open health activity"`)
+  })
+
+  it("the activity stripe door is present even on error (sparse data stays reachable)", () => {
+    const html = renderToStaticMarkup(
+      <StatusBoardCell row={makeRow({ hourlyStripeError: true, name: "health" })} />,
+    )
+    expect(html).toContain(`aria-label="Open health activity"`)
   })
 })
 
@@ -437,13 +508,13 @@ describe("StatusBoardCell: a11y", () => {
 
 describe("StatusBoardCell: no illegal inline style", () => {
   it("does not render style= on the container link element", () => {
-    // The outer <a> container must not have any inline style attribute.
+    // The outer div[role=link] container must not have any inline style attribute.
     const html = renderToStaticMarkup(
       <StatusBoardCell
         row={makeRow({ hourlyStripe: Array(24).fill(0) })}
       />,
     )
-    const linkMatch = html.match(/<a [^>]*>/)
+    const linkMatch = html.match(/<div role="link"[^>]*>/)
     expect(linkMatch).not.toBeNull()
     expect(linkMatch![0]).not.toContain("style=")
   })
@@ -475,7 +546,7 @@ describe("StatusBoardCell: no illegal inline style", () => {
     // ActivityStripe's intensity cell IS allowed to have style= (typed-primitive exemption).
     // But all cells outside ActivityStripe must not. We check the container-level elements
     // do not have style= by verifying the link itself has no style attribute.
-    const linkMatch = html.match(/<a [^>]*>/)
+    const linkMatch = html.match(/<div role="link"[^>]*>/)
     expect(linkMatch).not.toBeNull()
     expect(linkMatch![0]).not.toContain("style=")
   })
@@ -573,6 +644,8 @@ describe("StatusBoardCell: onRestore callback", () => {
   })
 
   it("clicking the restore chip invokes onRestore with the butler name", () => {
+    // Two buttons render per cell now (bu-27dxl.8.3 activity door + restore
+    // chip) — select the chip specifically by its visible label.
     const onRestore = vi.fn()
     const { getByRole } = render(
       <StatusBoardCell
@@ -580,7 +653,7 @@ describe("StatusBoardCell: onRestore callback", () => {
         onRestore={onRestore}
       />,
     )
-    const btn = getByRole("button")
+    const btn = getByRole("button", { name: "STALE" })
     fireEvent.click(btn)
     expect(onRestore).toHaveBeenCalledOnce()
     expect(onRestore).toHaveBeenCalledWith("finance")
@@ -594,7 +667,7 @@ describe("StatusBoardCell: onRestore callback", () => {
         onRestore={onRestore}
       />,
     )
-    const btn = getByRole("button")
+    const btn = getByRole("button", { name: "QUARANTINED" })
     fireEvent.click(btn)
     expect(onRestore).toHaveBeenCalledOnce()
     expect(onRestore).toHaveBeenCalledWith("qa")

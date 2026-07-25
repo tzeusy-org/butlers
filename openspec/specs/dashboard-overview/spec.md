@@ -277,6 +277,25 @@ tabular-numeric, and visually calm.
 - **THEN** cells backed by the failed source render an unavailable/error value
 - **AND** cells backed by the still-available source MAY continue rendering
 
+#### Scenario: KPI cells are doors to supported destinations only (bu-27dxl.8.3)
+
+- **WHEN** a KPI cell's backing value is available (including a genuine zero)
+- **THEN** the whole cell is a navigable door: `Total butlers` routes to
+  `/butlers`; `Healthy` routes to the SAME unfiltered `/butlers` board (no
+  `healthy`-only filter exists anywhere in the product) with an accessible
+  name that says so explicitly; `Sessions · 24h` routes to
+  `/sessions?since=<captured-since>&until=<captured-until>` using one 24-hour
+  window captured once per render, not a fresh instant recomputed between
+  render and click; `Pending approvals` routes to `/approvals`
+
+#### Scenario: Unavailable KPI cells never carry a door
+
+- **WHEN** a KPI cell renders its unavailable value (`—`, from loading, error,
+  or a degraded source)
+- **THEN** that cell has no href and is not a link, div[role=link], button, or
+  any other interactive control
+- **AND** a genuine zero value is unaffected by this rule and keeps its door
+
 ### Requirement: Operations Index
 
 The home page SHALL render a right-column `Operations` section summarizing the

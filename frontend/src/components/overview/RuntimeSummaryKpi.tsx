@@ -11,6 +11,22 @@ interface RuntimeSummaryKpiProps {
    */
   isError?: boolean;
   pendingApprovalsAvailable?: boolean;
+  /**
+   * Closed 24-hour window backing the Sessions door (bu-27dxl.8.3) — the
+   * SAME captured `since`/`until` instant the caller derived once for its
+   * render, not a fresh `Date.now()` recomputed at click time.
+   */
+  sessionsSince?: string;
+  sessionsUntil?: string;
+}
+
+/** Query-string door for the Sessions KPI cell, scoped to the one captured window. */
+function sessionsHref(since: string | undefined, until: string | undefined): string {
+  const params = new URLSearchParams();
+  if (since) params.set("since", since);
+  if (until) params.set("until", until);
+  const qs = params.toString();
+  return qs ? `/sessions?${qs}` : "/sessions";
 }
 
 export function RuntimeSummaryKpi({
@@ -18,26 +34,40 @@ export function RuntimeSummaryKpi({
   isLoading = false,
   isError = false,
   pendingApprovalsAvailable = true,
+  sessionsSince,
+  sessionsUntil,
 }: RuntimeSummaryKpiProps) {
   // Treat both the loading and error states as "no honest value yet": on error
   // the upstream butlers list is an empty fallback, so a literal 0 would lie.
+  // Dashes never carry a door -- only a genuine (possibly zero) value does.
   const unavailable = isLoading || isError;
+  const approvalsUnavailable = isLoading || !pendingApprovalsAvailable;
   const cells: React.ComponentProps<typeof KpiStrip>["cells"] = [
     {
       eyebrow: "Total butlers",
       value: unavailable ? "—" : kpis.totalButlers,
+      href: unavailable ? undefined : "/butlers",
     },
     {
       eyebrow: "Healthy",
       value: unavailable ? "—" : kpis.healthyButlers,
+      href: unavailable ? undefined : "/butlers",
+      // Honest label: there is no healthy-only filter on /butlers -- this
+      // door opens the same unfiltered fleet board as "Total butlers". No
+      // em-dash (design-language.md non-negotiable #6): use a colon instead.
+      ariaLabel: unavailable
+        ? undefined
+        : "Healthy butlers: opens the full unfiltered butler board",
     },
     {
       eyebrow: "Sessions · 24h",
       value: unavailable ? "—" : kpis.sessions24h,
+      href: unavailable ? undefined : sessionsHref(sessionsSince, sessionsUntil),
     },
     {
       eyebrow: "Pending approvals",
-      value: isLoading || !pendingApprovalsAvailable ? "—" : kpis.pendingApprovals,
+      value: approvalsUnavailable ? "—" : kpis.pendingApprovals,
+      href: approvalsUnavailable ? undefined : "/approvals",
     },
   ];
 

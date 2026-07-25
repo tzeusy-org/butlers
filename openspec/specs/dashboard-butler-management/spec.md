@@ -104,6 +104,23 @@ band composition addendum and visually in each cell's `ButlerMark` component.
   - A hover affordance (open arrow or equivalent) linking to the butler detail
     page
 
+#### Scenario: Activity stripe is its own nested door (bu-27dxl.8.3)
+
+- **WHEN** a butler cell renders
+- **THEN** the 24h activity stripe region (label + bars/skeleton/error) is a
+  nested `<button>`, keyboard-accessible and semantically valid HTML (never a
+  nested anchor), with an accessible name naming the butler and the activity
+  destination
+- **AND** activating it routes to `/butlers/<name>?tab=activity`, independent
+  of the root tile's own destination, and does not also trigger the root
+  tile's navigation (the click does not propagate to the root)
+- **AND** the root tile's own Enter/Space keyboard activation continues to
+  route to `/butlers/<name>` (Overview), unaffected by the nested control
+- **AND** this door remains present and reachable even while the stripe's
+  underlying data is loading or has errored -- a sparse/incomplete stripe
+  stays navigable, it just makes no claim of completeness in what it visually
+  shows
+
 #### Scenario: Activity verb derivation
 
 - **WHEN** a butler's board row is assembled by `GET /api/butlers/board`

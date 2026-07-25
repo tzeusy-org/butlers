@@ -368,7 +368,7 @@ describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
     renderPage();
 
     // Stale row: chip label is STALE (eligibility takes precedence over activity label).
-    const chip = screen.getByRole("button", { name: /stale/i });
+    const chip = screen.getByRole("button", { name: "STALE" });
     expect(chip).toBeDefined();
 
     clickAndCommitRestore(chip);
@@ -388,7 +388,7 @@ describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
 
     renderPage();
 
-    const chip = screen.getByRole("button", { name: /stale/i });
+    const chip = screen.getByRole("button", { name: "STALE" });
     fireEvent.click(chip);
 
     expect(locationHref).toBe("http://localhost/");
