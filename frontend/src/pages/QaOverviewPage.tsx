@@ -37,6 +37,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Time } from "@/components/ui/time";
@@ -565,6 +566,10 @@ export default function QaOverviewPage() {
   // carries them; the toolbar just never consumed them.
   const circuitBreaker = useQaCircuitBreaker();
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  // Force Patrol confirm (bu-ep4ks.11 — the safety envelope for consequential
+  // actions): this used to gate on a bare window.confirm, inconsistent with
+  // the fleet's AlertDialog everywhere else on this same page.
+  const [forcePatrolDialogOpen, setForcePatrolDialogOpen] = useState(false);
   const butlersQuery = useButlers();
   const cases = useQaCases({
     sev: severity === "all" ? undefined : severity,
@@ -605,7 +610,11 @@ export default function QaOverviewPage() {
 
   function handleForcePatrol() {
     if (forcePatrol.isPending) return;
-    if (!window.confirm("Trigger an immediate QA patrol cycle now?")) return;
+    setForcePatrolDialogOpen(true);
+  }
+
+  function confirmForcePatrol() {
+    if (forcePatrol.isPending) return;
     forcePatrol.mutate(undefined, {
       onSuccess: (res) => {
         // The endpoint returns HTTP 202 even when no patrol actually ran -- the
@@ -625,6 +634,7 @@ export default function QaOverviewPage() {
           `Force patrol failed: ${err instanceof Error ? err.message : "Unknown error"}`,
         );
       },
+      onSettled: () => setForcePatrolDialogOpen(false),
     });
   }
 
@@ -736,6 +746,22 @@ export default function QaOverviewPage() {
         attemptsAvailable={!circuitBreaker.isError}
         onConfirm={confirmResetCircuitBreaker}
         pending={resetCircuitBreaker.isPending}
+      />
+
+      <ConfirmDialog
+        open={forcePatrolDialogOpen}
+        onOpenChange={(open) => {
+          // Don't let a backdrop/Escape dismiss abandon an in-flight patrol dispatch.
+          if (forcePatrol.isPending) return;
+          setForcePatrolDialogOpen(open);
+        }}
+        title="Trigger an immediate QA patrol cycle now?"
+        description="Runs a new patrol cycle outside the normal schedule."
+        confirmLabel="Force patrol"
+        pendingLabel="Patrolling…"
+        pending={forcePatrol.isPending}
+        onConfirm={confirmForcePatrol}
+        testId="qa-force-patrol-dialog"
       />
 
       <PageHeader summary={summary} />

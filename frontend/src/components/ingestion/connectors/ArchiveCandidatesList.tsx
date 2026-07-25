@@ -18,14 +18,22 @@
  *   to the collapsed "archived" section and drops out of the fleet rollups.
  * - Each row also links to the connector detail route so its history stays
  *   reachable before a human decides to archive.
+ * - Archiving is reversible (bu-ep4ks.11 — the safety envelope for
+ *   consequential actions): a click schedules the archive UNDO_WINDOW_MS out
+ *   behind an "Undo" toast action, mirroring the undo-window pattern
+ *   ButlersPage's board established for restore (bu-86c4c.15), rather than
+ *   firing the mutation on click. The unarchive UI path back lives in
+ *   ArchivedConnectorsList.
  *
  * Spec: openspec/specs/dashboard-ingestion-dispatch-console/spec.md
  *       §"Archived Connector Identities" — archive review queue
  */
 
 import { Link } from 'react-router'
+import { toast } from 'sonner'
 import type { ConnectorSummary } from '@/api/types'
 import { useArchiveConnector } from '@/hooks/use-ingestion'
+import { UNDO_WINDOW_MS, useUndoWindow } from '@/hooks/use-undo-window'
 
 interface ArchiveCandidatesListProps {
   connectors: ConnectorSummary[]
@@ -48,6 +56,7 @@ function daysSince(iso: string | null | undefined): number | null {
  */
 export function ArchiveCandidatesList({ connectors }: ArchiveCandidatesListProps) {
   const archive = useArchiveConnector()
+  const archiveUndo = useUndoWindow('connector-archive')
 
   const candidates = connectors.filter((c) => c.archive_candidate)
   if (candidates.length === 0) return null
@@ -62,6 +71,21 @@ export function ArchiveCandidatesList({ connectors }: ArchiveCandidatesListProps
     archive.isPending && archive.variables
       ? `${archive.variables.connectorType}:${archive.variables.endpointIdentity}`
       : null
+
+  function handleArchive(connectorType: string, endpointIdentity: string, key: string) {
+    if (archiveUndo.isScheduled(key)) return
+
+    // archive.isError already renders the shared error banner below -- no
+    // separate toast needed for the fired-but-failed case.
+    archiveUndo.schedule(key, () => {
+      archive.mutate({ connectorType, endpointIdentity })
+    })
+
+    toast(`Archiving ${endpointIdentity}`, {
+      action: { label: 'Undo', onClick: () => archiveUndo.cancel(key) },
+      duration: UNDO_WINDOW_MS,
+    })
+  }
 
   return (
     <div data-testid="archive-candidates-section" className="mt-9">
@@ -88,7 +112,8 @@ export function ArchiveCandidatesList({ connectors }: ArchiveCandidatesListProps
             c.connector_type,
           )}/${encodeURIComponent(c.endpoint_identity)}`
           const offlineDays = daysSince(c.last_heartbeat_at)
-          const rowPending = pendingKey === key
+          const rowScheduled = archiveUndo.isScheduled(key)
+          const rowPending = pendingKey === key || rowScheduled
           return (
             <div
               key={key}
@@ -119,17 +144,12 @@ export function ArchiveCandidatesList({ connectors }: ArchiveCandidatesListProps
                 {offlineDays != null ? `offline ${offlineDays}d` : 'offline'} · superseded
               </span>
 
-              {/* One-click archive — reuses the audit-logged archive endpoint */}
+              {/* Archive — reversible via the undo-window toast (bu-ep4ks.11) */}
               <button
                 type="button"
                 data-testid={`archive-candidate-action-${key}`}
-                disabled={archive.isPending}
-                onClick={() =>
-                  archive.mutate({
-                    connectorType: c.connector_type,
-                    endpointIdentity: c.endpoint_identity,
-                  })
-                }
+                disabled={rowPending}
+                onClick={() => handleArchive(c.connector_type, c.endpoint_identity, key)}
                 className="font-mono text-[11px] border border-foreground px-3 py-1.5 hover:bg-foreground hover:text-background transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
               >
                 {rowPending ? 'archiving…' : 'archive'}

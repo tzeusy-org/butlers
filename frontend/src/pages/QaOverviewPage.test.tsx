@@ -690,10 +690,11 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
 describe("QaOverviewPage -- force-patrol toast honesty", () => {
   let container: HTMLDivElement;
   let root: Root;
-  let confirmSpy: AnyMock;
   // Captures the callbacks the page hands to forcePatrol.mutate() so the test
   // can drive onSuccess/onError with fabricated responses.
-  let mutateArgs: Array<[unknown, { onSuccess?: (r: unknown) => void; onError?: (e: unknown) => void }]>;
+  let mutateArgs: Array<
+    [unknown, { onSuccess?: (r: unknown) => void; onError?: (e: unknown) => void; onSettled?: () => void }]
+  >;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -725,7 +726,6 @@ describe("QaOverviewPage -- force-patrol toast honesty", () => {
     (useQaCase as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: false });
     (useQaCaseJournal as AnyMock).mockReturnValue({ data: undefined });
 
-    confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -743,19 +743,57 @@ describe("QaOverviewPage -- force-patrol toast honesty", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
-    confirmSpy.mockRestore();
   });
 
+  // Force Patrol now opens a ConfirmDialog instead of a bare window.confirm
+  // (bu-ep4ks.11) -- clicking the toolbar button alone must NOT fire the
+  // mutation; only the dialog's own confirm action does.
   function clickForcePatrol() {
     const btn = container.querySelector<HTMLButtonElement>('button[aria-label="Force patrol"]');
     expect(btn).not.toBeNull();
     act(() => {
       btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    // The page calls forcePatrol.mutate(undefined, { onSuccess, onError }).
+    expect(mutateArgs).toHaveLength(0);
+
+    const confirmBtn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="qa-force-patrol-dialog-confirm"]',
+    );
+    expect(confirmBtn).not.toBeNull();
+    act(() => {
+      confirmBtn?.click();
+    });
+    // The page calls forcePatrol.mutate(undefined, { onSuccess, onError, onSettled }).
     expect(mutateArgs).toHaveLength(1);
     return mutateArgs[0][1];
   }
+
+  it("opens a confirm dialog instead of firing on the first click (bu-ep4ks.11)", () => {
+    expect(
+      document.querySelector('[data-testid="qa-force-patrol-dialog"]'),
+    ).toBeNull();
+
+    const btn = container.querySelector<HTMLButtonElement>('button[aria-label="Force patrol"]');
+    act(() => {
+      btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mutateArgs).toHaveLength(0);
+    expect(
+      document.querySelector('[data-testid="qa-force-patrol-dialog"]'),
+    ).not.toBeNull();
+  });
+
+  it("closes the confirm dialog once the mutation settles", () => {
+    const opts = clickForcePatrol();
+    act(() => {
+      opts.onSettled?.();
+    });
+
+    expect(
+      document.querySelector('[data-testid="qa-force-patrol-dialog"]'),
+    ).toBeNull();
+  });
 
   it("warns (not success) when the response reports the patrol was NOT triggered", () => {
     const opts = clickForcePatrol();

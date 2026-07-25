@@ -304,6 +304,37 @@ const KEYDOWN_LISTENER_SELECTORS = [
   },
 ]
 
+// bu-ep4ks.11: ban bare window.confirm (and global confirm()) in the files
+// this bead migrated onto ConfirmDialog (components/ui/confirm-dialog.tsx).
+// window.confirm cannot show a pending state, cannot carry evidence, and
+// visually diverges from the fleet's AlertDialog everywhere else.
+//
+// Scoped to NO_WINDOW_CONFIRM_FILES rather than repo-wide: two pre-existing
+// call sites (pages/EntityDetailPage.tsx, components/butler-detail/
+// ButlerFinanceFinancesTab.tsx) were out of this bead's four cited sites and
+// are not migrated here -- a repo-wide ban would break CI on those untouched
+// files. Broadening this list to cover them is a follow-up, not silently
+// expanded here (mirrors the POLL_POLICY_FILES scoping precedent above).
+const NO_WINDOW_CONFIRM_FILES = ['src/pages/QaOverviewPage.tsx']
+
+const NO_WINDOW_CONFIRM_SELECTORS = [
+  {
+    selector:
+      'CallExpression[callee.object.name="window"][callee.property.name="confirm"]',
+    message:
+      'window.confirm is banned in this file (bu-ep4ks.11). Use ConfirmDialog ' +
+      '(components/ui/confirm-dialog.tsx) instead -- it shows a pending state, can carry ' +
+      'evidence, and matches the fleet\'s AlertDialog visual language.',
+  },
+  {
+    selector: 'CallExpression[callee.name="confirm"]',
+    message:
+      'window.confirm is banned in this file (bu-ep4ks.11). Use ConfirmDialog ' +
+      '(components/ui/confirm-dialog.tsx) instead -- it shows a pending state, can carry ' +
+      'evidence, and matches the fleet\'s AlertDialog visual language.',
+  },
+]
+
 export default defineConfig([
   globalIgnores(['dist']),
   {
@@ -514,6 +545,27 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
+      ],
+    },
+  },
+  {
+    // bu-ep4ks.11: no-window-confirm, scoped -- see NO_WINDOW_CONFIRM_FILES
+    // comment above for why this isn't repo-wide. Must repeat the general
+    // '**/*.tsx' block's full selector set (flat config does not merge
+    // no-restricted-syntax across matching blocks for the same file).
+    files: NO_WINDOW_CONFIRM_FILES,
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...HEX_COLOR_SELECTORS,
+        ...PRIMITIVE_REDECLARATION_SELECTORS,
+        ...HANDROLLED_OVERLAY_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },
   },

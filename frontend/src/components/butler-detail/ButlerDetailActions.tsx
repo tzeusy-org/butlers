@@ -20,7 +20,11 @@
 //
 // Status pill:    derived from butler.status (ok/degraded/down/error/unknown)
 // Pause/Resume:   sets eligibility to "quarantined" (pause) or "active" (resume)
-//                 via the Switchboard registry eligibility API
+//                 via the Switchboard registry eligibility API. Consequential
+//                 (bu-ep4ks.11): scheduled behind the same undo-window
+//                 pattern ButlersPage's board established for restore
+//                 (bu-86c4c.15) rather than firing on click, since this is
+//                 the same eligibility flip.
 //
 // NO Tier-2 hero block is added — identity stays in the Overview tab card.
 // ---------------------------------------------------------------------------
@@ -43,6 +47,7 @@ import {
 } from "@/components/ui/select";
 import { Time } from "@/components/ui/time";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
+import { UNDO_WINDOW_MS, useUndoWindow } from "@/hooks/use-undo-window";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -92,6 +97,7 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
   const { data: registryResponse, isLoading: registryLoading } = useRegistry();
   const setEligibility = useSetEligibility();
   const navigate = useNavigate();
+  const pauseUndo = useUndoWindow("butler-detail-pause");
 
   const [prompt, setPrompt] = useState("");
   const [complexity, setComplexity] = useState(DEFAULT_COMPLEXITY);
@@ -102,7 +108,9 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
   // registry; disable the pause control until we have a known state.
   const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
   const isPaused = registryEntry?.eligibility_state === "quarantined";
-  const pauseDisabled = registryLoading || registryEntry === undefined || setEligibility.isPending;
+  const pauseScheduled = pauseUndo.isScheduled(butlerName);
+  const pauseDisabled =
+    registryLoading || registryEntry === undefined || setEligibility.isPending || pauseScheduled;
 
   // Surface WHY and WHEN a butler was quarantined right at the restore
   // decision point (bu-86c4c.3 — this used to be hidden at the exact moment
@@ -141,10 +149,28 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
   }
 
   function handlePauseToggle() {
-    if (setEligibility.isPending) return;
-    setEligibility.mutate({
-      name: butlerName,
-      state: isPaused ? "active" : "quarantined",
+    if (setEligibility.isPending || pauseScheduled) return;
+
+    const nextState = isPaused ? "active" : "quarantined";
+    const verb = isPaused ? "resumed" : "paused";
+    const verbing = isPaused ? "Resuming" : "Pausing";
+
+    pauseUndo.schedule(butlerName, () => {
+      setEligibility.mutate(
+        { name: butlerName, state: nextState },
+        {
+          onSuccess: () => toast.success(`${butlerName} ${verb}`),
+          onError: (err) =>
+            toast.error(`Failed to ${isPaused ? "resume" : "pause"} ${butlerName}`, {
+              description: err instanceof Error ? err.message : undefined,
+            }),
+        },
+      );
+    });
+
+    toast(`${verbing} ${butlerName}`, {
+      action: { label: "Undo", onClick: () => pauseUndo.cancel(butlerName) },
+      duration: UNDO_WINDOW_MS,
     });
   }
 
@@ -262,7 +288,7 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
         onClick={handlePauseToggle}
         className={isPaused ? operationalButtonClassName : primaryOperationalButtonClassName}
       >
-        {setEligibility.isPending
+        {setEligibility.isPending || pauseScheduled
           ? isPaused
             ? "Resuming…"
             : "Pausing…"

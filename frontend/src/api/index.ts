@@ -573,6 +573,7 @@ export {
   getConnectorSummariesWithAggregates,
   getPipelineStats,
   listConnectorSummaries,
+  unarchiveConnector,
   updateConnectorSettings,
 } from "./client.ts";
 

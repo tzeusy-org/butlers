@@ -26,6 +26,7 @@ import { MemoryRouter } from 'react-router'
 // ---------------------------------------------------------------------------
 
 const archiveMutate = vi.fn()
+const unarchiveMutate = vi.fn()
 
 vi.mock('@/hooks/use-ingestion', () => ({
   useConnectorSummariesWithAggregates: vi.fn(),
@@ -34,6 +35,13 @@ vi.mock('@/hooks/use-ingestion', () => ({
   // idle mutation so the roster mounts without a real QueryClient.
   useArchiveConnector: vi.fn(() => ({
     mutate: archiveMutate,
+    isPending: false,
+    isError: false,
+    variables: undefined,
+  })),
+  // ArchivedConnectorsList (bu-ep4ks.11) calls this unconditionally too.
+  useUnarchiveConnector: vi.fn(() => ({
+    mutate: unarchiveMutate,
     isPending: false,
     isError: false,
     variables: undefined,
@@ -982,7 +990,7 @@ describe('archive review queue (bu-u19yv)', () => {
     ).not.toBeNull()
   })
 
-  it('one-click archive fires the archive mutation with the identity (no dead onClick)', () => {
+  it('archive fires the archive mutation with the identity once the undo window elapses (no dead onClick)', () => {
     mockHooks([HEALTHY_CONNECTOR, CANDIDATE_CONNECTOR])
     renderRoster(container, root)
 
@@ -990,14 +998,23 @@ describe('archive review queue (bu-u19yv)', () => {
       '[data-testid="archive-candidate-action-google_health:dead-placeholder"]',
     )
     expect(btn).not.toBeNull()
-    act(() => {
-      ;(btn as HTMLButtonElement).click()
-    })
-    expect(archiveMutate).toHaveBeenCalledTimes(1)
-    expect(archiveMutate).toHaveBeenCalledWith({
-      connectorType: 'google_health',
-      endpointIdentity: 'dead-placeholder',
-    })
+    vi.useFakeTimers()
+    try {
+      act(() => {
+        ;(btn as HTMLButtonElement).click()
+      })
+      expect(archiveMutate).not.toHaveBeenCalled()
+      act(() => {
+        vi.advanceTimersByTime(5_000)
+      })
+      expect(archiveMutate).toHaveBeenCalledTimes(1)
+      expect(archiveMutate).toHaveBeenCalledWith({
+        connectorType: 'google_health',
+        endpointIdentity: 'dead-placeholder',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -1063,8 +1080,31 @@ describe('archived connectors section (bu-33dm2)', () => {
       '[data-testid="archived-row-google_health:degraded"]',
     )
     expect(row).not.toBeNull()
-    expect(row?.tagName).toBe('A')
-    expect(row?.getAttribute('href')).toBe('/ingestion/connectors/google_health/degraded')
+    // The row itself is a container (bu-ep4ks.11 added an unarchive button as
+    // a sibling), but it still links to detail so history stays reachable.
+    const link = row?.querySelector('a')
+    expect(link).not.toBeNull()
+    expect(link?.getAttribute('href')).toBe('/ingestion/connectors/google_health/degraded')
+  })
+
+  it('unarchive button fires the unarchive mutation with the identity', () => {
+    mockHooks([HEALTHY_CONNECTOR, ARCHIVED_CONNECTOR])
+    renderRoster(container, root)
+
+    act(() => {
+      ;(container.querySelector('[data-testid="archived-toggle"]') as HTMLButtonElement).click()
+    })
+
+    const btn = container.querySelector(
+      '[data-testid="unarchive-action-google_health:degraded"]',
+    ) as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    act(() => btn.click())
+
+    expect(unarchiveMutate).toHaveBeenCalledWith({
+      connectorType: 'google_health',
+      endpointIdentity: 'degraded',
+    })
   })
 })
 

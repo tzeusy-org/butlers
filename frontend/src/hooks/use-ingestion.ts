@@ -26,6 +26,7 @@ import {
   getPipelineStats,
   listAvailableConnectors,
   listConnectorSummaries,
+  unarchiveConnector,
   updateConnectorSettings,
 } from "@/api/index.ts";
 import type { IngestionPeriod } from "@/api/index.ts";
@@ -178,6 +179,35 @@ export function useArchiveConnector() {
       connectorType: string;
       endpointIdentity: string;
     }) => archiveConnector(connectorType, endpointIdentity),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.connectorSummariesWithAggregates(),
+      });
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.crossSummaryWithAggregates(),
+      });
+    },
+  });
+}
+
+/**
+ * Mutation to restore a soft-archived connector identity back to the active
+ * roster (bu-ep4ks.11 — the archive review queue's one-click archive had no
+ * UI path back, even though the backend's unarchive endpoint already
+ * existed). Same cache-invalidation contract as {@link useArchiveConnector}:
+ * on success, the identity moves out of the collapsed "archived" section and
+ * back into the active roster and its rollups.
+ */
+export function useUnarchiveConnector() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      connectorType,
+      endpointIdentity,
+    }: {
+      connectorType: string;
+      endpointIdentity: string;
+    }) => unarchiveConnector(connectorType, endpointIdentity),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.connectorSummariesWithAggregates(),

@@ -4438,6 +4438,25 @@ export async function archiveConnector(
   );
 }
 
+/**
+ * POST /api/ingestion/connectors/{type}/{identity}/unarchive
+ *
+ * Restore an archived connector identity back to the active roster
+ * (audit-only, bu-33dm2). The backend has carried this endpoint since the
+ * archive mechanism shipped; the dashboard never wired a UI path back to it
+ * until bu-ep4ks.11 (the archive review queue's one-click archive had no
+ * undo affordance). Idempotent.
+ */
+export async function unarchiveConnector(
+  connectorType: string,
+  endpointIdentity: string,
+): Promise<ApiResponse<ConnectorArchiveResult>> {
+  return apiFetch<ApiResponse<ConnectorArchiveResult>>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/unarchive`,
+    { method: "POST" },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Unified ingestion rules (design.md D8)
 // ---------------------------------------------------------------------------

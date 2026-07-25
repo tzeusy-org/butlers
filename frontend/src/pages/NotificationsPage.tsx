@@ -11,6 +11,7 @@ import {
 import { NotificationTableSkeleton } from "@/components/skeletons";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
@@ -326,9 +327,24 @@ export default function NotificationsPage() {
     [escalate],
   );
 
+  // Acknowledging all failed notifications is a bulk, irreversible action
+  // (bu-ep4ks.11 — the safety envelope for consequential actions): unlike a
+  // single mark-read, there is no natural undo-window target (there is no
+  // single row to schedule/cancel), so this uses a confirm dialog rather than
+  // the undo-window pattern.
+  const [ackAllDialogOpen, setAckAllDialogOpen] = useState(false);
+
   const handleAcknowledgeAll = useCallback(() => {
-    acknowledgeAll();
-  }, [acknowledgeAll]);
+    if (ackAllMutation.isPending) return;
+    setAckAllDialogOpen(true);
+  }, [ackAllMutation.isPending]);
+
+  const confirmAcknowledgeAll = useCallback(() => {
+    if (ackAllMutation.isPending) return;
+    acknowledgeAll(undefined, {
+      onSettled: () => setAckAllDialogOpen(false),
+    });
+  }, [acknowledgeAll, ackAllMutation.isPending]);
 
   // j/k roving selection + a=mark-read act key over the notification rows
   // (bu-qvnce.11 slice 4 -- useListTriage, extracted from ApprovalsPage's own
@@ -398,232 +414,245 @@ export default function NotificationsPage() {
   const failedCount = statsResponse?.data?.failed ?? 0;
 
   return (
-    <Page
-      archetype="list"
-      title="Notifications"
-      description="Monitor notification delivery across all butlers."
-      actions={
-        failedCount > 0 ? (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={ackAllMutation.isPending}
-            onClick={handleAcknowledgeAll}
-          >
-            {ackAllMutation.isPending
-              ? "Acknowledging…"
-              : `Acknowledge all failed (${failedCount})`}
-          </Button>
-        ) : undefined
-      }
-    >
-      {/* Verdict opener — windowed failed-notification count + dominant
-          butler, composed from by_butler (fetched but discarded until now,
-          JARVIS pursuit move 9 slice 3). */}
-      <div className="border-b border-border/60 px-6 py-3">
-        <NotificationsVerdictOpener
-          stats={verdictStatsResponse?.data}
-          isLoading={verdictStatsLoading}
-          isError={verdictStatsError}
-          since={verdictWindow.since}
-          until={verdictWindow.until}
-        />
-      </div>
-
-      {/* Stats bar — Sent/Failed tiles are filter anchors (bu-qvnce.13): click
-          one to pivot the filter bar to that status without leaving the page. */}
-      <NotificationStatsBar
-        stats={statsResponse?.data}
-        isLoading={statsLoading}
-        onFilterClick={(status) => handleFilterChange("status", status)}
-      />
-
-      {/* Filter bar */}
-      <Card>
-        <CardContent className="pt-0">
-          <div className="flex flex-wrap items-end gap-4">
-            {/* Butler name */}
-            <div className="space-y-1">
-              <label
-                htmlFor="filter-butler"
-                className="text-muted-foreground text-xs font-medium"
-              >
-                Butler
-              </label>
-              <Input
-                id="filter-butler"
-                placeholder="Filter by butler..."
-                value={filters.butler}
-                onChange={(e) => handleFilterChange("butler", e.target.value)}
-                className="w-44"
-              />
-            </div>
-
-            {/* Channel dropdown */}
-            <div className="space-y-1">
-              <label
-                htmlFor="notifications-channel-filter"
-                className="text-muted-foreground text-xs font-medium"
-              >
-                Channel
-              </label>
-              <Select
-                value={filters.channel}
-                onValueChange={(v) => handleFilterChange("channel", v)}
-              >
-                <SelectTrigger
-                  id="notifications-channel-filter"
-                  className="w-40"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {CHANNEL_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Status dropdown */}
-            <div className="space-y-1">
-              <label
-                htmlFor="notifications-status-filter"
-                className="text-muted-foreground text-xs font-medium"
-              >
-                Status
-              </label>
-              <Select
-                value={filters.status}
-                onValueChange={(v) => handleFilterChange("status", v)}
-              >
-                <SelectTrigger
-                  id="notifications-status-filter"
-                  className="w-40"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUS_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Since date and time */}
-            <div className="space-y-1">
-              <label
-                htmlFor="filter-since"
-                className="text-muted-foreground text-xs font-medium"
-              >
-                Since (local time)
-              </label>
-              <Input
-                id="filter-since"
-                type="datetime-local"
-                value={dateTimeLocalValue(filters.since)}
-                onChange={(e) =>
-                  handleFilterChange("since", queryTimestamp(e.target.value))
-                }
-                className="w-52"
-              />
-            </div>
-
-            {/* Until date and time */}
-            <div className="space-y-1">
-              <label
-                htmlFor="filter-until"
-                className="text-muted-foreground text-xs font-medium"
-              >
-                Until (local time)
-              </label>
-              <Input
-                id="filter-until"
-                type="datetime-local"
-                value={dateTimeLocalValue(filters.until)}
-                onChange={(e) =>
-                  handleFilterChange("until", queryTimestamp(e.target.value))
-                }
-                className="w-52"
-              />
-            </div>
-
-            {/* Clear filters */}
-            {hasActiveFilters && (
-              <Button variant="ghost" size="sm" onClick={handleClearFilters}>
-                Clear filters
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Notification feed — dims (never blanks) while a filter/page change refetches */}
-      <Card>
-        <CardContent>
-          {notificationsLoading ? (
-            <NotificationTableSkeleton rows={10} hasTriageControls />
-          ) : notificationsError ? (
-            <p className="text-destructive py-8 text-center text-sm">
-              Failed to load notifications. Please try refreshing the page.
-            </p>
-          ) : (
-            <FetchingDim isFetching={isNotificationsRefreshing}>
-              <NotificationFeed
-                notifications={notifications}
-                isLoading={false}
-                hasActiveFilters={hasActiveFilters}
-                onMarkRead={handleMarkRead}
-                onDismiss={handleDismiss}
-                onRetry={handleRetry}
-                onEscalate={handleEscalate}
-                pendingAckIds={pendingAckIds}
-                pendingRetryIds={pendingRetryIds}
-                pendingEscalateIds={pendingEscalateIds}
-                selectedId={selectedNotificationId}
-                sourceUnavailable={
-                  notificationsResponse?.source_available === false
-                }
-              />
-            </FetchingDim>
-          )}
-        </CardContent>
-        {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
-            EXACT j/k/a bindings useListTriage just registered. */}
-        <ListTriageFooterHint bindings={notificationTriageHints} />
-      </Card>
-
-      {/* Pagination */}
-      {total > 0 && (
-        <div className="flex items-center justify-between">
-          <p className="text-muted-foreground text-sm">
-            Showing {rangeStart}–{rangeEnd} of {total.toLocaleString()}
-          </p>
-          <div className="flex gap-2">
+    <>
+      <Page
+        archetype="list"
+        title="Notifications"
+        description="Monitor notification delivery across all butlers."
+        actions={
+          failedCount > 0 ? (
             <Button
               variant="outline"
               size="sm"
-              disabled={page === 0}
-              onClick={() => handlePageChange(Math.max(0, page - 1))}
+              disabled={ackAllMutation.isPending}
+              onClick={handleAcknowledgeAll}
             >
-              Previous
+              {ackAllMutation.isPending
+                ? "Acknowledging…"
+                : `Acknowledge all failed (${failedCount})`}
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!hasMore}
-              onClick={() => handlePageChange(page + 1)}
-            >
-              Next
-            </Button>
-          </div>
+          ) : undefined
+        }
+      >
+        {/* Verdict opener — windowed failed-notification count + dominant
+            butler, composed from by_butler (fetched but discarded until now,
+            JARVIS pursuit move 9 slice 3). */}
+        <div className="border-b border-border/60 px-6 py-3">
+          <NotificationsVerdictOpener
+            stats={verdictStatsResponse?.data}
+            isLoading={verdictStatsLoading}
+            isError={verdictStatsError}
+            since={verdictWindow.since}
+            until={verdictWindow.until}
+          />
         </div>
-      )}
-    </Page>
+
+        {/* Stats bar — Sent/Failed tiles are filter anchors (bu-qvnce.13): click
+            one to pivot the filter bar to that status without leaving the page. */}
+        <NotificationStatsBar
+          stats={statsResponse?.data}
+          isLoading={statsLoading}
+          onFilterClick={(status) => handleFilterChange("status", status)}
+        />
+
+        {/* Filter bar */}
+        <Card>
+          <CardContent className="pt-0">
+            <div className="flex flex-wrap items-end gap-4">
+              {/* Butler name */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="filter-butler"
+                  className="text-muted-foreground text-xs font-medium"
+                >
+                  Butler
+                </label>
+                <Input
+                  id="filter-butler"
+                  placeholder="Filter by butler..."
+                  value={filters.butler}
+                  onChange={(e) => handleFilterChange("butler", e.target.value)}
+                  className="w-44"
+                />
+              </div>
+
+              {/* Channel dropdown */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="notifications-channel-filter"
+                  className="text-muted-foreground text-xs font-medium"
+                >
+                  Channel
+                </label>
+                <Select
+                  value={filters.channel}
+                  onValueChange={(v) => handleFilterChange("channel", v)}
+                >
+                  <SelectTrigger
+                    id="notifications-channel-filter"
+                    className="w-40"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CHANNEL_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Status dropdown */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="notifications-status-filter"
+                  className="text-muted-foreground text-xs font-medium"
+                >
+                  Status
+                </label>
+                <Select
+                  value={filters.status}
+                  onValueChange={(v) => handleFilterChange("status", v)}
+                >
+                  <SelectTrigger
+                    id="notifications-status-filter"
+                    className="w-40"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STATUS_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Since date and time */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="filter-since"
+                  className="text-muted-foreground text-xs font-medium"
+                >
+                  Since (local time)
+                </label>
+                <Input
+                  id="filter-since"
+                  type="datetime-local"
+                  value={dateTimeLocalValue(filters.since)}
+                  onChange={(e) =>
+                    handleFilterChange("since", queryTimestamp(e.target.value))
+                  }
+                  className="w-52"
+                />
+              </div>
+
+              {/* Until date and time */}
+              <div className="space-y-1">
+                <label
+                  htmlFor="filter-until"
+                  className="text-muted-foreground text-xs font-medium"
+                >
+                  Until (local time)
+                </label>
+                <Input
+                  id="filter-until"
+                  type="datetime-local"
+                  value={dateTimeLocalValue(filters.until)}
+                  onChange={(e) =>
+                    handleFilterChange("until", queryTimestamp(e.target.value))
+                  }
+                  className="w-52"
+                />
+              </div>
+
+              {/* Clear filters */}
+              {hasActiveFilters && (
+                <Button variant="ghost" size="sm" onClick={handleClearFilters}>
+                  Clear filters
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Notification feed — dims (never blanks) while a filter/page change refetches */}
+        <Card>
+          <CardContent>
+            {notificationsLoading ? (
+              <NotificationTableSkeleton rows={10} hasTriageControls />
+            ) : notificationsError ? (
+              <p className="text-destructive py-8 text-center text-sm">
+                Failed to load notifications. Please try refreshing the page.
+              </p>
+            ) : (
+              <FetchingDim isFetching={isNotificationsRefreshing}>
+                <NotificationFeed
+                  notifications={notifications}
+                  isLoading={false}
+                  hasActiveFilters={hasActiveFilters}
+                  onMarkRead={handleMarkRead}
+                  onDismiss={handleDismiss}
+                  onRetry={handleRetry}
+                  onEscalate={handleEscalate}
+                  pendingAckIds={pendingAckIds}
+                  pendingRetryIds={pendingRetryIds}
+                  pendingEscalateIds={pendingEscalateIds}
+                  selectedId={selectedNotificationId}
+                  sourceUnavailable={
+                    notificationsResponse?.source_available === false
+                  }
+                />
+              </FetchingDim>
+            )}
+          </CardContent>
+          {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
+              EXACT j/k/a bindings useListTriage just registered. */}
+          <ListTriageFooterHint bindings={notificationTriageHints} />
+        </Card>
+
+        {/* Pagination */}
+        {total > 0 && (
+          <div className="flex items-center justify-between">
+            <p className="text-muted-foreground text-sm">
+              Showing {rangeStart}–{rangeEnd} of {total.toLocaleString()}
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page === 0}
+                onClick={() => handlePageChange(Math.max(0, page - 1))}
+              >
+                Previous
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!hasMore}
+                onClick={() => handlePageChange(page + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
+      </Page>
+      <ConfirmDialog
+        open={ackAllDialogOpen}
+        onOpenChange={setAckAllDialogOpen}
+        title={`Acknowledge all ${failedCount} failed notification${failedCount === 1 ? "" : "s"}?`}
+        description="Every failed notification is marked read at once. This cannot be undone."
+        confirmLabel="Acknowledge all"
+        pendingLabel="Acknowledging…"
+        pending={ackAllMutation.isPending}
+        onConfirm={confirmAcknowledgeAll}
+        testId="notifications-ack-all-dialog"
+      />
+    </>
   );
 }

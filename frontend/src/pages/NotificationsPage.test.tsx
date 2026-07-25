@@ -714,3 +714,140 @@ describe("NotificationsPage — debounced filter feedback", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Acknowledge-all-failed confirm dialog (bu-ep4ks.11 — safety envelope for
+// consequential actions). This bulk action used to fire on a single click
+// with no confirm and no undo; it now opens a ConfirmDialog first.
+// ---------------------------------------------------------------------------
+
+describe("NotificationsPage — Acknowledge-all-failed confirm (bu-ep4ks.11)", () => {
+  let container: HTMLDivElement | undefined;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useMarkNotificationRead).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useMarkNotificationRead>);
+    vi.mocked(useRetryNotification).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useRetryNotification>);
+    vi.mocked(useEscalateNotification).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useEscalateNotification>);
+    setStatsState({
+      data: {
+        data: { total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} },
+        meta: {},
+      },
+    });
+    setNotificationsState({
+      data: {
+        data: [NOTIFICATION_1, NOTIFICATION_2],
+        meta: { total: 2, offset: 0, limit: 20, has_more: false },
+      },
+    });
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => root!.unmount());
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+  });
+
+  function renderLive() {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const r = root;
+    act(() => {
+      r.render(
+        <MemoryRouter initialEntries={["/notifications"]}>
+          <NotificationsPage />
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("does not fire the mutation on the first click -- it opens a confirm dialog", () => {
+    const ackAllMutate = vi.fn();
+    vi.mocked(useAcknowledgeAllFailed).mockReturnValue({
+      mutate: ackAllMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
+
+    renderLive();
+    expect(
+      container!.querySelector('[data-testid="notifications-ack-all-dialog"]'),
+    ).toBeNull();
+
+    const btn = Array.from(container!.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Acknowledge all failed"),
+    );
+    expect(btn).not.toBeUndefined();
+    act(() => btn!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(ackAllMutate).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="notifications-ack-all-dialog"]'),
+    ).not.toBeNull();
+  });
+
+  it("fires the mutation once the dialog's confirm action is clicked", () => {
+    const ackAllMutate = vi.fn();
+    vi.mocked(useAcknowledgeAllFailed).mockReturnValue({
+      mutate: ackAllMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
+
+    renderLive();
+    const openBtn = Array.from(container!.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Acknowledge all failed"),
+    );
+    act(() => openBtn!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    const confirmBtn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="notifications-ack-all-dialog-confirm"]',
+    );
+    expect(confirmBtn).not.toBeNull();
+    act(() => confirmBtn!.click());
+
+    expect(ackAllMutate).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      onSettled: expect.any(Function),
+    }));
+  });
+
+  it("closes the dialog once the mutation settles", () => {
+    let settle: (() => void) | undefined;
+    const ackAllMutate = vi.fn((_vars, opts) => {
+      settle = opts.onSettled;
+    });
+    vi.mocked(useAcknowledgeAllFailed).mockReturnValue({
+      mutate: ackAllMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
+
+    renderLive();
+    const openBtn = Array.from(container!.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Acknowledge all failed"),
+    );
+    act(() => openBtn!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const confirmBtn = document.querySelector<HTMLButtonElement>(
+      '[data-testid="notifications-ack-all-dialog-confirm"]',
+    );
+    act(() => confirmBtn!.click());
+
+    act(() => settle?.());
+
+    expect(
+      document.querySelector('[data-testid="notifications-ack-all-dialog"]'),
+    ).toBeNull();
+  });
+});
