@@ -56,8 +56,8 @@ All monitoring thresholds are loaded from the state store at job invocation time
 - **THEN** the job SHALL fall back to hardcoded default values identical to the seeded defaults:
   - Battery: `{"critical": 10, "warning": 20, "info": 30}`
   - Offline hours: `{"critical": 24, "warning": 1}`
-  - Comfort defaults: `{"temp_min_c": 20, "temp_max_c": 24.5, "humidity_min": 30, "humidity_max": 60, "co2_max_ppm": 1000}`
-  - Comfort deviation: `{"minor_temp_c": 1, "moderate_temp_c": 3, "minor_humidity": 10, "moderate_humidity": 20, "critical_temp_low_c": 15.5, "critical_temp_high_c": 29.5, "critical_co2_ppm": 1500, "critical_humidity_low": 15, "critical_humidity_high": 80}`
+  - Comfort defaults: `{"temp_min_c": 20, "temp_max_c": 27.5, "humidity_min": 30, "humidity_max": 78, "co2_max_ppm": 1000}`
+  - Comfort deviation: `{"minor_temp_c": 1, "moderate_temp_c": 3, "minor_humidity": 10, "moderate_humidity": 20, "critical_temp_low_c": 15.5, "critical_temp_high_c": 32, "critical_co2_ppm": 1500, "critical_humidity_low": 15, "critical_humidity_high": 88}`
   - Energy: `{"anomaly_pct": 20, "high_severity_pct": 100}`
 - **AND** the job SHALL log a WARNING indicating that default thresholds are being used
 
@@ -147,7 +147,7 @@ The `environment_report` job reads environmental sensors per area, compares agai
 
 - **WHEN** readings are collected per area
 - **THEN** the job SHALL query memory facts with `predicate="comfort_preference"` for each area name
-- **AND** if no stored preference exists for an area, it SHALL load default healthy ranges from state store key `home:thresholds:comfort_defaults` (default: temperature 20-24.5 degC, humidity 30-60%, CO2 <1000 ppm)
+- **AND** if no stored preference exists for an area, it SHALL load default healthy ranges from state store key `home:thresholds:comfort_defaults` (default: temperature 20-27.5 degC, humidity 30-78%, CO2 <1000 ppm, tuned for a tropical climate rather than the US-centric range these were ported from)
 
 #### Scenario: Deviation classification
 
@@ -157,7 +157,7 @@ The `environment_report` job reads environmental sensors per area, compares agai
   - `ok` if within range
   - `minor` if within the `minor_temp_c` (default 1 degC) or `minor_humidity` (default 10% relative humidity) of boundary
   - `moderate` if within the `moderate_temp_c` (default 3 degC) or `moderate_humidity` (default 20% relative humidity) of boundary
-  - `critical` if temperature below `critical_temp_low_c` (default 15.5 degC) or above `critical_temp_high_c` (default 29.5 degC), CO2 above `critical_co2_ppm` (default 1500 ppm), or humidity below `critical_humidity_low` (default 15%) or above `critical_humidity_high` (default 80%)
+  - `critical` if temperature below `critical_temp_low_c` (default 15.5 degC) or above `critical_temp_high_c` (default 32 degC), CO2 above `critical_co2_ppm` (default 1500 ppm), or humidity below `critical_humidity_low` (default 15%) or above `critical_humidity_high` (default 88%)
 
 #### Scenario: Deviation memory storage
 
@@ -172,6 +172,9 @@ The `environment_report` job reads environmental sensors per area, compares agai
 - **AND** the message SHALL include a room-by-room summary showing readings and status (ok/deviation)
 - **AND** deviations SHALL include actionable recommendations (e.g., "humidity low — consider running humidifier")
 - **AND** at most 3 recommendations SHALL be included to avoid overwhelming the user
+- **AND** a recommendation SHALL be emitted only for a deviation that is new or has changed severity since the previous run, compared against state store key `home:environment:last_deviations`, so a standing condition (persistent tropical humidity, say) is stated once rather than every day
+- **AND** readings and their status icons SHALL still be shown for suppressed deviations, and the report SHALL state how many standing conditions were suppressed, so silence reads as "unchanged" rather than "not checked"
+- **AND** every current deviation SHALL be carried into `home:environment:last_deviations`, including suppressed ones, so a persistent condition stays suppressed rather than re-firing on alternate runs
 
 #### Scenario: Job return value
 

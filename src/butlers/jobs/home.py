@@ -65,7 +65,7 @@ from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,
 )
-from butlers.core.state import state_get
+from butlers.core.state import state_get, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import (
     resolve_owner_entity_info,
@@ -390,26 +390,17 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
     )
 
 
-class _NullEmbeddingEngine:
-    """Sentinel embedding engine that returns zero vectors for deterministic jobs.
-
-    Matches the synchronous ``EmbeddingEngine.embed(text: str) -> list[float]``
-    interface expected by ``store_fact``.  Returns an empty vector so that
-    vector-similarity searches simply skip these facts.
-    """
-
-    model_name = "deterministic-null"
-
-    def embed(self, text: str) -> list[float]:  # noqa: ARG002
-        return []
-
-
 class _NoOpEmbeddingEngine:
     """Minimal embedding engine stub for deterministic jobs.
 
     Returns zero vectors so that store_fact() can be called without loading
     sentence-transformers in a deterministic scheduled job context.
     Semantic search quality is degraded, but the fact is correctly stored.
+
+    The vector must have a real dimension: pgvector rejects a zero-length
+    vector with ``DataError: vector must have at least 1 dimension``, which
+    silently discarded every comfort_deviation and energy fact these jobs
+    tried to store.
     """
 
     model_name = "deterministic-noop"
@@ -449,11 +440,17 @@ _TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 # Comfort thresholds are Celsius throughout: Home Assistant reports its sensors
 # in the unit configured for the installation (°C here), readings are normalised
 # to °C at discovery, and the owner-facing report renders °C.
+#
+# The ranges are tuned for a tropical climate (Singapore), not the US-centric
+# 68-76 degF / 30-60% RH they were ported from. Ambient humidity here sits in
+# the 70s year-round and 26 degC indoors is comfortable, so the old ranges
+# flagged a deviation in every room on every run — an alert that never changes
+# state is noise, not information.
 _DEFAULT_COMFORT_DEFAULTS: dict[str, float] = {
     "temp_min_c": 20.0,
-    "temp_max_c": 24.5,
+    "temp_max_c": 27.5,
     "humidity_min": 30.0,
-    "humidity_max": 60.0,
+    "humidity_max": 78.0,
     "co2_max_ppm": 1000.0,
 }
 
@@ -463,10 +460,10 @@ _DEFAULT_COMFORT_DEVIATION: dict[str, float] = {
     "minor_humidity": 10.0,
     "moderate_humidity": 20.0,
     "critical_temp_low_c": 15.5,
-    "critical_temp_high_c": 29.5,
+    "critical_temp_high_c": 32.0,
     "critical_co2_ppm": 1500.0,
     "critical_humidity_low": 15.0,
-    "critical_humidity_high": 80.0,
+    "critical_humidity_high": 88.0,
 }
 _DEFAULT_ENERGY_THRESHOLDS: dict[str, float] = {
     "anomaly_pct": 20.0,
@@ -1087,6 +1084,39 @@ async def _load_area_comfort_preference(
 
 
 # ---------------------------------------------------------------------------
+# Standing-deviation suppression
+# ---------------------------------------------------------------------------
+
+# State-store key holding the deviations the previous run recommended on, as
+# ``{"<area>:<sensor_type>": "<severity>"}``.
+_LAST_DEVIATIONS_KEY = "home:environment:last_deviations"
+
+
+async def _load_reported_deviations(pool: asyncpg.Pool) -> dict[str, str]:
+    """Load the deviations the previous run already recommended on.
+
+    Returns an empty mapping when nothing is stored or the stored value is
+    malformed, which makes the next report recommend on everything — the
+    same behaviour as a first run.
+    """
+    raw = await state_get(pool, _LAST_DEVIATIONS_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if isinstance(v, (str, int, float))}
+
+
+async def _save_reported_deviations(pool: asyncpg.Pool, reported: dict[str, str]) -> None:
+    """Persist the deviations this run recommended on, for the next run to compare."""
+    try:
+        await state_set(pool, _LAST_DEVIATIONS_KEY, reported)
+    except Exception:
+        # Losing this only costs one repeated recommendation next run.
+        logger.warning(
+            "_save_reported_deviations: could not persist reported deviations", exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
 # Report message builder
 # ---------------------------------------------------------------------------
 
@@ -1132,21 +1162,36 @@ def _recommendation_for(
 def _build_environment_report_message(
     area_results: list[dict[str, Any]],
     comfort_defaults: dict[str, float],
-) -> str:
+    previously_reported: dict[str, str] | None = None,
+) -> tuple[str, dict[str, str]]:
     """Build the room-by-room environment report Telegram message.
+
+    Readings and their status icons are always shown, so the current state of
+    every room stays visible. Recommendations are only emitted for deviations
+    that are new or have changed severity since the previous run: a standing
+    condition (tropical humidity, say) is worth saying once, not every day.
 
     Args:
         area_results: List of per-area result dicts, each containing:
             ``area``, ``readings`` (dict sensor_type -> value),
             ``deviations`` (dict sensor_type -> severity).
         comfort_defaults: Default comfort thresholds (for recommendation hints).
+        previously_reported: ``{"<area>:<sensor_type>": "<severity>"}`` from the
+            previous run. Pass ``None`` to recommend on every deviation.
 
     Returns:
-        Markdown-formatted message string (see :func:`_send_notify`).
+        ``(message, reported)`` where *message* is Markdown (see
+        :func:`_send_notify`) and *reported* is the deviation map to hand the
+        next run. *reported* carries every current deviation, including ones
+        whose recommendation was suppressed, so a condition that persists stays
+        suppressed rather than re-firing on alternate days.
     """
+    seen_before = previously_reported or {}
     lines: list[str] = ["**Daily Environment Report**"]
 
     all_recommendations: list[str] = []
+    reported: dict[str, str] = {}
+    suppressed = 0
 
     for area_info in area_results:
         area = area_info["area"]
@@ -1182,12 +1227,17 @@ def _build_environment_report_message(
 
             status_parts.append(f"{status_icon} {label}")
 
-            if sev not in ("ok", "minor") and len(all_recommendations) < _MAX_RECOMMENDATIONS:
-                rec = _recommendation_for(sensor_type, value, comfort_defaults)
-                if rec:
-                    rec_text = f"{area.replace('_', ' ').title()}: {rec}"
-                    if rec_text not in all_recommendations:
-                        all_recommendations.append(rec_text)
+            if sev not in ("ok", "minor"):
+                deviation_key = f"{area}:{sensor_type}"
+                reported[deviation_key] = sev
+                if seen_before.get(deviation_key) == sev:
+                    suppressed += 1
+                elif len(all_recommendations) < _MAX_RECOMMENDATIONS:
+                    rec = _recommendation_for(sensor_type, value, comfort_defaults)
+                    if rec:
+                        rec_text = f"{area.replace('_', ' ').title()}: {rec}"
+                        if rec_text not in all_recommendations:
+                            all_recommendations.append(rec_text)
 
         area_label = area.replace("_", " ").title()
         lines.append(f"\n**{area_label}**: {', '.join(status_parts)}")
@@ -1196,8 +1246,13 @@ def _build_environment_report_message(
         lines.append("\n**Recommendations:**")
         for rec in all_recommendations[:_MAX_RECOMMENDATIONS]:
             lines.append(f"  \u2022 {rec}")
+    elif suppressed:
+        # Say why the section is absent, so silence reads as "unchanged"
+        # rather than "nothing was checked".
+        noun = "condition" if suppressed == 1 else "conditions"
+        lines.append(f"\n_{suppressed} standing {noun}, unchanged since the last report._")
 
-    return "\n".join(lines)
+    return "\n".join(lines), reported
 
 
 async def _load_energy_thresholds(pool: asyncpg.Pool) -> dict[str, float]:
@@ -1671,7 +1726,7 @@ async def run_energy_digest(
     # ------------------------------------------------------------------
     baseline_updated = False
     if total_kwh > 0:
-        eng = _NullEmbeddingEngine()
+        eng = _NoOpEmbeddingEngine()
 
         # Store overall energy baseline fact
         try:
@@ -2040,7 +2095,7 @@ async def run_environment_report(
     # ------------------------------------------------------------------
     # 5-6. Per-area: load preferences, classify deviations
     # ------------------------------------------------------------------
-    eng = _NullEmbeddingEngine()
+    eng = _NoOpEmbeddingEngine()
     total_sensors = 0
     total_deviations = 0
     area_results: list[dict[str, Any]] = []
@@ -2119,8 +2174,12 @@ async def run_environment_report(
     # ------------------------------------------------------------------
     # 8. Build and send report
     # ------------------------------------------------------------------
-    message = _build_environment_report_message(area_results, comfort_defaults)
+    previously_reported = await _load_reported_deviations(pool)
+    message, reported = _build_environment_report_message(
+        area_results, comfort_defaults, previously_reported
+    )
     await _send_notify(pool, message)
+    await _save_reported_deviations(pool, reported)
 
     areas_checked = len(area_results)
     logger.info(

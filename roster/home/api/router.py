@@ -1031,9 +1031,9 @@ _DEFAULT_THRESHOLDS = {
     "offline_hours": {"critical": 24, "warning": 1},
     "comfort_defaults": {
         "temp_min_c": 20,
-        "temp_max_c": 24.5,
+        "temp_max_c": 27.5,
         "humidity_min": 30,
-        "humidity_max": 60,
+        "humidity_max": 78,
         "co2_max_ppm": 1000,
     },
     "comfort_deviation": {
@@ -1042,10 +1042,10 @@ _DEFAULT_THRESHOLDS = {
         "minor_humidity": 10,
         "moderate_humidity": 20,
         "critical_temp_low_c": 15.5,
-        "critical_temp_high_c": 29.5,
+        "critical_temp_high_c": 32,
         "critical_co2_ppm": 1500,
         "critical_humidity_low": 15,
-        "critical_humidity_high": 80,
+        "critical_humidity_high": 88,
     },
     "energy": {"anomaly_pct": 20, "high_severity_pct": 100},
 }

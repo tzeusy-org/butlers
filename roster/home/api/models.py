@@ -183,9 +183,9 @@ class ComfortDefaults(BaseModel):
     """Default comfort range thresholds for environment report."""
 
     temp_min_c: float = 20
-    temp_max_c: float = 24.5
+    temp_max_c: float = 27.5
     humidity_min: float = 30
-    humidity_max: float = 60
+    humidity_max: float = 78
     co2_max_ppm: float = 1000
 
 
@@ -197,10 +197,10 @@ class ComfortDeviation(BaseModel):
     minor_humidity: float = 10
     moderate_humidity: float = 20
     critical_temp_low_c: float = 15.5
-    critical_temp_high_c: float = 29.5
+    critical_temp_high_c: float = 32
     critical_co2_ppm: float = 1500
     critical_humidity_low: float = 15
-    critical_humidity_high: float = 80
+    critical_humidity_high: float = 88
 
 
 class EnergyThresholds(BaseModel):

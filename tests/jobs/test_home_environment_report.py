@@ -2,7 +2,7 @@
 
 Covers _classify_sensor_type, _extract_numeric_state, _extract_area,
 classify_deviation, _build_environment_report_message, run_environment_report,
-_NullEmbeddingEngine, and daemon registry.
+_NoOpEmbeddingEngine, and daemon registry.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from butlers.jobs.home import (
     _extract_area,
     _extract_numeric_state,
     _is_ambient_sensor,
+    _NoOpEmbeddingEngine,
     _normalize_temperature_c,
-    _NullEmbeddingEngine,
     classify_deviation,
     run_environment_report,
 )
@@ -174,7 +174,7 @@ def test_classify_deviation_area_preference_overrides():
 
 def test_build_environment_report_message():
     """Message includes header, area readings, icons, and caps recommendations at 3."""
-    msg = _build_environment_report_message([], _DEFAULTS)
+    msg, _ = _build_environment_report_message([], _DEFAULTS)
     assert "Environment Report" in msg
 
     area_results = [
@@ -184,7 +184,7 @@ def test_build_environment_report_message():
             "deviations": {"temperature": "ok", "humidity": "ok"},
         }
     ]
-    msg2 = _build_environment_report_message(area_results, _DEFAULTS)
+    msg2, _ = _build_environment_report_message(area_results, _DEFAULTS)
     assert "Bedroom" in msg2 and "22.0°C" in msg2 and "✅" in msg2
     # Markdown, not HTML: the delivery chain HTML-escapes before rendering.
     assert "**Bedroom**" in msg2 and "<b>" not in msg2
@@ -197,16 +197,71 @@ def test_build_environment_report_message():
             "deviations": {"temperature": "critical"},
         }
     ]
-    msg3 = _build_environment_report_message(area_crit, _DEFAULTS)
+    msg3, _ = _build_environment_report_message(area_crit, _DEFAULTS)
     assert "🔴" in msg3
 
     areas_4 = [
         {"area": f"room{i}", "readings": {"humidity": 10.0}, "deviations": {"humidity": "critical"}}
         for i in range(4)
     ]
-    msg4 = _build_environment_report_message(areas_4, _DEFAULTS)
+    msg4, _ = _build_environment_report_message(areas_4, _DEFAULTS)
     recs_section = msg4.split("Recommendations:")[-1] if "Recommendations:" in msg4 else ""
     assert recs_section.count("  •") <= 3
+
+
+def test_standing_deviation_is_recommended_once_not_daily():
+    """A deviation at unchanged severity stops producing recommendations.
+
+    Tropical humidity sits above the comfort ceiling year-round; repeating the
+    same dehumidifier advice every morning is noise, not information.
+    """
+    area_results = [
+        {
+            "area": "bedroom",
+            "readings": {"humidity": 76.0},
+            "deviations": {"humidity": "moderate"},
+        }
+    ]
+
+    # First run: nothing seen before, so the deviation is recommended.
+    first, reported = _build_environment_report_message(area_results, _DEFAULTS, {})
+    assert "dehumidifier" in first
+    assert reported == {"bedroom:humidity": "moderate"}
+
+    # Second run, condition unchanged: reading still shown, advice suppressed.
+    second, still_reported = _build_environment_report_message(area_results, _DEFAULTS, reported)
+    assert "dehumidifier" not in second
+    assert "76% humidity" in second
+    assert "standing condition" in second
+    # Still carried forward, so it stays suppressed rather than re-firing.
+    assert still_reported == reported
+
+    # Escalation breaks the suppression.
+    escalated = [
+        {
+            "area": "bedroom",
+            "readings": {"humidity": 90.0},
+            "deviations": {"humidity": "critical"},
+        }
+    ]
+    third, _ = _build_environment_report_message(escalated, _DEFAULTS, reported)
+    assert "dehumidifier" in third
+
+
+def test_tropical_defaults_do_not_flag_ordinary_singapore_readings():
+    """26 degC / 74% RH is an ordinary day here and must classify as ok."""
+    assert (
+        classify_deviation(
+            "temperature", 26.0, comfort_defaults=_DEFAULTS, deviation_thresholds=_DEVIATIONS
+        )
+        == "ok"
+    )
+    assert (
+        classify_deviation(
+            "humidity", 74.0, comfort_defaults=_DEFAULTS, deviation_thresholds=_DEVIATIONS
+        )
+        == "ok"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -273,17 +328,24 @@ async def test_run_environment_report_no_sensors_and_normal_run():
 
 
 # ---------------------------------------------------------------------------
-# _NullEmbeddingEngine + Registry
+# _NoOpEmbeddingEngine + Registry
 # ---------------------------------------------------------------------------
 
 
-def test_null_embedding_engine():
-    """_NullEmbeddingEngine exposes the fields store_fact reads from real engines."""
+def test_noop_embedding_engine_emits_a_storable_vector():
+    """The stub engine must emit a vector pgvector accepts, not an empty list.
+
+    A zero-length vector is rejected with "vector must have at least 1
+    dimension", which silently discarded every fact these jobs stored.
+    """
     import inspect
 
-    eng = _NullEmbeddingEngine()
-    assert eng.model_name == "deterministic-null"
-    assert eng.embed("hello") == [] and eng.embed("") == []
+    eng = _NoOpEmbeddingEngine()
+    assert eng.model_name == "deterministic-noop"
+    for text in ("hello", ""):
+        vector = eng.embed(text)
+        assert len(vector) > 0
+        assert len(vector) == eng._DIM
     assert not inspect.iscoroutinefunction(eng.embed)
 
 
