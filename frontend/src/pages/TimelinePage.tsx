@@ -35,6 +35,7 @@ import { DispatchLayout, DispatchHeader, DispatchSurface } from "@/components/in
 import { NewEventsPill } from "@/components/timeline/NewEventsPill";
 import { TimelineLedger } from "@/components/timeline/TimelineLedger";
 import { useButlers } from "@/hooks/use-butlers.ts";
+import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
 import {
   useTimelineSavedViews,
@@ -231,6 +232,35 @@ export default function TimelinePage() {
 
   const hasDegradedSource = degradedSources.length > 0;
   const isLiveHeadRefreshing = pinned && isFetching && !isLoading && !isError;
+
+  // Hot-loop keyboard coverage (bu-ep4ks.12): this was the densest telemetry
+  // page in the fleet with zero useRegisterShortcut coverage. "r" mirrors the
+  // page's own retry affordance; "n" is only registered while there is
+  // something to jump to, matching the NewEventsPill's own visibility.
+  const pageActions = useMemo<PageAction[]>(() => {
+    const actions: PageAction[] = [
+      {
+        id: "timeline-refresh",
+        label: "Refresh timeline",
+        key: "r",
+        display: ["r"],
+        description: "Refresh timeline",
+        handler: () => void refetch(),
+      },
+    ];
+    if (newCount > 0) {
+      actions.push({
+        id: "timeline-jump-latest",
+        label: "Jump to latest events",
+        key: "n",
+        display: ["n"],
+        description: "Jump to latest events",
+        handler: showNewEvents,
+      });
+    }
+    return actions;
+  }, [refetch, newCount, showNewEvents]);
+  usePageActions(pageActions);
 
   return (
     <DispatchLayout>

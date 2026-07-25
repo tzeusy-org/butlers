@@ -462,4 +462,43 @@ describe("IssuesPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
     act(() => root.unmount());
     container.remove();
   });
+
+  it("Enter on the keyboard-focused row toggles its occurrences (bu-ep4ks.12)", () => {
+    setupDefaults([makeIssue()]);
+    vi.mocked(useIssueOccurrences).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: 1,
+            ts: "2026-06-14T10:30:00.000Z",
+            actor: "calendar",
+            action: "oauth_refresh",
+            target: null,
+            note: null,
+            ip: null,
+            request_id: null,
+          },
+        ],
+        meta: { total: 7, offset: 0, limit: 50, has_more: true },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIssueOccurrences>);
+    const { container, root } = renderPage("/issues");
+
+    act(() => press("j"));
+    // The focused element is the drillable row's nested DisclosureRow
+    // (role="button"), not the outer [data-testid="issue-row"] wrapper --
+    // that's the actual Enter/Space-activatable control (bu-ep4ks.12).
+    const focused = document.activeElement as HTMLElement;
+    expect(focused.getAttribute("role")).toBe("button");
+    expect(focused.getAttribute("data-issue-key")).toBe(makeIssue().issue_key);
+
+    act(() => focused.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+
+    expect(container.textContent).toContain("Showing 1 of 7");
+
+    act(() => root.unmount());
+    container.remove();
+  });
 });

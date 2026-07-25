@@ -2,6 +2,7 @@ import { useLocation, Link } from 'react-router'
 import { Search } from 'lucide-react'
 import { SiblingButlerNav } from '@/components/butler-detail/SiblingButlerNav'
 import { Button } from '../ui/button'
+import { Kbd } from '../ui/shortcut-hints'
 import { useBreadcrumbsControl } from '../ui/breadcrumbs-control'
 import { useDarkMode } from '../../hooks/useDarkMode'
 import { dispatchOpenEntityFinder } from '../../lib/entity-finder'
@@ -141,9 +142,14 @@ export default function PageHeader({ breadcrumbs, hideBreadcrumbs = false, liveS
           onClick={dispatchOpenEntityFinder}
           aria-label="Open command menu"
           title="Cmd/Ctrl+K"
-          className="h-8 w-8 p-0"
+          className="h-8 gap-1.5 px-2"
         >
           <Search className="h-4 w-4" />
+          {/* Visible affordance (bu-ep4ks.12) -- the shortcut used to be
+              discoverable only via this button's hover-only title tooltip.
+              Reuses the same Kbd chip the '?' help sheet renders bindings
+              with, so this hint never drifts from that shared vocabulary. */}
+          <Kbd>Ctrl K</Kbd>
         </Button>
 
         {/* Dark mode toggle */}

@@ -71,8 +71,10 @@ export const navSections: NavSection[] = [
       { path: '/butlers', label: 'Butlers', icon: 'butlers', chord: 'b' },
       { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-escalations', badgeVariant: 'red', icon: 'qa' },
       { path: '/ingestion', label: 'Ingestion', icon: 'ingestion', chord: 'e' },
-      { path: '/approvals', label: 'Approvals', badgeKey: 'approvals-pending', badgeVariant: 'amber', icon: 'approvals' },
-      { path: '/decisions', label: 'Decisions', badgeKey: 'decisions-open', badgeVariant: 'amber', icon: 'decisions' },
+      // g-chords added (bu-ep4ks.12): these two badged, high-traffic pages
+      // had no chord while several lower-traffic pages did.
+      { path: '/approvals', label: 'Approvals', badgeKey: 'approvals-pending', badgeVariant: 'amber', icon: 'approvals', chord: 'p' },
+      { path: '/decisions', label: 'Decisions', badgeKey: 'decisions-open', badgeVariant: 'amber', icon: 'decisions', chord: 'd' },
       { path: '/memory', label: 'Memory', icon: 'memory', chord: 'm' },
       { path: '/entities', label: 'Entities', icon: 'entities' },
       { path: '/secrets', label: 'Secrets', icon: 'secrets' },

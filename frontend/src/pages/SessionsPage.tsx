@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
@@ -381,6 +381,28 @@ export default function SessionsPage() {
   }, [sessions, selectedSessionId, cursor, nextCursor, prevCursors]);
 
   useRegisterShortcut(shortcutBindings);
+
+  // Keep DOM focus in sync with the current selection, mirroring IssuesPage's
+  // identical rail-focus effect -- j/k must move REAL focus (not just the
+  // ?selected= highlight), so Enter/Space on the focused control actually
+  // opens the drawer (bu-ep4ks.12). SessionTable deliberately keeps the row
+  // itself non-interactive (role=null, no tabindex -- see
+  // SessionTable.keyboard.test.tsx's "separate native controls" contract);
+  // the real focusable, natively Enter/Space-activatable target is the
+  // nested "Open session detail" button, so focus that rather than the row.
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    const nodes = document.querySelectorAll<HTMLElement>('[data-testid="session-row"]');
+    for (const node of nodes) {
+      if (node.getAttribute("data-session-id") === selectedSessionId) {
+        const detailButton = node.querySelector<HTMLElement>(
+          'button[aria-label^="Open session detail"]',
+        );
+        detailButton?.focus({ preventScroll: true });
+        break;
+      }
+    }
+  }, [selectedSessionId]);
 
   // A selected row is already enough to identify the session in the drawer.
   // Pass it through as a non-cacheable placeholder so click-through has useful

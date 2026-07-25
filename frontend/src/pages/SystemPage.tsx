@@ -7,6 +7,8 @@
  * what git SHA is actually serving, and how far behind origin/main it is.
  */
 
+import { useMemo } from "react";
+
 import { BackupTile } from "@/components/system/BackupTile";
 import { ButlerHeartbeatTile } from "@/components/system/ButlerHeartbeatTile";
 import { DbSizeTile } from "@/components/system/DbSizeTile";
@@ -29,6 +31,7 @@ import {
 import { Page } from "@/components/ui/page";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
+import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 
 // ---------------------------------------------------------------------------
 // SystemTile
@@ -63,8 +66,33 @@ function TopologyTile() {
   // rather than a separate useButlers() status probe. This closes the bug
   // where a butler could render green here while amber-stale in a list.
   const { rows, aggregates } = useButlerStatusBoard();
-  const { data: connectorsResponse, isLoading: connectorsLoading, isError: connectorsError } =
-    useConnectorSummaries();
+  const {
+    data: connectorsResponse,
+    isLoading: connectorsLoading,
+    isError: connectorsError,
+    refetch: refetchConnectors,
+  } = useConnectorSummaries();
+
+  // Hot-loop keyboard coverage (bu-ep4ks.12): /system had zero
+  // useRegisterShortcut coverage. "r" refreshes the same butler-status and
+  // connector data this tile (and the rest of the page's tiles) already poll.
+  const pageActions = useMemo<PageAction[]>(
+    () => [
+      {
+        id: "system-refresh",
+        label: "Refresh system status",
+        key: "r",
+        display: ["r"],
+        description: "Refresh system status",
+        handler: () => {
+          void aggregates.refetch();
+          void refetchConnectors();
+        },
+      },
+    ],
+    [aggregates, refetchConnectors],
+  );
+  usePageActions(pageActions);
 
   if (aggregates.isError) {
     return (

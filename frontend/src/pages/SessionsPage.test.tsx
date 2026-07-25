@@ -7,6 +7,7 @@
 
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { render, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { MemoryRouter, useLocation } from "react-router";
 
@@ -420,5 +421,70 @@ describe("SessionsPage — j/k/[/]/y keyboard loop", () => {
     fireEvent.keyDown(window, { key: "y" });
 
     expect(writeText).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Focus-reality (bu-ep4ks.12): j/k must move REAL DOM focus onto the
+// selected row, not just the ?selected= URL highlight -- mirroring
+// IssuesPage's identical rail-focus effect.
+// ---------------------------------------------------------------------------
+
+describe("SessionsPage — j/k moves real DOM focus (bu-ep4ks.12)", () => {
+  // SessionTable deliberately keeps the row itself non-interactive (no role,
+  // no tabindex -- SessionTable.keyboard.test.tsx's "separate native
+  // controls" contract): the real focus target is the nested "Open session
+  // detail" button, which already natively activates on Enter/Space. j/k
+  // must land focus there specifically, not on the row.
+  function activeRowId(): string | null {
+    return document.activeElement?.closest('[data-testid="session-row"]')?.getAttribute("data-session-id") ?? null;
+  }
+
+  it("j moves focus onto the first row's detail button", () => {
+    setSessions({
+      data: keysetResponse(
+        [makeSession({ id: "sess-1" }), makeSession({ id: "sess-2" })],
+        false,
+        null,
+      ),
+    });
+    renderPage();
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    expect(activeRowId()).toBe("sess-1");
+  });
+
+  it("k after j moves focus back to the previous row's detail button", () => {
+    setSessions({
+      data: keysetResponse(
+        [makeSession({ id: "sess-1" }), makeSession({ id: "sess-2" })],
+        false,
+        null,
+      ),
+    });
+    renderPage();
+
+    fireEvent.keyDown(window, { key: "j" });
+    fireEvent.keyDown(window, { key: "j" });
+    expect(activeRowId()).toBe("sess-2");
+
+    fireEvent.keyDown(window, { key: "k" });
+    expect(activeRowId()).toBe("sess-1");
+  });
+
+  it("Enter on the keyboard-focused row opens the session detail drawer", async () => {
+    setSessions({
+      data: keysetResponse([makeSession({ id: "sess-1" })], false, null),
+    });
+    const { getByTestId } = renderPage();
+    const user = userEvent.setup();
+
+    fireEvent.keyDown(window, { key: "j" });
+    expect(activeRowId()).toBe("sess-1");
+    await user.keyboard("{Enter}");
+
+    expect(getByTestId("drawer-stub").getAttribute("data-session-id")).toBe("sess-1");
   });
 });

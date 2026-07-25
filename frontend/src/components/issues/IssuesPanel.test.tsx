@@ -15,7 +15,7 @@
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 
 import IssuesPanel from "./IssuesPanel";
 import type { AuditLogEntry, Issue } from "../../api/types";
@@ -361,6 +361,88 @@ describe("IssuesPanel", () => {
 
       expect(onDismiss).toHaveBeenCalledTimes(1);
       expect(onToggleOccurrences).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Row keyboard activation (bu-ep4ks.12): the `[data-testid="issue-row"]`
+  // element is exactly what IssuesPage's j/k roving-focus effect calls
+  // .focus() on. Before this it had no keydown handler at all, so Enter on a
+  // keyboard-focused row did nothing.
+  // ---------------------------------------------------------------------------
+  describe("row keyboard activation (bu-ep4ks.12)", () => {
+    // A drillable row's real Enter/Space-activatable control is the nested
+    // DisclosureRow (role="button"), not the outer `[data-testid="issue-row"]`
+    // wrapper -- IssuesPage's focus effect targets that nested element for
+    // exactly this reason. DisclosureRow's own Enter/Space contract is
+    // exercised directly in DisclosureRow.test.tsx; these two only confirm
+    // IssuesPanel wires its onToggle through correctly.
+    it("Enter on the focused drillable row toggles its occurrences", () => {
+      const onToggleOccurrences = vi.fn();
+      const issue = makeIssue();
+      renderPanel({ issues: [issue], onToggleOccurrences });
+
+      const row = screen.getByRole("button", { expanded: false });
+      row.focus();
+      fireEvent.keyDown(row, { key: "Enter" });
+
+      expect(onToggleOccurrences).toHaveBeenCalledWith(issue.issue_key);
+    });
+
+    it("Space on the focused drillable row also toggles its occurrences", () => {
+      const onToggleOccurrences = vi.fn();
+      const issue = makeIssue();
+      renderPanel({ issues: [issue], onToggleOccurrences });
+
+      const row = screen.getByRole("button", { expanded: false });
+      row.focus();
+      fireEvent.keyDown(row, { key: " " });
+
+      expect(onToggleOccurrences).toHaveBeenCalledWith(issue.issue_key);
+    });
+
+    it("does not toggle when Enter fires from a nested control (e.g. Acknowledge)", () => {
+      const onToggleOccurrences = vi.fn();
+      const onDismiss = vi.fn();
+      const issue = makeIssue();
+      renderPanel({ issues: [issue], onToggleOccurrences, onDismiss });
+
+      fireEvent.keyDown(screen.getByRole("button", { name: "Acknowledge" }), {
+        key: "Enter",
+        bubbles: true,
+      });
+
+      expect(onToggleOccurrences).not.toHaveBeenCalled();
+    });
+
+    it("Enter on a focused non-drillable row with a link navigates to it", () => {
+      const issue = makeIssue({ type: "unreachable", link: "/butlers/general" });
+
+      render(
+        <MemoryRouter initialEntries={["/issues"]}>
+          <Routes>
+            <Route path="/issues" element={<IssuesPanel issues={[issue]} />} />
+            <Route path="/butlers/general" element={<div data-testid="butler-detail-stub" />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      const row = screen.getByTestId("issue-row");
+      row.focus();
+      fireEvent.keyDown(row, { key: "Enter" });
+
+      expect(screen.getByTestId("butler-detail-stub")).toBeTruthy();
+    });
+
+    it("Enter on a focused non-drillable row with no link is a no-op", () => {
+      const issue = makeIssue({ type: "unreachable", link: undefined });
+      // No onToggleOccurrences wired either -- nothing for Enter to do.
+      expect(() => {
+        renderPanel({ issues: [issue] });
+        const row = screen.getByTestId("issue-row");
+        row.focus();
+        fireEvent.keyDown(row, { key: "Enter" });
+      }).not.toThrow();
     });
   });
 });

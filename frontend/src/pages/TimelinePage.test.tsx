@@ -275,3 +275,61 @@ describe("TimelinePage — error vs empty state", () => {
     expect(html).not.toContain("opacity-60");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Hot-loop keyboard coverage (bu-ep4ks.12): the densest telemetry page had
+// zero useRegisterShortcut bindings.
+// ---------------------------------------------------------------------------
+
+describe("TimelinePage — keyboard shortcuts (bu-ep4ks.12)", () => {
+  afterEach(() => cleanup());
+
+  beforeEach(() => {
+    vi.mocked(useButlers).mockReturnValue({
+      data: { data: [] },
+    } as unknown as ReturnType<typeof useButlers>);
+    vi.mocked(useTimelineSavedViews).mockReturnValue({
+      data: { data: [] },
+    } as unknown as ReturnType<typeof useTimelineSavedViews>);
+    vi.mocked(useCreateTimelineSavedView).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateTimelineSavedView>);
+    vi.mocked(useDeleteTimelineSavedView).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useDeleteTimelineSavedView>);
+  });
+
+  function renderPage() {
+    return renderDom(
+      <MemoryRouter initialEntries={["/timeline"]}>
+        <TimelinePage />
+      </MemoryRouter>,
+    );
+  }
+
+  it("r refreshes the timeline", () => {
+    const refetch = vi.fn();
+    setLedger({ refetch });
+    renderPage();
+
+    fireEvent.keyDown(window, { key: "r" });
+
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("n jumps to the latest events only when there are new ones to jump to", () => {
+    const showNewEvents = vi.fn();
+    setLedger({ newCount: 0, showNewEvents });
+    const { unmount } = renderPage();
+
+    fireEvent.keyDown(window, { key: "n" });
+    expect(showNewEvents).not.toHaveBeenCalled();
+    unmount();
+
+    setLedger({ newCount: 2, showNewEvents });
+    renderPage();
+    fireEvent.keyDown(window, { key: "n" });
+    expect(showNewEvents).toHaveBeenCalledTimes(1);
+  });
+});

@@ -191,6 +191,9 @@ describe("PageHeader", () => {
 
     expect(searchButton).toBeInstanceOf(HTMLButtonElement);
     expect(searchButton?.getAttribute("title")).toBe("Cmd/Ctrl+K");
+    // Visible affordance (bu-ep4ks.12) -- discoverable without hovering,
+    // not just via the title tooltip above.
+    expect(searchButton?.textContent).toContain("Ctrl K");
 
     act(() => {
       searchButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

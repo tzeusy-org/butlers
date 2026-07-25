@@ -1,12 +1,15 @@
+// @vitest-environment jsdom
 /**
  * Tests for SystemPage.
  *
- * All tests use renderToStaticMarkup with mocked hooks to keep execution fast
- * and avoid network calls.
+ * Most tests use renderToStaticMarkup with mocked hooks to keep execution
+ * fast and avoid network calls; the keyboard-shortcut tests at the bottom
+ * need a real jsdom render to dispatch keydown events.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { cleanup, fireEvent, render as renderDom } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -173,6 +176,7 @@ function setAllLoading() {
     isLoading: true,
     isError: false,
     error: null,
+    refetch: vi.fn(),
   } as AnyMock);
 
   vi.mocked(useInstanceFacts).mockReturnValue({
@@ -239,6 +243,7 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
     isLoading: false,
     isError: false,
     error: null,
+    refetch: vi.fn(),
   } as AnyMock);
 
   vi.mocked(useInstanceFacts).mockReturnValue({
@@ -1034,5 +1039,53 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
     const html = renderPage();
     expect(html).toContain("security posture unavailable");
     expect(html).not.toContain('data-testid="system-verdict-all-clear"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hot-loop keyboard coverage (bu-ep4ks.12): /system had zero
+// useRegisterShortcut coverage.
+// ---------------------------------------------------------------------------
+
+describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setAllSuccess();
+  });
+
+  afterEach(() => cleanup());
+
+  function renderPageDom() {
+    const queryClient = new QueryClient();
+    return renderDom(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SystemPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("r refreshes butler status and connector data", () => {
+    const boardRefetch = vi.fn();
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      needsYou: [],
+      aggregates: { ...BOARD_AGGREGATES_DEFAULTS, isLoading: false, isError: false, error: null, refetch: boardRefetch },
+    } as AnyMock);
+    const connectorsRefetch = vi.fn();
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: connectorsRefetch,
+    } as AnyMock);
+
+    renderPageDom();
+    fireEvent.keyDown(window, { key: "r" });
+
+    expect(boardRefetch).toHaveBeenCalledTimes(1);
+    expect(connectorsRefetch).toHaveBeenCalledTimes(1);
   });
 });

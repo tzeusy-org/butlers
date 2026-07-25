@@ -1,5 +1,5 @@
-import type { MouseEvent } from 'react'
-import { Link } from 'react-router'
+import type { KeyboardEvent, MouseEvent } from 'react'
+import { Link, useNavigate } from 'react-router'
 import { ButlerMark } from '@/components/ui/ButlerMark'
 import { DisclosureRow } from '@/components/ui/DisclosureRow'
 import { Time } from '@/components/ui/time'
@@ -227,6 +227,8 @@ export default function IssuesPanel({
   onLoadMoreOccurrences,
   selectedIssueKey = null,
 }: IssuesPanelProps) {
+  const navigate = useNavigate()
+
   if (isLoading) {
     return (
       <Card>
@@ -429,42 +431,78 @@ export default function IssuesPanel({
               </>
             )
 
-            return (
-            <div
-              key={issue.issue_key}
-              data-testid="issue-row"
-              data-issue-key={issue.issue_key}
-              tabIndex={-1}
-              className={cn(
-                'rounded-md border',
-                selectedIssueKey === issue.issue_key && 'border-foreground/40 bg-muted/40',
-              )}
-            >
-              {drillable ? (
-                <DisclosureRow
-                  expanded={expanded}
-                  onToggle={() => onToggleOccurrences?.(issue.issue_key)}
-                  controlsId={`issue-occurrences-${issue.issue_key}`}
-                  className="flex items-start justify-between gap-3 p-3"
-                  prefetchTo={issue.link}
-                >
-                  {rowContent}
-                </DisclosureRow>
-              ) : (
-                <div className="flex items-start justify-between gap-3 p-3">{rowContent}</div>
-              )}
-              {expanded && (
-                <div id={`issue-occurrences-${issue.issue_key}`}>
-                  <OccurrencesPanel
-                    occurrences={occurrences}
-                    isLoading={occurrencesLoading}
-                    isError={occurrencesError}
-                    total={occurrencesTotal}
-                    onLoadMore={onLoadMoreOccurrences}
-                  />
+            // Non-drillable rows with a `link` get their own role="link" +
+            // Enter activation on the outer row itself -- previously this row
+            // had no keydown handler at all (bu-ep4ks.12), matching its own
+            // "View" button. Drillable rows need no handler here: DisclosureRow
+            // (nested below) already carries the real Enter/Space-activatable
+            // role="button" element that IssuesPage's focus effect targets
+            // (it prefers a nested `[role="button"]` over the plain row div).
+            const isLinkRow = !drillable && !!issue.link
+            const handleLinkRowKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+              if (e.target !== e.currentTarget) return
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              navigate(issue.link as string)
+            }
+
+            const occurrencesPanel = expanded && (
+              <div id={`issue-occurrences-${issue.issue_key}`}>
+                <OccurrencesPanel
+                  occurrences={occurrences}
+                  isLoading={occurrencesLoading}
+                  isError={occurrencesError}
+                  total={occurrencesTotal}
+                  onLoadMore={onLoadMoreOccurrences}
+                />
+              </div>
+            )
+            const rowClassName = cn(
+              'rounded-md border',
+              selectedIssueKey === issue.issue_key && 'border-foreground/40 bg-muted/40',
+            )
+
+            if (drillable) {
+              return (
+                <div key={issue.issue_key} data-testid="issue-row" data-issue-key={issue.issue_key} className={rowClassName}>
+                  <DisclosureRow
+                    data-issue-key={issue.issue_key}
+                    expanded={expanded}
+                    onToggle={() => onToggleOccurrences?.(issue.issue_key)}
+                    controlsId={`issue-occurrences-${issue.issue_key}`}
+                    className="flex items-start justify-between gap-3 p-3"
+                    prefetchTo={issue.link}
+                  >
+                    {rowContent}
+                  </DisclosureRow>
+                  {occurrencesPanel}
                 </div>
-              )}
-            </div>
+              )
+            }
+
+            if (isLinkRow) {
+              return (
+                <div key={issue.issue_key} className={rowClassName}>
+                  <div
+                    data-testid="issue-row"
+                    data-issue-key={issue.issue_key}
+                    role="link"
+                    tabIndex={0}
+                    onKeyDown={handleLinkRowKeyDown}
+                    className="flex items-start justify-between gap-3 p-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                  >
+                    {rowContent}
+                  </div>
+                  {occurrencesPanel}
+                </div>
+              )
+            }
+
+            return (
+              <div key={issue.issue_key} data-testid="issue-row" data-issue-key={issue.issue_key} className={rowClassName}>
+                <div className="flex items-start justify-between gap-3 p-3">{rowContent}</div>
+                {occurrencesPanel}
+              </div>
             )
           })}
         </div>

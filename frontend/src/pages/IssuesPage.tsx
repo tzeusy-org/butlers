@@ -262,13 +262,18 @@ export default function IssuesPage() {
   });
 
   // Keep DOM focus in sync with the current selection, mirroring
-  // ApprovalsPage's identical rail-focus effect.
+  // ApprovalsPage's identical rail-focus effect. A drillable row's real
+  // Enter/Space-activatable control is the nested DisclosureRow
+  // (role="button"), not the plain wrapping row div -- focus that when
+  // present so Enter on the keyboard-selected row actually does something
+  // (bu-ep4ks.12; the wrapping div previously had no keydown handler at all).
   useEffect(() => {
     if (!selectedIssueKey) return;
     const nodes = document.querySelectorAll<HTMLElement>('[data-testid="issue-row"]');
     for (const node of nodes) {
       if (node.getAttribute("data-issue-key") === selectedIssueKey) {
-        node.focus({ preventScroll: true });
+        const activatable = node.querySelector<HTMLElement>('[role="button"]');
+        (activatable ?? node).focus({ preventScroll: true });
         break;
       }
     }

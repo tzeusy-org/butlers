@@ -90,4 +90,9 @@ describe("route-registry", () => {
       expect(G_CHORD_ROUTES[letter]).toBeDefined();
     }
   });
+
+  it("gives Approvals and Decisions a g-chord (bu-ep4ks.12 -- these badged, high-traffic pages had none while lower-traffic pages did)", () => {
+    expect(G_CHORD_ROUTES.p).toBe("/approvals");
+    expect(G_CHORD_ROUTES.d).toBe("/decisions");
+  });
 });

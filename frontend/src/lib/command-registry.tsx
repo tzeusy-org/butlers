@@ -4,17 +4,31 @@
  * The command menu's Actions group is not a hardcoded list: any mounted
  * component can contribute commands to it for as long as it stays mounted,
  * via `useRegisterCommands`. This is how page-specific verbs (e.g.
- * ApprovalsPage's "Approve next", IssuesPage's "Acknowledge issue") reach the
- * global command menu without the menu needing to know every page exists.
- * `RootLayout` also uses it to register the always-available "Trigger
- * <butler>" actions, since a command doesn't need to be page-scoped to use
- * this API.
+ * ApprovalsPage's "Approve selected approval", IssuesPage's "Acknowledge
+ * selected issue" via `useListTriage`) reach the global command menu without
+ * the menu needing to know every page exists. `RootLayout` also uses it to
+ * register the always-available "Trigger <butler>" actions, since a command
+ * doesn't need to be page-scoped to use this API.
+ *
+ * Calling `useRegisterCommands` directly (as below) pairs a command with a
+ * keyboard shortcut ONLY if you also register a matching `useRegisterShortcut`
+ * binding yourself — nothing here enforces that pairing, which is exactly how
+ * this docstring once drifted (an illustrative example command cited here
+ * with no shortcut actually wired to it, bu-ep4ks.12). Two callers already
+ * close that gap structurally instead of by discipline: `useListTriage`
+ * (row-triage verbs — j/k plus an act key) and `usePageActions`
+ * (`src/hooks/use-page-actions.ts`, a page's own standalone actions with no
+ * surrounding row list) each take ONE declaration and derive both the
+ * shortcut and the command from it, so the two can never point at different
+ * things. Prefer one of those two for a new page verb; reach for
+ * `useRegisterCommands` directly only for a command with deliberately no
+ * keyboard binding.
  *
  * Usage:
  *
  *   const commands = useMemo(
- *     () => [{ id: "approve-next", label: "Approve next", perform: approveNext }],
- *     [approveNext],
+ *     () => [{ id: "open-settings", label: "Open settings", perform: openSettings }],
+ *     [openSettings],
  *   );
  *   useRegisterCommands(commands);
  *
