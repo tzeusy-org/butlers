@@ -127,6 +127,9 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "sessions_summary",
         "sessions_daily",
         "top_sessions",
+        # bu-ep4ks.2: dashboard chat Stop button — infrastructure endpoint the
+        # API calls server-to-server, always registered like route.execute.
+        "cancel_session",
         "schedule_costs",
         "notify",
         "remind",

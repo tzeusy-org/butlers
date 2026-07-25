@@ -24,4 +24,20 @@ describe("StatusBadge", () => {
     expect(html).toContain("var(--green)");
     expect(html).not.toMatch(/#[0-9a-fA-F]{6}/);
   });
+
+  it("renders Cancelled (not Failed) for an owner-cancelled session (bu-ep4ks.2)", () => {
+    const html = renderToStaticMarkup(
+      <StatusBadge success={false} error="Cancelled by owner" />,
+    );
+    expect(html).toContain("Cancelled");
+    expect(html).not.toContain("Failed");
+  });
+
+  it("still renders Failed for a false with an unrelated error", () => {
+    const html = renderToStaticMarkup(
+      <StatusBadge success={false} error="RuntimeError: exit code 1" />,
+    );
+    expect(html).toContain("Failed");
+    expect(html).not.toContain("Cancelled");
+  });
 });

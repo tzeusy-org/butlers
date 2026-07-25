@@ -5154,6 +5154,24 @@ export interface SendMessageRequest {
   page_context?: PageContext;
 }
 
+/**
+ * Response from POST /api/butlers/{name}/conversations/{id}/cancel (the
+ * chat "Stop" button, bu-ep4ks.2). Always HTTP 200 -- mirrors the backend's
+ * `ConversationCancelResponse`. Exactly one of three honest outcomes:
+ *   - `cancelled: true` -- an in-flight session was actually killed.
+ *   - `cancelled: false, already_finished: true` -- nothing was running;
+ *     benign no-op, never rendered as a failure.
+ *   - `cancelled: false, already_finished: false` -- cancellation was
+ *     attempted but could not be confirmed; `message` explains why and the
+ *     caller must surface this as a real failure, never as "stopped".
+ */
+export interface ConversationCancelResponse {
+  cancelled: boolean;
+  already_finished: boolean;
+  session_id?: string | null;
+  message?: string | null;
+}
+
 /** SSE event types emitted by the conversation streaming endpoints. */
 export type ConversationSseEventType =
   | "conversation_created"

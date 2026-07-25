@@ -29,6 +29,13 @@ POST /api/butlers/{name}/conversations/{conversation_id}/messages
     Response: SSE stream with ``token``, ``message_complete``, and
     ``done`` events.
 
+POST /api/butlers/{name}/conversations/{conversation_id}/cancel
+    Cancel the in-flight session behind the conversation's current turn
+    (the chat "Stop" button) -- a real terminate of the routed butler's
+    runtime subprocess, not a client-side stream detach. Always 200; see
+    ``ConversationCancelResponse`` for the cancelled/already_finished/failed
+    outcomes.
+
 PATCH /api/butlers/{name}/conversations/{conversation_id}
     Update conversation title or status (archive/unarchive).
 
@@ -81,6 +88,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastmcp.exceptions import ToolError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
@@ -105,6 +113,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.api.models.conversation import (
+    ConversationCancelResponse,
     ConversationCreateRequest,
     ConversationMessage,
     ConversationSearchResult,
@@ -134,6 +143,14 @@ _MCP_DISPATCH_TIMEOUT_S: float = 30.0
 # widget — conversations addressed to it are never pinned so its own
 # classify -> route pipeline can pick the target butler.
 _SWITCHBOARD_BUTLER: str = "switchboard"
+
+# conversation_id -> {"routed_butler": str, "request_id": str} for the turn
+# currently streaming a reply. Process-local (the dashboard API runs as a
+# single uvicorn worker, no `workers=` override in cli.py) -- POST
+# .../cancel resolves through this to find the live session to kill without
+# a DB round trip or plumbing request_id through the SSE payload. Populated
+# in _stream_conversation_response, cleared at every exit from that turn.
+_ACTIVE_TURNS: dict[UUID, dict[str, str]] = {}
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -351,65 +368,83 @@ async def _stream_conversation_response(
     # turn, otherwise the pinned/addressed butler itself.
     routed_butler = triage_target if routed_this_turn else butler_name
 
-    # Step 3: Poll for the conversation_reply message, with keepalive.
-    start_ts = time.monotonic()
-    last_keepalive_ts = start_ts
-    reply_row: dict[str, Any] | None = None
+    # Register this turn as cancellable (POST .../cancel resolves conversation_id
+    # -> routed_butler + request_id -> live session, see _resolve_session_id).
+    # Cleared in the finally below so a stale entry never outlives the turn it
+    # describes -- an unregistered conversation_id means "nothing to cancel"
+    # (benign no-op), never a dangling handle to an unrelated later turn. The
+    # try/finally (rather than a pop() at each exit point) also covers exit
+    # paths callers didn't anticipate, e.g. an unhandled exception from
+    # message_find_reply_since during polling, or the generator being closed
+    # early by the ASGI server.
+    if request_id_str:
+        _ACTIVE_TURNS[conversation_id] = {
+            "routed_butler": routed_butler,
+            "request_id": request_id_str,
+        }
 
-    while reply_row is None:
-        # Check client disconnect
-        if await request.is_disconnected():
-            logger.info("Client disconnected during conversation stream %s", conversation_id)
-            return
+    try:
+        # Step 3: Poll for the conversation_reply message, with keepalive.
+        start_ts = time.monotonic()
+        last_keepalive_ts = start_ts
+        reply_row: dict[str, Any] | None = None
 
-        # Keepalive check
-        now = time.monotonic()
-        if now - last_keepalive_ts >= _KEEPALIVE_INTERVAL_S:
-            yield _sse_comment("keepalive")
-            last_keepalive_ts = now
+        while reply_row is None:
+            # Check client disconnect
+            if await request.is_disconnected():
+                logger.info("Client disconnected during conversation stream %s", conversation_id)
+                return
 
-        # Timeout guard — graceful: the thread stays open and a late reply
-        # remains visible on the next history fetch/poll.
-        if now - start_ts >= _SESSION_TIMEOUT_S:
-            timeout_session_id = await _lookup_timed_out_session_id(
-                db=db, routed_butler=routed_butler, request_id=request_id_str
+            # Keepalive check
+            now = time.monotonic()
+            if now - last_keepalive_ts >= _KEEPALIVE_INTERVAL_S:
+                yield _sse_comment("keepalive")
+                last_keepalive_ts = now
+
+            # Timeout guard — graceful: the thread stays open and a late reply
+            # remains visible on the next history fetch/poll.
+            if now - start_ts >= _SESSION_TIMEOUT_S:
+                timeout_session_id = await _resolve_session_id(
+                    db=db, routed_butler=routed_butler, request_id=request_id_str
+                )
+                logger.warning(
+                    "No conversation_reply for conversation %s within %.0fs (routed_butler=%s)",
+                    conversation_id,
+                    _SESSION_TIMEOUT_S,
+                    routed_butler,
+                )
+                yield _sse_error(
+                    "SESSION_TIMEOUT",
+                    "No reply yet — inspect the session for details.",
+                    session_id=timeout_session_id,
+                )
+                yield _sse_done()
+                return
+
+            reply_row = await message_find_reply_since(
+                shared_pool, conversation_id, since=message_created_at
             )
-            logger.warning(
-                "No conversation_reply for conversation %s within %.0fs (routed_butler=%s)",
-                conversation_id,
-                _SESSION_TIMEOUT_S,
-                routed_butler,
-            )
-            yield _sse_error(
-                "SESSION_TIMEOUT",
-                "No reply yet — inspect the session for details.",
-                session_id=timeout_session_id,
-            )
-            yield _sse_done()
-            return
+            if reply_row is None:
+                await asyncio.sleep(_POLL_INTERVAL_S)
 
-        reply_row = await message_find_reply_since(
-            shared_pool, conversation_id, since=message_created_at
+        # Step 4: Emit the already-persisted conversation_reply — no DB write
+        # happens here; conversation_reply_create() did it inside the routed
+        # butler's own session.
+        yield _sse_event("token", {"content": reply_row["content"]})
+        yield _sse_event(
+            "message_complete",
+            {
+                "message_id": str(reply_row["id"]),
+                "model_name": reply_row.get("model_name"),
+                "input_tokens": reply_row.get("input_tokens"),
+                "output_tokens": reply_row.get("output_tokens"),
+                "duration_ms": reply_row.get("duration_ms"),
+                "tool_calls": reply_row.get("tool_calls") or [],
+            },
         )
-        if reply_row is None:
-            await asyncio.sleep(_POLL_INTERVAL_S)
-
-    # Step 4: Emit the already-persisted conversation_reply — no DB write
-    # happens here; conversation_reply_create() did it inside the routed
-    # butler's own session.
-    yield _sse_event("token", {"content": reply_row["content"]})
-    yield _sse_event(
-        "message_complete",
-        {
-            "message_id": str(reply_row["id"]),
-            "model_name": reply_row.get("model_name"),
-            "input_tokens": reply_row.get("input_tokens"),
-            "output_tokens": reply_row.get("output_tokens"),
-            "duration_ms": reply_row.get("duration_ms"),
-            "tool_calls": reply_row.get("tool_calls") or [],
-        },
-    )
-    yield _sse_done()
+        yield _sse_done()
+    finally:
+        _ACTIVE_TURNS.pop(conversation_id, None)
 
 
 async def _persist_dashboard_user_message(
@@ -446,20 +481,23 @@ async def _persist_dashboard_user_message(
         ) from exc
 
 
-async def _lookup_timed_out_session_id(
+async def _resolve_session_id(
     *,
     db: DatabaseManager,
     routed_butler: str,
     request_id: str | None,
 ) -> UUID | None:
-    """Best-effort session lookup for the ``SESSION_TIMEOUT`` event's link.
+    """Best-effort ``request_id`` -> ``sessions.id`` lookup on ``routed_butler``.
 
     ``request_id`` is the canonical Switchboard ingest request reference,
     which the routing pipeline stamps onto the resulting session row
     (``Spawner.trigger`` -> ``session_create(request_id=...)``). Returns
     ``None`` (never raises) when the butler's pool is unavailable or no
-    session row is found — the timeout event is still emitted either way,
-    just without a session link to inspect.
+    session row is found yet.
+
+    Shared by the ``SESSION_TIMEOUT`` event's "inspect session" link and
+    ``POST .../cancel`` (bu-ep4ks.2) -- both need the same request_id ->
+    session_id resolution, just for different follow-up actions.
     """
     if not request_id:
         return None
@@ -468,7 +506,7 @@ async def _lookup_timed_out_session_id(
         pool = db.pool(routed_butler)
     except KeyError:
         logger.warning(
-            "No DB pool registered for butler '%s'; cannot resolve timeout session link",
+            "No DB pool registered for butler '%s'; cannot resolve session id",
             routed_butler,
         )
         return None
@@ -480,7 +518,7 @@ async def _lookup_timed_out_session_id(
         )
     except Exception:
         logger.warning(
-            "Failed to resolve timeout session link (butler=%s, request_id=%s)",
+            "Failed to resolve session id (butler=%s, request_id=%s)",
             routed_butler,
             request_id,
             exc_info=True,
@@ -843,6 +881,104 @@ async def send_message(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/butlers/{name}/conversations/{conversation_id}/cancel
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{name}/conversations/{conversation_id}/cancel",
+    response_model=ConversationCancelResponse,
+)
+async def cancel_conversation_turn(
+    name: str,
+    conversation_id: UUID,
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConversationCancelResponse:
+    """Cancel the in-flight session behind this conversation's current turn.
+
+    Implements the chat "Stop" button (bu-ep4ks.2) as a real terminate, not a
+    client-side stream detach: resolves ``conversation_id`` -> the active
+    turn's ``(routed_butler, request_id)`` registered by
+    ``_stream_conversation_response`` -> ``request_id`` -> ``session_id`` ->
+    the routed butler's ``cancel_session`` MCP tool, which kills the actual
+    runtime subprocess.
+
+    Always returns HTTP 200 -- see ``ConversationCancelResponse`` for the
+    three distinct outcomes it distinguishes. Never claims ``cancelled=True``
+    unless the routed butler itself confirmed the kill -- or, for a Stop
+    click that lands before the runtime invocation has started (the session
+    row exists but ``Spawner._run`` hasn't reached ``asyncio.create_task
+    (runtime.invoke(...))`` yet), confirmed the invocation will be skipped
+    entirely rather than falsely reporting ``already_finished``.
+    """
+    turn = _ACTIVE_TURNS.get(conversation_id)
+    if turn is None:
+        # Nothing registered for this conversation right now -- the turn
+        # already finished (or was never dispatched). Benign no-op.
+        return ConversationCancelResponse(cancelled=False, already_finished=True)
+
+    routed_butler = turn["routed_butler"]
+    request_id = turn["request_id"]
+
+    session_id = await _resolve_session_id(
+        db=db, routed_butler=routed_butler, request_id=request_id
+    )
+    if session_id is None:
+        # The session row hasn't landed yet (very early race) or the pool
+        # lookup failed -- nothing concrete to cancel against.
+        return ConversationCancelResponse(cancelled=False, already_finished=True)
+
+    try:
+        client = await asyncio.wait_for(
+            mcp_mgr.get_client(routed_butler), timeout=_MCP_DISPATCH_TIMEOUT_S
+        )
+        mcp_result = await asyncio.wait_for(
+            client.call_tool("cancel_session", {"session_id": str(session_id)}),
+            timeout=_MCP_DISPATCH_TIMEOUT_S,
+        )
+    except (ButlerUnreachableError, ToolError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "cancel_session MCP call failed for conversation %s (butler=%s, session=%s): %s",
+            conversation_id,
+            routed_butler,
+            session_id,
+            exc,
+        )
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            session_id=session_id,
+            message=f"Could not reach {routed_butler} to confirm cancellation.",
+        )
+
+    result = _first_json_block(mcp_result)
+    if mcp_result.is_error or not isinstance(result, dict):
+        logger.warning(
+            "cancel_session tool returned an unexpected result for conversation %s "
+            "(butler=%s, session=%s): %r",
+            conversation_id,
+            routed_butler,
+            session_id,
+            result,
+        )
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            session_id=session_id,
+            message="Cancellation request failed.",
+        )
+
+    cancelled = bool(result.get("cancelled"))
+    return ConversationCancelResponse(
+        cancelled=cancelled,
+        already_finished=not cancelled,
+        session_id=session_id,
+        message=None if cancelled else "Session already finished.",
     )
 
 

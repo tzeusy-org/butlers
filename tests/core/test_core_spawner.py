@@ -30,6 +30,7 @@ from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import (
+    SESSION_CANCELLED_ERROR,
     Spawner,
     SpawnerResult,
     _append_runtime_session_query,
@@ -2734,3 +2735,231 @@ class TestSpendEventBusWiring:
         # Session must succeed despite broker error
         assert result.success is True
         assert result.error is None
+
+
+# ---------------------------------------------------------------------------
+# cancel_session (bu-ep4ks.2) — owner-initiated Stop actually kills the
+# in-flight runtime invocation rather than just detaching a client watcher.
+# ---------------------------------------------------------------------------
+
+
+class TestCancelSession:
+    async def test_unknown_session_id_is_benign_noop(self, tmp_path: Path):
+        """Cancelling a session that never registered an invoke_task is a no-op, not an error."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        spawner = Spawner(config=_make_config(), config_dir=config_dir, runtime=MockAdapter())
+        assert spawner.cancel_session("00000000-0000-0000-0000-000000000000") is False
+
+    async def test_cancel_kills_running_invocation_and_marks_ledger(self, tmp_path: Path):
+        """cancel_session() cancels the live invoke_task and the outcome is honestly logged."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+        ):
+            fake_session_id = uuid.UUID("00000000-0000-0000-0000-0000000000ca")
+            mock_create.return_value = fake_session_id
+
+            spawner = Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                # Long delay — invoke() must still be running when we cancel.
+                runtime=MockAdapter(delay=30),
+            )
+
+            trigger_task = asyncio.create_task(spawner.trigger("cancel me", "schedule"))
+            try:
+                for _ in range(500):
+                    if str(fake_session_id) in spawner._invoke_tasks_by_session:
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    pytest.fail("invoke_task never registered for session_id")
+
+                assert spawner.cancel_session(str(fake_session_id)) is True
+
+                result = await asyncio.wait_for(trigger_task, timeout=5)
+            finally:
+                if not trigger_task.done():
+                    trigger_task.cancel()
+
+            assert result.success is False
+            assert result.error == SESSION_CANCELLED_ERROR
+            assert result.session_id == fake_session_id
+
+            # No leaked registry entry once the attempt has unwound.
+            assert str(fake_session_id) not in spawner._invoke_tasks_by_session
+
+            mock_complete.assert_called_once()
+            args, kwargs = mock_complete.call_args
+            assert args[0] is mock_pool and args[1] == fake_session_id
+            assert kwargs["success"] is False
+            assert kwargs["error"] == SESSION_CANCELLED_ERROR
+
+    async def test_cancel_after_completion_is_benign_noop(self, tmp_path: Path):
+        """A session that already finished is not cancellable — no false 'stopped' claim."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            fake_session_id = uuid.UUID("00000000-0000-0000-0000-0000000000cb")
+            mock_create.return_value = fake_session_id
+
+            spawner = Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=MockAdapter(result_text="done already"),
+            )
+
+            result = await spawner.trigger("finish fast", "schedule")
+            assert result.success is True
+
+            assert spawner.cancel_session(str(fake_session_id)) is False
+
+    async def test_cancel_before_invoke_task_registered_skips_invocation(self, tmp_path: Path):
+        """Stop clicked in the pre-invocation window (session row created,
+        invoke_task not yet registered) must cancel the session honestly
+        instead of the runtime ever being invoked (bu-j9ie8 review thread
+        r3650319071)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        reached_window = asyncio.Event()
+        proceed = asyncio.Event()
+
+        async def _blocking_prompt_override(*args: Any, **kwargs: Any) -> None:
+            # Fires after session_create() (and _pending_invoke_sessions
+            # registration) but before invoke_task is ever created --
+            # exactly the pre-invocation window the review flagged.
+            reached_window.set()
+            await proceed.wait()
+            return None
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch(
+                "butlers.core.spawner.fetch_system_prompt_override",
+                side_effect=_blocking_prompt_override,
+            ),
+        ):
+            fake_session_id = uuid.UUID("00000000-0000-0000-0000-0000000000cd")
+            mock_create.return_value = fake_session_id
+            adapter = MockAdapter(result_text="should never run", capture=True)
+
+            spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+            trigger_task = asyncio.create_task(
+                spawner.trigger("cancel me before invoke", "schedule")
+            )
+            try:
+                await asyncio.wait_for(reached_window.wait(), timeout=5.0)
+
+                # Session row exists (session_create() has run) but no
+                # invoke_task has been registered yet.
+                assert str(fake_session_id) in spawner._pending_invoke_sessions
+                assert str(fake_session_id) not in spawner._invoke_tasks_by_session
+                assert spawner.cancel_session(str(fake_session_id)) is True
+
+                proceed.set()
+                result = await asyncio.wait_for(trigger_task, timeout=5.0)
+            finally:
+                if not trigger_task.done():
+                    trigger_task.cancel()
+
+            assert result.success is False
+            assert result.error == SESSION_CANCELLED_ERROR
+            assert result.session_id == fake_session_id
+            # The runtime was never actually invoked.
+            assert adapter.calls == []
+            mock_complete.assert_called_once()
+            args, kwargs = mock_complete.call_args
+            assert args[0] is mock_pool and args[1] == fake_session_id
+            assert kwargs["success"] is False
+            assert kwargs["error"] == SESSION_CANCELLED_ERROR
+
+            # No leaked bookkeeping once the attempt has unwound.
+            assert str(fake_session_id) not in spawner._pending_invoke_sessions
+            assert str(fake_session_id) not in spawner._invoke_tasks_by_session
+
+    async def test_drain_forced_cancel_not_swallowed_by_overlapping_owner_cancel(
+        self, tmp_path: Path
+    ):
+        """drain()'s shutdown-timeout cancel of the outer task must keep
+        propagating to trigger()'s caller even when it races with an owner
+        cancel_session() call still unwinding on the same session's
+        invoke_task (bu-j9ie8 review thread r3650319593)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        class SlowToUnwindAdapter(MockAdapter):
+            """Simulates a runtime adapter whose own kill+wait cleanup takes
+            real time after being cancelled -- long enough for drain()'s
+            independent shutdown-timeout cancel of the outer task to land
+            before the owner-cancel has finished unwinding."""
+
+            def __init__(self, unwind_delay: float) -> None:
+                super().__init__(delay=100, capture=True)
+                self.cancel_received = asyncio.Event()
+                self._unwind_delay = unwind_delay
+
+            async def invoke(self, *args: Any, **kwargs: Any) -> Any:
+                try:
+                    return await super().invoke(*args, **kwargs)
+                except asyncio.CancelledError:
+                    self.cancel_received.set()
+                    await asyncio.sleep(self._unwind_delay)
+                    raise
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+        ):
+            fake_session_id = uuid.UUID("00000000-0000-0000-0000-0000000000ce")
+            mock_create.return_value = fake_session_id
+            adapter = SlowToUnwindAdapter(unwind_delay=0.3)
+
+            spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+            trigger_task = asyncio.create_task(spawner.trigger("racey", "schedule"))
+            try:
+                for _ in range(500):
+                    if str(fake_session_id) in spawner._invoke_tasks_by_session:
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    pytest.fail("invoke_task never registered for session_id")
+
+                # Owner-initiated Stop: cancels invoke_task, but the adapter
+                # takes its time (unwind_delay) to actually unwind.
+                assert spawner.cancel_session(str(fake_session_id)) is True
+                await asyncio.wait_for(adapter.cancel_received.wait(), timeout=5.0)
+
+                # Before the owner-cancel finishes unwinding, drain()'s
+                # independent shutdown-timeout path cancels the *outer* task
+                # directly -- this must NOT be misclassified as the owner
+                # cancel and swallowed.
+                spawner.stop_accepting()
+                await spawner.drain(timeout=0.001)
+
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(trigger_task, timeout=5.0)
+            finally:
+                if not trigger_task.done():
+                    trigger_task.cancel()

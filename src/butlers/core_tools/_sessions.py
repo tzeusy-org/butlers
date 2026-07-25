@@ -1,6 +1,9 @@
-"""Sessions core tools: sessions_list, sessions_get, sessions_summary, sessions_daily, top_sessions.
+"""Sessions core tools: sessions_list, sessions_get, sessions_summary, sessions_daily,
+top_sessions, cancel_session.
 
-All session tools are only registered for non-STAFFER butlers.
+The query tools (sessions_list, etc.) are only registered for non-STAFFER
+butlers. cancel_session is always registered regardless of butler type or
+core_groups -- see its docstring below.
 """
 
 from __future__ import annotations
@@ -19,9 +22,30 @@ from butlers.core_tools._base import ToolContext
 
 
 def register_session_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
-    """Register sessions group tools (non-STAFFER only)."""
+    """Register sessions group tools (non-STAFFER only) plus cancel_session (always)."""
     pool = ctx.pool
     butler_type = ctx.butler_type
+    spawner = ctx.spawner
+
+    # cancel_session is ALWAYS registered regardless of core_groups or butler
+    # type -- like route.execute, this is an infrastructure endpoint the
+    # dashboard API calls server-to-server (never an LLM-facing tool), so it
+    # must survive core_groups pruning. It implements the chat "Stop" button
+    # (bu-ep4ks.2): killing the actual runtime subprocess, not just detaching
+    # the client's SSE watch.
+    @mcp.tool(name="cancel_session")
+    async def cancel_session(session_id: str) -> dict:
+        """Cancel an in-flight session's runtime invocation, if still running.
+
+        Kills the underlying CLI subprocess via the spawner's cancellation
+        handling -- a real terminate, not a client-side stream detach.
+        Cancelling a session that already completed (or was never in flight
+        on this daemon) is a benign no-op: ``cancelled`` is ``False`` so the
+        caller never renders a false "stopped" confirmation for something
+        that simply finished on its own.
+        """
+        cancelled = spawner.cancel_session(session_id)
+        return {"cancelled": cancelled, "session_id": session_id}
 
     if butler_type != ButlerType.STAFFER:
 

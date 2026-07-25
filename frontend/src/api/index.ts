@@ -802,6 +802,7 @@ export {
   searchConversations,
   createConversation,
   sendMessage,
+  cancelConversationTurn,
 } from "./client.ts";
 
 export type {

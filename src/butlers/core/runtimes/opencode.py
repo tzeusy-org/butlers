@@ -1192,6 +1192,29 @@ class OpenCodeAdapter(RuntimeAdapter):
                         f"OpenCode CLI timed out after {effective_timeout} seconds"
                     ) from None
 
+                except asyncio.CancelledError:
+                    # Owner-initiated Stop (Spawner.cancel_session) cancels the
+                    # task running this coroutine. Without an explicit kill
+                    # here the CLI subprocess would be orphaned and keep
+                    # running/spending after the Python-level task unwinds —
+                    # this is the actual "Stop actually stops" mechanism.
+                    # Never retried — propagates immediately out of the loop.
+                    logger.warning("OpenCode CLI invocation cancelled; killing subprocess")
+                    self._last_process_info = {
+                        "pid": proc.pid if proc is not None else None,
+                        "exit_code": -1,
+                        "command": cmd_for_log,
+                        "stderr": "(cancelled - process killed)",
+                        "runtime_type": "opencode",
+                        "attempt_index": attempt_index,
+                        "attempt_count": attempt_count,
+                        "is_pre_tool_call": True,
+                    }
+                    if proc is not None:
+                        proc.kill()
+                        await proc.wait()
+                    raise
+
             raise RuntimeError("OpenCode CLI retry loop exhausted")
 
 

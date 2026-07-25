@@ -162,6 +162,14 @@ _RUNTIME_TIMEOUT_MIN_CLEANUP_GRACE_S = 1.0
 _RUNTIME_TIMEOUT_MAX_CLEANUP_GRACE_S = 10.0
 _RUNTIME_TIMEOUT_CLEANUP_GRACE_FRACTION = 0.05
 
+# Session ``error`` column value written when a session is terminated via
+# Spawner.cancel_session() (owner-initiated Stop). There is no DB status enum
+# for sessions -- outcome is entirely success/error text, matching the
+# existing timeout convention -- so this exact string is the contract readers
+# (dashboard API, frontend) match against to render a "Cancelled" terminal
+# state distinct from a generic failure.
+SESSION_CANCELLED_ERROR = "Cancelled by owner"
+
 # ---------------------------------------------------------------------------
 # Guardrail budget defaults
 # ---------------------------------------------------------------------------
@@ -434,6 +442,31 @@ class Spawner:
         self._in_flight: set[asyncio.Task] = set()
         self._in_flight_event = asyncio.Event()
         self._in_flight_event.set()  # Initially no in-flight sessions
+        # session_id (str) -> the asyncio.Task currently running runtime.invoke()
+        # for that session. Populated only while a runtime invocation attempt is
+        # actually in flight (see the failover loop in _run) so an owner-initiated
+        # cancel_session() call can reach the live invocation without needing a
+        # cross-process handle -- the API process talks to this via the
+        # cancel_session MCP tool, not directly.
+        self._invoke_tasks_by_session: dict[str, asyncio.Task] = {}
+        # session_ids explicitly cancelled via cancel_session() (owner Stop).
+        # _run's CancelledError handler consults this to distinguish an
+        # owner-initiated cancel (absorb -> honest SpawnerResult) from
+        # drain()'s shutdown-timeout cancellation of the *outer* task (must
+        # keep propagating so drain()'s callers observe real cancellation).
+        self._owner_cancelled_sessions: set[str] = set()
+        # session_ids for which the session row has been created (session_
+        # create() has run) but the runtime invoke_task has not yet been
+        # registered in _invoke_tasks_by_session -- the pre-invocation window
+        # in _run that spans several real awaits (system-prompt/situational-
+        # context/memory-context fetches, credential/env building, MCP
+        # warmup). An owner Stop click landing in this window has no live
+        # task to cancel; cancel_session() consults this set to recognize the
+        # session as real-but-not-yet-invoked and record the cancel intent
+        # here instead of falsely reporting "already finished". Cleared
+        # once the invoke_task is registered (see _run) or, defensively, in
+        # _run's own finally block on any exit path.
+        self._pending_invoke_sessions: set[str] = set()
         self._metrics = ButlerMetrics(butler_name=config.name)
         self._metrics.ensure_registered()
         self._mcp_warmup_lock = asyncio.Lock()
@@ -808,6 +841,46 @@ class Spawner:
     def in_flight_count(self) -> int:
         """Return the number of currently in-flight runtime sessions."""
         return len(self._in_flight)
+
+    def cancel_session(self, session_id: str) -> bool:
+        """Cancel an in-flight session's runtime invocation, if one is running.
+
+        Called from the ``cancel_session`` MCP tool (in-process, same event
+        loop) when the dashboard owner clicks Stop. Cancelling the
+        ``invoke_task`` unwinds it through the runtime adapter's own
+        ``CancelledError`` handler, which kills the underlying CLI subprocess
+        -- this is what makes Stop actually stop, rather than merely
+        detaching the watching client.
+
+        A Stop click can also land in the pre-invocation window: the session
+        row exists (``session_create()`` has run) but ``_run`` hasn't reached
+        ``asyncio.create_task(runtime.invoke(...))`` yet, so there is no live
+        task here to cancel. ``_pending_invoke_sessions`` (populated by
+        ``_run`` as soon as the session row is created) lets this method
+        recognize that case and record the cancel intent instead of
+        reporting a false "already finished" -- ``_run`` checks it just
+        before creating the invoke_task and skips invocation entirely.
+
+        Returns
+        -------
+        bool
+            ``True`` if a running invocation was found and cancelled, or the
+            session is real but still in the pre-invocation window (recorded
+            for ``_run`` to skip invoking the runtime).
+            ``False`` if the session is not currently in flight and not
+            pending invocation (already completed, failed, or unknown) --
+            callers must treat ``False`` as a benign no-op, not an error.
+        """
+        session_key = str(session_id)
+        task = self._invoke_tasks_by_session.get(session_key)
+        if task is not None and not task.done():
+            self._owner_cancelled_sessions.add(session_key)
+            task.cancel()
+            return True
+        if session_key in self._pending_invoke_sessions:
+            self._owner_cancelled_sessions.add(session_key)
+            return True
+        return False
 
     @staticmethod
     def _normalize_mcp_warmup_url(url: str) -> str | None:
@@ -1390,6 +1463,13 @@ class Spawner:
                 runtime_session_id = str(session_id)
                 ensure_runtime_session_capture(runtime_session_id)
                 set_runtime_session_routing_context(runtime_session_id, routing_context)
+                # Mark the session as real-but-not-yet-invoked so a Stop
+                # click landing in the pre-invocation window below (system-
+                # prompt/context/memory fetches, MCP warmup) is recognized by
+                # cancel_session() instead of falsely reporting "already
+                # finished". Discarded once the invoke_task is registered
+                # (or, defensively, in this method's finally block).
+                self._pending_invoke_sessions.add(runtime_session_id)
 
             # Read system prompt. The live override (HEAD of
             # public.system_prompt_history, set via the dashboard prompt editor)
@@ -1532,7 +1612,22 @@ class Spawner:
                 _attempt_tool_calls: list[dict[str, Any]] = []
 
                 try:
+                    if runtime_session_id and runtime_session_id in self._owner_cancelled_sessions:
+                        # Owner clicked Stop while this session was still
+                        # pending invocation (cancel_session() found no live
+                        # invoke_task and recorded intent via
+                        # _pending_invoke_sessions instead). Skip invoking the
+                        # runtime entirely and raise the same CancelledError
+                        # the mid-flight owner-cancel path produces (case 1
+                        # in the except asyncio.CancelledError handler below)
+                        # so the caller gets an honest cancelled outcome
+                        # instead of a runtime invocation nobody asked for.
+                        self._pending_invoke_sessions.discard(runtime_session_id)
+                        raise asyncio.CancelledError()
                     invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
+                    if runtime_session_id:
+                        self._invoke_tasks_by_session[runtime_session_id] = invoke_task
+                        self._pending_invoke_sessions.discard(runtime_session_id)
                     try:
                         done, _pending = await asyncio.wait(
                             {invoke_task},
@@ -1565,6 +1660,14 @@ class Spawner:
                                 await invoke_task
                             except (asyncio.CancelledError, Exception):
                                 pass
+                        # Only this attempt's own entry -- a same-tier failover
+                        # retry may have already overwritten the key with a new
+                        # invoke_task by the time this finally runs.
+                        if (
+                            runtime_session_id
+                            and self._invoke_tasks_by_session.get(runtime_session_id) is invoke_task
+                        ):
+                            del self._invoke_tasks_by_session[runtime_session_id]
                 except MCPToolDiscoveryError as exc:
                     executed_tool_calls = (
                         consume_runtime_session_tool_calls(runtime_session_id)
@@ -2028,6 +2131,80 @@ class Spawner:
 
             return spawner_result
 
+        except asyncio.CancelledError:
+            # Two distinct sources land here and must be told apart:
+            #   1. Spawner.cancel_session() cancelled this attempt's own
+            #      invoke_task (owner-initiated Stop) -- an intentional
+            #      terminal stop, not a runtime failure. Absorb it and record
+            #      the honest outcome instead of propagating: the caller of
+            #      trigger() (e.g. a routed MCP dispatch awaiting the result
+            #      inline) must see a normal SpawnerResult(success=False),
+            #      not an unrelated cancellation of its own task.
+            #   2. drain()'s shutdown timeout cancelled the *outer* _run task
+            #      directly (see _in_flight) -- callers of trigger() (and
+            #      tests) rely on that cancellation actually propagating, so
+            #      it must keep unwinding rather than being swallowed here.
+            #
+            # `runtime_session_id in self._owner_cancelled_sessions` alone is
+            # NOT a reliable discriminator: cancel_session() adds the id
+            # *before* calling invoke_task.cancel() and only discards it once
+            # a CancelledError reaches this handler and is classified as case
+            # 1, so the id can still be present while a *second*, independent
+            # CancelledError from case 2 (drain cancelling the outer task
+            # directly, while the owner-cancel is still unwinding through the
+            # runtime adapter) is what actually lands here -- misclassifying
+            # it as case 1 and swallowing a cancellation that must propagate.
+            #
+            # asyncio.Task.cancelling() (3.11+) resolves this unambiguously:
+            # it counts pending .cancel() calls made directly against *this*
+            # task. drain() calls .cancel() on the outer task itself (via
+            # _in_flight), so cancelling() > 0 there regardless of what
+            # session-id bookkeeping says. Case 1's CancelledError instead
+            # arises from `await invoke_task` observing a cancellation that
+            # was requested on invoke_task, not on the current task, so
+            # cancelling() stays 0 here even while the id is still recorded.
+            current_task = asyncio.current_task()
+            outer_task_cancelled_directly = (
+                current_task is not None and current_task.cancelling() > 0
+            )
+            is_owner_cancel = bool(runtime_session_id) and (
+                runtime_session_id in self._owner_cancelled_sessions
+            )
+            if outer_task_cancelled_directly or not is_owner_cancel:
+                raise
+            self._owner_cancelled_sessions.discard(runtime_session_id)
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            captured_on_cancel: list[dict[str, Any]] = []
+            if preconsumed_runtime_tool_calls is not None:
+                captured_on_cancel = list(preconsumed_runtime_tool_calls)
+            elif runtime_session_id:
+                captured_on_cancel = consume_runtime_session_tool_calls(runtime_session_id)
+            logger.info(
+                "Session cancelled for butler=%s session_id=%s",
+                self._config.name,
+                session_id,
+            )
+            span.set_status(trace.StatusCode.ERROR, SESSION_CANCELLED_ERROR)
+            spawner_result = SpawnerResult(
+                error=SESSION_CANCELLED_ERROR,
+                success=False,
+                duration_ms=duration_ms,
+                model=model,
+                session_id=session_id,
+            )
+            if self._pool is not None and session_id is not None:
+                await session_complete(
+                    self._pool,
+                    session_id,
+                    output=None,
+                    tool_calls=captured_on_cancel,
+                    duration_ms=duration_ms,
+                    success=False,
+                    error=SESSION_CANCELLED_ERROR,
+                    butler_name=self._config.name,
+                )
+            return spawner_result
+
         except Exception as exc:
             # Capture exc_info FIRST — before any cleanup code runs.
             # The traceback object is live only until cleanup clears the frame.
@@ -2287,6 +2464,12 @@ class Spawner:
         finally:
             if runtime_session_id:
                 clear_runtime_session_routing_context(runtime_session_id)
+                # Defensive: normally discarded once the invoke_task is
+                # registered or the pre-invocation cancel check consumes it,
+                # but any other exit path (e.g. an exception raised during
+                # the pre-invocation context-fetch window) must not leak this
+                # entry for the lifetime of the daemon process.
+                self._pending_invoke_sessions.discard(runtime_session_id)
             # Record session duration metric using wall-clock time from t0
             self._metrics.record_session_duration(int((time.monotonic() - t0) * 1000))
             # Record token usage when available (success path only; model always set)

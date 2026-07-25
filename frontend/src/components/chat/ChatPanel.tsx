@@ -26,7 +26,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 
-import { createConversation, sendMessage } from "@/api/index.ts";
+import { cancelConversationTurn, createConversation, sendMessage } from "@/api/index.ts";
 import type { Message, ConversationSummary } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
@@ -353,8 +353,46 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     void sendText(text);
   }
 
-  function handleStop() {
-    abortRef.current?.abort();
+  async function handleStop() {
+    if (!streaming || streaming.cancelling) return;
+    const conversationId = streaming.conversationId;
+    if (!conversationId || conversationId === "pending") {
+      // No conversation exists server-side yet — nothing to cancel remotely.
+      abortRef.current?.abort();
+      return;
+    }
+
+    setStreaming((prev) => (prev ? { ...prev, cancelling: true, cancelError: null } : prev));
+    try {
+      const result = await cancelConversationTurn(butlerName, conversationId);
+      if (!result.cancelled) {
+        if (result.already_finished) {
+          // The turn already finished on its own — quietly stop watching.
+          // Never claim we stopped something that had already ended.
+          abortRef.current?.abort();
+          setStreaming(null);
+          return;
+        }
+        setStreaming((prev) =>
+          prev
+            ? {
+                ...prev,
+                cancelling: false,
+                cancelError: result.message ?? "Could not stop. Try again.",
+              }
+            : prev,
+        );
+        return;
+      }
+      abortRef.current?.abort();
+      setStreaming((prev) => (prev ? { ...prev, cancelling: false, cancelled: true } : prev));
+    } catch {
+      setStreaming((prev) =>
+        prev
+          ? { ...prev, cancelling: false, cancelError: "Could not stop. Try again." }
+          : prev,
+      );
+    }
   }
 
   function handleNewConversation() {
@@ -421,6 +459,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           onChange={setInputValue}
           onSend={handleSend}
           onStop={handleStop}
+          stopPending={streaming?.cancelling ?? false}
           disabled={isLoadingConversations}
           isStreaming={isStreaming}
         />

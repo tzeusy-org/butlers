@@ -49,7 +49,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { createConversation, sendMessage } from "@/api/index.ts";
+import { cancelConversationTurn, createConversation, sendMessage } from "@/api/index.ts";
 import type {
   ConversationSummary,
   CreateConversationRequest,
@@ -340,8 +340,46 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     void sendText(text);
   }
 
-  function handleStop() {
-    abortRef.current?.abort();
+  async function handleStop() {
+    if (!streaming || streaming.cancelling) return;
+    const conversationId = streaming.conversationId;
+    if (!conversationId || conversationId === "pending") {
+      // No conversation exists server-side yet — nothing to cancel remotely.
+      abortRef.current?.abort();
+      return;
+    }
+
+    setStreaming((prev) => (prev ? { ...prev, cancelling: true, cancelError: null } : prev));
+    try {
+      const result = await cancelConversationTurn(WIDGET_BUTLER, conversationId);
+      if (!result.cancelled) {
+        if (result.already_finished) {
+          // The turn already finished on its own — quietly stop watching.
+          // Never claim we stopped something that had already ended.
+          abortRef.current?.abort();
+          setStreaming(null);
+          return;
+        }
+        setStreaming((prev) =>
+          prev
+            ? {
+                ...prev,
+                cancelling: false,
+                cancelError: result.message ?? "Could not stop. Try again.",
+              }
+            : prev,
+        );
+        return;
+      }
+      abortRef.current?.abort();
+      setStreaming((prev) => (prev ? { ...prev, cancelling: false, cancelled: true } : prev));
+    } catch {
+      setStreaming((prev) =>
+        prev
+          ? { ...prev, cancelling: false, cancelError: "Could not stop. Try again." }
+          : prev,
+      );
+    }
   }
 
   function handleNewConversation() {
@@ -480,6 +518,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             onChange={setInputValue}
             onSend={handleSendClick}
             onStop={handleStop}
+            stopPending={streaming?.cancelling ?? false}
             disabled={isLoadingConversations}
             isStreaming={isStreaming}
           />

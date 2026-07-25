@@ -40,7 +40,7 @@ export default function SessionDetailPage() {
       archetype="detail"
       title="Session Detail"
       breadcrumbs={[{ label: "Sessions", href: "/sessions" }, { label: id.slice(0, 8) }]}
-      status={session ? <StatusBadge success={session.success} /> : undefined}
+      status={session ? <StatusBadge success={session.success} error={session.error} /> : undefined}
       loading={isLoading}
       error={isError || notFound ? (error ?? new Error("Session not found")) : null}
       empty={null}

@@ -240,6 +240,7 @@ import type {
   Message,
   CreateConversationRequest,
   SendMessageRequest,
+  ConversationCancelResponse,
   TelegramSendCodeRequest,
   TelegramSendCodeResponse,
   TelegramVerifyCodeRequest,
@@ -5073,6 +5074,22 @@ export function sendMessage(
       body: JSON.stringify(body),
       signal,
     },
+  );
+}
+
+/**
+ * POST /api/butlers/{name}/conversations/{id}/cancel — the chat "Stop"
+ * button (bu-ep4ks.2). Always resolves to a 200 with a structured
+ * cancelled/already_finished/message body — never throws for a benign
+ * "nothing to cancel" outcome, only for a genuine transport failure.
+ */
+export function cancelConversationTurn(
+  butlerName: string,
+  conversationId: string,
+): Promise<ConversationCancelResponse> {
+  return apiFetch<ConversationCancelResponse>(
+    `/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/cancel`,
+    { method: "POST" },
   );
 }
 

@@ -92,7 +92,7 @@ The active conversation renders as a scrollable message thread with user and ass
 
 ### Requirement: Message Input Area
 
-The message input area occupies the bottom of the chat panel with a text input and send controls.
+The message input area SHALL occupy the bottom of the chat panel with a text input and send controls, including cancellation of an active response.
 
 #### Scenario: Text input
 
@@ -113,7 +113,9 @@ The message input area occupies the bottom of the chat panel with a text input a
 
 - **WHEN** an assistant response is currently streaming
 - **THEN** the textarea and send button are disabled
-- **AND** a "Stop" button replaces the send button, which cancels the active stream
+- **AND** a "Stop" button replaces the send button, which calls the
+  server-side cancel endpoint (see Stream cancellation below) rather than
+  only detaching the client's own stream watch
 
 #### Scenario: Starting a new conversation from empty state
 
@@ -184,7 +186,7 @@ A search input in the conversation list enables full-text search across conversa
 
 ### Requirement: SSE Client Integration
 
-The frontend connects to the SSE streaming endpoints for real-time response delivery.
+The frontend SHALL connect to the SSE streaming endpoints for real-time response delivery.
 
 #### Scenario: SSE connection for new conversation
 
@@ -201,12 +203,38 @@ The frontend connects to the SSE streaming endpoints for real-time response deli
 - **WHEN** `POST /api/butlers/{name}/conversations/{id}/messages` is called
 - **THEN** the same SSE event handling applies as for new conversations (without `conversation_created`)
 
-#### Scenario: Stream cancellation
+#### Scenario: Stream cancellation is a real server-side stop
 
 - **WHEN** the user clicks the "Stop" button during streaming
-- **THEN** the fetch request is aborted via `AbortController`
-- **AND** the partial assistant message is retained in the thread with an "Interrupted" indicator
+- **THEN** the frontend calls `POST
+  /api/butlers/{name}/conversations/{conversation_id}/cancel` with a pending
+  ("Stopping…") state on the Stop button, disabling it against a second click
+- **AND** the backend resolves the conversation's active turn to its
+  in-flight session and kills the routed butler's runtime subprocess (not
+  merely detaching a watcher) via the `cancel_session` MCP tool
+- **AND** only once the server confirms `cancelled: true` does the frontend
+  abort its own SSE watch (`AbortController`) and render the partial
+  assistant message with a "Cancelled by owner" indicator, distinct from the
+  generic "Interrupted" indicator used for unrelated client-side aborts
+  (e.g. component unmount, switching conversations)
 - **AND** the input is re-enabled
+
+#### Scenario: Stop click on an already-finished turn is a benign no-op
+
+- **WHEN** the user clicks "Stop" but the turn already completed on the
+  routed butler (`already_finished: true` in the cancel response)
+- **THEN** the frontend stops watching the stream without rendering
+  "Cancelled by owner" or any other claim that it stopped something —
+  the (already-arrived or arriving) reply is unaffected
+
+#### Scenario: A failed cancel attempt is never rendered as calm
+
+- **WHEN** the cancel request itself fails (e.g. the routed butler is
+  unreachable) so the server cannot confirm the session was killed
+- **THEN** the frontend surfaces the failure message inline in the thread
+  and re-enables the Stop button for another attempt
+- **AND** it SHALL NOT render "Cancelled by owner", "Interrupted", or any
+  other terminal-state indicator implying the session actually stopped
 
 ### Requirement: Conversation React Query Hooks
 
@@ -232,7 +260,7 @@ TanStack Query hooks manage conversation data fetching and caching.
 
 ### Requirement: Session Linkage Navigation
 
-Assistant messages link to their corresponding butler sessions for drill-down.
+Assistant messages SHALL link to their corresponding butler sessions for drill-down.
 
 #### Scenario: Session link on assistant message
 
@@ -244,3 +272,11 @@ Assistant messages link to their corresponding butler sessions for drill-down.
 
 - **WHEN** an assistant message has a non-null `request_id`
 - **THEN** a "View lineage" link navigates to the ingestion event detail view at `/ingestion?event={request_id}`
+
+#### Scenario: A cancelled session's detail renders a first-class "Cancelled" state
+
+- **WHEN** a session's `sessions.error` is the owner-cancellation marker
+  (written by `Spawner.cancel_session()`)
+- **THEN** the session detail status badge (`/sessions/{id}` and the session
+  detail drawer) renders "Cancelled", not the generic destructive "Failed"
+  badge used for other error outcomes

@@ -100,7 +100,7 @@ export function SessionDetailDrawer({
             <SheetHeader>
               <SheetTitle className="flex items-center gap-2 text-sm">
                 <span className="font-mono truncate">{session.id}</span>
-                <StatusBadge success={session.success} />
+                <StatusBadge success={session.success} error={session.error} />
               </SheetTitle>
               <SheetDescription>
                 {session.butler} &mdash; {session.trigger_source}
@@ -127,7 +127,7 @@ export function SessionDetailDrawer({
             <SheetHeader>
               <SheetTitle className="flex items-center gap-2 text-sm">
                 <span className="font-mono truncate">{session.id}</span>
-                <StatusBadge success={session.success} />
+                <StatusBadge success={session.success} error={session.error} />
               </SheetTitle>
               <SheetDescription>
                 {session.butler} &mdash; {session.trigger_source}

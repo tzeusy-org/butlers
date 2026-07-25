@@ -1915,6 +1915,26 @@ class CodexAdapter(RuntimeAdapter):
                 await proc.wait()
             raise TimeoutError(f"Codex CLI timed out after {timeout} seconds") from None
 
+        except asyncio.CancelledError:
+            # Owner-initiated Stop (Spawner.cancel_session) cancels the task
+            # running this coroutine. Without an explicit kill here the CLI
+            # subprocess would be orphaned and keep running/spending after the
+            # Python-level task unwinds — this is the actual "Stop actually
+            # stops" mechanism.
+            logger.warning("Codex CLI invocation cancelled; killing subprocess")
+            self._last_process_info = {
+                "pid": proc.pid if proc else None,
+                "exit_code": -1,
+                "command": cmd_for_log,
+                "stderr": "(cancelled — process killed)",
+                "runtime_type": "codex",
+                "is_pre_tool_call": True,
+            }
+            if proc:
+                proc.kill()
+                await proc.wait()
+            raise
+
     def _schedule_auth_sync(self, token_path: Path | None) -> None:
         """Fire-and-forget: schedule auth.json rotation detection and persist.
 

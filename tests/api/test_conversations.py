@@ -42,7 +42,7 @@ from butlers.api.routers import conversations as conversations_router
 from butlers.api.routers.conversations import (
     _SWITCHBOARD_BUTLER,
     _get_db_manager,
-    _lookup_timed_out_session_id,
+    _resolve_session_id,
     _stream_conversation_response,
     _submit_to_switchboard,
 )
@@ -456,42 +456,37 @@ async def test_message_find_reply_since_deserializes_tool_calls_json_string():
 
 
 # ---------------------------------------------------------------------------
-# _lookup_timed_out_session_id — best-effort SESSION_TIMEOUT session link
+# _resolve_session_id — best-effort request_id -> session_id lookup, shared
+# by the SESSION_TIMEOUT session link and POST .../cancel (bu-ep4ks.2)
 # ---------------------------------------------------------------------------
 
 
-async def test_lookup_timed_out_session_id_returns_none_without_request_id():
+async def test_resolve_session_id_returns_none_without_request_id():
     mock_db = MagicMock(spec=DatabaseManager)
 
-    result = await _lookup_timed_out_session_id(
-        db=mock_db, routed_butler="finance", request_id=None
-    )
+    result = await _resolve_session_id(db=mock_db, routed_butler="finance", request_id=None)
 
     assert result is None
     mock_db.pool.assert_not_called()
 
 
-async def test_lookup_timed_out_session_id_returns_none_when_pool_missing():
+async def test_resolve_session_id_returns_none_when_pool_missing():
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.side_effect = KeyError("no pool")
 
-    result = await _lookup_timed_out_session_id(
-        db=mock_db, routed_butler="ghost", request_id=str(uuid4())
-    )
+    result = await _resolve_session_id(db=mock_db, routed_butler="ghost", request_id=str(uuid4()))
 
     assert result is None
 
 
-async def test_lookup_timed_out_session_id_returns_session_id():
+async def test_resolve_session_id_returns_session_id():
     session_id = uuid4()
     butler_pool = AsyncMock()
     butler_pool.fetchval = AsyncMock(return_value=session_id)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = butler_pool
 
-    result = await _lookup_timed_out_session_id(
-        db=mock_db, routed_butler="finance", request_id=str(uuid4())
-    )
+    result = await _resolve_session_id(db=mock_db, routed_butler="finance", request_id=str(uuid4()))
 
     assert result == session_id
 
@@ -950,3 +945,188 @@ async def test_stream_conversation_response_emits_keepalives_then_late_reply(mon
     # Keepalives must precede the eventual reply — proves they were emitted
     # during the wait, not after the fact.
     assert full_stream.index(": keepalive") < full_stream.index("event: token")
+
+
+# ---------------------------------------------------------------------------
+# _ACTIVE_TURNS registration lifecycle + POST .../cancel (bu-ep4ks.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_active_turns():
+    """_ACTIVE_TURNS is process-local module state — never leak between tests."""
+    conversations_router._ACTIVE_TURNS.clear()
+    yield
+    conversations_router._ACTIVE_TURNS.clear()
+
+
+async def test_stream_conversation_response_registers_and_clears_active_turn():
+    """The turn is cancellable while streaming and gone once the reply lands."""
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+
+    reply_row = _make_reply_row()
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=reply_row)
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
+    )
+
+    assert _CONV_ID not in conversations_router._ACTIVE_TURNS
+    gen = _stream_conversation_response(
+        request=_FakeRequest(),
+        butler_name=_SWITCHBOARD_BUTLER,
+        conversation_id=_CONV_ID,
+        message_created_at=_NOW - timedelta(seconds=1),
+        envelope=envelope,
+        db=mock_db,
+        mcp_mgr=mgr,
+    )
+    await anext(gen)  # advance past the Switchboard submission step
+    assert conversations_router._ACTIVE_TURNS[_CONV_ID] == {
+        "routed_butler": "finance",
+        "request_id": request_id,
+    }
+
+    async for _ in gen:
+        pass
+
+    assert _CONV_ID not in conversations_router._ACTIVE_TURNS
+
+
+async def test_cancel_with_no_active_turn_is_benign_noop(app):
+    """Stop after the turn already finished must never claim it stopped anything."""
+    app.dependency_overrides[_get_db_manager] = lambda: MagicMock(spec=DatabaseManager)
+    app.dependency_overrides[get_mcp_manager] = lambda: MagicMock(spec=MCPClientManager)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/butlers/{_BUTLER}/conversations/{uuid4()}/cancel")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "cancelled": False,
+        "already_finished": True,
+        "session_id": None,
+        "message": None,
+    }
+
+
+async def test_cancel_confirmed_by_routed_butler_kills_the_session(app):
+    """A genuinely in-flight session is killed and the response says so honestly."""
+    conversation_id = uuid4()
+    session_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": "finance",
+        "request_id": str(uuid4()),
+    }
+
+    butler_pool = AsyncMock()
+    butler_pool.fetchval = AsyncMock(return_value=session_id)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = butler_pool
+
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": True, "session_id": str(session_id)})
+    )
+    mgr = _make_mcp_manager(mock_client)
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/butlers/{_BUTLER}/conversations/{conversation_id}/cancel")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cancelled"] is True
+    assert body["already_finished"] is False
+    assert body["session_id"] == str(session_id)
+    mock_client.call_tool.assert_awaited_once_with(
+        "cancel_session", {"session_id": str(session_id)}
+    )
+
+
+async def test_cancel_when_session_already_finished_is_not_rendered_as_stopped(app):
+    """The routed butler reports the session already completed -- honest no-op, not a claim of success."""
+    conversation_id = uuid4()
+    session_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": "finance",
+        "request_id": str(uuid4()),
+    }
+
+    butler_pool = AsyncMock()
+    butler_pool.fetchval = AsyncMock(return_value=session_id)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = butler_pool
+
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": False, "session_id": str(session_id)})
+    )
+    mgr = _make_mcp_manager(mock_client)
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/butlers/{_BUTLER}/conversations/{conversation_id}/cancel")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cancelled"] is False
+    assert body["already_finished"] is True
+
+
+async def test_cancel_surfaces_honest_failure_when_butler_unreachable(app):
+    """A failed cancel must surface as failed -- never fabricated calm."""
+    conversation_id = uuid4()
+    session_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": "finance",
+        "request_id": str(uuid4()),
+    }
+
+    butler_pool = AsyncMock()
+    butler_pool.fetchval = AsyncMock(return_value=session_id)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = butler_pool
+
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("finance"))
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/butlers/{_BUTLER}/conversations/{conversation_id}/cancel")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cancelled"] is False
+    assert body["already_finished"] is False
+    assert body["message"]

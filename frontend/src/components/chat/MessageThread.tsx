@@ -100,6 +100,10 @@ interface MessageBubbleProps {
   /** Streaming content appended to this message (while SSE is active). */
   streamingContent?: string;
   interrupted?: boolean;
+  /** Server confirmed this stream's session was killed (bu-ep4ks.2). */
+  cancelled?: boolean;
+  /** A Stop attempt failed — must render honestly, never as "stopped". */
+  cancelError?: string | null;
 }
 
 function MessageBubble({
@@ -107,6 +111,8 @@ function MessageBubble({
   pricingMap,
   streamingContent,
   interrupted,
+  cancelled,
+  cancelError,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const displayContent = streamingContent !== undefined ? streamingContent : message.content;
@@ -146,10 +152,18 @@ function MessageBubble({
           <p className="text-destructive text-sm mt-2">{message.error}</p>
         )}
 
-        {/* Interrupted indicator */}
-        {interrupted && (
-          <p className="text-muted-foreground text-xs mt-1 italic">Interrupted</p>
+        {/* Cancelled indicator — only rendered once the server confirmed the
+            kill (bu-ep4ks.2); takes precedence over the generic Interrupted
+            label below, which also fires on unrelated client-side aborts
+            (unmount, conversation switch). */}
+        {cancelled ? (
+          <p className="text-muted-foreground text-xs mt-1 italic">Cancelled by owner</p>
+        ) : (
+          interrupted && (
+            <p className="text-muted-foreground text-xs mt-1 italic">Interrupted</p>
+          )
         )}
+        {cancelError && <p className="text-destructive text-xs mt-1">{cancelError}</p>}
       </div>
 
       {/* Tool calls */}
@@ -231,8 +245,14 @@ export interface StreamingState {
   content: string;
   /** True while awaiting the first token (typing indicator phase). */
   pending: boolean;
-  /** True if the user cancelled the stream. */
+  /** True if the client-side stream watch was aborted (any reason). */
   interrupted: boolean;
+  /** True while a POST .../cancel call for this stream is in flight. */
+  cancelling?: boolean;
+  /** True once the server confirmed the in-flight session was killed. */
+  cancelled?: boolean;
+  /** Set when a cancel attempt failed — surfaced honestly, never dropped. */
+  cancelError?: string | null;
 }
 
 export interface MessageThreadProps {
@@ -300,6 +320,8 @@ export function MessageThread({
             pricingMap={pricingMap}
             streamingContent={isStreamingTarget ? streaming.content : undefined}
             interrupted={isStreamingTarget ? streaming.interrupted : undefined}
+            cancelled={isStreamingTarget ? streaming.cancelled : undefined}
+            cancelError={isStreamingTarget ? streaming.cancelError : undefined}
           />
         );
       })}
@@ -314,8 +336,15 @@ export function MessageThread({
           <div className="flex flex-col gap-1 max-w-[85%] self-start items-start">
             <div className="rounded-2xl rounded-bl-sm bg-muted px-4 py-2.5">
               <SimpleMarkdown content={streaming.content} />
-              {streaming.interrupted && (
-                <p className="text-muted-foreground text-xs mt-1 italic">Interrupted</p>
+              {streaming.cancelled ? (
+                <p className="text-muted-foreground text-xs mt-1 italic">Cancelled by owner</p>
+              ) : (
+                streaming.interrupted && (
+                  <p className="text-muted-foreground text-xs mt-1 italic">Interrupted</p>
+                )
+              )}
+              {streaming.cancelError && (
+                <p className="text-destructive text-xs mt-1">{streaming.cancelError}</p>
               )}
             </div>
           </div>

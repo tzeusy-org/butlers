@@ -48,9 +48,11 @@ vi.mock("@/api/client.ts", () => ({
 
 const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
+const cancelConversationTurnMock = vi.fn();
 vi.mock("@/api/index.ts", () => ({
   createConversation: (...args: unknown[]) => createConversationMock(...args),
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
+  cancelConversationTurn: (...args: unknown[]) => cancelConversationTurnMock(...args),
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
@@ -653,5 +655,91 @@ describe("FloatingChatWidget — send-error classification", () => {
       "chat-widget-timeout-session-link",
     ) as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/sessions/session-abc-123");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stop button — server-side cancellation (bu-ep4ks.2)
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — Stop button", () => {
+  /** Drive the widget into an active mid-stream state (Stop button visible,
+   * a real conversation id known) by scripting a token event with no
+   * trailing `done` — the awaited send call resolves while still "open". */
+  async function sendAndEnterStreamingState() {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-stop-1", title: "New" } },
+      { event: "token", data: { content: "partial response" } },
+    ];
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-stop-button")).toBeDefined();
+  }
+
+  it("kills the session and renders the confirmed cancellation, never claiming success beforehand", async () => {
+    await sendAndEnterStreamingState();
+    cancelConversationTurnMock.mockResolvedValue({
+      cancelled: true,
+      already_finished: false,
+      session_id: "sess-1",
+      message: null,
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+    });
+
+    expect(cancelConversationTurnMock).toHaveBeenCalledWith("switchboard", "conv-stop-1");
+    await waitFor(() => {
+      expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    });
+  });
+
+  it("surfaces a failed cancel honestly instead of rendering calm", async () => {
+    await sendAndEnterStreamingState();
+    cancelConversationTurnMock.mockResolvedValue({
+      cancelled: false,
+      already_finished: false,
+      session_id: "sess-1",
+      message: "switchboard unreachable",
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("switchboard unreachable")).toBeDefined();
+    });
+    // Stop remains actionable — the failed attempt did not lock the UI up.
+    expect(
+      (screen.getByTestId("chat-stop-button") as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it("quietly stops watching without a false 'stopped' claim when the turn already finished", async () => {
+    await sendAndEnterStreamingState();
+    cancelConversationTurnMock.mockResolvedValue({
+      cancelled: false,
+      already_finished: true,
+      session_id: null,
+      message: null,
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+    });
+
+    expect(screen.queryByText("Cancelled by owner")).toBeNull();
+    expect(screen.queryByTestId("chat-stop-button")).toBeNull();
   });
 });

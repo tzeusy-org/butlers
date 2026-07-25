@@ -130,3 +130,27 @@ class ConversationStats(BaseModel):
     total_conversations: int
     active_conversations: int
     total_messages: int
+
+
+class ConversationCancelResponse(BaseModel):
+    """Response for ``POST .../conversations/{id}/cancel`` (bu-ep4ks.2).
+
+    Always HTTP 200 -- the three outcomes below are all legitimate results,
+    not error conditions, and the frontend renders each honestly rather than
+    treating a non-cancellation as calm success:
+
+    - ``cancelled=True``: an in-flight runtime invocation was found and
+      killed.
+    - ``cancelled=False, already_finished=True``: nothing was in flight for
+      this conversation (the turn already completed, or Stop was clicked
+      after the reply landed) -- a benign no-op, never rendered as a failure.
+    - ``cancelled=False, already_finished=False``: cancellation was
+      attempted but could not be confirmed (e.g. the routed butler was
+      unreachable) -- ``message`` explains why; the frontend must surface
+      this as a real failure, never as "stopped".
+    """
+
+    cancelled: bool
+    already_finished: bool
+    session_id: UUID | None = None
+    message: str | None = None

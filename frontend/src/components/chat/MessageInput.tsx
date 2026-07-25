@@ -3,7 +3,7 @@
  */
 
 import { useRef, useEffect } from "react";
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
+import { ArrowUpIcon, Loader2, SquareIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -16,6 +16,10 @@ export interface MessageInputProps {
   disabled: boolean;
   /** True while an assistant response is streaming. */
   isStreaming: boolean;
+  /** True while a Stop click's POST .../cancel call is in flight (bu-ep4ks.2) —
+   * disables the button and shows a spinner so a second click can't race the
+   * first cancel attempt. */
+  stopPending?: boolean;
   placeholder?: string;
 }
 
@@ -26,6 +30,7 @@ export function MessageInput({
   onStop,
   disabled,
   isStreaming,
+  stopPending = false,
   placeholder = "Type a message...",
 }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -72,9 +77,15 @@ export function MessageInput({
           size="icon"
           className="shrink-0 size-9"
           onClick={onStop}
-          title="Stop generation"
+          disabled={stopPending}
+          title={stopPending ? "Stopping…" : "Stop generation"}
+          data-testid="chat-stop-button"
         >
-          <SquareIcon className="size-4" />
+          {stopPending ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <SquareIcon className="size-4" />
+          )}
         </Button>
       ) : (
         <Button
