@@ -2,7 +2,7 @@
 
 Covers _classify_sensor_type, _extract_numeric_state, _extract_area,
 classify_deviation, _build_environment_report_message, run_environment_report,
-_NullEmbeddingEngine, and daemon registry.
+_NoOpEmbeddingEngine, and daemon registry.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from butlers.jobs.home import (
     _extract_area,
     _extract_numeric_state,
     _is_ambient_sensor,
+    _NoOpEmbeddingEngine,
     _normalize_temperature_c,
-    _NullEmbeddingEngine,
     classify_deviation,
     run_environment_report,
 )
@@ -270,20 +270,23 @@ async def test_run_environment_report_no_sensors_and_normal_run():
     assert result3["deviations_found"] >= 1
     mock_store.assert_awaited()
     assert mock_store.await_args.kwargs["source_butler"] == "home"
+    embedding_engine = mock_store.await_args.kwargs["embedding_engine"]
+    assert len(embedding_engine.embed("comfort deviation")) == 384
 
 
 # ---------------------------------------------------------------------------
-# _NullEmbeddingEngine + Registry
+# _NoOpEmbeddingEngine + Registry
 # ---------------------------------------------------------------------------
 
 
-def test_null_embedding_engine():
-    """_NullEmbeddingEngine exposes the fields store_fact reads from real engines."""
+def test_noop_embedding_engine_has_memory_schema_dimensions():
+    """The deterministic engine returns vectors accepted by memory's vector(384) columns."""
     import inspect
 
-    eng = _NullEmbeddingEngine()
-    assert eng.model_name == "deterministic-null"
-    assert eng.embed("hello") == [] and eng.embed("") == []
+    eng = _NoOpEmbeddingEngine()
+    assert eng.model_name == "deterministic-noop"
+    assert eng.embed("hello") == [0.0] * 384
+    assert eng.embed("") == [0.0] * 384
     assert not inspect.iscoroutinefunction(eng.embed)
 
 

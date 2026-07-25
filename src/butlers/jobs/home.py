@@ -390,20 +390,6 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
     )
 
 
-class _NullEmbeddingEngine:
-    """Sentinel embedding engine that returns zero vectors for deterministic jobs.
-
-    Matches the synchronous ``EmbeddingEngine.embed(text: str) -> list[float]``
-    interface expected by ``store_fact``.  Returns an empty vector so that
-    vector-similarity searches simply skip these facts.
-    """
-
-    model_name = "deterministic-null"
-
-    def embed(self, text: str) -> list[float]:  # noqa: ARG002
-        return []
-
-
 class _NoOpEmbeddingEngine:
     """Minimal embedding engine stub for deterministic jobs.
 
@@ -1671,7 +1657,7 @@ async def run_energy_digest(
     # ------------------------------------------------------------------
     baseline_updated = False
     if total_kwh > 0:
-        eng = _NullEmbeddingEngine()
+        eng = _NoOpEmbeddingEngine()
 
         # Store overall energy baseline fact
         try:
@@ -2040,7 +2026,7 @@ async def run_environment_report(
     # ------------------------------------------------------------------
     # 5-6. Per-area: load preferences, classify deviations
     # ------------------------------------------------------------------
-    eng = _NullEmbeddingEngine()
+    eng = _NoOpEmbeddingEngine()
     total_sensors = 0
     total_deviations = 0
     area_results: list[dict[str, Any]] = []
