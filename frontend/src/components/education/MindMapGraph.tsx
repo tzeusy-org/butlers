@@ -12,6 +12,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import dagre from "@dagrejs/dagre";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMap, useFrontierNodes } from "@/hooks/use-education";
 import type { EducationNodeSelection } from "./types";
 
@@ -93,7 +94,7 @@ interface MindMapGraphProps {
 }
 
 export default function MindMapGraph({ mindMapId, onSelectNode }: MindMapGraphProps) {
-  const { data: mindMap, isLoading } = useMindMap(mindMapId);
+  const { data: mindMap, isLoading, isError, refetch } = useMindMap(mindMapId);
   const { data: frontierNodes } = useFrontierNodes(mindMapId);
 
   const frontierIds = useMemo(
@@ -148,6 +149,24 @@ export default function MindMapGraph({ mindMapId, onSelectNode }: MindMapGraphPr
           <div className="flex h-96 items-center justify-center text-muted-foreground">
             Loading...
           </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Concept Map</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SourceDegradedNote
+            label="Concept map"
+            detail="could not be reached"
+            onRetry={() => void refetch()}
+            testId="mind-map-graph-degraded"
+          />
         </CardContent>
       </Card>
     );

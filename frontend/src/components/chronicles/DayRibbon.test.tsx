@@ -44,6 +44,31 @@ describe("DayRibbon — empty state", () => {
     expect(html).toContain("day-ribbon-empty")
     expect(html).toContain("No activity recorded for this window")
   })
+
+  it("renders a degraded note (not the quiet-day empty message) when the episodes fetch errored [bu-ep4ks.5]", () => {
+    // An outage must not conflate with a genuinely quiet day (bu-ep4ks.5).
+    const html = renderToStaticMarkup(
+      <DayRibbon episodes={[]} windowStart={WINDOW_START} windowEnd={WINDOW_END} isError />,
+    )
+    expect(html).toContain("day-ribbon-degraded")
+    expect(html).not.toContain("day-ribbon-empty")
+    expect(html).not.toContain("No activity recorded for this window")
+    expect(html).toContain("episodes could not be reached")
+  })
+
+  it("still renders the normal tracks when episodes is populated even if isError is true (stale cache)", () => {
+    const html = renderToStaticMarkup(
+      <DayRibbon
+        episodes={[makeEpisode()]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+        isError
+      />,
+    )
+    expect(html).toContain("day-ribbon")
+    expect(html).not.toContain("day-ribbon-degraded")
+    expect(html).not.toContain("day-ribbon-empty")
+  })
 })
 
 describe("DayRibbon — tracks", () => {

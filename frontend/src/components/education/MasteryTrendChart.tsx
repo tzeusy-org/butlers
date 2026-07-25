@@ -7,6 +7,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMapAnalytics } from "@/hooks/use-education";
 import { chartColor } from "@/lib/chart-colors";
 
@@ -15,7 +16,7 @@ interface MasteryTrendChartProps {
 }
 
 export default function MasteryTrendChart({ mindMapId }: MasteryTrendChartProps) {
-  const { data: analytics } = useMindMapAnalytics(mindMapId, 30);
+  const { data: analytics, isError, refetch } = useMindMapAnalytics(mindMapId, 30);
 
   const trendData = (analytics?.trend ?? []).map((entry) => ({
     date: entry.snapshot_date,
@@ -23,6 +24,24 @@ export default function MasteryTrendChart({ mindMapId }: MasteryTrendChartProps)
   }));
 
   if (!mindMapId) return null;
+
+  if (isError) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Mastery Trend</CardTitle>
+        </CardHeader>
+        <CardContent className="flex h-72 items-center justify-center">
+          <SourceDegradedNote
+            label="Mastery trend"
+            detail="could not be reached"
+            onRetry={() => void refetch()}
+            testId="mastery-trend-chart-degraded"
+          />
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (trendData.length === 0) {
     return (

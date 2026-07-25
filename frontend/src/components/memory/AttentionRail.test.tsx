@@ -139,6 +139,50 @@ describe("AttentionRail", () => {
     expect(mounted.container.textContent).not.toContain("Nothing waiting.");
   });
 
+  it("shows an error state (not 'Nothing waiting.') when the fading-facts count fails to load [bu-ep4ks.5]", () => {
+    // Condition 4 (important facts fading) previously defaulted a fetch
+    // failure to a silent 0, indistinguishable from a genuine zero.
+    prime({ stats: healthyStats() });
+    vi.mocked(useFacts).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useFacts>);
+    mounted = render();
+    const errorEl = mounted.container.querySelector('[data-testid="memory-attention-error"]');
+    expect(errorEl).not.toBeNull();
+    expect(mounted.container.textContent).not.toContain("Nothing waiting.");
+  });
+
+  it("shows an error state (not 'Nothing waiting.') when the stale-embeddings count fails to load [bu-ep4ks.5]", () => {
+    // Condition 5 (stale embeddings) previously defaulted a fetch failure to
+    // a silent 0, indistinguishable from a genuine zero.
+    prime({ stats: healthyStats() });
+    vi.mocked(useReembedPending).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useReembedPending>);
+    mounted = render();
+    const errorEl = mounted.container.querySelector('[data-testid="memory-attention-error"]');
+    expect(errorEl).not.toBeNull();
+    expect(mounted.container.textContent).not.toContain("Nothing waiting.");
+  });
+
+  it("still shows a confirmed dead-letter row when the fading-facts source degrades, instead of hiding it behind the error note [bu-ep4ks.5]", () => {
+    // A real, already-confirmed problem from a healthy source (stats) must
+    // never be suppressed just because a different rail source is degraded.
+    prime({ stats: healthyStats({ dead_letter_episodes: 3 }) });
+    vi.mocked(useFacts).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useFacts>);
+    mounted = render();
+    expect(mounted.container.textContent).toContain("3 episodes dead-lettered");
+    expect(mounted.container.querySelector('[data-testid="memory-attention-error"]')).toBeNull();
+  });
+
   it("shows an error state (not 'Nothing observed yet.') when activity fails to load", () => {
     prime({ stats: healthyStats() });
     vi.mocked(useMemoryActivity).mockReturnValue({

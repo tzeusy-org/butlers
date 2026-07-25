@@ -177,14 +177,22 @@ export default function AttentionRail({ now }: AttentionRailProps) {
   // Important fading facts: validity=fading ∧ importance >= 8. We only need the
   // count, so request a single row and read meta.total (the #2185 importance_min
   // filter, exposed on FactParams).
-  const { data: fadingResp } = useFacts({
+  const {
+    data: fadingResp,
+    isError: factsError,
+    refetch: refetchFacts,
+  } = useFacts({
     validity: "fading",
     importance_min: IMPORTANT_FACT_THRESHOLD,
     limit: 1,
   });
   const importantFadingCount = fadingResp?.meta?.total ?? 0;
 
-  const { data: reembedResp } = useReembedPending();
+  const {
+    data: reembedResp,
+    isError: reembedError,
+    refetch: refetchReembed,
+  } = useReembedPending();
   const staleEmbeddings = reembedResp?.data?.total ?? 0;
 
   const {
@@ -194,13 +202,20 @@ export default function AttentionRail({ now }: AttentionRailProps) {
   } = useMemoryActivity(20);
   const activity = activityResp?.data ?? [];
 
-  // A killed stats/activity source must not fall through to the rail's calm
-  // "Nothing waiting." / "Nothing observed yet." lines — those read as a fully
-  // healthy, quiet house when the backend is actually down (bu-mkd5r, the
-  // canonical truth-amnesty defect this bead closes). React Query keeps the
-  // last-good data on a background-refetch error, so these only trip on a
-  // genuine first-load outage with nothing cached.
+  // A killed stats/facts/reembed/activity source must not fall through to the
+  // rail's calm "Nothing waiting." / "Nothing observed yet." lines — those
+  // read as a fully healthy, quiet house when the backend is actually down
+  // (bu-mkd5r, the canonical truth-amnesty defect this bead closes). React
+  // Query keeps the last-good data on a background-refetch error, so these
+  // only trip on a genuine first-load outage with nothing cached.
+  //
+  // Facts (condition 4) and reembed (condition 5) previously defaulted to 0
+  // on a fetch failure with no distinction from a genuine zero (bu-ep4ks.5) —
+  // silently clearing 2 of the rail's 5 conditions. They now feed the same
+  // "can we vouch for this being clear" gate stats/activity already use.
   const statsUnavailable = statsError && stats == null;
+  const factsUnavailable = factsError && fadingResp == null;
+  const embeddingsUnavailable = reembedError && reembedResp == null;
   const activityUnavailable = activityError && activity.length === 0;
 
   // Build the attention list in severity/priority order; each row appears only
@@ -279,10 +294,18 @@ export default function AttentionRail({ now }: AttentionRailProps) {
       {/* NEEDS ATTENTION */}
       <div className="flex flex-col gap-1">
         <Eyebrow as="div">Needs attention</Eyebrow>
-        {statsUnavailable ? (
+        {items.length === 0 && (statsUnavailable || factsUnavailable || embeddingsUnavailable) ? (
+          // Nothing confirmed AND at least one of the five conditions' sources
+          // is down -- "Nothing waiting." would be a fabricated all-clear.
+          // (When items IS non-empty, a confirmed problem from a healthy
+          // source is real signal and must not be hidden behind this note.)
           <MemoryLoadError
             label="attention"
-            onRetry={() => void refetchStats()}
+            onRetry={() => {
+              void refetchStats();
+              void refetchFacts();
+              void refetchReembed();
+            }}
             testId="memory-attention-error"
           />
         ) : items.length === 0 ? (

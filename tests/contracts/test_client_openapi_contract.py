@@ -720,13 +720,6 @@ _LIMIT_LITERAL_PINS: list[tuple[str, str, str, str, str]] = [
         "limit",
     ),
     (
-        "manual-refresh-events",
-        "components/chronicles/ManualRefreshButton.tsx",
-        r"until:[^,]*,\s*limit:\s*(\d+)",
-        "/api/chronicler/events",
-        "limit",
-    ),
-    (
         "measurement-chart",
         "components/health/MeasurementChart.tsx",
         r"limit:\s*(\d+)",

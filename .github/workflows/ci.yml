@@ -319,6 +319,9 @@ jobs:
       - name: Em-dash copy gate (bu-370uj)
         run: npm run lint:emdash
 
+      - name: Query-result coercion gate (bu-ep4ks.5)
+        run: npm run lint:query-coercion
+
       - name: Import graph (knip)
         run: npm run knip
 

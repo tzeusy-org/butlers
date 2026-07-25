@@ -96,6 +96,32 @@ export const chroniclesKeys = {
 };
 
 // ---------------------------------------------------------------------------
+// Family-prefix keys (bu-ep4ks.5) -- no params, so react-query's default
+// prefix matching invalidates every cached param variant of the family in
+// one call. Used by ManualRefreshButton's "full refresh" affordance, which
+// does not know the exact params (trends window, day, tz) every family was
+// last fetched with. Scoped to the 11 day/window-driven families the
+// Chronicles drilldown renders; per-episode-detail keys (episode,
+// episodeEvents, episodeCorrections, evidenceChain), episodesInfinite, and
+// routines are deliberately excluded -- they are drawer/settings surfaces,
+// not part of the day's refreshable picture.
+// ---------------------------------------------------------------------------
+
+export const chroniclesFamilyKeys = {
+  byCategory: [...chroniclesKeys.all, "aggregate-by-category"] as const,
+  byDay: [...chroniclesKeys.all, "aggregate-by-day"] as const,
+  dayClose: [...chroniclesKeys.all, "day-close"] as const,
+  sourceState: chroniclesKeys.sourceState(),
+  pointEvents: [...chroniclesKeys.all, "point-events"] as const,
+  episodes: [...chroniclesKeys.all, "episodes"] as const,
+  balance: [...chroniclesKeys.all, "balance"] as const,
+  whoYouWereWith: [...chroniclesKeys.all, "who-you-were-with"] as const,
+  correctionPrompts: [...chroniclesKeys.all, "correction-prompts"] as const,
+  trends: [...chroniclesKeys.all, "trends"] as const,
+  rollups: [...chroniclesKeys.all, "rollups"] as const,
+} as const;
+
+// ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
 

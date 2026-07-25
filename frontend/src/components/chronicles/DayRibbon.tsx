@@ -25,6 +25,7 @@
 import { useMemo } from "react";
 
 import type { ChroniclerEpisode } from "@/api/types";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { categoryForSource, LANE_TAXONOMY, type Category } from "./lane-taxonomy";
 
 export interface DayRibbonProps {
@@ -33,6 +34,14 @@ export interface DayRibbonProps {
   windowEnd: Date;
   /** Called with the episode ID when a lived-activity block is clicked. */
   onEpisodeClick?: (episodeId: string) => void;
+  /**
+   * True when the episodes fetch errored. An empty `episodes` array under an
+   * outage must never render as "No activity recorded" -- that reads as a
+   * confirmed quiet day when the day was never actually observed
+   * (bu-ep4ks.5).
+   */
+  isError?: boolean;
+  onRetry?: () => void;
 }
 
 interface PlacedBlock {
@@ -92,7 +101,14 @@ function formatBlockDuration(startIso: string, endIso: string | null): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-export function DayRibbon({ episodes, windowStart, windowEnd, onEpisodeClick }: DayRibbonProps) {
+export function DayRibbon({
+  episodes,
+  windowStart,
+  windowEnd,
+  onEpisodeClick,
+  isError = false,
+  onRetry,
+}: DayRibbonProps) {
   const startMs = windowStart.getTime();
   const endMs = windowEnd.getTime();
   const spanMs = Math.max(1, endMs - startMs);
@@ -109,6 +125,23 @@ export function DayRibbon({ episodes, windowStart, windowEnd, onEpisodeClick }: 
     activity.sort((a, b) => a.leftPct - b.leftPct);
     return { intentBlocks: intent, activityBlocks: activity };
   }, [episodes, startMs, endMs, spanMs]);
+
+  if (episodes.length === 0 && isError) {
+    return (
+      <div
+        className="rounded-md border border-dashed py-10"
+        style={{ borderColor: "var(--border)" }}
+        data-testid="day-ribbon-degraded"
+      >
+        <SourceDegradedNote
+          className="mx-auto w-fit"
+          label="Day ribbon"
+          detail="episodes could not be reached"
+          onRetry={onRetry}
+        />
+      </div>
+    );
+  }
 
   if (episodes.length === 0) {
     return (

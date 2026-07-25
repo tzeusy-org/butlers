@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMapAnalytics } from "@/hooks/use-education";
 import type { EducationNodeSelection } from "./types";
 
@@ -19,11 +20,30 @@ export default function StrugglingNodesCard({
   mindMapId,
   onSelectNode,
 }: StrugglingNodesCardProps) {
-  const { data: analytics } = useMindMapAnalytics(mindMapId);
+  const { data: analytics, isError, refetch } = useMindMapAnalytics(mindMapId);
 
   const struggling = (analytics?.metrics?.struggling_nodes as StrugglingNode[]) ?? [];
 
-  if (!mindMapId || struggling.length === 0) return null;
+  if (!mindMapId) return null;
+  if (!isError && struggling.length === 0) return null;
+
+  if (isError) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Struggling Concepts</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SourceDegradedNote
+            label="Struggling concepts"
+            detail="could not be reached"
+            onRetry={() => void refetch()}
+            testId="struggling-nodes-degraded"
+          />
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card>

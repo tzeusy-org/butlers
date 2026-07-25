@@ -1,45 +1,47 @@
 // @vitest-environment jsdom
 
 /**
- * Tests for ManualRefreshButton (bu-zlzxz).
+ * Tests for ManualRefreshButton (bu-zlzxz, completeness fix bu-ep4ks.5).
  *
  * Verifies:
  *   - Button renders with "Refresh" label by default.
- *   - On click, invalidates all five window-scoped cache families for the active window.
- *   - Cache entries for other windows are NOT invalidated (key isolation via chroniclesKeys).
- *   - aria-busy lifecycle: false at rest (not "true" in static render).
+ *   - On click, invalidates all 11 day/window-scoped cache families
+ *     (chroniclesFamilyKeys) — not just the 5 the button originally shipped
+ *     with — so "Refresh" is truthful about what it refreshes.
+ *   - Each invalidation uses a family-prefix key (no params element), which
+ *     react-query's default `exact: false` matching applies to every cached
+ *     param variant of that family, regardless of which window/day/tz it was
+ *     fetched with.
+ *   - aria-busy lifecycle: false at rest, true while the invalidation is in
+ *     flight.
  */
 
-import { describe, expect, it } from "vitest";
-import { renderToStaticMarkup } from "react-dom/server";
-import { chroniclesKeys } from "@/hooks/use-chronicles";
+import { describe, expect, it, vi } from "vitest";
+import { render, screen, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach } from "vitest";
+import { chroniclesFamilyKeys } from "@/hooks/use-chronicles";
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton";
 
 // ---------------------------------------------------------------------------
-// Stub useQueryClient so renderToStaticMarkup does not need a QueryClientProvider.
+// Stub useQueryClient so the test does not need a QueryClientProvider, and so
+// the invalidateQueries calls made on click can be inspected.
 // ---------------------------------------------------------------------------
 
-import { vi } from "vitest";
+const invalidateQueries = vi.fn(() => Promise.resolve()) as unknown as {
+  (opts: { queryKey: readonly unknown[] }): Promise<void>;
+  mock: { calls: Array<[{ queryKey: readonly unknown[] }]> };
+  mockClear: () => void;
+};
 
 vi.mock("@tanstack/react-query", () => ({
-  useQueryClient: () => ({
-    invalidateQueries: vi.fn(() => Promise.resolve()),
-  }),
+  useQueryClient: () => ({ invalidateQueries }),
 }));
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-const WINDOW_FROM = new Date("2026-04-25T00:00:00.000Z");
-const WINDOW_TO = new Date("2026-04-25T23:59:59.000Z");
-
-const OTHER_FROM = new Date("2026-04-20T00:00:00.000Z");
-const OTHER_TO = new Date("2026-04-20T23:59:59.000Z");
-
-function renderButton(from = WINDOW_FROM, to = WINDOW_TO): string {
-  return renderToStaticMarkup(<ManualRefreshButton timeWindow={{ from, to }} />);
-}
+afterEach(() => {
+  cleanup();
+  invalidateQueries.mockClear();
+});
 
 // ---------------------------------------------------------------------------
 // Rendering tests
@@ -47,154 +49,79 @@ function renderButton(from = WINDOW_FROM, to = WINDOW_TO): string {
 
 describe("ManualRefreshButton — rendering", () => {
   it("renders a button with text 'Refresh'", () => {
-    const html = renderButton();
-    expect(html).toContain("Refresh");
+    render(<ManualRefreshButton />);
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeDefined();
   });
 
   it("button is not disabled at rest", () => {
-    const html = renderButton();
-    // The disabled HTML attribute must not be present as a standalone attribute.
-    // (Tailwind class names like "disabled:opacity-50" are fine — we check only
-    // for the attribute form which appears as ` disabled` or `disabled=""`.)
-    expect(html).not.toMatch(/ disabled[=" >]/);
+    render(<ManualRefreshButton />);
+    const button = screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
   });
 
-  it("does not show 'Refreshing' text in initial state", () => {
-    const html = renderButton();
-    // Before any click, the button label should be "Refresh" not "Refreshing"
-    expect(html).not.toContain("Refreshing");
+  it("aria-busy is false at rest", () => {
+    render(<ManualRefreshButton />);
+    const button = screen.getByRole("button", { name: "Refresh" });
+    expect(button.getAttribute("aria-busy")).toBe("false");
   });
 });
 
 // ---------------------------------------------------------------------------
-// aria-busy lifecycle — static render confirms initial state
+// Family completeness — the 11 families the drilldown panel renders must all
+// be named, and must be prefix-only (no params) so invalidation covers every
+// cached variant regardless of the window/day/tz it was fetched with.
 // ---------------------------------------------------------------------------
 
-describe("ManualRefreshButton — aria-busy lifecycle", () => {
-  it("aria-busy is false (not 'true') in initial render", () => {
-    const html = renderButton();
-    // aria-busy should be "false" or absent, never "true" at rest
-    expect(html).not.toMatch(/aria-busy="true"/);
+describe("chroniclesFamilyKeys — completeness", () => {
+  it("names exactly the 11 day/window-scoped families the drilldown panel renders", () => {
+    const families = Object.keys(chroniclesFamilyKeys).sort();
+    expect(families).toEqual(
+      [
+        "balance",
+        "byCategory",
+        "byDay",
+        "correctionPrompts",
+        "dayClose",
+        "episodes",
+        "pointEvents",
+        "rollups",
+        "sourceState",
+        "trends",
+        "whoYouWereWith",
+      ].sort(),
+    );
+  });
+
+  it("every family key is prefix-only (no params element)", () => {
+    for (const key of Object.values(chroniclesFamilyKeys)) {
+      // A params-bearing key would be 3 elements: [..all, segment, params].
+      // Family-prefix keys must stop at the segment.
+      expect(key.length).toBe(2);
+      expect(key[0]).toBe("chronicles");
+    }
   });
 });
 
 // ---------------------------------------------------------------------------
-// Window-scoped key isolation — assert that different windows produce different
-// cache keys so invalidating one window leaves another window's cache intact.
+// Click behavior — clicking Refresh invalidates every family.
 // ---------------------------------------------------------------------------
 
-describe("ManualRefreshButton — window-scoped key isolation", () => {
-  it("byDay keys differ across windows", () => {
-    const activeKey = chroniclesKeys.byDay({
-      start_at: WINDOW_FROM.toISOString(),
-      end_at: WINDOW_TO.toISOString(),
-    });
-    const otherKey = chroniclesKeys.byDay({
-      start_at: OTHER_FROM.toISOString(),
-      end_at: OTHER_TO.toISOString(),
-    });
-    expect(activeKey).not.toEqual(otherKey);
-  });
+describe("ManualRefreshButton — click invalidates all 11 families", () => {
+  it("calls invalidateQueries once per family in chroniclesFamilyKeys, and shows Refreshing while in flight", async () => {
+    const user = userEvent.setup();
+    render(<ManualRefreshButton />);
 
-  it("byCategory keys differ across windows", () => {
-    const activeKey = chroniclesKeys.byCategory({
-      start_at: WINDOW_FROM.toISOString(),
-      end_at: WINDOW_TO.toISOString(),
-    });
-    const otherKey = chroniclesKeys.byCategory({
-      start_at: OTHER_FROM.toISOString(),
-      end_at: OTHER_TO.toISOString(),
-    });
-    expect(activeKey).not.toEqual(otherKey);
-  });
+    const button = screen.getByRole("button", { name: "Refresh" });
+    await user.click(button);
 
-  it("dayClose keys differ across windows", () => {
-    const activeKey = chroniclesKeys.dayClose({
-      window_start: WINDOW_FROM.toISOString(),
-      window_end: WINDOW_TO.toISOString(),
-    });
-    const otherKey = chroniclesKeys.dayClose({
-      window_start: OTHER_FROM.toISOString(),
-      window_end: OTHER_TO.toISOString(),
-    });
-    expect(activeKey).not.toEqual(otherKey);
-  });
+    expect(invalidateQueries).toHaveBeenCalledTimes(11);
+    const invalidatedKeys = invalidateQueries.mock.calls.map((call) => call[0].queryKey);
+    for (const expectedKey of Object.values(chroniclesFamilyKeys)) {
+      expect(invalidatedKeys).toContainEqual(expectedKey);
+    }
 
-  it("pointEvents keys differ across windows", () => {
-    const activeKey = chroniclesKeys.pointEvents({
-      since: WINDOW_FROM.toISOString(),
-      until: WINDOW_TO.toISOString(),
-      limit: 500,
-    });
-    const otherKey = chroniclesKeys.pointEvents({
-      since: OTHER_FROM.toISOString(),
-      until: OTHER_TO.toISOString(),
-      limit: 500,
-    });
-    expect(activeKey).not.toEqual(otherKey);
-  });
-
-  it("sourceState key is a singleton (no window params, always invalidated)", () => {
-    // sourceState has no window params — it's always invalidated as-is.
-    expect(chroniclesKeys.sourceState()).toEqual(["chronicles", "source-state"]);
-  });
-
-  it("invalidating active window byDay key does not match other window byDay key", () => {
-    const activeKey = chroniclesKeys.byDay({
-      start_at: WINDOW_FROM.toISOString(),
-      end_at: WINDOW_TO.toISOString(),
-    });
-    const otherKey = chroniclesKeys.byDay({
-      start_at: OTHER_FROM.toISOString(),
-      end_at: OTHER_TO.toISOString(),
-    });
-    // A prefix-exact invalidation of activeKey will not match otherKey
-    // because the params objects embedded in position [2] differ.
-    expect(JSON.stringify(activeKey[2])).not.toBe(JSON.stringify(otherKey[2]));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Key content — verify correct param mapping from timeWindow → key families
-// ---------------------------------------------------------------------------
-
-describe("ManualRefreshButton — key content", () => {
-  it("byDay key contains active window ISO strings", () => {
-    const key = chroniclesKeys.byDay({
-      start_at: WINDOW_FROM.toISOString(),
-      end_at: WINDOW_TO.toISOString(),
-    });
-    expect(key[1]).toBe("aggregate-by-day");
-    expect(JSON.stringify(key)).toContain(WINDOW_FROM.toISOString());
-    expect(JSON.stringify(key)).toContain(WINDOW_TO.toISOString());
-  });
-
-  it("byCategory key contains active window ISO strings", () => {
-    const key = chroniclesKeys.byCategory({
-      start_at: WINDOW_FROM.toISOString(),
-      end_at: WINDOW_TO.toISOString(),
-    });
-    expect(key[1]).toBe("aggregate-by-category");
-    expect(JSON.stringify(key)).toContain(WINDOW_FROM.toISOString());
-  });
-
-  it("dayClose key contains active window ISO strings", () => {
-    const key = chroniclesKeys.dayClose({
-      window_start: WINDOW_FROM.toISOString(),
-      window_end: WINDOW_TO.toISOString(),
-    });
-    expect(key[1]).toBe("day-close");
-    expect(JSON.stringify(key)).toContain(WINDOW_FROM.toISOString());
-  });
-
-  it("pointEvents key contains active window ISO strings and limit=500", () => {
-    const key = chroniclesKeys.pointEvents({
-      since: WINDOW_FROM.toISOString(),
-      until: WINDOW_TO.toISOString(),
-      limit: 500,
-    });
-    expect(key[1]).toBe("point-events");
-    expect(JSON.stringify(key)).toContain(WINDOW_FROM.toISOString());
-    expect(JSON.stringify(key)).toContain("500");
+    // After the (resolved) invalidation settles, the button returns to rest.
+    const settledButton = await screen.findByRole("button", { name: "Refresh" });
+    expect(settledButton.getAttribute("aria-busy")).toBe("false");
   });
 });

@@ -880,73 +880,88 @@ function TopSessionsSection({
               <Skeleton key={i} className="h-6 w-full" />
             ))}
           </div>
-        ) : isError ? (
+        ) : isError && !data ? (
           <p className="text-sm text-muted-foreground">Failed to load top sessions.</p>
-        ) : sessions.length === 0 && unavailableButlers.length > 0 ? (
-          // Empty because butlers dropped out of the fan-out, not a genuine
-          // absence of expensive sessions — name them (bu-jad4j.3).
-          <SpendUnavailableFootnote
-            label="Top sessions"
-            butlers={unavailableButlers}
-            variant="empty"
-            testId="top-sessions-unavailable"
-          />
-        ) : sessions.length === 0 ? (
-          <p className="font-serif italic text-muted-foreground text-sm">
-            No session data available.
-          </p>
         ) : (
-          <div className="flex flex-col gap-3">
-            <Table>
-              <TableHeader>
-                <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                  <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
-                  <TableHead className="text-left py-2 px-2 font-normal">Model</TableHead>
-                  <TableHead className="text-right py-2 px-2 font-normal">Tokens</TableHead>
-                  <TableHead className="text-right py-2 px-2 font-normal">Cost</TableHead>
-                  <TableHead className="text-right py-2 px-2 font-normal">When</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sessions.map((s) => (
-                  <TableRow key={s.session_id} className="border-border/60 hover:bg-muted/30">
-                    <TableCell className="py-2 px-2">
-                      <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
-                        {s.butler}
-                      </Link>
-                    </TableCell>
-                    <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.model}</TableCell>
-                    <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
-                      {s.input_tokens.toLocaleString()} / {s.output_tokens.toLocaleString()}
-                    </TableCell>
-                    <TableCell className="py-2 px-2 text-right tabular-nums font-medium">
-                      {formatCostUsd(s.cost_usd)}
-                    </TableCell>
-                    <TableCell className="py-2 px-2 text-right text-xs text-muted-foreground">
-                      <Link to={`/sessions/${s.session_id}`} className="hover:underline">
-                        {new Date(s.started_at).toLocaleString("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </Link>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            {unavailableButlers.length > 0 && (
-              // Populated but partial: some butlers' sessions are absent from
-              // the ranking.
+          <>
+            {/* A background refetch failing must not clobber good cached rows
+                with an error line -- keep showing the last-loaded data and
+                flag it as stale instead (bu-ep4ks.5). */}
+            {isError && (
+              <SourceDegradedNote
+                className="mb-3"
+                label="Top sessions"
+                detail="showing last loaded data; refresh failed"
+                testId="top-sessions-stale"
+              />
+            )}
+            {sessions.length === 0 && unavailableButlers.length > 0 ? (
+              // Empty because butlers dropped out of the fan-out, not a genuine
+              // absence of expensive sessions — name them (bu-jad4j.3).
               <SpendUnavailableFootnote
                 label="Top sessions"
                 butlers={unavailableButlers}
-                variant="partial"
+                variant="empty"
                 testId="top-sessions-unavailable"
               />
+            ) : sessions.length === 0 ? (
+              <p className="font-serif italic text-muted-foreground text-sm">
+                No session data available.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                      <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">Model</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">Tokens</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">Cost</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">When</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sessions.map((s) => (
+                      <TableRow key={s.session_id} className="border-border/60 hover:bg-muted/30">
+                        <TableCell className="py-2 px-2">
+                          <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
+                            {s.butler}
+                          </Link>
+                        </TableCell>
+                        <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.model}</TableCell>
+                        <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
+                          {s.input_tokens.toLocaleString()} / {s.output_tokens.toLocaleString()}
+                        </TableCell>
+                        <TableCell className="py-2 px-2 text-right tabular-nums font-medium">
+                          {formatCostUsd(s.cost_usd)}
+                        </TableCell>
+                        <TableCell className="py-2 px-2 text-right text-xs text-muted-foreground">
+                          <Link to={`/sessions/${s.session_id}`} className="hover:underline">
+                            {new Date(s.started_at).toLocaleString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </Link>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {unavailableButlers.length > 0 && (
+                  // Populated but partial: some butlers' sessions are absent from
+                  // the ranking.
+                  <SpendUnavailableFootnote
+                    label="Top sessions"
+                    butlers={unavailableButlers}
+                    variant="partial"
+                    testId="top-sessions-unavailable"
+                  />
+                )}
+              </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </section>
@@ -986,69 +1001,84 @@ function ByScheduleSection({
               <Skeleton key={i} className="h-6 w-full" />
             ))}
           </div>
-        ) : isError ? (
+        ) : isError && !data ? (
           <p className="text-sm text-muted-foreground">Failed to load schedule costs.</p>
-        ) : schedules.length === 0 && unavailableButlers.length > 0 ? (
-          // Empty because butlers dropped out of the fan-out, not a genuine
-          // absence of scheduled-task cost data — name them (bu-h3ej9).
-          <SpendUnavailableFootnote
-            label="Schedule costs"
-            butlers={unavailableButlers}
-            variant="empty"
-            testId="by-schedule-unavailable"
-          />
-        ) : schedules.length === 0 ? (
-          <p className="font-serif italic text-muted-foreground text-sm">
-            No scheduled-task cost data available.
-          </p>
         ) : (
-          <div className="flex flex-col gap-3">
-            <Table>
-              <TableHeader>
-                <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                  <TableHead className="text-left py-2 px-2 font-normal">Schedule</TableHead>
-                  <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
-                  <TableHead className="text-left py-2 px-2 font-normal">Cron</TableHead>
-                  <TableHead className="text-right py-2 px-2 font-normal">Runs</TableHead>
-                  <TableHead className="text-right py-2 px-2 font-normal">Avg/run</TableHead>
-                  <TableHead className="text-right py-2 px-2 font-normal">Projected/mo</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {schedules.map((s) => (
-                  <TableRow
-                    key={`${s.butler}-${s.schedule_name}`}
-                    className="border-border/60 hover:bg-muted/30"
-                  >
-                    <TableCell className="py-2 px-2 font-mono text-xs">{s.schedule_name}</TableCell>
-                    <TableCell className="py-2 px-2">
-                      <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
-                        {s.butler}
-                      </Link>
-                    </TableCell>
-                    <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.cron}</TableCell>
-                    <TableCell className="py-2 px-2 text-right tabular-nums text-xs">{s.total_runs}</TableCell>
-                    <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
-                      {formatCostUsd(s.avg_cost_per_run)}
-                    </TableCell>
-                    <TableCell className="py-2 px-2 text-right tabular-nums font-medium">
-                      {formatCostUsd(s.projected_monthly_usd)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            {unavailableButlers.length > 0 && (
-              // Populated but partial: some butlers' schedules are absent from
-              // the ranking (bu-h3ej9).
+          <>
+            {/* A background refetch failing must not clobber good cached rows
+                with an error line -- keep showing the last-loaded data and
+                flag it as stale instead (bu-ep4ks.5). */}
+            {isError && (
+              <SourceDegradedNote
+                className="mb-3"
+                label="Schedule costs"
+                detail="showing last loaded data; refresh failed"
+                testId="by-schedule-stale"
+              />
+            )}
+            {schedules.length === 0 && unavailableButlers.length > 0 ? (
+              // Empty because butlers dropped out of the fan-out, not a genuine
+              // absence of scheduled-task cost data — name them (bu-h3ej9).
               <SpendUnavailableFootnote
                 label="Schedule costs"
                 butlers={unavailableButlers}
-                variant="partial"
+                variant="empty"
                 testId="by-schedule-unavailable"
               />
+            ) : schedules.length === 0 ? (
+              <p className="font-serif italic text-muted-foreground text-sm">
+                No scheduled-task cost data available.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                      <TableHead className="text-left py-2 px-2 font-normal">Schedule</TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">Cron</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">Runs</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">Avg/run</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">Projected/mo</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {schedules.map((s) => (
+                      <TableRow
+                        key={`${s.butler}-${s.schedule_name}`}
+                        className="border-border/60 hover:bg-muted/30"
+                      >
+                        <TableCell className="py-2 px-2 font-mono text-xs">{s.schedule_name}</TableCell>
+                        <TableCell className="py-2 px-2">
+                          <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
+                            {s.butler}
+                          </Link>
+                        </TableCell>
+                        <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.cron}</TableCell>
+                        <TableCell className="py-2 px-2 text-right tabular-nums text-xs">{s.total_runs}</TableCell>
+                        <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
+                          {formatCostUsd(s.avg_cost_per_run)}
+                        </TableCell>
+                        <TableCell className="py-2 px-2 text-right tabular-nums font-medium">
+                          {formatCostUsd(s.projected_monthly_usd)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {unavailableButlers.length > 0 && (
+                  // Populated but partial: some butlers' schedules are absent from
+                  // the ranking (bu-h3ej9).
+                  <SpendUnavailableFootnote
+                    label="Schedule costs"
+                    butlers={unavailableButlers}
+                    variant="partial"
+                    testId="by-schedule-unavailable"
+                  />
+                )}
+              </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </section>

@@ -423,6 +423,23 @@ describe("SettingsPermissionsPage — audit reel filters operational noise [bu-9
 
     expect(screen.getByText("No recent audit entries.")).toBeTruthy();
   });
+
+  it("shows a degraded note (not the empty state) when the audit log query errors [bu-ep4ks.5]", async () => {
+    useAuditLogMock.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("audit log fetch failed"),
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useAuditLogMock>);
+
+    await act(async () => {
+      renderPage();
+    });
+
+    expect(screen.getByTestId("audit-reel-degraded")).toBeTruthy();
+    expect(screen.queryByText("No recent audit entries.")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -534,6 +551,35 @@ describe("SettingsPermissionsPage — webhook enabled state [bu-9q1dx.7]", () =>
       const cell = screen.getByTestId(`webhook-enabled-${WEBHOOK_ID}`);
       expect(cell.getAttribute("data-enabled")).toBe("true");
     });
+  });
+});
+
+describe("SettingsPermissionsPage — webhooks load error [bu-ep4ks.5]", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("shows a degraded note (not 'No webhooks registered') when the webhooks fetch fails", async () => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes("/api/webhooks")) {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ detail: "internal error" }),
+        });
+      }
+      return defaultFetch(url);
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await act(async () => {
+      renderPage();
+    });
+
+    expect(await screen.findByTestId("webhooks-degraded")).toBeTruthy();
+    expect(screen.queryByText("No webhooks registered.")).toBeNull();
   });
 });
 

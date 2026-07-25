@@ -579,6 +579,26 @@ describe("PlexPage — dimension halo", () => {
     expect(
       container.querySelectorAll("[data-testid='plex-halo-arc-label']").length,
     ).toBe(0);
+    // Genuinely no-data-yet must never render the degraded note either.
+    expect(container.querySelector("[data-testid='plex-halo-degraded']")).toBeNull();
+  });
+
+  it("shows a degraded note instead of a silent absence when the halo source errors (bu-ep4ks.5)", () => {
+    vi.mocked(usePlexHalo).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("halo fetch failed"),
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof usePlexHalo>);
+    renderPage("/entities");
+    // The rings still render — this is not a full-page error.
+    expect(container.querySelectorAll("[data-testid='plex-node']").length).toBe(3);
+    // But the halo failure is named, not silently absent.
+    const note = container.querySelector("[data-testid='plex-halo-degraded']");
+    expect(note).toBeTruthy();
+    expect(note?.textContent).toContain("halo source unavailable");
+    expect(container.querySelectorAll("[data-testid='plex-halo-mark']").length).toBe(0);
   });
 
   it("renders one mark per satellite and one label per arc", () => {

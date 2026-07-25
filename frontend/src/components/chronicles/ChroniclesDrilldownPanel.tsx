@@ -185,7 +185,7 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-end">
-        <ManualRefreshButton timeWindow={{ from, to }} />
+        <ManualRefreshButton />
       </div>
 
       <SourceStateBadgeStrip />
@@ -228,6 +228,8 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
             windowStart={from}
             windowEnd={to}
             onEpisodeClick={handleEpisodeClick}
+            isError={episodesQuery.isError}
+            onRetry={() => void episodesQuery.refetch()}
           />
           <BalanceRings
             data={balance.data?.data}

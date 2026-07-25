@@ -24,6 +24,7 @@ import { ExternalLink, Loader2 } from "lucide-react";
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { Button } from "@/components/ui/button";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import {
   Dialog,
   DialogContent,
@@ -411,7 +412,7 @@ function isDestructiveAction(action: string): boolean {
 }
 
 function AuditReelSection() {
-  const { data, isLoading } = useAuditLog({ limit: 15, kind: "privileged" });
+  const { data, isLoading, isError, refetch } = useAuditLog({ limit: 15, kind: "privileged" });
   const entries = data?.data ?? [];
 
   return (
@@ -425,7 +426,17 @@ function AuditReelSection() {
           ))}
         </div>
       )}
-      {!isLoading && (
+      {!isLoading && isError && (
+        <div className="border-r border-b border-border/60 px-4 py-3">
+          <SourceDegradedNote
+            label="Audit reel"
+            detail="could not be reached"
+            onRetry={() => void refetch()}
+            testId="audit-reel-degraded"
+          />
+        </div>
+      )}
+      {!isLoading && !isError && (
         <>
           {entries.map((entry) => (
             <div
@@ -945,6 +956,7 @@ function EditWebhookModal({ webhook, onClose, onSaved }: EditWebhookModalProps) 
 function WebhooksSection() {
   const [webhooks, setWebhooks] = useState<WebhookRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<WebhookRow | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -955,8 +967,10 @@ function WebhooksSection() {
     try {
       const whs = await fetchWebhooks();
       setWebhooks(whs);
+      setLoadError(false);
     } catch (err) {
       toast.error(`Failed to load webhooks: ${err instanceof Error ? err.message : String(err)}`);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -1056,6 +1070,13 @@ function WebhooksSection() {
             </div>
           ))}
         </div>
+      ) : loadError ? (
+        <SourceDegradedNote
+          label="Webhooks"
+          detail="could not be reached"
+          onRetry={() => void reload()}
+          testId="webhooks-degraded"
+        />
       ) : webhooks.length === 0 ? (
         <p className="text-sm italic font-serif text-muted-foreground">
           No webhooks registered.

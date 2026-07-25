@@ -1472,7 +1472,7 @@ export default function PlexPage() {
   );
 
   // Dimension halo: non-person entities banded around the rings (owner mode).
-  const { data: haloData } = usePlexHalo(isOwnerMode);
+  const { data: haloData, isError: haloError, refetch: refetchHalo } = usePlexHalo(isOwnerMode);
   const haloLayout: HaloLayout | null = useMemo(() => {
     if (!haloData) return null;
     const layout = layoutHalo(haloData);
@@ -2130,6 +2130,24 @@ export default function PlexPage() {
             type to find · esc back · enter open · 0 reset · drag a person to
             pin a tier
           </p>
+
+          {/* Halo fetch failure: the rings still render fine, but the
+              non-person satellites are silently absent -- indistinguishable
+              from a plex with no organizations/places/things without this
+              note (bu-ep4ks.5). */}
+          {isOwnerMode && !isLoading && !isError && haloError && (
+            <div
+              data-plex-overlay
+              className="pointer-events-auto absolute left-0 top-0 z-10 w-56 p-1"
+            >
+              <SourceDegradedNote
+                label="Organizations, places & things"
+                detail="halo source unavailable"
+                onRetry={() => void refetchHalo()}
+                testId="plex-halo-degraded"
+              />
+            </div>
+          )}
 
           {/* Owner mode: attention + capacity flanks. */}
           {isOwnerMode && (

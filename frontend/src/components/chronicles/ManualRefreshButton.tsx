@@ -1,16 +1,16 @@
 /**
- * ManualRefreshButton — window-scoped cache invalidation for the Chronicles dashboard.
+ * ManualRefreshButton — full-window cache invalidation for the Chronicles dashboard.
  *
- * Accepts a `timeWindow` prop ({ from: Date; to: Date }) and invalidates only the
- * TanStack Query cache entries that belong to that exact window, leaving cache
- * entries for other windows untouched.
+ * Invalidates every TanStack Query cache family the drilldown panel renders for
+ * the selected day, by family prefix (react-query's default `exact: false`
+ * matching), so it does not need to know the exact params (trends window, tz,
+ * day) each family was last fetched with — those live in ChroniclesDrilldownPanel
+ * state, not in this button.
  *
- * Families invalidated on click:
- *   - chroniclesKeys.byDay({ start_at, end_at })
- *   - chroniclesKeys.byCategory({ start_at, end_at })
- *   - chroniclesKeys.dayClose({ window_start, window_end })
- *   - chroniclesKeys.sourceState()            (singleton — no window params)
- *   - chroniclesKeys.pointEvents({ since, until, limit })
+ * Families invalidated on click (chroniclesFamilyKeys — all 11 day/window-scoped
+ * families the drilldown panel renders; see use-chronicles.ts for the exclusions):
+ *   - byDay, byCategory, dayClose, sourceState, pointEvents, episodes, balance,
+ *     whoYouWereWith, correctionPrompts, trends, rollups
  *
  * The button is disabled and shows a spinner while any invalidation is in flight.
  * Visible UX: "Refresh" / "Refreshing" with a spinner (aria-busy=true while busy).
@@ -20,18 +20,9 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { chroniclesKeys } from "@/hooks/use-chronicles";
+import { chroniclesFamilyKeys } from "@/hooks/use-chronicles";
 
-export interface ManualRefreshButtonTimeWindow {
-  from: Date;
-  to: Date;
-}
-
-interface ManualRefreshButtonProps {
-  timeWindow: ManualRefreshButtonTimeWindow;
-}
-
-export function ManualRefreshButton({ timeWindow }: ManualRefreshButtonProps) {
+export function ManualRefreshButton() {
   const queryClient = useQueryClient();
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -39,21 +30,11 @@ export function ManualRefreshButton({ timeWindow }: ManualRefreshButtonProps) {
     if (isRefreshing) return;
     setIsRefreshing(true);
 
-    const windowFrom = timeWindow.from.toISOString();
-    const windowTo = timeWindow.to.toISOString();
-
-    // Derive the exact param shapes that ChroniclesPage passes to each hook.
-    const aggregateParams = { start_at: windowFrom, end_at: windowTo };
-    const dayCloseParams = { window_start: windowFrom, window_end: windowTo };
-    const pointEventsParams = { since: windowFrom, until: windowTo, limit: 500 };
-
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: chroniclesKeys.byDay(aggregateParams) }),
-      queryClient.invalidateQueries({ queryKey: chroniclesKeys.byCategory(aggregateParams) }),
-      queryClient.invalidateQueries({ queryKey: chroniclesKeys.dayClose(dayCloseParams) }),
-      queryClient.invalidateQueries({ queryKey: chroniclesKeys.sourceState() }),
-      queryClient.invalidateQueries({ queryKey: chroniclesKeys.pointEvents(pointEventsParams) }),
-    ]);
+    await Promise.all(
+      Object.values(chroniclesFamilyKeys).map((queryKey) =>
+        queryClient.invalidateQueries({ queryKey }),
+      ),
+    );
 
     setIsRefreshing(false);
   }

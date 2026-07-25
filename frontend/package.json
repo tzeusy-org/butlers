@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build --configLoader runner",
     "lint": "eslint .",
     "lint:emdash": "node scripts/check-em-dash-copy.mjs",
+    "lint:query-coercion": "node scripts/check-query-result-coercion.mjs",
     "knip": "knip",
     "preview": "vite preview --configLoader runner",
     "test": "node --test scripts/worktree-tooling-contract.mjs && vitest run --configLoader runner",

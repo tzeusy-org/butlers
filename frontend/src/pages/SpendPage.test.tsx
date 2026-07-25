@@ -1310,6 +1310,99 @@ describe("SpendPage — why (evidence layer)", () => {
     expect(screen.queryByTestId("by-schedule-unavailable")).toBeNull()
   })
 
+  it("keeps showing cached Top Sessions rows with a stale badge on a background refetch error (bu-ep4ks.5)", async () => {
+    // A background refetch failing must not clobber good cached rows with a
+    // bare "Failed to load" line -- react-query keeps the last-successful
+    // `data` around across a failed refetch, and the page must too.
+    mockUseTopSessions.mockReturnValue({
+      data: {
+        data: [
+          {
+            session_id: "sess-1",
+            butler: "general",
+            cost_usd: 1.2345,
+            input_tokens: 5000,
+            output_tokens: 2500,
+            model: "claude-sonnet",
+            started_at: "2026-05-17T10:00:00Z",
+          },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: true,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const section = await screen.findByTestId("top-sessions-section")
+    expect(section.textContent).toContain("general")
+    expect(section.textContent).not.toBe("Failed to load top sessions.")
+    const stale = await screen.findByTestId("top-sessions-stale")
+    expect(stale.textContent).toContain("showing last loaded data")
+  })
+
+  it("shows the full failure message for Top Sessions only when there is no cached data at all (bu-ep4ks.5)", async () => {
+    mockUseTopSessions.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const section = await screen.findByTestId("top-sessions-section")
+    expect(section.textContent).toContain("Failed to load top sessions.")
+    expect(screen.queryByTestId("top-sessions-stale")).toBeNull()
+  })
+
+  it("keeps showing cached By Schedule rows with a stale badge on a background refetch error (bu-ep4ks.5)", async () => {
+    mockUseCostsBySchedule.mockReturnValue({
+      data: {
+        data: [
+          {
+            schedule_name: "morning-briefing",
+            butler: "general",
+            cron: "0 7 * * *",
+            total_runs: 30,
+            total_cost_usd: 3.0,
+            avg_cost_per_run: 0.1,
+            runs_per_day: 1,
+            projected_monthly_usd: 3.0,
+          },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: true,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const section = await screen.findByTestId("by-schedule-section")
+    expect(section.textContent).toContain("morning-briefing")
+    const stale = await screen.findByTestId("by-schedule-stale")
+    expect(stale.textContent).toContain("showing last loaded data")
+  })
+
+  it("shows the full failure message for By Schedule only when there is no cached data at all (bu-ep4ks.5)", async () => {
+    mockUseCostsBySchedule.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const section = await screen.findByTestId("by-schedule-section")
+    expect(section.textContent).toContain("Failed to load schedule costs.")
+    expect(screen.queryByTestId("by-schedule-stale")).toBeNull()
+  })
+
   it("scopes both evidence sections to the TimeWindowPicker window, not all-time [bu-oaiiw]", async () => {
     await act(async () => {
       renderPage()
