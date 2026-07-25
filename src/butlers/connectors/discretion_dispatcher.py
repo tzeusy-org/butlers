@@ -35,6 +35,15 @@ Design notes
   ``adapter.last_process_info`` is still passed through, since some gates
   (e.g. OpenCode's pre-tool-call ``APIError`` envelope) key off it rather
   than ``tool_calls``.
+- Spend routing rules (bu-m95jq): after tier resolution, the resolved model
+  is run through :func:`~butlers.core.model_routing.apply_spend_routing_rules`
+  with ``trigger_source="discretion"``, the same integration shape
+  ``Spawner._run()`` uses, so an operator-configured rule scoped to
+  ``condition={"purpose": "discretion"}`` (or ``"trigger"``) can re-route the
+  model actually dispatched. A matching rule's ``action.max_cost_per_call``
+  cap is logged for visibility but not enforced as a pre-call DENY here,
+  since discretion calls have no ``max_token_budget`` to bound a worst-case
+  cost estimate against.
 """
 
 from __future__ import annotations
@@ -55,6 +64,7 @@ from butlers.core.failover_classifier import FailoverContext, classify_failover_
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
+    apply_spend_routing_rules,
     check_token_quota,
     next_same_tier_candidate,
     record_token_usage,
@@ -228,8 +238,11 @@ class DiscretionDispatcher:
         Resolution order:
         1. Query ``public.model_catalog`` for ``Complexity.SPECIALTY``.
         2. Raise ``RuntimeError`` if no enabled catalog entry matches.
-        3. Acquire the concurrency semaphore.
-        4. Invoke the adapter with ``asyncio.wait_for`` enforcing ``timeout_s``.
+        3. Apply operator spend routing rules (``purpose="discretion"``) via
+           :func:`~butlers.core.model_routing.apply_spend_routing_rules`; a
+           matching rule may re-route the resolved model.
+        4. Acquire the concurrency semaphore.
+        5. Invoke the adapter with ``asyncio.wait_for`` enforcing ``timeout_s``.
 
         Parameters
         ----------
@@ -305,6 +318,53 @@ class DiscretionDispatcher:
             session_timeout_s,
             effective_tier,
         ) = catalog_result
+
+        # bu-m95jq: spend routing rules (public.spend_rules), model SELECTION
+        # override. Mirrors Spawner._run()'s integration (butlers/core/spawner.py)
+        # exactly: applied once, right after tier resolution and before the
+        # same-tier failover loop below, with trigger_source="discretion" (the
+        # same literal purpose= value record_token_usage stamps onto
+        # public.token_usage_ledger further down) so a rule scoped to
+        # condition={"purpose": "discretion"} matches. A matching rule can
+        # re-route the resolved model (action.model) and/or surface a per-call
+        # USD cap (action.max_cost_per_call); apply_spend_routing_rules fails
+        # open on any DB/lookup error, so a rules problem never blocks a
+        # discretion call. The per-call cap is not enforced as a pre-call DENY
+        # here (unlike the spawner path) because discretion calls have no
+        # analogous max_token_budget to bound a worst-case cost estimate
+        # against; it is logged for operator visibility instead.
+        if catalog_entry_id is not None:
+            try:
+                _routing_result = await apply_spend_routing_rules(
+                    self._pool,
+                    self._butler_name,
+                    effective_tier,
+                    (runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s),
+                    trigger_source="discretion",
+                )
+                (
+                    runtime_type,
+                    model_id,
+                    extra_args,
+                    catalog_entry_id,
+                    session_timeout_s,
+                ) = _routing_result.resolved
+                if _routing_result.max_cost_per_call is not None:
+                    logger.info(
+                        "DiscretionDispatcher: spend rule set per-call cap $%.4f for "
+                        "model=%s (not enforced pre-call: no fixed token budget to "
+                        "estimate worst-case cost against)",
+                        _routing_result.max_cost_per_call,
+                        model_id,
+                    )
+            except Exception:
+                logger.warning(
+                    "DiscretionDispatcher: spend routing-rule evaluation failed for "
+                    "butler=%s; keeping tier-resolved model=%s",
+                    self._butler_name,
+                    model_id,
+                    exc_info=True,
+                )
 
         attempted_ids: list[uuid.UUID] = []
         attempt_count = 0
