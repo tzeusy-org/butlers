@@ -854,6 +854,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             butler_name=origin,
                             **dossier_kwargs,
                             enforce_dossier=True,
+                            approval_push_runtime=daemon._approval_push_runtime,
                         )
                         if decision.dossier_error is not None:
                             return _dossier_error_response(
@@ -1008,8 +1009,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"Message: {message_text!r}"
                             ),
                             session_id=get_current_runtime_session_id(),
+                            butler_name=origin,
                             **dossier_kwargs,
                             enforce_dossier=True,
+                            approval_push_runtime=daemon._approval_push_runtime,
                         )
                         if decision.dossier_error is not None:
                             return _dossier_error_response(

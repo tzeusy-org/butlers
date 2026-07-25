@@ -206,7 +206,18 @@ async def reserve_approval_push(
     action_id: uuid.UUID,
     now: datetime,
 ) -> ApprovalPushReservation:
-    """Reserve exactly one emission mode under a per-schema transaction lock."""
+    """Reserve exactly one emission mode under a per-schema transaction lock.
+
+    A reservation whose prior attempt never reached a terminal successful
+    outcome (``outcome`` is ``NULL`` -- still in flight or from a version of
+    this table that predates outcome tracking -- or ``'failed'``) is claimed
+    again rather than treated as a duplicate.  This is what makes a
+    previously-failed push (e.g. because ``APPROVAL_CALLBACK_SECRET`` was
+    unavailable) actually retryable once the underlying problem is fixed,
+    instead of being silently swallowed forever by ``ON CONFLICT DO NOTHING``
+    (bu-mda0r).  A reservation that already reached a terminal outcome
+    (``delivered``, ``deferred``, ``collapsed``, ``duplicate``) is left alone.
+    """
     window_start = now - _BURST_WINDOW
     async with pool.acquire() as connection:
         async with connection.transaction():
@@ -215,9 +226,14 @@ async def reserve_approval_push(
             await connection.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()))")
             inserted = await connection.fetchval(
                 """
-                INSERT INTO approval_push_emissions (action_id, emission_kind, created_at)
-                VALUES ($1, 'single', $2)
-                ON CONFLICT (action_id) DO NOTHING
+                INSERT INTO approval_push_emissions (action_id, emission_kind, created_at, outcome)
+                VALUES ($1, 'single', $2, NULL)
+                ON CONFLICT (action_id) DO UPDATE
+                    SET emission_kind = EXCLUDED.emission_kind,
+                        created_at = EXCLUDED.created_at,
+                        outcome = NULL
+                    WHERE approval_push_emissions.outcome IS NULL
+                       OR approval_push_emissions.outcome = 'failed'
                 RETURNING action_id
                 """,
                 action_id,
@@ -278,6 +294,34 @@ async def _callback_secret(runtime: ApprovalPushRuntime) -> str | None:
     return await runtime.credential_store.resolve(APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False)
 
 
+async def _record_push_outcome(
+    pool: Any,
+    action_id: uuid.UUID,
+    outcome: ApprovalPushOutcome,
+) -> None:
+    """Persist the terminal outcome onto this action's emission reservation.
+
+    Recording the outcome (rather than leaving the row's mere existence as the
+    only signal) is what lets :func:`reserve_approval_push` tell a delivered
+    push apart from a failed one on a later call, and is what surfaces a
+    failed push to the dashboard/API layer instead of it reading as a normal
+    silently-unreported pending row (bu-mda0r).
+    """
+    try:
+        await pool.execute(
+            "UPDATE approval_push_emissions SET outcome = $1 WHERE action_id = $2",
+            outcome,
+            action_id,
+        )
+    except Exception:  # noqa: BLE001 - never let outcome bookkeeping mutate the action
+        logger.warning(
+            "approval push: failed to record emission outcome %r (action=%s)",
+            outcome,
+            action_id,
+            exc_info=True,
+        )
+
+
 async def emit_approval_push(
     *,
     pool: Any,
@@ -291,21 +335,31 @@ async def emit_approval_push(
     This is fail-open with respect to the action itself: an unavailable delivery
     plane must never un-park, approve, extend, or otherwise mutate the pending
     action.  The durable reservation is intentionally retained on an egress
-    failure so retries/edits do not create owner-notification storms.
+    failure so retries/edits do not create owner-notification storms -- but its
+    ``outcome`` is recorded, so a subsequent call for the same action (once the
+    underlying problem is fixed) claims the reservation again instead of being
+    treated as a duplicate of a push that never actually went out.
     """
     effective_now = now or datetime.now(UTC)
     if effective_now.tzinfo is None or effective_now.utcoffset() is None:
         raise ValueError("emit_approval_push requires a timezone-aware now value")
 
+    action_id = _action_id(action)
+    reservation_claimed = False
+
     try:
         reservation = await reserve_approval_push(
             pool,
-            action_id=_action_id(action),
+            action_id=action_id,
             now=effective_now,
         )
         if reservation.mode == "duplicate":
             return "duplicate"
+        # From here on this call owns the reservation row and must record its
+        # terminal outcome before returning, on every exit path.
+        reservation_claimed = True
         if reservation.mode == "collapsed":
+            await _record_push_outcome(pool, action_id, "collapsed")
             return "collapsed"
 
         owner_recipient = await runtime.resolve_owner_recipient()
@@ -313,9 +367,10 @@ async def emit_approval_push(
             logger.warning(
                 "approval push skipped because no owner Telegram recipient is configured "
                 "(action=%s butler=%s)",
-                _action_id(action),
+                action_id,
                 origin_butler,
             )
+            await _record_push_outcome(pool, action_id, "failed")
             return "failed"
 
         if reservation.mode == "burst_digest":
@@ -331,9 +386,10 @@ async def emit_approval_push(
                 logger.warning(
                     "approval push skipped because %s is unavailable (action=%s butler=%s)",
                     APPROVAL_CALLBACK_SECRET_KEY,
-                    _action_id(action),
+                    action_id,
                     origin_butler,
                 )
+                await _record_push_outcome(pool, action_id, "failed")
                 return "failed"
             envelope = build_approval_request_envelope(
                 action=action,
@@ -358,20 +414,22 @@ async def emit_approval_push(
             )
             logger.info(
                 "Deferred approval push (action=%s butler=%s deliver_at=%s mode=%s)",
-                _action_id(action),
+                action_id,
                 origin_butler,
                 deliver_at.isoformat(),
                 reservation.mode,
             )
+            await _record_push_outcome(pool, action_id, "deferred")
             return "deferred"
 
         await runtime.dispatch(envelope)
         logger.info(
             "Submitted approval push (action=%s butler=%s mode=%s)",
-            _action_id(action),
+            action_id,
             origin_butler,
             reservation.mode,
         )
+        await _record_push_outcome(pool, action_id, "delivered")
         return "delivered"
     except Exception:  # noqa: BLE001 - never alter a parked action for push failure
         logger.warning(
@@ -380,6 +438,8 @@ async def emit_approval_push(
             origin_butler,
             exc_info=True,
         )
+        if reservation_claimed:
+            await _record_push_outcome(pool, action_id, "failed")
         return "failed"
 
 

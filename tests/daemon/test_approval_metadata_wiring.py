@@ -103,18 +103,22 @@ async def test_enabled_gates_receive_the_deterministic_approval_push_runtime(
     push_runtime = object()
     monkeypatch.setattr("butlers.daemon.apply_approval_gates", apply_gates)
 
+    warn_if_secret_missing = AsyncMock()
     daemon = SimpleNamespace(
         config=config,
         _active_modules=[_MetadataModule(), approvals],
         mcp=object(),
         db=SimpleNamespace(pool=object()),
         _build_approval_push_runtime=lambda: push_runtime,
+        _warn_if_approval_callback_secret_missing=warn_if_secret_missing,
     )
 
     result = await ButlerDaemon._apply_approval_gates(daemon)
 
     assert result == {}
     assert apply_gates.await_args.kwargs["approval_push_runtime"] is push_runtime
+    assert daemon._approval_push_runtime is push_runtime
+    warn_if_secret_missing.assert_awaited_once()
 
 
 async def test_relationship_registration_dispatches_legacy_merge_via_memory_callable(

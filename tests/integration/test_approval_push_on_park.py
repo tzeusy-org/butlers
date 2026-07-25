@@ -190,6 +190,74 @@ async def test_gate_park_emits_one_real_database_backed_approval_envelope(
     dispatch.assert_awaited_once()
 
 
+async def test_failed_push_is_retried_once_the_callback_secret_is_fixed(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """bu-mda0r: a push that failed (e.g. missing secret) must not be stuck as
+    a permanent 'duplicate' once the underlying problem is fixed. Before this
+    fix, ``reserve_approval_push``'s plain ``ON CONFLICT DO NOTHING`` claimed
+    the reservation on the first (failing) attempt and every later attempt for
+    the same action silently no-opped as 'duplicate' forever, even after the
+    secret became available.
+    """
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    action = await _insert_pending_action(approval_push_pool, requested_at=now)
+
+    broken_credential_store = SimpleNamespace(resolve=AsyncMock(return_value=None))
+    dispatch = AsyncMock()
+    broken_runtime = ApprovalPushRuntime(
+        dispatch=dispatch,
+        resolve_owner_recipient=AsyncMock(return_value="100200300"),
+        credential_store=broken_credential_store,
+    )
+
+    first_outcome = await emit_approval_push(
+        pool=approval_push_pool,
+        action=action,
+        origin_butler="relationship",
+        runtime=broken_runtime,
+        now=now,
+    )
+    assert first_outcome == "failed"
+    dispatch.assert_not_awaited()
+
+    recorded_outcome = await approval_push_pool.fetchval(
+        "SELECT outcome FROM approval_push_emissions WHERE action_id = $1",
+        action["id"],
+    )
+    assert recorded_outcome == "failed"
+
+    # The secret is now provisioned; retry the exact same action.
+    fixed_runtime = _runtime(dispatch)
+    second_outcome = await emit_approval_push(
+        pool=approval_push_pool,
+        action=action,
+        origin_butler="relationship",
+        runtime=fixed_runtime,
+        now=now + timedelta(seconds=1),
+    )
+
+    assert second_outcome == "delivered"
+    dispatch.assert_awaited_once()
+
+    recorded_outcome_after_retry = await approval_push_pool.fetchval(
+        "SELECT outcome FROM approval_push_emissions WHERE action_id = $1",
+        action["id"],
+    )
+    assert recorded_outcome_after_retry == "delivered"
+
+    # A THIRD call for the same now-delivered action is a genuine duplicate.
+    third_outcome = await emit_approval_push(
+        pool=approval_push_pool,
+        action=action,
+        origin_butler="relationship",
+        runtime=fixed_runtime,
+        now=now + timedelta(seconds=2),
+    )
+    assert third_outcome == "duplicate"
+    dispatch.assert_awaited_once()
+
+
 async def test_quiet_hours_defers_push_without_changing_pending_action_expiry(
     approval_push_pool: asyncpg.Pool,
 ) -> None:

@@ -592,6 +592,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     if pool is not None:
                         import datetime as _dt
 
+                        from butlers.core.approvals_hooks import park_pending_action
+
                         action_id = uuid.uuid4()
                         now = _dt.datetime.now(_dt.UTC)
                         expires_at = now + _dt.timedelta(hours=72)
@@ -618,23 +620,28 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 default=str,
                             )
                         )
-                        await pool.execute(
-                            "INSERT INTO pending_actions "
-                            "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
-                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-                            action_id,
-                            "notify",
-                            safe_park_tool_args,
-                            agent_summary,
-                            get_current_runtime_session_id(),
-                            "pending",  # ActionStatus.PENDING — literal avoids approvals import
-                            now,
-                            expires_at,
-                            dossier.why,
-                            dossier.evidence,
-                            dossier.blast_radius,
-                            dossier.reversibility,
+                        # park_pending_action is the single choke point for
+                        # PENDING inserts: it writes the row AND attempts the
+                        # owner-facing push in one call, replacing the ad hoc
+                        # owner-alert deliver() this site used to build by
+                        # hand (which had no reservation, no quiet-hours
+                        # deferral, and no Approve/Reject affordance -- see
+                        # bu-mda0r).
+                        await park_pending_action(
+                            pool,
+                            action_id=action_id,
+                            tool_name="notify",
+                            tool_args=safe_park_tool_args,
+                            agent_summary=agent_summary,
+                            requested_at=now,
+                            expires_at=expires_at,
+                            session_id=get_current_runtime_session_id(),
+                            why=dossier.why,
+                            evidence=dossier.evidence,
+                            blast_radius=dossier.blast_radius,
+                            reversibility=dossier.reversibility,
+                            origin_butler=butler_name,
+                            approval_push_runtime=daemon._approval_push_runtime,
                         )
                         logger.warning(
                             "notify() parked as pending_missing_identifier: "
@@ -643,59 +650,6 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             info_type,
                             action_id,
                         )
-                    # Notify the owner about the missing identifier.
-                    # Note: _resolve_default_notify_recipient only handles telegram+send;
-                    # owner_identifier will be None for non-telegram channels.
-                    owner_identifier = await daemon._resolve_default_notify_recipient(
-                        channel=channel,
-                        intent="send",
-                        recipient=None,
-                    )
-                    if owner_identifier is not None:
-                        owner_notify_request: dict[str, Any] = {
-                            "schema_version": "notify.v1",
-                            "origin_butler": butler_name,
-                            "delivery": {
-                                "intent": "send",
-                                "channel": channel,
-                                "message": (
-                                    f"A notification could not be delivered to entity "
-                                    f"{entity_id} via {channel!r}: missing {info_type!r} "
-                                    f"channel identifier. The pending action has been queued "
-                                    f"for review."
-                                ),
-                                "recipient": owner_identifier,
-                            },
-                        }
-                        try:
-                            if client is not None:
-                                await asyncio.wait_for(
-                                    client.call_tool(
-                                        "deliver",
-                                        {
-                                            "source_butler": butler_name,
-                                            "notify_request": owner_notify_request,
-                                        },
-                                    ),
-                                    timeout=15,
-                                )
-                            elif butler_name == "switchboard":
-                                _owner_pool = daemon.db.pool if daemon.db is not None else None
-                                if _owner_pool is not None:
-                                    from butlers.tools.switchboard.notification.deliver import (
-                                        deliver as _sw_deliver,
-                                    )
-
-                                    await _sw_deliver(
-                                        _owner_pool,
-                                        source_butler=butler_name,
-                                        notify_request=owner_notify_request,
-                                    )
-                        except Exception as _owner_exc:  # noqa: BLE001
-                            logger.warning(
-                                "notify() failed to alert owner about missing identifier: %s",
-                                _owner_exc,
-                            )
                     return {
                         "status": "pending_missing_identifier",
                         "entity_id": str(entity_id),
@@ -757,6 +711,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         blast_radius=_blast_radius,
                         reversibility=_reversibility,
                         enforce_dossier=True,
+                        approval_push_runtime=daemon._approval_push_runtime,
                     )
                     if _decision.dossier_error is not None:
                         return _decision.dossier_error
@@ -814,6 +769,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         blast_radius=_blast_radius,
                         reversibility=_reversibility,
                         enforce_dossier=True,
+                        approval_push_runtime=daemon._approval_push_runtime,
                     )
                     if _decision.dossier_error is not None:
                         return _decision.dossier_error

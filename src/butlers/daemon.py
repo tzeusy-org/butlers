@@ -304,6 +304,12 @@ class ButlerDaemon:
         self._audit_pool: asyncpg.Pool | None = None
         self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
+        # Cached park -> Switchboard delivery boundary (bu-mda0r). Built once
+        # in _apply_approval_gates() (after the credential store and DB pool
+        # exist) and reused by every PENDING park path on this daemon: the
+        # gate wrapper, the email/recipient guards (via approvals_hooks), the
+        # calendar overlap-approval enqueuer, and notify()'s own park sites.
+        self._approval_push_runtime: Any | None = None
         self.blob_store: S3BlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
@@ -1486,6 +1492,12 @@ class ButlerDaemon:
             if callable(get_decision_memory_writer):
                 decision_memory_writer = get_decision_memory_writer()
 
+        # Cached once and reused by every PENDING park path on this daemon
+        # (see the field docstring on __init__), not just the gate wrapper.
+        self._approval_push_runtime = self._build_approval_push_runtime()
+        if self._approval_push_runtime is not None:
+            await self._warn_if_approval_callback_secret_missing()
+
         wrapped_originals = await apply_approval_gates(
             self.mcp,
             approval_config,
@@ -1493,7 +1505,7 @@ class ButlerDaemon:
             self.config.name,
             tool_metadata=tool_metadata,
             decision_memory_writer=decision_memory_writer,
-            approval_push_runtime=self._build_approval_push_runtime(),
+            approval_push_runtime=self._approval_push_runtime,
         )
         # Keep the executor closure wired above, but make its captured mapping
         # available once gate wrapping has saved the original handlers.
@@ -1578,6 +1590,47 @@ class ButlerDaemon:
             credential_store=self._credential_store,
         )
 
+    async def _warn_if_approval_callback_secret_missing(self) -> None:
+        """Log loudly, once at startup, when APPROVAL_CALLBACK_SECRET is unresolvable.
+
+        Without this Tier 1 secret, ``emit_approval_push`` structurally cannot
+        dispatch a single-action push: it resolves 'failed' before every
+        attempt (see ``notifications.py::_callback_secret``). That was
+        previously visible only as a per-push ``logger.warning`` an operator
+        would have to be looking at the right log line to see. This makes the
+        degraded state loud and startup-time visible instead -- a clear
+        operator-facing signal, not a silent per-push warning. This never
+        raises: a missing secret degrades approval pushes, it must not take
+        the daemon down (dashboard-only fallback remains available).
+        """
+        if self._credential_store is None:
+            return
+        from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
+
+        try:
+            secret = await self._credential_store.resolve(
+                APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False
+            )
+        except Exception:  # noqa: BLE001 - a probe failure must not block startup
+            logger.warning(
+                "Could not probe %s at startup (butler=%s)",
+                APPROVAL_CALLBACK_SECRET_KEY,
+                self.config.name,
+                exc_info=True,
+            )
+            return
+
+        if not secret:
+            logger.error(
+                "DEGRADED: %s is not provisioned (butler=%s). Every approval push will "
+                "resolve 'failed' before dispatch -- parked actions will NOT reach the "
+                "owner via Telegram until this secret is provisioned. Dashboard review "
+                "remains the only reachable decision path; see ApprovalMetrics."
+                "callback_secret_configured for the same signal on the dashboard.",
+                APPROVAL_CALLBACK_SECRET_KEY,
+                self.config.name,
+            )
+
     def _wire_calendar_approval_enqueuer(self) -> None:
         """Wire calendar overlap-approval enqueuer when both modules are loaded.
 
@@ -1606,6 +1659,8 @@ class ButlerDaemon:
 
         pool = self.db.pool
         expiry_hours = approval_config.default_expiry_hours
+        approval_push_runtime = self._approval_push_runtime
+        origin_butler = self.config.name
 
         async def _enqueue_overlap_action(
             tool_name: str,
@@ -1622,7 +1677,7 @@ class ButlerDaemon:
                 ApprovalEventType,
                 record_approval_event,
             )
-            from butlers.modules.approvals.models import ActionStatus
+            from butlers.modules.approvals.park import park_pending_action
 
             action_id = _uuid.uuid4()
             now = _dt.now(_UTC)
@@ -1635,19 +1690,21 @@ class ButlerDaemon:
             # instead of an OBJECT (bu-cymc4/bu-bstqu; mirrors gate.py's fix).
             safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
-            await pool.execute(
-                "INSERT INTO pending_actions "
-                "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                "requested_at, expires_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                action_id,
-                tool_name,
-                safe_tool_args,
-                agent_summary,
-                get_current_runtime_session_id(),
-                ActionStatus.PENDING.value,
-                now,
-                expires_at,
+            # park_pending_action is the single choke point for PENDING
+            # inserts: it writes the row AND attempts the owner-facing push
+            # in one call, so this park path cannot silently skip notifying
+            # the owner (bu-mda0r).
+            await park_pending_action(
+                pool,
+                action_id=action_id,
+                tool_name=tool_name,
+                tool_args=safe_tool_args,
+                agent_summary=agent_summary,
+                requested_at=now,
+                expires_at=expires_at,
+                session_id=get_current_runtime_session_id(),
+                origin_butler=origin_butler,
+                approval_push_runtime=approval_push_runtime,
             )
             await record_approval_event(
                 pool,

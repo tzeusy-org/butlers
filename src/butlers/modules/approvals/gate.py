@@ -41,7 +41,8 @@ from butlers.identity import (
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
-from butlers.modules.approvals.notifications import ApprovalPushRuntime, emit_approval_push
+from butlers.modules.approvals.notifications import ApprovalPushRuntime
+from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.approvals.rules import (
     constraint_pins_value,
     match_rules_from_list,
@@ -802,23 +803,27 @@ def _make_gate_wrapper(
         else:
             pend_reason = "no matching standing rule"
 
-        await pool.execute(
-            "INSERT INTO pending_actions "
-            "(id, tool_name, tool_args, agent_summary, session_id, status, "
-            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-            action_id,
-            tool_name,
-            safe_tool_args,
-            agent_summary,
-            None,  # session_id
-            ActionStatus.PENDING.value,
-            now,
-            expires_at,
-            dossier.why,
-            dossier.evidence,
-            dossier.blast_radius,
-            dossier.reversibility,
+        # park_pending_action is the single choke point for PENDING inserts:
+        # it writes the row AND attempts the owner-facing push in one call, so
+        # a new park path cannot be added without also notifying (bu-mda0r).
+        # It reserves the action id before dispatch, applies quiet-hours
+        # deferral/burst collapse, and never changes this action's expiry or
+        # approval state if delivery is unavailable.
+        await park_pending_action(
+            pool,
+            action_id=action_id,
+            tool_name=tool_name,
+            tool_args=safe_tool_args,
+            agent_summary=agent_summary,
+            requested_at=now,
+            expires_at=expires_at,
+            session_id=None,
+            why=dossier.why,
+            evidence=dossier.evidence,
+            blast_radius=dossier.blast_radius,
+            reversibility=dossier.reversibility,
+            origin_butler=butler_name,
+            approval_push_runtime=approval_push_runtime,
         )
         await _emit_created(action_id, ActionStatus.PENDING.value)
         await record_approval_event(
@@ -830,27 +835,6 @@ def _make_gate_wrapper(
             metadata={"tool_name": tool_name, "path": "pending", "reason": pend_reason},
             occurred_at=now,
         )
-
-        # A parked action gets one deterministic owner-facing control-plane
-        # notification. The helper reserves the action id before dispatch,
-        # applies quiet-hours deferral/burst collapse, and never changes this
-        # action's expiry or approval state if delivery is unavailable.
-        if approval_push_runtime is not None and butler_name:
-            await emit_approval_push(
-                pool=pool,
-                action={
-                    "id": action_id,
-                    "tool_name": tool_name,
-                    "requested_at": now,
-                    "expires_at": expires_at,
-                    "why": dossier.why,
-                    "blast_radius": dossier.blast_radius,
-                    "reversibility": dossier.reversibility,
-                },
-                origin_butler=butler_name,
-                runtime=approval_push_runtime,
-                now=now,
-            )
 
         logger.info(
             "Parked gated tool %r for approval (action=%s, risk_tier=%s, reason=%s)",

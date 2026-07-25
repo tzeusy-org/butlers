@@ -1,7 +1,11 @@
 """Dependency-inversion hooks for the approvals module.
 
 ``core_tools`` (notify, route.execute) need to invoke email-recipient
-approval checks without importing ``modules.approvals`` directly.
+approval checks -- and park a PENDING action for owner review -- without
+importing ``modules.approvals`` directly.  ``core_tools`` is a core layer:
+``tests/contracts/test_dependency_direction.py`` enforces that
+``butlers.core_tools.*`` never imports ``butlers.modules.*``, so this module
+is the only sanctioned crossing point.
 
 This module provides:
 
@@ -12,9 +16,14 @@ This module provides:
 2. A hook-registration API that ``modules.approvals`` calls during startup
    to wire up its concrete implementation.
 
-3. A thin ``check_email_recipient`` stub that delegates to the registered hook
-   or returns an "allowed" decision when the approvals module is not loaded
-   (fail-open for butlers that don't enable approvals).
+3. Thin stubs (``check_email_recipient``, ``check_recipient``,
+   ``park_pending_action``) that delegate to the registered hooks.  The
+   recipient-guard stubs fail open (return an "allowed" decision) when the
+   approvals module is not loaded, since butlers without approvals must
+   remain functional.  ``park_pending_action`` cannot fail open the same way
+   -- there is no safe default for "park this action" -- so it logs loudly
+   and no-ops when unregistered (mirroring the reality that a butler with no
+   approvals module has no ``pending_actions`` table to park into).
 
 Design rationale
 ----------------
@@ -29,6 +38,7 @@ import logging
 import uuid
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -349,6 +359,7 @@ async def check_email_recipient(
     blast_radius: Any = None,
     reversibility: Any = None,
     enforce_dossier: bool = False,
+    approval_push_runtime: Any = None,
 ) -> EmailGuardDecision:
     """Check whether an outbound email to *email_target* is permitted.
 
@@ -357,6 +368,11 @@ async def check_email_recipient(
     ``allowed=True`` decision so butlers without approvals remain functional.
 
     Parameters mirror ``modules.approvals.email_guard.check_email_recipient``.
+    ``approval_push_runtime`` (an
+    ``modules.approvals.notifications.ApprovalPushRuntime`` or ``None``) is
+    passed through untyped here to avoid importing the approvals module from
+    core; the registered hook applies it when parking an action so the owner
+    is actually notified (bu-mda0r).
     """
     if _email_guard_hook is None:
         # Approvals module not loaded — fail open.
@@ -379,6 +395,7 @@ async def check_email_recipient(
         blast_radius=blast_radius,
         reversibility=reversibility,
         enforce_dossier=enforce_dossier,
+        approval_push_runtime=approval_push_runtime,
     )
     # Coerce to core's EmailGuardDecision (modules returns the approvals-local type).
     return EmailGuardDecision(
@@ -409,6 +426,7 @@ async def check_recipient(
     blast_radius: Any = None,
     reversibility: Any = None,
     enforce_dossier: bool = False,
+    approval_push_runtime: Any = None,
 ) -> EmailGuardDecision:
     """Channel-general outbound recipient guard for ``notify()``.
 
@@ -422,6 +440,9 @@ async def check_recipient(
     decision so butlers without approvals remain functional.
 
     Parameters mirror ``modules.approvals.email_guard.check_recipient``.
+    ``approval_push_runtime`` is forwarded untyped (see
+    :func:`check_email_recipient`) so a parked action is actually pushed to
+    the owner (bu-mda0r).
     """
     if _recipient_guard_hook is None:
         # Approvals module not loaded — fail open.
@@ -444,6 +465,7 @@ async def check_recipient(
         blast_radius=blast_radius,
         reversibility=reversibility,
         enforce_dossier=enforce_dossier,
+        approval_push_runtime=approval_push_runtime,
     )
     # Coerce to core's EmailGuardDecision (modules returns the approvals-local type).
     return EmailGuardDecision(
@@ -453,4 +475,89 @@ async def check_recipient(
         rule_id=result.rule_id,
         contact_desc=result.contact_desc,
         dossier_error=getattr(result, "dossier_error", None),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Park hook slot
+# ---------------------------------------------------------------------------
+
+#: Registered by modules.approvals during on_startup.
+#: Signature: modules.approvals.park.park_pending_action (same keyword args).
+_park_pending_action_hook: Callable[..., Coroutine[Any, Any, Any]] | None = None
+
+
+def register_park_pending_action(
+    fn: Callable[..., Coroutine[Any, Any, Any]],
+) -> None:
+    """Register the park_pending_action implementation from ``modules.approvals``.
+
+    The registered callable must have the same keyword-argument signature as
+    ``modules.approvals.park.park_pending_action`` -- it IS that function; this
+    only exists so core_tools reaches it through this hook instead of an
+    import, keeping ``butlers.core_tools.*`` free of ``butlers.modules.*``
+    imports (bu-mda0r; enforced by
+    ``tests/contracts/test_dependency_direction.py``).
+
+    Args:
+        fn: Async callable implementing the park-and-push choke point.
+    """
+    global _park_pending_action_hook
+    _park_pending_action_hook = fn
+
+
+async def park_pending_action(
+    pool: Any,
+    *,
+    action_id: uuid.UUID,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    agent_summary: str | None,
+    requested_at: datetime,
+    expires_at: datetime | None,
+    session_id: uuid.UUID | None = None,
+    why: str | None = None,
+    evidence: Any = None,
+    blast_radius: str | None = None,
+    reversibility: str | None = None,
+    origin_butler: str | None = None,
+    approval_push_runtime: Any = None,
+) -> Any | None:
+    """Insert one PENDING ``pending_actions`` row and push it to the owner.
+
+    Delegates to the hook registered by ``modules.approvals``
+    (``modules.approvals.park.park_pending_action``, the single choke point
+    every PENDING park path in this codebase routes through -- bu-mda0r).
+
+    Unlike :func:`check_email_recipient` / :func:`check_recipient`, this
+    cannot fail open: there is no safe default for "park this action" when no
+    hook is registered.  A butler with no approvals module also has no
+    ``pending_actions`` table to park into, so this logs a loud warning and
+    returns ``None`` (no row written, no push attempted) rather than
+    fabricating a park that never happened.
+    """
+    if _park_pending_action_hook is None:
+        logger.warning(
+            "park_pending_action called but no approvals module is registered on "
+            "this butler; action %s (tool=%r) was NOT parked",
+            action_id,
+            tool_name,
+        )
+        return None
+
+    return await _park_pending_action_hook(
+        pool,
+        action_id=action_id,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        agent_summary=agent_summary,
+        requested_at=requested_at,
+        expires_at=expires_at,
+        session_id=session_id,
+        why=why,
+        evidence=evidence,
+        blast_radius=blast_radius,
+        reversibility=reversibility,
+        origin_butler=origin_butler,
+        approval_push_runtime=approval_push_runtime,
     )

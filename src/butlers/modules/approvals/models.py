@@ -110,6 +110,15 @@ class PendingAction:
     evidence: list[EvidenceReference] = field(default_factory=list)
     blast_radius: str | None = None
     reversibility: str | None = None
+    # Terminal outcome of this action's approval_push_emissions reservation
+    # (delivered/deferred/collapsed/duplicate/failed), or None. Populated only
+    # by queries that join approval_push_emissions -- None here means either
+    # no push was ever attempted (no delivery plane wired) or the caller's
+    # query does not populate it, NOT that the push succeeded. A still-pending
+    # action with push_outcome in (None, "failed") means the owner was never
+    # actually notified (bu-mda0r); callers must not read that combination as
+    # a normal row.
+    push_outcome: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -130,6 +139,7 @@ class PendingAction:
             "evidence": self.evidence,
             "blast_radius": self.blast_radius,
             "reversibility": self.reversibility,
+            "push_outcome": self.push_outcome,
         }
         return d
 
@@ -153,6 +163,7 @@ class PendingAction:
             evidence=list(data.get("evidence") or []),
             blast_radius=data.get("blast_radius"),
             reversibility=data.get("reversibility"),
+            push_outcome=data.get("push_outcome"),
         )
 
     @classmethod
@@ -178,6 +189,7 @@ class PendingAction:
             evidence=_parse_jsonb_list(_get("evidence")),
             blast_radius=_get("blast_radius"),
             reversibility=_get("reversibility"),
+            push_outcome=_get("push_outcome"),
         )
 
 

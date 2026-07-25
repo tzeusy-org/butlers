@@ -552,21 +552,28 @@ class ApprovalsModule(Module):
         )
         self._db = db
 
-        # Register the recipient-guard hooks so core_tools can call them without
-        # importing the approvals module directly (dependency inversion).  The
-        # email guard keeps its channel-primacy / context-conflict nuance; the
-        # channel-general guard gates telegram (and any other channel).
+        # Register the recipient-guard and park hooks so core_tools can call
+        # them without importing the approvals module directly (dependency
+        # inversion; core_tools.* must never import modules.*, enforced by
+        # tests/contracts/test_dependency_direction.py).  The email guard
+        # keeps its channel-primacy / context-conflict nuance; the
+        # channel-general guard gates telegram (and any other channel); the
+        # park hook is the single choke point every PENDING park path routes
+        # through (bu-mda0r).
         from butlers.core.approvals_hooks import (
             register_email_guard,
+            register_park_pending_action,
             register_recipient_guard,
         )
         from butlers.modules.approvals.email_guard import (
             check_email_recipient,
             check_recipient,
         )
+        from butlers.modules.approvals.park import park_pending_action
 
         register_email_guard(check_email_recipient)
         register_recipient_guard(check_recipient)
+        register_park_pending_action(park_pending_action)
 
     async def on_shutdown(self) -> None:
         """No persistent resources to clean up."""
@@ -590,12 +597,18 @@ class ApprovalsModule(Module):
                 return [{"error": f"Invalid status: {status}"}]
 
             query = (
-                "SELECT * FROM pending_actions WHERE status = $1 "
-                "ORDER BY requested_at DESC LIMIT $2"
+                "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+                "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                "WHERE pa.status = $1 "
+                "ORDER BY pa.requested_at DESC LIMIT $2"
             )
             rows = await self._db.fetch(query, status, effective_limit)
         else:
-            query = "SELECT * FROM pending_actions ORDER BY requested_at DESC LIMIT $1"
+            query = (
+                "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+                "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                "ORDER BY pa.requested_at DESC LIMIT $1"
+            )
             rows = await self._db.fetch(query, effective_limit)
 
         return [PendingAction.from_row(row).to_dict() for row in rows]
@@ -607,7 +620,12 @@ class ApprovalsModule(Module):
         except ValueError:
             return {"error": f"Invalid action_id: {action_id}"}
 
-        row = await self._db.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+        row = await self._db.fetchrow(
+            "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+            "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+            "WHERE pa.id = $1",
+            parsed_id,
+        )
         if row is None:
             return {"error": f"Action not found: {action_id}"}
 

@@ -191,12 +191,16 @@ class TestDaemonCalendarOverlapEnqueuer:
         pool = pending_actions_pool
         daemon = ButlerDaemon.__new__(ButlerDaemon)
         daemon.config = SimpleNamespace(
-            modules={"approvals": {"enabled": True, "default_expiry_hours": 1}}
+            name="test-butler",
+            modules={"approvals": {"enabled": True, "default_expiry_hours": 1}},
         )
         daemon.db = SimpleNamespace(pool=pool)
         fake_cal = _FakeCalendarModule()
         daemon._modules = [fake_cal]
         daemon._module_statuses = {}
+        # __new__ bypasses __init__, so the cached park -> push runtime
+        # (bu-mda0r) must be set explicitly like every other instance attr.
+        daemon._approval_push_runtime = None
 
         daemon._wire_calendar_approval_enqueuer()
         assert fake_cal.enqueuer is not None, "calendar overlap enqueuer was not wired"
@@ -378,12 +382,13 @@ class TestNotifyParkPath:
 
         fake_daemon = SimpleNamespace(
             db=SimpleNamespace(pool=pool),
-            # Truthy so notify()'s "Switchboard is not connected" guard passes;
-            # never actually invoked because owner_identifier resolves to None.
             switchboard_client=SimpleNamespace(),
             _resolve_entity_channel_identifier=AsyncMock(return_value=None),
             _CHANNEL_TO_CONTACT_INFO_TYPE={"telegram": "telegram_chat_id", "email": "email"},
             _resolve_default_notify_recipient=AsyncMock(return_value=None),
+            # None -> park_pending_action attempts no push (bu-mda0r); this
+            # test only asserts the INSERT round-trips tool_args as a dict.
+            _approval_push_runtime=None,
         )
         ctx = ToolContext(
             daemon=fake_daemon,
@@ -399,23 +404,37 @@ class TestNotifyParkPath:
         notify_fn = captured.get("notify")
         assert notify_fn is not None, "notify() was not registered"
 
-        entity_id = uuid.uuid4()
-        result = await notify_fn(
-            channel="telegram",
-            message="hello there",
-            intent="send",
-            entity_id=entity_id,
-            _why="The contact needs this delivery after their channel is configured.",
-            _evidence=[
-                {
-                    "type": "entity",
-                    "ref": str(entity_id),
-                    "note": "The target entity lacks a telegram identifier.",
-                }
-            ],
-            _blast_radius="contact",
-            _reversibility="compensable",
-        )
+        # notify() reaches park_pending_action via the core_tools ->
+        # core.approvals_hooks indirection (core_tools must never import
+        # modules.* directly; bu-mda0r). Register the real implementation for
+        # this test the same way modules.approvals.module.on_startup() does
+        # in production, and restore whatever was registered beforehand so
+        # this doesn't leak into other tests sharing the process.
+        import butlers.core.approvals_hooks as _approvals_hooks
+        from butlers.modules.approvals.park import park_pending_action as _real_park
+
+        original_park_hook = _approvals_hooks._park_pending_action_hook
+        _approvals_hooks.register_park_pending_action(_real_park)
+        try:
+            entity_id = uuid.uuid4()
+            result = await notify_fn(
+                channel="telegram",
+                message="hello there",
+                intent="send",
+                entity_id=entity_id,
+                _why="The contact needs this delivery after their channel is configured.",
+                _evidence=[
+                    {
+                        "type": "entity",
+                        "ref": str(entity_id),
+                        "note": "The target entity lacks a telegram identifier.",
+                    }
+                ],
+                _blast_radius="contact",
+                _reversibility="compensable",
+            )
+        finally:
+            _approvals_hooks._park_pending_action_hook = original_park_hook
         assert result["status"] == "pending_missing_identifier"
 
         stored = await _fetch_latest_tool_args(pool, "notify")

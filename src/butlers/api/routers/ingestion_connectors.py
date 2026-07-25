@@ -50,6 +50,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.routers.audit import append as _audit_append
+from butlers.modules.approvals.park import park_pending_action
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,66 @@ def _pool(db: DatabaseManager):
             status_code=503,
             detail="Connector registry database is not available",
         )
+
+
+def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
+    """Build the park -> Switchboard delivery boundary for a dashboard-API park.
+
+    The dashboard-API process is not a butler daemon: it has no
+    ``switchboard_client`` MCP connection, so it dispatches exactly the way
+    ``daemon.py``'s ``_build_approval_push_runtime`` does when the daemon
+    process itself IS switchboard -- import ``deliver()`` and call it
+    in-process against the switchboard pool.  Returns ``None`` when the
+    switchboard pool or shared credential pool is unavailable (mirrors the
+    daemon-side helper's degrade-gracefully behavior; bu-mda0r).
+    """
+    from butlers.credential_store import CredentialStore, resolve_owner_entity_info
+    from butlers.modules.approvals.notifications import ApprovalPushRuntime
+    from butlers.tools.switchboard.notification.deliver import deliver as _switchboard_deliver
+
+    # AttributeError is caught alongside KeyError because callers may pass a
+    # duck-typed DatabaseManager stand-in (tests) that only implements
+    # .pool(name); this helper is inherently best-effort and must degrade
+    # rather than break the primary pending_actions INSERT it accompanies.
+    try:
+        pool = db.pool(_SWITCHBOARD_BUTLER)
+    except (KeyError, AttributeError):
+        logger.warning(
+            "Approval push runtime unavailable for dashboard connector actions "
+            "(switchboard pool not registered)"
+        )
+        return None
+
+    try:
+        shared_pool = db.credential_shared_pool()
+    except (KeyError, AttributeError):
+        logger.warning(
+            "Approval push runtime unavailable for dashboard connector actions "
+            "(shared credential pool not registered)"
+        )
+        return None
+
+    credential_store = CredentialStore(pool=pool, fallback_pools=[shared_pool])
+
+    async def _resolve_owner_recipient() -> str | None:
+        return await resolve_owner_entity_info(pool, "telegram_chat_id")
+
+    async def _dispatch(envelope: dict[str, Any]) -> None:
+        result = await _switchboard_deliver(
+            pool,
+            source_butler=_SWITCHBOARD_BUTLER,
+            notify_request=envelope,
+        )
+        if result.get("status") == "failed":
+            raise RuntimeError(
+                f"Approval request delivery failed: {result.get('error') or 'unknown error'}"
+            )
+
+    return ApprovalPushRuntime(
+        dispatch=_dispatch,
+        resolve_owner_recipient=_resolve_owner_recipient,
+        credential_store=credential_store,
+    )
 
 
 def _get_prometheus_url() -> str | None:
@@ -1256,17 +1317,20 @@ async def disconnect_connector(
     expires_at = now + timedelta(hours=72)
 
     try:
-        await pool.execute(
-            "INSERT INTO pending_actions"
-            " (id, tool_name, tool_args, agent_summary, status, requested_at, expires_at)"
-            " VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            action_id,
-            "connector_disconnect",
-            safe_tool_args,
-            f"Disconnect connector '{target}' (soft-delete)",
-            "pending",
-            now,
-            expires_at,
+        # park_pending_action is the single choke point for PENDING inserts:
+        # it writes the row AND attempts the owner-facing push in one call
+        # (bu-mda0r). This dashboard-API context has no daemon-cached
+        # runtime, so a fresh one is built per request.
+        await park_pending_action(
+            pool,
+            action_id=action_id,
+            tool_name="connector_disconnect",
+            tool_args=safe_tool_args,
+            agent_summary=f"Disconnect connector '{target}' (soft-delete)",
+            requested_at=now,
+            expires_at=expires_at,
+            origin_butler=_SWITCHBOARD_BUTLER,
+            approval_push_runtime=_build_dashboard_approval_push_runtime(db),
         )
     except Exception:
         logger.warning(
@@ -1401,17 +1465,22 @@ async def rotate_connector_token(
     expires_at = now + timedelta(hours=72)
 
     try:
-        await pool.execute(
-            "INSERT INTO pending_actions"
-            " (id, tool_name, tool_args, agent_summary, status, requested_at, expires_at)"
-            " VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            action_id,
-            "connector_rotate_token",
-            safe_tool_args,
-            f"Rotate credential for connector '{target}' [SENSITIVE — credential redacted]",
-            "pending",
-            now,
-            expires_at,
+        # park_pending_action is the single choke point for PENDING inserts:
+        # it writes the row AND attempts the owner-facing push in one call
+        # (bu-mda0r). This dashboard-API context has no daemon-cached
+        # runtime, so a fresh one is built per request.
+        await park_pending_action(
+            pool,
+            action_id=action_id,
+            tool_name="connector_rotate_token",
+            tool_args=safe_tool_args,
+            agent_summary=(
+                f"Rotate credential for connector '{target}' [SENSITIVE — credential redacted]"
+            ),
+            requested_at=now,
+            expires_at=expires_at,
+            origin_butler=_SWITCHBOARD_BUTLER,
+            approval_push_runtime=_build_dashboard_approval_push_runtime(db),
         )
     except Exception:
         logger.warning(

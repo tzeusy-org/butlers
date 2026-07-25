@@ -407,6 +407,9 @@ class TestStep13cCalendarApprovalWiring:
         daemon._module_statuses = {}
         daemon.db = MagicMock()
         daemon.db.pool = AsyncMock()
+        # __init__ is bypassed above, so the cached park -> push runtime
+        # (bu-mda0r) must be set explicitly like every other instance attr.
+        daemon._approval_push_runtime = None
 
         if has_calendar:
             if calendar_has_setter:
@@ -499,6 +502,9 @@ class TestStep13cCalendarApprovalWiring:
         daemon.db = MagicMock()
         daemon.db.pool = mock_pool
         daemon._modules = [_CalendarMod()]
+        # __init__ is bypassed above, so the cached park -> push runtime
+        # (bu-mda0r) must be set explicitly like every other instance attr.
+        daemon._approval_push_runtime = None
 
         with patch(
             "butlers.modules.approvals.events.record_approval_event",

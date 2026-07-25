@@ -33,6 +33,8 @@ from butlers.core.approvals_hooks import (
     validate_owner_dossier,
 )
 from butlers.modules.approvals._shared import is_primary_contact
+from butlers.modules.approvals.notifications import ApprovalPushRuntime
+from butlers.modules.approvals.park import park_pending_action
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +130,7 @@ async def check_email_recipient(
     blast_radius: Any = None,
     reversibility: Any = None,
     enforce_dossier: bool = False,
+    approval_push_runtime: ApprovalPushRuntime | None = None,
 ) -> EmailGuardDecision:
     """Check whether an outbound email to *email_target* is permitted.
 
@@ -161,6 +164,11 @@ async def check_email_recipient(
     butler_name:
         The name of the butler that owns this guard (used for WS event
         attribution).  Pass ``None`` when the name is unavailable.
+    approval_push_runtime:
+        Deterministic daemon dependencies used to notify the owner when this
+        guard parks an action.  ``None`` preserves the standalone-guard
+        behavior for callers that do not run a Switchboard delivery plane
+        (the action is still parked, just not pushed).
 
     Returns
     -------
@@ -267,23 +275,24 @@ async def check_email_recipient(
                 # cast) — asyncpg's registered jsonb codec already serializes
                 # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
                 safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-                await pool.execute(
-                    "INSERT INTO pending_actions "
-                    "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                    "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-                    action_id,
-                    park_tool_name,
-                    safe_park_tool_args,
-                    mismatch_summary,
-                    normalized_session_id,
-                    ActionStatus.PENDING.value,
-                    now,
-                    expires_at,
-                    dossier.why,
-                    dossier.evidence,
-                    dossier.blast_radius,
-                    dossier.reversibility,
+                # park_pending_action is the single choke point for PENDING
+                # inserts: it writes the row AND attempts the owner-facing
+                # push in one call (bu-mda0r).
+                await park_pending_action(
+                    pool,
+                    action_id=action_id,
+                    tool_name=park_tool_name,
+                    tool_args=safe_park_tool_args,
+                    agent_summary=mismatch_summary,
+                    requested_at=now,
+                    expires_at=expires_at,
+                    session_id=normalized_session_id,
+                    why=dossier.why,
+                    evidence=dossier.evidence,
+                    blast_radius=dossier.blast_radius,
+                    reversibility=dossier.reversibility,
+                    origin_butler=butler_name,
+                    approval_push_runtime=approval_push_runtime,
                 )
                 await _emit_created(action_id, ActionStatus.PENDING.value)
                 logger.warning(
@@ -352,23 +361,24 @@ async def check_email_recipient(
 
     try:
         safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-        await pool.execute(
-            "INSERT INTO pending_actions "
-            "(id, tool_name, tool_args, agent_summary, session_id, status, "
-            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-            action_id,
-            park_tool_name,
-            safe_park_tool_args,
-            park_summary,
-            normalized_session_id,
-            ActionStatus.PENDING.value,
-            now,
-            expires_at,
-            dossier.why,
-            dossier.evidence,
-            dossier.blast_radius,
-            dossier.reversibility,
+        # park_pending_action is the single choke point for PENDING inserts:
+        # it writes the row AND attempts the owner-facing push in one call
+        # (bu-mda0r).
+        await park_pending_action(
+            pool,
+            action_id=action_id,
+            tool_name=park_tool_name,
+            tool_args=safe_park_tool_args,
+            agent_summary=park_summary,
+            requested_at=now,
+            expires_at=expires_at,
+            session_id=normalized_session_id,
+            why=dossier.why,
+            evidence=dossier.evidence,
+            blast_radius=dossier.blast_radius,
+            reversibility=dossier.reversibility,
+            origin_butler=butler_name,
+            approval_push_runtime=approval_push_runtime,
         )
         await _emit_created(action_id, ActionStatus.PENDING.value)
         logger.warning(
@@ -410,6 +420,7 @@ async def check_recipient(
     blast_radius: Any = None,
     reversibility: Any = None,
     enforce_dossier: bool = False,
+    approval_push_runtime: ApprovalPushRuntime | None = None,
 ) -> EmailGuardDecision:
     """Channel-general outbound recipient guard (telegram, etc.).
 
@@ -555,23 +566,24 @@ async def check_recipient(
 
     try:
         safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-        await pool.execute(
-            "INSERT INTO pending_actions "
-            "(id, tool_name, tool_args, agent_summary, session_id, status, "
-            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-            action_id,
-            park_tool_name,
-            safe_park_tool_args,
-            park_summary,
-            normalized_session_id,
-            ActionStatus.PENDING.value,
-            now,
-            expires_at,
-            dossier.why,
-            dossier.evidence,
-            dossier.blast_radius,
-            dossier.reversibility,
+        # park_pending_action is the single choke point for PENDING inserts:
+        # it writes the row AND attempts the owner-facing push in one call
+        # (bu-mda0r).
+        await park_pending_action(
+            pool,
+            action_id=action_id,
+            tool_name=park_tool_name,
+            tool_args=safe_park_tool_args,
+            agent_summary=park_summary,
+            requested_at=now,
+            expires_at=expires_at,
+            session_id=normalized_session_id,
+            why=dossier.why,
+            evidence=dossier.evidence,
+            blast_radius=dossier.blast_radius,
+            reversibility=dossier.reversibility,
+            origin_butler=butler_name,
+            approval_push_runtime=approval_push_runtime,
         )
         await _emit_created(action_id, ActionStatus.PENDING.value)
         logger.warning(

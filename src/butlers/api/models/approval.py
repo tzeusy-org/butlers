@@ -81,6 +81,24 @@ class ApprovalAction(BaseModel):
             "state and can be retried."
         ),
     )
+    push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
+        Field(
+            default=None,
+            description=(
+                "Terminal outcome of the owner-facing approval push for this action, "
+                "or null if no push was ever attempted."
+            ),
+        )
+    )
+    push_failed: bool = Field(
+        default=False,
+        description=(
+            "True when this action is still pending AND the owner was never actually "
+            "notified (push_outcome is null or 'failed'). Never fabricate calm: a "
+            "true value here means this row must not render as an ordinary pending "
+            "action (bu-mda0r)."
+        ),
+    )
 
 
 class ApprovalDetail(BaseModel):
@@ -124,6 +142,22 @@ class ApprovalDetail(BaseModel):
             "fact references (e.g. subject/object of relationship_assert_fact)."
         ),
     )
+    push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
+        Field(
+            default=None,
+            description=(
+                "Terminal outcome of the owner-facing approval push for this action, "
+                "or null if no push was ever attempted."
+            ),
+        )
+    )
+    push_failed: bool = Field(
+        default=False,
+        description=(
+            "True when this action is still pending AND the owner was never actually "
+            "notified. Never fabricate calm (bu-mda0r)."
+        ),
+    )
 
 
 class ApprovalSummary(BaseModel):
@@ -138,6 +172,22 @@ class ApprovalSummary(BaseModel):
     why: str | None = None
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
+    push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
+        Field(
+            default=None,
+            description=(
+                "Terminal outcome of the owner-facing approval push for this action, "
+                "or null if no push was ever attempted."
+            ),
+        )
+    )
+    push_failed: bool = Field(
+        default=False,
+        description=(
+            "True when this action is still pending AND the owner was never actually "
+            "notified. Never fabricate calm (bu-mda0r)."
+        ),
+    )
 
 
 class ApprovalsPolicy(BaseModel):
@@ -237,6 +287,15 @@ class ApprovalMetrics(BaseModel):
     rejection_rate: float = 0.0
     failure_count_today: int = 0
     active_rules_count: int = 0
+    callback_secret_configured: bool | None = Field(
+        default=None,
+        description=(
+            "Whether APPROVAL_CALLBACK_SECRET resolves via the shared credential "
+            "store. False means every approval push is structurally disabled "
+            "(each attempt will resolve 'failed') until it is provisioned. Null "
+            "when this could not be determined (e.g. no approvals pool available)."
+        ),
+    )
 
 
 class ApprovalActionApproveRequest(BaseModel):

@@ -65,10 +65,11 @@ from butlers.modules.approvals.decision_memory import (
     memory_pool_for_schema,
 )
 from butlers.modules.approvals.models import (
-    ApprovalRule as ApprovalRuleModel,
+    ActionStatus,
+    PendingAction,
 )
 from butlers.modules.approvals.models import (
-    PendingAction,
+    ApprovalRule as ApprovalRuleModel,
 )
 from butlers.modules.approvals.redaction import redact_execution_result
 from butlers.modules.approvals.rules import is_rule_effective
@@ -352,6 +353,22 @@ def _decision_memory_writer_for(
     )
 
 
+_UNPUSHED_OUTCOMES = (None, "failed")
+
+
+def _push_failed(action: PendingAction) -> bool:
+    """True when a still-pending action was never actually pushed to the owner.
+
+    A ``pending`` action whose push outcome is ``None`` (no push runtime was
+    wired, or the reservation never resolved) or ``"failed"`` (resolved but
+    delivery did not go out, e.g. a missing ``APPROVAL_CALLBACK_SECRET``) must
+    not render as an ordinary pending row -- that is the fabricated-calm
+    failure mode this flag exists to prevent (bu-mda0r). Decided actions are
+    never flagged: their outcome no longer changes whether the owner acts.
+    """
+    return action.status == ActionStatus.PENDING and action.push_outcome in _UNPUSHED_OUTCOMES
+
+
 def _pending_action_to_api(
     action: PendingAction,
     butler_name: str,
@@ -377,6 +394,8 @@ def _pending_action_to_api(
         evidence=action.evidence,
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
+        push_outcome=action.push_outcome,
+        push_failed=_push_failed(action),
     )
 
 
@@ -449,6 +468,8 @@ def _pending_action_to_detail(
         target_contact=target_contact,
         session_id=str(action.session_id) if action.session_id else None,
         referenced_entities=referenced_entities or [],
+        push_outcome=action.push_outcome,
+        push_failed=_push_failed(action),
     )
 
 
@@ -464,6 +485,8 @@ def _pending_action_to_summary(action: PendingAction, butler_name: str) -> Appro
         why=action.why,
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
+        push_outcome=action.push_outcome,
+        push_failed=_push_failed(action),
     )
 
 
@@ -717,7 +740,9 @@ async def list_actions(
                     *args,
                 )
                 rows = await conn.fetch(
-                    f"SELECT * FROM pending_actions{where_clause} ORDER BY requested_at DESC",
+                    "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+                    "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id"
+                    f"{where_clause} ORDER BY pa.requested_at DESC",
                     *args,
                 )
                 all_rows.extend((butler_name, row) for row in rows)
@@ -873,7 +898,12 @@ async def get_action(
     for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+                row = await conn.fetchrow(
+                    "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+                    "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                    "WHERE pa.id = $1",
+                    parsed_id,
+                )
             if row is not None:
                 found_butler = butler_name
                 break
@@ -1785,9 +1815,44 @@ async def get_metrics(
         rejection_rate=rejection_rate,
         failure_count_today=failure_count_today,
         active_rules_count=active_rules_count,
+        callback_secret_configured=await _callback_secret_configured(db_mgr),
     )
 
     return ApiResponse(data=metrics)
+
+
+async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:
+    """Return whether APPROVAL_CALLBACK_SECRET resolves via the shared credential store.
+
+    Missing this Tier 1 secret structurally disables every approval push
+    (``emit_approval_push`` resolves 'failed' before dispatch, every time) --
+    previously visible only as a per-push warning log line an operator would
+    have to go looking for. Surfacing it on the metrics endpoint that the
+    dashboard already polls makes it a loud, always-visible degraded signal
+    instead (bu-mda0r). Returns ``None`` (undetermined, not "missing") when
+    the shared credential pool itself is unavailable.
+    """
+    from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
+    from butlers.credential_store import CredentialStore
+
+    try:
+        shared_pool = db_mgr.credential_shared_pool()
+    except KeyError:
+        return None
+
+    try:
+        secret = await CredentialStore(pool=shared_pool).resolve(
+            APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False
+        )
+    except Exception:  # noqa: BLE001 - a probe failure must not break /metrics
+        logger.warning(
+            "Failed to probe %s for the approvals metrics degraded signal",
+            APPROVAL_CALLBACK_SECRET_KEY,
+            exc_info=True,
+        )
+        return None
+
+    return bool(secret)
 
 
 # ---------------------------------------------------------------------------
@@ -1876,23 +1941,27 @@ async def list_approvals_flat(
 
                 if state == "stalled":
                     rows = await conn.fetch(
-                        "SELECT * FROM pending_actions "
-                        "WHERE status = $1 AND execution_result IS NULL "
-                        "ORDER BY requested_at DESC LIMIT $2",
+                        "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+                        "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                        "WHERE pa.status = $1 AND pa.execution_result IS NULL "
+                        "ORDER BY pa.requested_at DESC LIMIT $2",
                         _STALLED_STATUS,
                         limit,
                     )
                 elif status_filter:
                     rows = await conn.fetch(
-                        "SELECT * FROM pending_actions "
-                        "WHERE status = ANY($1::text[]) "
-                        "ORDER BY requested_at DESC LIMIT $2",
+                        "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+                        "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                        "WHERE pa.status = ANY($1::text[]) "
+                        "ORDER BY pa.requested_at DESC LIMIT $2",
                         status_filter,
                         limit,
                     )
                 else:
                     rows = await conn.fetch(
-                        "SELECT * FROM pending_actions ORDER BY requested_at DESC LIMIT $1",
+                        "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+                        "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                        "ORDER BY pa.requested_at DESC LIMIT $1",
                         limit,
                     )
                 all_rows.extend((butler_name, row) for row in rows)
@@ -2413,7 +2482,12 @@ async def get_approval_detail(
     for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+                row = await conn.fetchrow(
+                    "SELECT pa.*, ape.outcome AS push_outcome FROM pending_actions pa "
+                    "LEFT JOIN approval_push_emissions ape ON ape.action_id = pa.id "
+                    "WHERE pa.id = $1",
+                    parsed_id,
+                )
                 if row is not None:
                     pa = PendingAction.from_row(row)
                     denial_reason = (

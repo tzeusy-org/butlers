@@ -881,10 +881,15 @@ async def test_list_rules_unknown_butler_returns_empty(app):
 
 async def test_gated_tools_lists_configured_tools_even_when_they_have_no_rules(app):
     """The autonomy baseline must show every configured gate, not only grants."""
-    active_notify_rule = _make_rule(tool_name="notify")
+    # telegram_send_message, not "notify": messenger is a STAFFER butler and
+    # never registers a bare `notify` tool (see core_tools/_notifications.py),
+    # so `notify` cannot appear in its real gated-tools config (bu-mda0r --
+    # roster/messenger/butler.toml previously had a stale, never-matching
+    # gated_tools.notify entry for exactly this reason).
+    active_rule = _make_rule(tool_name="telegram_send_message")
     app, _ = _rules_app_with_capture(
         app,
-        rows=[active_notify_rule],
+        rows=[active_rule],
         butler_name="messenger",
     )
 
@@ -897,20 +902,22 @@ async def test_gated_tools_lists_configured_tools_even_when_they_have_no_rules(a
     tools = {(item["butler"], item["tool_name"]): item for item in response.json()["data"]}
 
     # Messenger's real roster config is the authoritative gate inventory.
-    assert ("messenger", "notify") in tools
+    assert ("messenger", "telegram_send_message") in tools
     assert ("messenger", "telegram_reply_to_message") in tools
-    assert tools[("messenger", "notify")]["risk_tier"] == "medium"
-    assert tools[("messenger", "notify")]["active_rules"][0]["id"] == str(active_notify_rule["id"])
+    assert tools[("messenger", "telegram_send_message")]["risk_tier"] == "medium"
+    assert tools[("messenger", "telegram_send_message")]["active_rules"][0]["id"] == str(
+        active_rule["id"]
+    )
     # A zero-rule tool is still visible as an always-ask boundary.
     assert tools[("messenger", "telegram_reply_to_message")]["active_rules"] == []
 
 
 async def test_gated_tools_excludes_expired_and_exhausted_rules(app):
     """The autonomy ledger only counts rules that can still auto-approve."""
-    expired = _make_rule(tool_name="notify")
+    expired = _make_rule(tool_name="telegram_send_message")
     expired["expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
 
-    exhausted = _make_rule(tool_name="notify")
+    exhausted = _make_rule(tool_name="telegram_send_message")
     exhausted["max_uses"] = 3
     exhausted["use_count"] = 3
 
@@ -927,7 +934,7 @@ async def test_gated_tools_excludes_expired_and_exhausted_rules(app):
 
     assert response.status_code == 200, response.text
     tools = {(item["butler"], item["tool_name"]): item for item in response.json()["data"]}
-    assert tools[("messenger", "notify")]["active_rules"] == []
+    assert tools[("messenger", "telegram_send_message")]["active_rules"] == []
 
 
 async def test_rule_suggestions_for_found_action_returns_redacted_scope(app):
