@@ -248,3 +248,10 @@ report). Bug/system reports SHALL NEVER be routed to a domain butler.
 - **THEN** the Switchboard SHALL capture the request to the dead-letter queue (`source_table="message_inbox"`)
 - **AND** SHALL persist an in-thread `conversation_reply` telling the owner a lane decision could not be made, referencing the dead-letter case id
 - **AND** SHALL NOT silently fall back to routing the message to the `general` butler — that fallback is specific to non-dashboard channels
+
+#### Scenario: Route acknowledgement is terminal for the dead-letter net; downstream session completion is out of scope
+
+- **WHEN** `route_to_butler` dispatches via `route.execute` and the target butler returns an `accepted` (or `ok`) status for a dashboard-originated message
+- **THEN** the dead-letter net gate SHALL treat that acknowledgement as terminal success for the synchronous reply contract — the target butler has confirmed only that it accepted the dispatch, not that the spawned downstream session will run to completion
+- **AND** if that downstream session subsequently crashes, hangs, or times out after acknowledgement, this contract SHALL NOT capture the failure to the dead-letter queue and SHALL NOT persist an additional in-thread reply on its behalf; the owner is left with whatever live-only signal (e.g. a widget-side `SESSION_TIMEOUT`) the caller surfaces independently
+- **AND** this ack-terminal boundary is a deliberate, accepted scope decision for the synchronous reply contract, not an oversight — closing the last hop (e.g. a reply-watch timeout that persists an in-thread failure note when an acknowledged downstream session never completes) is a possible future extension, not a current requirement
