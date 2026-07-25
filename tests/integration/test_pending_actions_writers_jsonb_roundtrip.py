@@ -163,13 +163,25 @@ async def _fetch_latest_tool_args(pool, tool_name: str) -> Any:
 
 
 class _FakeDbManager:
-    """Duck-typed stand-in for DatabaseManager exposing only ``.pool(name)``."""
+    """Duck-typed stand-in for DatabaseManager exposing ``.pool(name)`` and
+    ``.credential_shared_pool()``.
+
+    ``credential_shared_pool`` raises ``KeyError``, mirroring what the real
+    ``DatabaseManager`` does when no shared credential pool is configured
+    (see api/db.py). That makes ``_build_dashboard_approval_push_runtime``
+    degrade to ``None`` (push skipped, KeyError-only per bu-1j5q6) rather
+    than raising -- these tests only assert the jsonb roundtrip of the
+    pending_actions INSERT, not the owner-push path.
+    """
 
     def __init__(self, pool: Any) -> None:
         self._pool = pool
 
     def pool(self, _name: str) -> Any:
         return self._pool
+
+    def credential_shared_pool(self) -> Any:
+        raise KeyError("Shared credential pool is not configured")
 
 
 class _FakeCalendarModule:

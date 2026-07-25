@@ -35,7 +35,12 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.routers.ingestion_connectors import (
+    _SWITCHBOARD_BUTLER,
+    _build_dashboard_approval_push_runtime,
+    _get_db_manager,
+)
+from butlers.modules.approvals.notifications import ApprovalPushRuntime
 
 pytestmark = pytest.mark.unit
 
@@ -466,3 +471,52 @@ async def test_reauth_no_db_required(app):
 
     # Must be 503, not 500 (handler-level rejection)
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# _build_dashboard_approval_push_runtime — direct unit coverage (bu-1j5q6)
+#
+# This is the park -> Switchboard delivery boundary for a dashboard-API park
+# (bu-mda0r): a security-relevant path (it decides whether an approval push
+# reaches the owner, or degrades silently to dashboard-only). It previously
+# had zero dedicated coverage -- the disconnect/rotate-token tests above wire
+# a MagicMock(spec=DatabaseManager), which auto-mocks credential_shared_pool()
+# to a non-raising MagicMock and so never exercises either branch below.
+# ---------------------------------------------------------------------------
+
+
+def test_build_dashboard_approval_push_runtime_returns_runtime_when_pools_available():
+    """Switchboard pool + shared credential pool both resolve -> a live
+    ApprovalPushRuntime is returned, wired for dispatch/recipient-resolution."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_pool()
+    mock_db.credential_shared_pool.return_value = _make_pool()
+
+    runtime = _build_dashboard_approval_push_runtime(mock_db)
+
+    assert isinstance(runtime, ApprovalPushRuntime)
+    assert runtime.dispatch is not None
+    assert runtime.resolve_owner_recipient is not None
+    assert runtime.credential_store is not None
+    mock_db.pool.assert_called_once_with(_SWITCHBOARD_BUTLER)
+    mock_db.credential_shared_pool.assert_called_once_with()
+
+
+def test_build_dashboard_approval_push_runtime_degrades_when_switchboard_pool_missing():
+    """No switchboard pool registered -> degrades to None without raising
+    (the accompanying pending_actions INSERT still proceeds; bu-mda0r)."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.side_effect = KeyError("switchboard pool not available")
+
+    assert _build_dashboard_approval_push_runtime(mock_db) is None
+    mock_db.credential_shared_pool.assert_not_called()
+
+
+def test_build_dashboard_approval_push_runtime_degrades_when_credential_pool_missing():
+    """Switchboard pool resolves but the shared credential pool doesn't ->
+    degrades to None without raising."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_pool()
+    mock_db.credential_shared_pool.side_effect = KeyError("shared credential pool not configured")
+
+    assert _build_dashboard_approval_push_runtime(mock_db) is None

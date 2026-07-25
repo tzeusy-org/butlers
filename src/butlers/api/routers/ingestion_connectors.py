@@ -193,13 +193,14 @@ def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
     from butlers.modules.approvals.notifications import ApprovalPushRuntime
     from butlers.tools.switchboard.notification.deliver import deliver as _switchboard_deliver
 
-    # AttributeError is caught alongside KeyError because callers may pass a
-    # duck-typed DatabaseManager stand-in (tests) that only implements
-    # .pool(name); this helper is inherently best-effort and must degrade
-    # rather than break the primary pending_actions INSERT it accompanies.
+    # DatabaseManager.pool()/.credential_shared_pool() only ever raise
+    # KeyError (unregistered pool) in real code -- see api/db.py. This helper
+    # is inherently best-effort and must degrade rather than break the
+    # primary pending_actions INSERT it accompanies, but only for that one
+    # documented failure mode; anything else should surface (bu-1j5q6).
     try:
         pool = db.pool(_SWITCHBOARD_BUTLER)
-    except (KeyError, AttributeError):
+    except KeyError:
         logger.warning(
             "Approval push runtime unavailable for dashboard connector actions "
             "(switchboard pool not registered)"
@@ -208,7 +209,7 @@ def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
 
     try:
         shared_pool = db.credential_shared_pool()
-    except (KeyError, AttributeError):
+    except KeyError:
         logger.warning(
             "Approval push runtime unavailable for dashboard connector actions "
             "(shared credential pool not registered)"
