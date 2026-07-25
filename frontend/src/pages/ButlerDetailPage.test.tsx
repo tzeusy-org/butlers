@@ -71,6 +71,23 @@ vi.mock("@/hooks/use-system", () => ({
   useInsightDeliveryState: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useDriftFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useDeploymentFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
+  useSystemConditions: vi.fn(() => ({
+    data: { data: { conditions: [], total: 0, conditions_available: true } },
+    isPending: false,
+    isError: false,
+  })),
+}));
+
+vi.mock("@/hooks/use-healing", () => ({
+  useInfraConditionSuppressionCounts: vi.fn(() => ({
+    counts: new Map(),
+    isLoading: false,
+    isError: false,
+  })),
+}));
+
+vi.mock("@/hooks/use-delegation", () => ({
+  useDelegationLedger: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-ingestion", () => ({

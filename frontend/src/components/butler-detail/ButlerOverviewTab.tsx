@@ -22,6 +22,7 @@ import {
   MonoLabel,
   Panel,
 } from "@/components/butler-detail/atoms"
+import { ButlerDelegationsPanel } from "@/components/butler-detail/ButlerDelegationsPanel"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer"
 import { Button } from "@/components/ui/button"
@@ -552,6 +553,8 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
           <KV k="skills" v={`${skills.length} available`} />
         </div>
       </Panel>
+
+      <ButlerDelegationsPanel butlerName={butlerName} />
     </ButlerPanelGrid>
 
     <SessionDetailDrawer

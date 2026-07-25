@@ -240,15 +240,25 @@ async def _count_attempts(pool, status_filter: str | None) -> int:
     return int(result)
 
 
-async def _count_dispatch_events(pool, decision_filter: str | None) -> int:
-    """Return the total count of dispatch events, optionally filtered by decision."""
+async def _count_dispatch_events(
+    pool, decision_filter: str | None, fingerprint_filter: str | None = None
+) -> int:
+    """Return the total count of dispatch events, optionally filtered by decision/fingerprint."""
+    conditions: list[str] = []
+    args: list[str] = []
+    idx = 1
     if decision_filter is not None:
-        result: int = await pool.fetchval(
-            "SELECT COUNT(*) FROM public.healing_dispatch_events WHERE decision = $1",
-            decision_filter,
-        )
-    else:
-        result = await pool.fetchval("SELECT COUNT(*) FROM public.healing_dispatch_events")
+        conditions.append(f"decision = ${idx}")
+        args.append(decision_filter)
+        idx += 1
+    if fingerprint_filter is not None:
+        conditions.append(f"fingerprint = ${idx}")
+        args.append(fingerprint_filter)
+        idx += 1
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    result: int = await pool.fetchval(
+        f"SELECT COUNT(*) FROM public.healing_dispatch_events{where}", *args
+    )
     return int(result)
 
 
@@ -725,6 +735,15 @@ async def list_healing_dispatch_events(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     decision: str | None = Query(default=None, description="Filter by decision value"),
+    fingerprint: str | None = Query(
+        default=None,
+        description=(
+            "Filter by fingerprint. Combined with decision=infra_condition_open, "
+            "this is the same identity public.infra_conditions uses for "
+            "source=infra_state -- how the dashboard finds the QA dispatches a "
+            "standing condition suppressed (bu-ep4ks.3)."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[HealingDispatchEvent]:
     """Return a paginated list of healing dispatch decisions.
@@ -734,11 +753,18 @@ async def list_healing_dispatch_events(
     which record launched execution history.
 
     Decision values include: ``cooldown``, ``concurrency_cap``, ``circuit_breaker``,
-    ``novelty_join``, ``no_model``, ``severity``, ``disabled``, ``accepted``.
+    ``novelty_join``, ``no_model``, ``severity``, ``disabled``, ``accepted``,
+    ``infra_condition_open``.
     """
     pool = _shared_pool(db)
-    rows = await list_dispatch_events(pool, limit=limit, offset=offset, decision_filter=decision)
-    total = await _count_dispatch_events(pool, decision)
+    rows = await list_dispatch_events(
+        pool,
+        limit=limit,
+        offset=offset,
+        decision_filter=decision,
+        fingerprint_filter=fingerprint,
+    )
+    total = await _count_dispatch_events(pool, decision, fingerprint)
     events = [
         HealingDispatchEvent(
             id=row["id"],

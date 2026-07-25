@@ -876,6 +876,7 @@ async def list_dispatch_events(
     limit: int = 20,
     offset: int = 0,
     decision_filter: str | None = None,
+    fingerprint_filter: str | None = None,
 ) -> list[HealingDispatchEventRow]:
     """Return paginated dispatch-decision rows for dashboard display.
 
@@ -893,36 +894,46 @@ async def list_dispatch_events(
         Number of rows to skip (for pagination).
     decision_filter:
         If provided, only return rows with this ``decision`` value.
+    fingerprint_filter:
+        If provided, only return rows with this ``fingerprint`` value.
+        For ``decision="infra_condition_open"`` events (bu-27dxl.6.4 Gate
+        5.5), ``fingerprint`` is the exact same identity
+        ``public.infra_conditions`` uses for ``source="infra_state"``
+        (bu-ep4ks.3) -- combined with ``decision_filter`` this is how the
+        dashboard links a standing condition to the QA dispatches it
+        suppressed, without a new join column.
 
     Returns
     -------
     list[HealingDispatchEventRow]
         Rows ordered by ``created_at DESC``.
     """
+    conditions: list[str] = []
+    args: list[str] = []
+    idx = 1
+
     if decision_filter is not None:
-        rows = await pool.fetch(
-            """
-            SELECT *
-            FROM public.healing_dispatch_events
-            WHERE decision = $1
-            ORDER BY created_at DESC
-            LIMIT $2 OFFSET $3
-            """,
-            decision_filter,
-            limit,
-            offset,
-        )
-    else:
-        rows = await pool.fetch(
-            """
-            SELECT *
-            FROM public.healing_dispatch_events
-            ORDER BY created_at DESC
-            LIMIT $1 OFFSET $2
-            """,
-            limit,
-            offset,
-        )
+        conditions.append(f"decision = ${idx}")
+        args.append(decision_filter)
+        idx += 1
+    if fingerprint_filter is not None:
+        conditions.append(f"fingerprint = ${idx}")
+        args.append(fingerprint_filter)
+        idx += 1
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    rows = await pool.fetch(
+        f"""
+        SELECT *
+        FROM public.healing_dispatch_events{where}
+        ORDER BY created_at DESC
+        LIMIT ${idx} OFFSET ${idx + 1}
+        """,
+        *args,
+        limit,
+        offset,
+    )
     return [_decode_row(row) for row in rows]
 
 

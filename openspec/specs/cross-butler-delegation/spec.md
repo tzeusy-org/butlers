@@ -135,6 +135,35 @@ one shared `public` table reachable from any pool).
 - **THEN** the response is `404 Not Found`, never a `200` with null/empty
   data standing in for "not found"
 
+#### Scenario: Wake-protocol fields are discoverable, not just the answer (bu-ep4ks.3)
+- **WHEN** `GET /api/delegation/ledger` or `GET /api/delegation/ledger/{id}`
+  returns a row
+- **THEN** the response includes `wake_state`, `wake_key`, `wake_task_id`,
+  `wake_task_name`, `wake_updated_at`, and `answer_digest` alongside the
+  existing fields, so `callback_failed` and `task_conflict` -- the two
+  failure states the wake protocol introduces -- are distinguishable from an
+  ordinary answered row over the API, not only via direct database access
+- **AND** a row with no v1 wake provenance defaults `wake_state` to
+  `"not_applicable"` rather than omitting the field
+
+#### Scenario: Filtering to stuck wake states without a fleet-wide scan
+- **WHEN** a caller requests `GET /api/delegation/ledger?wake_stuck=true`
+- **THEN** only rows whose `wake_state` is `callback_failed` or
+  `task_conflict` are returned, combinable with the existing `status`,
+  `asking_butler`, and `target_butler` filters
+
+#### Scenario: Delegation rows are visible on butler detail and the attention surface
+- **WHEN** the dashboard renders a butler's detail page or the Overview
+  attention list
+- **THEN** the butler detail page shows delegated-out and delegated-in rows
+  for that butler, with a visually distinct badge for `callback_failed` and
+  `task_conflict` rows
+- **AND** any fleet-wide row stuck in `callback_failed` or `task_conflict`
+  surfaces on the Overview attention list, deep-linking to the asking
+  butler's detail page
+- **AND** a failed fetch of stuck delegations renders a named degraded
+  notice, never a silent "nothing stuck" all-clear
+
 ### Requirement: Delegated Answer Wake Contract
 
 A valid delegated answer SHALL remain a durable fact in

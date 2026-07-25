@@ -4,6 +4,7 @@ import type {
   ApprovalMetrics,
   ApprovalSummary,
   BoardRow,
+  DelegationLedgerEntry,
   Issue,
   NotificationStats,
   QaSummary,
@@ -1672,5 +1673,82 @@ describe("deriveOverviewTriageModel — fleet-halt attention row (bu-7o89u.3)", 
     expect(ids.indexOf("fleet-halt:ceiling")).toBeLessThan(
       ids.findIndex((id) => id.startsWith("issue:")),
     );
+  });
+});
+
+function delegation(overrides: Partial<DelegationLedgerEntry> = {}): DelegationLedgerEntry {
+  return {
+    id: "11111111-1111-1111-1111-111111111111",
+    asked_at: "2026-05-14T10:00:00.000Z",
+    asking_butler: "finance",
+    question: "Who is Alice's employer?",
+    target_butler: "relationship",
+    catalog_match_id: null,
+    catalog_score: null,
+    status: "answered",
+    reason: null,
+    answer: "Acme Corp.",
+    answered_at: "2026-05-14T10:05:00.000Z",
+    answering_butler: "relationship",
+    answer_digest: null,
+    wake_key: null,
+    wake_state: "callback_failed",
+    wake_task_id: null,
+    wake_task_name: null,
+    wake_updated_at: "2026-05-14T10:06:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("deriveOverviewTriageModel — delegation wake-failure attention rows (bu-ep4ks.3)", () => {
+  it("renders a high-severity row for a callback_failed delegation", () => {
+    const model = deriveOverviewTriageModel({
+      stuckDelegations: [delegation({ wake_state: "callback_failed" })],
+    });
+    const row = model.attentionRows.find((r) => r.id.startsWith("delegations:"));
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({
+      kind: "delegation",
+      severity: "high",
+      title: "Delegation callback failed for finance",
+      href: "/butlers/finance",
+      butlers: ["finance"],
+    });
+  });
+
+  it("renders a medium-severity row for a task_conflict delegation", () => {
+    const model = deriveOverviewTriageModel({
+      stuckDelegations: [delegation({ wake_state: "task_conflict" })],
+    });
+    const row = model.attentionRows.find((r) => r.id.startsWith("delegations:"));
+    expect(row).toMatchObject({
+      severity: "medium",
+      title: "Delegation task conflict for finance",
+    });
+  });
+
+  it("renders no row when stuckDelegations is empty or absent", () => {
+    expect(
+      deriveOverviewTriageModel({ stuckDelegations: [] }).attentionRows.some((r) =>
+        r.id.startsWith("delegations:"),
+      ),
+    ).toBe(false);
+    expect(
+      deriveOverviewTriageModel({}).attentionRows.some((r) => r.id.startsWith("delegations:")),
+    ).toBe(false);
+  });
+
+  it("surfaces a degraded source-error row instead of silently reading as 'nothing stuck' when the fetch fails", () => {
+    const model = deriveOverviewTriageModel({
+      stuckDelegations: null,
+      stuckDelegationsError: true,
+    });
+    const row = model.attentionRows.find((r) => r.id === "delegations:source-error");
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({
+      kind: "delegation",
+      severity: "high",
+      isSourceError: true,
+    });
   });
 });

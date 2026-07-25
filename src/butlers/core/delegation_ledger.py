@@ -484,16 +484,27 @@ async def record_wake_attempt(
     )
 
 
+#: The two wake-protocol failure states (bu-ep4ks.3) -- see VALID_WAKE_STATES
+#: docstring: "the two failure states the wake protocol introduces are
+#: exactly the ones the owner cannot see" without this filter.
+_WAKE_STUCK_STATES = frozenset({"callback_failed", "task_conflict"})
+
+
 async def list_delegations(
     pool: asyncpg.Pool,
     *,
     status: str | None = None,
     asking_butler: str | None = None,
     target_butler: str | None = None,
+    wake_stuck: bool = False,
     offset: int = 0,
     limit: int = 50,
 ) -> tuple[int, list[dict[str, Any]]]:
     """List delegation-ledger rows, most-recent first, with optional filters.
+
+    ``wake_stuck=True`` restricts to rows whose ``wake_state`` is
+    ``callback_failed`` or ``task_conflict`` -- the two wake-protocol failure
+    states that otherwise render as an ordinary answered row (bu-ep4ks.3).
 
     Returns ``(total, rows)`` where ``total`` is the unfiltered-by-page count
     matching the given filters (for pagination), and ``rows`` is the current
@@ -514,6 +525,10 @@ async def list_delegations(
     if target_butler is not None:
         conditions.append(f"target_butler = ${idx}")
         args.append(target_butler)
+        idx += 1
+    if wake_stuck:
+        conditions.append(f"wake_state = ANY(${idx})")
+        args.append(sorted(_WAKE_STUCK_STATES))
         idx += 1
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""

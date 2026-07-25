@@ -51,6 +51,12 @@ def _row_to_entry(row: dict) -> DelegationLedgerEntry:
         answer=row.get("answer"),
         answered_at=str(row["answered_at"]) if row.get("answered_at") else None,
         answering_butler=row.get("answering_butler"),
+        answer_digest=row.get("answer_digest"),
+        wake_key=row.get("wake_key"),
+        wake_state=row.get("wake_state") or "not_applicable",
+        wake_task_id=str(row["wake_task_id"]) if row.get("wake_task_id") else None,
+        wake_task_name=row.get("wake_task_name"),
+        wake_updated_at=str(row["wake_updated_at"]) if row.get("wake_updated_at") else None,
     )
 
 
@@ -62,6 +68,14 @@ async def list_delegation_ledger(
     asking_butler: str | None = Query(None, description="Filter by the asking butler's name."),
     target_butler: str | None = Query(
         None, description="Filter by the resolved target butler's name."
+    ),
+    wake_stuck: bool = Query(
+        False,
+        description=(
+            "When true, only return rows whose wake_state is one of the two "
+            "failure states the wake protocol introduces: callback_failed or "
+            "task_conflict."
+        ),
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -87,6 +101,7 @@ async def list_delegation_ledger(
         status=status,
         asking_butler=asking_butler,
         target_butler=target_butler,
+        wake_stuck=wake_stuck,
         offset=offset,
         limit=limit,
     )

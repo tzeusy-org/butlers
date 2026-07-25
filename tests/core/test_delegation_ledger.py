@@ -465,6 +465,28 @@ class TestGetAndListDelegations:
         fetch_query = pool.fetch.await_args.args[0]
         assert "WHERE" not in fetch_query
 
+    async def test_list_delegations_wake_stuck_filters_to_failure_states(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = AsyncMock(return_value=[])
+
+        await list_delegations(pool, wake_stuck=True)
+        fetch_query, *fetch_args = pool.fetch.await_args.args
+        assert "wake_state = ANY($1)" in fetch_query
+        assert fetch_args[0] == ["callback_failed", "task_conflict"]
+
+    async def test_list_delegations_wake_stuck_false_omits_filter(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = AsyncMock(return_value=[])
+
+        await list_delegations(pool, wake_stuck=False)
+        fetch_query = pool.fetch.await_args.args[0]
+        # wake_state is always a selected column; only the WHERE-clause filter
+        # is conditional on wake_stuck=True.
+        assert "WHERE" not in fetch_query
+        assert "wake_state = ANY" not in fetch_query
+
     async def test_valid_statuses_matches_migration_check_constraint(self):
         assert VALID_STATUSES == {"pending", "routed", "unroutable", "failed", "answered"}
 

@@ -577,6 +577,19 @@ async def test_list_dispatch_events_unit() -> None:
     filtered_sql: str = pool2.fetch.call_args[0][0]
     assert "decision = $1" in filtered_sql
 
+    # Combined decision + fingerprint filter (bu-ep4ks.3 — links a standing
+    # condition to the QA dispatches it suppressed).
+    pool3 = MagicMock()
+    pool3.fetch = AsyncMock(return_value=[mock_row])
+    rows3 = await list_dispatch_events(
+        pool3, decision_filter="infra_condition_open", fingerprint_filter="a" * 64
+    )
+    assert len(rows3) == 1
+    combined_sql, *combined_args = pool3.fetch.call_args[0]
+    assert "decision = $1" in combined_sql
+    assert "fingerprint = $2" in combined_sql
+    assert combined_args[:2] == ["infra_condition_open", "a" * 64]
+
 
 @pytest.mark.unit
 async def test_record_phase_session_unit() -> None:

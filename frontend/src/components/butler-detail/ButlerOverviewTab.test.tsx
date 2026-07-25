@@ -32,6 +32,10 @@ vi.mock("@/hooks/use-butler-analytics", () => ({
   useButlerActivityFeed: vi.fn(),
 }))
 
+vi.mock("@/hooks/use-delegation", () => ({
+  useDelegationLedger: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+}))
+
 vi.mock("@/components/ui/time", () => ({
   Time: ({ value }: { value: string }) => <span data-testid="time-value">{value}</span>,
 }))

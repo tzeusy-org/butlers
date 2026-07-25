@@ -875,20 +875,33 @@ export {
   getButlerHeartbeats,
   getInsightDeliveryState,
   getDriftFacts,
+  getSystemConditions,
   getDeploymentFacts,
+  listDelegationLedger,
+  getHealingDispatchEvents,
+} from "./client.ts";
+
+export type {
+  DelegationLedgerParams,
+  HealingDispatchEventsParams,
+  SystemConditionsParams,
 } from "./client.ts";
 
 export type {
   BackupEvent,
   BackupFacts,
   ButlerHeartbeat,
+  ConditionEntry,
+  ConditionsFacts,
   DatabaseFacts,
+  DelegationLedgerEntry,
   DeploymentFacts,
   DeploymentRecord,
   DriftEntry,
   DriftFacts,
   EgressActor,
   EgressCatalog,
+  HealingDispatchEvent,
   HeartbeatFacts,
   InsightDeliveryState,
   InstanceFacts,

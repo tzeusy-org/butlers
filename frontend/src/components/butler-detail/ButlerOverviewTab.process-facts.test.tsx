@@ -67,6 +67,10 @@ vi.mock("@/hooks/use-butler-analytics", () => ({
   useButlerActivityFeed: vi.fn(() => ({ data: { events: [] }, isLoading: false, isError: false, error: null })),
 }));
 
+vi.mock("@/hooks/use-delegation", () => ({
+  useDelegationLedger: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+}));
+
 // Stub components that require full DOM / router context not needed here.
 vi.mock("@/components/notifications/notification-feed", () => ({
   NotificationFeed: () => <div data-testid="notification-feed" />,

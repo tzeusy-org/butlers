@@ -19,6 +19,8 @@ import {
   getHealth,
   getInsightDeliveryState,
   getInstanceFacts,
+  getSystemConditions,
+  type SystemConditionsParams,
 } from "@/api/index.ts";
 
 /** Fetch software version, process uptime, and start timestamp. */
@@ -140,5 +142,20 @@ export function useDeploymentFacts() {
     queryKey: ["system-deployments"],
     queryFn: () => getDeploymentFacts(),
     refetchInterval: 60_000,
+  });
+}
+
+/**
+ * Fetch standing infrastructure conditions (bu-27dxl.6.2 / bu-ep4ks.3).
+ *
+ * Always HTTP 200 -- `data.conditions_available === false` means the ledger
+ * query itself failed server-side; render "unknown", never "no active
+ * conditions".
+ */
+export function useSystemConditions(params: SystemConditionsParams = {}) {
+  return useQuery({
+    queryKey: ["system-conditions", params],
+    queryFn: () => getSystemConditions(params),
+    refetchInterval: 30_000,
   });
 }

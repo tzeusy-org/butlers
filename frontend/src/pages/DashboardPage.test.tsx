@@ -48,6 +48,7 @@ vi.mock("@/hooks/use-notifications", () => ({ useNotificationStats: vi.fn() }));
 vi.mock("@/hooks/use-qa", () => ({ useQaSummary: vi.fn() }));
 vi.mock("@/hooks/use-timeline", () => ({ useTimeline: vi.fn() }));
 vi.mock("@/hooks/use-fleet-halt", () => ({ useFleetHaltStatus: vi.fn() }));
+vi.mock("@/hooks/use-delegation", () => ({ useStuckDelegations: vi.fn() }));
 
 // ---------------------------------------------------------------------------
 // Imports after mocks are registered
@@ -70,6 +71,7 @@ import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
 import { useTimeline } from "@/hooks/use-timeline";
 import { useFleetHaltStatus } from "@/hooks/use-fleet-halt";
+import { useStuckDelegations } from "@/hooks/use-delegation";
 import {
   ShortcutRegistryProvider,
   useShortcutHintEntries,
@@ -313,6 +315,12 @@ function setDefaultData(
     deniedTotal: 0,
     since: null,
     recentAttempts: [],
+    isLoading: false,
+    isError: false,
+  } as AnyMock);
+  vi.mocked(useStuckDelegations).mockReturnValue({
+    rows: [],
+    total: 0,
     isLoading: false,
     isError: false,
   } as AnyMock);

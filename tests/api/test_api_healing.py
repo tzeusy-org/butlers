@@ -186,6 +186,25 @@ async def test_dispatch_events_structure_and_503():
     assert resp_503.status_code == 503
 
 
+async def test_dispatch_events_fingerprint_filter_passes_through():
+    """fingerprint query param (bu-ep4ks.3) links a standing condition to the
+    QA dispatches it suppressed -- same identity infra_conditions uses."""
+    event = _make_dispatch_event_row(decision="infra_condition_open")
+    app, pool = _build_app(fetch_rows=[event], fetchval_result=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/healing/dispatch-events",
+            params={"decision": "infra_condition_open", "fingerprint": "a" * 64},
+        )
+    assert resp.status_code == 200
+    fetch_query, *fetch_args = pool.fetch.await_args.args
+    assert "decision = $1" in fetch_query
+    assert "fingerprint = $2" in fetch_query
+    assert fetch_args[:2] == ["infra_condition_open", "a" * 64]
+
+
 # ---------------------------------------------------------------------------
 # Attempt detail — 404 for unknown attempt
 # ---------------------------------------------------------------------------

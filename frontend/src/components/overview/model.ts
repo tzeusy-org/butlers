@@ -2,6 +2,7 @@ import type {
   ApprovalMetrics,
   ApprovalSummary,
   BoardRow,
+  DelegationLedgerEntry,
   Issue,
   NotificationStats,
   QaSummary,
@@ -22,6 +23,7 @@ export type OverviewAttentionKind =
   | "approval"
   | "notification"
   | "qa"
+  | "delegation"
   | "old-issues-summary";
 
 export interface OverviewDerivationOptions {
@@ -76,6 +78,16 @@ export interface OverviewDerivationInput {
    * other optional source above).
    */
   fleetHalt?: OverviewFleetHaltStatus | null;
+  /**
+   * Delegation-ledger rows stuck in callback_failed or task_conflict --
+   * the two wake-protocol failure states (migration core_181) that
+   * otherwise render as an ordinary answered row (bu-ep4ks.3). Absent/null
+   * means the caller hasn't wired the source (renders no row, same as every
+   * other optional source above).
+   */
+  stuckDelegations?: DelegationLedgerEntry[] | null;
+  /** True when the underlying GET /api/delegation/ledger fetch itself failed. */
+  stuckDelegationsError?: boolean;
 }
 
 /**
@@ -235,6 +247,10 @@ export function deriveOverviewTriageModel(
   );
   const qaRows = qaAttentionRows(input.qaSummary, now);
   const fleetHaltRows = fleetHaltAttentionRows(input.fleetHalt);
+  const delegationRows = delegationAttentionRows(
+    input.stuckDelegations,
+    input.stuckDelegationsError ?? false,
+  );
   const currentHighIssues = issueBuckets.currentHigh.slice(
     0,
     maxRecentIssueRows,
@@ -295,6 +311,7 @@ export function deriveOverviewTriageModel(
     ...notificationRows,
     ...notificationSourceRows,
     ...qaRows,
+    ...delegationRows,
     ...recentIssueRows,
   ].sort(
     (a, b) =>
@@ -695,6 +712,50 @@ function fleetHaltAttentionRows(
       lastSeenAt: status.since,
     },
   ];
+}
+
+/**
+ * Delegation wake-protocol failure rows (bu-ep4ks.3): a delegated answer
+ * stuck in `callback_failed` (the return callback to the asking butler could
+ * not be routed) or `task_conflict` (a deterministically-named local task
+ * already exists with different provenance) was previously invisible over
+ * the API -- it rendered identically to an ordinary answered row. Mirrors
+ * the `isSourceError` idiom (`notificationSourceErrorRows`) for a failed
+ * fetch: a failed fetch means "unknown", not "nothing stuck".
+ */
+function delegationAttentionRows(
+  stuckDelegations: DelegationLedgerEntry[] | null | undefined,
+  stuckDelegationsError: boolean,
+): OverviewAttentionRow[] {
+  if (stuckDelegationsError) {
+    return [
+      {
+        id: "delegations:source-error",
+        kind: "delegation",
+        severity: "high",
+        title: "Delegation wake status unavailable",
+        detail: "Could not confirm whether any delegated answer is stuck -- retry from the butler.",
+        href: null,
+        isSourceError: true,
+      },
+    ];
+  }
+
+  return (stuckDelegations ?? []).map((entry) => {
+    const isCallbackFailed = entry.wake_state === "callback_failed";
+    return {
+      id: `delegations:${entry.id}`,
+      kind: "delegation",
+      severity: isCallbackFailed ? "high" : "medium",
+      title: isCallbackFailed
+        ? `Delegation callback failed for ${entry.asking_butler}`
+        : `Delegation task conflict for ${entry.asking_butler}`,
+      detail: entry.question,
+      href: `/butlers/${encodeURIComponent(entry.asking_butler)}`,
+      butlers: [entry.asking_butler],
+      lastSeenAt: entry.wake_updated_at ?? entry.answered_at,
+    };
+  });
 }
 
 /** Short human date+time for the fleet-halt row's "since <ts>" clause. */

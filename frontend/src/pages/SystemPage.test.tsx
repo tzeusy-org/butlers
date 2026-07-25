@@ -64,6 +64,19 @@ vi.mock("@/hooks/use-system", () => ({
   useInsightDeliveryState: vi.fn(),
   useDriftFacts: vi.fn(),
   useDeploymentFacts: vi.fn(),
+  useSystemConditions: vi.fn(() => ({
+    data: { data: { conditions: [], total: 0, conditions_available: true } },
+    isPending: false,
+    isError: false,
+  })),
+}));
+
+vi.mock("@/hooks/use-healing", () => ({
+  useInfraConditionSuppressionCounts: vi.fn(() => ({
+    counts: new Map(),
+    isLoading: false,
+    isError: false,
+  })),
 }));
 
 // ---------------------------------------------------------------------------

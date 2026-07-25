@@ -341,6 +341,9 @@ import type {
   HeartbeatFacts,
   InsightDeliveryState,
   DriftFacts,
+  ConditionsFacts,
+  HealingDispatchEvent,
+  DelegationLedgerEntry,
   DeploymentFacts,
   ModuleStatus,
   Briefing,
@@ -5725,6 +5728,97 @@ export function getInsightDeliveryState(): Promise<ApiResponse<InsightDeliverySt
  */
 export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
   return apiFetch<ApiResponse<DriftFacts>>("/system/drift");
+}
+
+/** Params for getSystemConditions(). */
+export interface SystemConditionsParams {
+  source?: string;
+  /** "open" | "aging" | "resolved" */
+  state?: string;
+  offset?: number;
+  limit?: number;
+}
+
+/**
+ * Fetch standing infrastructure conditions from GET /api/system/conditions
+ * (bu-27dxl.6.2 / bu-ep4ks.3). Named distinctly from getConditions() (health
+ * conditions, unrelated) to avoid a same-module symbol collision.
+ *
+ * Always returns HTTP 200 -- `data.conditions_available === false` means the
+ * ledger query itself failed server-side; render "unknown", never "no active
+ * conditions".
+ */
+export function getSystemConditions(
+  params: SystemConditionsParams = {},
+): Promise<ApiResponse<ConditionsFacts>> {
+  const query = new URLSearchParams();
+  if (params.source) query.set("source", params.source);
+  if (params.state) query.set("state", params.state);
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<ApiResponse<ConditionsFacts>>(`/system/conditions${qs ? `?${qs}` : ""}`);
+}
+
+/** Params for listDelegationLedger(). */
+export interface DelegationLedgerParams {
+  /** "pending" | "routed" | "unroutable" | "failed" | "answered" */
+  status?: string;
+  asking_butler?: string;
+  target_butler?: string;
+  /** Only return rows stuck in callback_failed or task_conflict (bu-ep4ks.3). */
+  wake_stuck?: boolean;
+  offset?: number;
+  limit?: number;
+}
+
+/**
+ * List cross-butler delegated questions from GET /api/delegation/ledger
+ * (bu-gxmfx), most-recent first.
+ */
+export function listDelegationLedger(
+  params: DelegationLedgerParams = {},
+): Promise<PaginatedResponse<DelegationLedgerEntry>> {
+  const query = new URLSearchParams();
+  if (params.status) query.set("status", params.status);
+  if (params.asking_butler) query.set("asking_butler", params.asking_butler);
+  if (params.target_butler) query.set("target_butler", params.target_butler);
+  if (params.wake_stuck) query.set("wake_stuck", "true");
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<DelegationLedgerEntry>>(
+    `/delegation/ledger${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Params for getHealingDispatchEvents(). */
+export interface HealingDispatchEventsParams {
+  decision?: string;
+  /** Same identity public.infra_conditions uses for source=infra_state (bu-ep4ks.3). */
+  fingerprint?: string;
+  offset?: number;
+  limit?: number;
+}
+
+/**
+ * List healing/QA-dispatch gate-decision events from
+ * GET /api/healing/dispatch-events -- e.g. `decision=infra_condition_open`
+ * rows record a QA finding suppressed by an active standing condition with
+ * the same `fingerprint` (Gate 5.5, bu-27dxl.6.4).
+ */
+export function getHealingDispatchEvents(
+  params: HealingDispatchEventsParams = {},
+): Promise<PaginatedResponse<HealingDispatchEvent>> {
+  const query = new URLSearchParams();
+  if (params.decision) query.set("decision", params.decision);
+  if (params.fingerprint) query.set("fingerprint", params.fingerprint);
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<HealingDispatchEvent>>(
+    `/healing/dispatch-events${qs ? `?${qs}` : ""}`,
+  );
 }
 
 /**

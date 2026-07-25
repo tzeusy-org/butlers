@@ -75,6 +75,10 @@ vi.mock("@/hooks/use-butler-analytics", () => ({
   useButlerActivityFeed: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-delegation", () => ({
+  useDelegationLedger: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+}));
+
 // Stub heavy child components not under test here.
 vi.mock("@/components/notifications/notification-feed", () => ({
   NotificationFeed: () => <div data-testid="notification-feed" />,

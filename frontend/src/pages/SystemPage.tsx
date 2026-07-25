@@ -15,6 +15,7 @@ import { DriftTile } from "@/components/system/DriftTile";
 import { EgressCatalogTile } from "@/components/system/EgressCatalogTile";
 import { InsightDeliveryTile } from "@/components/system/InsightDeliveryTile";
 import { SecurityPostureTile } from "@/components/system/SecurityPostureTile";
+import { StandingConditionsTile } from "@/components/system/StandingConditionsTile";
 import { SystemVerdictBanner } from "@/components/system/SystemVerdictBanner";
 import { UptimeTile } from "@/components/system/UptimeTile";
 import { VersionTile } from "@/components/system/VersionTile";
@@ -127,6 +128,9 @@ function SystemPage() {
         </div>
         <div className="lg:col-span-2 h-full">
           <ButlerHeartbeatTile />
+        </div>
+        <div className="lg:col-span-3 h-full">
+          <StandingConditionsTile />
         </div>
       </div>
 

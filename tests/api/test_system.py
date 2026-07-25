@@ -493,6 +493,150 @@ async def test_drift_check_unavailable_returns_flag_not_503(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/system/conditions (bu-ep4ks.3)
+# ---------------------------------------------------------------------------
+
+
+def _make_condition_row(
+    *,
+    source: str = "infra_state",
+    state: str = "open",
+    escalation_level: str = "L0",
+    resolved_at=None,
+    recovered_after_s=None,
+) -> dict:
+    return {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "source": source,
+        "fingerprint": "a" * 64,
+        "episode": 1,
+        "state": state,
+        "first_detected_at": _NOW,
+        "last_confirmed_at": _NOW,
+        "last_escalated_at": None,
+        "next_reescalate_at": None,
+        "escalation_level": escalation_level,
+        "resolved_at": resolved_at,
+        "recovered_after_s": recovered_after_s,
+        "summary": "backup source unreachable",
+        "metadata": None,
+    }
+
+
+def _make_conditions_pool_mock(*, rows: list[dict], total: int | None = None) -> AsyncMock:
+    # infra_conditions.list_conditions wraps each row through dict(row) --
+    # plain dicts round-trip through that cleanly, unlike _make_record's
+    # MagicMock (whose auto-configured __iter__ makes dict(mock) come back
+    # empty; see test_delegation.py's _Record dict-subclass for the same fix).
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=total if total is not None else len(rows))
+    pool.fetch = AsyncMock(return_value=list(rows))
+    return pool
+
+
+async def test_conditions_happy_path_returns_rows():
+    rows = [_make_condition_row(), _make_condition_row(state="aging", escalation_level="L1")]
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["conditions_available"] is True
+    assert data["total"] == 2
+    assert len(data["conditions"]) == 2
+    assert data["conditions"][0]["source"] == "infra_state"
+    assert data["conditions"][0]["escalation_level"] == "L0"
+
+
+async def test_conditions_resolved_episode_carries_recovery_provenance():
+    resolved_at = _NOW
+    rows = [
+        _make_condition_row(state="resolved", resolved_at=resolved_at, recovered_after_s=3600.0)
+    ]
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 200
+    entry = resp.json()["data"]["conditions"][0]
+    assert entry["state"] == "resolved"
+    assert entry["resolved_at"] is not None
+    assert entry["recovered_after_s"] == 3600.0
+
+
+async def test_conditions_empty_ledger_is_honest_all_clear():
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=[], total=0)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["conditions_available"] is True
+    assert data["conditions"] == []
+    assert data["total"] == 0
+
+
+async def test_conditions_query_failure_degrades_not_503():
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(side_effect=RuntimeError("connection reset"))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    # Fleet-wide degraded-envelope convention: never a fabricated all-clear, never a 503.
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["conditions_available"] is False
+    assert data["conditions"] == []
+
+
+async def test_conditions_switchboard_pool_unavailable_returns_503():
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.side_effect = KeyError("switchboard")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 503
+
+
+async def test_conditions_rejects_invalid_state():
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=[])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions", params={"state": "bogus"})
+    assert resp.status_code == 400
+
+
+async def test_conditions_passes_filters_through():
+    pool = _make_conditions_pool_mock(rows=[])
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/system/conditions", params={"source": "infra_state", "state": "open"}
+        )
+    assert resp.status_code == 200
+    fetch_query, *fetch_args = pool.fetch.await_args.args
+    assert "source = $1" in fetch_query
+    assert "state = $2" in fetch_query
+    assert fetch_args[:2] == ["infra_state", "open"]
+
+
+# ---------------------------------------------------------------------------
 # GET /api/system/backups
 # ---------------------------------------------------------------------------
 

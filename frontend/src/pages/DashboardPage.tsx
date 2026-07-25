@@ -73,6 +73,7 @@ import { useQaSummary } from "@/hooks/use-qa";
 import { useTickingNow } from "@/hooks/use-ticking-now";
 import { useTimeline } from "@/hooks/use-timeline";
 import { useFleetHaltStatus } from "@/hooks/use-fleet-halt";
+import { useStuckDelegations } from "@/hooks/use-delegation";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 
 import CostWidget from "@/components/costs/CostWidget";
@@ -169,6 +170,9 @@ export default function DashboardPage() {
   // lives on /spend -- Overview only needs the summary shape for the
   // critical attention row, so the default drawer-row limit is unused here.
   const fleetHalt = useFleetHaltStatus();
+  // Delegation wake-protocol failures (bu-ep4ks.3) -- callback_failed/
+  // task_conflict rows are otherwise invisible outside this fetch.
+  const stuckDelegations = useStuckDelegations();
   const topSessionsQuery = useTopSessions();
   // Real 7-day daily cost series for the CostWidget sparkline (bu-86c4c.1 —
   // the sparkline previously fabricated bar heights from a pseudo-random
@@ -222,6 +226,8 @@ export default function DashboardPage() {
             since: fleetHalt.since,
             isSourceError: fleetHalt.isError,
           },
+          stuckDelegations: stuckDelegations.isError ? null : stuckDelegations.rows,
+          stuckDelegationsError: stuckDelegations.isError,
         },
         { now: new Date(overviewNowMs), includeInternal },
       ),
@@ -247,6 +253,8 @@ export default function DashboardPage() {
       pendingApprovalsQuery.isError,
       qaSummary,
       qaSummaryQuery.isError,
+      stuckDelegations.isError,
+      stuckDelegations.rows,
       timeline,
       timelineQuery.isError,
     ],

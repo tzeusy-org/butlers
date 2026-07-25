@@ -30,6 +30,9 @@ def _make_ledger_row(
     target_butler: str | None = "relationship",
     status: str = "routed",
     answer: str | None = None,
+    wake_state: str = "not_applicable",
+    wake_task_id: uuid.UUID | None = None,
+    wake_task_name: str | None = None,
 ) -> _Record:
     return _Record(
         {
@@ -46,6 +49,12 @@ def _make_ledger_row(
             "answered_at": _NOW if answer else None,
             "answering_butler": target_butler if answer else None,
             "metadata": None,
+            "answer_digest": None,
+            "wake_key": None,
+            "wake_state": wake_state,
+            "wake_task_id": wake_task_id,
+            "wake_task_name": wake_task_name,
+            "wake_updated_at": None,
         }
     )
 
@@ -120,6 +129,55 @@ async def test_list_ledger_passes_filters_through(app):
     assert "asking_butler = $2" in fetch_query
     assert "target_butler = $3" in fetch_query
     assert fetch_args[:3] == ["answered", "finance", "relationship"]
+
+
+async def test_list_ledger_exposes_wake_fields(app):
+    row = _make_ledger_row(
+        status="answered",
+        answer="Acme Corp.",
+        wake_state="callback_failed",
+        wake_task_id=uuid.uuid4(),
+        wake_task_name="delegation-wake-task",
+    )
+    _wire_db(app, rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/delegation/ledger")
+
+    assert resp.status_code == 200
+    entry = resp.json()["data"][0]
+    assert entry["wake_state"] == "callback_failed"
+    assert entry["wake_task_id"] == str(row["wake_task_id"])
+    assert entry["wake_task_name"] == "delegation-wake-task"
+
+
+async def test_list_ledger_defaults_wake_state_when_absent(app):
+    row = _make_ledger_row()
+    _wire_db(app, rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/delegation/ledger")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["wake_state"] == "not_applicable"
+
+
+async def test_list_ledger_passes_wake_stuck_through(app):
+    mock_db = _wire_db(app, rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/delegation/ledger", params={"wake_stuck": "true"})
+
+    assert resp.status_code == 200
+    fetch_query, *fetch_args = mock_db.pool_mock.fetch.await_args.args
+    assert "wake_state = ANY($1)" in fetch_query
+    assert fetch_args[0] == ["callback_failed", "task_conflict"]
 
 
 async def test_get_ledger_entry_by_id(app):

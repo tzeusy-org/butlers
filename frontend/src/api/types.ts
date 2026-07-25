@@ -6910,6 +6910,64 @@ export interface DriftFacts {
   drift_check_available: boolean;
 }
 
+/**
+ * One episode row from public.infra_conditions (bu-27dxl.6.2 / bu-ep4ks.3).
+ *
+ * An "open"/"aging" episode is an active outage; a "resolved" episode is
+ * retained history -- `resolved_at`/`recovered_after_s` are only set once
+ * resolved, and are how the panel shows auto-resolve provenance.
+ */
+export interface ConditionEntry {
+  id: string;
+  source: string;
+  fingerprint: string;
+  episode: number;
+  /** "open" | "aging" | "resolved" */
+  state: string;
+  first_detected_at: string;
+  last_confirmed_at: string;
+  last_escalated_at: string | null;
+  next_reescalate_at: string | null;
+  /** "L0" | "L1" | "L2" | "L3" */
+  escalation_level: string;
+  resolved_at: string | null;
+  recovered_after_s: number | null;
+  summary: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/**
+ * Standing infrastructure conditions, most-recently-detected first.
+ *
+ * `conditions_available: false` means the ledger query itself failed --
+ * per the fleet-wide degraded-envelope convention, render "unknown", never
+ * a fabricated "no active conditions" all-clear.
+ */
+export interface ConditionsFacts {
+  conditions: ConditionEntry[];
+  total: number;
+  conditions_available: boolean;
+}
+
+/**
+ * A dispatch-decision record from public.healing_dispatch_events -- a gate
+ * evaluation (why a healing/QA-remediation workflow was or was not
+ * launched), distinct from a launched healing_attempts execution.
+ *
+ * `decision="infra_condition_open"` (Gate 5.5, bu-27dxl.6.4) means a QA
+ * finding was suppressed because a standing infrastructure condition with
+ * this same `fingerprint` was already active -- see ConditionEntry.
+ */
+export interface HealingDispatchEvent {
+  id: string;
+  fingerprint: string;
+  butler_name: string;
+  decision: string;
+  reason: string | null;
+  attempt_id: string | null;
+  created_at: string;
+}
+
 /** Single row from public.deployments (a boot or deploy execution). */
 export interface DeploymentRecord {
   id: string;
@@ -9030,4 +9088,35 @@ export interface RulePromotionStats {
 export interface RulePromotionDismissRequest {
   reason?: string;
   cooldown_days?: number;
+}
+
+/**
+ * One row of public.delegation_ledger -- a cross-butler question/answer
+ * (bu-gxmfx). `wake_*`/`answer_digest` (bu-ep4ks.3) widen this entry with the
+ * return-callback/task lifecycle migration core_181 added: `wake_state`
+ * defaults to "not_applicable" (no v1 answer yet); "callback_failed" and
+ * "task_conflict" are the two failure states the wake protocol introduces --
+ * before this widening they rendered as an ordinary answered row.
+ */
+export interface DelegationLedgerEntry {
+  id: string;
+  asked_at: string;
+  asking_butler: string;
+  question: string;
+  target_butler: string | null;
+  catalog_match_id: string | null;
+  catalog_score: number | null;
+  /** "pending" | "routed" | "unroutable" | "failed" | "answered" */
+  status: string;
+  reason: string | null;
+  answer: string | null;
+  answered_at: string | null;
+  answering_butler: string | null;
+  answer_digest: string | null;
+  wake_key: string | null;
+  /** "not_applicable" | "callback_pending" | "callback_failed" | "callback_routed" | "task_created" | "task_conflict" */
+  wake_state: string;
+  wake_task_id: string | null;
+  wake_task_name: string | null;
+  wake_updated_at: string | null;
 }

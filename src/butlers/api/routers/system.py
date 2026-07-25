@@ -9,6 +9,7 @@ Surfaces seven ownership-fact domains:
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
     GET /api/system/deployments    -- current + recent deployment ledger entries
     GET /api/system/drift          -- migration-drift sentinel (bu-9r3hd.1)
+    GET /api/system/conditions     -- standing infrastructure condition ledger (bu-27dxl.6.2)
 
 Privacy contract: /api/system/egress is owner-only. The owner is identified
 by asserting 'owner' = ANY(roles) on public.entities. Non-owner callers
@@ -59,7 +60,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from opentelemetry import trace
 from prometheus_client import Counter
 from pydantic import BaseModel
@@ -119,6 +120,11 @@ system_deployments_reads_total = Counter(
 system_drift_reads_total = Counter(
     "system_drift_reads_total",
     "Number of GET /api/system/drift requests.",
+)
+
+system_conditions_reads_total = Counter(
+    "system_conditions_reads_total",
+    "Number of GET /api/system/conditions requests.",
 )
 
 
@@ -329,6 +335,45 @@ class InsightDeliveryState(BaseModel):
     delivered: int
     failed: int
     last_delivery_at: str | None
+
+
+class ConditionEntry(BaseModel):
+    """One episode row from public.infra_conditions (bu-27dxl.6.2).
+
+    An ``open``/``aging`` episode is an active outage; a ``resolved`` episode
+    is retained history. ``recovered_after_s`` is only set once ``resolved_at``
+    is set -- see ``butlers.core.infra_conditions`` for the full lifecycle.
+    """
+
+    id: str
+    source: str
+    fingerprint: str
+    episode: int
+    state: str  # "open" | "aging" | "resolved"
+    first_detected_at: str
+    last_confirmed_at: str
+    last_escalated_at: str | None
+    next_reescalate_at: str | None
+    escalation_level: str  # "L0" | "L1" | "L2" | "L3"
+    resolved_at: str | None
+    recovered_after_s: float | None
+    summary: str | None
+    metadata: dict | None
+
+
+class ConditionsFacts(BaseModel):
+    """Standing infrastructure conditions, most-recently-detected first.
+
+    ``conditions_available=False`` means the ledger query itself failed
+    (unreachable pool, permission error) -- per the fleet-wide degraded-
+    envelope convention, this must never be rendered as a truthful "no
+    active conditions" all-clear. An honestly empty ledger (query succeeded,
+    zero rows) returns ``conditions_available=True`` with an empty list.
+    """
+
+    conditions: list[ConditionEntry]
+    total: int
+    conditions_available: bool
 
 
 # ---------------------------------------------------------------------------
@@ -1322,5 +1367,84 @@ async def get_insight_delivery_state(
             delivered=result.delivered,
             failed=result.failed,
             last_delivery_at=last_dt.isoformat() if last_dt is not None else None,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/conditions
+# ---------------------------------------------------------------------------
+
+
+def _condition_row_to_entry(row: dict) -> ConditionEntry:
+    return ConditionEntry(
+        id=str(row["id"]),
+        source=row["source"],
+        fingerprint=row["fingerprint"],
+        episode=row["episode"],
+        state=row["state"],
+        first_detected_at=row["first_detected_at"].isoformat(),
+        last_confirmed_at=row["last_confirmed_at"].isoformat(),
+        last_escalated_at=(
+            row["last_escalated_at"].isoformat() if row.get("last_escalated_at") else None
+        ),
+        next_reescalate_at=(
+            row["next_reescalate_at"].isoformat() if row.get("next_reescalate_at") else None
+        ),
+        escalation_level=row["escalation_level"],
+        resolved_at=row["resolved_at"].isoformat() if row.get("resolved_at") else None,
+        recovered_after_s=row.get("recovered_after_s"),
+        summary=row.get("summary"),
+        metadata=row.get("metadata"),
+    )
+
+
+@router.get("/conditions", response_model=ApiResponse[ConditionsFacts])
+async def get_conditions(
+    source: str | None = Query(None, description="Filter by producer source."),
+    state: str | None = Query(None, description="Filter by state. One of: open, aging, resolved."),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ConditionsFacts]:
+    """Return standing infrastructure conditions from the durable ledger (bu-27dxl.6.2).
+
+    Opens the door on ``public.infra_conditions``, which until now had zero API
+    router and zero frontend (bu-ep4ks.3): an L0-L3 escalating outage was durable
+    in Postgres but visible only via psql. Reads (never writes) via
+    ``butlers.core.infra_conditions.list_conditions``, most-recently-detected
+    first. Always returns HTTP 200 -- per the fleet-wide degraded-envelope
+    convention, a failed ledger query sets ``conditions_available=False`` with
+    an empty list, never a fabricated all-clear.
+    """
+    system_conditions_reads_total.inc()
+
+    from butlers.core.infra_conditions import VALID_STATES, list_conditions
+
+    if state is not None and state not in VALID_STATES:
+        allowed = ", ".join(sorted(VALID_STATES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid state {state!r}. Must be one of: {allowed}",
+        )
+
+    try:
+        pool = db.pool("switchboard")
+    except KeyError:
+        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+
+    try:
+        total, rows = await list_conditions(
+            pool, source=source, state=state, offset=offset, limit=limit
+        )
+    except Exception as exc:
+        logger.warning("infra_conditions query failed (degraded state returned): %s", exc)
+        return ApiResponse(data=ConditionsFacts(conditions=[], total=0, conditions_available=False))
+
+    return ApiResponse(
+        data=ConditionsFacts(
+            conditions=[_condition_row_to_entry(r) for r in rows],
+            total=total,
+            conditions_available=True,
         )
     )

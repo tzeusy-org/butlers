@@ -481,6 +481,52 @@ timestamp and session activity summary for each registered butler.
   `active_session_count` are `null` and 0 respectively, and the entry is still
   included in the response with an `error: "schema_unreachable"` flag
 
+### Requirement: Standing Infrastructure Conditions
+
+The `/api/system/conditions` endpoint SHALL expose the durable infrastructure
+condition ledger (`public.infra_conditions`), and the System page SHALL render
+a Standing Conditions panel from it, so an escalating outage is visible on
+the dashboard instead of only via direct database access.
+
+#### Scenario: Conditions endpoint returns ledger episodes
+
+- **WHEN** `GET /api/system/conditions` is called with optional `source`,
+  `state`, `offset`, and `limit` filters
+- **THEN** the response body contains `conditions: ConditionEntry[]`,
+  `total: number`, and `conditions_available: boolean`, ordered by
+  `first_detected_at` descending
+- **AND** each `ConditionEntry` includes `source`, `fingerprint`, `episode`,
+  `state` (`open` | `aging` | `resolved`), `escalation_level` (`L0`-`L3`),
+  `first_detected_at`, `last_confirmed_at`, `resolved_at`, and
+  `recovered_after_s`, matching the ledger's stored evidence
+
+#### Scenario: A failed ledger query degrades honestly, never a fabricated all-clear
+
+- **WHEN** the underlying `infra_conditions` query fails (unreachable pool,
+  permission error)
+- **THEN** the endpoint still returns HTTP 200 with `conditions_available:
+  false` and an empty `conditions` list
+- **AND** the System page renders a named "unavailable" notice, distinct from
+  both an ordinary empty ledger and a transport-level error
+
+#### Scenario: Standing Conditions panel shows escalation and recovery provenance
+
+- **WHEN** the System page renders the Standing Conditions panel
+- **THEN** each active (`open`/`aging`) episode shows its source, escalation
+  level, and time since first detected
+- **AND** each `resolved` episode shows when it resolved and how long the
+  condition was active before recovering (`recovered_after_s`), rather than
+  disappearing from the panel with no trace of the outage having occurred
+
+#### Scenario: Standing conditions surface how many QA dispatches they suppressed
+
+- **WHEN** an active condition has suppressed one or more QA dispatch
+  decisions (Gate 5.5, `decision="infra_condition_open"`, joined on the
+  shared `fingerprint` identity)
+- **THEN** the panel shows a count of suppressed QA dispatches for that
+  condition, so a previously invisible suppression is now traceable back to
+  the condition that caused it
+
 ### Requirement: System Page Privacy Contract
 
 The System page and all `/api/system/*` endpoints SHALL operate under a strict access
