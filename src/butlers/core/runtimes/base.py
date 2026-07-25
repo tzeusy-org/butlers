@@ -26,6 +26,14 @@ class RuntimeAdapter(abc.ABC):
     adapter so that butler core stays runtime-agnostic.
     """
 
+    #: Whether this adapter's ``invoke()`` accepts a ``resume_session_id``
+    #: kwarg to continue a prior provider-native session (bu-ep4ks.8) instead
+    #: of cold-starting with a freshly composed system prompt. False for
+    #: every adapter by default; callers MUST check this flag before passing
+    #: ``resume_session_id`` -- adapters that don't support it do not accept
+    #: the parameter at all, rather than silently ignoring it.
+    supports_resume: bool = False
+
     @property
     @abc.abstractmethod
     def binary_name(self) -> str:

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.core.runtimes import ClaudeCodeAdapter
-from butlers.core.runtimes.claude_code import _find_claude_binary
+from butlers.core.runtimes.claude_code import _extract_claude_session_id, _find_claude_binary
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +107,94 @@ async def test_invoke_flags_and_output():
             prompt="test", system_prompt="", mcp_servers={}, env={}
         )
     assert usage2 == {"input_tokens": 150, "output_tokens": 300}
+
+
+def test_supports_resume_flag():
+    """ClaudeCodeAdapter opts into the resume extension point (bu-ep4ks.8)."""
+    assert ClaudeCodeAdapter.supports_resume is True
+
+
+async def test_invoke_resume_session_id_conditional():
+    """--resume is only emitted when resume_session_id is a non-empty string."""
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="continue",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            resume_session_id="sess-abc-123",
+        )
+    cmd = mock_sub.call_args[0]
+    assert "--resume" in cmd and cmd[cmd.index("--resume") + 1] == "sess-abc-123"
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(prompt="cold start", system_prompt="", mcp_servers={}, env={})
+    assert "--resume" not in mock_sub.call_args[0]
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="blank handle",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            resume_session_id="   ",
+        )
+    assert "--resume" not in mock_sub.call_args[0]
+
+
+async def test_invoke_captures_provider_session_id_on_success():
+    """last_process_info surfaces the CLI-reported session_id for the next resume."""
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+    output = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init", "session_id": "sess-fresh-1"}),
+            json.dumps({"type": "result", "result": "Done"}),
+        ]
+    )
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output.encode(), b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+
+    assert adapter.last_process_info["provider_session_id"] == "sess-fresh-1"
+
+
+async def test_invoke_captures_none_provider_session_id_when_absent():
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+    output = json.dumps({"type": "result", "result": "Done"})
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output.encode(), b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+
+    assert adapter.last_process_info["provider_session_id"] is None
+
+
+def test_extract_claude_session_id_scans_any_event_type():
+    output = "\n".join(
+        [
+            json.dumps({"type": "assistant", "content": "no session id here"}),
+            json.dumps({"type": "result", "result": "Done", "session_id": "sess-9"}),
+        ]
+    )
+    assert _extract_claude_session_id(output) == "sess-9"
+
+
+def test_extract_claude_session_id_returns_none_for_non_json_output():
+    assert _extract_claude_session_id("plain text, not json-lines") is None
+    assert _extract_claude_session_id("") is None
 
 
 async def test_invoke_stderr_log(tmp_path: Path):

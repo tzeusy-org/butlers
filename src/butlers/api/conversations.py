@@ -13,13 +13,21 @@ import json
 import logging
 import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+# Provider resume handles are considered fresh for this long after their last
+# refresh. Chosen as a generous same-day window: long enough that a user
+# picking a conversation back up later the same day still gets warm
+# prompt-cache continuity, short enough that a handle from days ago (likely
+# evicted provider-side already) is never worth an attempted resume. Pure
+# staleness check -- there is no separate eviction job (bu-ep4ks.8 [decision]).
+_PROVIDER_SESSION_TTL_SECONDS: int = 24 * 60 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +269,192 @@ async def conversation_set_routed_butler(
         conversation_id,
         routed_butler,
     )
+
+
+async def conversation_get_or_create_by_thread(
+    pool: asyncpg.Pool,
+    *,
+    butler_name: str,
+    source_channel: str,
+    source_thread_identity: str,
+    first_message: str,
+) -> tuple[dict[str, Any], bool]:
+    """Upsert the channel-agnostic conversation anchor for an inbound thread.
+
+    Generalizes conversation creation beyond the dashboard-only
+    ``conversation_create``: any channel that already normalizes a
+    ``source_thread_identity`` at ingest (Telegram, email, ...) can call this
+    once per inbound message to get a stable ``dashboard_conversations`` row
+    to attach session lineage and a provider resume handle to, without
+    needing to track its own anchor concept.
+
+    Concurrency-safe: relies on the partial unique index on
+    ``(butler_name, source_channel, source_thread_identity)`` (core_185) so
+    two concurrent callers for the same thread converge on one row via
+    ``ON CONFLICT ... DO NOTHING`` rather than racing to create duplicates.
+
+    Returns ``(conversation, is_new)``.
+    """
+    conv_id = _generate_uuid7()
+    title = _auto_title(first_message)
+    now = datetime.now(UTC)
+
+    inserted = await pool.fetchrow(
+        """
+        INSERT INTO public.dashboard_conversations
+            (id, butler_name, title, status, created_at, updated_at,
+             message_count, source_channel, source_thread_identity)
+        VALUES ($1, $2, $3, 'active', $4, $4, 0, $5, $6)
+        ON CONFLICT (butler_name, source_channel, source_thread_identity)
+            WHERE source_thread_identity IS NOT NULL
+        DO NOTHING
+        RETURNING id, butler_name, title, status, created_at, updated_at,
+                  message_count, routed_butler, source_channel, source_thread_identity
+        """,
+        conv_id,
+        butler_name,
+        title,
+        now,
+        source_channel,
+        source_thread_identity,
+    )
+    if inserted is not None:
+        return dict(inserted), True
+
+    existing = await pool.fetchrow(
+        """
+        SELECT id, butler_name, title, status, created_at, updated_at,
+               message_count, routed_butler, source_channel, source_thread_identity
+        FROM public.dashboard_conversations
+        WHERE butler_name = $1 AND source_channel = $2 AND source_thread_identity = $3
+        """,
+        butler_name,
+        source_channel,
+        source_thread_identity,
+    )
+    if existing is None:
+        raise RuntimeError(
+            f"Conversation anchor for {butler_name}/{source_channel}/"
+            f"{source_thread_identity} disappeared after an upsert conflict"
+        )
+    return dict(existing), False
+
+
+async def conversation_get_provider_session(
+    pool: asyncpg.Pool,
+    conversation_id: UUID,
+    *,
+    butler_name: str,
+) -> dict[str, Any] | None:
+    """Fetch the current provider resume handle for a conversation, if any.
+
+    Returns ``None`` when the conversation has never had a provider session
+    recorded (including when the conversation itself does not exist) --
+    callers treat that identically to "cold start", never as an error.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT provider_session_id, provider_runtime_type, provider_session_updated_at
+        FROM public.dashboard_conversations
+        WHERE id = $1 AND butler_name = $2
+        """,
+        conversation_id,
+        butler_name,
+    )
+    if row is None or row["provider_session_id"] is None:
+        return None
+    return dict(row)
+
+
+async def conversation_set_provider_session(
+    pool: asyncpg.Pool,
+    conversation_id: UUID,
+    *,
+    butler_name: str,
+    provider_session_id: str,
+    provider_runtime_type: str,
+) -> None:
+    """Record the provider-native session id minted for a conversation's turn.
+
+    Overwrites any prior handle -- "one memory per thread" means only the
+    most recent provider session is ever worth resuming from.
+    """
+    await pool.execute(
+        """
+        UPDATE public.dashboard_conversations
+        SET provider_session_id = $3,
+            provider_runtime_type = $4,
+            provider_session_updated_at = now()
+        WHERE id = $1 AND butler_name = $2
+        """,
+        conversation_id,
+        butler_name,
+        provider_session_id,
+        provider_runtime_type,
+    )
+
+
+async def conversation_clear_provider_session(
+    pool: asyncpg.Pool,
+    conversation_id: UUID,
+    *,
+    butler_name: str,
+) -> None:
+    """Evict a conversation's provider resume handle (fall-back-to-cold).
+
+    Callers invoke this when a resume attempt fails (the provider rejects
+    the handle as expired or unknown) so the *next* turn cold-starts cleanly
+    instead of repeatedly retrying a dead handle.
+    """
+    await pool.execute(
+        """
+        UPDATE public.dashboard_conversations
+        SET provider_session_id = NULL,
+            provider_runtime_type = NULL,
+            provider_session_updated_at = NULL
+        WHERE id = $1 AND butler_name = $2
+        """,
+        conversation_id,
+        butler_name,
+    )
+
+
+def resolve_resume_handle(
+    provider_session: dict[str, Any] | None,
+    *,
+    runtime_type: str,
+    ttl_seconds: int = _PROVIDER_SESSION_TTL_SECONDS,
+    now: datetime | None = None,
+) -> str | None:
+    """Return a usable provider resume handle, or ``None`` if not applicable.
+
+    Pure function (no DB access) so eviction/TTL logic is unit-testable
+    without a pool. A handle is usable only when:
+
+    - one is present at all,
+    - it was minted by the *same* ``runtime_type`` the caller is about to
+      invoke (resume tokens are provider-specific and never portable across
+      adapters), and
+    - its ``provider_session_updated_at`` is within ``ttl_seconds`` of `now`.
+
+    Any other case (missing, runtime mismatch, expired) returns ``None`` --
+    the caller's contract is to treat that as a transparent cold start, never
+    an error.
+    """
+    if provider_session is None:
+        return None
+    handle = provider_session.get("provider_session_id")
+    if not handle:
+        return None
+    if provider_session.get("provider_runtime_type") != runtime_type:
+        return None
+    updated_at = provider_session.get("provider_session_updated_at")
+    if updated_at is None:
+        return None
+    effective_now = now if now is not None else datetime.now(UTC)
+    if effective_now - updated_at > timedelta(seconds=ttl_seconds):
+        return None
+    return handle
 
 
 async def conversation_search(

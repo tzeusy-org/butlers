@@ -31,10 +31,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from butlers.api.conversations import (
+    conversation_clear_provider_session,
     conversation_create,
+    conversation_get_or_create_by_thread,
+    conversation_get_provider_session,
     conversation_list,
     conversation_reply_create,
     conversation_search,
+    conversation_set_provider_session,
     conversation_set_routed_butler,
     message_create_idempotent,
     message_find_reply_since,
@@ -254,3 +258,158 @@ async def test_conversation_search_exposes_latest_assistant_reply_at(
         assert len(rows) == 1
         assert rows[0]["snippet"] == "Find the needle in this conversation"
         assert rows[0]["latest_assistant_reply_at"] == reply["created_at"]
+
+
+# ---------------------------------------------------------------------------
+# bu-ep4ks.8: channel-agnostic conversation anchor + provider resume ledger
+# ---------------------------------------------------------------------------
+
+
+async def test_conversation_get_or_create_by_thread_creates_once_then_reuses(
+    migrated_core_postgres_pool,
+) -> None:
+    """Repeat ingress for the same thread converges on one anchor row.
+
+    Exercises the real partial unique index (core_185) via
+    ``ON CONFLICT ... DO NOTHING`` — a mocked pool cannot catch a broken
+    conflict-target/index mismatch, only a live database can.
+    """
+    async with migrated_core_postgres_pool() as pool:
+        first, first_is_new = await conversation_get_or_create_by_thread(
+            pool,
+            butler_name="telegram-relay",
+            source_channel="telegram",
+            source_thread_identity="telegram:12345",
+            first_message="hello from telegram",
+        )
+        second, second_is_new = await conversation_get_or_create_by_thread(
+            pool,
+            butler_name="telegram-relay",
+            source_channel="telegram",
+            source_thread_identity="telegram:12345",
+            first_message="a different first message on retry",
+        )
+
+        assert first_is_new is True
+        assert second_is_new is False
+        assert second["id"] == first["id"]
+        # The winning row keeps the first writer's title, not the retry's.
+        assert second["title"] == first["title"]
+
+        count = await pool.fetchval(
+            """
+            SELECT count(*) FROM public.dashboard_conversations
+            WHERE butler_name = $1 AND source_channel = $2 AND source_thread_identity = $3
+            """,
+            "telegram-relay",
+            "telegram",
+            "telegram:12345",
+        )
+        assert count == 1
+
+
+async def test_conversation_get_or_create_by_thread_distinguishes_channels_and_threads(
+    migrated_core_postgres_pool,
+) -> None:
+    async with migrated_core_postgres_pool() as pool:
+        telegram_conv, _ = await conversation_get_or_create_by_thread(
+            pool,
+            butler_name="switchboard",
+            source_channel="telegram",
+            source_thread_identity="telegram:1",
+            first_message="hi from telegram",
+        )
+        email_conv, _ = await conversation_get_or_create_by_thread(
+            pool,
+            butler_name="switchboard",
+            source_channel="email",
+            source_thread_identity="telegram:1",
+            first_message="hi from email",
+        )
+        other_thread_conv, _ = await conversation_get_or_create_by_thread(
+            pool,
+            butler_name="switchboard",
+            source_channel="telegram",
+            source_thread_identity="telegram:2",
+            first_message="a different telegram thread",
+        )
+
+        ids = {telegram_conv["id"], email_conv["id"], other_thread_conv["id"]}
+        assert len(ids) == 3
+
+        # Pre-existing dashboard-created rows (NULL source_thread_identity)
+        # are untouched by the partial index and never collide with anchors.
+        dashboard_conv = await conversation_create(
+            pool, butler_name="switchboard", first_message="dashboard-native conversation"
+        )
+        assert dashboard_conv["id"] not in ids
+
+
+async def test_provider_session_round_trip_and_eviction(
+    migrated_core_postgres_pool,
+) -> None:
+    async with migrated_core_postgres_pool() as pool:
+        conv = await conversation_create(pool, butler_name="switchboard", first_message="hi")
+
+        # No provider session recorded yet.
+        assert (
+            await conversation_get_provider_session(pool, conv["id"], butler_name="switchboard")
+            is None
+        )
+
+        await conversation_set_provider_session(
+            pool,
+            conv["id"],
+            butler_name="switchboard",
+            provider_session_id="claude-session-abc",
+            provider_runtime_type="claude",
+        )
+
+        stored = await conversation_get_provider_session(
+            pool, conv["id"], butler_name="switchboard"
+        )
+        assert stored is not None
+        assert stored["provider_session_id"] == "claude-session-abc"
+        assert stored["provider_runtime_type"] == "claude"
+        assert stored["provider_session_updated_at"] is not None
+
+        # A later turn overwrites the handle -- one memory per thread.
+        await conversation_set_provider_session(
+            pool,
+            conv["id"],
+            butler_name="switchboard",
+            provider_session_id="claude-session-def",
+            provider_runtime_type="claude",
+        )
+        updated = await conversation_get_provider_session(
+            pool, conv["id"], butler_name="switchboard"
+        )
+        assert updated["provider_session_id"] == "claude-session-def"
+
+        # Eviction (fall-back-to-cold) clears the handle entirely.
+        await conversation_clear_provider_session(pool, conv["id"], butler_name="switchboard")
+        assert (
+            await conversation_get_provider_session(pool, conv["id"], butler_name="switchboard")
+            is None
+        )
+
+
+async def test_provider_session_scoped_by_butler_name(
+    migrated_core_postgres_pool,
+) -> None:
+    """Provider session writes/reads are scoped by (id, butler_name), like other mutations."""
+    async with migrated_core_postgres_pool() as pool:
+        conv = await conversation_create(pool, butler_name="finance", first_message="hi")
+
+        await conversation_set_provider_session(
+            pool,
+            conv["id"],
+            butler_name="wrong-butler",
+            provider_session_id="claude-session-xyz",
+            provider_runtime_type="claude",
+        )
+
+        # The write was scoped away from the real owner -- nothing landed.
+        assert (
+            await conversation_get_provider_session(pool, conv["id"], butler_name="finance") is None
+        )

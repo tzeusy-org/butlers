@@ -30,11 +30,13 @@ from fastapi import FastAPI
 
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
+    conversation_get_or_create_by_thread,
     conversation_reply_create,
     conversation_search,
     conversation_set_routed_butler,
     message_create_idempotent,
     message_find_reply_since,
+    resolve_resume_handle,
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
@@ -453,6 +455,115 @@ async def test_message_find_reply_since_deserializes_tool_calls_json_string():
     result = await message_find_reply_since(pool, _CONV_ID, since=_NOW)
 
     assert result["tool_calls"] == [{"name": "conversation_reply"}]
+
+
+# ---------------------------------------------------------------------------
+# bu-ep4ks.8: channel-agnostic conversation anchor + provider resume ledger
+# ---------------------------------------------------------------------------
+
+
+async def test_conversation_get_or_create_by_thread_new_row_inserts_full_shape():
+    pool = AsyncMock()
+    inserted_row = _make_conversation_row(source_channel="telegram", source_thread_identity="t:1")
+    pool.fetchrow = AsyncMock(return_value=inserted_row)
+
+    conv, is_new = await conversation_get_or_create_by_thread(
+        pool,
+        butler_name=_BUTLER,
+        source_channel="telegram",
+        source_thread_identity="t:1",
+        first_message="hello",
+    )
+
+    assert is_new is True
+    assert conv == inserted_row
+    pool.fetchrow.assert_awaited_once()
+    sql = pool.fetchrow.await_args.args[0]
+    assert "ON CONFLICT" in sql
+    assert "DO NOTHING" in sql
+
+
+async def test_conversation_get_or_create_by_thread_conflict_reuses_existing_row():
+    pool = AsyncMock()
+    existing_row = _make_conversation_row(source_channel="telegram", source_thread_identity="t:1")
+    # INSERT ... ON CONFLICT DO NOTHING RETURNING yields no row on conflict;
+    # the follow-up SELECT recovers the winner.
+    pool.fetchrow = AsyncMock(side_effect=[None, existing_row])
+
+    conv, is_new = await conversation_get_or_create_by_thread(
+        pool,
+        butler_name=_BUTLER,
+        source_channel="telegram",
+        source_thread_identity="t:1",
+        first_message="a retried first message",
+    )
+
+    assert is_new is False
+    assert conv == existing_row
+    assert pool.fetchrow.await_count == 2
+
+
+async def test_conversation_get_or_create_by_thread_raises_if_row_vanishes():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[None, None])
+
+    with pytest.raises(RuntimeError, match="disappeared"):
+        await conversation_get_or_create_by_thread(
+            pool,
+            butler_name=_BUTLER,
+            source_channel="telegram",
+            source_thread_identity="t:1",
+            first_message="hello",
+        )
+
+
+class TestResolveResumeHandle:
+    """Pure eviction/TTL logic for the provider resume ledger."""
+
+    def test_none_provider_session_returns_none(self):
+        assert resolve_resume_handle(None, runtime_type="claude") is None
+
+    def test_missing_handle_returns_none(self):
+        session = {
+            "provider_session_id": None,
+            "provider_runtime_type": "claude",
+            "provider_session_updated_at": _NOW,
+        }
+        assert resolve_resume_handle(session, runtime_type="claude", now=_NOW) is None
+
+    def test_runtime_type_mismatch_returns_none(self):
+        session = {
+            "provider_session_id": "abc",
+            "provider_runtime_type": "codex",
+            "provider_session_updated_at": _NOW,
+        }
+        assert resolve_resume_handle(session, runtime_type="claude", now=_NOW) is None
+
+    def test_fresh_handle_is_usable(self):
+        session = {
+            "provider_session_id": "abc",
+            "provider_runtime_type": "claude",
+            "provider_session_updated_at": _NOW - timedelta(minutes=5),
+        }
+        assert resolve_resume_handle(session, runtime_type="claude", now=_NOW) == "abc"
+
+    def test_expired_handle_returns_none(self):
+        session = {
+            "provider_session_id": "abc",
+            "provider_runtime_type": "claude",
+            "provider_session_updated_at": _NOW - timedelta(hours=25),
+        }
+        assert resolve_resume_handle(session, runtime_type="claude", now=_NOW) is None
+
+    def test_custom_ttl_is_honored(self):
+        session = {
+            "provider_session_id": "abc",
+            "provider_runtime_type": "claude",
+            "provider_session_updated_at": _NOW - timedelta(minutes=10),
+        }
+        assert (
+            resolve_resume_handle(session, runtime_type="claude", ttl_seconds=60, now=_NOW) is None
+        )
 
 
 # ---------------------------------------------------------------------------

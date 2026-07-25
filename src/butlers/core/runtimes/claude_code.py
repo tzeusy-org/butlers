@@ -199,6 +199,34 @@ def _parse_claude_output(
     return result_text, tool_calls, usage
 
 
+def _extract_claude_session_id(stdout: str) -> str | None:
+    """Extract the provider-native session id from stream-json output.
+
+    The Claude CLI stamps its own ``session_id`` onto stream-json events
+    (the ``system``/``init`` event and the terminal ``result`` event both
+    carry it in practice). This scans every parsed JSON-line for a top-level
+    ``session_id`` string, independent of event ``type``, so a future CLI
+    version that moves which event carries it does not silently break
+    capture. Returns ``None`` (never raises) when absent or output is not
+    JSON-lines -- callers must treat that as "no resume handle available",
+    the same as any other cold-start turn.
+    """
+    for line in stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        session_id = obj.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            return session_id
+    return None
+
+
 class ClaudeCodeAdapter(RuntimeAdapter):
     """Runtime adapter for the Claude CLI binary (subprocess-based).
 
@@ -232,6 +260,8 @@ class ClaudeCodeAdapter(RuntimeAdapter):
     by the CLI — there is no equivalent ``--max-turns`` flag. Timeout is the
     primary safety mechanism.
     """
+
+    supports_resume = True
 
     def __init__(
         self,
@@ -289,6 +319,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         runtime_args: list[str] | None = None,
         cwd: Path | None = None,
         timeout: int | None = None,
+        resume_session_id: str | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the Claude CLI binary with the given prompt and configuration.
 
@@ -317,6 +348,16 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             Working directory for the Claude process.
         timeout:
             Maximum execution time in seconds.
+        resume_session_id:
+            Optional provider-native session id (bu-ep4ks.8) to resume via
+            ``--resume`` instead of cold-starting. The CLI still receives the
+            usual ``--system-prompt``/``--mcp-config``/``--model`` flags on a
+            resumed call -- ``--resume`` only restores prior conversational
+            state, not this invocation's tool wiring. Regardless of whether
+            this is set, the session id the CLI reports for *this* call
+            (fresh or resumed) is captured into
+            ``last_process_info["provider_session_id"]`` on success so the
+            caller can persist it for the next turn.
 
         Returns
         -------
@@ -331,7 +372,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         TimeoutError
             If the Claude process exceeds the timeout.
         RuntimeError
-            If the Claude process exits with a non-zero exit code.
+            If the Claude process exits with a non-zero exit code (including
+            a rejected/expired ``resume_session_id`` -- the caller is
+            responsible for clearing the stale handle and retrying cold).
         """
         import tempfile
 
@@ -405,6 +448,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 "--mcp-config",
                 str(mcp_config_path),
             ]
+
+            if isinstance(resume_session_id, str) and resume_session_id.strip():
+                cmd.extend(["--resume", resume_session_id.strip()])
 
             if system_prompt:
                 cmd.extend(["--system-prompt", system_prompt])
@@ -483,6 +529,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 raise RuntimeError(f"Claude CLI exited with code {returncode}: {error_detail}")
 
             result_text, tool_calls, usage = _parse_claude_output(stdout, stderr, returncode)
+            self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
             return result_text, tool_calls, usage
 
         except TimeoutError:

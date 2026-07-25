@@ -59,6 +59,18 @@ def test_adapter_registry_and_base_class() -> None:
         assert getattr(runtimes_module, cls.__name__) is cls
 
 
+def test_supports_resume_defaults_false_except_claude() -> None:
+    """Only ClaudeCodeAdapter opts into the resume extension point (bu-ep4ks.8).
+
+    Callers must gate ``resume_session_id`` on this flag rather than assuming
+    every adapter accepts the kwarg -- the other adapters' ``invoke()``
+    signatures do not declare it at all.
+    """
+    for cls in (CodexAdapter, GeminiAdapter, OpenCodeAdapter, ApiAdapter):
+        assert cls.supports_resume is False, cls.__name__
+    assert ClaudeCodeAdapter.supports_resume is True
+
+
 # ---------------------------------------------------------------------------
 # build_config_file contract — shared mcpServers key structure
 # ---------------------------------------------------------------------------
