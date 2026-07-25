@@ -8,6 +8,9 @@ Covers:
   override butler_name at construction time and never pass identity).
 - purpose="discretion" is always stamped regardless of identity.
 - DiscretionEvaluator.evaluate() forwards its source_name as identity.
+- Spend routing rules (bu-m95jq): ``apply_spend_routing_rules`` is wired into
+  the model-resolution step so a ``purpose="discretion"`` rule can re-route
+  the dispatched model, mirroring Spawner._run()'s integration.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ import pytest
 
 from butlers.connectors.discretion import DiscretionEvaluator
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
-from butlers.core.model_routing import Complexity, QuotaStatus
+from butlers.core.model_routing import Complexity, QuotaStatus, SpendRoutingResult
 
 pytestmark = pytest.mark.unit
 
@@ -146,3 +149,148 @@ async def test_resolve_model_none_raises_before_any_ledger_write() -> None:
             await dispatcher.call("hi", identity="tg:1")
 
     mock_record.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Spend routing rules (bu-m95jq), model SELECTION override
+# ---------------------------------------------------------------------------
+
+
+def _rerouted_result() -> SpendRoutingResult:
+    """A SpendRoutingResult re-routing to a different model, with a cap."""
+    return SpendRoutingResult(
+        resolved=("api", "claude-haiku-cheap", [], uuid.uuid4(), 15),
+        max_cost_per_call=0.05,
+    )
+
+
+async def test_call_applies_matching_spend_rule_reroutes_model() -> None:
+    """A matching purpose=discretion spend rule re-routes the dispatched model."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+    adapter = _make_adapter()
+    rerouted = _rerouted_result()
+    catalog = _catalog_result()
+
+    with (
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=catalog),
+        ),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules", AsyncMock(return_value=rerouted)
+        ) as mock_apply,
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as mock_get,
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+    ):
+        result = await dispatcher.call("hi", identity="tg:1")
+
+    assert result == "FORWARD"
+
+    # apply_spend_routing_rules was called with the tier-resolved model, the
+    # constructor butler_name, the effective tier, and trigger_source="discretion"
+    # (the same literal purpose= value recorded on the ledger below), mirroring
+    # Spawner._run()'s call convention.
+    mock_apply.assert_awaited_once()
+    args, kwargs = mock_apply.call_args
+    assert args[0] is pool
+    assert args[1] == "__discretion__"
+    assert args[2] == "specialty"
+    assert args[3] == catalog[:5]
+    assert kwargs["trigger_source"] == "discretion"
+
+    # The adapter was invoked with the rule-selected model, not the tier-resolved one.
+    mock_get.assert_called_with("api", None)
+    _, invoke_kwargs = adapter.invoke.call_args
+    assert invoke_kwargs["model"] == "claude-haiku-cheap"
+
+    # Reporting/ledger visibility is unaffected: usage is still recorded with
+    # purpose="discretion" and the per-connector identity.
+    mock_record.assert_awaited_once()
+    _, record_kwargs = mock_record.call_args
+    assert record_kwargs["purpose"] == "discretion"
+    assert record_kwargs["butler_name"] == "tg:1"
+    assert record_kwargs["catalog_entry_id"] == rerouted.resolved[3]
+
+
+async def test_call_no_matching_rule_keeps_tier_resolved_model() -> None:
+    """No matching rule -> apply_spend_routing_rules returns the input unchanged."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+    adapter = _make_adapter()
+    catalog = _catalog_result()
+    unchanged = SpendRoutingResult(resolved=catalog[:5])
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules", AsyncMock(return_value=unchanged)
+        ) as mock_apply,
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+    ):
+        result = await dispatcher.call("hi")
+
+    assert result == "FORWARD"
+    mock_apply.assert_awaited_once()
+    _, invoke_kwargs = adapter.invoke.call_args
+    assert invoke_kwargs["model"] == catalog[1]
+    mock_record.assert_awaited_once()
+
+
+async def test_call_spend_rule_evaluation_failure_fails_open() -> None:
+    """A raising apply_spend_routing_rules must not block the discretion call
+    (fail-open), keeping the tier-resolved model.
+    """
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+    adapter = _make_adapter()
+    catalog = _catalog_result()
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        ),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+    ):
+        result = await dispatcher.call("hi")
+
+    assert result == "FORWARD"
+    _, invoke_kwargs = adapter.invoke.call_args
+    assert invoke_kwargs["model"] == catalog[1]
+    mock_record.assert_awaited_once()
+
+
+async def test_call_unpatched_apply_spend_routing_rules_fails_open_on_mock_pool() -> None:
+    """End-to-end sanity: the real apply_spend_routing_rules against a plain
+    MagicMock pool (no real DB) fails open internally and the call still
+    succeeds with the tier-resolved model unchanged, matching every other
+    test in this module that never patches apply_spend_routing_rules.
+    """
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+    adapter = _make_adapter()
+    catalog = _catalog_result()
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+    ):
+        result = await dispatcher.call("hi")
+
+    assert result == "FORWARD"
+    _, invoke_kwargs = adapter.invoke.call_args
+    assert invoke_kwargs["model"] == catalog[1]
+    mock_record.assert_awaited_once()
