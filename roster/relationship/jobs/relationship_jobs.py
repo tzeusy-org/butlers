@@ -17,9 +17,18 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.state import state_get, state_set
+from butlers.core.tool_call_capture import (
+    get_current_approval_push_runtime,
+    get_current_runtime_session_id,
+)
 
 logger = logging.getLogger(__name__)
+
+# Every pending_actions row these curation jobs park belongs to the
+# relationship butler -- they only ever run inside this daemon (bu-g27ib).
+_ORIGIN_BUTLER = "relationship"
 
 # ---------------------------------------------------------------------------
 # Memory curation constants
@@ -2625,21 +2634,27 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     )
                 ]
 
-                await conn.execute(
-                    "INSERT INTO pending_actions "
-                    "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                    "requested_at, expires_at, why, evidence) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                    action_id,
-                    "memory_forget",
-                    {"memory_type": "fact", "memory_id": str(fact_id)},
-                    f"Retract fact {fact_id} ({flag_reason}): {predicate!r} — {content[:60]}",
-                    None,
-                    "pending",
-                    pending_now,
-                    action_expires_at,
-                    why,
-                    evidence,
+                # park_pending_action is the single choke point for PENDING
+                # inserts: it writes the row AND attempts the owner-facing
+                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
+                # (not *conn*) because the push path needs real pool
+                # semantics; the dedup read above has no transactional
+                # dependency on it.
+                await park_pending_action(
+                    db_pool,
+                    action_id=action_id,
+                    tool_name="memory_forget",
+                    tool_args={"memory_type": "fact", "memory_id": str(fact_id)},
+                    agent_summary=(
+                        f"Retract fact {fact_id} ({flag_reason}): {predicate!r} — {content[:60]}"
+                    ),
+                    requested_at=pending_now,
+                    expires_at=action_expires_at,
+                    session_id=get_current_runtime_session_id(),
+                    why=why,
+                    evidence=evidence,
+                    origin_butler=_ORIGIN_BUTLER,
+                    approval_push_runtime=get_current_approval_push_runtime(),
                 )
                 return "new"
         except Exception:
@@ -3122,27 +3137,31 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     )
                 ]
 
-                await conn.execute(
-                    "INSERT INTO pending_actions "
-                    "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                    "requested_at, expires_at, why, evidence) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                    action_id,
-                    "memory_entity_merge",
-                    {
+                # park_pending_action is the single choke point for PENDING
+                # inserts: it writes the row AND attempts the owner-facing
+                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
+                # (not *conn*) because the push path needs real pool
+                # semantics; the dedup read above has no transactional
+                # dependency on it.
+                await park_pending_action(
+                    db_pool,
+                    action_id=action_id,
+                    tool_name="memory_entity_merge",
+                    tool_args={
                         "source_entity_id": source_id,
                         "target_entity_id": target_id,
                     },
-                    (
+                    agent_summary=(
                         f"Merge duplicate entity {source['canonical_name']!r} "
                         f"({match_type}) into {target['canonical_name']!r}"
                     ),
-                    None,
-                    "pending",
-                    pending_now,
-                    action_expires_at,
-                    why,
-                    evidence,
+                    requested_at=pending_now,
+                    expires_at=action_expires_at,
+                    session_id=get_current_runtime_session_id(),
+                    why=why,
+                    evidence=evidence,
+                    origin_butler=_ORIGIN_BUTLER,
+                    approval_push_runtime=get_current_approval_push_runtime(),
                 )
                 return "new"
         except Exception:
@@ -3598,27 +3617,30 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
                 )
             ]
 
-            await db_pool.execute(
-                "INSERT INTO pending_actions "
-                "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                "requested_at, expires_at, why, evidence) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                action_id,
-                "relationship_assert_fact",
-                {
+            # park_pending_action is the single choke point for PENDING
+            # inserts: it writes the row AND attempts the owner-facing push
+            # in one call (bu-mda0r/bu-g27ib).
+            await park_pending_action(
+                db_pool,
+                action_id=action_id,
+                tool_name="relationship_assert_fact",
+                tool_args={
                     "subject": str(entity_id),
                     "predicate": "has-email",
                     "object": address,
                     "object_kind": "literal",
                     "primary": True,
                 },
-                f"Link email {address!r} to entity {canonical_name_for_why!r} ({action_kind})",
-                None,
-                "pending",
-                pending_now,
-                action_expires_at,
-                why,
-                evidence,
+                agent_summary=(
+                    f"Link email {address!r} to entity {canonical_name_for_why!r} ({action_kind})"
+                ),
+                requested_at=pending_now,
+                expires_at=action_expires_at,
+                session_id=get_current_runtime_session_id(),
+                why=why,
+                evidence=evidence,
+                origin_butler=_ORIGIN_BUTLER,
+                approval_push_runtime=get_current_approval_push_runtime(),
             )
 
             if action_kind == "link":
@@ -3937,29 +3959,33 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
                     )
                 ]
 
-                await conn.execute(
-                    "INSERT INTO pending_actions "
-                    "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                    "requested_at, expires_at, why, evidence) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                    action_id,
-                    "memory_reclassify",
-                    {
+                # park_pending_action is the single choke point for PENDING
+                # inserts: it writes the row AND attempts the owner-facing
+                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
+                # (not *conn*) because the push path needs real pool
+                # semantics; the dedup read above has no transactional
+                # dependency on it.
+                await park_pending_action(
+                    db_pool,
+                    action_id=action_id,
+                    tool_name="memory_reclassify",
+                    tool_args={
                         "memory_type": "fact",
                         "memory_id": str(fact_id),
                         "permanence_target": "volatile",
                     },
-                    (
+                    agent_summary=(
                         f"Reclassify fact {fact_id} "
                         f"(episodic-in-durable): {predicate!r} at "
                         f"{permanence!r} — {content[:60]}"
                     ),
-                    None,
-                    "pending",
-                    pending_now,
-                    action_expires_at,
-                    why,
-                    evidence,
+                    requested_at=pending_now,
+                    expires_at=action_expires_at,
+                    session_id=get_current_runtime_session_id(),
+                    why=why,
+                    evidence=evidence,
+                    origin_butler=_ORIGIN_BUTLER,
+                    approval_push_runtime=get_current_approval_push_runtime(),
                 )
                 return "new"
         except Exception:

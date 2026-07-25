@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     execution_result JSONB,
     approval_rule_id UUID,
     why          TEXT,
-    evidence     JSONB       NOT NULL DEFAULT '[]'::jsonb
+    evidence     JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    blast_radius TEXT,
+    reversibility TEXT
 )
 """
 

@@ -198,12 +198,14 @@ async def test_create_pending_action_inserts_with_why_and_evidence() -> None:
     assert "evidence" in insert_sql
 
     insert_params = conn.execute.call_args.args[1:]
-    # Order: (id, tool_name, tool_args, summary, session_id, status,
-    #         requested_at, expires_at, why, evidence)
+    # Order matches modules.approvals.park.park_pending_action's INSERT (the
+    # choke point this now routes through, bu-g27ib): (id, tool_name,
+    # tool_args, agent_summary, session_id, requested_at, expires_at, why,
+    # evidence, blast_radius, reversibility) -- status is a SQL literal, not
+    # a bound param.
     assert insert_params[1] == "relationship_assert_fact"
-    assert insert_params[5] == "pending"
-    assert insert_params[8] == "human-readable rationale"
-    assert insert_params[9] == ["ci_id=123", "contact_id=456"]
+    assert insert_params[7] == "human-readable rationale"
+    assert insert_params[8] == ["ci_id=123", "contact_id=456"]
 
 
 async def test_owner_carveout_passes_dedup_match_and_rationale() -> None:
@@ -223,6 +225,7 @@ async def test_owner_carveout_passes_dedup_match_and_rationale() -> None:
 
     result = await _assert_on_conn(
         conn,
+        conn,  # pool arg: same mock backs pool.execute() for the park choke point
         subject=subject_id,
         predicate=_PRED_HAS_EMAIL,
         object="owner@example.com",
@@ -274,6 +277,7 @@ async def test_owner_carveout_inserts_with_caller_supplied_why() -> None:
 
     result = await _assert_on_conn(
         conn,
+        conn,  # pool arg: same mock backs pool.execute() for the park choke point
         subject=subject_id,
         predicate=_PRED_HAS_EMAIL,
         object="owner@example.com",
@@ -292,10 +296,13 @@ async def test_owner_carveout_inserts_with_caller_supplied_why() -> None:
 
     assert result.outcome == AssertOutcome.pending_approval
     insert_params = conn.execute.call_args.args[1:]
-    # (id, tool_name, tool_args, summary, session_id, status,
-    #  requested_at, expires_at, why, evidence)
-    assert insert_params[8] == caller_why
-    assert insert_params[9] == caller_evidence
+    # Order matches modules.approvals.park.park_pending_action's INSERT (the
+    # choke point this now routes through, bu-g27ib): (id, tool_name,
+    # tool_args, agent_summary, session_id, requested_at, expires_at, why,
+    # evidence, blast_radius, reversibility) -- status is a SQL literal, not
+    # a bound param.
+    assert insert_params[7] == caller_why
+    assert insert_params[8] == caller_evidence
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +470,7 @@ async def test_owner_entity_with_non_trusted_src_parks_to_pending() -> None:
 
     result = await _assert_on_conn(
         conn,
+        conn,  # pool arg: same mock backs pool.execute() for the park choke point
         subject=subject_id,
         predicate=_PRED_HAS_EMAIL,
         object="owner@example.com",

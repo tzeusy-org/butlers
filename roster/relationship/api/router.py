@@ -1563,13 +1563,39 @@ async def promote_entity(
     - ``403`` — owner entity not registered (Amendment 12a).
     - ``422`` — unregistered predicate in ``initial_facts``, or validation failure.
     """
-    from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
+    from butlers.tools.relationship.relationship_assert_fact import (
+        relationship_assert_fact,
+        validate_fact_fields_or_raise,
+    )
 
     pool = _pool(db)
 
     # Amendment 12a: owner-only write gate (roles-aware, see _assert_owner_role).
     if (err := await _assert_owner_role(pool)) is not None:
         return err
+
+    # Pre-validate EVERY initial_fact's predicate/conf/object_kind BEFORE
+    # starting the entity-creation transaction below (bu-g27ib). Without
+    # this, an earlier fact in the loop could park -- committing a
+    # pending_actions row and firing the owner push on park_pending_action's
+    # own connection, independent of this transaction -- and then a LATER
+    # fact's ValueError would roll back the entity/fact writes, orphaning
+    # that already-pushed park against data that was never persisted. Ruling
+    # out every ValueError up front makes that ordering impossible: by the
+    # time the transaction starts, every fact's predicate is known-valid.
+    for fact in body.initial_facts:
+        try:
+            await validate_fact_fields_or_raise(
+                pool,
+                predicate=fact.predicate,
+                conf=fact.conf,
+                object_kind=fact.object_kind,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_predicate", "message": str(exc)},
+            )
 
     async with pool.acquire() as conn:
         async with conn.transaction():

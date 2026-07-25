@@ -150,7 +150,9 @@ async def identity_pool(provisioned_postgres_pool):
                 execution_result JSONB,
                 why TEXT,
                 evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
-                approval_rule_id UUID
+                approval_rule_id UUID,
+                blast_radius TEXT,
+                reversibility TEXT
             )
         """)
         yield pool
@@ -178,6 +180,28 @@ async def _insert_event(
         thread_id,
         f"dedupe:{address}:{thread_id}:{day_offset}",
     )
+
+
+@pytest.fixture(autouse=True)
+def _register_real_park_pending_action_hook():
+    """Register the real park_pending_action hook against the real test DB pool.
+
+    run_email_identity_enrichment now routes its PENDING insert through
+    butlers.core.approvals_hooks.park_pending_action (bu-g27ib), which no-ops
+    with a warning unless the approvals module's on_startup registered a real
+    implementation. These tests call the job function directly (no daemon
+    startup), so register the real implementation here -- mirroring
+    modules.approvals.module.on_startup -- and restore whatever was
+    registered before so this doesn't leak to other tests in the same xdist
+    worker process.
+    """
+    import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.park import park_pending_action as _real_park
+
+    orig = _hooks._park_pending_action_hook
+    _hooks._park_pending_action_hook = _real_park
+    yield
+    _hooks._park_pending_action_hook = orig
 
 
 @pytest.fixture(autouse=True)

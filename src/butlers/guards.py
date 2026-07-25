@@ -14,9 +14,11 @@ from urllib.parse import parse_qs
 from starlette.requests import ClientDisconnect
 
 from butlers.core.tool_call_capture import (
+    reset_current_approval_push_runtime,
     reset_current_runtime_butler_name,
     reset_current_runtime_session_id,
     reset_current_runtime_trigger_source,
+    set_current_approval_push_runtime,
     set_current_runtime_butler_name,
     set_current_runtime_session_id,
     set_current_runtime_trigger_source,
@@ -104,9 +106,16 @@ class _McpRuntimeSessionGuard:
     _MAX_SESSION_MAP_SIZE = 4096
     _MCP_SESSION_ID_HEADER = b"mcp-session-id"
 
-    def __init__(self, app: Any, *, butler_name: str) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        butler_name: str,
+        approval_push_runtime: Any | None = None,
+    ) -> None:
         self._app = app
         self._butler_name = butler_name
+        self._approval_push_runtime = approval_push_runtime
         self._mcp_session_to_runtime_context: dict[str, tuple[str, str | None]] = {}
 
     def __getattr__(self, name: str) -> Any:
@@ -182,6 +191,7 @@ class _McpRuntimeSessionGuard:
         session_token = set_current_runtime_session_id(runtime_session_id)
         trigger_token = set_current_runtime_trigger_source(trigger_source)
         butler_token = set_current_runtime_butler_name(self._butler_name)
+        push_token = set_current_approval_push_runtime(self._approval_push_runtime)
 
         async def _send_with_session_capture(message: dict[str, Any]) -> None:
             if message.get("type") == "http.response.start" and runtime_session_id:
@@ -198,6 +208,7 @@ class _McpRuntimeSessionGuard:
         try:
             await self._app(scope, receive, _send_with_session_capture)
         finally:
+            reset_current_approval_push_runtime(push_token)
             reset_current_runtime_butler_name(butler_token)
             reset_current_runtime_trigger_source(trigger_token)
             reset_current_runtime_session_id(session_token)

@@ -147,7 +147,9 @@ async def pool(provisioned_postgres_pool):
                 execution_result JSONB,
                 approval_rule_id UUID,
                 why         TEXT,
-                evidence    JSONB       NOT NULL DEFAULT '[]'::jsonb
+                evidence    JSONB       NOT NULL DEFAULT '[]'::jsonb,
+                blast_radius TEXT,
+                reversibility TEXT
             )
         """)
 

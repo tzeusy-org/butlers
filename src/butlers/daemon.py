@@ -572,7 +572,11 @@ class ButlerDaemon:
         The socket is stored on ``self._mcp_socket`` and closed in shutdown after
         the server task finishes.
         """
-        app = self._build_mcp_http_app(self.mcp, butler_name=self.config.name)
+        app = self._build_mcp_http_app(
+            self.mcp,
+            butler_name=self.config.name,
+            approval_push_runtime=self._approval_push_runtime,
+        )
         config = uvicorn.Config(
             app,
             host="0.0.0.0",
@@ -657,7 +661,13 @@ class ButlerDaemon:
         return False
 
     @classmethod
-    def _build_mcp_http_app(cls, mcp: FastMCP, *, butler_name: str) -> Any:
+    def _build_mcp_http_app(
+        cls,
+        mcp: FastMCP,
+        *,
+        butler_name: str,
+        approval_push_runtime: Any | None = None,
+    ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
         # Codex and other modern MCP clients use streamable HTTP at /mcp.
@@ -698,7 +708,11 @@ class ButlerDaemon:
         if not cls._attach_route_via_public_api(streamable_app, health_route):
             streamable_app.routes.append(health_route)
 
-        guarded_app = _McpRuntimeSessionGuard(streamable_app, butler_name=butler_name)
+        guarded_app = _McpRuntimeSessionGuard(
+            streamable_app,
+            butler_name=butler_name,
+            approval_push_runtime=approval_push_runtime,
+        )
         return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
@@ -990,6 +1004,7 @@ class ButlerDaemon:
             complexity=complexity,
             max_token_budget=max_token_budget,
             switchboard_client=self.switchboard_client,
+            approval_push_runtime=self._approval_push_runtime,
         )
 
     async def _scheduler_loop(self) -> None:

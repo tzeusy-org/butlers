@@ -109,16 +109,43 @@ class _FakePool:
 
     async def execute(self, query: str, *args: Any) -> str:
         if "INSERT INTO pending_actions" in query:
+            # Column order matches modules.approvals.park.park_pending_action's
+            # INSERT (id, tool_name, tool_args, agent_summary, session_id,
+            # status[literal], requested_at, expires_at, why, evidence,
+            # blast_radius, reversibility) -- status is a SQL literal, not a
+            # bound param, so args[7]/[8] are why/evidence (bu-g27ib).
             self.inserted_actions.append(
                 {
                     "tool_name": args[1],
                     "tool_args": args[2],
-                    "why": args[8],
-                    "evidence": args[9],
+                    "why": args[7],
+                    "evidence": args[8],
                 }
             )
             return "INSERT 0 1"
         raise AssertionError(f"unexpected execute: {query}")
+
+
+@pytest.fixture(autouse=True)
+def _register_real_park_pending_action_hook():
+    """Register the real park_pending_action hook against this test's FakePool.
+
+    run_email_identity_enrichment now routes its PENDING insert through
+    butlers.core.approvals_hooks.park_pending_action (bu-g27ib), which no-ops
+    with a warning unless the approvals module's on_startup registered a real
+    implementation. These tests call the job function directly (no daemon
+    startup), so register the real implementation here -- mirroring
+    modules.approvals.module.on_startup -- and restore whatever was
+    registered before so this doesn't leak to other tests in the same xdist
+    worker process.
+    """
+    import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.park import park_pending_action as _real_park
+
+    orig = _hooks._park_pending_action_hook
+    _hooks._park_pending_action_hook = _real_park
+    yield
+    _hooks._park_pending_action_hook = orig
 
 
 @pytest.fixture(autouse=True)

@@ -23,7 +23,9 @@ import httpx
 from butlers.core.memory_hooks import bind_memory_maintenance_dispatch
 from butlers.core.model_routing import Complexity
 from butlers.core.tool_call_capture import (
+    reset_current_approval_push_runtime,
     reset_current_switchboard_client,
+    set_current_approval_push_runtime,
     set_current_switchboard_client,
 )
 from butlers.scheduled_jobs import (
@@ -77,6 +79,7 @@ async def dispatch_scheduled_task(
     complexity: Complexity = Complexity.WORKHORSE,
     max_token_budget: int | None = None,
     switchboard_client: Any | None = None,
+    approval_push_runtime: Any | None = None,
 ) -> Any:
     """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -111,6 +114,14 @@ async def dispatch_scheduled_task(
         through the notify boundary (``deliver()`` via the Switchboard MCP
         connection) without widening every job handler's ``(pool, job_args)``
         signature. Unused for prompt-mode dispatch.
+    approval_push_runtime:
+        The calling daemon's ``ApprovalPushRuntime`` (or ``None`` when no push
+        runtime is wired for this butler). Bound to the same ambient
+        ``butlers.core.tool_call_capture`` contextvar as ``switchboard_client``
+        for the duration of the deterministic handler call, so a job that parks
+        a PENDING action (via ``butlers.core.approvals_hooks.park_pending_action``)
+        can trigger the owner-facing push without widening every job handler's
+        signature (bu-g27ib). Unused for prompt-mode dispatch.
     """
     resolved_job_name = _resolve_deterministic_schedule_job_name(
         butler_name=butler_name,
@@ -144,6 +155,7 @@ async def dispatch_scheduled_task(
             job_args,
         )
         _client_token = set_current_switchboard_client(switchboard_client)
+        _push_token = set_current_approval_push_runtime(approval_push_runtime)
         try:
             with bind_memory_maintenance_dispatch(
                 butler_name=butler_name,
@@ -151,6 +163,7 @@ async def dispatch_scheduled_task(
             ):
                 return await handler(pool, job_args)
         finally:
+            reset_current_approval_push_runtime(_push_token)
             reset_current_switchboard_client(_client_token)
 
     if spawner is None:

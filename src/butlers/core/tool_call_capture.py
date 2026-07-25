@@ -34,6 +34,16 @@ _runtime_butler_name_var: contextvars.ContextVar[str | None] = contextvars.Conte
 _runtime_switchboard_client_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "_runtime_switchboard_client_var", default=None
 )
+# Ambient handle to the current butler daemon's ApprovalPushRuntime, scoped to
+# the duration of one MCP tool call (bound by ``_McpRuntimeSessionGuard`` in
+# guards.py) or one deterministic scheduled-job dispatch (bound by
+# ``background.dispatch_scheduled_task``). Module code that parks a PENDING
+# action (e.g. a domain butler's curation jobs) reads this instead of
+# widening every job/tool signature to thread the runtime through by hand
+# (bu-g27ib, mirroring the switchboard-client contextvar above).
+_runtime_approval_push_runtime_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "_runtime_approval_push_runtime_var", default=None
+)
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
@@ -101,6 +111,26 @@ def reset_current_switchboard_client(token: contextvars.Token[Any | None]) -> No
 def get_current_switchboard_client() -> Any | None:
     """Return the switchboard MCP client bound to the current task context, if any."""
     return _runtime_switchboard_client_var.get()
+
+
+def set_current_approval_push_runtime(runtime: Any | None) -> contextvars.Token[Any | None]:
+    """Set the ambient ApprovalPushRuntime for the current task context."""
+    return _runtime_approval_push_runtime_var.set(runtime)
+
+
+def reset_current_approval_push_runtime(token: contextvars.Token[Any | None]) -> None:
+    """Restore the ApprovalPushRuntime binding for the current task context."""
+    _runtime_approval_push_runtime_var.reset(token)
+
+
+def get_current_approval_push_runtime() -> Any | None:
+    """Return the ApprovalPushRuntime bound to the current task context, if any.
+
+    ``None`` means "no runtime wired for this call site" -- the same fallback
+    ``modules.approvals.park.park_pending_action`` already treats as
+    "attempt no push" (e.g. a butler with no live switchboard connection).
+    """
+    return _runtime_approval_push_runtime_var.get()
 
 
 def ensure_runtime_session_capture(session_id: str) -> None:
