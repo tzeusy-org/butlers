@@ -51,7 +51,6 @@ Design reference: openspec/changes/archive/home-butler-enhancements/
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 import logging
 import re
@@ -261,8 +260,12 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
 
     Args:
         pool: asyncpg connection pool for the home butler's database.
-        message: Message text to deliver.  HTML parse mode is used, so
-            ``<b>``, ``<i>``, and ``<code>`` tags are supported.
+        message: Message text to deliver.  Markdown, *not* HTML: the
+            delivery chain (``deliver()`` -> ``telegram_send_message``)
+            HTML-escapes the text and then converts ``**bold**``, ``*italic*``
+            and ``` `code` ``` to Telegram HTML.  Raw ``<b>`` tags passed in
+            here reach the owner as literal ``&lt;b&gt;``, and pre-escaping
+            here double-escapes ``&`` and ``<``.
     """
     suppress_reason = await _check_owner_notify_suppression(pool)
     if suppress_reason is not None:
@@ -443,21 +446,24 @@ _SEVERITY_IMPORTANCE: dict[str, float] = {
 
 _TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
+# Comfort thresholds are Celsius throughout: Home Assistant reports its sensors
+# in the unit configured for the installation (°C here), readings are normalised
+# to °C at discovery, and the owner-facing report renders °C.
 _DEFAULT_COMFORT_DEFAULTS: dict[str, float] = {
-    "temp_min_f": 68.0,
-    "temp_max_f": 76.0,
+    "temp_min_c": 20.0,
+    "temp_max_c": 24.5,
     "humidity_min": 30.0,
     "humidity_max": 60.0,
     "co2_max_ppm": 1000.0,
 }
 
 _DEFAULT_COMFORT_DEVIATION: dict[str, float] = {
-    "minor_temp_f": 2.0,
-    "moderate_temp_f": 5.0,
+    "minor_temp_c": 1.0,
+    "moderate_temp_c": 3.0,
     "minor_humidity": 10.0,
     "moderate_humidity": 20.0,
-    "critical_temp_low_f": 60.0,
-    "critical_temp_high_f": 85.0,
+    "critical_temp_low_c": 15.5,
+    "critical_temp_high_c": 29.5,
     "critical_co2_ppm": 1500.0,
     "critical_humidity_low": 15.0,
     "critical_humidity_high": 80.0,
@@ -612,15 +618,11 @@ def _build_health_check_notification(
         Formatted text message for Telegram.
     """
 
-    def _esc(text: str) -> str:
-        """HTML-escape a user-supplied string for Telegram HTML parse mode."""
-        return html.escape(text)
-
     if not issues or (critical_count == 0 and warning_count == 0):
         # All-clear (may still have info-only issues)
         if info_count > 0:
             info_lines = [
-                f"  \u2022 {_esc(i['friendly_name'])}: {_esc(i['description'])}"
+                f"  \u2022 {i['friendly_name']}: {i['description']}"
                 for i in issues
                 if i["severity"] == "info"
             ]
@@ -641,7 +643,7 @@ def _build_health_check_notification(
     if critical_issues:
         lines.append("\U0001f534 Critical:")
         for issue in critical_issues:
-            lines.append(f"  \u2022 {_esc(issue['friendly_name'])}: {_esc(issue['description'])}")
+            lines.append(f"  \u2022 {issue['friendly_name']}: {issue['description']}")
         lines.append("")
 
     # Warning issues
@@ -649,7 +651,7 @@ def _build_health_check_notification(
     if warning_issues:
         lines.append("\U0001f7e0 Warning:")
         for issue in warning_issues:
-            lines.append(f"  \u2022 {_esc(issue['friendly_name'])}: {_esc(issue['description'])}")
+            lines.append(f"  \u2022 {issue['friendly_name']}: {issue['description']}")
         lines.append("")
 
     return "\n".join(lines).rstrip()
@@ -676,11 +678,71 @@ def _extract_numeric_state(state: str | None) -> float | None:
         return None
 
 
-# Sensor domain/keyword filters for environment sensors
+# Home Assistant ``device_class`` values, which are authoritative when present.
+# Only these four map to an environment sensor type; every other device_class
+# (``pm25``, ``volatile_organic_compounds``, ``battery``, …) is deliberately
+# unmapped so it never reaches the report under a borrowed unit.
+_DEVICE_CLASS_SENSOR_TYPES: dict[str, str] = {
+    "temperature": "temperature",
+    "humidity": "humidity",
+    "carbon_dioxide": "co2",
+    "illuminance": "illuminance",
+}
+
+# Fallback keyword filters, used only when device_class is absent. These are
+# deliberately narrow: broad tokens (``air_quality``, ``voc``) used to pull
+# particulate, formaldehyde and VOC sensors into the CO₂ bucket, where their
+# ppb/µg-per-m³ readings were rendered as "ppm CO₂".
 _TEMP_KEYWORDS = ("temperature", "temp")
 _HUMIDITY_KEYWORDS = ("humidity", "humid")
-_CO2_KEYWORDS = ("co2", "carbon_dioxide", "air_quality", "voc", "co2_ppm")
+_CO2_KEYWORDS = ("co2", "carbon_dioxide", "co2_ppm")
 _ILLUMINANCE_KEYWORDS = ("illuminance", "lux", "light_level")
+
+# Entities whose temperature is hardware, not room comfort (NAS disks, CPUs,
+# batteries). Without this, a 53 °C drive temperature can be picked as the
+# room's reading.
+_NON_AMBIENT_KEYWORDS = (
+    "disk",
+    "drive",
+    "volume",
+    "cpu",
+    "gpu",
+    "battery",
+    "nas",
+    "processor",
+    "chipset",
+    "coolant",
+    "water_heater",
+    "freezer",
+    "fridge",
+    "refrigerator",
+    "oven",
+)
+
+# Room names recognised in an entity_id / friendly_name when Home Assistant
+# supplies no area. ``/api/states`` carries no area registry, so every entity
+# arrives area-less and previously collapsed into a single "Unknown" bucket.
+_AREA_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("living_room", "living room"),
+    ("livingroom", "living room"),
+    ("dining_room", "dining room"),
+    ("diningroom", "dining room"),
+    ("bedroom", "bedroom"),
+    ("bathroom", "bathroom"),
+    ("kitchen", "kitchen"),
+    ("office", "office"),
+    ("study", "study"),
+    ("garage", "garage"),
+    ("hallway", "hallway"),
+    ("basement", "basement"),
+    ("attic", "attic"),
+    ("nursery", "nursery"),
+    ("balcony", "balcony"),
+    ("patio", "patio"),
+    ("garden", "garden"),
+    ("outdoor", "outdoor"),
+    ("outside", "outdoor"),
+)
 
 # At most 3 recommendations per report (per spec)
 _MAX_RECOMMENDATIONS = 3
@@ -694,7 +756,7 @@ _MAX_RECOMMENDATIONS = 3
 async def _load_comfort_defaults(pool: asyncpg.Pool) -> dict[str, float]:
     """Load comfort defaults from state store, falling back to hardcoded defaults.
 
-    Returns a dict with keys: ``temp_min_f``, ``temp_max_f``,
+    Returns a dict with keys: ``temp_min_c``, ``temp_max_c``,
     ``humidity_min``, ``humidity_max``, ``co2_max_ppm``.
     """
     return await _load_thresholds(pool, "comfort_defaults", _DEFAULT_COMFORT_DEFAULTS)  # type: ignore[return-value]
@@ -703,9 +765,9 @@ async def _load_comfort_defaults(pool: asyncpg.Pool) -> dict[str, float]:
 async def _load_comfort_deviation(pool: asyncpg.Pool) -> dict[str, float]:
     """Load comfort deviation thresholds from state store, falling back to hardcoded defaults.
 
-    Returns a dict with keys: ``minor_temp_f``, ``moderate_temp_f``,
-    ``minor_humidity``, ``moderate_humidity``, ``critical_temp_low_f``,
-    ``critical_temp_high_f``, ``critical_co2_ppm``, ``critical_humidity_low``,
+    Returns a dict with keys: ``minor_temp_c``, ``moderate_temp_c``,
+    ``minor_humidity``, ``moderate_humidity``, ``critical_temp_low_c``,
+    ``critical_temp_high_c``, ``critical_co2_ppm``, ``critical_humidity_low``,
     ``critical_humidity_high``.
     """
     return await _load_thresholds(pool, "comfort_deviation", _DEFAULT_COMFORT_DEVIATION)  # type: ignore[return-value]
@@ -716,12 +778,26 @@ async def _load_comfort_deviation(pool: asyncpg.Pool) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 
-def _classify_sensor_type(entity_id: str, friendly_name: str | None) -> str | None:
+def _classify_sensor_type(
+    entity_id: str,
+    friendly_name: str | None,
+    device_class: str | None = None,
+) -> str | None:
     """Classify a sensor entity as temperature/humidity/co2/illuminance or None.
+
+    ``device_class`` is Home Assistant's own declaration of what a sensor
+    measures and is authoritative when present; the keyword scan is only a
+    fallback for integrations that omit it. An unrecognised ``device_class``
+    (``pm25``, ``volatile_organic_compounds``, ``pressure``, …) returns None
+    rather than falling through to keywords — that fall-through is what let a
+    VOC reading in ppb be reported as "ppm CO₂".
 
     Returns one of ``"temperature"``, ``"humidity"``, ``"co2"``,
     ``"illuminance"``, or ``None`` if not classified.
     """
+    if device_class:
+        return _DEVICE_CLASS_SENSOR_TYPES.get(device_class.strip().lower())
+
     combined = f"{entity_id} {friendly_name or ''}".lower()
     if any(kw in combined for kw in _TEMP_KEYWORDS):
         return "temperature"
@@ -734,10 +810,51 @@ def _classify_sensor_type(entity_id: str, friendly_name: str | None) -> str | No
     return None
 
 
-def _extract_area(attributes: dict[str, Any]) -> str | None:
-    """Extract area name from entity attributes, trying common HA fields."""
+def _is_ambient_sensor(entity_id: str, friendly_name: str | None) -> bool:
+    """Return True unless the entity measures hardware rather than room comfort."""
+    combined = f"{entity_id} {friendly_name or ''}".lower()
+    return not any(kw in combined for kw in _NON_AMBIENT_KEYWORDS)
+
+
+def _normalize_temperature_c(value: float, unit: str | None) -> float | None:
+    """Normalise a temperature reading to Celsius.
+
+    Returns None when *unit* is present but not a recognised temperature unit,
+    so an unrelated reading is never charted as a room temperature. A missing
+    unit is assumed to already be Celsius (the Home Assistant default).
+    """
+    if not unit:
+        return value
+    normalized = unit.strip().lower().replace("°", "")
+    if normalized in ("c", "celsius"):
+        return value
+    if normalized in ("f", "fahrenheit"):
+        return (value - 32.0) * 5.0 / 9.0
+    if normalized in ("k", "kelvin"):
+        return value - 273.15
+    return None
+
+
+def _extract_area(
+    attributes: dict[str, Any],
+    entity_id: str = "",
+    friendly_name: str | None = None,
+) -> str | None:
+    """Resolve an entity's area, falling back to a room name in its identifiers.
+
+    Home Assistant's ``/api/states`` payload carries no area registry, so the
+    ``area_id``/``area``/``room`` attributes are usually absent and every
+    sensor would otherwise land in a single "Unknown" bucket.
+    """
     area = attributes.get("area_id") or attributes.get("area") or attributes.get("room")
-    return str(area).strip() if area else None
+    if area:
+        return str(area).strip()
+
+    combined = f"{entity_id} {friendly_name or ''}".lower().replace(" ", "_")
+    for keyword, canonical in _AREA_KEYWORDS:
+        if keyword in combined:
+            return canonical
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -758,11 +875,11 @@ def classify_deviation(
     Args:
         sensor_type: One of ``"temperature"``, ``"humidity"``, ``"co2"``,
             ``"illuminance"``.
-        value: The current sensor reading.
+        value: The current sensor reading (temperature in Celsius).
         comfort_defaults: Default comfort range thresholds (from state store or hardcoded).
         deviation_thresholds: Deviation severity thresholds (from state store or hardcoded).
         area_preference: Optional area-specific preference dict that may override defaults.
-            Expected keys: ``temp_min_f``, ``temp_max_f``, ``humidity_min``,
+            Expected keys: ``temp_min_c``, ``temp_max_c``, ``humidity_min``,
             ``humidity_max``, ``co2_max_ppm`` (same as ``comfort_defaults``).
 
     Returns:
@@ -779,12 +896,12 @@ def classify_deviation(
                     pass
 
     if sensor_type == "temperature":
-        temp_min = prefs["temp_min_f"]
-        temp_max = prefs["temp_max_f"]
-        crit_low = deviation_thresholds["critical_temp_low_f"]
-        crit_high = deviation_thresholds["critical_temp_high_f"]
-        minor = deviation_thresholds["minor_temp_f"]
-        moderate = deviation_thresholds["moderate_temp_f"]
+        temp_min = prefs["temp_min_c"]
+        temp_max = prefs["temp_max_c"]
+        crit_low = deviation_thresholds["critical_temp_low_c"]
+        crit_high = deviation_thresholds["critical_temp_high_c"]
+        minor = deviation_thresholds["minor_temp_c"]
+        moderate = deviation_thresholds["moderate_temp_c"]
 
         # Critical first
         if value < crit_low or value > crit_high:
@@ -850,8 +967,12 @@ async def _discover_areas_and_sensors(
     Returns a nested dict:
     ``{area_name: {sensor_type: [{entity_id, friendly_name, value, state}, ...]}}``
 
-    Only sensors classified as temperature/humidity/co2/illuminance are included.
-    Sensors without a recognisable area go under ``"unknown"``.
+    Only sensors classified as temperature/humidity/co2/illuminance are
+    included, and only those that measure the room rather than hardware.
+    Temperature readings are normalised to Celsius. Sensors whose area cannot
+    be resolved — from Home Assistant attributes or a room name in the entity
+    id — are skipped rather than pooled into an "unknown" bucket that reports
+    one arbitrary sensor as if it spoke for the whole house.
     """
     rows = await pool.fetch("SELECT entity_id, state, attributes FROM ha_entity_snapshot")
     areas: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -869,15 +990,33 @@ async def _discover_areas_and_sensors(
             attrs = {}
 
         friendly = attrs.get("friendly_name") or entity_id
-        sensor_type = _classify_sensor_type(entity_id, friendly)
+        sensor_type = _classify_sensor_type(entity_id, friendly, attrs.get("device_class"))
         if sensor_type is None:
             continue  # not an env sensor we care about
+
+        if not _is_ambient_sensor(entity_id, friendly):
+            logger.debug("_discover_areas_and_sensors: skipping non-ambient sensor %r", entity_id)
+            continue
 
         value = _extract_numeric_state(state)
         if value is None:
             continue  # no numeric reading available
 
-        area = _extract_area(attrs) or "unknown"
+        if sensor_type == "temperature":
+            converted = _normalize_temperature_c(value, attrs.get("unit_of_measurement"))
+            if converted is None:
+                logger.debug(
+                    "_discover_areas_and_sensors: skipping %r — unrecognised temperature unit %r",
+                    entity_id,
+                    attrs.get("unit_of_measurement"),
+                )
+                continue
+            value = converted
+
+        area = _extract_area(attrs, entity_id, friendly)
+        if area is None:
+            logger.debug("_discover_areas_and_sensors: skipping %r — no resolvable area", entity_id)
+            continue
 
         areas.setdefault(area, {}).setdefault(sensor_type, []).append(
             {
@@ -977,7 +1116,7 @@ def _recommendation_for(
         return None
 
     if sensor_type == "temperature":
-        midpoint = (comfort_defaults["temp_min_f"] + comfort_defaults["temp_max_f"]) / 2
+        midpoint = (comfort_defaults["temp_min_c"] + comfort_defaults["temp_max_c"]) / 2
         direction = "low" if value < midpoint else "high"
     elif sensor_type == "humidity":
         midpoint = (comfort_defaults["humidity_min"] + comfort_defaults["humidity_max"]) / 2
@@ -1003,9 +1142,9 @@ def _build_environment_report_message(
         comfort_defaults: Default comfort thresholds (for recommendation hints).
 
     Returns:
-        HTML-formatted message string.
+        Markdown-formatted message string (see :func:`_send_notify`).
     """
-    lines: list[str] = ["<b>Daily Environment Report</b>"]
+    lines: list[str] = ["**Daily Environment Report**"]
 
     all_recommendations: list[str] = []
 
@@ -1021,9 +1160,9 @@ def _build_environment_report_message(
         for sensor_type, value in readings.items():
             sev = deviations.get(sensor_type, "ok")
             if sensor_type == "temperature":
-                label = f"{value:.1f}\u00b0F"
+                label = f"{value:.1f}\u00b0C"
             elif sensor_type == "humidity":
-                label = f"{value:.0f}% RH"
+                label = f"{value:.0f}% humidity"
             elif sensor_type == "co2":
                 label = f"{value:.0f} ppm CO\u2082"
             elif sensor_type == "illuminance":
@@ -1046,15 +1185,15 @@ def _build_environment_report_message(
             if sev not in ("ok", "minor") and len(all_recommendations) < _MAX_RECOMMENDATIONS:
                 rec = _recommendation_for(sensor_type, value, comfort_defaults)
                 if rec:
-                    rec_text = f"{html.escape(area.replace('_', ' ').title())}: {rec}"
+                    rec_text = f"{area.replace('_', ' ').title()}: {rec}"
                     if rec_text not in all_recommendations:
                         all_recommendations.append(rec_text)
 
-        area_label = html.escape(area.replace("_", " ").title())
-        lines.append(f"\n<b>{area_label}</b>: {', '.join(status_parts)}")
+        area_label = area.replace("_", " ").title()
+        lines.append(f"\n**{area_label}**: {', '.join(status_parts)}")
 
     if all_recommendations:
-        lines.append("\n<b>Recommendations:</b>")
+        lines.append("\n**Recommendations:**")
         for rec in all_recommendations[:_MAX_RECOMMENDATIONS]:
             lines.append(f"  \u2022 {rec}")
 
@@ -1341,7 +1480,7 @@ def _build_digest_message(
     baseline_total: float | None,
 ) -> str:
     """Compose the weekly energy digest Telegram message."""
-    lines: list[str] = ["<b>Weekly Energy Digest</b>"]
+    lines: list[str] = ["**Weekly Energy Digest**"]
 
     # Total with trend
     trend_str = ""
@@ -1353,20 +1492,20 @@ def _build_digest_message(
 
     # Top consumers
     if top_consumers:
-        lines.append("\n<b>Top consumers:</b>")
+        lines.append("\n**Top consumers:**")
         for item in top_consumers[:_TOP_N_CONSUMERS]:
             lines.append(
-                f"  • {html.escape(item['friendly_name'])}: {item['weekly_kwh']:.1f} kWh "
+                f"  • {item['friendly_name']}: {item['weekly_kwh']:.1f} kWh "
                 f"({item['share_pct']:.0f}%)"
             )
 
     # Anomaly alerts
     if anomalies:
-        lines.append("\n<b>⚠️ Anomaly alerts:</b>")
+        lines.append("\n**⚠️ Anomaly alerts:**")
         for a in anomalies:
             sev = "🔴 HIGH" if a["severity"] == "high" else "🟡 Anomaly"
             lines.append(
-                f"  {sev}: {html.escape(a['friendly_name'])} — "
+                f"  {sev}: {a['friendly_name']} — "
                 f"{a['weekly_kwh']:.1f} kWh (+{a['pct_above']:.0f}% above baseline)"
             )
 
@@ -1375,11 +1514,11 @@ def _build_digest_message(
     high_severity_devices = [a for a in anomalies if a["severity"] == "high"]
     if high_severity_devices:
         recs.append(
-            f"Check {html.escape(high_severity_devices[0]['friendly_name'])} — "
+            f"Check {high_severity_devices[0]['friendly_name']} — "
             f"consumption is more than double its baseline."
         )
     if top_consumers:
-        top_name = html.escape(top_consumers[0]["friendly_name"])
+        top_name = top_consumers[0]["friendly_name"]
         recs.append(
             f"Review {top_name} usage patterns — it accounts for the most energy this week."
         )
@@ -1387,7 +1526,7 @@ def _build_digest_message(
         recs.append("Energy usage within normal range this week.")
 
     if recs:
-        lines.append("\n<b>Recommendations:</b>")
+        lines.append("\n**Recommendations:**")
         for rec in recs[:3]:
             lines.append(f"  • {rec}")
 

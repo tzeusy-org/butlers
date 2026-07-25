@@ -18,6 +18,8 @@ from butlers.jobs.home import (
     _classify_sensor_type,
     _extract_area,
     _extract_numeric_state,
+    _is_ambient_sensor,
+    _normalize_temperature_c,
     _NullEmbeddingEngine,
     classify_deviation,
     run_environment_report,
@@ -75,12 +77,59 @@ def test_extract_numeric_state():
     assert _extract_numeric_state("on") is None
 
 
+def test_classify_sensor_type_prefers_device_class():
+    """device_class is authoritative; unmapped classes do not fall through to keywords."""
+    assert _classify_sensor_type("sensor.x", "Bedroom CO2", "carbon_dioxide") == "co2"
+    # Particulate/VOC sensors previously matched the "air_quality"/"voc" keywords
+    # and were rendered as "ppm CO₂" despite reading in ppb / µg per m³.
+    assert (
+        _classify_sensor_type("sensor.bedroom_air_quality_voc", "VOC", "volatile_organic") is None
+    )
+    assert _classify_sensor_type("sensor.bedroom_air_quality_pm25", "PM2.5", "pm25") is None
+    assert _classify_sensor_type("sensor.bedroom_air_quality_voc", "Bedroom VOC", None) is None
+
+
+def test_is_ambient_sensor_rejects_hardware():
+    """Disk/CPU temperatures must not stand in for a room's comfort reading."""
+    assert _is_ambient_sensor("sensor.bedroom_temperature", "Bedroom Temp")
+    assert not _is_ambient_sensor("sensor.tzehouse_drive_1_temperature", "Drive 1 Temperature")
+    assert not _is_ambient_sensor("sensor.nas_volume_2_average_disk_temp", None)
+
+
+@pytest.mark.parametrize(
+    "value, unit, expected",
+    [
+        (21.5, "°C", 21.5),
+        (21.5, None, 21.5),
+        (70.0, "°F", 21.11),
+        (294.15, "K", 21.0),
+        (14.0, "ppb", None),
+    ],
+)
+def test_normalize_temperature_c(value, unit, expected):
+    """Readings are normalised to Celsius; unrecognised units are rejected, not assumed."""
+    result = _normalize_temperature_c(value, unit)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == pytest.approx(expected, abs=0.01)
+
+
 def test_extract_area():
     """_extract_area resolves area_id > area > room; returns None when absent."""
     assert _extract_area({"area_id": "bedroom"}) == "bedroom"
     assert _extract_area({"area": "kitchen"}) == "kitchen"
     assert _extract_area({"room": "living_room"}) == "living_room"
     assert _extract_area({}) is None
+
+
+def test_extract_area_falls_back_to_entity_name():
+    """/api/states carries no area registry, so the entity id must supply the room."""
+    assert _extract_area({}, "sensor.bedroom_air_quality_temperature", None) == "bedroom"
+    assert (
+        _extract_area({}, "sensor.livingroom_broadlink_rm4_pro_temperature", None) == "living room"
+    )
+    assert _extract_area({}, "sensor.tzehouse_temperature", "TzeHouse Temperature") is None
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +140,8 @@ def test_extract_area():
 @pytest.mark.parametrize(
     "sensor_type, value, expected",
     [
-        ("temperature", 72.0, "ok"),
-        ("temperature", 55.0, "critical"),
+        ("temperature", 22.0, "ok"),
+        ("temperature", 12.0, "critical"),
         ("humidity", 10.0, "critical"),
         ("co2", 800.0, "ok"),
     ],
@@ -107,10 +156,10 @@ def test_classify_deviation(sensor_type, value, expected):
 
 def test_classify_deviation_area_preference_overrides():
     """Area preference overrides defaults for range calculation."""
-    area_pref = {"temp_min_f": 65.0, "temp_max_f": 70.0}
+    area_pref = {"temp_min_c": 18.0, "temp_max_c": 21.0}
     result = classify_deviation(
         "temperature",
-        72.0,
+        22.0,
         comfort_defaults=_DEFAULTS,
         deviation_thresholds=_DEVIATIONS,
         area_preference=area_pref,
@@ -131,17 +180,20 @@ def test_build_environment_report_message():
     area_results = [
         {
             "area": "bedroom",
-            "readings": {"temperature": 72.0, "humidity": 45.0},
+            "readings": {"temperature": 22.0, "humidity": 45.0},
             "deviations": {"temperature": "ok", "humidity": "ok"},
         }
     ]
     msg2 = _build_environment_report_message(area_results, _DEFAULTS)
-    assert "Bedroom" in msg2 and "72.0°F" in msg2 and "✅" in msg2
+    assert "Bedroom" in msg2 and "22.0°C" in msg2 and "✅" in msg2
+    # Markdown, not HTML: the delivery chain HTML-escapes before rendering.
+    assert "**Bedroom**" in msg2 and "<b>" not in msg2
+    assert "RH" not in msg2 and "% humidity" in msg2
 
     area_crit = [
         {
             "area": "garage",
-            "readings": {"temperature": 55.0},
+            "readings": {"temperature": 12.0},
             "deviations": {"temperature": "critical"},
         }
     ]
@@ -181,7 +233,7 @@ async def test_run_environment_report_no_sensors_and_normal_run():
     rows2 = [
         _make_snapshot_row(
             "sensor.bedroom_temperature",
-            "72.0",
+            "22.0",
             {"friendly_name": "Bedroom Temp", "area_id": "bedroom"},
         ),
         _make_snapshot_row(
@@ -202,7 +254,7 @@ async def test_run_environment_report_no_sensors_and_normal_run():
     rows_crit = [
         _make_snapshot_row(
             "sensor.garage_temperature",
-            "50.0",
+            "10.0",
             {"friendly_name": "Garage Temp", "area_id": "garage"},
         )
     ]

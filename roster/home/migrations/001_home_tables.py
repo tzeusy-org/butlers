@@ -39,20 +39,20 @@ OFFLINE_HOURS_THRESHOLDS: dict = {
 }
 
 COMFORT_DEFAULTS: dict = {
-    "temp_min_f": 68,
-    "temp_max_f": 76,
+    "temp_min_c": 20,
+    "temp_max_c": 24.5,
     "humidity_min": 30,
     "humidity_max": 60,
     "co2_max_ppm": 1000,
 }
 
 COMFORT_DEVIATION_THRESHOLDS: dict = {
-    "minor_temp_f": 2,
-    "moderate_temp_f": 5,
+    "minor_temp_c": 1,
+    "moderate_temp_c": 3,
     "minor_humidity": 10,
     "moderate_humidity": 20,
-    "critical_temp_low_f": 60,
-    "critical_temp_high_f": 85,
+    "critical_temp_low_c": 15.5,
+    "critical_temp_high_c": 29.5,
     "critical_co2_ppm": 1500,
     "critical_humidity_low": 15,
     "critical_humidity_high": 80,

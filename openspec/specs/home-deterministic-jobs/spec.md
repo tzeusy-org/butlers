@@ -26,6 +26,19 @@ All home deterministic job handlers follow the standard `_DeterministicScheduleJ
 - **WHEN** the daemon imports home job handlers
 - **THEN** they SHALL be imported from `butlers.jobs.home`
 
+### Requirement: Notification Message Formatting
+
+All home job notifications SHALL be composed in Markdown, because the delivery chain
+(`_send_notify` -> `deliver()` -> `telegram_send_message`) HTML-escapes the message
+and then converts Markdown to Telegram HTML.
+
+#### Scenario: Markdown, not HTML
+
+- **WHEN** any home job composes an owner-facing notification
+- **THEN** it SHALL emit Markdown (`**bold**`, `*italic*`, `` `code` ``)
+- **AND** it SHALL NOT emit raw HTML tags, which reach the owner as literal `&lt;b&gt;`
+- **AND** it SHALL NOT HTML-escape interpolated values itself, since the delivery chain escapes them and pre-escaping double-escapes `&` and `<`
+
 ### Requirement: Threshold Loading from State Store
 
 All monitoring thresholds are loaded from the state store at job invocation time, with hardcoded defaults used only if no stored value exists. This enables user-configurable monitoring sensitivity.
@@ -43,8 +56,8 @@ All monitoring thresholds are loaded from the state store at job invocation time
 - **THEN** the job SHALL fall back to hardcoded default values identical to the seeded defaults:
   - Battery: `{"critical": 10, "warning": 20, "info": 30}`
   - Offline hours: `{"critical": 24, "warning": 1}`
-  - Comfort defaults: `{"temp_min_f": 68, "temp_max_f": 76, "humidity_min": 30, "humidity_max": 60, "co2_max_ppm": 1000}`
-  - Comfort deviation: `{"minor_temp_f": 2, "moderate_temp_f": 5, "minor_humidity": 10, "moderate_humidity": 20, "critical_temp_low_f": 60, "critical_temp_high_f": 85, "critical_co2_ppm": 1500, "critical_humidity_low": 15, "critical_humidity_high": 80}`
+  - Comfort defaults: `{"temp_min_c": 20, "temp_max_c": 24.5, "humidity_min": 30, "humidity_max": 60, "co2_max_ppm": 1000}`
+  - Comfort deviation: `{"minor_temp_c": 1, "moderate_temp_c": 3, "minor_humidity": 10, "moderate_humidity": 20, "critical_temp_low_c": 15.5, "critical_temp_high_c": 29.5, "critical_co2_ppm": 1500, "critical_humidity_low": 15, "critical_humidity_high": 80}`
   - Energy: `{"anomaly_pct": 20, "high_severity_pct": 100}`
 - **AND** the job SHALL log a WARNING indicating that default thresholds are being used
 
@@ -118,20 +131,23 @@ The `environment_report` job reads environmental sensors per area, compares agai
 
 - **WHEN** the `environment_report` job runs
 - **THEN** it SHALL query the `ha_entity_snapshot` table to discover all areas and their associated sensor entities
-- **AND** it SHALL group sensors by area, filtering for temperature, humidity, CO2/air quality, and illuminance sensors
-- **AND** if the snapshot table lacks area-registry data, it SHALL fall back to the HA REST API area registry endpoint
+- **AND** it SHALL group sensors by area, classifying each sensor by its Home Assistant `device_class` where present and by entity-id keywords only as a fallback, so that a sensor is only ever reported under the quantity it actually measures (a `pm25` or `volatile_organic_compounds` sensor SHALL NOT be reported as CO2)
+- **AND** it SHALL exclude sensors that measure hardware rather than room comfort (disk, CPU, battery, appliance temperatures)
+- **AND** since `/api/states` carries no area registry, it SHALL resolve an area from the entity `area_id`/`area`/`room` attributes where present and otherwise from a room name in the entity id or friendly name
+- **AND** it SHALL skip any sensor whose area cannot be resolved rather than pooling such sensors into a single "unknown" area, since one arbitrary sensor would then be reported as if it spoke for the whole house
 
 #### Scenario: Sensor reading collection
 
 - **WHEN** sensors are grouped by area
 - **THEN** the job SHALL read current state values for each sensor from the `ha_entity_snapshot` table
+- **AND** it SHALL normalise every temperature reading to Celsius using the entity's `unit_of_measurement`, skipping readings whose unit is present but is not a temperature unit
 - **AND** it SHALL build a room-by-room map of readings (temperature, humidity, CO2, illuminance)
 
 #### Scenario: Comfort preference retrieval
 
 - **WHEN** readings are collected per area
 - **THEN** the job SHALL query memory facts with `predicate="comfort_preference"` for each area name
-- **AND** if no stored preference exists for an area, it SHALL load default healthy ranges from state store key `home:thresholds:comfort_defaults` (default: temperature 68-76 degF, humidity 30-60%, CO2 <1000 ppm)
+- **AND** if no stored preference exists for an area, it SHALL load default healthy ranges from state store key `home:thresholds:comfort_defaults` (default: temperature 20-24.5 degC, humidity 30-60%, CO2 <1000 ppm)
 
 #### Scenario: Deviation classification
 
@@ -139,9 +155,9 @@ The `environment_report` job reads environmental sensors per area, compares agai
 - **THEN** it SHALL load deviation thresholds from state store key `home:thresholds:comfort_deviation`
 - **AND** it SHALL be classified as:
   - `ok` if within range
-  - `minor` if within the `minor_temp_f` (default 2 degF) or `minor_humidity` (default 10% RH) of boundary
-  - `moderate` if within the `moderate_temp_f` (default 5 degF) or `moderate_humidity` (default 20% RH) of boundary
-  - `critical` if temperature below `critical_temp_low_f` (default 60 degF) or above `critical_temp_high_f` (default 85 degF), CO2 above `critical_co2_ppm` (default 1500 ppm), or humidity below `critical_humidity_low` (default 15%) or above `critical_humidity_high` (default 80%)
+  - `minor` if within the `minor_temp_c` (default 1 degC) or `minor_humidity` (default 10% relative humidity) of boundary
+  - `moderate` if within the `moderate_temp_c` (default 3 degC) or `moderate_humidity` (default 20% relative humidity) of boundary
+  - `critical` if temperature below `critical_temp_low_c` (default 15.5 degC) or above `critical_temp_high_c` (default 29.5 degC), CO2 above `critical_co2_ppm` (default 1500 ppm), or humidity below `critical_humidity_low` (default 15%) or above `critical_humidity_high` (default 80%)
 
 #### Scenario: Deviation memory storage
 
@@ -152,6 +168,7 @@ The `environment_report` job reads environmental sensors per area, compares agai
 
 - **WHEN** the report is composed
 - **THEN** the job SHALL send a Telegram notification via the notify helper with `intent="send"`
+- **AND** the message SHALL express temperatures in Celsius and SHALL spell out units in plain language rather than abbreviations such as "RH"
 - **AND** the message SHALL include a room-by-room summary showing readings and status (ok/deviation)
 - **AND** deviations SHALL include actionable recommendations (e.g., "humidity low — consider running humidifier")
 - **AND** at most 3 recommendations SHALL be included to avoid overwhelming the user

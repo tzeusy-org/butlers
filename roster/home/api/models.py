@@ -182,8 +182,8 @@ class OfflineHoursThresholds(BaseModel):
 class ComfortDefaults(BaseModel):
     """Default comfort range thresholds for environment report."""
 
-    temp_min_f: float = 68
-    temp_max_f: float = 76
+    temp_min_c: float = 20
+    temp_max_c: float = 24.5
     humidity_min: float = 30
     humidity_max: float = 60
     co2_max_ppm: float = 1000
@@ -192,12 +192,12 @@ class ComfortDefaults(BaseModel):
 class ComfortDeviation(BaseModel):
     """Comfort deviation thresholds for environment report."""
 
-    minor_temp_f: float = 2
-    moderate_temp_f: float = 5
+    minor_temp_c: float = 1
+    moderate_temp_c: float = 3
     minor_humidity: float = 10
     moderate_humidity: float = 20
-    critical_temp_low_f: float = 60
-    critical_temp_high_f: float = 85
+    critical_temp_low_c: float = 15.5
+    critical_temp_high_c: float = 29.5
     critical_co2_ppm: float = 1500
     critical_humidity_low: float = 15
     critical_humidity_high: float = 80
