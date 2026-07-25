@@ -6,7 +6,10 @@ so that ``__init__.py`` stays focused on the Module boilerplate.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def register_tools(mcp: Any, module: Any) -> None:
@@ -17,6 +20,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     """
 
     # Import sub-modules (deferred to avoid import-time side effects)
+    from butlers.core_tools._domain_events import publish_domain_event
     from butlers.tools.travel import bookings as _bookings
     from butlers.tools.travel import documents as _documents
     from butlers.tools.travel import health as _health
@@ -85,7 +89,28 @@ def register_tools(mcp: Any, module: Any) -> None:
     @mcp.tool()
     async def record_booking(payload: dict[str, Any]) -> dict[str, Any]:
         """Parse a booking confirmation and persist it into the trip container model."""
-        return await _bookings.record_booking(module._get_pool(), payload)
+        result = await _bookings.record_booking(module._get_pool(), payload)
+        if result.get("trip_created"):
+            # Best-effort: a domain-event-bus hiccup (fan-out failure,
+            # Switchboard unavailable) must never fail the booking itself --
+            # the trip is already durably persisted above. publish_domain_event
+            # itself still durably records the event row; only downstream
+            # fan-out to subscribers is where a failure is swallowed here.
+            try:
+                await publish_domain_event(
+                    module._get_pool(),
+                    module._switchboard_client,
+                    event_type="travel.trip_booked",
+                    source_butler="travel",
+                    payload=result.get("trip_event_payload") or {"trip_id": result["trip_id"]},
+                )
+            except Exception:
+                logger.warning(
+                    "record_booking: failed to publish travel.trip_booked for trip_id=%s",
+                    result.get("trip_id"),
+                    exc_info=True,
+                )
+        return result
 
     @mcp.tool()
     async def update_itinerary(

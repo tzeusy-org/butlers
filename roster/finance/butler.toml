@@ -17,6 +17,7 @@ core_groups = [
     "media",          # get_attachment
     "temporal",       # deadlines, event_chains, seasonal_periods
     "delegation",     # delegate_ask/receive/answer/wake — cross-butler questions
+    "domain_events",  # publish/subscribe/receive_domain_event — standing pub/sub
 ]
 
 [butler.db]

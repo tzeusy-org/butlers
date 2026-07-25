@@ -109,10 +109,14 @@ async def _find_matching_trip(
 async def _create_trip_from_payload(
     pool: asyncpg.Pool,
     payload: dict[str, Any],
-) -> str:
+) -> dict[str, Any]:
     """Create a minimal trip container from booking payload hints.
 
-    Returns the new trip_id (str).
+    Returns ``{"trip_id", "name", "destination", "start_date", "end_date"}`` --
+    the fields the ``travel.trip_booked`` domain event payload is built from
+    (see ``record_booking``'s ``trip_created``/``trip_event_payload`` result
+    fields) so the event never needs a second query for what was just
+    inserted.
     """
     destination = (
         payload.get("arrival_city")
@@ -152,7 +156,13 @@ async def _create_trip_from_payload(
         start_date,
         end_date,
     )
-    return str(row["id"])
+    return {
+        "trip_id": str(row["id"]),
+        "name": name,
+        "destination": destination,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +408,13 @@ async def record_booking(
     dict
         RecordBookingResult with keys:
         ``trip_id``, ``entity_type``, ``entity_id``, ``created``,
-        ``deduped``, ``warnings``.
+        ``deduped``, ``warnings``, ``trip_created`` (bool -- whether this
+        call created a brand-new trip container rather than attaching to an
+        existing one), ``trip_event_payload`` (the new trip's name/
+        destination/dates when ``trip_created`` is True, else ``None``).
+        The MCP tool wrapper (``roster/travel/modules/tools.py``) publishes a
+        ``travel.trip_booked`` domain event from ``trip_event_payload`` when
+        ``trip_created`` is True (bu-ep4ks.10).
     """
     warnings: list[str] = []
 
@@ -440,8 +456,13 @@ async def record_booking(
             candidate_destinations.append(str(val))
 
     trip_id = await _find_matching_trip(pool, candidate_dates, candidate_destinations)
+    trip_created = False
+    trip_event_payload: dict[str, Any] | None = None
     if trip_id is None:
-        trip_id = await _create_trip_from_payload(pool, payload)
+        created_trip = await _create_trip_from_payload(pool, payload)
+        trip_id = created_trip["trip_id"]
+        trip_created = True
+        trip_event_payload = created_trip
 
     # --- Insert entity ---
     entity_id: str
@@ -474,6 +495,8 @@ async def record_booking(
             "created": False,
             "deduped": False,
             "warnings": warnings,
+            "trip_created": trip_created,
+            "trip_event_payload": trip_event_payload,
         }
 
     return {
@@ -483,6 +506,8 @@ async def record_booking(
         "created": created,
         "deduped": deduped,
         "warnings": warnings,
+        "trip_created": trip_created,
+        "trip_event_payload": trip_event_payload,
     }
 
 

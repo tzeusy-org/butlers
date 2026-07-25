@@ -150,6 +150,13 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "delegate_receive",
         "delegate_answer",
         "delegate_wake",
+        # bu-ep4ks.10: domain-event bus (standing pub/sub); non-STAFFER only,
+        # same gate as delegate_* above.
+        "publish_event",
+        "subscribe_to_event",
+        "unsubscribe_from_event",
+        "list_my_subscriptions",
+        "receive_domain_event",
     }
 )
 
