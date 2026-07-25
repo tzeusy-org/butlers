@@ -249,6 +249,12 @@ services:
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
       BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
       DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
+      # bu-g4jg1: butlers.jobs.external_deadman runs in THIS container and reads
+      # this from os.environ. Unset/empty leaves the loop disabled (by design).
+      # Without this passthrough, setting it in .env has no effect at all --
+      # there is no env_file here, so only vars listed explicitly reach the
+      # container. Point it at an off-host push/heartbeat monitor URL.
+      EXTERNAL_DEADMAN_URL: ${EXTERNAL_DEADMAN_URL:-}
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -793,6 +799,9 @@ services:
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
       BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
       DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
+      # bu-g4jg1: see the dashboard-api service above for why this passthrough
+      # is required for butlers.jobs.external_deadman to see the URL at all.
+      EXTERNAL_DEADMAN_URL: ${EXTERNAL_DEADMAN_URL:-}
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro
