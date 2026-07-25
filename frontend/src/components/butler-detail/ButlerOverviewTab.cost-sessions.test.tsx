@@ -347,6 +347,24 @@ describe("ButlerOverviewTab — recent activity panel", () => {
     expect(html).toContain("Stored one useful memory");
   });
 
+  it("renders the API-provided safe session summary without a prompt fallback", () => {
+    const rawPrompt = 'REQUEST CONTEXT {"source_channel":"telegram"}';
+    setupDefaultMocks({
+      activityEvents: [
+        {
+          ...ACTIVITY_EVENTS[0],
+          summary: "Scheduled: daily digest",
+          metadata: { trigger_source: "schedule:daily_digest", prompt: rawPrompt },
+        },
+      ],
+    });
+
+    const html = renderTab();
+
+    expect(html).toContain("Scheduled: daily digest");
+    expect(html).not.toContain(rawPrompt);
+  });
+
   it("renders event kind labels", () => {
     setupDefaultMocks();
     const html = renderTab();

@@ -45,6 +45,7 @@ from butlers.api.routers.memory import (
     _memory_relation,
     _memory_schema_absent_at_start,
 )
+from butlers.api.session_presentation import derive_session_summary
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +85,11 @@ def _normalize_tz(dt: datetime | None) -> datetime | None:
 
 def _session_to_event(row: ActivitySessionRow) -> ActivityEvent:
     """Convert an :class:`ActivitySessionRow` (activity_v1) to an :class:`ActivityEvent`."""
-    prompt = row.prompt or ""
-    summary = (prompt[:120] + "...") if len(prompt) > 120 else prompt
+    summary = derive_session_summary(row.prompt, trigger_source=row.trigger_source)
     return ActivityEvent(
         event_type="session_completed",
         ts=_normalize_tz(row.completed_at),
-        summary=summary or "Session completed",
+        summary=summary,
         entity_id=str(row.id),
         metadata={
             "trigger_source": row.trigger_source,

@@ -20,7 +20,10 @@ from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.activity_feed import _get_db_manager, _normalize_tz
+from butlers.api.read_models.activity_v1 import ActivitySessionRow
+from butlers.api.read_models.timeline_v1 import TimelineSessionRow
+from butlers.api.routers.activity_feed import _get_db_manager, _normalize_tz, _session_to_event
+from butlers.api.routers.timeline import _session_dto_to_event
 
 pytestmark = pytest.mark.unit
 
@@ -35,8 +38,8 @@ _BASE = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 def _session_row(
     *,
     offset_minutes: int = 0,
-    prompt: str = "Check emails",
-    trigger_source: str = "scheduler",
+    prompt: str | None = "Check emails",
+    trigger_source: str | None = "scheduler",
     success: bool = True,
     duration_ms: int = 500,
 ) -> MagicMock:
@@ -219,7 +222,9 @@ class TestActivityFeedEventTypes:
     """Verify each event_type is correctly populated."""
 
     async def test_session_completed_event_type(self):
-        session = _session_row(prompt="Daily digest", trigger_source="cron", success=True)
+        session = _session_row(
+            prompt="Daily digest", trigger_source="schedule:daily_digest", success=True
+        )
         app = _make_app(session_rows=[session])
 
         async with httpx.AsyncClient(
@@ -231,8 +236,8 @@ class TestActivityFeedEventTypes:
         assert len(events) == 1
         ev = events[0]
         assert ev["event_type"] == "session_completed"
-        assert ev["summary"] == "Daily digest"
-        assert ev["metadata"]["trigger_source"] == "cron"
+        assert ev["summary"] == "Scheduled: daily digest"
+        assert ev["metadata"]["trigger_source"] == "schedule:daily_digest"
         assert ev["metadata"]["success"] is True
 
     async def test_approval_raised_event_type(self):
@@ -457,34 +462,137 @@ class TestActivityFeed503:
         assert "nonexistent" in resp.json()["detail"]
 
 
-class TestActivityFeedSummaryTruncation:
-    """Long summaries are truncated at 120 chars with ellipsis."""
+class TestActivityFeedSessionSummaryProjection:
+    """Session events use the same safe projection as Timeline."""
 
-    async def test_long_session_prompt_is_truncated(self):
-        long_prompt = "x" * 200
-        session = _session_row(prompt=long_prompt)
-        app = _make_app(session_rows=[session])
+    @pytest.mark.parametrize(
+        ("trigger_source", "prompt", "expected", "forbidden"),
+        [
+            (
+                "schedule:daily_digest",
+                'REQUEST CONTEXT\n{"source_channel": "telegram"}',
+                "Scheduled: daily digest",
+                "REQUEST CONTEXT",
+            ),
+            (
+                "deadline:passport-renewal",
+                "=== Chat id: 295310574 ===\nSystem instructions follow.",
+                "Deadline: passport renewal",
+                "=== Chat id:",
+            ),
+            (
+                "classification",
+                "Please use the /message-triage skill with this raw machine prompt.",
+                "Switchboard classification",
+                "message-triage",
+            ),
+            (
+                "route",
+                "<user_message>Find a florist for Saturday</user_message>",
+                "Find a florist for Saturday",
+                "<user_message>",
+            ),
+        ],
+    )
+    async def test_structured_or_complete_routed_summary_never_leaks_prompt(
+        self,
+        trigger_source: str,
+        prompt: str,
+        expected: str,
+        forbidden: str,
+    ):
+        app = _make_app(session_rows=[_session_row(prompt=prompt, trigger_source=trigger_source)])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/butlers/atlas/activity-feed")
 
-        ev = resp.json()["events"][0]
-        assert len(ev["summary"]) == 123  # 120 + len("...")
-        assert ev["summary"].endswith("...")
+        assert resp.status_code == 200
+        summary = resp.json()["events"][0]["summary"]
+        assert summary == expected
+        assert forbidden not in summary
 
-    async def test_short_prompt_is_not_truncated(self):
-        session = _session_row(prompt="Short prompt")
-        app = _make_app(session_rows=[session])
+    @pytest.mark.parametrize(
+        ("trigger_source", "prompt", "expected", "forbidden"),
+        [
+            (None, None, "Activity", None),
+            ("future_trigger", "untrusted future prompt", "Activity", "untrusted future prompt"),
+            (
+                "route",
+                "<routed_message>Missing the closing tag",
+                "Routed message",
+                "Missing the closing tag",
+            ),
+            (
+                "route",
+                'REQUEST CONTEXT\n{"request_id": "abc"}',
+                "Routed message",
+                "REQUEST CONTEXT",
+            ),
+            (
+                "route",
+                "=== Chat id: 295310574 ===\nSystem instructions follow.",
+                "Routed message",
+                "=== Chat id:",
+            ),
+        ],
+    )
+    async def test_unsafe_session_prompt_shapes_use_generic_safe_labels(
+        self,
+        trigger_source: str | None,
+        prompt: str | None,
+        expected: str,
+        forbidden: str | None,
+    ):
+        app = _make_app(session_rows=[_session_row(prompt=prompt, trigger_source=trigger_source)])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/butlers/atlas/activity-feed")
 
-        ev = resp.json()["events"][0]
-        assert ev["summary"] == "Short prompt"
+        assert resp.status_code == 200
+        summary = resp.json()["events"][0]["summary"]
+        assert summary == expected
+        if forbidden is not None:
+            assert forbidden not in summary
+
+    def test_session_summary_matches_timeline_for_equivalent_session_row(self):
+        session_id = uuid.uuid4()
+        prompt = 'REQUEST CONTEXT\n{"source_channel": "telegram"}\n\n<routed_message>Call Sam</routed_message>'
+        completed_at = _BASE + timedelta(minutes=5)
+        activity_event = _session_to_event(
+            ActivitySessionRow(
+                id=session_id,
+                prompt=prompt,
+                trigger_source="route",
+                success=True,
+                started_at=_BASE,
+                completed_at=completed_at,
+                duration_ms=500,
+            )
+        )
+        timeline_event = _session_dto_to_event(
+            TimelineSessionRow(
+                id=session_id,
+                trace_id=None,
+                prompt=prompt,
+                trigger_source="route",
+                success=True,
+                started_at=_BASE,
+                completed_at=completed_at,
+                duration_ms=500,
+                butler="atlas",
+            )
+        )
+
+        assert activity_event.summary == timeline_event.summary == "Call Sam"
+        assert activity_event.metadata == {
+            "trigger_source": "route",
+            "success": True,
+            "duration_ms": 500,
+        }
 
 
 class TestNormalizeTz:

@@ -520,6 +520,9 @@ the whole tab behind a single combined flag.
 - **AND** the data SHALL come from `useButlerActivityFeed(butlerName, 5)` over
   `GET /api/butlers/{name}/activity-feed`
   (`frontend/src/hooks/use-butler-analytics.ts:120`)
+- **AND** each `session_completed` row SHALL render the API-provided safe summary
+  from the same structured-trigger-first projection as Timeline, without a
+  client-side raw-prompt or envelope fallback
 - **AND** loading SHALL render skeleton rows, errors SHALL render "Could not load
   recent events.", and an empty feed SHALL render "no recent events"
 

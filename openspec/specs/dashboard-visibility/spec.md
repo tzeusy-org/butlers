@@ -218,11 +218,12 @@ The Timeline page (`/timeline`) SHALL merge events from all butlers into a singl
 - **AND** there is no manual toggle or interval picker — the prior `AutoRefreshToggle`/`useAutoRefresh` mechanism retired
 
 #### Scenario: Human-readable event summary derivation
-- **WHEN** Timeline projects a session row, it SHALL derive the row's `summary` from its structured `trigger_source` before inspecting stored prompt text
+- **WHEN** Timeline or the Butler Activity Feed projects a session row, it SHALL derive the row's `summary` from its structured `trigger_source` before inspecting stored prompt text
 - **THEN** `schedule:<task-name>` and `deadline:<task-name>` sources render bounded, humanized labels (for example, `schedule:daily_digest` → "Scheduled: daily digest" and `deadline:passport-renewal` → "Deadline: passport renewal")
 - **AND** recognised exact sources, including heartbeat and classification sources, render their safe source label without interpreting prompt text
 - **AND** only a session whose `trigger_source` is exactly `route` and whose prompt contains one complete, non-empty `<routed_message>` or `<user_message>` fence MAY render that fence's bounded inner text
 - **AND** malformed, unknown, null, legacy, context-envelope, chat-envelope, and system-prompt cases SHALL use a generic safe label rather than dumping prompt text
+- **AND** equivalent stored session rows SHALL yield the same summary through `GET /api/timeline` and `GET /api/butlers/{name}/activity-feed`
 
 #### Scenario: Failed-delivery row honesty
 - **WHEN** a notification event has `data.status === "failed"` (a bounced delivery, e.g. a repeatedly-failing owner alert)
