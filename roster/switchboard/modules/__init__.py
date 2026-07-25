@@ -7,6 +7,8 @@ Each module is implemented in a dedicated sub-module:
                             extraction audit, backfill, and dead-letter tools.
 - ``InsightBrokerModule`` — proactive insight candidate submission tool
                             (``propose_insight_candidate``).
+- ``OwnerConditionsBrokerModule`` — owner condition ledger reconciliation
+                            tool (``reconcile_owner_condition``).
 
 The tool closures strip infrastructure arguments (pool, conn) from the
 MCP-visible signature and inject them from module state at call time.
@@ -32,6 +34,10 @@ from pydantic import BaseModel
 from butlers.modules.base import Module, ToolGroupMixin
 
 from .insight_broker import InsightBrokerConfig, InsightBrokerModule  # noqa: F401
+from .owner_conditions_broker import (  # noqa: F401
+    OwnerConditionsBrokerConfig,
+    OwnerConditionsBrokerModule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "InsightBrokerConfig",
     "InsightBrokerModule",
+    "OwnerConditionsBrokerConfig",
+    "OwnerConditionsBrokerModule",
     "SwitchboardModule",
     "SwitchboardModuleConfig",
 ]

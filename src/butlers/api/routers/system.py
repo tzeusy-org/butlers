@@ -9,7 +9,8 @@ Surfaces seven ownership-fact domains:
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
     GET /api/system/deployments    -- current + recent deployment ledger entries
     GET /api/system/drift          -- migration-drift sentinel (bu-9r3hd.1)
-    GET /api/system/conditions     -- standing infrastructure condition ledger (bu-27dxl.6.2)
+    GET /api/system/conditions     -- standing condition ledger: infra (bu-27dxl.6.2) or
+                                       owner-facing (bu-ep4ks.6), selected via ?ledger=
 
 Privacy contract: /api/system/egress is owner-only. The owner is identified
 by asserting 'owner' = ANY(roles) on public.entities. Non-owner callers
@@ -338,13 +339,21 @@ class InsightDeliveryState(BaseModel):
 
 
 class ConditionEntry(BaseModel):
-    """One episode row from public.infra_conditions (bu-27dxl.6.2).
+    """One episode row from public.infra_conditions or public.owner_conditions.
 
-    An ``open``/``aging`` episode is an active outage; a ``resolved`` episode
-    is retained history. ``recovered_after_s`` is only set once ``resolved_at``
-    is set -- see ``butlers.core.infra_conditions`` for the full lifecycle.
+    An ``open``/``aging`` episode is an active outage/standing concern; a
+    ``resolved`` episode is retained history. ``recovered_after_s`` is only
+    set once ``resolved_at`` is set -- see ``butlers.core.infra_conditions``
+    (bu-27dxl.6.2) / ``butlers.core.owner_conditions`` (bu-ep4ks.6, the same
+    lifecycle generalized to owner-facing standing concerns) for the full
+    lifecycle both share via ``butlers.core.condition_ledger``.
+
+    ``ledger`` distinguishes which table this row came from: ``"infra"``
+    (infrastructure reliability, e.g. deploy drift, calendar sync deadman) or
+    ``"owner"`` (owner-facing standing concerns, e.g. an overdue bill).
     """
 
+    ledger: str  # "infra" | "owner"
     id: str
     source: str
     fingerprint: str
@@ -1376,8 +1385,12 @@ async def get_insight_delivery_state(
 # ---------------------------------------------------------------------------
 
 
-def _condition_row_to_entry(row: dict) -> ConditionEntry:
+VALID_LEDGERS = frozenset({"infra", "owner"})
+
+
+def _condition_row_to_entry(row: dict, *, ledger: str) -> ConditionEntry:
     return ConditionEntry(
+        ledger=ledger,
         id=str(row["id"]),
         source=row["source"],
         fingerprint=row["fingerprint"],
@@ -1401,25 +1414,46 @@ def _condition_row_to_entry(row: dict) -> ConditionEntry:
 
 @router.get("/conditions", response_model=ApiResponse[ConditionsFacts])
 async def get_conditions(
+    ledger: str = Query(
+        "infra", description="Which condition ledger to read. One of: infra, owner."
+    ),
     source: str | None = Query(None, description="Filter by producer source."),
     state: str | None = Query(None, description="Filter by state. One of: open, aging, resolved."),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ConditionsFacts]:
-    """Return standing infrastructure conditions from the durable ledger (bu-27dxl.6.2).
+    """Return standing conditions from a durable ledger (bu-27dxl.6.2 / bu-ep4ks.6).
 
-    Opens the door on ``public.infra_conditions``, which until now had zero API
-    router and zero frontend (bu-ep4ks.3): an L0-L3 escalating outage was durable
-    in Postgres but visible only via psql. Reads (never writes) via
-    ``butlers.core.infra_conditions.list_conditions``, most-recently-detected
-    first. Always returns HTTP 200 -- per the fleet-wide degraded-envelope
-    convention, a failed ledger query sets ``conditions_available=False`` with
-    an empty list, never a fabricated all-clear.
+    ``ledger="infra"`` (default, backward compatible) opens the door on
+    ``public.infra_conditions``: an L0-L3 escalating infrastructure outage
+    (deploy drift, calendar sync deadman) durable in Postgres. ``ledger=
+    "owner"`` reads ``public.owner_conditions`` (bu-ep4ks.6): the same
+    lifecycle generalized to owner-facing standing concerns (an overdue
+    bill, a spending anomaly still true this month). Both ledgers share the
+    exact reconciliation engine (``butlers.core.condition_ledger``) and this
+    same response envelope -- the frontend's Standing Conditions panel reads
+    both and renders them together, tagging each row's ``ledger`` field.
+
+    Reads (never writes) via the matching facade's ``list_conditions``,
+    most-recently-detected first. Always returns HTTP 200 -- per the
+    fleet-wide degraded-envelope convention, a failed ledger query sets
+    ``conditions_available=False`` with an empty list, never a fabricated
+    all-clear.
     """
     system_conditions_reads_total.inc()
 
-    from butlers.core.infra_conditions import VALID_STATES, list_conditions
+    if ledger not in VALID_LEDGERS:
+        allowed = ", ".join(sorted(VALID_LEDGERS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid ledger {ledger!r}. Must be one of: {allowed}",
+        )
+
+    if ledger == "owner":
+        from butlers.core.owner_conditions import VALID_STATES, list_conditions
+    else:
+        from butlers.core.infra_conditions import VALID_STATES, list_conditions
 
     if state is not None and state not in VALID_STATES:
         allowed = ", ".join(sorted(VALID_STATES))
@@ -1438,12 +1472,12 @@ async def get_conditions(
             pool, source=source, state=state, offset=offset, limit=limit
         )
     except Exception as exc:
-        logger.warning("infra_conditions query failed (degraded state returned): %s", exc)
+        logger.warning("%s_conditions query failed (degraded state returned): %s", ledger, exc)
         return ApiResponse(data=ConditionsFacts(conditions=[], total=0, conditions_available=False))
 
     return ApiResponse(
         data=ConditionsFacts(
-            conditions=[_condition_row_to_entry(r) for r in rows],
+            conditions=[_condition_row_to_entry(r, ledger=ledger) for r in rows],
             total=total,
             conditions_available=True,
         )

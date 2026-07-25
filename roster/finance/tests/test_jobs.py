@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from butlers.core.owner_conditions import create_owner_conditions_table, get_active_condition
 from butlers.tools.switchboard.insight.broker import create_insight_tables
 
 docker_available = shutil.which("docker") is not None
@@ -226,6 +227,11 @@ async def _setup_insight_schema(pool) -> None:
     # alembic core_010) can never drift here into the synthetic-id divergence
     # that masked the bu-tdd4k.1 production crash (bu-jgrn8).
     await create_insight_tables(pool)
+    # bu-ep4ks.6: run_insight_scan also reconciles into the owner condition
+    # ledger alongside insight-candidate submission -- provision it here too
+    # so that side effect is exercised (not silently no-op'd by a missing
+    # table) rather than added to a separate, divergent test setup helper.
+    await create_owner_conditions_table(pool)
     # Seed insight_settings with default verbosity (not 'off')
     await pool.execute(
         "INSERT INTO insight_settings (id, verbosity) "
@@ -424,6 +430,183 @@ async def test_insight_scan_bill_paid_excluded(provisioned_postgres_pool):
         result = await run_insight_scan(pool)
 
         assert result["submitted"] == 0
+
+
+async def test_insight_scan_overdue_bill_opens_owner_condition(provisioned_postgres_pool):
+    """bu-ep4ks.6: a bill past due_date and still pending opens a standing
+    owner condition -- a signal the pre-existing bill-due insight candidate
+    never tracked (that category only ever fires while a bill is upcoming)."""
+    from butlers.jobs._roster.finance_jobs import (
+        _OWNER_CONDITION_BILL_OVERDUE_SOURCE,
+        owner_condition_fingerprint,
+        run_insight_scan,
+    )
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        bill_id = await _insert_bill_returning_id(
+            pool, payee="Electric Co", amount="75.00", due_date=_today() - timedelta(days=2)
+        )
+
+        await run_insight_scan(pool)
+
+        fp = owner_condition_fingerprint(
+            _OWNER_CONDITION_BILL_OVERDUE_SOURCE, 1, {"bill_id": bill_id}
+        )
+        active = await get_active_condition(
+            pool, source=_OWNER_CONDITION_BILL_OVERDUE_SOURCE, fingerprint=fp
+        )
+        assert active is not None
+        assert active["state"] == "open"
+        assert "Electric Co" in active["summary"]
+
+
+async def test_insight_scan_overdue_bill_condition_resolves_once_paid(provisioned_postgres_pool):
+    """bu-ep4ks.6: paying an overdue bill resolves its owner condition on the
+    next scan -- the ledger tracks "still true and unactioned", not a
+    one-shot edge."""
+    from butlers.jobs._roster.finance_jobs import (
+        _OWNER_CONDITION_BILL_OVERDUE_SOURCE,
+        owner_condition_fingerprint,
+        run_insight_scan,
+    )
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        bill_id = await _insert_bill_returning_id(
+            pool, payee="Water Co", amount="40.00", due_date=_today() - timedelta(days=1)
+        )
+        await run_insight_scan(pool)
+
+        fp = owner_condition_fingerprint(
+            _OWNER_CONDITION_BILL_OVERDUE_SOURCE, 1, {"bill_id": bill_id}
+        )
+        assert (
+            await get_active_condition(
+                pool, source=_OWNER_CONDITION_BILL_OVERDUE_SOURCE, fingerprint=fp
+            )
+        ) is not None
+
+        await pool.execute("UPDATE finance.bills SET status = 'paid' WHERE id = $1::uuid", bill_id)
+        await run_insight_scan(pool)
+
+        assert (
+            await get_active_condition(
+                pool, source=_OWNER_CONDITION_BILL_OVERDUE_SOURCE, fingerprint=fp
+            )
+        ) is None
+
+
+async def test_insight_scan_upcoming_bill_does_not_open_overdue_condition(
+    provisioned_postgres_pool,
+):
+    """A bill due in the future (not yet overdue) must not open the
+    bill-overdue owner condition -- only the existing bill-due insight
+    candidate covers "upcoming"."""
+    from butlers.core.owner_conditions import list_conditions
+    from butlers.jobs._roster.finance_jobs import (
+        _OWNER_CONDITION_BILL_OVERDUE_SOURCE,
+        run_insight_scan,
+    )
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_bill_returning_id(
+            pool, payee="Internet", amount="89.00", due_date=_today() + timedelta(days=1)
+        )
+
+        await run_insight_scan(pool)
+
+        total, _rows = await list_conditions(pool, source=_OWNER_CONDITION_BILL_OVERDUE_SOURCE)
+        assert total == 0
+
+
+async def test_insight_scan_missing_owner_conditions_table_does_not_break_scan(
+    provisioned_postgres_pool,
+):
+    """bu-ep4ks.6: owner_conditions reconciliation is best-effort -- an
+    unmigrated pool (owner_conditions table absent) must not break insight
+    candidate submission."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        # Deliberately skip create_owner_conditions_table here.
+        await pool.execute(CREATE_FINANCE_SCHEMA)
+        await pool.execute(CREATE_BILLS_SQL)
+        await pool.execute(CREATE_SUBSCRIPTIONS_SQL)
+        await pool.execute(CREATE_TRANSACTIONS_SQL)
+        await pool.execute(CREATE_BUDGETS_SQL)
+        await create_insight_tables(pool)
+        await pool.execute(
+            "INSERT INTO insight_settings (id, verbosity) "
+            "VALUES (1, 'normal') ON CONFLICT (id) DO NOTHING"
+        )
+
+        await _insert_bill_returning_id(
+            pool, payee="Electric Co", amount="75.00", due_date=_today() - timedelta(days=2)
+        )
+
+        result = await run_insight_scan(pool)
+        assert result["errors"] == 0
+
+
+async def test_insight_scan_spending_anomaly_opens_owner_condition(provisioned_postgres_pool):
+    """bu-ep4ks.6: an anomalous category also opens a standing owner
+    condition, scoped to (category, month)."""
+    from butlers.jobs._roster.finance_jobs import (
+        _OWNER_CONDITION_SPENDING_ANOMALY_SOURCE,
+        owner_condition_fingerprint,
+        run_insight_scan,
+    )
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        today = _today()
+        month_start = today.replace(day=1)
+        for months_back in range(1, 4):
+            if month_start.month - months_back > 0:
+                hist_month = month_start.replace(month=month_start.month - months_back)
+            else:
+                hist_month = month_start.replace(
+                    year=month_start.year - 1, month=month_start.month - months_back + 12
+                )
+            tx_date = datetime(hist_month.year, hist_month.month, 15, 12, 0, 0, tzinfo=UTC)
+            await _insert_transaction(
+                pool,
+                merchant="Supermarket",
+                amount="100.00",
+                direction="debit",
+                category="groceries",
+                posted_at=tx_date,
+            )
+        current_day = min(today.day, 28)
+        current_tx_date = datetime(today.year, today.month, current_day, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Whole Foods",
+            amount="220.00",
+            direction="debit",
+            category="groceries",
+            posted_at=current_tx_date,
+        )
+
+        await run_insight_scan(pool)
+
+        year_month = today.strftime("%Y-%m")
+        fp = owner_condition_fingerprint(
+            _OWNER_CONDITION_SPENDING_ANOMALY_SOURCE,
+            1,
+            {"category": "groceries", "month": year_month},
+        )
+        active = await get_active_condition(
+            pool, source=_OWNER_CONDITION_SPENDING_ANOMALY_SOURCE, fingerprint=fp
+        )
+        assert active is not None
+        assert active["state"] == "open"
 
 
 async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):

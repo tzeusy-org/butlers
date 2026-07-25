@@ -14,7 +14,7 @@
 //   - Suppression-count source degraded: never fabricates a 0 count
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import type { ApiResponse, ConditionsFacts } from "@/api/types"
@@ -27,11 +27,20 @@ type ConditionsHookResult = Partial<{
 }>
 
 let mockConditionsResult: ConditionsHookResult = { isPending: false }
+// null means "same as mockConditionsResult" -- most tests exercise a single
+// ledger's shape and expect both the infra and owner useSystemConditions()
+// calls to see it identically (mirrors production symmetry). Tests
+// exercising partial degradation (one ledger down, the other healthy) set
+// this explicitly.
+let mockOwnerConditionsResult: ConditionsHookResult | null = null
 let mockSuppressionCounts: Map<string, number> = new Map()
 let mockSuppressionIsError = false
 
 vi.mock("@/hooks/use-system", () => ({
-  useSystemConditions: () => mockConditionsResult,
+  useSystemConditions: (params?: { ledger?: string }) =>
+    params?.ledger === "owner" && mockOwnerConditionsResult !== null
+      ? mockOwnerConditionsResult
+      : mockConditionsResult,
 }))
 
 vi.mock("@/hooks/use-healing", () => ({
@@ -122,6 +131,7 @@ describe("StandingConditionsTile -- empty ledger", () => {
 
 describe("StandingConditionsTile -- populated", () => {
   const openCondition = {
+    ledger: "infra",
     id: "11111111-1111-1111-1111-111111111111",
     source: "infra_state",
     fingerprint: "a".repeat(64),
@@ -193,6 +203,7 @@ describe("StandingConditionsTile -- populated", () => {
 
 describe("StandingConditionsTile -- resolved condition (auto-resolve provenance)", () => {
   const resolvedCondition = {
+    ledger: "infra",
     id: "22222222-2222-2222-2222-222222222222",
     source: "deploy_drift",
     fingerprint: "b".repeat(64),
@@ -221,3 +232,121 @@ describe("StandingConditionsTile -- resolved condition (auto-resolve provenance)
     expect(html).toContain("recovered after 1h")
   })
 })
+
+// ---------------------------------------------------------------------------
+// bu-ep4ks.6: both ledgers (infra + owner) merged onto one panel
+// ---------------------------------------------------------------------------
+
+describe("StandingConditionsTile -- ledger badge", () => {
+  const infraCondition = {
+    ledger: "infra",
+    id: "33333333-3333-3333-3333-333333333333",
+    source: "deploy_drift",
+    fingerprint: "c".repeat(64),
+    episode: 1,
+    state: "open",
+    first_detected_at: "2026-07-25T10:00:00Z",
+    last_confirmed_at: "2026-07-25T10:00:00Z",
+    last_escalated_at: null,
+    next_reescalate_at: null,
+    escalation_level: "L0",
+    resolved_at: null,
+    recovered_after_s: null,
+    summary: null,
+    metadata: null,
+  }
+  const ownerCondition = {
+    ledger: "owner",
+    id: "44444444-4444-4444-4444-444444444444",
+    source: "finance:bill-overdue",
+    fingerprint: "d".repeat(64),
+    episode: 1,
+    state: "open",
+    first_detected_at: "2026-07-24T10:00:00Z",
+    last_confirmed_at: "2026-07-24T10:00:00Z",
+    last_escalated_at: null,
+    next_reescalate_at: null,
+    escalation_level: "L1",
+    resolved_at: null,
+    recovered_after_s: null,
+    summary: "Bill overdue: Utility Co",
+    metadata: null,
+  }
+
+  afterEach(() => {
+    mockOwnerConditionsResult = null
+  })
+
+  it("merges rows from both ledgers into one list, most-recently-detected first", () => {
+    mockSuppressionCounts = new Map()
+    mockConditionsResult = {
+      isPending: false,
+      data: makeFacts({ conditions: [infraCondition], total: 1 }),
+    }
+    mockOwnerConditionsResult = {
+      isPending: false,
+      data: makeFacts({ conditions: [ownerCondition], total: 1 }),
+    }
+    const html = render()
+    assert_ordered(html, "deploy_drift", "finance:bill-overdue")
+  })
+
+  it("labels an infra row 'Infra' and an owner row 'Owner'", () => {
+    mockSuppressionCounts = new Map()
+    mockConditionsResult = {
+      isPending: false,
+      data: makeFacts({ conditions: [infraCondition], total: 1 }),
+    }
+    mockOwnerConditionsResult = {
+      isPending: false,
+      data: makeFacts({ conditions: [ownerCondition], total: 1 }),
+    }
+    const html = render()
+    expect(html).toContain("Infra")
+    expect(html).toContain("Owner")
+    expect(html).toContain("Bill overdue: Utility Co")
+  })
+
+  it("shows an infra-degraded note when only the owner ledger is available", () => {
+    mockSuppressionCounts = new Map()
+    mockConditionsResult = { isPending: false, data: makeFacts({ conditions_available: false }) }
+    mockOwnerConditionsResult = {
+      isPending: false,
+      data: makeFacts({ conditions: [ownerCondition], total: 1 }),
+    }
+    const html = render()
+    expect(html).toContain("standing-conditions-infra-degraded")
+    expect(html).toContain("finance:bill-overdue")
+  })
+
+  it("shows an owner-degraded note when only the infra ledger is available", () => {
+    mockSuppressionCounts = new Map()
+    mockConditionsResult = {
+      isPending: false,
+      data: makeFacts({ conditions: [infraCondition], total: 1 }),
+    }
+    mockOwnerConditionsResult = { isPending: false, data: makeFacts({ conditions_available: false }) }
+    const html = render()
+    expect(html).toContain("standing-conditions-owner-degraded")
+    expect(html).toContain("deploy_drift")
+  })
+
+  it("does not compute a suppression count for an owner-ledger row", () => {
+    mockSuppressionCounts = new Map([[ownerCondition.fingerprint, 5]])
+    mockConditionsResult = { isPending: false, data: makeFacts() }
+    mockOwnerConditionsResult = {
+      isPending: false,
+      data: makeFacts({ conditions: [ownerCondition], total: 1 }),
+    }
+    const html = render()
+    expect(html).not.toContain("condition-suppressed-count")
+  })
+})
+
+function assert_ordered(html: string, first: string, second: string): void {
+  const firstIndex = html.indexOf(first)
+  const secondIndex = html.indexOf(second)
+  expect(firstIndex).toBeGreaterThanOrEqual(0)
+  expect(secondIndex).toBeGreaterThanOrEqual(0)
+  expect(firstIndex).toBeLessThan(secondIndex)
+}

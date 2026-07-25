@@ -5760,6 +5760,8 @@ export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
 
 /** Params for getSystemConditions(). */
 export interface SystemConditionsParams {
+  /** "infra" (default) | "owner" -- bu-ep4ks.6 */
+  ledger?: string;
   source?: string;
   /** "open" | "aging" | "resolved" */
   state?: string;
@@ -5768,9 +5770,12 @@ export interface SystemConditionsParams {
 }
 
 /**
- * Fetch standing infrastructure conditions from GET /api/system/conditions
- * (bu-27dxl.6.2 / bu-ep4ks.3). Named distinctly from getConditions() (health
+ * Fetch standing conditions from GET /api/system/conditions (bu-27dxl.6.2 /
+ * bu-ep4ks.3 / bu-ep4ks.6). Named distinctly from getConditions() (health
  * conditions, unrelated) to avoid a same-module symbol collision.
+ *
+ * `params.ledger` selects "infra" (default, infrastructure reliability) or
+ * "owner" (owner-facing standing concerns) -- same envelope shape either way.
  *
  * Always returns HTTP 200 -- `data.conditions_available === false` means the
  * ledger query itself failed server-side; render "unknown", never "no active
@@ -5780,6 +5785,7 @@ export function getSystemConditions(
   params: SystemConditionsParams = {},
 ): Promise<ApiResponse<ConditionsFacts>> {
   const query = new URLSearchParams();
+  if (params.ledger) query.set("ledger", params.ledger);
   if (params.source) query.set("source", params.source);
   if (params.state) query.set("state", params.state);
   if (params.offset !== undefined) query.set("offset", String(params.offset));

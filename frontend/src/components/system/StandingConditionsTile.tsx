@@ -1,15 +1,22 @@
 // ---------------------------------------------------------------------------
-// StandingConditionsTile -- standing infrastructure condition ledger
-// (bu-27dxl.6.2 / bu-ep4ks.3)
+// StandingConditionsTile -- standing condition ledger, both flavors
+// (bu-27dxl.6.2 / bu-ep4ks.3 / bu-ep4ks.6)
 //
-// Data source: useSystemConditions -> GET /api/system/conditions
-// Opens the door on public.infra_conditions: until now an L0-L3 escalating
-// outage was durable in Postgres but visible only via psql, and QA-dispatch
-// Gate 5.5 suppressed repeat findings against it invisibly. Also surfaces,
-// per condition, how many QA dispatches it suppressed (useInfraConditionSuppressionCounts
-// -> GET /api/healing/dispatch-events?decision=infra_condition_open), joined
-// on the shared fingerprint identity -- the concrete "link to the condition
-// that suppressed them" slice 3 asks for.
+// Data source: useSystemConditions -> GET /api/system/conditions, called
+// twice (ledger="infra" and ledger="owner") and merged into one list, most-
+// recently-detected first. Opens the door on public.infra_conditions: until
+// now an L0-L3 escalating outage was durable in Postgres but visible only
+// via psql, and QA-dispatch Gate 5.5 suppressed repeat findings against it
+// invisibly. bu-ep4ks.6 generalizes the same lifecycle to owner-facing
+// standing concerns (public.owner_conditions -- an overdue bill, a spending
+// anomaly still true this month) and surfaces them on this SAME panel rather
+// than a duplicate one, distinguished by a small ledger badge per row.
+// Also surfaces, per infra condition, how many QA dispatches it suppressed
+// (useInfraConditionSuppressionCounts -> GET /api/healing/dispatch-events?
+// decision=infra_condition_open), joined on the shared fingerprint identity
+// -- the concrete "link to the condition that suppressed them" slice 3 asks
+// for. Owner conditions have no QA-dispatch suppression concept, so that
+// chip is only ever computed/shown for ledger="infra" rows.
 // ---------------------------------------------------------------------------
 
 import {
@@ -33,7 +40,7 @@ function TileSkeleton() {
     <Card>
       <CardHeader>
         <CardTitle>Standing Conditions</CardTitle>
-        <CardDescription>Infrastructure outages tracked by the reliability ledger</CardDescription>
+        <CardDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</CardDescription>
       </CardHeader>
       <CardContent>
         <div data-testid="standing-conditions-skeleton" className="space-y-2">
@@ -51,7 +58,7 @@ function TileFrame({ children, testId }: { children: React.ReactNode; testId?: s
     <Card>
       <CardHeader>
         <CardTitle>Standing Conditions</CardTitle>
-        <CardDescription>Infrastructure outages tracked by the reliability ledger</CardDescription>
+        <CardDescription>Infrastructure outages and owner-facing concerns tracked by the reliability ledger</CardDescription>
       </CardHeader>
       <CardContent data-testid={testId}>{children}</CardContent>
     </Card>
@@ -78,6 +85,12 @@ function ConditionRow({
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-2 min-w-0">
           <StateDot state={conditionDotState(condition.state)} />
+          <span
+            className="text-muted-foreground shrink-0 rounded border px-1 text-[10px] uppercase"
+            data-testid="standing-condition-ledger-badge"
+          >
+            {condition.ledger === "owner" ? "Owner" : "Infra"}
+          </span>
           <span className="font-medium truncate">{condition.source}</span>
           <span className="text-muted-foreground font-mono text-xs shrink-0">
             {condition.escalation_level}
@@ -116,14 +129,26 @@ function ConditionRow({
   )
 }
 
+/** Merge two most-recently-detected-first lists into one, deduped by id. */
+function mergeConditions(a: ConditionEntry[], b: ConditionEntry[]): ConditionEntry[] {
+  const byId = new Map<string, ConditionEntry>()
+  for (const condition of [...a, ...b]) {
+    if (!byId.has(condition.id)) byId.set(condition.id, condition)
+  }
+  return Array.from(byId.values()).sort((x, y) =>
+    x.first_detected_at < y.first_detected_at ? 1 : x.first_detected_at > y.first_detected_at ? -1 : 0,
+  )
+}
+
 export function StandingConditionsTile() {
-  const { data: response, isPending, isError } = useSystemConditions({ limit: 20 })
+  const infraQuery = useSystemConditions({ limit: 20 })
+  const ownerQuery = useSystemConditions({ limit: 20, ledger: "owner" })
   const { counts: suppressedCounts, isError: suppressionCountsError } =
     useInfraConditionSuppressionCounts()
 
-  if (isPending) return <TileSkeleton />
+  if (infraQuery.isPending || ownerQuery.isPending) return <TileSkeleton />
 
-  if (isError) {
+  if (infraQuery.isError && ownerQuery.isError) {
     return (
       <TileFrame testId="standing-conditions-error">
         <SourceDegradedNote label="Standing conditions" detail="could not be reached" />
@@ -131,9 +156,12 @@ export function StandingConditionsTile() {
     )
   }
 
-  const facts = response?.data
+  const infraFacts = infraQuery.isError ? undefined : infraQuery.data?.data
+  const ownerFacts = ownerQuery.isError ? undefined : ownerQuery.data?.data
+  const infraAvailable = Boolean(infraFacts?.conditions_available)
+  const ownerAvailable = Boolean(ownerFacts?.conditions_available)
 
-  if (!facts || !facts.conditions_available) {
+  if (!infraAvailable && !ownerAvailable) {
     return (
       <TileFrame testId="standing-conditions-degraded">
         <SourceDegradedNote label="Standing conditions" detail="reliability ledger unavailable" />
@@ -141,7 +169,12 @@ export function StandingConditionsTile() {
     )
   }
 
-  if (facts.conditions.length === 0) {
+  const merged = mergeConditions(
+    infraAvailable ? (infraFacts?.conditions ?? []) : [],
+    ownerAvailable ? (ownerFacts?.conditions ?? []) : [],
+  )
+
+  if (merged.length === 0 && infraAvailable && ownerAvailable) {
     return (
       <TileFrame testId="standing-conditions-empty">
         <p className="text-muted-foreground text-sm">No standing conditions recorded.</p>
@@ -151,6 +184,22 @@ export function StandingConditionsTile() {
 
   return (
     <TileFrame testId="standing-conditions-content">
+      {!infraAvailable ? (
+        <SourceDegradedNote
+          className="mb-2"
+          label="Infrastructure conditions"
+          detail="reliability ledger unavailable"
+          testId="standing-conditions-infra-degraded"
+        />
+      ) : null}
+      {!ownerAvailable ? (
+        <SourceDegradedNote
+          className="mb-2"
+          label="Owner conditions"
+          detail="condition ledger unavailable"
+          testId="standing-conditions-owner-degraded"
+        />
+      ) : null}
       {suppressionCountsError ? (
         <SourceDegradedNote
           className="mb-2"
@@ -158,17 +207,25 @@ export function StandingConditionsTile() {
           testId="standing-conditions-suppression-degraded"
         />
       ) : null}
-      <ul className="space-y-3 max-h-[320px] overflow-y-auto">
-        {facts.conditions.map((condition) => (
-          <ConditionRow
-            key={condition.id}
-            condition={condition}
-            suppressedCount={
-              suppressionCountsError ? null : suppressedCounts.get(condition.fingerprint) ?? 0
-            }
-          />
-        ))}
-      </ul>
+      {merged.length === 0 ? (
+        <p className="text-muted-foreground text-sm">No standing conditions recorded.</p>
+      ) : (
+        <ul className="space-y-3 max-h-[320px] overflow-y-auto">
+          {merged.map((condition) => (
+            <ConditionRow
+              key={condition.id}
+              condition={condition}
+              suppressedCount={
+                condition.ledger !== "infra"
+                  ? null
+                  : suppressionCountsError
+                    ? null
+                    : (suppressedCounts.get(condition.fingerprint) ?? 0)
+              }
+            />
+          ))}
+        </ul>
+      )}
     </TileFrame>
   )
 }

@@ -6927,13 +6927,18 @@ export interface DriftFacts {
 }
 
 /**
- * One episode row from public.infra_conditions (bu-27dxl.6.2 / bu-ep4ks.3).
+ * One episode row from public.infra_conditions or public.owner_conditions
+ * (bu-27dxl.6.2 / bu-ep4ks.3 / bu-ep4ks.6).
  *
- * An "open"/"aging" episode is an active outage; a "resolved" episode is
- * retained history -- `resolved_at`/`recovered_after_s` are only set once
- * resolved, and are how the panel shows auto-resolve provenance.
+ * An "open"/"aging" episode is an active outage/standing concern; a
+ * "resolved" episode is retained history -- `resolved_at`/`recovered_after_s`
+ * are only set once resolved, and are how the panel shows auto-resolve
+ * provenance. `ledger` distinguishes "infra" (infrastructure reliability)
+ * from "owner" (owner-facing standing concerns, e.g. an overdue bill) --
+ * both share the same lifecycle and this same shape.
  */
 export interface ConditionEntry {
+  ledger: string; // "infra" | "owner"
   id: string;
   source: string;
   fingerprint: string;

@@ -636,6 +636,49 @@ async def test_conditions_passes_filters_through():
     assert fetch_args[:2] == ["infra_state", "open"]
 
 
+async def test_conditions_defaults_to_infra_ledger():
+    """ledger is omitted -> reads public.infra_conditions (backward compatible)."""
+    rows = [_make_condition_row()]
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    assert resp.status_code == 200
+    entry = resp.json()["data"]["conditions"][0]
+    assert entry["ledger"] == "infra"
+
+
+async def test_conditions_ledger_owner_reads_owner_conditions_table():
+    rows = [_make_condition_row(source="finance:bill-overdue")]
+    pool = _make_conditions_pool_mock(rows=rows)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions", params={"ledger": "owner"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["conditions_available"] is True
+    entry = data["conditions"][0]
+    assert entry["ledger"] == "owner"
+    assert entry["source"] == "finance:bill-overdue"
+    fetch_query = pool.fetch.await_args.args[0]
+    assert "public.owner_conditions" in fetch_query
+
+
+async def test_conditions_rejects_invalid_ledger():
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=[])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions", params={"ledger": "bogus"})
+    assert resp.status_code == 400
+
+
 # ---------------------------------------------------------------------------
 # GET /api/system/backups
 # ---------------------------------------------------------------------------

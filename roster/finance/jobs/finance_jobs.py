@@ -19,6 +19,9 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.owner_conditions import Observation as OwnerObservation
+from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
+from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
 from butlers.tools.finance.alerts import detect_price_changes
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import budget_status
@@ -51,6 +54,17 @@ async def _finance_scoped_connection(db_pool: asyncpg.Pool):
 # ---------------------------------------------------------------------------
 
 _INSIGHT_BUTLER = "finance"
+
+# bu-ep4ks.6: owner_conditions sources for the two categories this job also
+# reconciles into the standing owner-condition ledger (see
+# _reconcile_owner_conditions below) so "is this still true and still
+# unactioned" has a durable, escalating answer alongside the existing
+# cooldown-gated insight-candidate delivery. One hour of grace before the
+# first escalation (L0->L1), matching infra_conditions' producer convention
+# of a short-but-nonzero grace rather than escalating on the very first scan.
+_OWNER_CONDITION_BILL_OVERDUE_SOURCE = "finance:bill-overdue"
+_OWNER_CONDITION_SPENDING_ANOMALY_SOURCE = "finance:spending-anomaly"
+_OWNER_CONDITION_GRACE_S = 3600.0
 
 # Spending anomaly thresholds (percentage above 3-month rolling average)
 _ANOMALY_THRESHOLD_LOW = Decimal("0.30")  # >30%  — generate insight
@@ -188,6 +202,40 @@ async def _propose(
     )["status"]
 
 
+async def _reconcile_owner_conditions(
+    db_pool: asyncpg.Pool, *, source: str, observations: list[OwnerObservation]
+) -> None:
+    """Best-effort reconcile this scan's full observation set into the owner
+    condition ledger (bu-ep4ks.6).
+
+    This is a STATE side effect, not the delivery path — insight-candidate
+    submission (``_propose``/``_submit``) is unchanged by this call and is
+    the sole owner-facing delivery mechanism. ``observations`` must be this
+    run's complete, authoritative enumeration for ``source`` (every category/
+    bill this scan currently considers, not a partial slice), since this
+    always reconciles with ``snapshot_complete=True`` -- an owner condition
+    absent from ``observations`` is resolved. A reconciliation failure must
+    never break the insight scan it is running alongside, so this logs and
+    swallows rather than raising (mirrors
+    ``butlers.core.attention_ledger.record_attention_event``'s degraded-
+    honesty contract for a secondary observability write).
+    """
+    try:
+        await reconcile_owner_condition(
+            db_pool,
+            source=source,
+            observations=observations,
+            snapshot_complete=True,
+            initial_grace_seconds=_OWNER_CONDITION_GRACE_S,
+        )
+    except Exception:
+        logger.warning(
+            "Finance insight scan: owner_conditions reconciliation failed for source=%s",
+            source,
+            exc_info=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # run_insight_scan
 # ---------------------------------------------------------------------------
@@ -206,6 +254,15 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     Each candidate is submitted via ``propose_insight_candidate()``.
     If any submission returns ``{"status": "filtered"}``, verbosity is off and
     all remaining candidates are skipped (early exit).
+
+    bu-ep4ks.6: this scan also reconciles two of those categories into the
+    durable owner condition ledger (``butlers.core.owner_conditions``) --
+    spending anomalies (per category+month) and overdue bills (due_date
+    already passed, still unpaid; a signal the old edge-candidate system
+    never tracked). This is a STATE side effect alongside, not instead of,
+    the insight-candidate delivery above: it gives "is this still true and
+    still unactioned" a durable, escalating answer on the dashboard's
+    Standing Conditions panel, best-effort and non-fatal to this scan.
 
     Args:
         db_pool: Database connection pool (used for both finance and insight tables).
@@ -301,6 +358,50 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     }
 
     month_end_dt = _end_of_month(today)
+
+    # bu-ep4ks.6: reconcile the FULL anomalous-category set for this month
+    # into the owner condition ledger before submitting any insight
+    # candidates below -- a separate, complete pass so "is category X still
+    # anomalous" has a durable, escalating answer even though the insight
+    # candidate below still uses its own cooldown-gated delivery. Fingerprint
+    # is scoped to (category, year_month): a new calendar month is a new
+    # identity, so a condition auto-resolves the moment its month's data is
+    # no longer observed as anomalous, without needing an explicit month-end
+    # close.
+    anomaly_observations: list[OwnerObservation] = []
+    for row in current_rows:
+        category = row["category"]
+        if category not in rolling_avg:
+            continue
+        current_total = Decimal(str(row["total"]))
+        avg_total = rolling_avg[category]
+        if avg_total <= 0:
+            continue
+        pct_above = (current_total - avg_total) / avg_total
+        if pct_above <= _ANOMALY_THRESHOLD_LOW:
+            continue
+        anomaly_observations.append(
+            OwnerObservation(
+                fingerprint=owner_condition_fingerprint(
+                    _OWNER_CONDITION_SPENDING_ANOMALY_SOURCE,
+                    1,
+                    {"category": category, "month": year_month},
+                ),
+                summary=(
+                    f"Spending in '{category}' is {pct_above * 100:.0f}% above the 3-month average"
+                ),
+                metadata={
+                    "category": category,
+                    "current": str(current_total),
+                    "average": str(avg_total),
+                },
+            )
+        )
+    await _reconcile_owner_conditions(
+        db_pool,
+        source=_OWNER_CONDITION_SPENDING_ANOMALY_SOURCE,
+        observations=anomaly_observations,
+    )
 
     for row in current_rows:
         category = row["category"]
@@ -399,6 +500,57 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not keep_going:
             logger.info("Finance insight scan: verbosity=off early exit (upcoming bills)")
             return {**counts, "early_exit": True}
+
+    # ------------------------------------------------------------------
+    # bu-ep4ks.6: overdue bills -> owner condition ledger
+    # ------------------------------------------------------------------
+    # Distinct from "upcoming bills" above (due within 3 days, still delivered
+    # via the cooldown-gated insight candidate): this is "due_date already
+    # passed and still unpaid", the concrete "overdue bill" example the
+    # owner-condition ledger exists for -- a standing concern with no prior
+    # durable state, since the old edge-candidate system only ever fired
+    # while a bill was upcoming, never tracked it once it went overdue.
+    # fingerprint identifies the BILL itself (stable across days overdue), so
+    # confirming evidence escalates the same episode rather than reopening a
+    # new one each day; the query is a full authoritative sweep of every
+    # still-pending overdue bill, so a bill leaving this set (paid,
+    # cancelled) resolves its condition on the very next run.
+    async with db_pool.acquire() as conn:
+        overdue_rows = await conn.fetch(
+            """
+            SELECT id, payee, amount, currency, due_date
+            FROM finance.bills
+            WHERE status = 'pending'
+              AND due_date < $1
+            ORDER BY due_date ASC
+            """,
+            today,
+        )
+
+    overdue_observations = [
+        OwnerObservation(
+            fingerprint=owner_condition_fingerprint(
+                _OWNER_CONDITION_BILL_OVERDUE_SOURCE, 1, {"bill_id": str(row["id"])}
+            ),
+            summary=(
+                f"Bill overdue: {row['payee']} — {row['currency']} "
+                f"{Decimal(str(row['amount'])):.2f} was due {row['due_date'].isoformat()}"
+            ),
+            metadata={
+                "bill_id": str(row["id"]),
+                "payee": row["payee"],
+                "amount": str(row["amount"]),
+                "currency": row["currency"],
+                "due_date": row["due_date"].isoformat(),
+            },
+        )
+        for row in overdue_rows
+    ]
+    await _reconcile_owner_conditions(
+        db_pool,
+        source=_OWNER_CONDITION_BILL_OVERDUE_SOURCE,
+        observations=overdue_observations,
+    )
 
     # ------------------------------------------------------------------
     # 3. Budget thresholds (all periods: weekly/monthly/quarterly/yearly)
