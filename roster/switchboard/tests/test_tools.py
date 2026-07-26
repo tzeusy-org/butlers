@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import shutil
 from typing import Any
 
@@ -302,6 +303,7 @@ async def test_route_to_unknown_butler(pool):
     result = await route(pool, "nonexistent", "some_tool", {})
     assert "error" in result
     assert "not found" in result["error"]
+    assert result["retryable"] is False
 
 
 async def test_route_to_known_butler_success(pool):
@@ -320,18 +322,62 @@ async def test_route_to_known_butler_success(pool):
     assert captured["endpoint_url"] == "http://localhost:41200/mcp"
 
 
-async def test_route_to_known_butler_failure(pool):
-    """route returns an error dict when the tool call raises."""
+class _RouteConnectionFailure(ConnectionError):
+    """Concrete transport subclass used to protect the route envelope contract."""
+
+
+class _RouteOSError(OSError):
+    """Concrete transport subclass used to protect the route envelope contract."""
+
+
+class _RouteTimeoutError(TimeoutError):
+    """Concrete transport subclass used to protect the route envelope contract."""
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        _RouteConnectionFailure("Connection refused"),
+        _RouteOSError(errno.ECONNREFUSED, "Connection refused"),
+        _RouteTimeoutError("Connection refused"),
+    ),
+)
+async def test_route_to_known_butler_marks_transient_subclasses_retryable(pool, failure):
+    """route preserves the error text while marking known transport failures retryable."""
     from butlers.tools.switchboard import register_butler, route
 
     await register_butler(pool, "failing", "http://localhost:8300/sse")
 
     async def failing_call(endpoint_url, tool_name, args):
-        raise ConnectionError("Connection refused")
+        raise failure
 
     result = await route(pool, "failing", "broken_tool", {}, call_fn=failing_call)
-    assert "error" in result
-    assert "ConnectionError" in result["error"]
+    assert result["error"] == f"{type(failure).__name__}: {failure}"
+    assert result["retryable"] is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        PermissionError(errno.EACCES, "Permission denied"),
+        OSError(errno.EINVAL, "Invalid argument"),
+    ),
+)
+async def test_route_to_known_butler_marks_nontransient_os_errors_terminal(pool, failure):
+    """Current route envelopes must make non-transient OS failures explicit."""
+    from butlers.tools.switchboard import register_butler, route
+
+    await register_butler(pool, "failing", "http://localhost:8300/sse")
+
+    async def failing_call(endpoint_url, tool_name, args):
+        raise failure
+
+    result = await route(pool, "failing", "broken_tool", {}, call_fn=failing_call)
+
+    assert result == {
+        "error": f"{type(failure).__name__}: {failure}",
+        "retryable": False,
+    }
 
 
 async def test_route_blocks_stale_target_by_default_and_allows_override(pool):
@@ -654,7 +700,8 @@ async def test_routing_log_records_failure(pool):
     async def bad_call(endpoint_url, tool_name, args):
         raise RuntimeError("boom")
 
-    await route(pool, "errored", "explode", {}, call_fn=bad_call)
+    result = await route(pool, "errored", "explode", {}, call_fn=bad_call)
+    assert result == {"error": "RuntimeError: boom", "retryable": False}
 
     rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'errored'")
     assert len(rows) == 1

@@ -78,10 +78,11 @@ active subscriber of its own event type.
 
 - **WHEN** the Switchboard `route()` call for one subscriber's dispatch
   fails (unreachable, timeout, tool error)
-- **THEN** that subscriber's delivery row is recorded with `status =
-  'failed'` and an `error_message`, the publish call itself still returns
-  `{"status": "ok", ...}` for the event that was durably recorded, and the
-  failure is reported in that subscriber's delivery outcome
+- **THEN** that subscriber's delivery row records the original
+  `error_message`, the publish call itself still returns `{"status": "ok",
+  ...}` for the event that was durably recorded, and the failure is reported
+  in that subscriber's delivery outcome according to the retry-classification
+  requirement below
 
 #### Scenario: The publisher is excluded from its own fan-out
 
@@ -89,6 +90,56 @@ active subscriber of its own event type.
   `event_type` it just published
 - **THEN** no delivery row is created for that butler and it is not
   dispatched to
+
+### Requirement: Strict Delivery Retry Classification
+
+The domain-event delivery ledger SHALL retry only a transient route failure.
+Switchboard SHALL preserve the existing route-level `error` text and SHALL add
+a literal boolean `retryable` classification to current route-error envelopes:
+`true` only when it still has a concrete connection, transient OS, or timeout
+exception, and `false` for every other current route error. The domain-event
+route-result unwrap SHALL honor a literal boolean `retryable` signal when
+present and treat a present non-boolean signal as terminal; for older route
+envelopes without that signal, it SHALL retain compatibility only for the exact
+legacy `ConnectionError:`, `OSError:`, and `TimeoutError:` prefixes.
+
+Every other route-level failure, including unregistered/unknown tool,
+registry lookup, authorization, validation/schema, configuration, and business
+errors, SHALL be terminal. A target tool's own `{"status": "error", ...}`
+response SHALL also be terminal, regardless of its message. Terminal failures
+SHALL transition the delivery to `failed_permanent` without entering the
+reconciliation retry selection. Retryable failures SHALL retain their original
+error text, honor the existing backoff and maximum-attempt bound, and become
+`failed_permanent` once that bound is exhausted.
+
+#### Scenario: A structured nonlegacy transport error is retried
+
+- **WHEN** Switchboard returns `{"error": "ClientConnectorError: connection
+  refused", "retryable": true}` for a subscriber delivery
+- **THEN** the original error text is stored, the delivery remains `failed`
+  for the bounded reconciliation retry path, and a later eligible sweep
+  redrives it
+
+#### Scenario: A legacy transient envelope remains retryable
+
+- **WHEN** an older Switchboard route envelope returns an error beginning with
+  `OSError:` and carries no `retryable` field
+- **THEN** the delivery remains retryable under the existing bounded retry
+  policy
+
+#### Scenario: Persistent route and target-tool failures are terminal
+
+- **WHEN** a route envelope reports `RuntimeError` for an unknown tool,
+  `LookupError` for a missing registry target, or a target tool returns
+  `{"status": "error", ...}`
+- **THEN** the delivery transitions to `failed_permanent` and is not selected
+  for a reconciliation retry
+
+#### Scenario: Retry exhaustion is terminal
+
+- **WHEN** a retryable delivery reaches the configured maximum-attempt bound
+- **THEN** the final failed attempt transitions it to `failed_permanent`, and
+  later reconciliation sweeps do not dispatch it again
 
 ### Requirement: Subscriber-Local Wake Reconciliation
 
@@ -173,3 +224,8 @@ Not once per scan cycle for as long as the condition holds -- the producer uses 
 - **WHEN** the condition's dedup identity changes (e.g. a new budget
   period window, or an escalation from `"recovering"` to `"depleted"`)
 - **THEN** a fresh domain event is published with the new payload
+
+## Source References
+
+- Non-Negotiable Rule 3 (MCP-only inter-butler communication through the Switchboard)
+- RFC 0003 (Switchboard routing and ingestion)

@@ -9,12 +9,14 @@ Mirrors the fake-``_core_tool``-registry harness from
 from __future__ import annotations
 
 import asyncio
+import errno
 import shutil
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import asyncpg
+import httpx
 import pytest
 
 from butlers.config import ButlerType
@@ -535,6 +537,53 @@ class TestFanOutEvent:
             max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
         )
 
+    async def test_incomplete_target_success_marks_delivery_failed_permanent(self, monkeypatch):
+        """A malformed target success cannot enter the retry reconciliation path."""
+        pool = AsyncMock()
+        monkeypatch.setattr(
+            _domain_events, "get_active_subscribers", AsyncMock(return_value=["finance"])
+        )
+        monkeypatch.setattr(
+            _domain_events,
+            "claim_delivery",
+            AsyncMock(return_value={"id": "d3", "status": "pending"}),
+        )
+        monkeypatch.setattr(
+            _domain_events,
+            "_dispatch_receive_via_switchboard",
+            AsyncMock(return_value=({"status": "ok"}, None, False)),
+        )
+        mark_failed_mock = AsyncMock(return_value="failed_permanent")
+        monkeypatch.setattr(_domain_events, "mark_delivery_failed", mark_failed_mock)
+
+        result = await fan_out_event(
+            pool,
+            None,
+            event_id="event-1",
+            event_type="travel.trip_booked",
+            source_butler="travel",
+            payload={},
+        )
+
+        assert result["deliveries"] == [
+            {
+                "subscriber_butler": "finance",
+                "status": "failed_permanent",
+                "error": (
+                    "receive_domain_event on 'finance' returned an incomplete success payload: "
+                    "{'status': 'ok'}"
+                ),
+            }
+        ]
+        mark_failed_mock.assert_awaited_once_with(
+            pool,
+            "d3",
+            "receive_domain_event on 'finance' returned an incomplete success payload: "
+            "{'status': 'ok'}",
+            retryable=False,
+            max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
+        )
+
     async def test_task_conflict_marks_delivery_conflict(self, monkeypatch):
         pool = AsyncMock()
         monkeypatch.setattr(
@@ -657,6 +706,42 @@ class TestUnwrapRouteResult:
         assert error == "ConnectionError: refused"
         assert retryable is True
 
+    def test_structured_transient_envelope_handles_a_nonlegacy_concrete_name(self):
+        data, error, retryable = _unwrap_route_result(
+            {
+                "error": "ClientConnectorError: connection refused",
+                "retryable": True,
+            }
+        )
+        assert data is None
+        assert error == "ClientConnectorError: connection refused"
+        assert retryable is True
+
+    @pytest.mark.parametrize("retryable_signal", ("true", 1, None))
+    def test_malformed_structured_retryable_signal_fails_closed(self, retryable_signal):
+        data, error, retryable = _unwrap_route_result(
+            {
+                "error": "ConnectionError: refused",
+                "retryable": retryable_signal,
+            }
+        )
+
+        assert data is None
+        assert error == "ConnectionError: refused"
+        assert retryable is False
+
+    def test_explicit_terminal_oserror_overrides_legacy_prefix(self):
+        data, error, retryable = _unwrap_route_result(
+            {
+                "error": "OSError: [Errno 13] Permission denied",
+                "retryable": False,
+            }
+        )
+
+        assert data is None
+        assert error == "OSError: [Errno 13] Permission denied"
+        assert retryable is False
+
     def test_error_envelope_is_detected_and_classified_permanent(self):
         data, error, retryable = _unwrap_route_result(
             {"error": "RuntimeError: Unknown tool: receive_domain_event"}
@@ -738,6 +823,55 @@ class TestDispatchReceiveViaSwitchboardEnvelope:
         assert data is None
         assert error == "RuntimeError: Unknown tool: receive_domain_event"
         assert retryable is False
+
+    @pytest.mark.parametrize(
+        "failure",
+        (
+            PermissionError(errno.EACCES, "Permission denied"),
+            OSError(errno.EINVAL, "Invalid route protocol"),
+        ),
+    )
+    async def test_client_branch_fails_closed_for_nontransient_os_errors(self, failure):
+        client = AsyncMock()
+        client.call_tool = AsyncMock(side_effect=failure)
+
+        data, error, retryable = await _domain_events._dispatch_receive_via_switchboard(
+            client,
+            AsyncMock(),
+            "travel",
+            target_butler="finance",
+            args={"event_id": "e1", "event_type": "travel.trip_booked", "payload": {}},
+        )
+
+        assert data is None
+        assert error == f"Switchboard unreachable: {failure}"
+        assert retryable is False
+
+    @pytest.mark.parametrize(
+        "failure",
+        (
+            httpx.ConnectError("connection refused"),
+            httpx.ReadTimeout("read timed out"),
+        ),
+    )
+    async def test_client_branch_classifies_direct_transient_httpx_errors_as_retryable(
+        self, failure
+    ):
+        """Direct HTTPX transport failures use the shared retry classifier."""
+        client = AsyncMock()
+        client.call_tool = AsyncMock(side_effect=failure)
+
+        data, error, retryable = await _domain_events._dispatch_receive_via_switchboard(
+            client,
+            AsyncMock(),
+            "travel",
+            target_butler="finance",
+            args={"event_id": "e1", "event_type": "travel.trip_booked", "payload": {}},
+        )
+
+        assert data is None
+        assert error == f"Switchboard unreachable: {failure}"
+        assert retryable is True
 
     async def test_switchboard_self_delivery_branch_unwraps_successful_result(self, monkeypatch):
         import importlib

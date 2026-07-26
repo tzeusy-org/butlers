@@ -106,6 +106,17 @@ class _ReceivingClient:
         return SimpleNamespace(is_error=False, data={"result": result})
 
 
+class _IncompleteSuccessClient:
+    """Simulate a target tool that claims success without delivery provenance."""
+
+    async def call_tool(self, tool_name: str, args: dict[str, Any]) -> Any:
+        from types import SimpleNamespace
+
+        assert tool_name == "route"
+        assert args["tool_name"] == "receive_domain_event"
+        return SimpleNamespace(is_error=False, data={"result": {"status": "ok"}})
+
+
 # ---------------------------------------------------------------------------
 # Migration shape + seed
 # ---------------------------------------------------------------------------
@@ -221,6 +232,29 @@ async def test_no_active_subscribers_publishes_with_zero_deliveries(pool: asyncp
         "SELECT event_type FROM public.domain_events WHERE id = $1", result["event_id"]
     )
     assert event_row["event_type"] == "travel.document_expiring"
+
+
+async def test_incomplete_target_success_is_recorded_failed_permanent(pool: asyncpg.Pool) -> None:
+    """A malformed target success cannot be selected for later retry reconciliation."""
+    result = await publish_domain_event(
+        pool,
+        _IncompleteSuccessClient(),
+        event_type="travel.trip_booked",
+        source_butler="travel",
+        payload={"trip_id": "trip-incomplete-target-result"},
+    )
+
+    assert result["deliveries"][0]["subscriber_butler"] == "finance"
+    assert result["deliveries"][0]["status"] == "failed_permanent"
+    assert "incomplete success payload" in result["deliveries"][0]["error"]
+    delivery = await pool.fetchrow(
+        "SELECT status, attempt_count, error_message FROM public.domain_event_deliveries "
+        "WHERE event_id = $1 AND subscriber_butler = 'finance'",
+        result["event_id"],
+    )
+    assert delivery["status"] == "failed_permanent"
+    assert delivery["attempt_count"] == 1
+    assert "incomplete success payload" in delivery["error_message"]
 
 
 async def test_publisher_is_never_its_own_fanout_target(pool: asyncpg.Pool) -> None:
@@ -510,9 +544,8 @@ async def _transient_failure_switchboard_route(
     source_butler: str = "switchboard",
     **_kwargs: Any,
 ) -> dict[str, Any]:
-    """Simulates a transient network blip -- retryable per
-    `_is_retryable_route_error_text`."""
-    return {"error": "ConnectionError: connection refused"}
+    """Simulates a real route envelope with a concrete nonlegacy transport name."""
+    return {"error": "ClientConnectorError: connection refused", "retryable": True}
 
 
 async def _insert_delivery_row(

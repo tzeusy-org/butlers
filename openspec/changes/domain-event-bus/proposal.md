@@ -90,6 +90,11 @@ still honoring the MCP-only rule.
   quiet-hours gate, and the attention ledger) that a fire-once domain
   event cannot replace without a broader redesign of those read paths.
   None is subsumed by the new subscriptions; no producer was removed.
+- (bu-j9bc7) Route-level failures retain the legacy `error` string and current
+  Switchboard envelopes carry a literal boolean `retryable` classification
+  while Switchboard still has the concrete exception hierarchy. Domain-event
+  delivery consumes that signal through its existing bounded retry ledger;
+  route/configuration and target-tool failures remain terminal.
 - Deferred (still reported as a follow-up): a shared `domain-event-bus`
   skill. Not added in this change -- the new publish call sites (Travel's
   context producer, Finance's and Health's insight-scan jobs) are

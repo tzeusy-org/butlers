@@ -15,6 +15,7 @@ from opentelemetry import trace
 from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
 from butlers.core.model_routing import Complexity
 from butlers.core.telemetry import inject_trace_context
+from butlers.core_tools._switchboard_route_dispatch import is_retryable_route_exception
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
     resolve_routing_target,
@@ -109,6 +110,8 @@ async def _call_tool_with_router_client(
             client = await _get_cached_router_client(endpoint_url, reconnect=reconnect)
             return await client.call_tool(tool_name, args, raise_on_error=False)
         except Exception as exc:
+            if not is_retryable_route_exception(exc):
+                raise
             if reconnect:
                 if first_exc is None:
                     message = f"Failed to call tool {tool_name} on {endpoint_url}: {exc}"
@@ -320,7 +323,7 @@ async def route(
                     await _log_routing(
                         pool, source_butler, target_butler, tool_name, False, 0, wake_error
                     )
-                    return {"error": wake_error}
+                    return {"error": wake_error, "retryable": False}
 
             # Resolve target with registry validation
             target_row, resolve_error = await resolve_routing_target(
@@ -348,7 +351,7 @@ async def route(
                 await _log_routing(
                     pool, source_butler, target_butler, tool_name, False, 0, error_msg
                 )
-                return {"error": error_msg}
+                return {"error": error_msg, "retryable": False}
 
             # Registry endpoints are self-registered as http://localhost:<port>
             # from butlers-up's own point of view (see runtime_mcp_url()).
@@ -410,6 +413,7 @@ async def route(
                 )
                 return {"result": result}
             except Exception as exc:
+                retryable = is_retryable_route_exception(exc)
                 error_class = normalize_error_class(exc)
                 span.set_status(trace.StatusCode.ERROR, str(exc))
                 span.set_attribute("routing.outcome", "failure")
@@ -436,7 +440,7 @@ async def route(
                 await _log_routing(
                     pool, source_butler, target_butler, tool_name, False, duration_ms, error_msg
                 )
-                return {"error": error_msg}
+                return {"error": error_msg, "retryable": retryable}
 
 
 async def post_mail(

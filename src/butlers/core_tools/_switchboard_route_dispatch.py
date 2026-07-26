@@ -21,10 +21,61 @@ owns.
 from __future__ import annotations
 
 import asyncio
+import errno
 from collections.abc import Callable
 from typing import Any
 
+import httpx
+
 ROUTE_TIMEOUT_S = 30
+
+# Route dispatch handles sockets, not local files. Keep the same bounded
+# classifier at both the caller-to-Switchboard and Switchboard-to-target hops:
+# PermissionError and FileNotFoundError are configuration or authorization
+# failures that a delivery retry cannot repair.
+_RETRYABLE_ROUTE_OS_ERRNOS = frozenset(
+    {
+        errno.EAGAIN,
+        errno.ECONNABORTED,
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.EHOSTUNREACH,
+        errno.EINTR,
+        errno.ENETDOWN,
+        errno.ENETRESET,
+        errno.ENETUNREACH,
+        errno.EPIPE,
+        errno.ETIMEDOUT,
+    }
+)
+
+
+def _is_direct_retryable_route_exception(exc: Exception) -> bool:
+    """Return whether ``exc`` itself is a known transient route failure."""
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    if isinstance(exc, (httpx.NetworkError, httpx.TimeoutException)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _RETRYABLE_ROUTE_OS_ERRNOS
+
+
+def is_retryable_route_exception(exc: Exception) -> bool:
+    """Return whether an exception is a known transient route transport failure.
+
+    FastMCP turns a transport error raised while opening a client into its
+    exact ``RuntimeError('Client failed to connect: ...')`` wrapper. Preserve
+    the underlying network classification only for that known shape and its
+    direct cause; arbitrary runtime wrappers remain terminal and must never
+    gain a reconnect attempt or be relabeled as ``ConnectionError``.
+    """
+    if _is_direct_retryable_route_exception(exc):
+        return True
+    return (
+        type(exc) is RuntimeError
+        and str(exc).startswith("Client failed to connect:")
+        and isinstance(exc.__cause__, Exception)
+        and _is_direct_retryable_route_exception(exc.__cause__)
+    )
 
 
 def _extract_mcp_error_text(result: Any) -> str:
@@ -59,13 +110,14 @@ async def dispatch_via_switchboard_route(
 
     ``route()`` (``roster/switchboard/tools/routing/route.py``) always
     returns ``{"error": "<ExceptionType>: <message>"}`` on a route-level
-    failure (target unreachable, unknown tool, registry lookup) or
+    failure (target unreachable, unknown tool, registry lookup), with a
+    literal boolean ``"retryable"`` classification on current envelopes, or
     ``{"result": <target tool's own return value>}`` on success -- never the
     target's dict unwrapped at the top level. ``classify`` is the one seam
     where callers deliberately diverge on how to peel that envelope back and
-    decide whether the *target tool's own* response also counts as a
-    failure; given the raw value returned by ``route()`` (``result.data`` for
-    a real MCP client, or the same shape returned directly by the in-process
+    decide whether the *target tool's own* response also counts as a failure;
+    given the raw value returned by ``route()`` (``result.data`` for a real
+    MCP client, or the same shape returned directly by the in-process
     ``route()`` call for Switchboard's self-delivery branch), it must return
     ``(data, error_text, retryable)`` in this function's own return shape.
 
@@ -93,8 +145,12 @@ async def dispatch_via_switchboard_route(
             )
         except TimeoutError:
             return None, f"Switchboard route() call timed out after {timeout_s}s.", True
-        except (ConnectionError, OSError) as exc:
-            return None, f"Switchboard unreachable: {exc}", True
+        except (ConnectionError, OSError, httpx.NetworkError, httpx.TimeoutException) as exc:
+            return (
+                None,
+                f"Switchboard unreachable: {exc}",
+                is_retryable_route_exception(exc),
+            )
         except Exception as exc:
             return None, f"{type(exc).__name__}: {exc}", False
 
