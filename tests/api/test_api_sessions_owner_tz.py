@@ -39,28 +39,16 @@ OWNER_TZ = "Asia/Singapore"  # UTC+8, no DST
 SGT = ZoneInfo(OWNER_TZ)
 
 
-def _make_agg_record(values: dict):
-    base = {
-        "total": 0,
-        "success_count": 0,
-        "failed_count": 0,
-        "running_count": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-    }
-    base.update(values)
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: base[key])
-    return m
-
-
 def _make_app_capturing_args(monkeypatch: pytest.MonkeyPatch) -> tuple[object, MagicMock]:
     """Wire an app whose fan-out records the args tuple it was called with.
 
     Patches the shared timezone resolver so the owner timezone is a known,
     non-UTC value (Asia/Singapore) regardless of DB state.
     """
-    fan_out_return = ({"atlas": [_make_agg_record({"total": 1})]}, [])
+    # These tests exercise only bound time-window arguments.  Empty rows keep
+    # the list request from sending an aggregate-shaped fixture through the
+    # shared summary mapper.
+    fan_out_return = ({"atlas": []}, [])
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
     mock_db.fan_out_with_status = AsyncMock(return_value=fan_out_return)
@@ -111,11 +99,17 @@ async def test_list_and_aggregate_share_the_same_owner_day_bounds(monkeypatch) -
     """KPI/window coherence: the list and aggregate resolve identical bounds."""
     app, mock_db = _make_app_capturing_args(monkeypatch)
 
-    await _get(app, "/api/sessions/aggregate?from_date=2026-07-11&to_date=2026-07-11")
+    aggregate_response = await _get(
+        app, "/api/sessions/aggregate?from_date=2026-07-11&to_date=2026-07-11"
+    )
+    assert aggregate_response.status_code == 200
     agg_args = mock_db.fan_out_with_status.call_args.args[1]
 
     mock_db.fan_out_with_status.reset_mock()
-    await _get(app, "/api/sessions?from_date=2026-07-11&to_date=2026-07-11&limit=20")
+    list_response = await _get(
+        app, "/api/sessions?from_date=2026-07-11&to_date=2026-07-11&limit=20"
+    )
+    assert list_response.status_code == 200
     # The list keyset path appends cursor/limit params after the WHERE args; the
     # leading two are the from/to bounds.
     list_args = mock_db.fan_out_with_status.call_args.args[1]
