@@ -130,6 +130,22 @@ describe("SessionsPinnedStrip — recent failures", () => {
     );
   });
 
+  it("renders a canonical owner cancellation as Cancelled, not Failed", () => {
+    const cancelled = makeSession({
+      id: "cancelled-1",
+      success: false,
+      cancelled_by_owner: true,
+    });
+    setup({ errors: new Map([["cancelled-1", "Cancelled by owner"]]) });
+
+    const { getByTestId, getByText } = render(
+      <SessionsPinnedStrip runningSessions={[]} recentFailures={[cancelled]} />,
+    );
+    const row = getByTestId("pinned-session-row");
+    expect(getByText("Cancelled")).toBeTruthy();
+    expect(row.textContent).not.toContain("Failed");
+  });
+
   it("truncates a long error excerpt", () => {
     const longError = "E".repeat(200);
     const failed = makeSession({ id: "fail-1", success: false });

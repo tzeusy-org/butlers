@@ -11,7 +11,8 @@ unsuccessful list row as `Failed`.
 **Goals:**
 
 - Carry only a boolean `cancelled_by_owner` discriminator through the summary
-  read model, API DTO, frontend type, and `SessionTable`.
+  read model, API DTO, frontend type, and list status consumers
+  (`SessionTable` and `SessionsPinnedStrip`).
 - Derive the discriminator only from the exact canonical marker paired with a
   failed terminal outcome.
 - Keep the cross-butler keyset and butler-scoped offset list routes coherent.
@@ -31,8 +32,9 @@ unsuccessful list row as `Failed`.
   `success IS FALSE`, rather than using a substring or an arbitrary failed
   error. This makes only the owner-confirmed outcome cancellable in display.
 - Let `StatusBadge` accept the boolean in addition to its existing detail
-  `error` input. `SessionTable` supplies the boolean; detail callers retain
-  their established marker behavior.
+  `error` input. Summary-list consumers (`SessionTable` and
+  `SessionsPinnedStrip`) supply the boolean; detail callers retain their
+  established marker behavior.
 
 ## Risks / Trade-offs
 

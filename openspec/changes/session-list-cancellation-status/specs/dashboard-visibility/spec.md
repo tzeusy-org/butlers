@@ -9,11 +9,11 @@ The frontend TypeScript interfaces SHALL define the data contracts that all visi
 - **WHEN** the sessions list API responds
 - **THEN** each item conforms to: `id` (string), `butler` (optional string), `prompt` (string), `trigger_source` (string), `request_id` (optional string | null), `success` (boolean | null), `cancelled_by_owner` (boolean), `started_at` (ISO 8601 string), `completed_at` (string | null), `duration_ms` (number | null), `input_tokens` (number | null), `output_tokens` (number | null)
 
-#### Scenario: Owner-cancelled list row is distinct from a failure
+#### Scenario: Owner-cancelled list status is distinct from a failure
 
-- **WHEN** `SessionTable` renders a session summary with `success = false` and
-  `cancelled_by_owner = true`
-- **THEN** it renders `Cancelled`, not `Failed`
+- **WHEN** `SessionTable` or `SessionsPinnedStrip` renders a session summary
+  with `success = false` and `cancelled_by_owner = true`
+- **THEN** the status badge renders `Cancelled`, not `Failed`
 - **AND** a failed summary with `cancelled_by_owner = false` renders `Failed`
 - **AND** success and non-terminal rows retain their existing labels
 

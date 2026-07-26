@@ -20,8 +20,9 @@
 // Design language: pinned != alarm-styled. No red banner, no animate-pulse
 // (forbidden by eslint anyway) -- a plain bordered section reusing the same
 // StatusBadge/ButlerMark vocabulary as the main SessionTable, so a pinned row
-// reads as "the same kind of row, just surfaced first," not a klaxon. Errors
-// use the StatusBadge "Failed" destructive token, not a custom red.
+// reads as "the same kind of row, just surfaced first," not a klaxon. Ordinary
+// failures use the StatusBadge "Failed" destructive token; canonical owner
+// cancellations retain the badge's neutral "Cancelled" state.
 //
 // [decision] Collapses to nothing (no "all clear" line restated) when neither
 // list has anything to pin, rather than always rendering a calm one-liner
@@ -95,7 +96,10 @@ function PinnedRow({ session, trailing, selected, onClick }: PinnedRowProps) {
             "cursor-pointer hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
         )}
       >
-        <StatusBadge success={session.success} />
+        <StatusBadge
+          success={session.success}
+          cancelledByOwner={session.cancelled_by_owner}
+        />
         {session.butler && (
           <span className="inline-flex items-center gap-1.5 text-foreground">
             <ButlerMark name={session.butler} tone="neutral" />

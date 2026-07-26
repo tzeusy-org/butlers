@@ -61,8 +61,8 @@ READ_MODEL_VERSION = "sessions_v1"
 #: marker is canonicalized in ``Spawner.cancel_session()``; summary reads
 #: expose only this boolean and never the raw ``sessions.error`` text.
 _CANCELLED_BY_OWNER_SQL = (
-    "(success IS FALSE AND error = "
-    f"'{SESSION_CANCELLED_ERROR.replace("'", "''")}') AS cancelled_by_owner"
+    "COALESCE((success IS FALSE AND error = "
+    f"'{SESSION_CANCELLED_ERROR.replace("'", "''")}'), FALSE) AS cancelled_by_owner"
 )
 
 #: Columns returned for list / summary views. The additive cancellation
@@ -255,7 +255,9 @@ def row_to_summary(row: asyncpg.Record, *, butler: str | None = None) -> Session
         complexity=row["complexity"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
-        cancelled_by_owner=row["cancelled_by_owner"],
+        # The SQL projection is non-null, but fail closed at the read-model
+        # boundary if a legacy/mock row still reaches us with NULL.
+        cancelled_by_owner=row["cancelled_by_owner"] is True,
     )
 
 

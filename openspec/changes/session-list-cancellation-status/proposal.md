@@ -9,8 +9,8 @@ raw runtime error text.
 
 - Add a backwards-compatible owner-cancellation discriminator to every
   `SessionSummary` list response.
-- Render that discriminator as `Cancelled` in the sessions table while
-  preserving existing success, failure, and running states.
+- Render that discriminator as `Cancelled` in session-list status surfaces
+  while preserving existing success, failure, and running states.
 - Keep list pagination, detail and Stop semantics, transport, migrations, and
   schema boundaries unchanged.
 

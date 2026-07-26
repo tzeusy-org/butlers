@@ -319,6 +319,39 @@ async def test_session_list_routes_project_only_canonical_owner_cancellation() -
         assert all("error" not in item for item in items)
 
 
+async def test_session_list_routes_treat_null_cancellation_projection_as_generic_failure() -> None:
+    """A failed row with a NULL error must not invalidate either list response.
+
+    SQL three-valued logic returns NULL for the cancellation predicate when
+    ``sessions.error`` is NULL.  Simulate that raw projection value here so
+    both route serializers are protected even if a bad historical row reaches
+    the read-model boundary.
+    """
+    rows = [_make_session_row(success=False, error=None, cancelled_by_owner=None)]
+
+    global_app = _make_app_with_sessions(rows)
+    scoped_app = _make_butler_app_with_sessions(rows)
+
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(global_app), base_url="http://test"
+        ) as global_client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(scoped_app), base_url="http://test"
+        ) as scoped_client,
+    ):
+        global_response = await global_client.get("/api/sessions")
+        scoped_response = await scoped_client.get("/api/butlers/atlas/sessions")
+
+    assert global_response.status_code == 200
+    assert scoped_response.status_code == 200
+    for response in (global_response, scoped_response):
+        item = response.json()["data"][0]
+        assert item["success"] is False
+        assert item["cancelled_by_owner"] is False
+        assert "error" not in item
+
+
 # ---------------------------------------------------------------------------
 # Butler-scoped /api/butlers/{name}/sessions pagination tests
 # ---------------------------------------------------------------------------

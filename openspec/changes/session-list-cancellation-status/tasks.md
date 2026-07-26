@@ -5,10 +5,10 @@
 
 ## 2. Sessions table
 
-- [x] 2.1 Add the frontend summary type field and render it as `Cancelled` in `SessionTable` without changing generic failed or running states.
+- [x] 2.1 Add the frontend summary type field and render it as `Cancelled` in `SessionTable` and `SessionsPinnedStrip` without changing generic failed or running states.
 
 ## 3. Verification
 
 - [x] 3.1 Add focused backend coverage for canonical cancellation, generic failure, and non-terminal summaries across both list routes.
-- [x] 3.2 Add focused frontend table coverage for cancelled, failed, and non-terminal status rendering.
+- [x] 3.2 Add focused frontend table and pinned-row coverage for cancelled, failed, and non-terminal status rendering.
 - [x] 3.3 Run targeted backend and frontend tests, formatter/lint/type checks, and strict OpenSpec validation.

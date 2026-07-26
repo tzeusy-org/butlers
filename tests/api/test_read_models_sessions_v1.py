@@ -144,6 +144,8 @@ def test_row_to_summary_maps_all_fields():
 def test_summary_projection_derives_only_the_canonical_cancellation_indicator():
     """List reads compute a boolean rather than selecting raw error text."""
     assert "AS cancelled_by_owner" in SUMMARY_COLUMNS
+    assert "COALESCE(" in SUMMARY_COLUMNS
+    assert ", FALSE) AS cancelled_by_owner" in SUMMARY_COLUMNS
     assert f"error = '{SESSION_CANCELLED_ERROR}'" in SUMMARY_COLUMNS
     assert "id, prompt" in SUMMARY_COLUMNS
 
