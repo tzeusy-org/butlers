@@ -73,6 +73,27 @@ cron = "45 7 * * *"
 dispatch_mode = "job"
 job_name = "insight_scan"
 
+# Flight-status poll (bu-8bnn9, follow-up from bu-ep4ks.16): polls the flight
+# numbers Travel already extracts from booking confirmations
+# (travel.legs.metadata->>'flight_number') against AviationStack and notifies
+# on a schedule delta past a threshold. Degrades honestly to a no-op when no
+# AVIATIONSTACK_API_KEY secret is provisioned in butler_secrets.
+[[butler.schedule]]
+name = "flight-status-check"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "flight_status_check"
+
+# Destination weather outlook for trips departing within 3 days (bu-8bnn9,
+# follow-up from bu-ep4ks.16 slice 1): geocodes the destination and fetches
+# its current conditions via the same keyless Open-Meteo source as the shared
+# home atmosphere feed.
+[[butler.schedule]]
+name = "destination-outlook"
+cron = "30 7 * * *"
+dispatch_mode = "job"
+job_name = "destination_outlook"
+
 [[butler.schedule]]
 name = "daily_briefing_contribution"
 cron = "55 6 * * *"

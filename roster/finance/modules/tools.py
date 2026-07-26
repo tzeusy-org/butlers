@@ -38,6 +38,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
     from butlers.tools.finance import bills as _bills
     from butlers.tools.finance import facts as _facts
+    from butlers.tools.finance import feed_reconciliation as _feed_reconciliation
     from butlers.tools.finance import reconciliation as _reconciliation
     from butlers.tools.finance import spending as _spending
     from butlers.tools.finance import subscriptions as _subscriptions
@@ -389,6 +390,56 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         """
         message = _bills.compose_upcoming_bills_digest(sweep, bills, predictions)
         return {"message": message}
+
+    @_tool("core")
+    async def reconcile_feed_vs_email(lookback_days: int = 30) -> dict[str, Any]:
+        """Cross-check aggregator-fed transactions against the email-parsed ledger.
+
+        Matches ``transactions.source = 'aggregator'`` rows against
+        ``source_message_id IS NOT NULL`` (email-parsed) rows on (amount ±$0.01,
+        date ±3 days, merchant-fuzzy). No aggregator connector ships yet (the
+        owner must provision a token first) so today this always returns
+        `configured=false` with empty match lists — that is the honest state,
+        not an error.
+
+        lookback_days: Outer scan horizon for both transaction sets (default 30).
+
+        Returns:
+          configured: whether any account has ever completed an aggregator sync.
+            False means the empty lists reflect "not connected yet", not "all
+            reconciled".
+          matched: [{feed, email}, ...] — paired transactions.
+          unmatched_feed: aggregator transactions with no matching email receipt
+            (e.g. a merchant that never emails receipts).
+          unmatched_email_count: email transactions with no matching aggregator
+            row in the window.
+        """
+        return await _feed_reconciliation.reconcile_feed_vs_email(
+            module._get_pool(),
+            lookback_days=lookback_days,
+        )
+
+    @_tool("core")
+    async def account_feed_freshness(staleness_threshold_hours: int = 24) -> dict[str, Any]:
+        """Report per-account aggregator-feed freshness.
+
+        An account is `degraded=true` when it has never completed an
+        aggregator sync (`reason="never_synced"`) or its last sync is older
+        than `staleness_threshold_hours` (`reason="stale"`). Until an
+        aggregator connector is wired up, every account reports
+        `never_synced` — this is the honest degraded state per the
+        Degraded-Mode Response Envelope convention, never a fabricated "all
+        healthy".
+
+        Returns:
+          accounts: [{account_id, institution, type, name, last_synced_at,
+            degraded, reason}, ...]
+        """
+        accounts = await _feed_reconciliation.account_feed_freshness(
+            module._get_pool(),
+            staleness_threshold_hours=staleness_threshold_hours,
+        )
+        return {"accounts": accounts}
 
     # =================================================================
     # Spending tools

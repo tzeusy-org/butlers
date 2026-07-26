@@ -50,6 +50,16 @@ cron = "0 7 * * 1"
 dispatch_mode = "job"
 job_name = "insight_scan"
 
+# Atmosphere health advisory (bu-8bnn9, follow-up from bu-ep4ks.16 slice 1):
+# reads the shared home-location atmosphere feed and surfaces an advisory
+# when outdoor AQI or pollen is elevated. No-op when the feed is not
+# configured or has no reading yet.
+[[butler.schedule]]
+name = "atmosphere-advisory"
+cron = "15 7 * * *"
+dispatch_mode = "job"
+job_name = "atmosphere_advisory"
+
 # Situational context-bus producer (RFC 0009): deterministic, zero-LLM.
 # Publishes `sleeping` from the owner-declared quiet-hours window every 15
 # minutes, activating the shipped notify sleeping-gate.

@@ -940,6 +940,36 @@ async def _run_travel_insight_scan_job(
     return await mod.run_insight_scan(pool)
 
 
+async def _run_travel_flight_status_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Poll AviationStack for booked flight legs and notify on delay/cancellation.
+
+    Delegates to ``butlers.jobs.flight_status.run_flight_status_check``
+    (bu-8bnn9, follow-up from bu-ep4ks.16). Degrades honestly to
+    ``{"skipped": True, "reason": "not_configured"}`` when no
+    ``AVIATIONSTACK_API_KEY`` secret is provisioned.
+    """
+    from butlers.jobs.flight_status import run_flight_status_check
+
+    return await run_flight_status_check(pool, job_args)
+
+
+async def _run_travel_destination_outlook_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Propose a destination-weather outlook for trips departing soon.
+
+    Delegates to ``butlers.jobs.atmosphere_consumers.run_travel_destination_outlook``
+    (bu-8bnn9, follow-up from bu-ep4ks.16 slice 1).
+    """
+    from butlers.jobs.atmosphere_consumers import run_travel_destination_outlook
+
+    return await run_travel_destination_outlook(pool, job_args)
+
+
 async def _run_health_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -959,6 +989,21 @@ async def _run_health_insight_scan_job(
     mod = load_roster_jobs("health")
     ha_reader = await build_ha_environment_reader(pool)
     return await mod.run_insight_scan(pool, ha_environment_reader=ha_reader)
+
+
+async def _run_health_atmosphere_advisory_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Surface a health advisory when outdoor AQI or pollen is elevated.
+
+    Delegates to ``butlers.jobs.atmosphere_consumers.run_health_atmosphere_advisory``
+    (bu-8bnn9, follow-up from bu-ep4ks.16 slice 1). Degrades honestly when the
+    shared atmosphere feed is not configured or has no reading yet.
+    """
+    from butlers.jobs.atmosphere_consumers import run_health_atmosphere_advisory
+
+    return await run_health_atmosphere_advisory(pool, job_args)
 
 
 async def _run_relationship_calendar_overlay_contribution_job(
@@ -1314,6 +1359,22 @@ async def _run_home_atmosphere_feed_refresh_job(
     return await run_atmosphere_feed_refresh(pool, job_args)
 
 
+async def _run_home_atmosphere_preconditioning_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Suggest pre-cooling/pre-heating/closing windows ahead of extreme conditions.
+
+    Delegates to
+    ``butlers.jobs.atmosphere_consumers.run_home_atmosphere_preconditioning``
+    (bu-8bnn9, follow-up from bu-ep4ks.16 slice 1). Degrades honestly when the
+    shared atmosphere feed is not configured or has no reading yet.
+    """
+    from butlers.jobs.atmosphere_consumers import run_home_atmosphere_preconditioning
+
+    return await run_home_atmosphere_preconditioning(pool, job_args)
+
+
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "device_health_check": _run_home_device_health_check_job,
     "environment_report": _run_home_environment_report_job,
@@ -1321,6 +1382,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "maintenance_schedule_check": _run_home_maintenance_schedule_check_job,
     "context_producer_home_presence": _run_context_producer_home_presence_job,
     "atmosphere_feed_refresh": _run_home_atmosphere_feed_refresh_job,
+    "atmosphere_preconditioning": _run_home_atmosphere_preconditioning_job,
 }
 
 
@@ -1767,6 +1829,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "daily_briefing_contribution": _run_health_briefing_contribution_job,
             "calendar_overlay_contribution": _run_health_calendar_overlay_contribution_job,
             "insight_scan": _run_health_insight_scan_job,
+            "atmosphere_advisory": _run_health_atmosphere_advisory_job,
             "context_producer_sleep_window": _run_context_producer_sleep_window_job,
             # Per-butler session log pruner
             "session_process_logs_prune": _run_session_process_logs_prune_job,
@@ -1803,6 +1866,8 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_travel_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_travel_calendar_prep_contribution_job,
             "insight_scan": _run_travel_insight_scan_job,
+            "flight_status_check": _run_travel_flight_status_check_job,
+            "destination_outlook": _run_travel_destination_outlook_job,
             "context_producer_travel": _run_context_producer_travel_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },

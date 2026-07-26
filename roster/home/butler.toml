@@ -70,6 +70,16 @@ cron = "*/30 * * * *"
 dispatch_mode = "job"
 job_name = "atmosphere_feed_refresh"
 
+# Home pre-conditioning advisory (bu-8bnn9, follow-up from bu-ep4ks.16 slice
+# 1): reads the shared atmosphere feed and proposes a pre-cool/pre-heat/
+# close-windows suggestion ahead of extreme conditions. No-op when the feed
+# is not configured or has no reading yet.
+[[butler.schedule]]
+name = "atmosphere-preconditioning"
+cron = "5 */3 * * *"
+dispatch_mode = "job"
+job_name = "atmosphere_preconditioning"
+
 [[butler.schedule]]
 name = "daily_briefing_contribution"
 cron = "55 6 * * *"
