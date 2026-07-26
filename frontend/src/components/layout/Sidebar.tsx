@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
 import { useSpendSummary } from '@/hooks/use-spend'
 import { useBadgeCounts } from '@/hooks/use-qa-badge'
+import { usePrefetchOnIntent } from '@/hooks/use-prefetch-on-intent'
 import { useRouteChunkPrefetchOnIntent } from '@/hooks/use-route-chunk-prefetch-on-intent'
 import { ButlerMark } from '@/components/ui/ButlerMark'
 import {
@@ -13,6 +14,7 @@ import {
 } from '@/components/ui/tooltip'
 import { navSections, type NavItem, type NavFlatItem, type NavGroupItem, type NavSection } from './nav-config'
 import { NavIcon } from './NavIcon'
+import { composeHandlers } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
 // Type guard
@@ -200,6 +202,7 @@ function FlatNavLink({
   // Hover/focus intent -> route JS-chunk prefetch (bu-ep4ks.15). A no-op for
   // any path not in lib/route-chunk-registry.ts's map.
   const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
+  const dataPrefetch = usePrefetchOnIntent(item.path)
 
   return (
     <Tooltip>
@@ -208,10 +211,10 @@ function FlatNavLink({
           to={item.path}
           end={item.end}
           onClick={onNavClick}
-          onPointerEnter={chunkPrefetch.onPointerEnter}
-          onPointerLeave={chunkPrefetch.onPointerLeave}
-          onFocus={chunkPrefetch.onFocus}
-          onBlur={chunkPrefetch.onBlur}
+          onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
+          onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
+          onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
+          onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
           className={railItemClassName(isActive)}
           aria-label={item.tooltip ?? item.label}
         >
@@ -339,6 +342,7 @@ function NavGroupChildLink({
   onNavClick?: () => void
 }) {
   const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
+  const dataPrefetch = usePrefetchOnIntent(path)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -346,10 +350,10 @@ function NavGroupChildLink({
           to={path}
           end={end}
           onClick={onNavClick}
-          onPointerEnter={chunkPrefetch.onPointerEnter}
-          onPointerLeave={chunkPrefetch.onPointerLeave}
-          onFocus={chunkPrefetch.onFocus}
-          onBlur={chunkPrefetch.onBlur}
+          onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
+          onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
+          onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
+          onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
           className={[railItemClassName(isActive), 'pl-2'].join(' ')}
           aria-label={label}
         >
@@ -710,16 +714,17 @@ function MobileFlatLink({
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
   const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
+  const dataPrefetch = usePrefetchOnIntent(item.path)
 
   return (
     <NavLink
       to={item.path}
       end={item.end}
       onClick={onNavClick}
-      onPointerEnter={chunkPrefetch.onPointerEnter}
-      onPointerLeave={chunkPrefetch.onPointerLeave}
-      onFocus={chunkPrefetch.onFocus}
-      onBlur={chunkPrefetch.onBlur}
+      onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
+      onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
+      onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
+      onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
       className={({ isActive }) =>
         [
           'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
@@ -850,15 +855,16 @@ function MobileNavGroupChildLink({
   onNavClick?: () => void
 }) {
   const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
+  const dataPrefetch = usePrefetchOnIntent(path)
   return (
     <NavLink
       to={path}
       end={end}
       onClick={onNavClick}
-      onPointerEnter={chunkPrefetch.onPointerEnter}
-      onPointerLeave={chunkPrefetch.onPointerLeave}
-      onFocus={chunkPrefetch.onFocus}
-      onBlur={chunkPrefetch.onBlur}
+      onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
+      onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
+      onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
+      onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
       className={({ isActive }) =>
         [
           'flex items-center gap-3 rounded-md pl-9 pr-3 py-2 text-sm font-medium transition-colors',

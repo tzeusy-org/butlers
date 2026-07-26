@@ -17,7 +17,7 @@
  * parallel "is this route covered" list.
  *
  * Bus-covered entries retain their POLL_BUS_RECONCILE_MS staleTime (see
- * lib/poll-policy.ts); ordinary detail routes use the QueryClient's 30-second
+ * lib/poll-policy.ts); ordinary routes use the QueryClient's 30-second
  * freshness window. This keeps a prefetch behaviorally identical to the page
  * that will consume its cache entry.
  */
@@ -29,16 +29,20 @@ import {
   getEpisode,
   getFact,
   getIngestionEvent,
+  getMeasurementTypes,
   getRule,
   getSession,
+  getSessions,
   getTimeline,
 } from "@/api/index.ts";
 import { ENTITY_DETAIL_INITIAL_PARAMS } from "@/lib/entity-detail-query";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
+import { fetchSpendForecast } from "@/lib/spend-forecast";
 
 /** Head-page size used by TimelinePage's own query (use-timeline-ledger.ts). */
 const TIMELINE_HEAD_PAGE_SIZE = 50;
-const DEFAULT_DETAIL_STALE_TIME_MS = 30_000;
+const SESSION_LIST_INITIAL_PARAMS = { limit: 20 };
+const DEFAULT_QUERY_STALE_TIME_MS = 30_000;
 
 export interface PrefetchTarget {
   queryKey: readonly unknown[];
@@ -47,6 +51,39 @@ export interface PrefetchTarget {
 }
 
 type Matcher = (pathname: string) => PrefetchTarget | null;
+
+/**
+ * The Sidebar only supplies these exact, unfiltered list paths. Match the raw
+ * `to` value before pathname normalization so a filtered or anchored link
+ * cannot accidentally warm the default list cache entry instead of the
+ * destination's own query shape.
+ */
+function matchSidebarListRoute(to: string): PrefetchTarget | null {
+  switch (to) {
+    case "/sessions":
+      return {
+        queryKey: ["sessions", SESSION_LIST_INITIAL_PARAMS],
+        queryFn: () => getSessions(SESSION_LIST_INITIAL_PARAMS),
+        staleTime: DEFAULT_QUERY_STALE_TIME_MS,
+      };
+    case "/health":
+      // Health's briefing is an LLM-backed, manual-refresh cost-guarded
+      // query. Prefetch only the first deterministic page query instead.
+      return {
+        queryKey: ["health-measurement-types"],
+        queryFn: getMeasurementTypes,
+        staleTime: DEFAULT_QUERY_STALE_TIME_MS,
+      };
+    case "/spend":
+      return {
+        queryKey: ["spend-forecast"],
+        queryFn: fetchSpendForecast,
+        staleTime: DEFAULT_QUERY_STALE_TIME_MS,
+      };
+    default:
+      return null;
+  }
+}
 
 /** `/butlers/:name` -- ButlerDetailPage's useButler(name). */
 const BUTLER_DETAIL_RE = /^\/butlers\/([^/]+)$/;
@@ -57,7 +94,7 @@ function matchButlerDetail(pathname: string): PrefetchTarget | null {
   return {
     queryKey: ["butlers", name],
     queryFn: () => getButler(name),
-    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+    staleTime: DEFAULT_QUERY_STALE_TIME_MS,
   };
 }
 
@@ -79,7 +116,7 @@ function matchEntityDetail(pathname: string): PrefetchTarget | null {
   return {
     queryKey: ["memory-entity", entityId, ENTITY_DETAIL_INITIAL_PARAMS],
     queryFn: () => getEntity(entityId, ENTITY_DETAIL_INITIAL_PARAMS),
-    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+    staleTime: DEFAULT_QUERY_STALE_TIME_MS,
   };
 }
 
@@ -92,7 +129,7 @@ function matchFactDetail(pathname: string): PrefetchTarget | null {
   return {
     queryKey: ["memory-fact", factId],
     queryFn: () => getFact(factId),
-    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+    staleTime: DEFAULT_QUERY_STALE_TIME_MS,
   };
 }
 
@@ -105,7 +142,7 @@ function matchEpisodeDetail(pathname: string): PrefetchTarget | null {
   return {
     queryKey: ["memory-episode", episodeId],
     queryFn: () => getEpisode(episodeId),
-    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+    staleTime: DEFAULT_QUERY_STALE_TIME_MS,
   };
 }
 
@@ -118,7 +155,7 @@ function matchRuleDetail(pathname: string): PrefetchTarget | null {
   return {
     queryKey: ["memory-rule", ruleId],
     queryFn: () => getRule(ruleId),
-    staleTime: DEFAULT_DETAIL_STALE_TIME_MS,
+    staleTime: DEFAULT_QUERY_STALE_TIME_MS,
   };
 }
 
@@ -205,6 +242,8 @@ const MATCHERS: Matcher[] = [
 export function resolvePrefetchTarget(to: string): PrefetchTarget | null {
   const ingestionEventTarget = matchIngestionEventDetail(to);
   if (ingestionEventTarget) return ingestionEventTarget;
+  const sidebarListTarget = matchSidebarListRoute(to);
+  if (sidebarListTarget) return sidebarListTarget;
   const pathname = to.split("?")[0].split("#")[0];
   try {
     for (const matcher of MATCHERS) {

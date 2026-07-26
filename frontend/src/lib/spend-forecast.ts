@@ -1,5 +1,6 @@
 // ---------------------------------------------------------------------------
 
+import { apiFetch } from "@/api/client"
 import type { SpendDivergence, UnpricedModelUsage } from "@/api/types"
 // Shared GET /api/spend/forecast response shape.
 //
@@ -39,4 +40,9 @@ export interface ForecastData {
   // Retained for older cached responses. Ledger daily actuals no longer omit
   // per-butler fan-out sources, so current responses use source/deadman fields.
   unavailable_butlers?: string[]
+}
+
+/** Shared `/spend` posture query used by SpendPage and intent prefetch. */
+export function fetchSpendForecast(): Promise<{ data: ForecastData }> {
+  return apiFetch<{ data: ForecastData }>("/spend/forecast")
 }

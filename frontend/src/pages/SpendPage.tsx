@@ -77,7 +77,7 @@ import { cn } from "@/lib/utils"
 import { announce } from "@/lib/shell-announcer"
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry"
 import { computeMovers, type Mover } from "@/lib/spend-movers"
-import type { ForecastData, ForecastDay } from "@/lib/spend-forecast"
+import { fetchSpendForecast, type ForecastData, type ForecastDay } from "@/lib/spend-forecast"
 import type { ComplexityTier, SpendDivergence, UnpricedModelUsage } from "@/api/types"
 
 // ---------------------------------------------------------------------------
@@ -147,10 +147,6 @@ interface BreakdownData {
 // ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
-
-function fetchForecast(): Promise<{ data: ForecastData }> {
-  return apiFetch<{ data: ForecastData }>("/spend/forecast")
-}
 
 function fetchBreakdown(
   by: "butler" | "model" | "feature" | "purpose",
@@ -1863,7 +1859,7 @@ export default function SpendPage() {
     refetch: refetchForecast,
   } = useQuery({
     queryKey: ["spend-forecast"],
-    queryFn: fetchForecast,
+    queryFn: fetchSpendForecast,
     refetchInterval: forecastRefetchInterval,
   })
   const forecast = forecastData?.data

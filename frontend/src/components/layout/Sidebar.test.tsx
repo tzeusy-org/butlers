@@ -4,8 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
+import { fireEvent } from "@testing-library/react";
 
 import Sidebar from "@/components/layout/Sidebar";
+import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
+import { useRouteChunkPrefetchOnIntent } from "@/hooks/use-route-chunk-prefetch-on-intent";
 import { useSpendSummary } from "@/hooks/use-spend";
 import { useBadgeCounts } from "@/hooks/use-qa-badge";
 import { resetUseButlersMock, setUseButlersState } from "@/test-utils/use-butlers";
@@ -22,6 +25,14 @@ vi.mock("@/hooks/use-qa-badge", () => ({
   useBadgeCounts: vi.fn(() => ({})),
 }));
 
+vi.mock("@/hooks/use-prefetch-on-intent", () => ({
+  usePrefetchOnIntent: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-route-chunk-prefetch-on-intent", () => ({
+  useRouteChunkPrefetchOnIntent: vi.fn(),
+}));
+
 // Radix Tooltip renders content in a portal — skip portal assertions in JSDOM
 vi.mock("radix-ui", async (importOriginal) => {
   const actual = await importOriginal<typeof import("radix-ui")>();
@@ -35,6 +46,24 @@ vi.mock("radix-ui", async (importOriginal) => {
 });
 
 const setButlersState = setUseButlersState;
+
+const dataPrefetchHandlers = {
+  schedule: vi.fn(),
+  cancel: vi.fn(),
+  onPointerEnter: vi.fn(),
+  onPointerLeave: vi.fn(),
+  onFocus: vi.fn(),
+  onBlur: vi.fn(),
+};
+
+const chunkPrefetchHandlers = {
+  schedule: vi.fn(),
+  cancel: vi.fn(),
+  onPointerEnter: vi.fn(),
+  onPointerLeave: vi.fn(),
+  onFocus: vi.fn(),
+  onBlur: vi.fn(),
+};
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -51,6 +80,8 @@ describe("Sidebar", () => {
       data: { data: { total_cost_usd: 26.27 } },
       isLoading: false,
     } as ReturnType<typeof useSpendSummary>);
+    vi.mocked(usePrefetchOnIntent).mockReturnValue(dataPrefetchHandlers);
+    vi.mocked(useRouteChunkPrefetchOnIntent).mockReturnValue(chunkPrefetchHandlers);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -94,6 +125,41 @@ describe("Sidebar", () => {
       );
     });
   }
+
+  describe("intent prefetch", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: {
+          data: [{ name: "health", status: "ok", port: 40109, type: "butler" as const, sessions_24h: 0 }],
+          meta: {},
+        },
+      });
+    });
+
+    it.each([
+      ["desktop flat link", () => render(), "/sessions"],
+      ["desktop group child", () => render("/health"), "/health"],
+      ["mobile flat link", () => renderMobile(), "/spend"],
+      ["mobile group child", () => renderMobile("/health"), "/health"],
+    ])("composes route-chunk and data prefetch handlers for each %s", (_surface, renderSurface, path) => {
+      renderSurface();
+
+      const link = container.querySelector(`a[href="${path}"]`);
+      expect(link).toBeInstanceOf(HTMLAnchorElement);
+      expect(useRouteChunkPrefetchOnIntent).toHaveBeenCalledWith(path);
+      expect(usePrefetchOnIntent).toHaveBeenCalledWith(path);
+
+      fireEvent.pointerEnter(link!);
+      fireEvent.pointerLeave(link!);
+      fireEvent.focus(link!);
+      fireEvent.blur(link!);
+
+      for (const handler of ["onPointerEnter", "onPointerLeave", "onFocus", "onBlur"] as const) {
+        expect(chunkPrefetchHandlers[handler]).toHaveBeenCalledOnce();
+        expect(dataPrefetchHandlers[handler]).toHaveBeenCalledOnce();
+      }
+    });
+  });
 
   // -------------------------------------------------------------------------
   // Rail geometry: brand mark
