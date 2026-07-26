@@ -28,6 +28,21 @@ reconciliation sweep) gets the *same* row back and must inspect its
 dispatched, but a ``pending``/``failed`` row is a legitimate retry target
 for the caller (mirrors ``delegation_wake``'s deterministic-name
 reconciliation, just keyed by a unique index instead of a task name).
+
+The periodic reconciliation sweep this design anticipated (bu-1yw6d) is
+``run_domain_event_reconciliation_sweep`` in ``src/butlers/core_tools/
+_domain_events.py``, dispatched by the Switchboard's ``domain_event_
+reconciliation_sweep`` scheduled job: it re-drives ``pending`` rows stuck
+since a crash (:func:`select_stale_pending_deliveries`) and retries
+``failed`` rows a bounded number of times with backoff
+(:func:`select_retryable_failed_deliveries`), reusing this exact claim/mark
+idempotence so a genuinely in-flight delivery is never double-dispatched.
+:func:`mark_delivery_failed` transitions a delivery to the terminal
+``failed_permanent`` status -- distinct from the retryable ``failed`` --
+once a route error is classified permanent (e.g. the subscriber lacks the
+``domain_events`` core group) or the retry bound is reached, so a delivery
+that can never succeed is surfaced honestly instead of retried forever or
+silently dropped.
 """
 
 from __future__ import annotations
@@ -35,11 +50,14 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from datetime import timedelta
 from typing import Any
 
 import asyncpg
 
-VALID_DELIVERY_STATUSES = frozenset({"pending", "delivered", "conflict", "failed"})
+VALID_DELIVERY_STATUSES = frozenset(
+    {"pending", "delivered", "conflict", "failed", "failed_permanent"}
+)
 
 # "<namespace>.<event>" -- namespace is conventionally the publishing
 # butler's name. Deliberately permissive (no fixed enum): any butler can
@@ -341,19 +359,51 @@ async def mark_delivery_failed(
     pool: asyncpg.Pool,
     delivery_id: uuid.UUID | str,
     error_message: str,
-) -> None:
-    """Record a route()-level dispatch failure; leaves the row retryable.
+    *,
+    retryable: bool = True,
+    max_attempts: int | None = None,
+) -> str | None:
+    """Record a route()-level dispatch failure and bump ``attempt_count``.
 
-    Never downgrades an already-``delivered`` row.
+    Never downgrades an already-``delivered`` or already-``failed_permanent``
+    row -- both are terminal. Transitions to the terminal ``failed_permanent``
+    status instead of the retryable ``failed`` when either:
+
+    - ``retryable`` is ``False`` -- the caller (see
+      ``_domain_events._is_retryable_route_error_text``) classified this as a
+      permanent route error (e.g. the subscriber lacks the ``domain_events``
+      core group, surfaced as an "unknown tool" route failure) rather than a
+      transient one (connection/timeout); retrying a permanent error can
+      never succeed, so there is no reason to wait for the attempt bound.
+    - ``max_attempts`` is given and ``attempt_count`` would reach it -- the
+      periodic reconciliation sweep's bounded-retry cap
+      (``run_domain_event_reconciliation_sweep``). Pass ``None`` (the
+      default) to skip the attempt-count bound entirely, e.g. for a
+      fresh/first dispatch attempt where an early attempt number can never
+      legitimately equal the cap.
+
+    Returns the delivery's resulting status (``"failed"`` or
+    ``"failed_permanent"``), or ``None`` if no row was updated (already
+    ``delivered``/``failed_permanent`` -- nothing to record).
     """
-    await pool.execute(
+    return await pool.fetchval(
         """
         UPDATE public.domain_event_deliveries
-        SET status = 'failed', error_message = $2, updated_at = now()
-        WHERE id = $1 AND status != 'delivered'
+        SET status = CASE
+                WHEN NOT $3 THEN 'failed_permanent'
+                WHEN $4::int IS NOT NULL AND attempt_count + 1 >= $4 THEN 'failed_permanent'
+                ELSE 'failed'
+            END,
+            attempt_count = attempt_count + 1,
+            error_message = $2,
+            updated_at = now()
+        WHERE id = $1 AND status NOT IN ('delivered', 'failed_permanent')
+        RETURNING status
         """,
         uuid.UUID(str(delivery_id)),
         error_message,
+        retryable,
+        max_attempts,
     )
 
 
@@ -364,12 +414,92 @@ async def list_deliveries_for_event(
     rows = await pool.fetch(
         """
         SELECT id, event_id, subscriber_butler, status, task_id, task_name,
-               error_message, delivered_at, created_at, updated_at
+               error_message, attempt_count, delivered_at, created_at, updated_at
         FROM public.domain_event_deliveries
         WHERE event_id = $1
         ORDER BY subscriber_butler
         """,
         uuid.UUID(str(event_id)),
+    )
+    return [_row_to_dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation sweep candidate reads (bu-1yw6d)
+# ---------------------------------------------------------------------------
+
+
+async def select_stale_pending_deliveries(
+    pool: asyncpg.Pool,
+    *,
+    older_than: timedelta,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Return ``pending`` deliveries whose claim is older than *older_than*.
+
+    A delivery row is claimed (inserted ``pending``) the moment
+    :func:`claim_delivery` first sees a fresh ``(event, subscriber)`` pair,
+    and ``updated_at`` is set at that same insert (nothing bumps it again
+    until an outcome is recorded). A row still ``pending`` well past a
+    normal dispatch's lifetime (bounded by the ~30s route-call timeout, plus
+    generous scheduling slack) means the claiming process crashed -- or
+    otherwise never reached ``mark_delivery_delivered``/``mark_delivery_
+    failed`` -- before it could record an outcome. Joins in the owning
+    event's ``event_type``/``source_butler``/``payload`` -- the periodic
+    reconciliation sweep (``run_domain_event_reconciliation_sweep``) needs
+    these to re-drive the dispatch, exactly as ``fan_out_event`` needs them
+    for a fresh publish. Ordered oldest-claimed-first so a backlog drains in
+    claim order rather than arbitrarily.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT d.id, d.event_id, d.subscriber_butler, d.status, d.attempt_count,
+               e.event_type, e.source_butler, e.payload
+        FROM public.domain_event_deliveries d
+        JOIN public.domain_events e ON e.id = d.event_id
+        WHERE d.status = 'pending' AND d.updated_at < now() - $1::interval
+        ORDER BY d.updated_at ASC
+        LIMIT $2
+        """,
+        older_than,
+        limit,
+    )
+    return [_row_to_dict(r) for r in rows]
+
+
+async def select_retryable_failed_deliveries(
+    pool: asyncpg.Pool,
+    *,
+    backoff_after: timedelta,
+    max_attempts: int,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Return ``failed`` deliveries eligible for a bounded, backed-off retry.
+
+    Eligible when ``attempt_count < max_attempts`` (the same bound
+    :func:`mark_delivery_failed` uses to transition a row to the terminal
+    ``failed_permanent`` status instead) and at least *backoff_after* has
+    elapsed since the last attempt (``updated_at``, bumped by every
+    ``mark_delivery_failed`` call), so a genuinely down subscriber is not
+    hammered on every sweep tick. A row already at ``failed_permanent`` never
+    matches ``status = 'failed'`` and is correctly excluded -- it is a
+    terminal state, not a retry candidate.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT d.id, d.event_id, d.subscriber_butler, d.status, d.attempt_count,
+               d.error_message, e.event_type, e.source_butler, e.payload
+        FROM public.domain_event_deliveries d
+        JOIN public.domain_events e ON e.id = d.event_id
+        WHERE d.status = 'failed'
+          AND d.attempt_count < $1
+          AND d.updated_at < now() - $2::interval
+        ORDER BY d.updated_at ASC
+        LIMIT $3
+        """,
+        max_attempts,
+        backoff_after,
+        limit,
     )
     return [_row_to_dict(r) for r in rows]
 
@@ -426,7 +556,7 @@ async def list_recent_deliveries(
     rows = await pool.fetch(
         f"""
         SELECT d.id, d.event_id, d.subscriber_butler, d.status, d.task_id, d.task_name,
-               d.error_message, d.delivered_at, d.created_at, d.updated_at,
+               d.error_message, d.attempt_count, d.delivered_at, d.created_at, d.updated_at,
                e.event_type, e.source_butler, e.occurred_at
         FROM public.domain_event_deliveries d
         JOIN public.domain_events e ON e.id = d.event_id

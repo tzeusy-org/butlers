@@ -5875,7 +5875,7 @@ export function listDomainEventSubscriptions(
 export interface DomainEventDeliveriesParams {
   subscriber_butler?: string;
   source_butler?: string;
-  /** "pending" | "delivered" | "conflict" | "failed" */
+  /** "pending" | "delivered" | "conflict" | "failed" | "failed_permanent" */
   status?: string;
   offset?: number;
   limit?: number;

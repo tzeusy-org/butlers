@@ -9180,11 +9180,13 @@ export interface DeliveryEntry {
   id: string;
   event_id: string;
   subscriber_butler: string;
-  /** "pending" | "delivered" | "conflict" | "failed" */
+  /** "pending" | "delivered" | "conflict" | "failed" | "failed_permanent" */
   status: string;
   task_id: string | null;
   task_name: string | null;
   error_message: string | null;
+  /** Dispatch attempts so far, bumped on every retry (bu-1yw6d reconciliation sweep). */
+  attempt_count: number;
   delivered_at: string | null;
   created_at: string;
   updated_at: string;

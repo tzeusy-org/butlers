@@ -129,3 +129,15 @@ name = "decision-escalation-check"
 cron = "0 */6 * * *"
 dispatch_mode = "job"
 job_name = "decision_escalation_check"
+
+# Domain-event-bus delivery reconciliation sweep (bu-1yw6d, PR #3585 review
+# follow-up) — re-drives pending/failed public.domain_event_deliveries rows
+# that a fresh publish's fan-out never resolved (crash after claim, or a
+# route error). Every 10 minutes, offset to :03 past the hour so it never
+# lands on the same tick as eligibility_sweep (*/5), insight-urgent-subcycle
+# (:30), or rule-promotion-trigger (:50).
+[[butler.schedule]]
+name = "domain-event-reconciliation-sweep"
+cron = "3,13,23,33,43,53 * * * *"
+dispatch_mode = "job"
+job_name = "domain_event_reconciliation_sweep"

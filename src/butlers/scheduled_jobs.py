@@ -113,6 +113,30 @@ async def _run_switchboard_rule_promotion_trigger_job(
     return await run_rule_promotion_trigger_job(pool, job_args)
 
 
+async def _run_switchboard_domain_event_reconciliation_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the domain-event-bus delivery reconciliation sweep (bu-1yw6d).
+
+    Re-drives ``pending`` deliveries stuck since a crash and retries
+    ``failed`` deliveries a bounded number of times with backoff, marking a
+    delivery ``failed_permanent`` (surfaced via ``GET /api/domain-events/
+    deliveries?status=failed_permanent`` and an ERROR log line) once its
+    route error is permanent or its retry budget is exhausted. See
+    ``butlers.core_tools._domain_events.run_domain_event_reconciliation_
+    sweep`` for the full policy. Runs on the Switchboard daemon -- the
+    domain-event tables (``public.domain_events``/``public.butler_
+    subscriptions``/``public.domain_event_deliveries``) are fleet-wide, and
+    Switchboard owns the ``route()`` primitive every re-drive dispatches
+    through.
+    """
+    del job_args
+    from butlers.core_tools._domain_events import run_domain_event_reconciliation_sweep
+
+    return await run_domain_event_reconciliation_sweep(pool)
+
+
 async def _run_switchboard_decision_review_digest_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1859,6 +1883,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
             "decision_review_digest": _run_switchboard_decision_review_digest_job,
             "decision_escalation_check": _run_switchboard_decision_escalation_check_job,
+            "domain_event_reconciliation_sweep": (
+                _run_switchboard_domain_event_reconciliation_sweep_job
+            ),
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },

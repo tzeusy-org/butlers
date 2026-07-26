@@ -22,7 +22,7 @@ import type { SubscriptionEntry, DeliveryEntry } from "@/api/types"
 const ROW_LIMIT = 5
 
 function deliveryStatusTone(status: string): "red" | "amber" | "dim" | "green" {
-  if (status === "failed" || status === "conflict") return "red"
+  if (status === "failed" || status === "failed_permanent" || status === "conflict") return "red"
   if (status === "pending") return "amber"
   if (status === "delivered") return "green"
   return "dim"

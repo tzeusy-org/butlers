@@ -39,6 +39,7 @@ class DeliveryEntry(BaseModel):
     task_id: str | None = None
     task_name: str | None = None
     error_message: str | None = None
+    attempt_count: int = 0
     delivered_at: str | None = None
     created_at: str
     updated_at: str

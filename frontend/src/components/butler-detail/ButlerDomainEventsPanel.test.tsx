@@ -54,6 +54,7 @@ function makeDelivery(overrides: Partial<DeliveryEntry> = {}): DeliveryEntry {
     task_id: null,
     task_name: null,
     error_message: null,
+    attempt_count: 0,
     delivered_at: "2026-07-25T10:05:00Z",
     created_at: "2026-07-25T10:00:00Z",
     updated_at: "2026-07-25T10:05:00Z",

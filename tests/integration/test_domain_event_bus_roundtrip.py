@@ -23,7 +23,10 @@ for those):
 
 from __future__ import annotations
 
+import asyncio
 import shutil
+import uuid
+from datetime import timedelta
 from typing import Any
 
 import asyncpg
@@ -35,8 +38,14 @@ from butlers.core.domain_events import (
     get_active_subscribers,
     list_recent_deliveries,
     list_subscriptions,
+    upsert_subscription,
 )
-from butlers.core_tools._domain_events import fan_out_event, publish_domain_event
+from butlers.core_tools._domain_events import (
+    fan_out_event,
+    publish_domain_event,
+    run_domain_event_reconciliation_sweep,
+)
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -54,7 +63,9 @@ def migrated_db_url(postgres_container) -> str:
 
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=5)
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
+    )
     yield p
     await p.close()
 
@@ -67,6 +78,12 @@ class _ReceivingClient:
     ``receive_domain_event`` MCP tool -- without needing a live MCP server.
     Both sides share the same real Postgres pool, exactly as they would in
     production (each butler's own connection, same database).
+
+    Wraps the target's own return value in ``{"result": ...}`` -- matching
+    ``route()``'s actual envelope (see ``roster/switchboard/tools/routing/
+    route.py::route``, which returns ``{"result": <target tool's return>}``
+    on success or ``{"error": ...}`` on failure) so this stub does not mask
+    the unwrap contract ``_dispatch_receive_via_switchboard`` depends on.
     """
 
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -86,7 +103,7 @@ class _ReceivingClient:
             payload=call_args["payload"],
             subscriber_butler=args["target_butler"],
         )
-        return SimpleNamespace(is_error=False, data=result)
+        return SimpleNamespace(is_error=False, data={"result": result})
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +441,313 @@ async def test_list_recent_deliveries_filters_by_subscriber_and_status(
     )
     assert total_none == 0
     assert rows_none == []
+
+
+# ---------------------------------------------------------------------------
+# Periodic reconciliation sweep (bu-1yw6d, PR #3585 review follow-up)
+# ---------------------------------------------------------------------------
+
+
+def _patch_switchboard_route(monkeypatch, pool: asyncpg.Pool, *, route_fn) -> None:
+    """Patch the module-level ``route`` the sweep's in-process client imports
+    at call time (``_SwitchboardInProcessRouteClient.call_tool``), so the
+    sweep exercises its real dispatch path (claim/mark idempotence, envelope
+    unwrap) without a live cross-butler MCP server.
+
+    Uses ``importlib.import_module`` rather than ``import ...routing.route as
+    x`` -- ``butlers.tools.switchboard.routing``'s ``__init__`` re-exports
+    ``route`` (the function) at the package level, shadowing the ``route``
+    *submodule* attribute on the parent package, so a dotted ``as``-import
+    would silently bind to the function instead of the module.
+    """
+    import importlib
+
+    route_module = importlib.import_module("butlers.tools.switchboard.routing.route")
+    monkeypatch.setattr(route_module, "route", route_fn)
+
+
+async def _ok_switchboard_route(
+    pool: asyncpg.Pool,
+    target_butler: str,
+    tool_name: str,
+    args: dict[str, Any],
+    source_butler: str = "switchboard",
+    **_kwargs: Any,
+) -> dict[str, Any]:
+    """Real-envelope-shaped stand-in for route() that actually reconciles the
+    subscriber's wake task, mirroring `_ReceivingClient` above."""
+    assert tool_name == "receive_domain_event"
+    result = await handle_receive_domain_event(
+        pool,
+        event_id=args["event_id"],
+        event_type=args["event_type"],
+        source_butler=args["source_butler"],
+        payload=args["payload"],
+        subscriber_butler=target_butler,
+    )
+    return {"result": result}
+
+
+async def _permanent_failure_switchboard_route(
+    pool: asyncpg.Pool,
+    target_butler: str,
+    tool_name: str,
+    args: dict[str, Any],
+    source_butler: str = "switchboard",
+    **_kwargs: Any,
+) -> dict[str, Any]:
+    """Simulates the target lacking the `domain_events` core group -- an
+    "unknown tool" route()-level failure, permanent per
+    `_is_retryable_route_error_text`."""
+    return {"error": "RuntimeError: Unknown tool: receive_domain_event"}
+
+
+async def _transient_failure_switchboard_route(
+    pool: asyncpg.Pool,
+    target_butler: str,
+    tool_name: str,
+    args: dict[str, Any],
+    source_butler: str = "switchboard",
+    **_kwargs: Any,
+) -> dict[str, Any]:
+    """Simulates a transient network blip -- retryable per
+    `_is_retryable_route_error_text`."""
+    return {"error": "ConnectionError: connection refused"}
+
+
+async def _insert_delivery_row(
+    pool: asyncpg.Pool,
+    *,
+    event_type: str,
+    source_butler: str,
+    subscriber_butler: str,
+    status: str,
+    updated_at_ago: timedelta,
+    attempt_count: int = 0,
+) -> tuple[Any, Any]:
+    """Seed one durable subscription + event + delivery row, with `updated_at`
+    backdated by `updated_at_ago` -- the sweep's staleness/backoff signal."""
+    await upsert_subscription(pool, subscriber_butler=subscriber_butler, event_type=event_type)
+    event_id = await pool.fetchval(
+        "INSERT INTO public.domain_events (event_type, source_butler, payload) "
+        "VALUES ($1, $2, $3::jsonb) RETURNING id",
+        event_type,
+        source_butler,
+        "{}",
+    )
+    delivery_id = await pool.fetchval(
+        """
+        INSERT INTO public.domain_event_deliveries
+            (event_id, subscriber_butler, status, attempt_count, updated_at)
+        VALUES ($1, $2, $3, $4, now() - $5::interval)
+        RETURNING id
+        """,
+        event_id,
+        subscriber_butler,
+        status,
+        attempt_count,
+        updated_at_ago,
+    )
+    return event_id, delivery_id
+
+
+async def _delivery_status(pool: asyncpg.Pool, delivery_id: Any) -> tuple[str, int]:
+    row = await pool.fetchrow(
+        "SELECT status, attempt_count FROM public.domain_event_deliveries WHERE id = $1",
+        delivery_id,
+    )
+    return row["status"], row["attempt_count"]
+
+
+async def test_sweep_redrives_a_stale_pending_delivery(pool: asyncpg.Pool, monkeypatch) -> None:
+    _patch_switchboard_route(monkeypatch, pool, route_fn=_ok_switchboard_route)
+    event_type = f"sweep.stale_pending.{uuid.uuid4().hex}"
+    event_id, delivery_id = await _insert_delivery_row(
+        pool,
+        event_type=event_type,
+        source_butler="travel",
+        subscriber_butler="finance",
+        status="pending",
+        updated_at_ago=timedelta(minutes=20),
+    )
+
+    result = await run_domain_event_reconciliation_sweep(
+        pool, stale_pending_after=timedelta(minutes=10)
+    )
+
+    assert result["stale_pending_candidates"] == 1
+    assert result["stale_pending_redriven"] == 1
+    assert result["stale_pending_delivered"] == 1
+
+    status, _ = await _delivery_status(pool, delivery_id)
+    assert status == "delivered"
+
+    count = await pool.fetchval(
+        "SELECT count(*) FROM scheduled_tasks WHERE name = $1",
+        task_name_for(event_id, "finance"),
+    )
+    assert count == 1
+
+
+async def test_sweep_does_not_redrive_a_fresh_in_flight_pending_delivery(
+    pool: asyncpg.Pool, monkeypatch
+) -> None:
+    """A `pending` row claimed moments ago (still comfortably inside a normal
+    dispatch's lifetime) must never be treated as stuck."""
+    dispatch_calls = 0
+
+    async def _counting_route(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal dispatch_calls
+        dispatch_calls += 1
+        return await _ok_switchboard_route(*args, **kwargs)
+
+    _patch_switchboard_route(monkeypatch, pool, route_fn=_counting_route)
+    event_type = f"sweep.fresh_pending.{uuid.uuid4().hex}"
+    _event_id, delivery_id = await _insert_delivery_row(
+        pool,
+        event_type=event_type,
+        source_butler="travel",
+        subscriber_butler="finance",
+        status="pending",
+        updated_at_ago=timedelta(seconds=1),
+    )
+
+    result = await run_domain_event_reconciliation_sweep(
+        pool, stale_pending_after=timedelta(minutes=10)
+    )
+
+    assert result["stale_pending_candidates"] == 0
+    assert dispatch_calls == 0
+    status, _ = await _delivery_status(pool, delivery_id)
+    assert status == "pending"
+
+
+async def test_sweep_retries_transient_failure_up_to_bound_then_permanent(
+    pool: asyncpg.Pool, monkeypatch
+) -> None:
+    """A `failed` row with a transient (retryable) error keeps retrying, with
+    attempt_count climbing each sweep tick, until the retry bound is reached
+    -- then it transitions to the terminal `failed_permanent`, never retried
+    again."""
+    _patch_switchboard_route(monkeypatch, pool, route_fn=_transient_failure_switchboard_route)
+    event_type = f"sweep.transient_retry.{uuid.uuid4().hex}"
+    _event_id, delivery_id = await _insert_delivery_row(
+        pool,
+        event_type=event_type,
+        source_butler="travel",
+        subscriber_butler="finance",
+        status="failed",
+        updated_at_ago=timedelta(minutes=30),
+        attempt_count=0,
+    )
+
+    max_attempts = 3
+    for expected_attempt in range(1, max_attempts + 1):
+        result = await run_domain_event_reconciliation_sweep(
+            pool,
+            failed_retry_backoff=timedelta(seconds=0),
+            max_attempts=max_attempts,
+        )
+        assert result["failed_retried"] == 1
+        status, attempt_count = await _delivery_status(pool, delivery_id)
+        assert attempt_count == expected_attempt
+        if expected_attempt < max_attempts:
+            assert status == "failed"
+        else:
+            assert status == "failed_permanent"
+
+    # A further sweep tick must not touch the now-terminal row again.
+    result = await run_domain_event_reconciliation_sweep(
+        pool,
+        failed_retry_backoff=timedelta(seconds=0),
+        max_attempts=max_attempts,
+    )
+    assert result["failed_retry_candidates"] == 0
+    _, final_attempt_count = await _delivery_status(pool, delivery_id)
+    assert final_attempt_count == max_attempts
+
+
+async def test_sweep_marks_permanent_route_error_failed_permanent_immediately(
+    pool: asyncpg.Pool, monkeypatch
+) -> None:
+    """A route error classified permanent (e.g. the subscriber lacks the
+    domain_events core group) must transition straight to `failed_permanent`
+    on its very next retry -- it must never wait for the attempt bound, and
+    it must be visible via the dashboard-facing status filter."""
+    _patch_switchboard_route(monkeypatch, pool, route_fn=_permanent_failure_switchboard_route)
+    event_type = f"sweep.permanent_failure.{uuid.uuid4().hex}"
+    _event_id, delivery_id = await _insert_delivery_row(
+        pool,
+        event_type=event_type,
+        source_butler="travel",
+        subscriber_butler="health",
+        status="failed",
+        updated_at_ago=timedelta(minutes=30),
+        attempt_count=1,
+    )
+
+    result = await run_domain_event_reconciliation_sweep(
+        pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
+    )
+
+    assert result["newly_permanently_failed"] == 1
+    status, attempt_count = await _delivery_status(pool, delivery_id)
+    assert status == "failed_permanent"
+    assert attempt_count == 2
+
+    _total, rows = await list_recent_deliveries(
+        pool, subscriber_butler="health", status="failed_permanent"
+    )
+    assert any(row["id"] == delivery_id for row in rows)
+
+
+async def test_sweep_is_idempotent_when_run_concurrently_with_live_fanout(
+    pool: asyncpg.Pool, monkeypatch
+) -> None:
+    """The sweep must be safe to run concurrently with a live in-flight
+    fan-out for the same delivery: claim_delivery's idempotent claim/
+    re-observe plus the subscriber's deterministic-task-name reconciliation
+    must converge to exactly one delivered row and one scheduled_task, never
+    a duplicate or corrupted outcome."""
+    _patch_switchboard_route(monkeypatch, pool, route_fn=_ok_switchboard_route)
+    event_type = f"sweep.concurrent.{uuid.uuid4().hex}"
+    event_id, delivery_id = await _insert_delivery_row(
+        pool,
+        event_type=event_type,
+        source_butler="travel",
+        subscriber_butler="finance",
+        status="pending",
+        updated_at_ago=timedelta(minutes=20),
+    )
+
+    client = _ReceivingClient(pool)
+
+    results = await asyncio.gather(
+        run_domain_event_reconciliation_sweep(pool, stale_pending_after=timedelta(minutes=10)),
+        fan_out_event(
+            pool,
+            client,
+            event_id=str(event_id),
+            event_type=event_type,
+            source_butler="travel",
+            payload={},
+        ),
+    )
+    assert results[0]["stale_pending_candidates"] == 1
+
+    status, _ = await _delivery_status(pool, delivery_id)
+    assert status == "delivered"
+
+    delivery_count = await pool.fetchval(
+        "SELECT count(*) FROM public.domain_event_deliveries WHERE event_id = $1", event_id
+    )
+    assert delivery_count == 1
+
+    task_count = await pool.fetchval(
+        "SELECT count(*) FROM scheduled_tasks WHERE name = $1",
+        task_name_for(event_id, "finance"),
+    )
+    assert task_count == 1
 
 
 async def test_list_recent_deliveries_orders_most_recent_first(pool: asyncpg.Pool) -> None:

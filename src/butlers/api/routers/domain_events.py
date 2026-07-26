@@ -70,6 +70,7 @@ def _delivery_to_entry(row: dict) -> DeliveryEntry:
         task_id=str(row["task_id"]) if row.get("task_id") else None,
         task_name=row.get("task_name"),
         error_message=row.get("error_message"),
+        attempt_count=row.get("attempt_count") or 0,
         delivered_at=str(row["delivered_at"]) if row.get("delivered_at") else None,
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),

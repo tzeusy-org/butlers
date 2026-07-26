@@ -21,9 +21,12 @@ from butlers.config import ButlerType
 from butlers.core_tools import _domain_events
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._domain_events import (
+    _is_retryable_route_error_text,
+    _unwrap_route_result,
     fan_out_event,
     publish_domain_event_once,
     register_domain_event_tools,
+    run_domain_event_reconciliation_sweep,
 )
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -457,7 +460,7 @@ class TestFanOutEvent:
             "_dispatch_receive_via_switchboard",
             AsyncMock(return_value=(None, "boom", True)),
         )
-        mark_failed_mock = AsyncMock()
+        mark_failed_mock = AsyncMock(return_value="failed")
         monkeypatch.setattr(_domain_events, "mark_delivery_failed", mark_failed_mock)
 
         result = await fan_out_event(
@@ -477,7 +480,60 @@ class TestFanOutEvent:
                 "retryable": True,
             }
         ]
-        mark_failed_mock.assert_awaited_once_with(pool, "d1", "boom")
+        mark_failed_mock.assert_awaited_once_with(
+            pool,
+            "d1",
+            "boom",
+            retryable=True,
+            max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
+        )
+
+    async def test_permanent_route_error_marks_delivery_failed_permanent(self, monkeypatch):
+        """A route error classified permanent (retryable=False) must land on the
+        terminal `failed_permanent` status, not the retryable `failed` -- and
+        the outcome must never claim `retryable` for a permanent failure."""
+        pool = AsyncMock()
+        monkeypatch.setattr(
+            _domain_events, "get_active_subscribers", AsyncMock(return_value=["health"])
+        )
+        monkeypatch.setattr(
+            _domain_events,
+            "claim_delivery",
+            AsyncMock(return_value={"id": "d2", "status": "pending"}),
+        )
+        monkeypatch.setattr(
+            _domain_events,
+            "_dispatch_receive_via_switchboard",
+            AsyncMock(
+                return_value=(None, "RuntimeError: Unknown tool: receive_domain_event", False)
+            ),
+        )
+        mark_failed_mock = AsyncMock(return_value="failed_permanent")
+        monkeypatch.setattr(_domain_events, "mark_delivery_failed", mark_failed_mock)
+
+        result = await fan_out_event(
+            pool,
+            None,
+            event_id="event-1",
+            event_type="travel.trip_active",
+            source_butler="travel",
+            payload={},
+        )
+
+        assert result["deliveries"] == [
+            {
+                "subscriber_butler": "health",
+                "status": "failed_permanent",
+                "error": "RuntimeError: Unknown tool: receive_domain_event",
+            }
+        ]
+        mark_failed_mock.assert_awaited_once_with(
+            pool,
+            "d2",
+            "RuntimeError: Unknown tool: receive_domain_event",
+            retryable=False,
+            max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
+        )
 
     async def test_task_conflict_marks_delivery_conflict(self, monkeypatch):
         pool = AsyncMock()
@@ -547,3 +603,282 @@ class TestFanOutEvent:
         mark_delivered_mock.assert_awaited_once_with(
             pool, "d1", task_id=task_id, task_name="domain-event-x"
         )
+
+
+class TestIsRetryableRouteErrorText:
+    """route()'s except-block stamps every failure as f"{type(exc).__name__}:
+    {exc}" -- these prefixes are the transient ones; everything else
+    (notably an "unknown tool" RuntimeError, the shape a missing
+    domain_events core group takes) is permanent."""
+
+    @pytest.mark.parametrize(
+        "error_text",
+        [
+            "ConnectionError: refused",
+            "OSError: [Errno 111] Connection refused",
+            "TimeoutError: deadline exceeded",
+        ],
+    )
+    def test_transient_prefixes_are_retryable(self, error_text):
+        assert _is_retryable_route_error_text(error_text) is True
+
+    @pytest.mark.parametrize(
+        "error_text",
+        [
+            "RuntimeError: Unknown tool: receive_domain_event",
+            "LookupError: Butler 'health' not found in registry",
+            "Butler 'health' not found in registry",
+        ],
+    )
+    def test_other_errors_are_permanent(self, error_text):
+        assert _is_retryable_route_error_text(error_text) is False
+
+
+class TestUnwrapRouteResult:
+    """route() (roster/switchboard/tools/routing/route.py) always returns
+    {"error": ...} on a route-level failure or {"result": <target's own
+    return>} on success -- never the target's dict unwrapped at the top
+    level. _unwrap_route_result is the one place that envelope gets peeled
+    back off before the caller inspects the target's own status/task_id/
+    task_name (see _dispatch_receive_via_switchboard's docstring for why an
+    earlier version of this code got this wrong)."""
+
+    def test_success_envelope_unwraps_to_inner_result(self):
+        data, error, retryable = _unwrap_route_result(
+            {"result": {"status": "ok", "state": "task_created", "task_id": "t1"}}
+        )
+        assert data == {"status": "ok", "state": "task_created", "task_id": "t1"}
+        assert error is None
+        assert retryable is False
+
+    def test_error_envelope_is_detected_and_classified_transient(self):
+        data, error, retryable = _unwrap_route_result({"error": "ConnectionError: refused"})
+        assert data is None
+        assert error == "ConnectionError: refused"
+        assert retryable is True
+
+    def test_error_envelope_is_detected_and_classified_permanent(self):
+        data, error, retryable = _unwrap_route_result(
+            {"error": "RuntimeError: Unknown tool: receive_domain_event"}
+        )
+        assert data is None
+        assert error == "RuntimeError: Unknown tool: receive_domain_event"
+        assert retryable is False
+
+    def test_inner_target_error_status_is_still_detected(self):
+        data, error, retryable = _unwrap_route_result(
+            {"result": {"status": "error", "error": "bad payload"}}
+        )
+        assert data is None
+        assert error == "bad payload"
+        assert retryable is False
+
+    def test_non_dict_raw_is_a_non_retryable_error(self):
+        data, error, retryable = _unwrap_route_result("not a dict")
+        assert data is None
+        assert error is not None
+        assert retryable is False
+
+
+class TestDispatchReceiveViaSwitchboardEnvelope:
+    """Regression coverage for the route()-envelope unwrap bug: a real MCP
+    client's CallToolResult.data is route()'s own {"result"/"error"} shape,
+    not the target tool's dict directly."""
+
+    async def test_client_branch_unwraps_successful_route_result(self):
+        client = AsyncMock()
+        client.call_tool = AsyncMock(
+            return_value=SimpleNamespace(
+                is_error=False,
+                data={
+                    "result": {
+                        "status": "ok",
+                        "state": "task_created",
+                        "task_id": "t1",
+                        "task_name": "domain-event-x-finance",
+                    }
+                },
+            )
+        )
+
+        data, error, retryable = await _domain_events._dispatch_receive_via_switchboard(
+            client,
+            AsyncMock(),
+            "travel",
+            target_butler="finance",
+            args={"event_id": "e1", "event_type": "travel.trip_booked", "payload": {}},
+        )
+
+        assert error is None
+        assert retryable is False
+        assert data == {
+            "status": "ok",
+            "state": "task_created",
+            "task_id": "t1",
+            "task_name": "domain-event-x-finance",
+        }
+
+    async def test_client_branch_surfaces_route_level_failure(self):
+        client = AsyncMock()
+        client.call_tool = AsyncMock(
+            return_value=SimpleNamespace(
+                is_error=False,
+                data={"error": "RuntimeError: Unknown tool: receive_domain_event"},
+            )
+        )
+
+        data, error, retryable = await _domain_events._dispatch_receive_via_switchboard(
+            client,
+            AsyncMock(),
+            "travel",
+            target_butler="health",
+            args={"event_id": "e1", "event_type": "travel.trip_active", "payload": {}},
+        )
+
+        assert data is None
+        assert error == "RuntimeError: Unknown tool: receive_domain_event"
+        assert retryable is False
+
+    async def test_switchboard_self_delivery_branch_unwraps_successful_result(self, monkeypatch):
+        import importlib
+
+        # butlers.tools.switchboard.routing's __init__ re-exports `route` (the
+        # function) at the package level, shadowing the `route` *submodule*
+        # attribute on the parent package -- `import ...routing.route as x`
+        # would silently bind `x` to the function, not the module (a known
+        # import-shadow gotcha). importlib.import_module always returns the
+        # real sys.modules entry regardless of that shadowing.
+        route_module = importlib.import_module("butlers.tools.switchboard.routing.route")
+
+        switchboard_route_mock = AsyncMock(
+            return_value={
+                "result": {
+                    "status": "ok",
+                    "state": "task_created",
+                    "task_id": "t2",
+                    "task_name": "domain-event-y-finance",
+                }
+            }
+        )
+        monkeypatch.setattr(route_module, "route", switchboard_route_mock)
+
+        data, error, retryable = await _domain_events._dispatch_receive_via_switchboard(
+            None,
+            AsyncMock(),
+            "switchboard",
+            target_butler="finance",
+            args={"event_id": "e2", "event_type": "travel.trip_booked", "payload": {}},
+        )
+
+        assert error is None
+        assert data["task_id"] == "t2"
+
+
+class TestRunDomainEventReconciliationSweep:
+    """Mocked-level orchestration coverage: the sweep selects candidates,
+    re-observes each via claim_delivery (the idempotence boundary), and
+    dispatches only those still in a redrivable state. Concurrency/real-DB
+    behavior is covered by tests/integration/test_domain_event_bus_roundtrip.py.
+    """
+
+    async def test_stale_pending_candidate_is_redriven_and_delivered(self, monkeypatch):
+        pool = AsyncMock()
+        row = {
+            "id": "d1",
+            "event_id": "event-1",
+            "subscriber_butler": "finance",
+            "status": "pending",
+            "attempt_count": 0,
+            "event_type": "travel.trip_booked",
+            "source_butler": "travel",
+            "payload": {"trip_id": "t1"},
+        }
+        monkeypatch.setattr(
+            _domain_events, "select_stale_pending_deliveries", AsyncMock(return_value=[row])
+        )
+        monkeypatch.setattr(
+            _domain_events, "select_retryable_failed_deliveries", AsyncMock(return_value=[])
+        )
+        monkeypatch.setattr(_domain_events, "claim_delivery", AsyncMock(return_value=dict(row)))
+        dispatch_mock = AsyncMock(
+            return_value={"subscriber_butler": "finance", "status": "delivered"}
+        )
+        monkeypatch.setattr(_domain_events, "_dispatch_and_record_delivery", dispatch_mock)
+
+        result = await run_domain_event_reconciliation_sweep(pool)
+
+        assert result["stale_pending_candidates"] == 1
+        assert result["stale_pending_redriven"] == 1
+        assert result["stale_pending_delivered"] == 1
+        dispatch_mock.assert_awaited_once()
+
+    async def test_candidate_already_resolved_since_selection_is_skipped(self, monkeypatch):
+        """A candidate that a concurrent live dispatch already resolved between
+        selection and processing must be re-observed (via claim_delivery) and
+        skipped, never blindly re-dispatched."""
+        pool = AsyncMock()
+        row = {
+            "id": "d1",
+            "event_id": "event-1",
+            "subscriber_butler": "finance",
+            "status": "pending",
+            "attempt_count": 0,
+            "event_type": "travel.trip_booked",
+            "source_butler": "travel",
+            "payload": {},
+        }
+        monkeypatch.setattr(
+            _domain_events, "select_stale_pending_deliveries", AsyncMock(return_value=[row])
+        )
+        monkeypatch.setattr(
+            _domain_events, "select_retryable_failed_deliveries", AsyncMock(return_value=[])
+        )
+        # Re-observe finds the row already delivered by someone else.
+        monkeypatch.setattr(
+            _domain_events,
+            "claim_delivery",
+            AsyncMock(return_value={**row, "status": "delivered"}),
+        )
+        dispatch_mock = AsyncMock()
+        monkeypatch.setattr(_domain_events, "_dispatch_and_record_delivery", dispatch_mock)
+
+        result = await run_domain_event_reconciliation_sweep(pool)
+
+        assert result["stale_pending_redriven"] == 0
+        dispatch_mock.assert_not_awaited()
+
+    async def test_permanent_failure_is_counted_and_logged(self, monkeypatch, caplog):
+        pool = AsyncMock()
+        row = {
+            "id": "d1",
+            "event_id": "event-1",
+            "subscriber_butler": "health",
+            "status": "failed",
+            "attempt_count": 1,
+            "error_message": "RuntimeError: Unknown tool",
+            "event_type": "travel.trip_active",
+            "source_butler": "travel",
+            "payload": {},
+        }
+        monkeypatch.setattr(
+            _domain_events, "select_stale_pending_deliveries", AsyncMock(return_value=[])
+        )
+        monkeypatch.setattr(
+            _domain_events, "select_retryable_failed_deliveries", AsyncMock(return_value=[row])
+        )
+        monkeypatch.setattr(_domain_events, "claim_delivery", AsyncMock(return_value=dict(row)))
+        dispatch_mock = AsyncMock(
+            return_value={
+                "subscriber_butler": "health",
+                "status": "failed_permanent",
+                "error": "RuntimeError: Unknown tool",
+            }
+        )
+        monkeypatch.setattr(_domain_events, "_dispatch_and_record_delivery", dispatch_mock)
+
+        with caplog.at_level("ERROR"):
+            result = await run_domain_event_reconciliation_sweep(pool)
+
+        assert result["failed_retried"] == 1
+        assert result["newly_permanently_failed"] == 1
+        assert any("permanently failed" in message for message in caplog.messages)
