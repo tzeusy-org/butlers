@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -31,6 +31,8 @@ from butlers.connectors.activitywatch import (
     classify_app,
     find_bucket_id,
     lookup_afk_status,
+    match_browser_domain,
+    persist_activity_event,
 )
 from butlers.ingestion_policy import PolicyDecision
 
@@ -301,6 +303,234 @@ def test_build_afk_intervals_skips_malformed_events() -> None:
         {"duration": 60, "data": {"status": "afk"}},  # missing timestamp
     ]
     assert build_afk_intervals(afk_events) == []
+
+
+# ---------------------------------------------------------------------------
+# Browser-domain correlation
+# ---------------------------------------------------------------------------
+
+
+def _web_event(
+    *,
+    timestamp: str,
+    duration: float,
+    url: str,
+    title: str = "Sensitive browser tab title",
+) -> dict:
+    return {
+        "timestamp": timestamp,
+        "duration": duration,
+        "data": {"url": url, "title": title},
+    }
+
+
+def test_match_browser_domain_uses_aware_instants_and_exposes_only_hostname() -> None:
+    """An offset-bearing web event matches the same UTC instant without URL leakage."""
+    raw_url = "https://docs.example.test/private/path?token=do-not-project#anchor"
+    match = match_browser_domain(
+        _TS,
+        [
+            _web_event(
+                timestamp="2026-07-05T18:00:00+08:00",
+                duration=60,
+                url=raw_url,
+            )
+        ],
+    )
+
+    assert match is not None
+    assert match.domain == "docs.example.test"
+    # The source event is retained for sensitive evidence persistence only;
+    # the correlation result itself has no path, query, fragment, or title.
+    assert match.raw_event["data"]["url"] == raw_url
+    assert "private" not in match.domain
+    assert "token" not in match.domain
+
+
+def test_match_browser_domain_uses_half_open_boundaries_and_latest_overlap() -> None:
+    """At an exact end boundary choose the next interval; overlap picks latest start."""
+    first = _web_event(
+        timestamp=(_TS - timedelta(seconds=60)).isoformat(),
+        duration=60,
+        url="https://ended.example.test/path",
+    )
+    boundary = _web_event(
+        timestamp=_TS.isoformat(),
+        duration=120,
+        url="https://boundary.example.test/path",
+    )
+    latest_overlap = _web_event(
+        timestamp=(_TS + timedelta(seconds=30)).isoformat(),
+        duration=120,
+        url="https://latest.example.test/path",
+    )
+
+    at_boundary = match_browser_domain(_TS, [first, boundary])
+    in_overlap = match_browser_domain(_TS + timedelta(seconds=45), [boundary, latest_overlap])
+
+    assert at_boundary is not None
+    assert at_boundary.domain == "boundary.example.test"
+    assert in_overlap is not None
+    assert in_overlap.domain == "latest.example.test"
+
+
+def test_match_browser_domain_returns_none_for_no_match_or_malformed_timestamp() -> None:
+    """No correlation is safer than guessing from malformed source data."""
+    no_match = _web_event(
+        timestamp=(_TS + timedelta(minutes=5)).isoformat(),
+        duration=60,
+        url="https://outside.example.test/path",
+    )
+    malformed_timestamp = _web_event(
+        timestamp="not-a-timestamp",
+        duration=60,
+        url="https://malformed.example.test/path",
+    )
+    unsupported_scheme = _web_event(
+        timestamp=_TS.isoformat(),
+        duration=60,
+        url="file:///private/path",
+    )
+
+    assert match_browser_domain(_TS, [no_match, malformed_timestamp, unsupported_scheme]) is None
+
+
+def test_match_browser_domain_treats_naive_activitywatch_timestamp_as_utc() -> None:
+    """ActivityWatch stores UTC timestamps and may discard their offset."""
+    match = match_browser_domain(
+        _TS.replace(tzinfo=None),
+        [
+            _web_event(
+                timestamp="2026-07-05T10:00:00",
+                duration=60,
+                url="https://utc-naive.example.test/path",
+            )
+        ],
+    )
+
+    assert match is not None
+    assert match.domain == "utc-naive.example.test"
+
+
+@pytest.mark.asyncio
+async def test_poll_passes_only_safe_domain_and_sensitive_web_event_to_persistence() -> None:
+    """Web enrichment is connector-local: the ingest envelope stays coarse."""
+    connector = ActivityWatchConnector(
+        ActivityWatchConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            machine_id=_MACHINE_ID,
+        )
+    )
+    connector._http_client = MagicMock()
+    connector._last_checkpoint_ts = _TS - timedelta(seconds=1)
+
+    window_event = {
+        "timestamp": _TS.isoformat(),
+        "duration": 42,
+        "data": {"app": "Google Chrome", "title": "Sensitive project roadmap"},
+    }
+    web_event = _web_event(
+        timestamp=_TS.isoformat(),
+        duration=60,
+        url="https://docs.example.test/private?token=secret",
+    )
+    connector._process_window_event = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "butlers.connectors.activitywatch.fetch_buckets",
+            new=AsyncMock(
+                return_value={
+                    _BUCKET_ID: {"type": "currentwindow"},
+                    "aw-watcher-web_desktop": {"type": "web.tab.current"},
+                }
+            ),
+        ),
+        patch(
+            "butlers.connectors.activitywatch.fetch_events",
+            new=AsyncMock(side_effect=[[window_event], [web_event]]),
+        ),
+    ):
+        await connector._execute_poll_cycle()
+
+    connector._process_window_event.assert_awaited_once()
+    kwargs = connector._process_window_event.await_args.kwargs
+    assert kwargs["browser_domain"] == "docs.example.test"
+    assert kwargs["raw_web_event"] == web_event
+
+
+@pytest.mark.asyncio
+async def test_process_window_event_keeps_raw_url_and_title_out_of_ingest_envelope() -> None:
+    """Only the evidence write receives the raw web event; normal ingress sees no URL/title."""
+    connector = ActivityWatchConnector(
+        ActivityWatchConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            machine_id=_MACHINE_ID,
+        ),
+        db_pool=MagicMock(),
+    )
+    connector._mcp_client.call_tool = AsyncMock()  # type: ignore[method-assign]
+    raw_url = "https://docs.example.test/private?token=secret"
+    raw_title = "Sensitive browser tab title"
+    raw_web_event = _web_event(timestamp=_TS.isoformat(), duration=60, url=raw_url, title=raw_title)
+    raw_window_event = {
+        "timestamp": _TS.isoformat(),
+        "duration": 42,
+        "data": {"app": "Google Chrome", "title": "Sensitive project roadmap"},
+    }
+
+    with patch(
+        "butlers.connectors.activitywatch.persist_activity_event", new=AsyncMock()
+    ) as persist:
+        await connector._process_window_event(
+            bucket_id=_BUCKET_ID,
+            ts=_TS,
+            duration_seconds=42,
+            app="Google Chrome",
+            window_title="Sensitive project roadmap",
+            app_class="browser",
+            is_afk=False,
+            raw_event=raw_window_event,
+            browser_domain="docs.example.test",
+            raw_web_event=raw_web_event,
+        )
+
+    envelope = connector._mcp_client.call_tool.await_args.args[1]
+    serialized_envelope = json.dumps(envelope)
+    assert raw_url not in serialized_envelope
+    assert raw_title not in serialized_envelope
+    assert "docs.example.test" not in serialized_envelope
+
+    persisted = persist.await_args.kwargs
+    assert persisted["browser_domain"] == "docs.example.test"
+    assert persisted["raw_payload"]["web_event"] == raw_web_event
+
+
+@pytest.mark.asyncio
+async def test_persist_activity_event_rejects_raw_url_as_browser_domain() -> None:
+    """A caller cannot bypass the connector's hostname-only write boundary."""
+    pool = AsyncMock()
+    pool.fetchval.return_value = "event-id"
+    raw_url = "https://docs.example.test/private?token=secret"
+
+    inserted = await persist_activity_event(
+        pool,
+        machine_id=_MACHINE_ID,
+        endpoint_identity=_ENDPOINT,
+        bucket_id=_BUCKET_ID,
+        ts=_TS,
+        duration_seconds=42,
+        app="Google Chrome",
+        window_title="Sensitive project roadmap",
+        app_class="browser",
+        browser_domain=raw_url,
+        is_afk=False,
+        raw_payload={"web_event": {"data": {"url": raw_url}}},
+    )
+
+    assert inserted is True
+    assert pool.fetchval.await_args.args[10] is None
+    assert pool.fetchval.await_args.args[12]["web_event"]["data"]["url"] == raw_url
 
 
 # ---------------------------------------------------------------------------

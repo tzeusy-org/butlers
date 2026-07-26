@@ -23,15 +23,17 @@ two Chronicler output layers (bu-whhll.6, epic bu-whhll Tier 1):
    precisely so a future occupation-classifier can refine work-vs-not-work
    without re-reading the raw evidence table.
 
-Privacy (bead requirement: "window titles default privacy=sensitive;
-app-class only in normal view"):
+Privacy (window titles default privacy=sensitive; normal views receive only
+app class, duration, and a validated browser hostname when available):
 - Raw window titles and raw ``app`` process names are NEVER read from the
   evidence table into a projected point event or episode payload. Only the
   connector-computed ``app_class`` bucket (``ide`` / ``terminal`` /
-  ``browser`` / ``other``) and duration are projected. Both point events and
-  episodes are stamped ``Privacy.NORMAL`` — a future title-surfacing view (if
-  ever built) MUST stamp ``Privacy.SENSITIVE`` instead; this adapter never
-  builds one.
+  ``browser`` / ``other``), duration, and a validated browser hostname are
+  projected. Raw browser URLs and web-watcher tab titles remain in the
+  evidence table's sensitive ``raw_payload`` and are never selected here.
+  Both point events and episodes are stamped ``Privacy.NORMAL`` — a future
+  title-surfacing view (if ever built) MUST stamp ``Privacy.SENSITIVE``
+  instead; this adapter never builds one.
 
 AFK handling:
 - Rows with ``is_afk = true`` are excluded from both point events and
@@ -54,6 +56,7 @@ Semantics:
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -99,6 +102,33 @@ DEFAULT_BATCH_LIMIT = 1000
 SCREEN_GAP_MINUTES = 10
 
 _APP_CLASSES = ("ide", "terminal", "browser", "other")
+
+
+def _safe_browser_domain(raw: object) -> str | None:
+    """Validate an evidence hostname before exposing it in normal projections.
+
+    The connector writes a hostname derived from an HTTP(S) URL. This second
+    guard deliberately accepts only a plain ASCII hostname, so an accidental
+    raw URL/path/query/title in evidence cannot cross into Chronicler output.
+    """
+
+    if not isinstance(raw, str):
+        return None
+    hostname = raw.strip().lower().rstrip(".")
+    if not hostname or len(hostname) > 253:
+        return None
+
+    labels = hostname.split(".")
+    if any(
+        not label
+        or len(label) > 63
+        or not label[0].isalnum()
+        or not label[-1].isalnum()
+        or any(not (char.isascii() and (char.isalnum() or char == "-")) for char in label)
+        for label in labels
+    ):
+        return None
+    return hostname
 
 
 class ActivityWatchWindowAdapter(ProjectionAdapter):
@@ -230,6 +260,14 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                 f"Skipping malformed ActivityWatch row {row_ref}: duration_seconds invalid"
             ]
 
+        try:
+            raw_browser_domain = row["browser_domain"]
+        except (IndexError, KeyError):
+            raw_browser_domain = None
+        browser_domain = (
+            _safe_browser_domain(raw_browser_domain) if app_class == "browser" else None
+        )
+
         normalized = {
             "id": row["id"],
             "idempotency_key": idempotency_key.strip(),
@@ -238,6 +276,7 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
             "app_class": app_class,
             "is_afk": row["is_afk"],
             "endpoint_identity": endpoint_identity.strip(),
+            "browser_domain": browser_domain,
         }
         return normalized, warnings
 
@@ -280,7 +319,7 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                     rows = await conn.fetch(
                         f"""
                         SELECT id, idempotency_key, ts, duration_seconds,
-                               app_class, is_afk, endpoint_identity
+                               app_class, browser_domain, is_afk, endpoint_identity
                         FROM {_EVIDENCE_TABLE}
                         ORDER BY ts ASC, id ASC
                         LIMIT $1
@@ -291,7 +330,7 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                     rows = await conn.fetch(
                         f"""
                         SELECT id, idempotency_key, ts, duration_seconds,
-                               app_class, is_afk, endpoint_identity
+                               app_class, browser_domain, is_afk, endpoint_identity
                         FROM {_EVIDENCE_TABLE}
                         WHERE ts > $1
                         ORDER BY ts ASC, id ASC
@@ -316,14 +355,22 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
         app_class = row["app_class"]
         duration_seconds = row["duration_seconds"]
 
-        title = f"{app_class.capitalize()} activity ({round(duration_seconds)}s)"
+        browser_domain = (
+            _safe_browser_domain(row.get("browser_domain")) if app_class == "browser" else None
+        )
+        if browser_domain is not None:
+            title = f"Browser activity ({browser_domain}, {round(duration_seconds)}s)"
+        else:
+            title = f"{app_class.capitalize()} activity ({round(duration_seconds)}s)"
 
-        # Privacy: app-class + duration only — never the raw app name or
-        # window title (see module docstring).
+        # Privacy: safe app class, duration, and optional validated hostname
+        # only — never a raw app name, URL, or title (see module docstring).
         payload: dict = {
             "app_class": app_class,
             "duration_seconds": duration_seconds,
         }
+        if browser_domain is not None:
+            payload["browser_domain"] = browser_domain
 
         async with chronicler_pool.acquire() as conn:
             event = await upsert_point_event(
@@ -377,10 +424,14 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
         seg_start_at, seg_class_seconds = self._resolve_carryover(
             carry=carry, row_ts=first_row["ts"], gap=gap
         )
+        seg_browser_domain_seconds = (
+            self._resolve_browser_domain_carryover(carry) if seg_start_at is not None else {}
+        )
 
         current: list[dict[str, Any]] = [first_row]
         current_start_at = seg_start_at
         current_class_seconds = seg_class_seconds
+        current_browser_domain_seconds = seg_browser_domain_seconds
 
         for row in rows[1:]:
             prev = current[-1]
@@ -403,6 +454,7 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                         "rows": current,
                         "start_at": current_start_at,
                         "class_seconds": current_class_seconds,
+                        "browser_domain_seconds": current_browser_domain_seconds,
                     }
                 )
                 current = [row]
@@ -411,11 +463,17 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                 current_start_at, current_class_seconds = self._resolve_carryover(
                     carry=new_carry, row_ts=row["ts"], gap=gap
                 )
+                current_browser_domain_seconds = (
+                    self._resolve_browser_domain_carryover(new_carry)
+                    if current_start_at is not None
+                    else {}
+                )
         segments.append(
             {
                 "rows": current,
                 "start_at": current_start_at,
                 "class_seconds": current_class_seconds,
+                "browser_domain_seconds": current_browser_domain_seconds,
             }
         )
 
@@ -431,10 +489,20 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
             endpoint_identity: str = first["endpoint_identity"]
 
             class_seconds: dict[str, float] = dict(seg["class_seconds"] or {})
+            browser_domain_seconds: dict[str, float] = dict(seg["browser_domain_seconds"] or {})
             for row in seg_rows:
                 class_seconds[row["app_class"]] = (
                     class_seconds.get(row["app_class"], 0.0) + row["duration_seconds"]
                 )
+                browser_domain = (
+                    _safe_browser_domain(row.get("browser_domain"))
+                    if row["app_class"] == "browser"
+                    else None
+                )
+                if browser_domain is not None:
+                    browser_domain_seconds[browser_domain] = (
+                        browser_domain_seconds.get(browser_domain, 0.0) + row["duration_seconds"]
+                    )
 
             if end_at < effective_start_at:
                 logger.warning(
@@ -460,6 +528,11 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                 "dominant_app_class": dominant_app_class,
                 **{f"{cls}_seconds": class_seconds.get(cls, 0.0) for cls in _APP_CLASSES},
             }
+            if browser_domain_seconds:
+                payload["browser_domain_seconds"] = {
+                    domain: browser_domain_seconds[domain]
+                    for domain in sorted(browser_domain_seconds)
+                }
 
             seg_event_ids = [
                 event_id_by_key[r["idempotency_key"]]
@@ -506,6 +579,7 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                 "start_at": effective_start_at.isoformat(),
                 "end_at": end_at.isoformat(),
                 "class_seconds": class_seconds,
+                "browser_domain_seconds": browser_domain_seconds,
             }
 
         return episodes_upserted, new_carryover
@@ -552,6 +626,26 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
             }
 
         return prior_start_at, class_seconds
+
+    @staticmethod
+    def _resolve_browser_domain_carryover(carry: Any) -> dict[str, float]:
+        """Return only valid, finite hostname totals from an open episode."""
+        if not isinstance(carry, dict):
+            return {}
+        raw_domain_seconds = carry.get("browser_domain_seconds")
+        if not isinstance(raw_domain_seconds, dict):
+            return {}
+
+        domain_seconds: dict[str, float] = {}
+        for raw_domain, raw_seconds in raw_domain_seconds.items():
+            domain = _safe_browser_domain(raw_domain)
+            if domain is None or not isinstance(raw_seconds, int | float):
+                continue
+            seconds = float(raw_seconds)
+            if not math.isfinite(seconds) or seconds < 0:
+                continue
+            domain_seconds[domain] = domain_seconds.get(domain, 0.0) + seconds
+        return domain_seconds
 
 
 __all__ = [

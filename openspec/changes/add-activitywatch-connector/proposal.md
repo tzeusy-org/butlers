@@ -31,28 +31,28 @@ window-focus and AFK-status history.
   per-app-class duration breakdown, so a future occupation-classifier can
   derive work-vs-not-work from `dominant_app_class` without re-reading raw
   evidence.
+- **Browser-domain sub-bucketing**: when a focused app is a browser, the
+  connector best-effort correlates an overlapping `aw-watcher-web`
+  (`web.tab.current`) event by timestamp and stores only its validated
+  hostname in `browser_domain` (migration `core_192`). Chronicler can expose
+  that hostname in normal browser point events and screen-episode duration
+  totals; raw URLs and web tab titles remain in the sensitive evidence JSON.
 - **Switchboard registration**: `activitywatch` channel/provider pair (RFC
   0003 Amendment 2), a global LLM-classification skip rule (`sw_018`,
   mirrors OwnTracks/Home Assistant), and `activitywatch` added to the
   heartbeat protocol's `VALID_CONNECTOR_TYPES`.
-- **Privacy**: window titles are captured only in the durable evidence table
-  and are NEVER projected into `ingest.v1` envelopes, Chronicler point
-  events, or episodes — only the derived `app_class` bucket (and, in `full`
-  ingestion tier, the raw `app` process name in the envelope only) reach
-  those surfaces. This satisfies "window titles default privacy=sensitive;
-  app-class only in normal view" by simply never building a title-carrying
-  projection path in v1.
+- **Privacy**: window titles, web URLs, and web tab titles are captured only
+  in durable sensitive evidence and are NEVER projected into `ingest.v1`
+  envelopes, Chronicler point events, or episodes. Normal surfaces receive
+  only app class, duration, and (for correlated browser activity) a validated
+  hostname; in `full` ingestion tier the raw app process name remains
+  envelope-only.
 
 ## Deliberately Out of Scope (Follow-Ups)
 
 This bead ships the connector + migration + Chronicler adapter core. The
 following are explicitly deferred (see Discovered-Follow-Ups in the PR):
 
-- **Browser-domain sub-bucketing.** The bead asks for "browser-by-domain"
-  granularity; v1 classifies all browsers into one `browser` app-class.
-  True domain-level bucketing requires correlating the separate
-  `aw-watcher-web` browser-extension bucket (which carries `url`) with
-  window-focus events by timestamp — a distinct, non-trivial adapter concern.
 - **Dedicated "occupation" category.** `screen_episode` is mapped to the
   existing `"tasks"` category (Work lane) in `aggregations.category_for()`
   today — there is no dedicated `"occupation"` category yet (that lands
@@ -74,6 +74,7 @@ following are explicitly deferred (see Discovered-Follow-Ups in the PR):
 - Affected code: `src/butlers/connectors/activitywatch.py`,
   `src/butlers/chronicler/adapters/activitywatch.py`,
   `alembic/versions/core/core_154_activitywatch_events.py`,
+  `alembic/versions/core/core_192_activitywatch_browser_domain.py`,
   `roster/switchboard/tools/routing/contracts.py`,
   `roster/switchboard/tools/connector/heartbeat.py`,
   `roster/switchboard/migrations/018_switchboard_activitywatch_skip.py`,

@@ -6,7 +6,8 @@ Covers:
 - is_afk=NULL rows (no AFK watcher installed) treated as active.
 - Screen episode rollup: contiguous active rows collapse; gap starts a new episode.
 - Per-app-class duration breakdown + dominant_app_class in episode payload.
-- Privacy: point event / episode payloads never carry raw app name or window title.
+- Privacy: point event / episode payloads never carry raw app name, window title,
+  or raw browser URL; a validated browser hostname is the only browser detail.
 - Malformed app_class handling (defaults to "other" with a warning).
 - Missing evidence surface graceful degradation.
 - Carryover continuation logic (``_resolve_carryover``).
@@ -48,6 +49,7 @@ def _make_row(
     is_afk: bool | None = False,
     endpoint_identity: str = _ENDPOINT,
     idempotency_key: str | None = None,
+    browser_domain: str | None = None,
 ) -> dict:
     ikey = idempotency_key or f"activitywatch:{endpoint_identity}:bucket:{ts.isoformat()}"
     return {
@@ -58,6 +60,7 @@ def _make_row(
         "app_class": app_class,
         "is_afk": is_afk,
         "endpoint_identity": endpoint_identity,
+        "browser_domain": browser_domain,
     }
 
 
@@ -240,6 +243,56 @@ async def test_point_event_payload_never_contains_app_name_or_title() -> None:
 
 
 @pytest.mark.asyncio
+async def test_browser_point_event_projects_validated_hostname_only() -> None:
+    row = _make_row(app_class="browser", browser_domain="docs.example.test")
+    adapter = ActivityWatchWindowAdapter()
+    upserted_events: list[PointEvent] = []
+
+    async def _fake_upsert_event(conn: object, event: PointEvent) -> PointEvent:
+        upserted_events.append(event)
+        return event
+
+    with patch(
+        "butlers.chronicler.adapters.activitywatch.upsert_point_event",
+        side_effect=_fake_upsert_event,
+    ):
+        await adapter._project_point_event(_chronicler_pool(), row)
+
+    event = upserted_events[0]
+    assert event.payload == {
+        "app_class": "browser",
+        "duration_seconds": 30.0,
+        "browser_domain": "docs.example.test",
+    }
+    assert "docs.example.test" in event.title
+
+
+@pytest.mark.asyncio
+async def test_browser_point_event_rejects_raw_url_shaped_domain() -> None:
+    """Projection fails closed if an evidence row contains a raw URL by mistake."""
+    raw_url = "https://docs.example.test/private?token=secret"
+    row = _make_row(app_class="browser", browser_domain=raw_url)
+    adapter = ActivityWatchWindowAdapter()
+    upserted_events: list[PointEvent] = []
+
+    async def _fake_upsert_event(conn: object, event: PointEvent) -> PointEvent:
+        upserted_events.append(event)
+        return event
+
+    with patch(
+        "butlers.chronicler.adapters.activitywatch.upsert_point_event",
+        side_effect=_fake_upsert_event,
+    ):
+        await adapter._project_point_event(_chronicler_pool(), row)
+
+    event = upserted_events[0]
+    serialized = str({"title": event.title, "payload": event.payload})
+    assert event.payload == {"app_class": "browser", "duration_seconds": 30.0}
+    assert raw_url not in serialized
+    assert "token=secret" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_malformed_app_class_defaults_to_other_with_warning() -> None:
     row = _make_row(app_class="not-a-real-class")
     adapter = ActivityWatchWindowAdapter()
@@ -335,6 +388,62 @@ async def test_contiguous_rows_collapse_into_one_episode_with_breakdown() -> Non
     assert episode_arg.payload["browser_seconds"] == 120.0
     assert episode_arg.payload["dominant_app_class"] == "browser"
     assert episode_arg.payload["point_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_browser_domain_seconds_are_aggregated_in_screen_episode() -> None:
+    row1 = _make_row(
+        ts=_NOW,
+        app_class="browser",
+        browser_domain="docs.example.test",
+        duration_seconds=60.0,
+        idempotency_key="k1",
+    )
+    row2 = _make_row(
+        ts=_NOW + timedelta(minutes=2),
+        app_class="browser",
+        browser_domain="search.example.test",
+        duration_seconds=30.0,
+        idempotency_key="k2",
+    )
+    row3 = _make_row(
+        ts=_NOW + timedelta(minutes=3),
+        app_class="browser",
+        browser_domain="docs.example.test",
+        duration_seconds=45.0,
+        idempotency_key="k3",
+    )
+    adapter = ActivityWatchWindowAdapter()
+    pool = _pool_returning(row1, row2, row3)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.activitywatch.upsert_point_event") as mock_pe,
+        patch("butlers.chronicler.adapters.activitywatch.upsert_episode") as mock_ep,
+    ):
+        mock_pe.side_effect = AsyncMock(return_value=MagicMock())
+        mock_ep.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.episodes_closed == 1
+    episode_arg = mock_ep.await_args.args[1]
+    assert episode_arg.payload["browser_domain_seconds"] == {
+        "docs.example.test": 105.0,
+        "search.example.test": 30.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fetch_events_reads_safe_domain_without_selecting_sensitive_evidence() -> None:
+    adapter = ActivityWatchWindowAdapter()
+    pool = _pool_returning()
+
+    await adapter._fetch_events(pool, since=None)
+
+    sql = str(pool.acquire.return_value._obj.fetch.await_args.args[0])
+    assert "browser_domain" in sql
+    assert "window_title" not in sql
+    assert "raw_payload" not in sql
 
 
 @pytest.mark.asyncio

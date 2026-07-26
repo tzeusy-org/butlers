@@ -40,9 +40,11 @@
   fixture (required by `test_all_supported_sources_have_non_other_category`).
 - [x] 4.5 Tests: `tests/chronicler/test_activitywatch_adapter.py`.
 
-## 5. Deferred (see proposal.md "Deliberately Out of Scope")
+## 5. Follow-ups (see proposal.md "Deliberately Out of Scope")
 
-- [ ] 5.1 Browser-domain sub-bucketing via `aw-watcher-web` correlation.
+- [x] 5.1 Browser-domain sub-bucketing via `aw-watcher-web` correlation:
+  `core_192` persists a validated hostname only; raw URL/tab-title evidence
+  stays in `raw_payload`, and Chronicler projects safe point/episode fields.
 - [ ] 5.2 Dedicated "occupation" category (refining beyond "tasks") once
   Tier 2 (routine inference) lands.
 - [ ] 5.3 Multi-machine `docker-compose.yml` templating.

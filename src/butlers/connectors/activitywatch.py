@@ -23,6 +23,10 @@ Key behaviors:
   via a static substring-match table (see ``classify_app``)
 - Matches each window event's start timestamp against the AFK bucket's
   status intervals to derive ``is_afk`` (best-effort; AFK bucket is optional)
+- For browser window events, best-effort correlates the matching
+  ``aw-watcher-web`` event by timestamp and derives a hostname-only
+  ``browser_domain`` sub-bucket. Raw web URLs and tab titles stay in the
+  sensitive evidence JSON and never enter the ingest envelope.
 - Bounded first-run backfill (``ACTIVITYWATCH_MAX_BACKFILL_DAYS``, default 30)
   so a long-running local AW install does not flood the system on first
   connect (RFC per "first poll baseline" connector obligation)
@@ -47,11 +51,9 @@ Privacy:
 - Window titles are captured into the durable evidence table for forensic /
   future-reclassification use, but are NEVER included in the ingest.v1
   envelope's normalized text, and NEVER projected by the Chronicler adapter
-  (see ``src/butlers/chronicler/adapters/activitywatch.py``) — only the
-  derived ``app_class`` (and, in ``full`` ingestion tier, the raw ``app``
-  process name) reach Chronicler / the dashboard. This matches the bead's
-  "window titles default privacy=sensitive; app-class only in normal view"
-  requirement.
+  (see ``src/butlers/chronicler/adapters/activitywatch.py``). A validated
+  hostname is the sole web-watcher detail allowed into a normal projection;
+  raw URLs and titles remain in the evidence table's ``raw_payload`` only.
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required)
@@ -96,6 +98,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
@@ -161,12 +164,10 @@ _TIER_FULL = "full"
 # AW bucket "type" field values (aw-client convention).
 _BUCKET_TYPE_WINDOW = "currentwindow"
 _BUCKET_TYPE_AFK = "afkstatus"
+_BUCKET_TYPE_WEB = "web.tab.current"
 
-# App-class buckets (bead requirement: "IDE / terminal / browser-by-domain").
-# Browser-domain sub-bucketing requires correlating the separate
-# aw-watcher-web browser-extension bucket with window events by timestamp;
-# deferred as a follow-up (v1 classifies browsers as a single "browser"
-# class — see PR discussion / Discovered-Follow-Ups).
+# App-class buckets. Browser events may carry an additional hostname-only
+# sub-bucket after correlation with aw-watcher-web (see ``match_browser_domain``).
 AppClass = Literal["ide", "terminal", "browser", "other"]
 
 _IDE_APPS = frozenset(
@@ -642,8 +643,126 @@ class ActivityWatchUnavailableError(Exception):
 
 
 def _parse_aw_timestamp(raw: str) -> datetime:
-    """Parse an ActivityWatch event timestamp (ISO8601, may end in 'Z')."""
-    return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    """Parse an ActivityWatch event timestamp as an aware UTC instant.
+
+    ActivityWatch stores timestamps as UTC and may discard the source offset,
+    so an offset-free ISO-8601 value is UTC rather than an unknown local time.
+    """
+
+    timestamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        return timestamp.replace(tzinfo=UTC)
+    return timestamp
+
+
+@dataclass(frozen=True)
+class BrowserDomainMatch:
+    """A safe browser-domain derivation plus its sensitive source event.
+
+    ``domain`` is an HTTP(S) hostname with no path, query, fragment, port,
+    credentials, or tab title. ``raw_event`` must only be stored in the
+    connector's evidence surface; callers must not put it in normal ingress
+    or projections.
+    """
+
+    domain: str
+    raw_event: dict[str, Any]
+
+
+def _safe_browser_hostname(hostname: object) -> str | None:
+    """Return a plain ASCII hostname suitable for normal evidence fields."""
+
+    if not isinstance(hostname, str):
+        return None
+    hostname = hostname.strip().lower().rstrip(".")
+    if not hostname or len(hostname) > 253:
+        return None
+
+    labels = hostname.split(".")
+    if any(
+        not label
+        or len(label) > 63
+        or not label[0].isalnum()
+        or not label[-1].isalnum()
+        or any(not (char.isascii() and (char.isalnum() or char == "-")) for char in label)
+        for label in labels
+    ):
+        return None
+    return hostname
+
+
+def _normalize_browser_hostname(raw_url: object) -> str | None:
+    """Return an ASCII hostname from an HTTP(S) URL, or ``None``.
+
+    ActivityWatch's web watcher reports an entire URL. Keeping only its
+    hostname is the privacy boundary for normal browser-domain projections.
+    Non-web schemes and malformed values deliberately fail closed.
+    """
+
+    if not isinstance(raw_url, str) or not raw_url:
+        return None
+
+    try:
+        parsed = urlsplit(raw_url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return None
+        hostname = parsed.hostname.encode("idna").decode("ascii")
+    except (UnicodeError, ValueError):
+        return None
+    return _safe_browser_hostname(hostname)
+
+
+def _to_utc_instant(timestamp: datetime) -> datetime | None:
+    """Canonicalize an ActivityWatch timestamp to its documented UTC instant."""
+
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)
+
+
+def match_browser_domain(
+    window_ts: datetime,
+    web_events: list[dict[str, Any]],
+) -> BrowserDomainMatch | None:
+    """Correlate a window-focus instant to an overlapping web-watcher event.
+
+    ActivityWatch event intervals use a half-open ``[start, end)`` boundary,
+    so an event beginning at a prior event's exact end takes precedence. If
+    valid web events overlap, the latest start wins; an equal-start collision
+    breaks deterministically by hostname. All comparisons use UTC instants;
+    offset-free ActivityWatch timestamps are UTC by protocol, while malformed
+    source data is ignored.
+    """
+
+    instant = _to_utc_instant(window_ts)
+    if instant is None:
+        return None
+
+    candidates: list[tuple[datetime, str, dict[str, Any]]] = []
+    for event in web_events:
+        try:
+            raw_timestamp = event["timestamp"]
+            if not isinstance(raw_timestamp, str):
+                continue
+            start = _to_utc_instant(_parse_aw_timestamp(raw_timestamp))
+            duration_seconds = float(event.get("duration", 0.0))
+            data = event.get("data")
+            raw_url = data.get("url") if isinstance(data, dict) else None
+            domain = _normalize_browser_hostname(raw_url)
+            if start is None or domain is None or duration_seconds <= 0:
+                continue
+            end = start + timedelta(seconds=duration_seconds)
+        except (KeyError, OverflowError, TypeError, ValueError):
+            continue
+
+        if start <= instant < end:
+            candidates.append((start, domain, event))
+
+    if not candidates:
+        return None
+
+    _, domain, raw_event = max(candidates, key=lambda candidate: (candidate[0], candidate[1]))
+    return BrowserDomainMatch(domain=domain, raw_event=raw_event)
 
 
 async def fetch_buckets(client: httpx.AsyncClient) -> dict[str, dict[str, Any]]:
@@ -809,6 +928,7 @@ async def persist_activity_event(
     app: str,
     window_title: str | None,
     app_class: AppClass,
+    browser_domain: str | None,
     is_afk: bool | None,
     raw_payload: dict[str, Any],
 ) -> bool:
@@ -818,6 +938,7 @@ async def persist_activity_event(
     Returns True if the row was inserted, False if it already existed.
     """
     idempotency_key = f"activitywatch:{machine_id}:{bucket_id}:{ts.isoformat()}"
+    browser_domain = _safe_browser_hostname(browser_domain)
 
     result = await pool.fetchval(
         f"""
@@ -831,9 +952,10 @@ async def persist_activity_event(
             app,
             window_title,
             app_class,
+            browser_domain,
             is_afk,
             raw_payload
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
         """,
@@ -846,6 +968,7 @@ async def persist_activity_event(
         app,
         window_title,
         app_class,
+        browser_domain,
         is_afk,
         raw_payload,
     )
@@ -1107,6 +1230,7 @@ class ActivityWatchConnector:
                 "with the window watcher enabled?"
             )
         afk_bucket_id = find_bucket_id(buckets, _BUCKET_TYPE_AFK)
+        web_bucket_id = find_bucket_id(buckets, _BUCKET_TYPE_WEB)
 
         since = self._last_checkpoint_ts
         if since is None:
@@ -1124,6 +1248,18 @@ class ActivityWatchConnector:
             except ActivityWatchUnavailableError:
                 # AFK data is best-effort enrichment — proceed without it.
                 logger.debug("ActivityWatchConnector: AFK bucket fetch failed; is_afk will be null")
+
+        web_events: list[dict[str, Any]] = []
+        if web_bucket_id is not None:
+            try:
+                web_events = await fetch_events(self._http_client, web_bucket_id, since=since)
+                self._metrics.record_source_api_call(api_method="get_events_web", status="success")
+            except ActivityWatchUnavailableError:
+                # Browser-domain enrichment is optional: keep coarse browser
+                # activity when the browser extension is absent or unreachable.
+                logger.debug(
+                    "ActivityWatchConnector: web bucket fetch failed; browser_domain will be null"
+                )
 
         if not window_events:
             return
@@ -1154,6 +1290,7 @@ class ActivityWatchConnector:
 
             app_class = classify_app(app)
             is_afk = lookup_afk_status(afk_intervals, ts)
+            browser_match = match_browser_domain(ts, web_events) if app_class == "browser" else None
 
             activitywatch_events_received_total.labels(
                 endpoint_identity=self._endpoint_identity, app_class=app_class
@@ -1169,6 +1306,8 @@ class ActivityWatchConnector:
                     app_class=app_class,
                     is_afk=is_afk,
                     raw_event=event,
+                    browser_domain=(browser_match.domain if browser_match is not None else None),
+                    raw_web_event=(browser_match.raw_event if browser_match is not None else None),
                 )
                 self._last_event_at = datetime.now(UTC)
                 self._events_today += 1
@@ -1199,6 +1338,8 @@ class ActivityWatchConnector:
         app_class: AppClass,
         is_afk: bool | None,
         raw_event: dict[str, Any],
+        browser_domain: str | None = None,
+        raw_web_event: dict[str, Any] | None = None,
     ) -> None:
         """Apply the policy gate, submit to Switchboard, and persist evidence."""
         observed_at = datetime.now(UTC).isoformat()
@@ -1258,6 +1399,12 @@ class ActivityWatchConnector:
 
         if self._db_pool is not None:
             try:
+                # Raw URLs and tab titles are sensitive evidence. They stay in
+                # this database-only JSON payload and are never passed to the
+                # Switchboard envelope above.
+                evidence_payload = dict(raw_event)
+                if raw_web_event is not None:
+                    evidence_payload["web_event"] = raw_web_event
                 await persist_activity_event(
                     self._db_pool,
                     machine_id=self._config.machine_id,
@@ -1268,8 +1415,9 @@ class ActivityWatchConnector:
                     app=app,
                     window_title=window_title,
                     app_class=app_class,
+                    browser_domain=browser_domain,
                     is_afk=is_afk,
-                    raw_payload=raw_event,
+                    raw_payload=evidence_payload,
                 )
             except Exception:
                 logger.warning(

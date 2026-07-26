@@ -82,17 +82,39 @@ buckets using a static, case-insensitive substring-match table.
 - **THEN** it returns one of `"ide"`, `"terminal"`, `"browser"`, `"other"`
 - **AND** an empty or missing `app` value classifies as `"other"`
 
-#### Scenario: Browser-domain bucketing deferred
+### Requirement: Browser-Domain Correlation
+
+The connector SHALL best-effort correlate browser window-focus activity with
+the ActivityWatch web watcher while preserving the existing sensitive-evidence
+boundary for raw URL and title data.
 
 - **WHEN** the focused application is a browser
-- **THEN** v1 classifies it as `"browser"` without a domain sub-bucket
-- **AND** true domain-level bucketing (correlating the `aw-watcher-web`
-  browser-extension bucket by timestamp) is deferred to a follow-up
+- **THEN** the connector MAY correlate it with an `aw-watcher-web` bucket
+  whose type is `"web.tab.current"`
+- **AND** a successful correlation stores only a validated HTTP(S) hostname
+  in `browser_domain`
+- **AND** absent, unavailable, malformed, or timestamp-unmatched web events
+  leave `browser_domain` `NULL` while preserving the coarse `"browser"`
+  app class
 
-### Requirement: Privacy — Window Titles Never Reach Projected Surfaces
+#### Scenario: Timestamp correlation is deterministic and timezone-safe
 
-Window titles are privacy-sensitive by default and MUST be excluded from
-every outward-facing surface; only the app-class SHALL be projected.
+- **WHEN** multiple web-watcher events could correlate with a browser
+  window-focus timestamp
+- **THEN** the connector compares timezone-aware instants as UTC
+- **AND** it treats web intervals as half-open `[start, end)` ranges
+- **AND** it selects the latest overlapping start time (with a deterministic
+  hostname tie-break)
+- **AND** it interprets offset-free ActivityWatch timestamps as UTC, per the
+  server storage contract, while ignoring malformed timestamps
+
+### Requirement: Privacy — Sensitive Window and Web Details Never Reach Normal Surfaces
+
+Sensitive window and web details MUST never reach normal surfaces. Window
+titles, raw web URLs, and web tab titles are privacy-sensitive by default and
+must be excluded from every outward-facing surface; only app
+class, duration, and a validated browser hostname (when available) SHALL be
+projected.
 
 #### Scenario: Envelope excludes window titles
 
@@ -103,6 +125,8 @@ every outward-facing surface; only the app-class SHALL be projected.
 - **AND** `payload.raw` is `None` in `metadata` ingestion tier (default)
 - **AND** in `full` ingestion tier, `payload.raw` contains the app-class,
   duration, and raw `app` process name — but never the window title
+- **AND** neither ingestion tier includes a web URL, web tab title, or
+  `browser_domain`
 
 #### Scenario: Durable evidence table retains the title for forensics
 
@@ -110,15 +134,23 @@ every outward-facing surface; only the app-class SHALL be projected.
   `connectors.activitywatch_events`
 - **THEN** the raw `window_title` and `app` columns are stored (nullable)
   for forensic / future-reclassification use
+- **AND** a correlated raw web-watcher event (including URL and tab title)
+  is retained only in `raw_payload`
+- **AND** the separate `browser_domain` column contains only the validated
+  hostname, never a path, query, fragment, credentials, port, or title
 - **AND** this table is not read by anything except the connector (write)
   and the Chronicler adapter (read)
 
-#### Scenario: Chronicler projection is app-class only
+#### Scenario: Chronicler projection exposes only safe browser granularity
 
 - **WHEN** the Chronicler adapter projects a window-focus row into a point
   event or episode
-- **THEN** the payload contains only `app_class` and duration fields
-- **AND** it never reads or projects the `window_title` or `app` columns
+- **THEN** the point payload contains `app_class`, duration, and a validated
+  `browser_domain` only for browser rows with a correlated domain
+- **AND** screen episodes MAY contain a `browser_domain_seconds` map keyed
+  only by validated hostnames
+- **AND** it never reads or projects the `window_title`, `app`, or
+  `raw_payload` columns
 
 ### Requirement: AFK-Aware Screen Episodes
 
