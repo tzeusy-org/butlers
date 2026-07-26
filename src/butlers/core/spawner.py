@@ -41,6 +41,12 @@ import asyncpg
 from opentelemetry import trace
 from opentelemetry.context import Context
 
+from butlers.api.conversations import (
+    conversation_clear_provider_session,
+    conversation_get_provider_session,
+    conversation_set_provider_session,
+    resolve_resume_handle,
+)
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
@@ -584,6 +590,7 @@ class Spawner:
         env_override: dict[str, str] | None = None,
         timeout_override: int | None = None,
         ingestion_event_id: str | None = None,
+        conversation_id: uuid.UUID | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -647,6 +654,16 @@ class Spawner:
             row joins back to the ingestion event (for chronicler contact
             resolution and downstream provenance). Internally-triggered
             sessions (tick, scheduler, manual trigger) leave this as ``None``.
+        conversation_id:
+            Optional ``public.dashboard_conversations`` anchor id for this
+            dispatch (bu-ep4ks.8 follow-up, bu-bkthr). When set on a
+            conversational-turn dispatch (``trigger_source == "route"``) and
+            the resolved adapter supports it, the spawner opportunistically
+            resumes the conversation's last provider-native session instead of
+            cold-starting, and persists whatever session id this turn reports
+            back onto the conversation for the next turn. ``None`` (the
+            default) for every non-route trigger source and for route
+            dispatches with no thread-anchored conversation.
 
         Returns
         -------
@@ -750,6 +767,7 @@ class Spawner:
                         env_override=env_override,
                         timeout_override=timeout_override,
                         ingestion_event_id=ingestion_event_id,
+                        conversation_id=conversation_id,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -778,6 +796,7 @@ class Spawner:
                             env_override=env_override,
                             timeout_override=timeout_override,
                             ingestion_event_id=ingestion_event_id,
+                            conversation_id=conversation_id,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -974,6 +993,7 @@ class Spawner:
         env_override: dict[str, str] | None = None,
         timeout_override: int | None = None,
         ingestion_event_id: str | None = None,
+        conversation_id: uuid.UUID | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1580,6 +1600,42 @@ class Spawner:
             await self._ensure_mcp_endpoints_warmed(mcp_servers)
 
             # ---------------------------------------------------------------------------
+            # Provider-native session resume lookup (bu-ep4ks.8 follow-up, bu-bkthr)
+            #
+            # For conversational turns (trigger_source == "route") on an adapter that
+            # supports resuming a prior provider-native session, resolve this
+            # conversation's resume handle ONCE, here, using the runtime_type initially
+            # resolved for this dispatch. Never re-resolved mid-loop below: a same-tier
+            # failover can land on a DIFFERENT runtime_type/adapter, and a resume token
+            # is never portable across adapters (RuntimeAdapter.supports_resume). The
+            # loop only ever attaches this handle to attempt 1 -- see the
+            # resume_session_id gate in the kwargs-building block and the
+            # transparent-cold-retry branch in the failure-handling block below.
+            # ---------------------------------------------------------------------------
+            _resume_session_id: str | None = None
+            if (
+                conversation_id is not None
+                and trigger_source == "route"
+                and runtime.supports_resume
+                and self._pool is not None
+            ):
+                try:
+                    _provider_session = await conversation_get_provider_session(
+                        self._pool, conversation_id, butler_name=self._config.name
+                    )
+                except Exception:
+                    _provider_session = None
+                    logger.debug(
+                        "Provider resume-session lookup failed for conversation=%s butler=%s",
+                        conversation_id,
+                        self._config.name,
+                        exc_info=True,
+                    )
+                _resume_session_id = resolve_resume_handle(
+                    _provider_session, runtime_type=resolved_runtime_type
+                )
+
+            # ---------------------------------------------------------------------------
             # Same-tier failover: runtime-failure retry loop
             #
             # One logical session may attempt multiple same-tier catalog candidates.
@@ -1622,6 +1678,13 @@ class Spawner:
                 else:
                     timeout_s = _FALLBACK_SESSION_TIMEOUT_S
                 invoke_kwargs["timeout"] = timeout_s
+                # Attach the resolved resume handle to attempt 1 only (bu-bkthr) --
+                # every later attempt in this loop is either a same-tier failover
+                # (a different candidate, possibly a different runtime_type/adapter
+                # that may not even accept this kwarg) or the transparent cold retry
+                # below, so resume_session_id must never survive past attempt 1.
+                if _attempt_count == 1 and _resume_session_id:
+                    invoke_kwargs["resume_session_id"] = _resume_session_id
                 merged_runtime_capture = False
 
                 _attempt_exc: BaseException | None = None
@@ -1789,6 +1852,41 @@ class Spawner:
                     # Restore tool calls for the outer except block.
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
+
+                # Fallback-to-cold for a failed resume attempt (bu-bkthr): attempt 1
+                # used the provider resume handle and failed, but
+                # `_failover_decision.eligible` being True already means no
+                # side-effecting tool call was confirmed this attempt (the
+                # classifier's default-closed contract: any captured MCP tool call
+                # makes a failure ineligible). It is therefore safe to retry the
+                # SAME candidate cold instead of routing this through ordinary
+                # same-tier failover -- the failure may be entirely about the resume
+                # handle (expired/rejected/unknown session), not the model's health.
+                # Evict the now-suspect handle and loop back without writing a
+                # runtime_failure row or advancing to another candidate: this must
+                # never consume a failover slot or count against the model's
+                # circuit breaker.
+                if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
+                    logger.info(
+                        "Provider resume attempt failed for butler=%s conversation=%s "
+                        "runtime_type=%s (%s); evicting handle and retrying cold",
+                        self._config.name,
+                        conversation_id,
+                        resolved_runtime_type,
+                        _failover_decision.reason,
+                    )
+                    if self._pool is not None and conversation_id is not None:
+                        try:
+                            await conversation_clear_provider_session(
+                                self._pool, conversation_id, butler_name=self._config.name
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Failed to clear stale provider resume handle for conversation=%s",
+                                conversation_id,
+                                exc_info=True,
+                            )
+                    continue
 
                 # Failover eligible — record runtime_failure provenance for the
                 # attempt that just failed before advancing to the next candidate.
@@ -2105,6 +2203,34 @@ class Spawner:
                             session_id,
                             exc_info=True,
                         )
+
+                # Persist this turn's provider-native session id as the
+                # conversation's new resume handle (bu-ep4ks.8 follow-up,
+                # bu-bkthr) -- whether or not THIS turn resumed, a successful
+                # invocation on a resume-capable adapter always reports a fresh
+                # session id (ClaudeCodeAdapter.invoke sets it unconditionally
+                # on success), which becomes the handle the *next* turn may
+                # resume from. Best-effort: a write failure just means the next
+                # turn cold-starts instead of resuming.
+                if conversation_id is not None and runtime.supports_resume:
+                    _reported_provider_session_id = (
+                        proc_info.get("provider_session_id") if proc_info else None
+                    )
+                    if _reported_provider_session_id:
+                        try:
+                            await conversation_set_provider_session(
+                                self._pool,
+                                conversation_id,
+                                butler_name=self._config.name,
+                                provider_session_id=_reported_provider_session_id,
+                                provider_runtime_type=resolved_runtime_type,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Failed to persist provider resume session for conversation=%s",
+                                conversation_id,
+                                exc_info=True,
+                            )
 
             # Write daemon-side audit log entry
             await write_audit_entry(

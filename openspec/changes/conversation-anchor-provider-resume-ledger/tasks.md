@@ -18,7 +18,7 @@
 
 ## 4. Follow-up (filed as beads, not part of this change)
 
-- [ ] 4.1 Wire `conversation_get_or_create_by_thread` into the Telegram/email ingest paths in `src/butlers/modules/pipeline.py`.
-- [ ] 4.2 Wire resume-handle lookup/persist/fallback-to-cold into `Spawner`'s invoke path for interactive trigger sources.
+- [x] 4.1 Wire `conversation_get_or_create_by_thread` into the Telegram/email ingest paths (bu-bkthr). Landed in `src/butlers/core_tools/_routing.py`'s `route.execute` background processor rather than `pipeline.py`: the target `butler_name` the anchor must be scoped to is only known once Switchboard's classification has chosen a route, and `_process_route` already holds the parsed, typed `source_channel`/`source_thread_identity` for that target butler.
+- [x] 4.2 Wire resume-handle lookup/persist/fallback-to-cold into `Spawner`'s invoke path for interactive trigger sources (bu-bkthr). Gated on `trigger_source == "route"`; a failed resume attempt with no confirmed side-effecting tool call transparently retries the same candidate cold without writing a `runtime_failure` provenance row or consuming a same-tier failover slot.
 - [ ] 4.3 First-token streaming to the chat widget / Telegram typing surface (rank #8 slice 3).
 - [ ] 4.4 Unified Conversations read surface + inline-undo action receipts (rank #8 slice 4).
