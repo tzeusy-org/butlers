@@ -38,7 +38,9 @@ class TestAssertEntityInfoSecured:
         assert_entity_info_secured(info_type, secured=True)
 
     # Allowed: whitelisted non-secret technical identifiers with secured=False.
-    @pytest.mark.parametrize("info_type", ["telegram_api_id", "home_assistant_url"])
+    @pytest.mark.parametrize(
+        "info_type", ["telegram_api_id", "home_assistant_url", "home_coordinates"]
+    )
     def test_whitelisted_not_secured_allowed(self, info_type: str) -> None:
         assert_entity_info_secured(info_type, secured=False)
 

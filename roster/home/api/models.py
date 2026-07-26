@@ -231,3 +231,44 @@ class ThresholdUpdateRequest(BaseModel):
     comfort_defaults: ComfortDefaults | None = None
     comfort_deviation: ComfortDeviation | None = None
     energy: EnergyThresholds | None = None
+
+
+class AtmosphereCurrentResponse(BaseModel):
+    """Current weather/AQI/pollen conditions from the shared context feed.
+
+    ``configured=False`` means no home location is on file (legitimate
+    absence, not an error — all other fields are unset). When configured,
+    ``stale``/``source_error`` flag a degraded feed per the CLAUDE.md
+    Degraded-Mode Response Envelope convention; the last-known-good values
+    (if any) are still returned alongside the flags rather than zeroed out.
+    """
+
+    configured: bool
+    latitude: float | None = None
+    longitude: float | None = None
+    observed_at: str | None = None
+    temperature_c: float | None = None
+    apparent_temperature_c: float | None = None
+    relative_humidity_pct: float | None = None
+    precipitation_mm: float | None = None
+    weather_code: int | None = None
+    wind_speed_kph: float | None = None
+    aqi_us: int | None = None
+    aqi_european: int | None = None
+    pm2_5: float | None = None
+    pm10: float | None = None
+    pollen_tree: float | None = None
+    pollen_grass: float | None = None
+    pollen_weed: float | None = None
+    pollen_available: bool = False
+    stale: bool = False
+    source_error: bool = False
+    last_error: str | None = None
+    fetched_at: str | None = None
+
+
+class AtmosphereLocationUpdateRequest(BaseModel):
+    """Owner-provisioned home location for the atmosphere context feed."""
+
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)

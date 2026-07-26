@@ -61,6 +61,15 @@ cron = "0 10 * * 1"
 dispatch_mode = "job"
 job_name = "maintenance_schedule_check"
 
+# Shared cross-butler weather/AQI/pollen context feed (bu-ep4ks.16): keyless
+# Open-Meteo poll keyed off the owner's configured home location. Degrades
+# honestly (no fetch attempted) when no home location is on file.
+[[butler.schedule]]
+name = "atmosphere-feed-refresh"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "atmosphere_feed_refresh"
+
 [[butler.schedule]]
 name = "daily_briefing_contribution"
 cron = "55 6 * * *"

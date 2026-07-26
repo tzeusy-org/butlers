@@ -77,6 +77,7 @@ _ENTITY_INFO_NON_SECRET_ALLOWED_TYPES: frozenset[str] = frozenset(
     {
         "telegram_api_id",  # technical API credential component, not a channel handle
         "home_assistant_url",  # service URL config entry; no predicate home in entity_facts
+        "home_coordinates",  # "lat,lon" feed-config entry; no predicate home in entity_facts
     }
 )
 

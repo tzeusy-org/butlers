@@ -25,6 +25,7 @@ from httpx import TimeoutException as HttpxTimeoutException
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.credential_store import upsert_owner_entity_info
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -53,6 +54,8 @@ if _spec is not None and _spec.loader is not None:
     ComfortDefaults = _models.ComfortDefaults
     ComfortDeviation = _models.ComfortDeviation
     EnergyThresholds = _models.EnergyThresholds
+    AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
+    AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
 
 logger = logging.getLogger(__name__)
 
@@ -1217,3 +1220,135 @@ def _validate_energy_thresholds(data: dict[str, Any]) -> None:
             status_code=422,
             detail="anomaly_pct must be <= high_severity_pct",
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/home/atmosphere/current — shared weather/AQI/pollen context feed
+# ---------------------------------------------------------------------------
+
+# A reading older than this many poll cycles (job cadence: every 30 min) is
+# stale — the owner should see a degraded flag rather than trust a cached
+# value indefinitely.
+_ATMOSPHERE_STALE_THRESHOLD = timedelta(hours=2)
+
+
+@router.get("/atmosphere/current", response_model=AtmosphereCurrentResponse)
+async def get_atmosphere_current(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> AtmosphereCurrentResponse:
+    """Return current weather/AQI/pollen conditions for the home location.
+
+    ``configured=False`` when no home location is on file — a legitimate
+    absence (the owner has not set one up yet), not an error. When
+    configured, ``stale``/``source_error`` surface a degraded feed per the
+    CLAUDE.md Degraded-Mode Response Envelope convention rather than
+    silently returning a truthful-looking empty/zeroed reading.
+    """
+    pool = _pool(db)
+    status_row = await pool.fetchrow(
+        """
+        SELECT configured, latitude, longitude, last_success_at, last_error,
+               consecutive_failures
+        FROM public.atmosphere_feed_status
+        WHERE id = 1
+        """
+    )
+    if status_row is None or not status_row["configured"]:
+        return AtmosphereCurrentResponse(configured=False)
+
+    reading = await pool.fetchrow(
+        """
+        SELECT observed_at, temperature_c, apparent_temperature_c, relative_humidity_pct,
+               precipitation_mm, weather_code, wind_speed_kph, aqi_us, aqi_european,
+               pm2_5, pm10, pollen_tree, pollen_grass, pollen_weed, pollen_available,
+               fetched_at
+        FROM public.atmosphere_readings
+        WHERE latitude = $1 AND longitude = $2
+        ORDER BY fetched_at DESC
+        LIMIT 1
+        """,
+        status_row["latitude"],
+        status_row["longitude"],
+    )
+
+    last_success_at = status_row["last_success_at"]
+    stale = (
+        last_success_at is None
+        or (datetime.now(UTC) - last_success_at) > _ATMOSPHERE_STALE_THRESHOLD
+    )
+    source_error = bool(status_row["last_error"]) and status_row["consecutive_failures"] > 0
+
+    if reading is None:
+        return AtmosphereCurrentResponse(
+            configured=True,
+            latitude=status_row["latitude"],
+            longitude=status_row["longitude"],
+            stale=True,
+            source_error=source_error,
+            last_error=status_row["last_error"],
+        )
+
+    return AtmosphereCurrentResponse(
+        configured=True,
+        latitude=status_row["latitude"],
+        longitude=status_row["longitude"],
+        observed_at=reading["observed_at"].isoformat() if reading["observed_at"] else None,
+        temperature_c=reading["temperature_c"],
+        apparent_temperature_c=reading["apparent_temperature_c"],
+        relative_humidity_pct=reading["relative_humidity_pct"],
+        precipitation_mm=reading["precipitation_mm"],
+        weather_code=reading["weather_code"],
+        wind_speed_kph=reading["wind_speed_kph"],
+        aqi_us=reading["aqi_us"],
+        aqi_european=reading["aqi_european"],
+        pm2_5=reading["pm2_5"],
+        pm10=reading["pm10"],
+        pollen_tree=reading["pollen_tree"],
+        pollen_grass=reading["pollen_grass"],
+        pollen_weed=reading["pollen_weed"],
+        pollen_available=reading["pollen_available"],
+        stale=stale,
+        source_error=source_error,
+        last_error=status_row["last_error"],
+        fetched_at=reading["fetched_at"].isoformat() if reading["fetched_at"] else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/home/atmosphere/location — owner-provisioned home location
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/atmosphere/location")
+async def update_atmosphere_location(
+    request: Request,
+    body: AtmosphereLocationUpdateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict[str, Any]:
+    """Set the home location used by the atmosphere context feed.
+
+    Stores ``"lat,lon"`` in the owner's ``entity_info`` (type
+    ``home_coordinates``, non-secret technical config — mirrors
+    ``home_assistant_url``). The next scheduled ``atmosphere_feed_refresh``
+    run picks it up; this endpoint does not fetch conditions synchronously.
+    """
+    pool = _pool(db)
+    value = f"{body.latitude},{body.longitude}"
+    stored = await upsert_owner_entity_info(pool, "home_coordinates", value, secured=False)
+    if not stored:
+        raise HTTPException(
+            status_code=503,
+            detail="No owner entity found — cannot store home location",
+        )
+
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="atmosphere_location_patch",
+        method="PATCH",
+        path="/api/home/atmosphere/location",
+        body={"latitude": body.latitude, "longitude": body.longitude},
+        response_status=200,
+        request=request,
+    )
+    return {"latitude": body.latitude, "longitude": body.longitude}

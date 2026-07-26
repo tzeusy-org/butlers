@@ -1267,12 +1267,29 @@ async def _run_home_maintenance_schedule_check_job(
     return await run_maintenance_schedule_check(pool, job_args, notify_fn=_notify)
 
 
+async def _run_home_atmosphere_feed_refresh_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Refresh the shared weather/AQI/pollen context feed for the home location.
+
+    Delegates to ``butlers.jobs.atmosphere.run_atmosphere_feed_refresh``, which
+    fetches Open-Meteo's keyless forecast + air-quality APIs for the owner's
+    configured home location and writes ``public.atmosphere_readings`` /
+    ``public.atmosphere_feed_status`` (bu-ep4ks.16).
+    """
+    from butlers.jobs.atmosphere import run_atmosphere_feed_refresh
+
+    return await run_atmosphere_feed_refresh(pool, job_args)
+
+
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "device_health_check": _run_home_device_health_check_job,
     "environment_report": _run_home_environment_report_job,
     "energy_digest": _run_home_energy_digest_job,
     "maintenance_schedule_check": _run_home_maintenance_schedule_check_job,
     "context_producer_home_presence": _run_context_producer_home_presence_job,
+    "atmosphere_feed_refresh": _run_home_atmosphere_feed_refresh_job,
 }
 
 
