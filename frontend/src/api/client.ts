@@ -370,6 +370,8 @@ import type {
   TravelTripsParams,
   TravelExpiringDocumentsResponse,
   HomeSnapshotStatus,
+  HomeAtmosphereCurrentResponse,
+  HomeAtmosphereLocationUpdate,
   HomeDeviceInventoryResponse,
   HomeMaintenanceItem,
   HomeEnergyDataPoint,
@@ -6124,6 +6126,21 @@ export function getTravelExpiringDocuments(
 
 export function getHomeSnapshotStatus(): Promise<HomeSnapshotStatus> {
   return apiFetch<HomeSnapshotStatus>("/home/snapshot-status");
+}
+
+/** Fetch the saved Home atmosphere location and the latest feed health. */
+export function getHomeAtmosphereCurrent(): Promise<HomeAtmosphereCurrentResponse> {
+  return apiFetch<HomeAtmosphereCurrentResponse>("/home/atmosphere/current");
+}
+
+/** Save Home atmosphere coordinates for the next scheduled feed refresh. */
+export function updateHomeAtmosphereLocation(
+  coordinates: HomeAtmosphereLocationUpdate,
+): Promise<HomeAtmosphereLocationUpdate> {
+  return apiFetch<HomeAtmosphereLocationUpdate>("/home/atmosphere/location", {
+    method: "PATCH",
+    body: JSON.stringify(coordinates),
+  });
 }
 
 export function getHomeDevices(params?: {

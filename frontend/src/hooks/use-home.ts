@@ -3,20 +3,24 @@
  *
  * Query-key strategy:
  * - homeKeys.snapshotStatus()                 → HomeSnapshotStatus
+ * - homeKeys.atmosphereCurrent()              → HomeAtmosphereCurrentResponse
  * - homeKeys.devices(params)                  → HomeDeviceInventoryResponse
  * - homeKeys.maintenance(params)              → HomeMaintenanceItem[]
  * - homeKeys.energy(params)                   → HomeEnergyDataPoint[]
  * - homeKeys.energyTopConsumers(params)       → HomeTopConsumer[]
  * - homeKeys.commandLog(params)               → { data: HomeCommandLogEntry[] }
  *
- * All hooks are read-only (no mutations). No new HTTP routes are added —
- * all data comes from the existing home butler API endpoints.
+ * Home data comes from the existing home butler API endpoints. The location
+ * mutation only saves coordinates; a scheduled atmosphere refresh picks them
+ * up later.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getHomeSnapshotStatus,
+  getHomeAtmosphereCurrent,
+  updateHomeAtmosphereLocation,
   getHomeDevices,
   getHomeMaintenance,
   getHomeEnergy,
@@ -29,6 +33,8 @@ import type {
   HomeTopConsumer,
   HomeMaintenanceItem,
   HomeSnapshotStatus,
+  HomeAtmosphereCurrentResponse,
+  HomeAtmosphereLocationUpdate,
   HomeCommandLogEntry,
 } from "@/api/types.ts";
 
@@ -39,6 +45,7 @@ import type {
 export const homeKeys = {
   all: ["home"] as const,
   snapshotStatus: () => [...homeKeys.all, "snapshot-status"] as const,
+  atmosphereCurrent: () => [...homeKeys.all, "atmosphere", "current"] as const,
   devices: (params?: {
     domain?: string;
     area?: string;
@@ -68,6 +75,28 @@ export function useHomeSnapshotStatus() {
     queryKey: homeKeys.snapshotStatus(),
     queryFn: () => getHomeSnapshotStatus(),
     retry: false,
+  });
+}
+
+/** Fetch saved atmosphere coordinates and the current feed health. */
+export function useHomeAtmosphereCurrent() {
+  return useQuery<HomeAtmosphereCurrentResponse>({
+    queryKey: homeKeys.atmosphereCurrent(),
+    queryFn: () => getHomeAtmosphereCurrent(),
+    retry: false,
+  });
+}
+
+/** Save Home atmosphere coordinates, then refetch the current feed status. */
+export function useUpdateHomeAtmosphereLocation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (coordinates: HomeAtmosphereLocationUpdate) =>
+      updateHomeAtmosphereLocation(coordinates),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: homeKeys.atmosphereCurrent() });
+    },
   });
 }
 

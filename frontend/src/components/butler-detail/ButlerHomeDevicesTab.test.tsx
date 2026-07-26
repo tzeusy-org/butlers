@@ -67,6 +67,8 @@ vi.mock("@/hooks/use-home", () => ({
   useHomeEnergy: vi.fn(),
   useHomeEnergyTopConsumers: vi.fn(),
   useHomeCommandLog: vi.fn(),
+  useHomeAtmosphereCurrent: vi.fn(),
+  useUpdateHomeAtmosphereLocation: vi.fn(),
 }));
 
 import {
@@ -76,6 +78,8 @@ import {
   useHomeEnergy,
   useHomeEnergyTopConsumers,
   useHomeCommandLog,
+  useHomeAtmosphereCurrent,
+  useUpdateHomeAtmosphereLocation,
 } from "@/hooks/use-home";
 
 import ButlerHomeDevicesTab from "./ButlerHomeDevicesTab";
@@ -233,7 +237,30 @@ function renderTab() {
 // Mock setup helpers
 // ---------------------------------------------------------------------------
 
+function setupAtmosphereLocation() {
+  vi.mocked(useHomeAtmosphereCurrent).mockReturnValue({
+    data: {
+      configured: false,
+      latitude: null,
+      longitude: null,
+      stale: false,
+      source_error: false,
+      last_error: null,
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useHomeAtmosphereCurrent>);
+
+  vi.mocked(useUpdateHomeAtmosphereLocation).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useUpdateHomeAtmosphereLocation>);
+}
+
 function setupWithData() {
+  setupAtmosphereLocation();
   vi.mocked(useHomeSnapshotStatus).mockReturnValue({
     data: SNAPSHOT_STATUS,
     isLoading: false,
@@ -291,6 +318,7 @@ function setupWithData() {
 }
 
 function setupEmpty() {
+  setupAtmosphereLocation();
   vi.mocked(useHomeSnapshotStatus).mockReturnValue({
     data: {
       total_entities: 0,
@@ -334,6 +362,7 @@ function setupEmpty() {
 }
 
 function setupLoading() {
+  setupAtmosphereLocation();
   vi.mocked(useHomeSnapshotStatus).mockReturnValue({
     data: undefined,
     isLoading: true,
@@ -372,6 +401,7 @@ function setupLoading() {
 }
 
 function setupErrorState() {
+  setupAtmosphereLocation();
   vi.mocked(useHomeSnapshotStatus).mockReturnValue({
     data: undefined,
     isLoading: false,
