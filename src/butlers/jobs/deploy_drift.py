@@ -425,6 +425,7 @@ async def reconcile_drift_conditions(
         observations.append(
             Observation(
                 fingerprint=fp,
+                identity_version=_DRIFT_IDENTITY_VERSION,
                 summary=_summarize((drift,)),
                 metadata={
                     "schema": drift.schema,

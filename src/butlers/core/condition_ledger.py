@@ -33,6 +33,13 @@ evidence mutates that row's ``last_confirmed_at`` (and optionally its
 inserted when a condition opens for the first time or recurs after its prior
 episode resolved.
 
+Version-bump provenance is opt-in evidence. A producer records the version of
+its identity payload with each observation and, on the first successor after a
+deliberate version change, explicitly supplies the predecessor fingerprint.
+Only a complete snapshot with a strictly higher declared successor version
+records reciprocal episode links and the superseded terminal reason. The
+fingerprint itself is never migrated or reinterpreted.
+
 ``reconcile_snapshot`` is the single entry point: it accepts everything a
 producer currently observes for one ``source`` plus whether that observation
 is a complete, successful snapshot of the producer's authoritative scope.
@@ -140,11 +147,20 @@ class Observation:
     for the same condition keeps landing on the same identity. ``summary``
     and ``metadata`` are sanitized evidence, not identity — they replace the
     episode's stored evidence on each confirmation rather than accumulating.
+
+    ``identity_version`` records the producer's versioned identity-payload
+    contract as durable evidence. When a producer deliberately changes that
+    contract, its first successor observation MAY name the old fingerprint in
+    ``predecessor_fingerprint``. A complete snapshot can then distinguish the
+    predecessor's absence from ordinary recovery without reinterpreting or
+    rewriting its historical fingerprint.
     """
 
     fingerprint: str
     summary: str | None = None
     metadata: dict[str, Any] | None = None
+    identity_version: int | None = None
+    predecessor_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,10 +177,51 @@ class ConditionTransition:
     next_reescalate_at: datetime | None
     resolved_at: datetime | None = None
     recovered_after_s: float | None = None
+    identity_version: int | None = None
 
 
 def _dumps_metadata(metadata: dict[str, Any] | None) -> str | None:
     return json.dumps(metadata) if metadata is not None else None
+
+
+def _metadata_with_identity_payload(obs: Observation) -> dict[str, Any] | None:
+    """Add declared identity-version evidence without changing caller metadata."""
+    if obs.identity_version is None:
+        return obs.metadata
+
+    metadata = dict(obs.metadata or {})
+    payload: dict[str, Any] = {"version": obs.identity_version}
+    metadata["identity_payload"] = payload
+    return metadata
+
+
+def _metadata_object(value: Any) -> dict[str, Any] | None:
+    """Normalize asyncpg JSONB text when a pool has no JSON codec registered."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        decoded = json.loads(value)
+        return decoded if isinstance(decoded, dict) else None
+    return None
+
+
+def _identity_version(row: asyncpg.Record) -> int | None:
+    metadata = _metadata_object(row["metadata"])
+    if metadata is None:
+        return None
+    payload = metadata.get("identity_payload")
+    version = payload.get("version") if isinstance(payload, dict) else None
+    return version if isinstance(version, int) and not isinstance(version, bool) else None
+
+
+def _identity_predecessor_fingerprint(row: asyncpg.Record) -> str | None:
+    metadata = _metadata_object(row["metadata"])
+    if metadata is None:
+        return None
+    payload = metadata.get("identity_payload")
+    predecessor = payload.get("predecessor") if isinstance(payload, dict) else None
+    fingerprint = predecessor.get("fingerprint") if isinstance(predecessor, dict) else None
+    return fingerprint if isinstance(fingerprint, str) else None
 
 
 async def reconcile_snapshot(
@@ -207,10 +264,22 @@ async def reconcile_snapshot(
         raise ValueError("reconcile_snapshot: source must be non-empty")
     if initial_grace_seconds < 0:
         raise ValueError("reconcile_snapshot: initial_grace_seconds must be >= 0")
+    for obs in observations:
+        if obs.identity_version is not None and obs.identity_version < 1:
+            raise ValueError("reconcile_snapshot: identity_version must be >= 1")
+        if obs.predecessor_fingerprint is not None and obs.identity_version is None:
+            raise ValueError(
+                "reconcile_snapshot: predecessor_fingerprint requires identity_version"
+            )
 
     observed_fingerprints = [o.fingerprint for o in observations]
     if len(set(observed_fingerprints)) != len(observed_fingerprints):
         raise ValueError("reconcile_snapshot: duplicate fingerprint in observations")
+    predecessor_fingerprints = [
+        o.predecessor_fingerprint for o in observations if o.predecessor_fingerprint is not None
+    ]
+    if len(set(predecessor_fingerprints)) != len(predecessor_fingerprints):
+        raise ValueError("reconcile_snapshot: duplicate predecessor_fingerprint in observations")
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -246,7 +315,7 @@ async def _reconcile_source_locked(
     active_rows = await conn.fetch(
         f"""
         SELECT id, fingerprint, episode, state, escalation_level,
-               first_detected_at, next_reescalate_at
+               first_detected_at, next_reescalate_at, metadata
         FROM {table}
         WHERE source = $1 AND state IN ('open', 'aging')
         """,
@@ -276,14 +345,48 @@ async def _reconcile_source_locked(
 
     if snapshot_complete:
         observed_set = {obs.fingerprint for obs in observations}
+        observed_transitions = {transition.fingerprint: transition for transition in results}
+        successors_by_predecessor = {
+            obs.predecessor_fingerprint: (obs, observed_transitions[obs.fingerprint])
+            for obs in observations
+            if obs.predecessor_fingerprint is not None
+        }
         for fingerprint, row in active_by_fingerprint.items():
             if fingerprint in observed_set:
                 continue
+            successor = successors_by_predecessor.get(fingerprint)
+            successor_transition: ConditionTransition | None = None
+            if successor is not None:
+                successor_obs, candidate = successor
+                prior_version = _identity_version(row)
+                if (
+                    prior_version is not None
+                    and successor_obs.identity_version is not None
+                    and successor_obs.identity_version > prior_version
+                    and _identity_predecessor_fingerprint(
+                        active_by_fingerprint.get(successor_obs.fingerprint, row)
+                    )
+                    in (None, fingerprint)
+                ):
+                    successor_transition = candidate
             results.append(
                 await _resolve_episode(
-                    conn, row, table=table, source=source, fingerprint=fingerprint, now=now
+                    conn,
+                    row,
+                    table=table,
+                    source=source,
+                    fingerprint=fingerprint,
+                    now=now,
+                    successor=successor_transition,
                 )
             )
+            if successor_transition is not None:
+                await _link_identity_predecessor(
+                    conn,
+                    table=table,
+                    predecessor=row,
+                    successor=successor_transition,
+                )
 
     return results
 
@@ -323,7 +426,7 @@ async def _open_episode(
         now,
         initial_grace_seconds,
         obs.summary,
-        _dumps_metadata(obs.metadata),
+        _dumps_metadata(_metadata_with_identity_payload(obs)),
     )
     return ConditionTransition(
         condition_id=row["id"],
@@ -334,6 +437,7 @@ async def _open_episode(
         transition="opened" if episode == 1 else "reopened",
         escalation_level=row["escalation_level"],
         next_reescalate_at=row["next_reescalate_at"],
+        identity_version=obs.identity_version,
     )
 
 
@@ -369,7 +473,17 @@ async def _confirm_episode(
                 WHEN $5 THEN $2::timestamptz + $6 ELSE next_reescalate_at
             END,
             summary = COALESCE($7, summary),
-            metadata = COALESCE($8::jsonb, metadata)
+            metadata = CASE
+                WHEN $8::jsonb IS NULL THEN metadata
+                WHEN $8::jsonb ? 'identity_payload' THEN jsonb_set(
+                    $8::jsonb,
+                    '{{identity_payload}}',
+                    COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb)
+                        || ($8::jsonb -> 'identity_payload'),
+                    true
+                )
+                ELSE $8::jsonb
+            END
         WHERE id = $1
         RETURNING id, episode, state, escalation_level, next_reescalate_at
         """,
@@ -380,7 +494,7 @@ async def _confirm_episode(
         due,
         interval_to_next,
         obs.summary,
-        _dumps_metadata(obs.metadata),
+        _dumps_metadata(_metadata_with_identity_payload(obs)),
     )
     return ConditionTransition(
         condition_id=row["id"],
@@ -391,6 +505,7 @@ async def _confirm_episode(
         transition=transition,
         escalation_level=row["escalation_level"],
         next_reescalate_at=row["next_reescalate_at"],
+        identity_version=obs.identity_version,
     )
 
 
@@ -402,20 +517,43 @@ async def _resolve_episode(
     source: str,
     fingerprint: str,
     now: datetime,
+    successor: ConditionTransition | None = None,
 ) -> ConditionTransition:
     recovered_after_s = (now - row["first_detected_at"]).total_seconds()
+    provenance: str | None = None
+    if successor is not None:
+        provenance = json.dumps(
+            {
+                "resolution_reason": "superseded_by_identity_version_bump",
+                "successor": {
+                    "condition_id": str(successor.condition_id),
+                    "fingerprint": successor.fingerprint,
+                    "version": successor.identity_version,
+                },
+            }
+        )
     updated = await conn.fetchrow(
         f"""
         UPDATE {table}
         SET state = 'resolved',
             resolved_at = $2,
-            recovered_after_s = $3
+            recovered_after_s = $3,
+            metadata = CASE
+                WHEN $4::jsonb IS NULL THEN metadata
+                ELSE jsonb_set(
+                    COALESCE(metadata, '{{}}'::jsonb),
+                    '{{identity_payload}}',
+                    COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb) || $4::jsonb,
+                    true
+                )
+            END
         WHERE id = $1
         RETURNING id, episode, state, escalation_level
         """,
         row["id"],
         now,
         recovered_after_s,
+        provenance,
     )
     return ConditionTransition(
         condition_id=updated["id"],
@@ -431,13 +569,51 @@ async def _resolve_episode(
     )
 
 
+async def _link_identity_predecessor(
+    conn: asyncpg.Connection,
+    *,
+    table: str,
+    predecessor: asyncpg.Record,
+    successor: ConditionTransition,
+) -> None:
+    """Record the immutable predecessor link on the declared successor."""
+    predecessor_version = _identity_version(predecessor)
+    assert predecessor_version is not None
+    await conn.execute(
+        f"""
+        UPDATE {table}
+        SET metadata = jsonb_set(
+            COALESCE(metadata, '{{}}'::jsonb),
+            '{{identity_payload}}',
+            COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb) || $2::jsonb,
+            true
+        )
+        WHERE id = $1
+        """,
+        successor.condition_id,
+        json.dumps(
+            {
+                "predecessor": {
+                    "condition_id": str(predecessor["id"]),
+                    "fingerprint": predecessor["fingerprint"],
+                    "version": predecessor_version,
+                }
+            }
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
-    return dict(row)
+    result = dict(row)
+    metadata = _metadata_object(result.get("metadata"))
+    if metadata is not None:
+        result["metadata"] = metadata
+    return result
 
 
 async def get_active_condition(

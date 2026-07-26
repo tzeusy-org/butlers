@@ -383,6 +383,7 @@ async def reconcile_calendar_conditions(
         observations.append(
             Observation(
                 fingerprint=fp,
+                identity_version=_CALENDAR_IDENTITY_VERSION,
                 summary=_summarize((stale,)),
                 metadata={
                     "db_butler": stale.db_butler,
