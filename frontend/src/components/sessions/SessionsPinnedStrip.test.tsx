@@ -43,6 +43,7 @@ function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
     duration_ms: null,
     input_tokens: null,
     output_tokens: null,
+    cancelled_by_owner: false,
     model: null,
     complexity: null,
     ...overrides,
@@ -127,6 +128,22 @@ describe("SessionsPinnedStrip — recent failures", () => {
     expect(getByTestId("pinned-failure-excerpt").textContent).toContain(
       "TimeoutError: upstream did not respond in 30s",
     );
+  });
+
+  it("renders a canonical owner cancellation as Cancelled, not Failed", () => {
+    const cancelled = makeSession({
+      id: "cancelled-1",
+      success: false,
+      cancelled_by_owner: true,
+    });
+    setup({ errors: new Map([["cancelled-1", "Cancelled by owner"]]) });
+
+    const { getByTestId, getByText } = render(
+      <SessionsPinnedStrip runningSessions={[]} recentFailures={[cancelled]} />,
+    );
+    const row = getByTestId("pinned-session-row");
+    expect(getByText("Cancelled")).toBeTruthy();
+    expect(row.textContent).not.toContain("Failed");
   });
 
   it("truncates a long error excerpt", () => {

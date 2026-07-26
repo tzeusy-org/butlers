@@ -366,6 +366,7 @@ def _make_summary_record(*, success):
         "complexity": None,
         "input_tokens": 0,
         "output_tokens": 0,
+        "cancelled_by_owner": False,
     }
     m = MagicMock()
     m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
@@ -398,6 +399,7 @@ async def test_list_status_running_filters_to_null_success() -> None:
     assert "success IS NULL" in captured["sql"]
     assert not any(isinstance(a, bool) for a in captured["args"])
     assert resp.json()["data"][0]["success"] is None
+    assert resp.json()["data"][0]["cancelled_by_owner"] is False
 
 
 async def test_list_status_running_is_accepted_literal() -> None:

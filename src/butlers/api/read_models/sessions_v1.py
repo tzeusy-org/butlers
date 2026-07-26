@@ -42,6 +42,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.core.spawner import SESSION_CANCELLED_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,21 @@ READ_MODEL_VERSION = "sessions_v1"
 # Column projections (v1 schema contract)
 # ---------------------------------------------------------------------------
 
-#: Columns returned for list / summary views.  Changing this list is a
-#: breaking change — create ``sessions_v2`` instead of editing here.
+#: Derived, privacy-preserving list discriminator. The owner-cancellation
+#: marker is canonicalized in ``Spawner.cancel_session()``; summary reads
+#: expose only this boolean and never the raw ``sessions.error`` text.
+_CANCELLED_BY_OWNER_SQL = (
+    "COALESCE((success IS FALSE AND error = "
+    f"'{SESSION_CANCELLED_ERROR.replace("'", "''")}'), FALSE) AS cancelled_by_owner"
+)
+
+#: Columns returned for list / summary views. The additive cancellation
+#: discriminator is computed in SQL so generic error text cannot reach the
+#: summary DTO or list response.
 SUMMARY_COLUMNS: str = (
     "id, prompt, trigger_source, request_id, success, started_at, completed_at, duration_ms, "
-    "model, complexity, input_tokens, output_tokens"
+    "model, complexity, input_tokens, output_tokens, "
+    f"{_CANCELLED_BY_OWNER_SQL}"
 )
 
 #: Columns returned for single-session detail views.  Same versioning rule.
@@ -92,6 +103,7 @@ class SessionSummaryRow:
     complexity: str | None
     input_tokens: int | None
     output_tokens: int | None
+    cancelled_by_owner: bool
 
 
 @dataclass
@@ -243,6 +255,9 @@ def row_to_summary(row: asyncpg.Record, *, butler: str | None = None) -> Session
         complexity=row["complexity"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
+        # The SQL projection is non-null, but fail closed at the read-model
+        # boundary if a legacy/mock row still reaches us with NULL.
+        cancelled_by_owner=row["cancelled_by_owner"] is True,
     )
 
 

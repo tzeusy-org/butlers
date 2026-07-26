@@ -58,6 +58,7 @@ def _make_session_row(**overrides: object) -> dict:
         "complexity": None,
         "input_tokens": 1000,
         "output_tokens": 1000,
+        "cancelled_by_owner": False,
     }
     row.update(overrides)
     return row

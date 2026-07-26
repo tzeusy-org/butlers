@@ -48,6 +48,7 @@ def _make_session_row(*, success: bool) -> dict:
         "complexity": None,
         "input_tokens": 10,
         "output_tokens": 20,
+        "cancelled_by_owner": False,
     }
 
 

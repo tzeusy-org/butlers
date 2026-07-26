@@ -17,6 +17,7 @@ function makeSession(overrides: Partial<SessionSummary>): SessionSummary {
     duration_ms: 2000,
     input_tokens: 100,
     output_tokens: 200,
+    cancelled_by_owner: false,
     model: null,
     complexity: null,
     ...overrides,
@@ -80,6 +81,35 @@ describe("SessionTable model and complexity columns", () => {
   it("shows complexity badge label for specialty tier", () => {
     const html = renderTable([makeSession({ complexity: "specialty" })]);
     expect(html).toContain("Specialty");
+  });
+});
+
+describe("SessionTable cancellation status", () => {
+  it("renders Cancelled for an owner-cancelled summary without receiving error text", () => {
+    const html = renderTable([
+      makeSession({ success: false, cancelled_by_owner: true }),
+    ]);
+
+    expect(html).toContain("Cancelled");
+    expect(html).not.toContain("Failed");
+  });
+
+  it("keeps an ordinary unsuccessful summary as Failed", () => {
+    const html = renderTable([
+      makeSession({ success: false, cancelled_by_owner: false }),
+    ]);
+
+    expect(html).toContain("Failed");
+    expect(html).not.toContain("Cancelled");
+  });
+
+  it("keeps a non-terminal summary Running even when a stale indicator is present", () => {
+    const html = renderTable([
+      makeSession({ success: null, cancelled_by_owner: true }),
+    ]);
+
+    expect(html).toContain("Running");
+    expect(html).not.toContain("Cancelled");
   });
 });
 

@@ -303,7 +303,12 @@ export function SessionTable({
                 <TableCell className="tabular-nums text-xs text-muted-foreground">
                   {formatDurationMs(session.duration_ms)}
                 </TableCell>
-                <TableCell><StatusBadge success={session.success} /></TableCell>
+                <TableCell>
+                  <StatusBadge
+                    success={session.success}
+                    cancelledByOwner={session.cancelled_by_owner}
+                  />
+                </TableCell>
                 <TableCell className="text-right tabular-nums text-xs text-muted-foreground">
                   {session.input_tokens != null || session.output_tokens != null
                     ? `${formatTokens(session.input_tokens)} / ${formatTokens(session.output_tokens)}`

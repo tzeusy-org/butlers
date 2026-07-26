@@ -32,13 +32,16 @@ _NOW = datetime.now(tz=UTC)
 # ---------------------------------------------------------------------------
 
 
-def _make_session_row(*, butler: str = "atlas", started_at: datetime | None = None) -> dict:
-    return {
+def _make_session_row(
+    *, butler: str = "atlas", started_at: datetime | None = None, **overrides: object
+) -> dict:
+    row = {
         "id": uuid4(),
         "prompt": "test prompt",
         "trigger_source": "api",
         "request_id": None,
         "success": True,
+        "error": None,
         "started_at": started_at or _NOW,
         "completed_at": _NOW,
         "duration_ms": 500,
@@ -46,7 +49,10 @@ def _make_session_row(*, butler: str = "atlas", started_at: datetime | None = No
         "complexity": None,
         "input_tokens": 1234,
         "output_tokens": 567,
+        "cancelled_by_owner": False,
     }
+    row.update(overrides)
+    return row
 
 
 def _make_app_with_sessions(rows: list[dict], *, degraded: list[str] | None = None) -> object:
@@ -274,6 +280,76 @@ async def test_butler_sessions_rows_include_token_counts() -> None:
     item = resp.json()["data"][0]
     assert item["input_tokens"] == 1234
     assert item["output_tokens"] == 567
+
+
+async def test_session_list_routes_project_only_canonical_owner_cancellation() -> None:
+    """Both list routes expose the private cancellation discriminator, not error text."""
+    rows = [
+        _make_session_row(success=False, error="Cancelled by owner", cancelled_by_owner=True),
+        _make_session_row(success=False, error="RuntimeError: exit code 1"),
+        _make_session_row(success=None, error="Cancelled by owner"),
+    ]
+
+    global_app = _make_app_with_sessions(rows)
+    scoped_app = _make_butler_app_with_sessions(rows)
+
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(global_app), base_url="http://test"
+        ) as global_client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(scoped_app), base_url="http://test"
+        ) as scoped_client,
+    ):
+        global_response = await global_client.get("/api/sessions")
+        scoped_response = await scoped_client.get("/api/butlers/atlas/sessions")
+
+    assert global_response.status_code == 200
+    assert scoped_response.status_code == 200
+    for items in (global_response.json()["data"], scoped_response.json()["data"]):
+        cancelled = [item for item in items if item["cancelled_by_owner"]]
+        generic_failures = [
+            item for item in items if item["success"] is False and not item["cancelled_by_owner"]
+        ]
+        non_terminal = [item for item in items if item["success"] is None]
+        assert len(cancelled) == 1
+        assert len(generic_failures) == 1
+        assert len(non_terminal) == 1
+        assert non_terminal[0]["cancelled_by_owner"] is False
+        assert all("error" not in item for item in items)
+
+
+async def test_session_list_routes_treat_null_cancellation_projection_as_generic_failure() -> None:
+    """A failed row with a NULL error must not invalidate either list response.
+
+    SQL three-valued logic returns NULL for the cancellation predicate when
+    ``sessions.error`` is NULL.  Simulate that raw projection value here so
+    both route serializers are protected even if a bad historical row reaches
+    the read-model boundary.
+    """
+    rows = [_make_session_row(success=False, error=None, cancelled_by_owner=None)]
+
+    global_app = _make_app_with_sessions(rows)
+    scoped_app = _make_butler_app_with_sessions(rows)
+
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(global_app), base_url="http://test"
+        ) as global_client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(scoped_app), base_url="http://test"
+        ) as scoped_client,
+    ):
+        global_response = await global_client.get("/api/sessions")
+        scoped_response = await scoped_client.get("/api/butlers/atlas/sessions")
+
+    assert global_response.status_code == 200
+    assert scoped_response.status_code == 200
+    for response in (global_response, scoped_response):
+        item = response.json()["data"][0]
+        assert item["success"] is False
+        assert item["cancelled_by_owner"] is False
+        assert "error" not in item
 
 
 # ---------------------------------------------------------------------------
