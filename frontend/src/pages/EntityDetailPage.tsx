@@ -44,6 +44,7 @@ import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
 import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionSetup";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { usePageContext } from "@/lib/page-context.tsx";
@@ -195,6 +196,9 @@ function LinkedContactSection({
   const setLinkedContact = useSetLinkedContact();
   const [linking, setLinking] = useState(false);
   const [search, setSearch] = useState("");
+  // bu-ep4ks.11 / bu-3dp0c: ConfirmDialog replaces the bare window.confirm
+  // that used to gate this irreversible unlink.
+  const [unlinkDialogOpen, setUnlinkDialogOpen] = useState(false);
   const {
     data: contactsData,
     isFetching: contactsFetching,
@@ -204,11 +208,15 @@ function LinkedContactSection({
   const contacts: ContactSummary[] = contactsData?.contacts ?? [];
 
   function handleUnlink() {
-    if (!window.confirm("Unlink this contact from the entity?")) return;
+    setUnlinkDialogOpen(true);
+  }
+
+  function confirmUnlink() {
     unlinkContact.mutate(entityId, {
       onSuccess: () => toast.success("Contact unlinked."),
       onError: (err) =>
         toast.error(`Failed to unlink: ${err instanceof Error ? err.message : "Unknown"}`),
+      onSettled: () => setUnlinkDialogOpen(false),
     });
   }
 
@@ -311,6 +319,18 @@ function LinkedContactSection({
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={unlinkDialogOpen}
+        onOpenChange={setUnlinkDialogOpen}
+        title="Unlink this contact from the entity?"
+        description="The contact record itself is unaffected: you can relink it at any time."
+        confirmLabel="Unlink"
+        pendingLabel="Unlinking…"
+        variant="destructive"
+        pending={unlinkContact.isPending}
+        onConfirm={confirmUnlink}
+        testId="entity-unlink-contact-dialog"
+      />
     </section>
   );
 }

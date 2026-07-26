@@ -4,32 +4,41 @@
  * actions).
  *
  * Generalizes two hand-rolled duplicates of the same shape: ButlersPage's
- * quarantine-restore undo (bu-86c4c.15) and use-approval-decisions.ts's
- * scheduleDecision (bu-qvnce.4). A click does not fire the real mutation
- * immediately — it schedules it `windowMs` out behind a cancellable timer, so
- * the caller can render an "Undo" toast action in the meantime. The store is
- * MODULE SCOPE (not component/hook state) so a scheduled action survives the
- * triggering component unmounting mid-window — navigating away within the
- * grace period is a normal part of fast operator triage, not an edge case.
+ * quarantine-restore undo (bu-86c4c.15, consolidated in bu-3dp0c) and
+ * use-approval-decisions.ts's scheduleDecision (bu-qvnce.4, also
+ * consolidated in bu-3dp0c — it delegates its storage/timer plumbing to this
+ * hook while keeping its own richer public contract, since ApprovalsPage and
+ * DashboardPage need the pending VERB (approve/deny/defer), not just a
+ * boolean). A click does not fire the real mutation immediately — it
+ * schedules it `windowMs` out behind a cancellable timer, so the caller can
+ * render an "Undo" toast action in the meantime. The store is MODULE SCOPE
+ * (not component/hook state) so a scheduled action survives the triggering
+ * component unmounting mid-window — navigating away within the grace period
+ * is a normal part of fast operator triage, not an edge case.
  *
- * This intentionally does not replace ButlersPage's or
- * use-approval-decisions.ts's own stores — consolidating those pre-existing,
- * independently-shipped duplicates onto this hook is a larger follow-up
- * (flagged in this bead's report), not bundled into this change.
+ * The optional `meta` payload on `schedule`/`get` is what lets
+ * use-approval-decisions.ts carry its `DecisionVerb` through this otherwise
+ * payload-free scheduler without hand-rolling a second store — callers that
+ * don't need metadata (e.g. ButlersPage) simply never pass or read it.
  */
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 /** Default grace window between scheduling an action and it actually firing. */
 export const UNDO_WINDOW_MS = 5_000;
 
-interface ScheduledEntry {
+interface ScheduledEntry<TMeta> {
   timeoutId: number;
+  meta?: TMeta;
 }
 
-let snapshot: ReadonlyMap<string, ScheduledEntry> = new Map();
+// The module-scope map is shared across every namespace (ids are prefixed
+// `${namespace}:${id}`), so its value type must be able to hold whichever
+// caller's metadata; each hook instance only ever reads back the type it
+// wrote via its own generic parameter.
+let snapshot: ReadonlyMap<string, ScheduledEntry<unknown>> = new Map();
 const listeners = new Set<() => void>();
 
-function setSnapshot(next: Map<string, ScheduledEntry>) {
+function setSnapshot(next: Map<string, ScheduledEntry<unknown>>) {
   snapshot = next;
   for (const listener of listeners) listener();
 }
@@ -57,14 +66,21 @@ function cancelKey(key: string) {
 /**
  * Scope undo-window scheduling to one `namespace` (e.g. "butler-pause",
  * "connector-archive") so two unrelated surfaces never collide on the same
- * raw id.
+ * raw id. Pass `TMeta` when a caller needs to carry a small payload (e.g. a
+ * verb/label) alongside the pending state — read it back via `get`.
  */
-export function useUndoWindow(namespace: string) {
+export function useUndoWindow<TMeta = never>(namespace: string) {
   const scheduled = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   const key = useCallback((id: string) => `${namespace}:${id}`, [namespace]);
 
   const isScheduled = useCallback((id: string) => scheduled.has(key(id)), [scheduled, key]);
+
+  /** Read back the `meta` passed to `schedule` for `id`, if it is pending. */
+  const get = useCallback(
+    (id: string) => scheduled.get(key(id))?.meta as TMeta | undefined,
+    [scheduled, key],
+  );
 
   /**
    * Schedule `run` to fire after `windowMs`. Returns `false` (a no-op) when
@@ -72,7 +88,7 @@ export function useUndoWindow(namespace: string) {
    * a repeat click on the same row instead of double-scheduling it.
    */
   const schedule = useCallback(
-    (id: string, run: () => void, windowMs: number = UNDO_WINDOW_MS): boolean => {
+    (id: string, run: () => void, windowMs: number = UNDO_WINDOW_MS, meta?: TMeta): boolean => {
       const k = key(id);
       if (snapshot.has(k)) return false;
 
@@ -81,7 +97,7 @@ export function useUndoWindow(namespace: string) {
         run();
       }, windowMs);
 
-      setSnapshot(new Map(snapshot).set(k, { timeoutId }));
+      setSnapshot(new Map(snapshot).set(k, { timeoutId, meta }));
       return true;
     },
     [key],
@@ -90,5 +106,27 @@ export function useUndoWindow(namespace: string) {
   /** Cancel `id`'s scheduled action, if one exists — the toast's "Undo". */
   const cancel = useCallback((id: string) => cancelKey(key(id)), [key]);
 
-  return { isScheduled, schedule, cancel };
+  // Plain ids (namespace prefix stripped) with a pending action -- lets a
+  // caller compute "which of MY ids are pending" without reaching into the
+  // cross-namespace snapshot itself (e.g. ApprovalsPage skipping already-
+  // scheduled ids from its own ranked list).
+  const namespacePrefix = `${namespace}:`;
+  const scheduledIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const k of scheduled.keys()) {
+      if (k.startsWith(namespacePrefix)) ids.add(k.slice(namespacePrefix.length));
+    }
+    return ids;
+  }, [scheduled, namespacePrefix]);
+
+  // Memoize the returned object itself (not just its individual members) so a
+  // caller that depends on the whole `undo` result in its own useMemo/
+  // useCallback deps (e.g. use-approval-decisions.ts) gets a referentially
+  // stable value across renders where nothing here actually changed --
+  // required for the React Compiler to preserve manual memoization that
+  // depends on this hook's return value.
+  return useMemo(
+    () => ({ isScheduled, schedule, cancel, get, scheduledIds }),
+    [isScheduled, schedule, cancel, get, scheduledIds],
+  );
 }

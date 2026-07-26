@@ -26,7 +26,7 @@
 // window elapses without an undo.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 
@@ -39,6 +39,7 @@ import { StatusBoardCell } from "@/components/butlers/StatusBoardCell";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useSetEligibility } from "@/hooks/use-general";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
+import { useUndoWindow } from "@/hooks/use-undo-window";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 
 // ---------------------------------------------------------------------------
@@ -66,52 +67,16 @@ function boardColumnCount(board: HTMLElement): number {
 }
 
 // ---------------------------------------------------------------------------
-// Scheduled-restore store -- MODULE SCOPE, not component state.
-//
-// A restore scheduled via the quarantine chip must survive ButlersPage
-// unmounting mid undo-window: navigating away from /butlers and back within
-// 5s is ordinary navigation, not an edge case. If this lived in a `useState`
-// on the page component, a remount would start from an empty map -- the
-// original `window.setTimeout` from the unmounted instance keeps ticking
-// unseen, and the fresh instance would happily schedule a SECOND, independent
-// restore for the same name. Both timers eventually fire and the mutation
-// double-submits. Keeping the map here, outside any component instance,
-// makes "is this name already scheduled" and "cancel this name's timer"
-// globally consistent regardless of how many times the page mounts while the
-// window is open -- mirrors ApprovalsPage's identical scheduledDecisions
-// store (bu-86c4c.14).
-// ---------------------------------------------------------------------------
-let scheduledRestoresSnapshot: ReadonlyMap<string, number> = new Map();
-const scheduledRestoresListeners = new Set<() => void>();
-
-function setScheduledRestoresSnapshot(next: Map<string, number>) {
-  scheduledRestoresSnapshot = next;
-  for (const listener of scheduledRestoresListeners) listener();
-}
-
-function subscribeScheduledRestores(onStoreChange: () => void) {
-  scheduledRestoresListeners.add(onStoreChange);
-  return () => {
-    scheduledRestoresListeners.delete(onStoreChange);
-  };
-}
-
-function getScheduledRestoresSnapshot() {
-  return scheduledRestoresSnapshot;
-}
-
-/** Cancel and clear a name's scheduled restore, if one exists. */
-function cancelScheduledRestore(name: string) {
-  const timeoutId = scheduledRestoresSnapshot.get(name);
-  if (timeoutId === undefined) return;
-  window.clearTimeout(timeoutId);
-  const next = new Map(scheduledRestoresSnapshot);
-  next.delete(name);
-  setScheduledRestoresSnapshot(next);
-}
-
-// ---------------------------------------------------------------------------
 // ButlersPage
+//
+// Scheduled-restore survival across unmount (JARVIS audit move 6,
+// bu-86c4c.15) used to be a bespoke module-scoped store hand-rolled here --
+// consolidated onto the shared useUndoWindow hook (bu-ep4ks.11 / bu-3dp0c),
+// which provides the identical MODULE SCOPE semantics (a restore scheduled
+// via the quarantine chip survives the page unmounting mid-window; see
+// use-undo-window.ts's own module-scope rationale) under the "butler-restore"
+// namespace so it never collides with use-approval-decisions.ts's identical
+// migration.
 // ---------------------------------------------------------------------------
 
 export default function ButlersPage() {
@@ -223,16 +188,10 @@ export default function ButlersPage() {
   }, [selectedButlerName]);
 
   // Butler names with a restore scheduled but not yet fired -- backed by the
-  // module-scoped store above (not useState) so a remount mid-window picks up
-  // the already-scheduled state instead of double scheduling.
-  const scheduledRestores = useSyncExternalStore(
-    subscribeScheduledRestores,
-    getScheduledRestoresSnapshot,
-    // getServerSnapshot: some tests render this page via
-    // `renderToStaticMarkup` (react-dom/server), which requires a third arg.
-    // There is no real SSR here, so reuse the same in-memory snapshot getter.
-    getScheduledRestoresSnapshot,
-  );
+  // shared useUndoWindow module-scoped store (not useState) so a remount
+  // mid-window picks up the already-scheduled state instead of double
+  // scheduling.
+  const restoreUndo = useUndoWindow("butler-restore");
 
   const networkPendingName = setEligibility.isPending ? setEligibility.variables?.name : undefined;
 
@@ -250,19 +209,11 @@ export default function ButlersPage() {
   }
 
   function handleRestore(name: string) {
-    if (scheduledRestores.has(name)) return; // already scheduled -- ignore repeat clicks
-
-    const timeoutId = window.setTimeout(() => {
-      const next = new Map(scheduledRestoresSnapshot);
-      next.delete(name);
-      setScheduledRestoresSnapshot(next);
-      fireRestore(name);
-    }, RESTORE_UNDO_WINDOW_MS);
-
-    setScheduledRestoresSnapshot(new Map(scheduledRestoresSnapshot).set(name, timeoutId));
+    const scheduled = restoreUndo.schedule(name, () => fireRestore(name), RESTORE_UNDO_WINDOW_MS);
+    if (!scheduled) return; // already scheduled -- ignore repeat clicks
 
     toast(`Restoring ${name}`, {
-      action: { label: "Undo", onClick: () => cancelScheduledRestore(name) },
+      action: { label: "Undo", onClick: () => restoreUndo.cancel(name) },
       duration: RESTORE_UNDO_WINDOW_MS,
     });
   }
@@ -313,7 +264,7 @@ export default function ButlersPage() {
               key={row.name}
               row={row}
               onRestore={handleRestore}
-              isRestorePending={scheduledRestores.has(row.name) || networkPendingName === row.name}
+              isRestorePending={restoreUndo.isScheduled(row.name) || networkPendingName === row.name}
               isCursorActive={selectedButlerName === row.name}
             />
           ))}

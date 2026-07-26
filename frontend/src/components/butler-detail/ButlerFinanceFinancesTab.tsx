@@ -38,6 +38,7 @@ import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Time } from "@/components/ui/time";
@@ -670,6 +671,14 @@ export default function ButlerFinanceFinancesTab() {
   // ---- Bulk edit state (bu-v3a4x.3) --------------------------------------
   const bulkUpdate = useBulkUpdateTransactionMetadata();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Staged bulk op awaiting confirmation via ConfirmDialog (bu-ep4ks.11 /
+  // bu-3dp0c): applyBulk used to gate the mutation behind a synchronous
+  // window.confirm; it now stages the computed ops + summary text here and
+  // the dialog's onConfirm fires the actual mutation.
+  const [pendingBulkOp, setPendingBulkOp] = useState<{
+    ops: FinanceBulkUpdateOp[];
+    summary: string;
+  } | null>(null);
 
   const toggleRow = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -724,30 +733,36 @@ export default function ButlerFinanceFinancesTab() {
         `transaction${selectedIds.size === 1 ? "" : "s"} ` +
         `(${ops.length} merchant${ops.length === 1 ? "" : "s"})?`;
 
-      // Honest confirmation before a write that fans out across the overlay.
-      if (typeof window !== "undefined" && !window.confirm(summary)) return;
-
-      bulkUpdate.mutate(
-        { ops },
-        {
-          onSuccess: (resp) => {
-            toast.success(
-              `Updated ${resp.updated_total} transaction fact${
-                resp.updated_total === 1 ? "" : "s"
-              }.`,
-            );
-            setSelectedIds(new Set());
-          },
-          onError: (err) => {
-            toast.error(
-              err instanceof Error ? err.message : "Bulk update failed.",
-            );
-          },
-        },
-      );
+      // Honest confirmation before a write that fans out across the overlay
+      // (bu-ep4ks.11 / bu-3dp0c): stage the computed ops + summary and let
+      // ConfirmDialog gate the actual mutation.
+      setPendingBulkOp({ ops, summary });
     },
-    [bulkUpdate, selectedIds, transactions],
+    [selectedIds, transactions],
   );
+
+  const confirmBulkApply = useCallback(() => {
+    if (!pendingBulkOp) return;
+    bulkUpdate.mutate(
+      { ops: pendingBulkOp.ops },
+      {
+        onSuccess: (resp) => {
+          toast.success(
+            `Updated ${resp.updated_total} transaction fact${
+              resp.updated_total === 1 ? "" : "s"
+            }.`,
+          );
+          setSelectedIds(new Set());
+        },
+        onError: (err) => {
+          toast.error(
+            err instanceof Error ? err.message : "Bulk update failed.",
+          );
+        },
+        onSettled: () => setPendingBulkOp(null),
+      },
+    );
+  }, [bulkUpdate, pendingBulkOp]);
   const subscriptions = subResp?.data ?? [];
   const upcomingBills = upcomingResp?.items ?? [];
   const accounts = accountsResp?.data ?? [];
@@ -875,6 +890,19 @@ export default function ButlerFinanceFinancesTab() {
       <SubscriptionsPanel subscriptions={subscriptions} isLoading={subLoading} />
       <AccountsPanel accounts={accounts} isLoading={accountsLoading} />
       </div>
+      <ConfirmDialog
+        open={pendingBulkOp != null}
+        onOpenChange={(open) => {
+          if (!open) setPendingBulkOp(null);
+        }}
+        title={pendingBulkOp?.summary ?? ""}
+        description="This overlays the selected transactions' facts. It does not modify the original transaction records."
+        confirmLabel="Apply"
+        pendingLabel="Applying…"
+        pending={bulkUpdate.isPending}
+        onConfirm={confirmBulkApply}
+        testId="finance-bulk-confirm-dialog"
+      />
     </FetchingDim>
   );
 }

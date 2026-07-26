@@ -23,8 +23,17 @@
  * for its keyboard-triage (a/d/x) path only; extracting it here lets
  * DashboardPage's one-click attention-list rows share the IDENTICAL grace
  * window instead of firing irreversibly the moment they're clicked.
+ *
+ * The scheduling/storage/timer plumbing itself is consolidated onto the
+ * shared useUndoWindow hook (bu-ep4ks.11 / bu-3dp0c) under the
+ * "approval-decision" namespace -- this module keeps its OWN public contract
+ * (`scheduledDecisions` as an id → { verb } map, `scheduleDecision`,
+ * `cancelDecision`) unchanged for ApprovalsPage/DashboardPage, since both read
+ * back the pending VERB (approve/deny/defer) to render a per-row
+ * pending/undo label, not just a boolean. useUndoWindow's generic `meta`
+ * payload is what carries that verb through the shared store.
  */
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { approveApproval, deferApproval, denyApproval } from "@/api/index.ts";
@@ -32,6 +41,7 @@ import type { ApiResponse, ApprovalAction, ApprovalSummary } from "@/api/index.t
 import { toast } from "sonner";
 
 import { useOptimisticMutation } from "@/hooks/use-optimistic-mutation.ts";
+import { useUndoWindow } from "@/hooks/use-undo-window";
 
 const WAITING_KEY_PREFIX = ["approvals", "flat", "waiting"] as const;
 const HISTORY_KEY = ["approvals", "history"] as const;
@@ -46,48 +56,10 @@ export const UNDO_WINDOW_MS = 5_000;
 
 export interface ScheduledDecision {
   verb: DecisionVerb;
-  timeoutId: number;
 }
 
-// ---------------------------------------------------------------------------
-// Scheduled-decision store -- MODULE SCOPE, not component/hook state.
-//
-// A decision scheduled from ANY surface (ApprovalsPage's a/d/x keyboard
-// triage, DashboardPage's attention-list rows) must survive that surface
-// unmounting mid undo-window -- navigating away within 5s is a normal part of
-// fast triage, not an edge case. Module scope also means the two surfaces
-// share one truth: scheduling a decision on the dashboard and switching to
-// /approvals within the window shows the SAME pending/undo state there, and
-// the id is consistently skipped from either surface's own selection.
-// ---------------------------------------------------------------------------
-let scheduledDecisionsSnapshot: ReadonlyMap<string, ScheduledDecision> = new Map();
-const scheduledDecisionsListeners = new Set<() => void>();
-
-function setScheduledDecisionsSnapshot(next: Map<string, ScheduledDecision>) {
-  scheduledDecisionsSnapshot = next;
-  for (const listener of scheduledDecisionsListeners) listener();
-}
-
-function subscribeScheduledDecisions(onStoreChange: () => void) {
-  scheduledDecisionsListeners.add(onStoreChange);
-  return () => {
-    scheduledDecisionsListeners.delete(onStoreChange);
-  };
-}
-
-function getScheduledDecisionsSnapshot() {
-  return scheduledDecisionsSnapshot;
-}
-
-/** Cancel and clear an id's scheduled decision, if one exists. */
-function cancelScheduledDecision(id: string) {
-  const entry = scheduledDecisionsSnapshot.get(id);
-  if (!entry) return;
-  window.clearTimeout(entry.timeoutId);
-  const next = new Map(scheduledDecisionsSnapshot);
-  next.delete(id);
-  setScheduledDecisionsSnapshot(next);
-}
+/** Namespace scoping this hook's ids within the shared useUndoWindow store. */
+const NAMESPACE = "approval-decision";
 
 export interface UseApprovalDecisionMutationsOptions {
   /**
@@ -120,11 +92,18 @@ export function useApprovalDecisionMutations(
 ) {
   const qc = useQueryClient();
   const { onDecided, undoWindow = false } = options;
-  const scheduledDecisions = useSyncExternalStore(
-    subscribeScheduledDecisions,
-    getScheduledDecisionsSnapshot,
-    getScheduledDecisionsSnapshot,
-  );
+  const undo = useUndoWindow<DecisionVerb>(NAMESPACE);
+
+  // Derived id → { verb } map matching the pre-consolidation public shape
+  // (ApprovalsPage/DashboardPage read `.verb`/`.has`/`.get` off this).
+  const scheduledDecisions = useMemo(() => {
+    const map = new Map<string, ScheduledDecision>();
+    for (const id of undo.scheduledIds) {
+      const verb = undo.get(id);
+      if (verb !== undefined) map.set(id, { verb });
+    }
+    return map;
+  }, [undo]);
 
   function dropFromPending(id: string): PendingSnapshot {
     const prev = qc.getQueriesData({ queryKey: WAITING_KEY_PREFIX });
@@ -200,24 +179,16 @@ export function useApprovalDecisionMutations(
    */
   const scheduleDecision = useCallback(
     (id: string, verb: DecisionVerb, run: () => void): boolean => {
-      if (scheduledDecisionsSnapshot.has(id)) return false;
+      if (undo.isScheduled(id)) return false;
 
       if (!undoWindow) {
         run();
         return true;
       }
 
-      const timeoutId = window.setTimeout(() => {
-        const next = new Map(scheduledDecisionsSnapshot);
-        next.delete(id);
-        setScheduledDecisionsSnapshot(next);
-        run();
-      }, UNDO_WINDOW_MS);
-
-      setScheduledDecisionsSnapshot(new Map(scheduledDecisionsSnapshot).set(id, { verb, timeoutId }));
-      return true;
+      return undo.schedule(id, run, UNDO_WINDOW_MS, verb);
     },
-    [undoWindow],
+    [undo, undoWindow],
   );
 
   return {
@@ -227,6 +198,6 @@ export function useApprovalDecisionMutations(
     /** Ids with a decision scheduled but not yet fired (see `scheduleDecision`). */
     scheduledDecisions,
     scheduleDecision,
-    cancelDecision: cancelScheduledDecision,
+    cancelDecision: undo.cancel,
   };
 }

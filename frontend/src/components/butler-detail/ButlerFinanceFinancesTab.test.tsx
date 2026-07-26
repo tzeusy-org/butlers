@@ -1037,18 +1037,26 @@ describe("ButlerDetailPage — finance finances tab in getAllTabs", () => {
 // ---------------------------------------------------------------------------
 
 describe("ButlerFinanceFinancesTab — bulk edit / categorize (bu-v3a4x.3)", () => {
-  let confirmSpy: ReturnType<typeof vi.fn>;
-
   beforeEach(() => {
     vi.resetAllMocks();
     setupWithData();
-    confirmSpy = vi.fn().mockReturnValue(true);
-    window.confirm = confirmSpy;
   });
 
   afterEach(() => {
     cleanup();
   });
+
+  /**
+   * Clicks "Apply to selected" then the ConfirmDialog's confirm action
+   * (bu-ep4ks.11 / bu-3dp0c: the bulk-apply flow used to gate the mutation
+   * behind a synchronous window.confirm; it now stages the op and requires
+   * an explicit confirm click on finance-bulk-confirm-dialog).
+   */
+  function applyAndConfirm() {
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+    const confirmBtn = screen.getByTestId("finance-bulk-confirm-dialog-confirm");
+    fireEvent.click(confirmBtn);
+  }
 
   it("renders the bulk action bar and a checkbox per transaction row", () => {
     renderTab();
@@ -1081,6 +1089,20 @@ describe("ButlerFinanceFinancesTab — bulk edit / categorize (bu-v3a4x.3)", () 
     expect(btn.disabled).toBe(false);
   });
 
+  it("does not call the mutation until the confirm dialog is confirmed", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
+    fireEvent.change(screen.getByTestId("bulk-category-input"), {
+      target: { value: "groceries" },
+    });
+    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+
+    // Staged, not yet applied: the dialog is open but the mutation has not
+    // fired.
+    expect(screen.getByTestId("finance-bulk-confirm-dialog-confirm")).toBeDefined();
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
   it("calls the mutation with the correct overlay payload (category + merchant)", () => {
     renderTab();
     // Select the first transaction (Whole Foods, raw merchant "Whole Foods").
@@ -1091,7 +1113,7 @@ describe("ButlerFinanceFinancesTab — bulk edit / categorize (bu-v3a4x.3)", () 
     fireEvent.change(screen.getByTestId("bulk-merchant-input"), {
       target: { value: "Whole Foods Market" },
     });
-    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+    applyAndConfirm();
 
     expect(mockMutate).toHaveBeenCalledTimes(1);
     const [payload] = mockMutate.mock.calls[0];
@@ -1116,7 +1138,7 @@ describe("ButlerFinanceFinancesTab — bulk edit / categorize (bu-v3a4x.3)", () 
     fireEvent.change(screen.getByTestId("bulk-category-input"), {
       target: { value: "subscriptions" },
     });
-    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+    applyAndConfirm();
 
     const [payload] = mockMutate.mock.calls[0];
     expect(payload.ops).toHaveLength(2);
@@ -1131,13 +1153,13 @@ describe("ButlerFinanceFinancesTab — bulk edit / categorize (bu-v3a4x.3)", () 
   });
 
   it("does not call the mutation when the confirmation is cancelled", () => {
-    confirmSpy.mockReturnValue(false);
     renderTab();
     fireEvent.click(screen.getAllByTestId("transaction-checkbox")[0]);
     fireEvent.change(screen.getByTestId("bulk-category-input"), {
       target: { value: "groceries" },
     });
     fireEvent.click(screen.getByTestId("bulk-apply-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mockMutate).not.toHaveBeenCalled();
   });
 
@@ -1153,7 +1175,7 @@ describe("ButlerFinanceFinancesTab — bulk edit / categorize (bu-v3a4x.3)", () 
     fireEvent.change(screen.getByTestId("bulk-category-input"), {
       target: { value: "groceries" },
     });
-    fireEvent.click(screen.getByTestId("bulk-apply-button"));
+    applyAndConfirm();
 
     // The component passes onSuccess via the mutate options; invoking it must
     // not throw and should clear the selection. (Query invalidation itself is

@@ -296,19 +296,19 @@ const KEYDOWN_LISTENER_SELECTORS = [
   },
 ]
 
-// bu-ep4ks.11: ban bare window.confirm (and global confirm()) in the files
-// this bead migrated onto ConfirmDialog (components/ui/confirm-dialog.tsx).
-// window.confirm cannot show a pending state, cannot carry evidence, and
-// visually diverges from the fleet's AlertDialog everywhere else.
-//
-// Scoped to NO_WINDOW_CONFIRM_FILES rather than repo-wide: two pre-existing
-// call sites (pages/EntityDetailPage.tsx, components/butler-detail/
-// ButlerFinanceFinancesTab.tsx) were out of this bead's four cited sites and
-// are not migrated here -- a repo-wide ban would break CI on those untouched
-// files. Broadening this list to cover them is a follow-up, not silently
-// expanded here (mirrors the POLL_POLICY_FILES scoping precedent above).
-const NO_WINDOW_CONFIRM_FILES = ['src/pages/QaOverviewPage.tsx']
-
+// bu-ep4ks.11 / bu-3dp0c: ban bare window.confirm (and global confirm())
+// repo-wide. window.confirm cannot show a pending state, cannot carry
+// evidence, and visually diverges from the fleet's AlertDialog everywhere
+// else. Originally scoped to the four sites bu-ep4ks.11 cited
+// (NO_WINDOW_CONFIRM_FILES, since retired) because two pre-existing call
+// sites -- pages/EntityDetailPage.tsx, components/butler-detail/
+// ButlerFinanceFinancesTab.tsx -- were out of that bead's scope and a
+// repo-wide ban would have broken CI on them. bu-3dp0c migrated both onto
+// ConfirmDialog, so every known call site is gone and the ban is now applied
+// via the shared '**/*.ts' / '**/*.tsx' blocks below (plus every per-file
+// override block, since flat config replaces rather than merges
+// no-restricted-syntax for a file matched by more than one block -- see the
+// IMPORTANT comment atop this file).
 const NO_WINDOW_CONFIRM_SELECTORS = [
   {
     selector:
@@ -345,7 +345,9 @@ const NO_WINDOW_CONFIRM_SELECTORS = [
 // those are informational-tone banners or fixed categorical tags, not all a
 // "healthy" status collision, and need per-file judgment this bead's scope
 // doesn't cover. Follow-up, not silently expanded here (mirrors the
-// POLL_POLICY_FILES / NO_WINDOW_CONFIRM_FILES scoping precedent above).
+// POLL_POLICY_FILES scoping precedent above; NO_WINDOW_CONFIRM_FILES, an
+// earlier instance of the same pattern, was retired once bu-3dp0c migrated
+// its last two call sites and the ban went repo-wide).
 const NO_CATEGORICAL_STATUS_FILES = [
   'src/components/ui/StateDot.tsx',
   'src/components/topology/TopologyGraph.tsx',
@@ -369,7 +371,8 @@ const NO_CATEGORICAL_STATUS_SELECTORS = [
 // its absence). A screen reader announcing a data table with unscoped
 // headers cannot associate a cell with its column/row header at all. Applied
 // repo-wide via the base '**/*.tsx' block below rather than a file
-// allowlist: unlike POLL_POLICY_FILES/NO_WINDOW_CONFIRM_FILES, EVERY existing
+// allowlist: unlike POLL_POLICY_FILES (and the now-retired
+// NO_WINDOW_CONFIRM_FILES), EVERY existing
 // <th> in this codebase was migrated onto `scope` in the same change that
 // added this rule (5 hand-rolled data tables -- ButlerRelationshipContactsTab,
 // ButlerFinanceFinancesTab, ButlerHomeDevicesTab, ButlerGeneralCollectionsTab,
@@ -526,6 +529,7 @@ export default defineConfig([
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },
   },
@@ -547,6 +551,7 @@ export default defineConfig([
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },
   },
@@ -566,6 +571,7 @@ export default defineConfig([
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },
   },
@@ -589,6 +595,7 @@ export default defineConfig([
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },
   },
@@ -605,6 +612,7 @@ export default defineConfig([
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },
   },
@@ -622,29 +630,7 @@ export default defineConfig([
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...TH_SCOPE_SELECTORS,
-      ],
-    },
-  },
-  {
-    // bu-ep4ks.11: no-window-confirm, scoped -- see NO_WINDOW_CONFIRM_FILES
-    // comment above for why this isn't repo-wide. Must repeat the general
-    // '**/*.tsx' block's full selector set (flat config does not merge
-    // no-restricted-syntax across matching blocks for the same file).
-    files: NO_WINDOW_CONFIRM_FILES,
-    rules: {
-      'no-restricted-syntax': [
-        'error',
-        ...HSL_VAR_SELECTORS,
-        ...STATUS_COLOR_SELECTORS,
-        ...HEX_COLOR_SELECTORS,
-        ...PRIMITIVE_REDECLARATION_SELECTORS,
-        ...HANDROLLED_OVERLAY_SELECTORS,
-        ...POLL_POLICY_SELECTORS,
-        ...ANIMATE_PULSE_SELECTORS,
-        ...FORMAT_CLONE_SELECTORS,
-        ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
-        ...TH_SCOPE_SELECTORS,
       ],
     },
   },
@@ -671,6 +657,7 @@ export default defineConfig([
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_CATEGORICAL_STATUS_SELECTORS,
         ...TH_SCOPE_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },
   },
@@ -695,6 +682,7 @@ export default defineConfig([
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },
   },

@@ -36,17 +36,35 @@ describe("no-window-confirm lint (bu-ep4ks.11)", () => {
     );
   });
 
-  it("does not flag window.confirm in an out-of-scope file (scope-cut, tracked as follow-up)", async () => {
+  it("flags window.confirm in EntityDetailPage.tsx (bu-3dp0c: migrated off the scope-cut, ban is now repo-wide)", async () => {
     const eslint = new ESLint();
     const [result] = await eslint.lintText(
       'function f() { if (!window.confirm("sure?")) return; }\n',
       { filePath: "src/pages/EntityDetailPage.tsx" },
     );
 
-    expect(result.messages).not.toEqual(
+    expect(result.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          message: expect.stringContaining("window.confirm is banned"),
+          ruleId: "no-restricted-syntax",
+          message: expect.stringContaining("window.confirm is banned in this file"),
+        }),
+      ]),
+    );
+  });
+
+  it("flags window.confirm in an arbitrary .tsx file not covered by any earlier scoped allowlist (repo-wide)", async () => {
+    const eslint = new ESLint();
+    const [result] = await eslint.lintText(
+      'function f() { if (!window.confirm("sure?")) return; }\n',
+      { filePath: "src/pages/SomeUnrelatedPage.tsx" },
+    );
+
+    expect(result.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "no-restricted-syntax",
+          message: expect.stringContaining("window.confirm is banned in this file"),
         }),
       ]),
     );
