@@ -18,33 +18,16 @@ vi.mock("@/api/client", async (importOriginal) => {
   };
 });
 
-import * as homeHooks from "./use-home.ts";
+import {
+  useHomeAtmosphereCurrent,
+  useUpdateHomeAtmosphereLocation,
+} from "./use-home.ts";
 
 afterEach(() => {
   vi.clearAllMocks();
 });
 
 function renderHookHarness() {
-  const useHomeAtmosphereCurrent = (
-    homeHooks as unknown as {
-      useHomeAtmosphereCurrent?: () => {
-        data?: { configured: boolean };
-        isLoading: boolean;
-      };
-    }
-  ).useHomeAtmosphereCurrent;
-  const useUpdateHomeAtmosphereLocation = (
-    homeHooks as unknown as {
-      useUpdateHomeAtmosphereLocation?: () => {
-        mutate: (coordinates: { latitude: number; longitude: number }) => void;
-      };
-    }
-  ).useUpdateHomeAtmosphereLocation;
-
-  expect(useHomeAtmosphereCurrent).toBeTypeOf("function");
-  expect(useUpdateHomeAtmosphereLocation).toBeTypeOf("function");
-  if (!useHomeAtmosphereCurrent || !useUpdateHomeAtmosphereLocation) return;
-
   function Harness() {
     const current = useHomeAtmosphereCurrent();
     const update = useUpdateHomeAtmosphereLocation();

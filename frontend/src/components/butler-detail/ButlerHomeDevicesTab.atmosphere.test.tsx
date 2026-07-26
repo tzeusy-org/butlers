@@ -6,6 +6,8 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { HomeAtmosphereCurrentResponse } from "@/api/types";
+
 const homeMocks = vi.hoisted(() => ({
   useHomeSnapshotStatus: vi.fn(),
   useHomeDevices: vi.fn(),
@@ -32,7 +34,7 @@ vi.mock("@/hooks/use-home", () => homeMocks);
 
 import ButlerHomeDevicesTab from "./ButlerHomeDevicesTab.tsx";
 
-const unconfigured = {
+const unconfigured: HomeAtmosphereCurrentResponse = {
   configured: false,
   latitude: null,
   longitude: null,
@@ -41,7 +43,7 @@ const unconfigured = {
   last_error: null,
 };
 
-const configured = {
+const configured: HomeAtmosphereCurrentResponse = {
   configured: true,
   latitude: 1.3521,
   longitude: 103.8198,
@@ -50,7 +52,7 @@ const configured = {
   last_error: null,
 };
 
-function setupHomeData(atmosphere = unconfigured) {
+function setupHomeData(atmosphere: HomeAtmosphereCurrentResponse = unconfigured) {
   homeMocks.useHomeSnapshotStatus.mockReturnValue({
     data: { total_entities: 0, domains: {}, oldest_captured_at: null, newest_captured_at: null },
     isLoading: false,
@@ -143,6 +145,26 @@ describe("ButlerHomeDevicesTab atmosphere location panel", () => {
     expect((screen.getByLabelText("Longitude") as HTMLInputElement).value).toBe("103.8198");
   });
 
+  it("hydrates configured coordinates without a cascading form render", () => {
+    setupHomeData(configured);
+    renderTab();
+
+    expect((screen.getByLabelText("Latitude") as HTMLInputElement).value).toBe("1.3521");
+    expect(homeMocks.useHomeAtmosphereCurrent).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains an in-progress edit when a refetch returns the same saved location", async () => {
+    const user = userEvent.setup();
+    setupHomeData(configured);
+    const { rerenderTab } = renderTab();
+
+    await user.clear(screen.getByLabelText("Latitude"));
+    await user.type(screen.getByLabelText("Latitude"), "1.4");
+    rerenderTab();
+
+    expect((screen.getByLabelText("Latitude") as HTMLInputElement).value).toBe("1.4");
+  });
+
   it("shows an honest stale source error without discarding the saved configuration", () => {
     setupHomeData({
       ...configured,
@@ -183,6 +205,25 @@ describe("ButlerHomeDevicesTab atmosphere location panel", () => {
     await act(async () => {
       callbacks.onSuccess({ latitude: 1.3521, longitude: 103.8198 });
     });
+    expect(screen.getByRole("status").textContent).toContain(
+      "Home location saved. The next scheduled refresh will pick up this change.",
+    );
+  });
+
+  it("keeps the scheduled-refresh confirmation when the saved location refetches", async () => {
+    const user = userEvent.setup();
+    const { rerenderTab } = renderTab();
+
+    await enterCoordinates(user);
+    await user.click(screen.getByRole("button", { name: "Save home location" }));
+    const [, callbacks] = homeMocks.mutateAtmosphereLocation.mock.calls[0];
+    await act(async () => {
+      callbacks.onSuccess({ latitude: 1.3521, longitude: 103.8198 });
+    });
+
+    setupHomeData(configured);
+    rerenderTab();
+
     expect(screen.getByRole("status").textContent).toContain(
       "Home location saved. The next scheduled refresh will pick up this change.",
     );

@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import { ApiError } from "@/api/client";
+import type {
+  HomeAtmosphereCurrentResponse,
+  HomeAtmosphereLocationUpdate,
+} from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useHomeAtmosphereCurrent, useUpdateHomeAtmosphereLocation } from "@/hooks/use-home";
@@ -91,6 +95,137 @@ function FeedHealth({
   return null;
 }
 
+function locationKey(current: HomeAtmosphereCurrentResponse | undefined): string {
+  if (!current?.configured || current.latitude === null || current.longitude === null) {
+    return "unconfigured";
+  }
+
+  return `${current.latitude},${current.longitude}`;
+}
+
+interface HomeAtmosphereLocationFormProps {
+  initialLatitude: string;
+  initialLongitude: string;
+  showingPending: boolean;
+  saveSuccess: boolean;
+  saveError: string | null;
+  onStateChange: () => void;
+  onSave: (coordinates: HomeAtmosphereLocationUpdate) => void;
+}
+
+function HomeAtmosphereLocationForm({
+  initialLatitude,
+  initialLongitude,
+  showingPending,
+  saveSuccess,
+  saveError,
+  onStateChange,
+  onSave,
+}: HomeAtmosphereLocationFormProps) {
+  const [latitude, setLatitude] = useState(initialLatitude);
+  const [longitude, setLongitude] = useState(initialLongitude);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+
+  const onCoordinateChange = (field: CoordinateField, value: string) => {
+    onStateChange();
+    setFieldErrors((errors) => ({ ...errors, [field]: undefined }));
+
+    if (field === "latitude") {
+      setLatitude(value);
+    } else {
+      setLongitude(value);
+    }
+  };
+
+  const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onStateChange();
+    const errors = validateCoordinates(latitude, longitude);
+    setFieldErrors(errors);
+
+    if (Object.keys(errors).length > 0) {
+      return;
+    }
+
+    onSave({ latitude: Number(latitude), longitude: Number(longitude) });
+  };
+
+  return (
+    <form className="space-y-4" noValidate onSubmit={onSubmit}>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium" htmlFor="home-atmosphere-latitude">
+            Latitude
+          </label>
+          <Input
+            id="home-atmosphere-latitude"
+            type="number"
+            inputMode="decimal"
+            min={-90}
+            max={90}
+            step="any"
+            required
+            value={latitude}
+            aria-invalid={Boolean(fieldErrors.latitude)}
+            aria-describedby={fieldErrors.latitude ? "home-atmosphere-latitude-error" : undefined}
+            onChange={(event) => onCoordinateChange("latitude", event.target.value)}
+          />
+          {fieldErrors.latitude ? (
+            <p className="text-xs text-destructive" id="home-atmosphere-latitude-error" role="alert">
+              {fieldErrors.latitude}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium" htmlFor="home-atmosphere-longitude">
+            Longitude
+          </label>
+          <Input
+            id="home-atmosphere-longitude"
+            type="number"
+            inputMode="decimal"
+            min={-180}
+            max={180}
+            step="any"
+            required
+            value={longitude}
+            aria-invalid={Boolean(fieldErrors.longitude)}
+            aria-describedby={fieldErrors.longitude ? "home-atmosphere-longitude-error" : undefined}
+            onChange={(event) => onCoordinateChange("longitude", event.target.value)}
+          />
+          {fieldErrors.longitude ? (
+            <p className="text-xs text-destructive" id="home-atmosphere-longitude-error" role="alert">
+              {fieldErrors.longitude}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button type="submit" disabled={showingPending}>
+          {showingPending ? "Saving home location..." : "Save home location"}
+        </Button>
+        {showingPending ? (
+          <p className="text-sm text-muted-foreground" role="status" aria-live="polite">
+            Saving home location...
+          </p>
+        ) : null}
+        {saveSuccess ? (
+          <p className="text-sm text-[var(--green)]" role="status" aria-live="polite">
+            Home location saved. The next scheduled refresh will pick up this change.
+          </p>
+        ) : null}
+        {saveError ? (
+          <p className="text-sm text-destructive" role="alert">
+            {saveError}
+          </p>
+        ) : null}
+      </div>
+    </form>
+  );
+}
+
 /**
  * Owner-only location form for the Home atmosphere feed. Saving coordinates
  * intentionally does not imply a synchronous refresh; the existing scheduled
@@ -105,68 +240,31 @@ export function HomeAtmosphereLocationPanel() {
     refetch,
   } = useHomeAtmosphereCurrent();
   const { mutate, isPending } = useUpdateHomeAtmosphereLocation();
-  const [latitude, setLatitude] = useState("");
-  const [longitude, setLongitude] = useState("");
-  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [locationWasSaved, setLocationWasSaved] = useState(false);
-  const hasUserEdited = useRef(false);
-  const hydratedLocation = useRef<string | null>(null);
 
-  useEffect(() => {
-    if (!current?.configured || current.latitude === null || current.longitude === null) {
-      return;
-    }
-
-    const locationKey = `${current.latitude},${current.longitude}`;
-    if (hasUserEdited.current || hydratedLocation.current === locationKey) {
-      return;
-    }
-
-    setLatitude(String(current.latitude));
-    setLongitude(String(current.longitude));
-    hydratedLocation.current = locationKey;
-  }, [current]);
-
-  const onCoordinateChange = (field: CoordinateField, value: string) => {
-    hasUserEdited.current = true;
+  const clearSaveState = () => {
     setSaveError(null);
     setSaveSuccess(false);
-    setFieldErrors((errors) => ({ ...errors, [field]: undefined }));
-
-    if (field === "latitude") {
-      setLatitude(value);
-    } else {
-      setLongitude(value);
-    }
   };
 
-  const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const errors = validateCoordinates(latitude, longitude);
-    setFieldErrors(errors);
-    setSaveError(null);
-    setSaveSuccess(false);
-
-    if (Object.keys(errors).length > 0) {
-      return;
-    }
-
-    mutate(
-      { latitude: Number(latitude), longitude: Number(longitude) },
-      {
-        onSuccess: () => {
-          setLocationWasSaved(true);
-          setSaveSuccess(true);
-        },
-        onError: (error) => {
-          setSaveError(mutationErrorMessage(error));
-        },
+  const saveCoordinates = (coordinates: HomeAtmosphereLocationUpdate) => {
+    mutate(coordinates, {
+      onSuccess: () => {
+        setLocationWasSaved(true);
+        setSaveSuccess(true);
       },
-    );
+      onError: (error) => {
+        setSaveError(mutationErrorMessage(error));
+      },
+    });
   };
 
+  const hasSavedCoordinates =
+    current?.configured && current.latitude !== null && current.longitude !== null;
+  const initialLatitude = hasSavedCoordinates ? String(current.latitude) : "";
+  const initialLongitude = hasSavedCoordinates ? String(current.longitude) : "";
   const showingPending = isPending && !saveSuccess && !saveError;
   const locationState = current?.configured
     ? "Home location is configured."
@@ -206,9 +304,7 @@ export function HomeAtmosphereLocationPanel() {
     <Panel title="Atmosphere location" span={4} testId="atmosphere-location-panel">
       <div className="space-y-4">
         <div className="space-y-1">
-          <p className="text-sm text-muted-foreground">
-            {locationState}
-          </p>
+          <p className="text-sm text-muted-foreground">{locationState}</p>
           {current ? (
             <FeedHealth
               stale={current.stale}
@@ -229,78 +325,16 @@ export function HomeAtmosphereLocationPanel() {
           </div>
         ) : null}
 
-        <form className="space-y-4" noValidate onSubmit={onSubmit}>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium" htmlFor="home-atmosphere-latitude">
-                Latitude
-              </label>
-              <Input
-                id="home-atmosphere-latitude"
-                type="number"
-                inputMode="decimal"
-                min={-90}
-                max={90}
-                step="any"
-                required
-                value={latitude}
-                aria-invalid={Boolean(fieldErrors.latitude)}
-                aria-describedby={fieldErrors.latitude ? "home-atmosphere-latitude-error" : undefined}
-                onChange={(event) => onCoordinateChange("latitude", event.target.value)}
-              />
-              {fieldErrors.latitude ? (
-                <p className="text-xs text-destructive" id="home-atmosphere-latitude-error" role="alert">
-                  {fieldErrors.latitude}
-                </p>
-              ) : null}
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium" htmlFor="home-atmosphere-longitude">
-                Longitude
-              </label>
-              <Input
-                id="home-atmosphere-longitude"
-                type="number"
-                inputMode="decimal"
-                min={-180}
-                max={180}
-                step="any"
-                required
-                value={longitude}
-                aria-invalid={Boolean(fieldErrors.longitude)}
-                aria-describedby={fieldErrors.longitude ? "home-atmosphere-longitude-error" : undefined}
-                onChange={(event) => onCoordinateChange("longitude", event.target.value)}
-              />
-              {fieldErrors.longitude ? (
-                <p className="text-xs text-destructive" id="home-atmosphere-longitude-error" role="alert">
-                  {fieldErrors.longitude}
-                </p>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <Button type="submit" disabled={showingPending}>
-              {showingPending ? "Saving home location..." : "Save home location"}
-            </Button>
-            {showingPending ? (
-              <p className="text-sm text-muted-foreground" role="status" aria-live="polite">
-                Saving home location...
-              </p>
-            ) : null}
-            {saveSuccess ? (
-              <p className="text-sm text-[var(--green)]" role="status" aria-live="polite">
-                Home location saved. The next scheduled refresh will pick up this change.
-              </p>
-            ) : null}
-            {saveError ? (
-              <p className="text-sm text-destructive" role="alert">
-                {saveError}
-              </p>
-            ) : null}
-          </div>
-        </form>
+        <HomeAtmosphereLocationForm
+          key={locationKey(current)}
+          initialLatitude={initialLatitude}
+          initialLongitude={initialLongitude}
+          showingPending={showingPending}
+          saveSuccess={saveSuccess}
+          saveError={saveError}
+          onStateChange={clearSaveState}
+          onSave={saveCoordinates}
+        />
       </div>
     </Panel>
   );
