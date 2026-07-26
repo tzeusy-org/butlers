@@ -23,6 +23,8 @@ const CANCELLED_ERROR_TEXT = "Cancelled by owner"
 export interface StatusBadgeProps {
   /** Session success flag: true = success, false = failed, null = running. */
   success: boolean | null
+  /** List-only discriminator for the canonical owner-cancellation outcome. */
+  cancelledByOwner?: boolean
   /** Session error text, if any — checked for the cancellation marker. */
   error?: string | null
   className?: string
@@ -32,13 +34,13 @@ export interface StatusBadgeProps {
  * Render the session status as a dot + mandatory text label.
  *
  *   success === true                        → green dot + "Success"
- *   success === false, error is the cancel
- *     marker (bu-ep4ks.2)                   → neutral badge "Cancelled"
+ *   success === false, cancelledByOwner or error is the
+ *     cancel marker (bu-ep4ks.2)            → neutral badge "Cancelled"
  *   success === false, otherwise             → destructive Badge "Failed"
  *   success === null                         → amber dot + "Running"
  */
-export function StatusBadge({ success, error, className }: StatusBadgeProps) {
-  if (success === false && error === CANCELLED_ERROR_TEXT) {
+export function StatusBadge({ success, cancelledByOwner, error, className }: StatusBadgeProps) {
+  if (success === false && (cancelledByOwner === true || error === CANCELLED_ERROR_TEXT)) {
     return (
       <span
         className={cn(

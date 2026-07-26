@@ -246,6 +246,7 @@ def _dto_to_summary(dto: SessionSummaryRow, pricing: PricingConfig | None = None
         complexity=dto.complexity,
         input_tokens=dto.input_tokens,
         output_tokens=dto.output_tokens,
+        cancelled_by_owner=dto.cancelled_by_owner,
         cost_usd=_cost_usd_for_dto(dto, pricing),
     )
 

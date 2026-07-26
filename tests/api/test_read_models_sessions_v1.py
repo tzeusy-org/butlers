@@ -39,6 +39,7 @@ from butlers.api.read_models.sessions_v1 import (
     row_to_detail,
     row_to_summary,
 )
+from butlers.core.spawner import SESSION_CANCELLED_ERROR
 
 pytestmark = pytest.mark.unit
 
@@ -66,6 +67,7 @@ def _summary_record(**overrides) -> dict:
         "complexity": "simple",
         "input_tokens": 100,
         "output_tokens": 50,
+        "cancelled_by_owner": False,
     }
     base.update(overrides)
     return base
@@ -136,6 +138,17 @@ def test_row_to_summary_maps_all_fields():
     assert dto.complexity == "simple"
     assert dto.input_tokens == 100
     assert dto.output_tokens == 50
+    assert dto.cancelled_by_owner is False
+
+
+def test_summary_projection_derives_only_the_canonical_cancellation_indicator():
+    """List reads compute a boolean rather than selecting raw error text."""
+    assert "AS cancelled_by_owner" in SUMMARY_COLUMNS
+    assert f"error = '{SESSION_CANCELLED_ERROR}'" in SUMMARY_COLUMNS
+    assert "id, prompt" in SUMMARY_COLUMNS
+
+    dto = row_to_summary(_make_record(_summary_record(cancelled_by_owner=True)), butler="atlas")
+    assert dto.cancelled_by_owner is True
 
 
 def test_row_to_summary_none_butler_allowed():

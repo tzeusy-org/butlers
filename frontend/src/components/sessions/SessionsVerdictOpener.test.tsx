@@ -51,6 +51,7 @@ function runningSession(overrides: Partial<SessionSummary> = {}): SessionSummary
     duration_ms: null,
     input_tokens: null,
     output_tokens: null,
+    cancelled_by_owner: false,
     ...overrides,
   };
 }

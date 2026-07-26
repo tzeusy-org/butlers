@@ -225,6 +225,8 @@ export interface SessionSummary {
   duration_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** True only when the backend recognized the canonical owner cancellation. */
+  cancelled_by_owner: boolean;
   model?: string | null;
   complexity?: string | null;
   /**

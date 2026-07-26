@@ -54,6 +54,7 @@ const SESSION_SUMMARY: SessionSummary = {
   duration_ms: 1530,
   input_tokens: 100,
   output_tokens: 200,
+  cancelled_by_owner: false,
   model: "claude-3-5-sonnet",
   complexity: null,
 };

@@ -43,6 +43,7 @@ function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
     duration_ms: null,
     input_tokens: null,
     output_tokens: null,
+    cancelled_by_owner: false,
     model: null,
     complexity: null,
     ...overrides,

@@ -220,6 +220,9 @@ class SessionSummary(BaseModel):
     complexity: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Additive list-only outcome discriminator. It is true only for the
+    # canonical owner cancellation and intentionally does not expose error text.
+    cancelled_by_owner: bool = False
     # Best-effort per-session USD cost, estimated from model + token counts via
     # the shared PricingConfig (bu-ptaub — sessions pinning + dollar column).
     # None when pricing is unavailable or the session has no token data yet
