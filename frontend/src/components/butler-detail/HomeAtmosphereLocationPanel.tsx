@@ -1,10 +1,7 @@
 import { useState } from "react";
 
 import { ApiError } from "@/api/client";
-import type {
-  HomeAtmosphereCurrentResponse,
-  HomeAtmosphereLocationUpdate,
-} from "@/api/types";
+import type { HomeAtmosphereLocationUpdate } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useHomeAtmosphereCurrent, useUpdateHomeAtmosphereLocation } from "@/hooks/use-home";
@@ -16,6 +13,11 @@ type CoordinateField = "latitude" | "longitude";
 interface FieldErrors {
   latitude?: string;
   longitude?: string;
+}
+
+interface CoordinateValues {
+  latitude: string;
+  longitude: string;
 }
 
 function validateCoordinates(latitudeValue: string, longitudeValue: string): FieldErrors {
@@ -95,46 +97,33 @@ function FeedHealth({
   return null;
 }
 
-function locationKey(current: HomeAtmosphereCurrentResponse | undefined): string {
-  if (!current?.configured || current.latitude === null || current.longitude === null) {
-    return "unconfigured";
-  }
-
-  return `${current.latitude},${current.longitude}`;
-}
-
 interface HomeAtmosphereLocationFormProps {
-  initialLatitude: string;
-  initialLongitude: string;
+  latitude: string;
+  longitude: string;
   showingPending: boolean;
   saveSuccess: boolean;
   saveError: string | null;
   onStateChange: () => void;
+  onCoordinateChange: (field: CoordinateField, value: string) => void;
   onSave: (coordinates: HomeAtmosphereLocationUpdate) => void;
 }
 
 function HomeAtmosphereLocationForm({
-  initialLatitude,
-  initialLongitude,
+  latitude,
+  longitude,
   showingPending,
   saveSuccess,
   saveError,
   onStateChange,
+  onCoordinateChange,
   onSave,
 }: HomeAtmosphereLocationFormProps) {
-  const [latitude, setLatitude] = useState(initialLatitude);
-  const [longitude, setLongitude] = useState(initialLongitude);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
 
-  const onCoordinateChange = (field: CoordinateField, value: string) => {
+  const handleCoordinateChange = (field: CoordinateField, value: string) => {
     onStateChange();
     setFieldErrors((errors) => ({ ...errors, [field]: undefined }));
-
-    if (field === "latitude") {
-      setLatitude(value);
-    } else {
-      setLongitude(value);
-    }
+    onCoordinateChange(field, value);
   };
 
   const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -168,7 +157,7 @@ function HomeAtmosphereLocationForm({
             value={latitude}
             aria-invalid={Boolean(fieldErrors.latitude)}
             aria-describedby={fieldErrors.latitude ? "home-atmosphere-latitude-error" : undefined}
-            onChange={(event) => onCoordinateChange("latitude", event.target.value)}
+            onChange={(event) => handleCoordinateChange("latitude", event.target.value)}
           />
           {fieldErrors.latitude ? (
             <p className="text-xs text-destructive" id="home-atmosphere-latitude-error" role="alert">
@@ -192,7 +181,7 @@ function HomeAtmosphereLocationForm({
             value={longitude}
             aria-invalid={Boolean(fieldErrors.longitude)}
             aria-describedby={fieldErrors.longitude ? "home-atmosphere-longitude-error" : undefined}
-            onChange={(event) => onCoordinateChange("longitude", event.target.value)}
+            onChange={(event) => handleCoordinateChange("longitude", event.target.value)}
           />
           {fieldErrors.longitude ? (
             <p className="text-xs text-destructive" id="home-atmosphere-longitude-error" role="alert">
@@ -243,6 +232,7 @@ export function HomeAtmosphereLocationPanel() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [locationWasSaved, setLocationWasSaved] = useState(false);
+  const [draftCoordinates, setDraftCoordinates] = useState<CoordinateValues | null>(null);
 
   const clearSaveState = () => {
     setSaveError(null);
@@ -263,8 +253,18 @@ export function HomeAtmosphereLocationPanel() {
 
   const hasSavedCoordinates =
     current?.configured && current.latitude !== null && current.longitude !== null;
-  const initialLatitude = hasSavedCoordinates ? String(current.latitude) : "";
-  const initialLongitude = hasSavedCoordinates ? String(current.longitude) : "";
+  const savedCoordinates: CoordinateValues = hasSavedCoordinates
+    ? { latitude: String(current.latitude), longitude: String(current.longitude) }
+    : { latitude: "", longitude: "" };
+  const formCoordinates = draftCoordinates ?? savedCoordinates;
+
+  const updateDraftCoordinate = (field: CoordinateField, value: string) => {
+    setDraftCoordinates((draft) => ({
+      ...(draft ?? savedCoordinates),
+      [field]: value,
+    }));
+  };
+
   const showingPending = isPending && !saveSuccess && !saveError;
   const locationState = current?.configured
     ? "Home location is configured."
@@ -326,13 +326,13 @@ export function HomeAtmosphereLocationPanel() {
         ) : null}
 
         <HomeAtmosphereLocationForm
-          key={locationKey(current)}
-          initialLatitude={initialLatitude}
-          initialLongitude={initialLongitude}
+          latitude={formCoordinates.latitude}
+          longitude={formCoordinates.longitude}
           showingPending={showingPending}
           saveSuccess={saveSuccess}
           saveError={saveError}
           onStateChange={clearSaveState}
+          onCoordinateChange={updateDraftCoordinate}
           onSave={saveCoordinates}
         />
       </div>

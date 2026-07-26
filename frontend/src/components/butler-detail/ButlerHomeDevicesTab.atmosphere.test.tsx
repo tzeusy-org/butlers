@@ -165,6 +165,32 @@ describe("ButlerHomeDevicesTab atmosphere location panel", () => {
     expect((screen.getByLabelText("Latitude") as HTMLInputElement).value).toBe("1.4");
   });
 
+  it("retains an in-progress edit when a refetch returns a changed saved location", async () => {
+    const user = userEvent.setup();
+    setupHomeData(configured);
+    const { rerenderTab } = renderTab();
+
+    await user.clear(screen.getByLabelText("Latitude"));
+    await user.type(screen.getByLabelText("Latitude"), "1.4");
+
+    setupHomeData({ ...configured, latitude: 51.5072, longitude: -0.1276 });
+    rerenderTab();
+
+    expect((screen.getByLabelText("Latitude") as HTMLInputElement).value).toBe("1.4");
+    expect((screen.getByLabelText("Longitude") as HTMLInputElement).value).toBe("103.8198");
+  });
+
+  it("hydrates a pristine form when a refetch returns a changed saved location", () => {
+    setupHomeData(configured);
+    const { rerenderTab } = renderTab();
+
+    setupHomeData({ ...configured, latitude: 51.5072, longitude: -0.1276 });
+    rerenderTab();
+
+    expect((screen.getByLabelText("Latitude") as HTMLInputElement).value).toBe("51.5072");
+    expect((screen.getByLabelText("Longitude") as HTMLInputElement).value).toBe("-0.1276");
+  });
+
   it("shows an honest stale source error without discarding the saved configuration", () => {
     setupHomeData({
       ...configured,
