@@ -15,6 +15,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
@@ -300,5 +301,27 @@ describe("MeasurementTracker — URL-backed type filter (bu-qvnce.13)", () => {
     fireEvent.change(select, { target: { value: "" } });
     expect(select.value).toBe("");
     expect(screen.getByText(/measurement types: unavailable/i)).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "n" keyboard path (bu-mmdef, keyboard chassis remainder) -- health's six
+// add/log actions were mouse-only, cut from #3586's scope. Asserts real DOM
+// focus lands in the opened dialog (the #3586 focus-reality doctrine), not
+// just that the dialog opened.
+// ---------------------------------------------------------------------------
+
+describe("MeasurementTracker — keyboard path (bu-mmdef)", () => {
+  it("n opens the log dialog and moves real DOM focus onto its first field", () => {
+    renderTracker();
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "n", bubbles: true, cancelable: true }));
+    });
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText("Value (kg)"));
   });
 });

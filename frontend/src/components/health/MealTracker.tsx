@@ -14,7 +14,7 @@
 // bu-w7b18.5
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import type { Meal, MealParams } from "@/api/types";
@@ -47,6 +47,7 @@ import { Voice } from "@/components/ui/Voice";
 import { dayKeyInTimeZone } from "@/lib/day-window";
 import { cn } from "@/lib/utils";
 import { useDeleteMeal, useMeals } from "@/hooks/use-health";
+import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 
 const PAGE_SIZE = 50;
 
@@ -349,6 +350,26 @@ export default function MealTracker({
   const editing = formTarget != null;
 
   const groups = groupByDay(meals, ownerTz);
+
+  // Keyboard path for the page's one primary action (bu-mmdef, keyboard
+  // chassis remainder -- health's six add/log actions were mouse-only, cut
+  // from #3586's scope). "n" mirrors TimelinePage/SystemPage's own "new/next"
+  // convention (bu-ep4ks.12); each of the six health record pages mounts
+  // exactly one Tracker, so there is no cross-page collision.
+  const mealPageActions = useMemo<PageAction[]>(
+    () => [
+      {
+        id: "health-log-meal",
+        label: "Log meal",
+        key: "n",
+        display: ["n"],
+        description: "Log meal",
+        handler: () => setFormTarget(undefined),
+      },
+    ],
+    [setFormTarget],
+  );
+  usePageActions(mealPageActions);
 
   return (
     <div className="space-y-4">

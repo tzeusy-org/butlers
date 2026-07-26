@@ -1,7 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
+import { useListTriage } from "@/hooks/use-list-triage";
 import { useAllPendingReviews, useMindMaps } from "@/hooks/use-education";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { classifyReviewBucket, type ReviewBucket } from "@/lib/review-buckets";
@@ -39,6 +41,12 @@ function groupByTimePeriod(entries: ReviewEntry[], now: Date, tz: string) {
   return groups.filter((g) => g.entries.length > 0);
 }
 
+/** Stable per-entry key -- also the useListTriage id and the row's DOM anchor
+ *  for the j/k focus-sync effect below. */
+function reviewEntryKey(entry: Pick<ReviewEntry, "mind_map_id" | "node_id">): string {
+  return `${entry.mind_map_id}-${entry.node_id}`;
+}
+
 function ReviewEntryRow({
   entry,
   onSelectNode,
@@ -52,6 +60,8 @@ function ReviewEntryRow({
       variant="ghost"
       className="h-auto w-full justify-between rounded-none px-3 py-2 text-left"
       aria-label={`Open ${entry.label} in ${entry.mind_map_title}`}
+      data-testid="review-entry-row"
+      data-review-key={reviewEntryKey(entry)}
       onClick={() =>
         onSelectNode({
           mindMapId: entry.mind_map_id,
@@ -125,6 +135,41 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
     [allEntries, tz],
   );
 
+  // j/k queue keyboard path (bu-mmdef, keyboard chassis remainder -- the
+  // reviews queue was Tab-only, cut from #3586's scope for its distinct
+  // interaction model: a flat roving cursor across entries that are grouped
+  // by time period purely for display). Flattening in render order means the
+  // cursor moves top-to-bottom through the same order the owner already
+  // reads, across group boundaries. Enter/Space activation is native --
+  // ReviewEntryRow already IS a real <Button>, so once j/k moves real DOM
+  // focus onto it (below), the shared shortcut registry's own native-key
+  // passthrough (`isNativeActivationKey` in use-register-shortcut.tsx) lets
+  // Enter/Space reach the button directly. No verbs to declare.
+  const flatEntries = useMemo(() => groups.flatMap((g) => g.entries), [groups]);
+  const entryIds = useMemo(() => flatEntries.map((e) => reviewEntryKey(e)), [flatEntries]);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const { hints: reviewTriageHints } = useListTriage({
+    ids: entryIds,
+    selectedId: selectedKey,
+    onSelect: setSelectedKey,
+  });
+
+  // Keep DOM focus in sync with the current selection (bu-ep4ks.12 focus-
+  // reality doctrine, mirroring IssuesPage's identical effect). Matches by
+  // attribute value rather than interpolating into a CSS selector -- ids are
+  // owner data (mind map / node ids) and must never be treated as selector
+  // syntax.
+  useEffect(() => {
+    if (!selectedKey) return;
+    const nodes = document.querySelectorAll<HTMLElement>('[data-testid="review-entry-row"]');
+    for (const node of nodes) {
+      if (node.getAttribute("data-review-key") === selectedKey) {
+        node.focus({ preventScroll: true });
+        break;
+      }
+    }
+  }, [selectedKey]);
+
   if (allEntries.length === 0) {
     return (
       <Card>
@@ -147,7 +192,7 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
           >
             {group.entries.map((entry) => (
               <ReviewEntryRow
-                key={`${entry.mind_map_id}-${entry.node_id}`}
+                key={reviewEntryKey(entry)}
                 entry={entry}
                 onSelectNode={onSelectNode}
               />
@@ -155,6 +200,9 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
           </CardContent>
         </Card>
       ))}
+      {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
+          EXACT j/k bindings useListTriage just registered. */}
+      <ListTriageFooterHint bindings={reviewTriageHints} />
     </div>
   );
 }

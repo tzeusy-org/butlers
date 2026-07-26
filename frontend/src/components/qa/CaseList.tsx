@@ -83,6 +83,7 @@ export function CaseList({
                   active && "border-l-2 border-foreground bg-white/[0.04]",
                 )}
                 data-testid={`qa-case-row-${qaCase.id}`}
+                data-case-id={qaCase.id}
                 aria-current={active ? "true" : undefined}
               >
                 <span

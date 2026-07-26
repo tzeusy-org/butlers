@@ -11,7 +11,7 @@
 // edits and butler edits stay in sync.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import type { Symptom, SymptomParams } from "@/api/types";
@@ -38,6 +38,7 @@ import { Input } from "@/components/ui/input";
 import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { useConditions, useDeleteSymptom, useSymptoms } from "@/hooks/use-health";
+import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 
 const PAGE_SIZE = 50;
 
@@ -216,6 +217,26 @@ export default function SymptomTracker() {
     setNameFilter(value);
     setPage(0);
   }
+
+  // Keyboard path for the page's one primary action (bu-mmdef, keyboard
+  // chassis remainder -- health's six add/log actions were mouse-only, cut
+  // from #3586's scope). "n" mirrors TimelinePage/SystemPage's own "new/next"
+  // convention (bu-ep4ks.12); each of the six health record pages mounts
+  // exactly one Tracker, so there is no cross-page collision.
+  const symptomPageActions = useMemo<PageAction[]>(
+    () => [
+      {
+        id: "health-log-symptom",
+        label: "Log symptom",
+        key: "n",
+        display: ["n"],
+        description: "Log symptom",
+        handler: () => setFormTarget(undefined),
+      },
+    ],
+    [setFormTarget],
+  );
+  usePageActions(symptomPageActions);
 
   return (
     <div className="space-y-4">

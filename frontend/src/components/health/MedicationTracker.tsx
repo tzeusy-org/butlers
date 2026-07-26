@@ -17,7 +17,7 @@
 // are preserved.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
@@ -59,6 +59,7 @@ import {
   useMedicationDoses,
   useMedications,
 } from "@/hooks/use-health";
+import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 
 // ---------------------------------------------------------------------------
 // Row action — a quiet mono text button (no badge / card chrome)
@@ -413,6 +414,26 @@ export default function MedicationTracker() {
   const medications = data?.data ?? [];
   const dialogOpen = formTarget !== null;
   const editing = formTarget != null;
+
+  // Keyboard path for the page's one primary action (bu-mmdef, keyboard
+  // chassis remainder -- health's six add/log actions were mouse-only, cut
+  // from #3586's scope). "n" mirrors TimelinePage/SystemPage's own "new/next"
+  // convention (bu-ep4ks.12); each of the six health record pages mounts
+  // exactly one Tracker, so there is no cross-page collision.
+  const medicationPageActions = useMemo<PageAction[]>(
+    () => [
+      {
+        id: "health-add-medication",
+        label: "Add medication",
+        key: "n",
+        display: ["n"],
+        description: "Add medication",
+        handler: () => setFormTarget(undefined),
+      },
+    ],
+    [setFormTarget],
+  );
+  usePageActions(medicationPageActions);
 
   return (
     <div className="space-y-4">

@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act } from "react";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -261,5 +262,118 @@ describe("ReviewTimeline — actionable review controls", () => {
       mindMapId: "map-a",
       nodeId: "node-closures",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// j/k queue keyboard path (bu-mmdef, keyboard chassis remainder) -- the
+// reviews queue was Tab-only. useListTriage's own navigation mechanics are
+// unit-tested directly in use-list-triage.test.tsx; only the wiring (real
+// DOM focus lands on the right row, in flattened top-to-bottom order across
+// group boundaries) is covered here, per the #3586 focus-reality doctrine.
+// ---------------------------------------------------------------------------
+
+describe("ReviewTimeline — j/k queue keyboard path (bu-mmdef)", () => {
+  function press(key: string) {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    });
+  }
+
+  it("j moves real DOM focus onto the first review row", () => {
+    const maps = [makeMap("map-a", "Alpha")];
+    mockUseMindMaps.mockReturnValue({
+      data: { data: maps },
+    } as unknown as ReturnType<typeof useMindMaps>);
+    mockUseAllPendingReviews.mockImplementation((mapIds: string[]) =>
+      mapIds.map(
+        () =>
+          ({
+            data: [makeReview("node-1", "First"), makeReview("node-2", "Second")],
+            isLoading: false,
+          }) as unknown as ReviewResult,
+      ),
+    );
+
+    renderTimeline();
+    press("j");
+
+    const rows = screen.getAllByTestId("review-entry-row");
+    expect(rows.length).toBe(2);
+    expect(document.activeElement).toBe(rows[0]);
+    expect(document.activeElement?.getAttribute("data-review-key")).toBe("map-a-node-1");
+  });
+
+  it("j then j again moves focus to the next row, and k moves it back", () => {
+    const maps = [makeMap("map-a", "Alpha")];
+    mockUseMindMaps.mockReturnValue({
+      data: { data: maps },
+    } as unknown as ReturnType<typeof useMindMaps>);
+    mockUseAllPendingReviews.mockImplementation((mapIds: string[]) =>
+      mapIds.map(
+        () =>
+          ({
+            data: [makeReview("node-1", "First"), makeReview("node-2", "Second")],
+            isLoading: false,
+          }) as unknown as ReviewResult,
+      ),
+    );
+
+    renderTimeline();
+    press("j");
+    press("j");
+
+    expect(document.activeElement?.getAttribute("data-review-key")).toBe("map-a-node-2");
+
+    press("k");
+
+    expect(document.activeElement?.getAttribute("data-review-key")).toBe("map-a-node-1");
+  });
+
+  it("j/k roves across group boundaries in flattened top-to-bottom order", () => {
+    // One review due today (Today bucket) and one due next week (This Week
+    // bucket) -- two separate <Card> groups. The cursor must still move
+    // linearly from the first group's last row into the second group's
+    // first row.
+    const maps = [makeMap("map-a", "Alpha")];
+    mockUseMindMaps.mockReturnValue({
+      data: { data: maps },
+    } as unknown as ReturnType<typeof useMindMaps>);
+    const now = new Date();
+    const todayReview = makeReview("node-today", "Due today", {
+      next_review_at: now.toISOString(),
+    });
+    const laterDate = new Date(now);
+    laterDate.setDate(laterDate.getDate() + 3);
+    const laterReview = makeReview("node-later", "Due later", {
+      next_review_at: laterDate.toISOString(),
+    });
+    mockUseAllPendingReviews.mockImplementation((mapIds: string[]) =>
+      mapIds.map(
+        () =>
+          ({
+            data: [todayReview, laterReview],
+            isLoading: false,
+          }) as unknown as ReviewResult,
+      ),
+    );
+
+    renderTimeline();
+    press("j");
+    expect(document.activeElement?.getAttribute("data-review-key")).toBe("map-a-node-today");
+
+    press("j");
+    expect(document.activeElement?.getAttribute("data-review-key")).toBe("map-a-node-later");
+  });
+
+  it("publishes the j/k bindings to the footer hint strip", () => {
+    const maps = [makeMap("map-a", "Alpha")];
+    mockReviewsPerMap(maps);
+
+    renderTimeline();
+
+    const hint = screen.getByRole("note", { name: /keyboard shortcuts for this list/i });
+    expect(hint.textContent).toContain("Next item");
+    expect(hint.textContent).toContain("Previous item");
   });
 });

@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import type { HealthResearch, ResearchParams } from "@/api/types";
@@ -41,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { useDeleteResearch, useResearch } from "@/hooks/use-health";
+import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
@@ -246,6 +247,26 @@ export default function ResearchTracker() {
     setSearch(value);
     setPage(0);
   }
+
+  // Keyboard path for the page's one primary action (bu-mmdef, keyboard
+  // chassis remainder -- health's six add/log actions were mouse-only, cut
+  // from #3586's scope). "n" mirrors TimelinePage/SystemPage's own "new/next"
+  // convention (bu-ep4ks.12); each of the six health record pages mounts
+  // exactly one Tracker, so there is no cross-page collision.
+  const researchPageActions = useMemo<PageAction[]>(
+    () => [
+      {
+        id: "health-add-research",
+        label: "Add research",
+        key: "n",
+        display: ["n"],
+        description: "Add research",
+        handler: () => setFormTarget(undefined),
+      },
+    ],
+    [setFormTarget],
+  );
+  usePageActions(researchPageActions);
 
   return (
     <div className="space-y-4">

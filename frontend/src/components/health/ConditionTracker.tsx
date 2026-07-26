@@ -9,7 +9,7 @@
 // butler edits stay in sync.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import type { HealthCondition } from "@/api/types";
@@ -35,6 +35,7 @@ import {
 import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { useConditions, useDeleteCondition } from "@/hooks/use-health";
+import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
@@ -196,6 +197,26 @@ export default function ConditionTracker() {
 
   const dialogOpen = formTarget !== null;
   const editing = formTarget != null;
+
+  // Keyboard path for the page's one primary action (bu-mmdef, keyboard
+  // chassis remainder -- health's six add/log actions were mouse-only, cut
+  // from #3586's scope). "n" mirrors TimelinePage/SystemPage's own "new/next"
+  // convention (bu-ep4ks.12); each of the six health record pages mounts
+  // exactly one Tracker, so there is no cross-page collision.
+  const conditionPageActions = useMemo<PageAction[]>(
+    () => [
+      {
+        id: "health-add-condition",
+        label: "Add condition",
+        key: "n",
+        display: ["n"],
+        description: "Add condition",
+        handler: () => setFormTarget(undefined),
+      },
+    ],
+    [setFormTarget],
+  );
+  usePageActions(conditionPageActions);
 
   return (
     <div className="space-y-4">

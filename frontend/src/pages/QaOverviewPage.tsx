@@ -20,7 +20,7 @@
  * bu-21uf7 -- Rewrite QaOverviewPage.tsx as dossier shell
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
@@ -38,11 +38,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
 import { useButlers } from "@/hooks/use-butlers";
+import { useListTriage } from "@/hooks/use-list-triage";
 import {
   useForceQaPatrol,
   useQaCases,
@@ -716,6 +718,37 @@ export default function QaOverviewPage() {
     });
   }
 
+  // j/k case-rail keyboard path (bu-mmdef, keyboard chassis remainder -- the
+  // rail was mouse-only, cut from #3586's scope for its distinct interaction
+  // model). Selecting a case already drives the dossier column via the same
+  // ?case= URL param a click would -- there is no separate act-verb, j/k
+  // navigation IS the selection, same shape as an issues-panel roving cursor
+  // with no verbs declared.
+  const caseIds = useMemo(
+    () => casesData.map((c) => c.id),
+    [cases.data?.data], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const { hints: caseTriageHints } = useListTriage({
+    ids: caseIds,
+    selectedId: effectiveCaseId ?? null,
+    onSelect: handleCaseSelect,
+  });
+
+  // Keep DOM focus in sync with the current selection (bu-ep4ks.12 focus-
+  // reality doctrine, mirroring IssuesPage's identical effect). Matches by
+  // attribute value rather than interpolating the case id into a CSS
+  // selector -- ids are owner/server data, not selector syntax.
+  useEffect(() => {
+    if (!effectiveCaseId) return;
+    const nodes = document.querySelectorAll<HTMLElement>("[data-case-id]");
+    for (const node of nodes) {
+      if (node.getAttribute("data-case-id") === effectiveCaseId) {
+        node.focus({ preventScroll: true });
+        break;
+      }
+    }
+  }, [effectiveCaseId]);
+
   return (
     <div className="flex min-h-full flex-col">
       <StickyTopBar
@@ -742,7 +775,7 @@ export default function QaOverviewPage() {
           if (resetCircuitBreaker.isPending) return;
           setResetDialogOpen(open);
         }}
-        attempts={circuitBreaker.data?.data.recent_attempts ?? []}
+        attempts={circuitBreaker.isError ? [] : (circuitBreaker.data?.data.recent_attempts ?? [])}
         attemptsAvailable={!circuitBreaker.isError}
         onConfirm={confirmResetCircuitBreaker}
         pending={resetCircuitBreaker.isPending}
@@ -800,14 +833,19 @@ export default function QaOverviewPage() {
               Nothing in the dossier.
             </p>
           ) : (
-            <CaseList
-              cases={casesData}
-              selectedId={effectiveCaseId ?? null}
-              onSelect={handleCaseSelect}
-              headerLabel={caseListSinceLabel(since)}
-              hasMore={cases.data?.meta?.has_more ?? false}
-              totalCount={cases.data?.meta?.total}
-            />
+            <>
+              <CaseList
+                cases={casesData}
+                selectedId={effectiveCaseId ?? null}
+                onSelect={handleCaseSelect}
+                headerLabel={caseListSinceLabel(since)}
+                hasMore={cases.data?.meta?.has_more ?? false}
+                totalCount={cases.data?.meta?.total}
+              />
+              {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises
+                  the EXACT j/k bindings useListTriage just registered. */}
+              <ListTriageFooterHint bindings={caseTriageHints} />
+            </>
           )}
         </FetchingDim>
 

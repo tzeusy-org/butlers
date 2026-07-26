@@ -41,6 +41,7 @@ import {
   useMeasurements,
   useMeasurementTypes,
 } from "@/hooks/use-health";
+import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 import { hasValidMeasurementUrlState } from "@/lib/measurement-door";
 
 const PAGE_SIZE = 50;
@@ -320,6 +321,26 @@ export default function MeasurementTracker() {
 
   const dialogOpen = formTarget !== null;
   const editing = formTarget != null;
+
+  // Keyboard path for the page's one primary action (bu-mmdef, keyboard
+  // chassis remainder -- health's six add/log actions were mouse-only, cut
+  // from #3586's scope). "n" mirrors TimelinePage/SystemPage's own "new/next"
+  // convention (bu-ep4ks.12); each of the six health record pages mounts
+  // exactly one Tracker, so there is no cross-page collision.
+  const measurementPageActions = useMemo<PageAction[]>(
+    () => [
+      {
+        id: "health-log-measurement",
+        label: "Log measurement",
+        key: "n",
+        display: ["n"],
+        description: "Log measurement",
+        handler: () => setFormTarget(undefined),
+      },
+    ],
+    [setFormTarget],
+  );
+  usePageActions(measurementPageActions);
 
   return (
     <div className="space-y-4">

@@ -1054,3 +1054,123 @@ describe("QaOverviewPage -- evidence-bearing reset + palette verb", () => {
     expect(labels).toContain("Reset circuit breaker");
   });
 });
+
+// ---------------------------------------------------------------------------
+// j/k case-rail keyboard path (bu-mmdef, keyboard chassis remainder) -- the
+// rail was mouse-only. useListTriage's own navigation mechanics are unit-
+// tested directly in use-list-triage.test.tsx; only the wiring (real DOM
+// focus lands on the right case row) is covered here, per the #3586 focus-
+// reality doctrine.
+// ---------------------------------------------------------------------------
+
+describe("QaOverviewPage -- j/k case-rail keyboard path (bu-mmdef)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  const MOCK_CASE_3 = {
+    id: "case-uuid-003",
+    short_id: "#003",
+    sev: "low" as const,
+    butler: "finance",
+    headline: "Ledger reconciliation drift",
+    detected: "2026-05-14T10:00:00Z",
+    age_seconds: 90_000,
+    state: "diagnose" as const,
+    pr_state: null,
+    pr_url: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: { data: MOCK_SUMMARY },
+      isLoading: false,
+      isError: false,
+    });
+    (useForceQaPatrol as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useButlers as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1, MOCK_CASE_2, MOCK_CASE_3] },
+      isLoading: false,
+      isError: false,
+    });
+    (useRemoveDismissal as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useResetQaCircuitBreaker as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useQaCircuitBreaker as AnyMock).mockReturnValue({
+      data: { data: MOCK_BREAKER_CLOSED },
+      isLoading: false,
+      isError: false,
+    });
+    (useQaCase as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: false });
+    (useQaCaseJournal as AnyMock).mockReturnValue({ data: undefined });
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter initialEntries={["/qa"]}>
+            <QaOverviewPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    document.body.innerHTML = "";
+  });
+
+  function press(key: string) {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    });
+  }
+
+  it("auto-selects the first case, and j moves real DOM focus to the next row", () => {
+    const firstRow = document.querySelector<HTMLElement>(
+      `[data-case-id="${MOCK_CASE_1.id}"]`,
+    );
+    expect(firstRow).not.toBeNull();
+    expect(document.activeElement).toBe(firstRow);
+
+    press("j");
+
+    const secondRow = document.querySelector<HTMLElement>(
+      `[data-case-id="${MOCK_CASE_2.id}"]`,
+    );
+    expect(secondRow).not.toBeNull();
+    expect(document.activeElement).toBe(secondRow);
+  });
+
+  it("j/k roves forward and back across all three rows, updating the URL-backed selection each time", () => {
+    press("j");
+    press("j");
+
+    const thirdRow = document.querySelector<HTMLElement>(
+      `[data-case-id="${MOCK_CASE_3.id}"]`,
+    );
+    expect(document.activeElement).toBe(thirdRow);
+    expect(thirdRow?.getAttribute("aria-current")).toBe("true");
+
+    press("k");
+
+    const secondRow = document.querySelector<HTMLElement>(
+      `[data-case-id="${MOCK_CASE_2.id}"]`,
+    );
+    expect(document.activeElement).toBe(secondRow);
+    expect(secondRow?.getAttribute("aria-current")).toBe("true");
+    expect(thirdRow?.getAttribute("aria-current")).toBeNull();
+  });
+
+  it("publishes the j/k bindings to the footer hint strip", () => {
+    const hint = container.querySelector('[aria-label="Keyboard shortcuts for this list"]');
+    expect(hint).not.toBeNull();
+    expect(hint?.textContent).toContain("Next item");
+    expect(hint?.textContent).toContain("Previous item");
+  });
+});

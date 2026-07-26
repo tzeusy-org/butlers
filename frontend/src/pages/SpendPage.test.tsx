@@ -1562,6 +1562,262 @@ describe("SpendPage — routing rules", () => {
 })
 
 // ---------------------------------------------------------------------------
+// Keyboard reorder (bu-mmdef, keyboard chassis remainder) — the routing-rules
+// table was drag-only. A tiny in-memory store fulfils GET /spend/rules and
+// PUT /spend/rules/:id the same way the real backend would (shifting the
+// other rows' positions), so a reorder's server round trip is exercised for
+// real rather than asserting only that a mutation fired.
+// ---------------------------------------------------------------------------
+
+interface RuleFixture {
+  id: string
+  position: number
+  condition: Record<string, unknown>
+  action: Record<string, unknown>
+  saved_7d: number | null
+  created_at: string
+  updated_at: string
+}
+
+function makeRulesStore(initial: RuleFixture[]) {
+  let rules = initial.map((r) => ({ ...r }))
+  return {
+    get: () => ({ data: [...rules].sort((a, b) => a.position - b.position), meta: {} }),
+    reorder(id: string, to: number) {
+      const rule = rules.find((r) => r.id === id)
+      if (!rule) return
+      const from = rule.position
+      if (from === to) return
+      rules = rules.map((r) => {
+        if (r.id === id) return { ...r, position: to }
+        if (from < to && r.position > from && r.position <= to) return { ...r, position: r.position - 1 }
+        if (from > to && r.position >= to && r.position < from) return { ...r, position: r.position + 1 }
+        return r
+      })
+    },
+  }
+}
+
+function mockRulesApi(store: ReturnType<typeof makeRulesStore>) {
+  apiFetchMock.mockReset()
+  apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+    if (path === "/spend/rules") return Promise.resolve(store.get())
+    const match = /^\/spend\/rules\/([^/]+)$/.exec(path)
+    if (match && opts?.method === "PUT") {
+      const body = JSON.parse(opts.body as string) as { position: number }
+      store.reorder(match[1], body.position)
+      return Promise.resolve({})
+    }
+    return defaultApiFetch(path)
+  })
+}
+
+describe("SpendPage — keyboard reorder (bu-mmdef)", () => {
+  beforeEach(() => {
+    setHooks()
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  const THREE_RULES: RuleFixture[] = [
+    { id: "rule-1", position: 1, condition: {}, action: { model: "claude-haiku" }, saved_7d: null, created_at: "", updated_at: "" },
+    { id: "rule-2", position: 2, condition: {}, action: { model: "claude-sonnet" }, saved_7d: null, created_at: "", updated_at: "" },
+    { id: "rule-3", position: 3, condition: {}, action: { model: "claude-opus" }, saved_7d: null, created_at: "", updated_at: "" },
+  ]
+
+  it("grabs a row, moves it with arrow keys, and keeps real DOM focus on it through the server round trip", async () => {
+    const store = makeRulesStore(THREE_RULES)
+    mockRulesApi(store)
+
+    await act(async () => {
+      renderPage()
+    })
+
+    const row = (await screen.findByTestId("spend-rule-row-rule-2")) as HTMLElement
+    row.focus()
+    expect(document.activeElement).toBe(row)
+
+    fireEvent.keyDown(row, { key: " " })
+    expect(row.getAttribute("data-grabbed")).toBe("true")
+
+    fireEvent.keyDown(row, { key: "ArrowUp" })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("spend-rule-position-rule-2").textContent).toBe("1")
+    })
+
+    // The row keeps the same key (rule id) across the reorder-driven refetch,
+    // so React's keyed reconciliation moves the existing DOM node instead of
+    // remounting it -- focus survives the round trip without any manual
+    // restore effect (the #3586 focus-reality doctrine: assert real DOM
+    // focus, not just that the handler fired).
+    const rowAfter = screen.getByTestId("spend-rule-row-rule-2")
+    expect(document.activeElement).toBe(rowAfter)
+
+    fireEvent.keyDown(rowAfter, { key: "Enter" })
+    expect(screen.getByTestId("spend-rule-row-rule-2").getAttribute("data-grabbed")).toBeNull()
+  })
+
+  it("Escape cancels and restores the row to the position it was grabbed from", async () => {
+    const store = makeRulesStore(THREE_RULES)
+    mockRulesApi(store)
+
+    await act(async () => {
+      renderPage()
+    })
+
+    const row = (await screen.findByTestId("spend-rule-row-rule-3")) as HTMLElement
+    row.focus()
+
+    fireEvent.keyDown(row, { key: "Enter" })
+    fireEvent.keyDown(row, { key: "ArrowUp" })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("spend-rule-position-rule-3").textContent).toBe("2")
+    })
+
+    fireEvent.keyDown(screen.getByTestId("spend-rule-row-rule-3"), { key: "Escape" })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("spend-rule-position-rule-3").textContent).toBe("3")
+    })
+    expect(document.activeElement).toBe(screen.getByTestId("spend-rule-row-rule-3"))
+    expect(screen.getByTestId("spend-rule-row-rule-3").getAttribute("data-grabbed")).toBeNull()
+  })
+
+  it("never fires a bare Up/Down page scroll while a row is grabbed (preventDefault)", async () => {
+    const store = makeRulesStore(THREE_RULES)
+    mockRulesApi(store)
+
+    await act(async () => {
+      renderPage()
+    })
+
+    const row = (await screen.findByTestId("spend-rule-row-rule-2")) as HTMLElement
+    row.focus()
+    fireEvent.keyDown(row, { key: " " })
+
+    const event = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true })
+    const prevented = !row.dispatchEvent(event)
+    expect(prevented).toBe(true)
+  })
+
+  it("Escape-cancel race: reorderMutation's scope serializes the restore behind the in-flight move, so a slow/reordered response can never leave the server moved (bu-mmdef)", async () => {
+    // The previous race test's mock applied store.reorder() synchronously at
+    // request-send time and stashed a single `resolveReorder` handle that the
+    // second PUT would silently clobber -- it could never fail even with no
+    // ordering guarantee at all, because the store only ever saw call order,
+    // never arrival order, and there was only ever one resolver to invoke.
+    // This test instead: (1) keeps one deferred handle per PUT call so
+    // neither is lost, (2) applies store.reorder() at *resolve* time (i.e.
+    // simulated response-arrival time, not send time) so resolution order is
+    // the thing that determines server-visible state, and (3) asserts the
+    // restore's PUT is not even dispatched until the move's PUT has settled
+    // -- the actual client-side serialization guarantee `scope` provides,
+    // not just a lucky final value.
+    const store = makeRulesStore(THREE_RULES)
+    const puts: Array<{ id: string; position: number; resolve: () => void }> = []
+    apiFetchMock.mockReset()
+    apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === "/spend/rules") return Promise.resolve(store.get())
+      const match = /^\/spend\/rules\/([^/]+)$/.exec(path)
+      if (match && opts?.method === "PUT") {
+        const body = JSON.parse(opts.body as string) as { position: number }
+        return new Promise((resolve) => {
+          puts.push({
+            id: match[1],
+            position: body.position,
+            resolve: () => {
+              store.reorder(match[1], body.position)
+              resolve({})
+            },
+          })
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    const row = (await screen.findByTestId("spend-rule-row-rule-2")) as HTMLElement
+    row.focus()
+
+    fireEvent.keyDown(row, { key: " " }) // grab rule-2 at position 2
+    fireEvent.keyDown(row, { key: "ArrowUp" }) // move mutation: PUT rule-2 position=1
+
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect(puts[0]).toMatchObject({ id: "rule-2", position: 1 })
+
+    fireEvent.keyDown(row, { key: "Escape" }) // compensating restore: mutate({id: rule-2, position: 2})
+
+    // The restore shares reorderMutation's scope with the still-pending move,
+    // so TanStack Query must hold its request back rather than dispatching a
+    // second, concurrent PUT. Give any (incorrect) immediate dispatch a full
+    // microtask+macrotask flush to show up before asserting it didn't.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(puts).toHaveLength(1)
+
+    // Settle the move. Only now should the queued restore mutation actually
+    // dispatch its request.
+    await act(async () => {
+      puts[0].resolve()
+    })
+    await waitFor(() => expect(puts).toHaveLength(2))
+    expect(puts[1]).toMatchObject({ id: "rule-2", position: 2 })
+
+    // Settle the restore last -- the scenario the old test structurally
+    // could not exercise. Server-visible state must reflect the restore
+    // (grab-origin position), never the moved position, however slow or
+    // reordered a real network response might have been.
+    await act(async () => {
+      puts[1].resolve()
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("spend-rule-position-rule-2").textContent).toBe("2")
+    })
+    expect(store.get().data.find((r) => r.id === "rule-2")?.position).toBe(2)
+    expect(row.getAttribute("data-grabbed")).toBeNull()
+  })
+
+  it("grabbing row B while row A is grabbed implicitly drops row A (bu-mmdef)", async () => {
+    // Scenario: grab row 2, then without Escaping, grab row 3. Row 2 should be
+    // implicitly dropped (announced) before row 3 is grabbed.
+    const store = makeRulesStore(THREE_RULES)
+    mockRulesApi(store)
+
+    await act(async () => {
+      renderPage()
+    })
+
+    const row2 = (await screen.findByTestId("spend-rule-row-rule-2")) as HTMLElement
+    const row3 = screen.getByTestId("spend-rule-row-rule-3") as HTMLElement
+
+    row2.focus()
+
+    // Grab row 2
+    fireEvent.keyDown(row2, { key: " " })
+    expect(row2.getAttribute("data-grabbed")).toBe("true")
+    expect(row3.getAttribute("data-grabbed")).toBeNull()
+
+    // Now grab row 3 without Escaping row 2 first
+    fireEvent.keyDown(row3, { key: " " })
+
+    // Row 2 should no longer be grabbed (implicitly dropped)
+    expect(row2.getAttribute("data-grabbed")).toBeNull()
+
+    // Row 3 should now be grabbed
+    expect(row3.getAttribute("data-grabbed")).toBe("true")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Degraded states — an errored inline query must render an honest degraded
 // note, never a calm empty (bu-mkd5r, three-way state contract). QueryClient
 // runs with retry:false so a rejected apiFetch surfaces isError on first pass.

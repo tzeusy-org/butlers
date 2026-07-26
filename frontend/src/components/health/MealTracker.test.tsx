@@ -18,6 +18,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import MealTracker, { type MealTrackerProps } from "@/components/health/MealTracker";
@@ -141,5 +142,27 @@ describe("MealTracker — direct CRUD", () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(deleteMutate).toHaveBeenCalledWith("meal-1"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "n" keyboard path (bu-mmdef, keyboard chassis remainder) -- health's six
+// add/log actions were mouse-only, cut from #3586's scope. Asserts real DOM
+// focus lands in the opened dialog (the #3586 focus-reality doctrine), not
+// just that the dialog opened.
+// ---------------------------------------------------------------------------
+
+describe("MealTracker — keyboard path (bu-mmdef)", () => {
+  it("n opens the log dialog and moves real DOM focus onto its first field", () => {
+    renderTracker();
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "n", bubbles: true, cancelable: true }));
+    });
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText("Description"));
   });
 });
