@@ -28,8 +28,12 @@ Routing always goes through the Switchboard's existing ``route()`` primitive
 except Switchboard itself, which calls the underlying ``route()`` function
 directly in-process (it already owns the pool ``route()`` needs), exactly
 mirroring ``notify()``'s client-vs-self-delivery split. ``_dispatch_via_switchboard``
-below is the shared helper for that split, used by both ``delegate_ask``'s
-dispatch to a target and ``delegate_answer``'s wake callback to an asker.
+below is the local wrapper for that split, used by both ``delegate_ask``'s
+dispatch to a target and ``delegate_answer``'s wake callback to an asker; the
+transport loop itself now lives in ``_switchboard_route_dispatch.dispatch_via_switchboard_route``,
+shared with ``_domain_events.py``'s equivalent wrapper (bu-xthtw) -- see
+``_classify_delegation_route_result`` below for this module's own
+route()-result classification rule.
 
 ``dispatch_delegated_ask`` (bu-27dxl.5.4) is the record-then-dispatch
 sequence factored out of the ``delegate_ask`` tool closure so a deterministic
@@ -43,7 +47,6 @@ seed for the only current caller outside the MCP tool itself.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -66,19 +69,46 @@ from butlers.core.delegation_wake import handle_delegate_wake
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
+from butlers.core_tools._switchboard_route_dispatch import dispatch_via_switchboard_route
 
 logger = logging.getLogger(__name__)
 
-_ROUTE_TIMEOUT_S = 30
 
+def _classify_delegation_route_result(
+    raw: Any,
+) -> tuple[dict[str, Any] | None, str | None, bool]:
+    """This module's route()-result classification rule: a truthy ``error``
+    key -- at either the route() envelope level or the target tool's own
+    unwrapped payload -- is a failure.
 
-def _extract_mcp_error_text(result: Any) -> str:
-    """Best-effort extraction of MCP error text from a CallToolResult."""
-    content = getattr(result, "content", None) or []
-    if content:
-        first = content[0]
-        return str(getattr(first, "text", "") or first)
-    return "route tool returned an error"
+    route() (see ``_switchboard_route_dispatch.dispatch_via_switchboard_route``'s
+    docstring) always returns ``{"error": ...}`` on a route-level failure or
+    ``{"result": <target's own return value>}`` on success. This module's
+    callers (``dispatch_delegated_ask``, ``delegate_answer``'s wake callback)
+    only ever need to know *whether* the dispatch failed, never the target's
+    own payload contents, so unlike ``_domain_events._unwrap_route_result``
+    this classifier doesn't need a business-status vocabulary (no
+    ``status == "error"`` check) -- a truthy ``error`` key at either level is
+    sufficient and exactly mirrors what ``delegate_receive``/``delegate_wake``
+    themselves return on failure (``{"status": "error", "error": ...}``).
+
+    Fixed here (bu-xthtw): an earlier version of this function only checked
+    the route() envelope's own ``error`` key and never unwrapped ``result``
+    to look at the target tool's payload -- so a route()-level *success* that
+    wrapped a target-tool-level failure (e.g. ``delegate_receive`` returning
+    ``{"status": "error", "error": "..."}`` because the ledger row went
+    missing between dispatch and lookup) was silently misreported as a
+    successful dispatch. Mirrors the fix ``_domain_events._unwrap_route_result``
+    already made for the fan-out path (PR #3596).
+    """
+    if not isinstance(raw, dict):
+        return None, None, False
+    if raw.get("error"):
+        return None, str(raw["error"]), False
+    data = raw.get("result")
+    if isinstance(data, dict) and data.get("error"):
+        return None, str(data["error"]), False
+    return (data if isinstance(data, dict) else None), None, False
 
 
 async def _dispatch_via_switchboard(
@@ -92,68 +122,28 @@ async def _dispatch_via_switchboard(
 ) -> tuple[str | None, bool]:
     """Dispatch one tool call through the Switchboard's ``route()`` primitive.
 
-    Mirrors ``notify()``'s client-vs-self-delivery split: every butler except
-    Switchboard itself calls ``client.call_tool("route", ...)`` (``client`` is
-    the caller's live ``daemon.switchboard_client``, or the deterministic-job
-    equivalent recovered via ``get_current_switchboard_client()``); Switchboard
-    calls the underlying ``route()`` function directly in-process (it already
-    owns the pool ``route()`` needs). Shared by ``delegate_ask``'s dispatch to
-    a target, ``delegate_answer``'s wake callback to an asker, and
-    ``dispatch_delegated_ask`` below.
+    Thin wrapper around the shared transport loop
+    (``_switchboard_route_dispatch.dispatch_via_switchboard_route``) using
+    this module's own route()-result classification rule
+    (``_classify_delegation_route_result``). Shared by ``delegate_ask``'s
+    dispatch to a target, ``delegate_answer``'s wake callback to an asker,
+    and ``dispatch_delegated_ask`` below.
 
     Returns ``(error_text, retryable)`` -- ``error_text`` is ``None`` on a
-    successful dispatch (a route()-level success; it says nothing about what
-    the target tool itself returned as its logical result).
+    successful dispatch (a route()-level success whose target tool also
+    reported no failure of its own).
     """
-    route_tool_args = {
-        "target_butler": target_butler,
-        "tool_name": tool_name,
-        "args": args,
-        "source_butler": butler_name,
-    }
-
-    if client is not None:
-        try:
-            result = await asyncio.wait_for(
-                client.call_tool("route", route_tool_args),
-                timeout=_ROUTE_TIMEOUT_S,
-            )
-        except TimeoutError:
-            return f"Switchboard route() call timed out after {_ROUTE_TIMEOUT_S}s.", True
-        except (ConnectionError, OSError) as exc:
-            return f"Switchboard unreachable: {exc}", True
-        except Exception as exc:
-            return f"{type(exc).__name__}: {exc}", False
-
-        if result.is_error:
-            return _extract_mcp_error_text(result), False
-        data = result.data
-        if isinstance(data, dict) and data.get("error"):
-            return str(data["error"]), False
-        return None, False
-
-    if butler_name == "switchboard":
-        from butlers.tools.switchboard.routing.route import route as _switchboard_route
-
-        try:
-            raw = await _switchboard_route(
-                pool,
-                target_butler,
-                tool_name,
-                args,
-                source_butler=butler_name,
-            )
-        except Exception as exc:
-            return f"{type(exc).__name__}: {exc}", False
-
-        if isinstance(raw, dict) and raw.get("error"):
-            return str(raw["error"]), False
-        return None, False
-
-    return (
-        "Switchboard is not connected. Cannot route the delegated call. "
-        "This is a transient infrastructure issue — retry after a delay."
-    ), True
+    _data, error_text, retryable = await dispatch_via_switchboard_route(
+        client,
+        pool,
+        butler_name,
+        target_butler=target_butler,
+        tool_name=tool_name,
+        args=args,
+        classify=_classify_delegation_route_result,
+        route_purpose="delegated call",
+    )
+    return error_text, retryable
 
 
 async def dispatch_delegated_ask(

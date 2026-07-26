@@ -443,3 +443,137 @@ class TestDelegateWake:
             "wake_key": "delegation-wake:v1:ledger-13:abc",
             "asking_butler": "finance",
         }
+
+
+class TestClassifyDelegationRouteResult:
+    """This module's route()-result classification rule: a truthy ``error``
+    key at either the route() envelope level or the target tool's own
+    unwrapped payload is a failure. See
+    ``_classify_delegation_route_result``'s docstring for the bu-xthtw
+    unwrap-bugfix this covers (the pre-fix version never looked past the
+    envelope, so a route()-level success wrapping a target-tool-level
+    failure was silently misreported as success)."""
+
+    def test_success_envelope_unwraps_to_inner_result(self):
+        data, error, retryable = _delegation._classify_delegation_route_result(
+            {"result": {"status": "scheduled", "task_id": "t1"}}
+        )
+        assert data == {"status": "scheduled", "task_id": "t1"}
+        assert error is None
+        assert retryable is False
+
+    def test_route_level_error_envelope_is_detected(self):
+        data, error, retryable = _delegation._classify_delegation_route_result(
+            {"error": "RuntimeError: Unknown tool: delegate_receive"}
+        )
+        assert data is None
+        assert error == "RuntimeError: Unknown tool: delegate_receive"
+        assert retryable is False
+
+    def test_inner_target_error_is_detected_after_unwrap(self):
+        """The bu-xthtw regression case: route() itself succeeded (wraps
+        {"result": ...}), but the target tool's own payload reports its own
+        failure -- this must not be misread as a successful dispatch."""
+        data, error, retryable = _delegation._classify_delegation_route_result(
+            {"result": {"status": "error", "error": "No delegation_ledger row for id='x'."}}
+        )
+        assert data is None
+        assert error == "No delegation_ledger row for id='x'."
+        assert retryable is False
+
+    def test_non_dict_raw_is_treated_as_no_error(self):
+        data, error, retryable = _delegation._classify_delegation_route_result("not a dict")
+        assert data is None
+        assert error is None
+        assert retryable is False
+
+
+class TestDispatchViaSwitchboardEnvelope:
+    """Regression coverage for the route()-envelope unwrap bug (bu-xthtw):
+    a real MCP client's CallToolResult.data is route()'s own
+    {"result"/"error"} shape, not the target tool's dict directly -- mirrors
+    ``tests/core_tools/test_domain_events.py::TestDispatchReceiveViaSwitchboardEnvelope
+    ::test_client_branch_unwraps_successful_route_result``.
+    """
+
+    async def test_client_branch_unwraps_successful_route_result(self):
+        client = AsyncMock()
+        client.call_tool = AsyncMock(
+            return_value=SimpleNamespace(
+                is_error=False,
+                data={"result": {"status": "scheduled", "task_id": "t1"}},
+            )
+        )
+
+        error, retryable = await _delegation._dispatch_via_switchboard(
+            client,
+            AsyncMock(),
+            "finance",
+            target_butler="relationship",
+            tool_name="delegate_receive",
+            args={"ledger_id": "ledger-1", "question": "q", "asking_butler": "finance"},
+        )
+
+        assert error is None
+        assert retryable is False
+
+    async def test_client_branch_surfaces_wrapped_target_failure(self):
+        """A route()-level success whose target tool's own payload reports a
+        failure (e.g. delegate_receive's ledger row went missing) must
+        surface as a dispatch failure, not a silent success."""
+        client = AsyncMock()
+        client.call_tool = AsyncMock(
+            return_value=SimpleNamespace(
+                is_error=False,
+                data={
+                    "result": {
+                        "status": "error",
+                        "error": "No delegation_ledger row for id='ledger-1'.",
+                    }
+                },
+            )
+        )
+
+        error, retryable = await _delegation._dispatch_via_switchboard(
+            client,
+            AsyncMock(),
+            "finance",
+            target_butler="relationship",
+            tool_name="delegate_receive",
+            args={"ledger_id": "ledger-1", "question": "q", "asking_butler": "finance"},
+        )
+
+        assert error == "No delegation_ledger row for id='ledger-1'."
+        assert retryable is False
+
+    async def test_switchboard_self_delivery_branch_surfaces_wrapped_target_failure(
+        self, monkeypatch
+    ):
+        import importlib
+
+        # See test_switchboard_self_dispatch_uses_direct_route_function above
+        # for why importlib.import_module is required to reach the real
+        # ``route`` submodule rather than the re-exported function.
+        route_module = importlib.import_module("butlers.tools.switchboard.routing.route")
+
+        direct_route_mock = AsyncMock(
+            return_value={
+                "result": {
+                    "status": "error",
+                    "error": "wake_key does not match the ledger row's immutable wake key.",
+                }
+            }
+        )
+        monkeypatch.setattr(route_module, "route", direct_route_mock)
+
+        error, retryable = await _delegation._dispatch_via_switchboard(
+            None,
+            AsyncMock(),
+            "switchboard",
+            target_butler="finance",
+            tool_name="delegate_wake",
+            args={"ledger_id": "ledger-1", "wake_key": "bad-key"},
+        )
+
+        assert error == "wake_key does not match the ledger row's immutable wake key."
+        assert retryable is False

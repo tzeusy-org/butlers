@@ -22,6 +22,15 @@ deterministic caller can also invoke directly (mirrors ``dispatch_
 delegated_ask``); see ``publish_domain_event`` for the convenience wrapper
 ``roster/travel/tools/bookings.py`` calls after a new trip is booked.
 
+``_dispatch_receive_via_switchboard``'s transport loop (timeout/connection
+handling, the client-vs-self-delivery split) now lives in the shared
+``_switchboard_route_dispatch.dispatch_via_switchboard_route`` (bu-xthtw),
+factored out of what used to be two independently-drifting ~60-line copies
+in this file and ``_delegation.py``. This module keeps its own
+``_unwrap_route_result`` as the classify callback passed into that shared
+core -- the one place the two files deliberately diverge (see its
+docstring).
+
 ``run_domain_event_reconciliation_sweep`` (bu-1yw6d) is the periodic
 reconciliation sweep ``src/butlers/core/domain_events.py``'s module
 docstring anticipated: it re-drives ``pending`` deliveries stuck since a
@@ -39,7 +48,6 @@ identity check.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from datetime import timedelta
@@ -65,16 +73,16 @@ from butlers.core.domain_events import (
 )
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
+from butlers.core_tools._switchboard_route_dispatch import dispatch_via_switchboard_route
 
 logger = logging.getLogger(__name__)
-
-_ROUTE_TIMEOUT_S = 30
 
 # Bounded-retry policy for the periodic reconciliation sweep (bu-1yw6d).
 #
 # - _STALE_PENDING_AFTER: a `pending` delivery this old was claimed but never
 #   resolved -- crashed after claim, before dispatch. Comfortably above
-#   _ROUTE_TIMEOUT_S (30s) plus scheduling/retry jitter, so a genuinely
+#   the shared route dispatch timeout (_switchboard_route_dispatch.
+#   ROUTE_TIMEOUT_S, 30s) plus scheduling/retry jitter, so a genuinely
 #   in-flight dispatch is never mistaken for a stuck one.
 # - _FAILED_RETRY_BACKOFF: minimum time between retry attempts on a `failed`
 #   row, so a target that is actually down is not hammered every sweep tick.
@@ -107,15 +115,6 @@ def _is_retryable_route_error_text(error_text: str) -> bool:
     return error_text.startswith(_RETRYABLE_ROUTE_ERROR_PREFIXES)
 
 
-def _extract_mcp_error_text(result: Any) -> str:
-    """Best-effort extraction of MCP error text from a CallToolResult."""
-    content = getattr(result, "content", None) or []
-    if content:
-        first = content[0]
-        return str(getattr(first, "text", "") or first)
-    return "route tool returned an error"
-
-
 async def _dispatch_receive_via_switchboard(
     client: Any,
     pool: Any,
@@ -126,71 +125,28 @@ async def _dispatch_receive_via_switchboard(
 ) -> tuple[dict[str, Any] | None, str | None, bool]:
     """Dispatch one ``receive_domain_event`` call through Switchboard ``route()``.
 
-    Mirrors ``_delegation._dispatch_via_switchboard`` exactly, except it also
-    returns the target tool's own result payload on success (the fan-out
-    ledger needs the subscriber's reconciliation outcome -- ``task_created``
-    vs ``task_conflict`` -- not just "route() succeeded").
-
-    ``route()`` itself never raises -- it catches every internal failure
-    (target unreachable, unknown tool, registry lookup) and returns
-    ``{"error": "<ExceptionType>: <message>"}``; only a genuine dispatch
-    success wraps the target tool's own return value as ``{"result": ...}``
-    (see ``roster/switchboard/tools/routing/route.py::route``). Both branches
-    below must unwrap that envelope before inspecting the target's own
-    ``status``/``task_id``/``task_name`` fields -- reading those directly off
-    the *envelope* (as an earlier version of this function did) meant every
-    non-error dispatch, and every route()-level error alike, fell through to
-    the same undifferentiated shape, silently misclassifying real successes.
+    Thin wrapper around the shared transport loop
+    (``_switchboard_route_dispatch.dispatch_via_switchboard_route``) using
+    this module's own route()-result classification rule
+    (``_unwrap_route_result``), which -- unlike
+    ``_delegation._classify_delegation_route_result`` -- also returns the
+    target tool's own result payload on success (the fan-out ledger needs
+    the subscriber's reconciliation outcome -- ``task_created`` vs
+    ``task_conflict`` -- not just "route() succeeded").
 
     Returns ``(data, error_text, retryable)``. ``error_text`` is ``None`` on
     a successful dispatch, and ``data`` is the *unwrapped* target-tool
     payload in that case.
     """
-    route_tool_args = {
-        "target_butler": target_butler,
-        "tool_name": "receive_domain_event",
-        "args": args,
-        "source_butler": butler_name,
-    }
-
-    if client is not None:
-        try:
-            result = await asyncio.wait_for(
-                client.call_tool("route", route_tool_args),
-                timeout=_ROUTE_TIMEOUT_S,
-            )
-        except TimeoutError:
-            return None, f"Switchboard route() call timed out after {_ROUTE_TIMEOUT_S}s.", True
-        except (ConnectionError, OSError) as exc:
-            return None, f"Switchboard unreachable: {exc}", True
-        except Exception as exc:
-            return None, f"{type(exc).__name__}: {exc}", False
-
-        if result.is_error:
-            return None, _extract_mcp_error_text(result), False
-        return _unwrap_route_result(result.data)
-
-    if butler_name == "switchboard":
-        from butlers.tools.switchboard.routing.route import route as _switchboard_route
-
-        try:
-            raw = await _switchboard_route(
-                pool,
-                target_butler,
-                "receive_domain_event",
-                args,
-                source_butler=butler_name,
-            )
-        except Exception as exc:
-            return None, f"{type(exc).__name__}: {exc}", False
-
-        return _unwrap_route_result(raw)
-
-    return (
-        None,
-        "Switchboard is not connected. Cannot route the fan-out dispatch. "
-        "This is a transient infrastructure issue — retry after a delay.",
-        True,
+    return await dispatch_via_switchboard_route(
+        client,
+        pool,
+        butler_name,
+        target_butler=target_butler,
+        tool_name="receive_domain_event",
+        args=args,
+        classify=_unwrap_route_result,
+        route_purpose="fan-out dispatch",
     )
 
 
