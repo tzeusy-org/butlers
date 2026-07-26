@@ -757,7 +757,16 @@ class TestSpawnerInvocation:
     async def test_pre_spawn_mcp_warmup_failure_does_not_block_session(
         self, tmp_path: Path
     ) -> None:
-        """Warmup failures are best-effort; the runtime still runs."""
+        """Warmup failures are best-effort; the runtime still runs.
+
+        Since bu-ep4ks.13's follow-up (bu-k9te9, slice 4), a speculative fire-and-forget
+        prewarm is kicked off from the routing decision, well before this on-path
+        ``_ensure_mcp_endpoints_warmed`` call. Both attempts hit the same
+        ``warmup_mcp_urls`` seam here (it always raises), so — as the safety net the
+        on-path call is designed to be — it retries independently of the speculative
+        attempt's outcome, and the endpoint is genuinely attempted twice. What this test
+        actually pins is unchanged: neither attempt's failure blocks or fails the session.
+        """
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(port=9420)
@@ -772,7 +781,8 @@ class TestSpawnerInvocation:
             result = await spawner.trigger("hello", "schedule:test")
 
         assert result.success is True
-        mock_warmup.assert_awaited_once_with("test-butler", ["http://127.0.0.1:9420/mcp"])
+        mock_warmup.assert_awaited_with("test-butler", ["http://127.0.0.1:9420/mcp"])
+        assert mock_warmup.await_count == 2
         assert len(adapter.calls) == 1
 
     async def test_terminal_codex_mcp_discovery_failure_marks_session_failed(

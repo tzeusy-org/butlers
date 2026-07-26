@@ -14,11 +14,14 @@ Covers:
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
 
+from butlers.core import model_routing as model_routing_module
 from butlers.core.model_routing import (
     _BREAKER_FAILURE_THRESHOLD,
     _BREAKER_HALF_OPEN_COOLDOWN_MINUTES,
@@ -28,10 +31,12 @@ from butlers.core.model_routing import (
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     RoutingEvidence,
+    TierQuotaExhausted,
     _check_deprecated_tier,
     _parse_max_cost_per_call,
     _rule_condition_matches,
     apply_spend_routing_rules,
+    clear_routing_decision_cache,
     coerce_complexity_tier,
     compute_routing_score,
     get_breaker_state,
@@ -265,6 +270,98 @@ def test_compute_routing_score_unpriced_model_treated_as_cost_neutral() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Bounded routing-decision cache (bu-ep4ks.13 follow-up / bu-k9te9, slice 5)
+#
+# Pure-Python unit coverage of _fetch_resolve_rows's cache mechanics against a fake pool
+# (no DB needed for hit/miss/expiry/eviction/bypass logic). Behavioral coverage against a
+# real resolve_model/resolve_model_with_effective_tier call (round-robin counter still
+# incrementing on a cache hit, quota_aware never caching) lives in the integration tests
+# below, since those need real catalog/breaker/quota state.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_fetch_resolve_rows_cache_hit_skips_second_db_call() -> None:
+    model_routing_module.clear_routing_decision_cache()
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[{"id": "row-1"}])
+    try:
+        rows1 = await model_routing_module._fetch_resolve_rows(pool, "general", ["workhorse"])
+        rows2 = await model_routing_module._fetch_resolve_rows(pool, "general", ["workhorse"])
+        assert rows1 == rows2 == [{"id": "row-1"}]
+        pool.fetch.assert_called_once()
+    finally:
+        model_routing_module.clear_routing_decision_cache()
+
+
+@pytest.mark.unit
+async def test_fetch_resolve_rows_cache_false_always_hits_db() -> None:
+    """The quota-aware path (cache=False) never reads or writes the cache."""
+    model_routing_module.clear_routing_decision_cache()
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[{"id": "row-1"}])
+    try:
+        await model_routing_module._fetch_resolve_rows(pool, "general", ["workhorse"], cache=False)
+        await model_routing_module._fetch_resolve_rows(pool, "general", ["workhorse"], cache=False)
+        assert pool.fetch.await_count == 2
+        # And it never populated the cache for a later cache=True caller either.
+        assert ("general", ("workhorse",)) not in model_routing_module._routing_rows_cache
+    finally:
+        model_routing_module.clear_routing_decision_cache()
+
+
+@pytest.mark.unit
+async def test_fetch_resolve_rows_empty_result_never_cached() -> None:
+    model_routing_module.clear_routing_decision_cache()
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    try:
+        await model_routing_module._fetch_resolve_rows(pool, "general", ["workhorse"])
+        await model_routing_module._fetch_resolve_rows(pool, "general", ["workhorse"])
+        assert pool.fetch.await_count == 2
+    finally:
+        model_routing_module.clear_routing_decision_cache()
+
+
+@pytest.mark.unit
+async def test_fetch_resolve_rows_expired_entry_refetches() -> None:
+    model_routing_module.clear_routing_decision_cache()
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[{"id": "row-1"}])
+    try:
+        await model_routing_module._fetch_resolve_rows(pool, "general", ["workhorse"])
+        key = ("general", ("workhorse",))
+        rows, _expires_at = model_routing_module._routing_rows_cache[key]
+        # Force expiry without sleeping the test for the real TTL.
+        model_routing_module._routing_rows_cache[key] = (rows, time.monotonic() - 1)
+        await model_routing_module._fetch_resolve_rows(pool, "general", ["workhorse"])
+        assert pool.fetch.await_count == 2
+    finally:
+        model_routing_module.clear_routing_decision_cache()
+
+
+@pytest.mark.unit
+async def test_fetch_resolve_rows_bounded_lru_eviction() -> None:
+    model_routing_module.clear_routing_decision_cache()
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[{"id": "row"}])
+    max_entries = model_routing_module._ROUTING_CACHE_MAX_ENTRIES
+    try:
+        for i in range(max_entries + 10):
+            await model_routing_module._fetch_resolve_rows(pool, f"butler-{i}", ["workhorse"])
+        assert len(model_routing_module._routing_rows_cache) == max_entries
+        # Oldest entries evicted; most-recently-inserted retained.
+        assert ("butler-0", ("workhorse",)) not in model_routing_module._routing_rows_cache
+        assert ("butler-9", ("workhorse",)) not in model_routing_module._routing_rows_cache
+        assert (
+            f"butler-{max_entries + 9}",
+            ("workhorse",),
+        ) in model_routing_module._routing_rows_cache
+    finally:
+        model_routing_module.clear_routing_decision_cache()
+
+
+# ---------------------------------------------------------------------------
 # Integration helpers
 #
 # NOTE: the resolver/failover SQL invariants (excludes failed-verification rows,
@@ -290,7 +387,14 @@ def migrated_db_url(postgres_container) -> str:
 
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    """Return an asyncpg pool with model routing tables cleared between tests."""
+    """Return an asyncpg pool with model routing tables cleared between tests.
+
+    Also drops the bounded routing-decision cache (bu-k9te9, slice 5): it is a
+    process-global, TTL-based cache keyed on (butler_name, tiers), so without this a test
+    could observe another test's cached rows for the same key within the TTL window
+    despite the DB being freshly truncated.
+    """
+    clear_routing_decision_cache()
     p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
     await p.execute(
         "TRUNCATE public.model_round_robin_counters, "
@@ -2228,3 +2332,316 @@ async def test_resolve_falls_back_to_round_robin_when_evidence_insufficient(
     seen = {r1[1], r2[1]}
     assert seen == {"no-history-a-model", "no-history-b-model"}
     assert r3[1] == r1[1]  # wraps back to the first after both are rotated through
+
+
+# ---------------------------------------------------------------------------
+# Quota-aware resolve fold (bu-ep4ks.13 follow-up / bu-k9te9)
+#
+# "Fold the quota/ceiling pre-spawn gates into the resolve CTE": resolve_model_with_effective_tier
+# (quota_aware=True) folds a per-catalog-entry token-quota check into the same round trip as
+# tier/breaker/priority resolution. Quota-unaware callers (resolve_model, and
+# resolve_model_with_effective_tier's own default) must be COMPLETELY unaffected -- the quota_ok
+# SQL column is purely additive. See TierQuotaExhausted's docstring for the exact contract this
+# section verifies.
+# ---------------------------------------------------------------------------
+
+
+async def _insert_limits(
+    pool: asyncpg.Pool,
+    *,
+    catalog_entry_id: str,
+    limit_24h: int | None = None,
+    limit_30d: int | None = None,
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO public.token_limits (catalog_entry_id, limit_24h, limit_30d)
+        VALUES ($1, $2, $3)
+        """,
+        uuid.UUID(catalog_entry_id),
+        limit_24h,
+        limit_30d,
+    )
+
+
+async def _insert_ledger_row(
+    pool: asyncpg.Pool, *, catalog_entry_id: str, input_tokens: int = 0, output_tokens: int = 0
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO public.token_usage_ledger
+            (catalog_entry_id, butler_name, input_tokens, output_tokens)
+        VALUES ($1, 'general', $2, $3)
+        """,
+        uuid.UUID(catalog_entry_id),
+        input_tokens,
+        output_tokens,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_quota_aware_no_limits_row_is_pure_fast_path(pool: asyncpg.Pool) -> None:
+    """No token_limits row -> quota_aware=True returns exactly what quota_aware=False would."""
+    await _insert_catalog_entry(
+        pool, alias="qa-no-limits", model_id="qa-no-limits-model", priority=10
+    )
+    unaware = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    aware = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+    )
+    assert unaware is not None and aware is not None
+    assert unaware == aware
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_quota_aware_boundary_just_under_limit_allowed(pool: asyncpg.Pool) -> None:
+    """usage == limit - 1 -> quota_ok, quota_aware=True returns normally (no exception)."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="qa-under", model_id="qa-under-model", priority=10
+    )
+    await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=100)
+    await _insert_ledger_row(pool, catalog_entry_id=entry_id, input_tokens=60, output_tokens=39)
+
+    result = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+    )
+    assert result is not None
+    assert str(result[3]) == entry_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_quota_aware_boundary_exactly_at_limit_raises_exhausted(
+    pool: asyncpg.Pool,
+) -> None:
+    """usage == limit (>=) -> blocked, matching check_token_quota's exact boundary."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="qa-exact", model_id="qa-exact-model", priority=10
+    )
+    await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=100)
+    await _insert_ledger_row(pool, catalog_entry_id=entry_id, input_tokens=60, output_tokens=40)
+
+    with pytest.raises(TierQuotaExhausted) as exc_info:
+        await resolve_model_with_effective_tier(
+            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+        )
+    assert exc_info.value.effective_tier == "workhorse"
+    # The representative must be exactly what a quota-unaware resolve would have picked --
+    # the caller falls back to the pre-existing sequential quota loop starting from it.
+    unaware = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert exc_info.value.representative == unaware
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_quota_aware_30d_boundary_exactly_at_limit_raises_exhausted(
+    pool: asyncpg.Pool,
+) -> None:
+    """30d window boundary: usage == limit_30d (24h unlimited) also blocks."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="qa-exact-30d", model_id="qa-exact-30d-model", priority=10
+    )
+    await _insert_limits(pool, catalog_entry_id=entry_id, limit_30d=200)
+    await _insert_ledger_row(pool, catalog_entry_id=entry_id, input_tokens=120, output_tokens=80)
+
+    with pytest.raises(TierQuotaExhausted):
+        await resolve_model_with_effective_tier(
+            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_quota_aware_mixed_tied_peers_conservatively_raises(
+    pool: asyncpg.Pool,
+) -> None:
+    """One of two tied top-priority peers is quota-blocked -> TierQuotaExhausted is still raised.
+
+    Deliberately conservative (see TierQuotaExhausted's docstring): the fold does not attempt to
+    pick among a mixed quota-ok/quota-blocked tie itself, because that could select a different
+    candidate than the deterministic same-tier failover the caller falls back to for a real
+    exhaustion. Verifies the fold never silently narrows a tie on the caller's behalf.
+    """
+    ok_id = await _insert_catalog_entry(
+        pool, alias="qa-mixed-ok", model_id="qa-mixed-ok-model", priority=10
+    )
+    blocked_id = await _insert_catalog_entry(
+        pool, alias="qa-mixed-blocked", model_id="qa-mixed-blocked-model", priority=10
+    )
+    await _insert_limits(pool, catalog_entry_id=blocked_id, limit_24h=100)
+    await _insert_ledger_row(pool, catalog_entry_id=blocked_id, input_tokens=100, output_tokens=0)
+    del ok_id  # unused beyond seeding a quota-ok tied peer
+
+    with pytest.raises(TierQuotaExhausted):
+        await resolve_model_with_effective_tier(
+            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_quota_aware_does_not_change_tier_fallthrough(pool: asyncpg.Pool) -> None:
+    """Tier-fallthrough stays governed by breaker/enabled state only, never by quota.
+
+    A workhorse candidate that is quota-blocked must NOT cause resolution to fall through to
+    the next canonical tier (cheap) -- that would silently swap a hard quota DENY for a
+    different, un-vetted model. TierQuotaExhausted must be raised for the workhorse tier
+    instead, exactly mirroring how the pre-fold sequential quota loop never fell through tiers
+    either (it only ever searched within `_failover_effective_tier`).
+    """
+    workhorse_id = await _insert_catalog_entry(
+        pool,
+        alias="qa-fallthrough-workhorse",
+        model_id="qa-fallthrough-workhorse-model",
+        complexity_tier="workhorse",
+        priority=10,
+    )
+    await _insert_catalog_entry(
+        pool,
+        alias="qa-fallthrough-cheap",
+        model_id="qa-fallthrough-cheap-model",
+        complexity_tier="cheap",
+        priority=10,
+    )
+    await _insert_limits(pool, catalog_entry_id=workhorse_id, limit_24h=100)
+    await _insert_ledger_row(pool, catalog_entry_id=workhorse_id, input_tokens=100, output_tokens=0)
+
+    with pytest.raises(TierQuotaExhausted) as exc_info:
+        await resolve_model_with_effective_tier(
+            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=True, quota_aware=True
+        )
+    assert exc_info.value.effective_tier == "workhorse"
+    assert exc_info.value.representative[1] == "qa-fallthrough-workhorse-model"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_quota_unaware_default_ignores_quota_ok_column(pool: asyncpg.Pool) -> None:
+    """Regression guard: quota_aware defaults to False and quota status never filters selection.
+
+    Every existing caller of resolve_model / resolve_model_with_effective_tier (Models tab,
+    calendar quick_add, QA dispatch, healing dispatch) must be provably unaffected by the
+    quota_ok column ``_RESOLVE_SQL`` now carries -- a fully quota-exhausted entry is still
+    resolved normally when quota_aware is left at its default.
+    """
+    entry_id = await _insert_catalog_entry(
+        pool, alias="qa-default-ignored", model_id="qa-default-ignored-model", priority=10
+    )
+    await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=1)
+    await _insert_ledger_row(pool, catalog_entry_id=entry_id, input_tokens=999, output_tokens=0)
+
+    # resolve_model: never raises, never filters on quota.
+    via_resolve_model = await resolve_model(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert via_resolve_model is not None
+    assert str(via_resolve_model[3]) == entry_id
+
+    # resolve_model_with_effective_tier default (quota_aware unset): same behavior.
+    default_result = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert default_result is not None
+    assert str(default_result[3]) == entry_id
+
+    # Explicit quota_aware=False: identical.
+    explicit_false = await resolve_model_with_effective_tier(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=False
+    )
+    assert explicit_false == default_result
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_routing_cache_masks_a_new_candidate_until_cleared(pool: asyncpg.Pool) -> None:
+    """A cache hit serves the stale-but-still-valid candidate set within the TTL window.
+
+    Documents the accepted staleness bound this cache trades for fewer round trips:
+    a second, higher-priority candidate added right after the first resolve is not seen
+    until the cache is cleared (in production: until the short TTL elapses).
+    """
+    await _insert_catalog_entry(
+        pool, alias="cache-first", model_id="cache-first-model", priority=10
+    )
+    first = await resolve_model(pool, "cache-butler", Complexity.WORKHORSE)
+    assert first is not None and first[1] == "cache-first-model"
+
+    await _insert_catalog_entry(
+        pool, alias="cache-second", model_id="cache-second-model", priority=100
+    )
+    still_cached = await resolve_model(pool, "cache-butler", Complexity.WORKHORSE)
+    assert still_cached is not None and still_cached[1] == "cache-first-model", (
+        "Expected the cached (now stale) candidate set within the TTL window"
+    )
+
+    model_routing_module.clear_routing_decision_cache()
+    fresh = await resolve_model(pool, "cache-butler", Complexity.WORKHORSE)
+    assert fresh is not None and fresh[1] == "cache-second-model"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_routing_cache_round_robin_counter_still_increments_on_cache_hit(
+    pool: asyncpg.Pool,
+) -> None:
+    """The round-robin counter increments every call even when candidate rows are cached.
+
+    The counter increment was split out of the cached candidate-resolution query
+    specifically so caching never masks this: several pre-existing tests
+    (test_resolve_round_robin, test_empty_tier_fallthrough_does_not_increment_skipped_counters)
+    depend on it incrementing exactly once per logical resolve_model call.
+    """
+    await _insert_catalog_entry(pool, alias="rr-cache-only", model_id="rr-cache-model", priority=10)
+
+    for _ in range(3):
+        r = await resolve_model(pool, "rr-cache-butler", Complexity.WORKHORSE)
+        assert r is not None and r[1] == "rr-cache-model"
+
+    row = await pool.fetchrow(
+        "SELECT counter FROM public.model_round_robin_counters "
+        "WHERE butler_name = $1 AND complexity_tier = 'workhorse'",
+        "rr-cache-butler",
+    )
+    assert row is not None and row["counter"] == 2, (
+        "Expected the counter to increment on all 3 calls (0, 1, 2) despite the "
+        "candidate row set being served from cache after the first"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_routing_cache_never_used_by_quota_aware_resolution(pool: asyncpg.Pool) -> None:
+    """quota_aware=True always sees a newly-added candidate immediately -- never cached."""
+    await _insert_catalog_entry(
+        pool, alias="qa-cache-first", model_id="qa-cache-first-model", priority=10
+    )
+    first = await resolve_model_with_effective_tier(
+        pool, "qa-cache-butler", Complexity.WORKHORSE, quota_aware=True
+    )
+    assert first is not None and first[1] == "qa-cache-first-model"
+
+    await _insert_catalog_entry(
+        pool, alias="qa-cache-second", model_id="qa-cache-second-model", priority=100
+    )
+    second = await resolve_model_with_effective_tier(
+        pool, "qa-cache-butler", Complexity.WORKHORSE, quota_aware=True
+    )
+    assert second is not None and second[1] == "qa-cache-second-model", (
+        "quota_aware=True must never serve a cached (potentially quota-stale) answer"
+    )

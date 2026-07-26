@@ -64,6 +64,7 @@ from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
     Complexity,
+    TierQuotaExhausted,
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
@@ -978,6 +979,63 @@ class Spawner:
                     warmed_now,
                 )
 
+    def _fire_speculative_prewarm(self, *, resolved_runtime_type: str, trigger_source: str) -> None:
+        """Fire-and-forget prewarm kicked off from the routing/classification decision.
+
+        Slice 4 of bu-ep4ks.13's follow-up (bu-k9te9): MCP/codex warmup previously ran
+        lazily on the spawn critical path even though the resolved runtime_type (this
+        dispatch's "classification decision") was already known well before invocation.
+        This is called as soon as that decision settles -- immediately after model
+        resolution and any spend-rule override, well before the permission/quota/ceiling
+        gates, provider-config resolution, system-prompt/situational-context/memory-context
+        fetches, and credential/env building that ``_run`` still has to do regardless. By
+        the time ``_run`` reaches its own on-path warmup calls (``_ensure_mcp_endpoints_warmed``
+        here, and ``CodexAdapter.invoke()``'s pre-warm check), this task has typically
+        already finished, so those on-path calls become no-ops (cache hits) instead of
+        real work.
+
+        STRICTLY off the critical path:
+        - Never awaited by the caller (``asyncio.create_task``, fire-and-forget).
+        - Every operation inside is independently wrapped and swallows its own
+          exceptions -- a prewarm failure can, at worst, leave the LATER on-path warmup
+          calls doing the same real work they would have done anyway; it can never fail,
+          delay, or alter the dispatch itself.
+        - Writes no ``public.model_dispatch_attempts`` provenance -- this is plumbing
+          warmup, not a dispatch attempt, and must never appear on that trail.
+        - Uses only the butler's own base MCP URL (no runtime_session_id query param,
+          which is not yet minted this early) -- ``_ensure_mcp_endpoints_warmed``
+          normalizes to scheme://netloc/path before deduping
+          (``_normalize_mcp_warmup_url``), so the later on-path call's fully-qualified
+          URL still matches this entry in ``self._warmed_mcp_urls``.
+        """
+
+        async def _prewarm() -> None:
+            if trigger_source not in ("healing", "qa"):
+                # healing/qa sessions never attach MCP servers (see the mirrored
+                # condition in _run); nothing to speculatively warm for them.
+                try:
+                    await self._ensure_mcp_endpoints_warmed(
+                        {self._config.name: {"url": runtime_mcp_url(self._config.port)}}
+                    )
+                except Exception:
+                    logger.debug(
+                        "Speculative MCP warmup failed for butler=%s (non-fatal)",
+                        self._config.name,
+                        exc_info=True,
+                    )
+            try:
+                adapter = self._get_or_create_adapter(resolved_runtime_type)
+                await adapter.speculative_prewarm()
+            except Exception:
+                logger.debug(
+                    "Speculative runtime prewarm failed for butler=%s runtime_type=%s (non-fatal)",
+                    self._config.name,
+                    resolved_runtime_type,
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_prewarm())
+
     async def _run(
         self,
         prompt: str,
@@ -1030,11 +1088,30 @@ class Spawner:
         fallback_runtime_type = DEFAULT_RUNTIME_TYPE
         fallback_model = _FALLBACK_MODEL_ID
         catalog_result = None
+        # ---------------------------------------------------------------------------
+        # Quota gate fold (bu-ep4ks.13 follow-up / bu-k9te9): quota_aware=True folds
+        # the pre-spawn token-quota check for the top-priority tier candidate into
+        # this same round trip (see resolve_model_with_effective_tier's docstring for
+        # the exact equivalence argument). True whenever the fold could PROVE the
+        # winning tier's top-priority candidate(s) all have quota headroom -- in that
+        # case the sequential check_token_quota/next_same_tier_candidate loop below is
+        # entirely skipped as redundant. Left False (the pre-fold, always-run-the-loop
+        # behavior) whenever the fold could not prove that: TierQuotaExhausted was
+        # raised (a top-priority candidate is quota-blocked; catalog_result gets the
+        # quota-unaware tie-break winner instead, i.e. exactly what a quota_aware=False
+        # call would have returned), or a spend rule reroutes the model afterward (the
+        # fold's quota_ok data applies to the pre-rule candidate, not the rule's
+        # target).
+        _initial_quota_confirmed = False
         if self._pool is not None:
             try:
                 catalog_result = await resolve_model_with_effective_tier(
-                    self._pool, self._config.name, complexity
+                    self._pool, self._config.name, complexity, quota_aware=True
                 )
+                _initial_quota_confirmed = catalog_result is not None
+            except TierQuotaExhausted as _quota_exc:
+                catalog_result = _quota_exc.representative
+                _initial_quota_confirmed = False
             except Exception:
                 logger.debug(
                     "Catalog model resolution failed for butler=%s complexity=%s; "
@@ -1080,6 +1157,24 @@ class Spawner:
             catalog_timeout_s = None
             resolution_source = "static_fallback"
 
+        # ---------------------------------------------------------------------------
+        # Ceiling gate fold (bu-ep4ks.13 follow-up / bu-k9te9): kick off the monthly
+        # spend-ceiling fetch CONCURRENTLY with the permission check and quota gate
+        # below, instead of sequentially after they finish (the old position). The
+        # ceiling is a GLOBAL, model-independent budget (see check_monthly_ceiling's
+        # docstring), so which candidate ultimately gets dispatched never changes
+        # whether/when this fetch is safe to start -- only WHEN its two-round-trip
+        # result (public.spend_ceiling row + priced MTD ledger usage) becomes
+        # available changes. The DENY decision itself stays exactly where it was
+        # (evaluated after the quota gate settles, against the final resolved
+        # catalog_entry_id) -- this task is only awaited there, not consulted early.
+        # Gated on catalog_entry_id is not None to match the existing ceiling gate's
+        # own gating (static_fallback never touches the catalog tables), so no new
+        # query fires on a path that previously issued none.
+        _ceiling_task: asyncio.Task | None = None
+        if catalog_entry_id is not None and self._pool is not None:
+            _ceiling_task = asyncio.create_task(check_monthly_ceiling(self._pool))
+
         logger.debug(
             "Model resolution: butler=%s complexity=%s source=%s runtime_type=%s model=%s",
             self._config.name,
@@ -1115,6 +1210,13 @@ class Spawner:
         # honor the rule and record the fact on the dispatch-attempt trail
         # (below, once effective_request_id is minted) rather than excluding it.
         _spend_rule_breaker_open = None
+        # Did a spend rule actually change the resolved catalog entry? Tracked so the
+        # quota-gate fold below knows its quota_ok guarantee (computed for the
+        # PRE-rule candidate) no longer applies once the model changes underneath it,
+        # and must fall back to the sequential quota loop for the rule-selected model
+        # -- exactly the pre-fold behavior, since the old code always quota-checked
+        # whatever apply_spend_routing_rules produced.
+        _pre_rule_catalog_entry_id = catalog_entry_id
         if catalog_entry_id is not None and self._pool is not None:
             try:
                 _routing_result = await apply_spend_routing_rules(
@@ -1147,6 +1249,17 @@ class Spawner:
                     model,
                     exc_info=True,
                 )
+        _spend_rule_fired = catalog_entry_id != _pre_rule_catalog_entry_id
+
+        # Speculative prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4): the runtime_type
+        # this dispatch will use is now fully settled (post spend-rule override), regardless
+        # of whether resolution came from the catalog or the static TOML fallback. Fire the
+        # warmup speculatively here -- fire-and-forget, off the critical path -- so it
+        # overlaps with the permission/quota/ceiling gates and pre-invocation context
+        # fetches below instead of only starting right before the actual invoke() call.
+        self._fire_speculative_prewarm(
+            resolved_runtime_type=resolved_runtime_type, trigger_source=trigger_source
+        )
 
         # ---------------------------------------------------------------------------
         # Same-tier failover: quota-skip loop
@@ -1232,7 +1345,15 @@ class Spawner:
                 )
                 return SpawnerResult(success=False, error=perm_msg, model=model)
 
-        if catalog_entry_id is not None and self._pool is not None:
+        # Quota-gate fold fast path (bu-ep4ks.13 follow-up / bu-k9te9): skip this
+        # sequential loop entirely when the resolve-CTE fold already proved the
+        # top-priority candidate has quota headroom AND no spend rule rerouted the
+        # model out from under that guarantee. See resolve_model_with_effective_tier's
+        # ``quota_aware`` docstring and the ``_spend_rule_fired`` comment above for the
+        # exact equivalence argument -- whenever either condition is false, this loop
+        # runs exactly as it did before the fold existed.
+        _quota_fast_path_ok = _initial_quota_confirmed and not _spend_rule_fired
+        if catalog_entry_id is not None and self._pool is not None and not _quota_fast_path_ok:
             while True:
                 quota = await check_token_quota(self._pool, catalog_entry_id)
                 if quota.allowed:
@@ -1322,7 +1443,17 @@ class Spawner:
         # check_monthly_ceiling, so a DB/pricing error never wedges spawns.
         # ---------------------------------------------------------------------------
         if catalog_entry_id is not None and self._pool is not None:
-            ceiling = await check_monthly_ceiling(self._pool)
+            # Consume the concurrently-prefetched ceiling result (kicked off right
+            # after model resolution, above) instead of issuing a fresh sequential
+            # fetch here -- same DENY decision, same inputs, just no longer paying
+            # this gate's latency serially after the quota gate. Defensive direct-call
+            # fallback in case _ceiling_task was somehow never created (should not
+            # happen given both are gated on the same condition).
+            ceiling = (
+                await _ceiling_task
+                if _ceiling_task is not None
+                else await check_monthly_ceiling(self._pool)
+            )
             if not ceiling.allowed:
                 ceiling_msg = (
                     f"{CEILING_DENIAL_REASON_PREFIX}: "

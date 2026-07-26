@@ -17,12 +17,35 @@
 ## 4. Contract and verification
 
 - [x] 4.1 `model-catalog` spec delta (MODIFIED: Priority tie-breaking scenario).
-- [ ] 4.2 Run `openspec validate --strict` on the changed specs.
+- [x] 4.2 Run `openspec validate --strict` on the changed specs.
 - [x] 4.3 Backend: ruff lint/format, targeted pytest, one full non-e2e pytest pass.
 - [x] 4.4 Frontend: eslint, full vitest, `npm run build`.
 
-## 5. Deferred (reported as follow-ups, not implemented here)
+## 5. Rest of slice 3 + slices 4-5 (bu-k9te9, follow-up to bu-ep4ks.13 / PR #3587)
 
-- [ ] 5.1 Collapse the pre-spawn gate chain (permission / quota / ceiling) into the resolve CTE (rest of slice 3).
-- [ ] 5.2 Speculative prewarm fired fire-and-forget from the classification decision, off the spawn critical path (slice 4).
-- [ ] 5.3 Bounded routing-decision cache -- routing decisions only, never act sessions or cached answers wearing freshness (slice 5).
+- [x] 5.1 Fold the quota/ceiling pre-spawn gates into the resolve CTE (rest of slice 3).
+      Token-quota gate: `resolve_model_with_effective_tier(quota_aware=True)` folds a
+      per-candidate `quota_ok` column into `_RESOLVE_SQL`; the spawner's sequential
+      `check_token_quota`/`next_same_tier_candidate` loop is skipped whenever the fold
+      proves the top-priority band has quota headroom (raises `TierQuotaExhausted`
+      otherwise, falling back to the unchanged sequential loop). Ceiling gate:
+      `check_monthly_ceiling` is kicked off concurrently (`asyncio.create_task`) with the
+      permission/quota gates instead of sequentially after them; its DENY decision still
+      fires in the same position. Permission is deliberately NOT folded — it is a
+      per-butler authorization check with no per-candidate meaning, so it stays exactly
+      where it was.
+- [x] 5.2 Speculative prewarm fired fire-and-forget from the classification decision, off the spawn critical path (slice 4).
+      `Spawner._fire_speculative_prewarm` fires as soon as the resolved runtime_type
+      settles (post spend-rule override): MCP endpoint warmup + a new
+      `RuntimeAdapter.speculative_prewarm()` hook (`CodexAdapter` override reuses the
+      existing token-refresh pre-warm, idempotent via `_prewarm_done`). Never awaited by
+      the dispatch path; every operation swallows its own exceptions; writes no
+      `model_dispatch_attempts` provenance.
+- [x] 5.3 Bounded routing-decision cache -- routing decisions only, never act sessions or cached answers wearing freshness (slice 5).
+      `_fetch_resolve_rows` serves `_RESOLVE_SQL`'s candidate rows from a short-TTL
+      (5s), size-bounded (256 entries, LRU) in-process cache for quota-unaware calls
+      only; the round-robin counter increment was split into a standalone query so it
+      still fires every call regardless of cache hit/miss. Never applied to the
+      quota-aware path, `next_same_tier_candidate`, or empty results (an empty answer is
+      exactly the state most likely to change soon). TTL-based rather than event-driven
+      invalidation — justified in `_fetch_resolve_rows`'s docstring.

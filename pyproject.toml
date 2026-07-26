@@ -168,6 +168,15 @@ filterwarnings = [
     # (xdist workers may start health servers on the same port). Tracked as a test-isolation
     # concern; the underlying connector code is correct.
     "ignore::pytest.PytestUnhandledThreadExceptionWarning",
+    # Spawner speculative prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4) fires the MCP
+    # endpoint warmup fire-and-forget via asyncio.create_task, deliberately unawaited by the
+    # dispatch path. In tests that don't mock butlers.core.mcp_warmup.warmup_mcp_urls, this
+    # is a real (fast-failing) httpx connect attempt to a localhost port with nothing
+    # listening; when the test finishes before that attempt resolves, httpx's internal
+    # connect_tcp coroutine is abandoned mid-flight. Benign in tests (no assertion depends on
+    # it) and in production (the daemon process outlives the attempt either way) -- the
+    # on-path warmup call this speculates ahead of already has its own coverage.
+    "ignore:coroutine 'connect_tcp.*' was never awaited:RuntimeWarning",
 ]
 
 [tool.coverage.run]

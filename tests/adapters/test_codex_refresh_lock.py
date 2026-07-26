@@ -28,6 +28,7 @@ from butlers.core.runtimes.codex import (
     _CODEX_TOKEN_EXPIRY_BUFFER_SECONDS,
     CodexAdapter,
     _codex_refresh_lock,
+    _maybe_speculative_codex_prewarm,
     _read_codex_token_expires_at,
     _token_needs_refresh,
     run_codex_pre_warm,
@@ -419,6 +420,182 @@ async def test_invoke_startup_prewarm_skipped_on_second_call(
         await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
 
     assert not prewarm_calls, "Pre-warm should be skipped when already done for this process"
+
+
+# ---------------------------------------------------------------------------
+# _maybe_speculative_codex_prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4)
+#
+# The spawner's fire-and-forget speculative prewarm (CodexAdapter.speculative_prewarm)
+# delegates to this same module-level helper. It must reach the identical decision
+# invoke()'s own on-path check would reach for the same on-disk state, and must be
+# fully idempotent with it via the shared CodexAdapter._prewarm_done set.
+# ---------------------------------------------------------------------------
+
+
+async def test_speculative_prewarm_runs_when_token_stale_and_not_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stale token, not yet pre-warmed this process -> runs and marks done."""
+    codex_dir = tmp_path / ".codex"
+    _stale_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prewarm_key = str(codex_dir)
+    CodexAdapter._prewarm_done.discard(prewarm_key)
+
+    prewarm_calls = []
+
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+        prewarm_calls.append((str(codex_dir_arg), binary))
+
+    with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
+        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+
+    assert prewarm_calls == [(prewarm_key, "/usr/bin/codex")]
+    assert prewarm_key in CodexAdapter._prewarm_done
+
+
+async def test_speculative_prewarm_skipped_when_already_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Already pre-warmed this process -> no redundant call."""
+    codex_dir = tmp_path / ".codex"
+    _stale_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prewarm_key = str(codex_dir)
+    CodexAdapter._prewarm_done.add(prewarm_key)
+
+    prewarm_calls = []
+
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+        prewarm_calls.append((str(codex_dir_arg), binary))
+
+    with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
+        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+
+    assert not prewarm_calls
+
+
+async def test_speculative_prewarm_skipped_when_no_auth_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unauthenticated state (no auth.json) -> nothing to refresh, no call."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Deliberately do not create tmp_path / ".codex" / "auth.json".
+
+    prewarm_calls = []
+
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+        prewarm_calls.append((str(codex_dir_arg), binary))
+
+    with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
+        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+
+    assert not prewarm_calls
+
+
+async def test_speculative_prewarm_skipped_when_token_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh token -> no refresh needed, no call."""
+    codex_dir = tmp_path / ".codex"
+    _fresh_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    CodexAdapter._prewarm_done.discard(str(codex_dir))
+
+    prewarm_calls = []
+
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+        prewarm_calls.append((str(codex_dir_arg), binary))
+
+    with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
+        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+
+    assert not prewarm_calls
+
+
+async def test_speculative_prewarm_never_raises_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure inside the speculative prewarm must never propagate to the caller.
+
+    The spawner fires this via asyncio.create_task without awaiting or wrapping it, so an
+    unswallowed exception here would only surface as an unhandled-task-exception log line at
+    best -- but the contract ("a prewarm failure must never fail, delay, or alter dispatch")
+    is strongest when the helper itself guarantees it never raises at all.
+    """
+    codex_dir = tmp_path / ".codex"
+    _stale_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    CodexAdapter._prewarm_done.discard(str(codex_dir))
+
+    with patch(
+        "butlers.core.runtimes.codex.run_codex_pre_warm",
+        side_effect=RuntimeError("boom"),
+    ):
+        await _maybe_speculative_codex_prewarm("/usr/bin/codex")  # must not raise
+
+    # A raising pre-warm must not be recorded as done -- a later attempt (speculative or
+    # on-path) should still retry rather than silently giving up forever.
+    assert str(codex_dir) not in CodexAdapter._prewarm_done
+
+
+async def test_speculative_prewarm_makes_invoke_skip_its_own_on_path_prewarm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The idempotency guarantee the whole optimization depends on.
+
+    A speculative prewarm that ran to completion before invoke() must leave invoke()'s own
+    on-path pre-warm check with nothing to do -- otherwise the fold would just add a second
+    redundant warmup instead of eliminating the on-path one.
+    """
+    codex_dir = tmp_path / ".codex"
+    _stale_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prewarm_key = str(codex_dir)
+    CodexAdapter._prewarm_done.discard(prewarm_key)
+
+    prewarm_calls = []
+
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+        prewarm_calls.append((str(codex_dir_arg), binary))
+
+    with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
+        # Speculative prewarm runs first, exactly as the spawner's fire-and-forget task would.
+        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+        assert len(prewarm_calls) == 1
+
+        # invoke()'s own on-path pre-warm check must now find _prewarm_done already set and
+        # skip calling run_codex_pre_warm again.
+        adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(_make_ok_proc_bytes(), b""))
+        mock_proc.returncode = 0
+        with patch(_EXEC, return_value=mock_proc):
+            await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
+    assert len(prewarm_calls) == 1, "invoke() must not redundantly re-run the pre-warm"
+
+
+async def test_adapter_speculative_prewarm_delegates_to_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CodexAdapter.speculative_prewarm() (the spawner-facing hook) uses the adapter's
+    own resolved binary and reaches the same helper invoke() uses internally."""
+    codex_dir = tmp_path / ".codex"
+    _stale_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    CodexAdapter._prewarm_done.discard(str(codex_dir))
+
+    prewarm_calls = []
+
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+        prewarm_calls.append((str(codex_dir_arg), binary))
+
+    adapter = CodexAdapter(codex_binary="/opt/codex/codex")
+    with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
+        await adapter.speculative_prewarm()
+
+    assert prewarm_calls == [(str(codex_dir), "/opt/codex/codex")]
 
 
 # ---------------------------------------------------------------------------

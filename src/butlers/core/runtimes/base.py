@@ -196,6 +196,24 @@ class RuntimeAdapter(abc.ABC):
         """
         return None
 
+    async def speculative_prewarm(self) -> None:
+        """Optional fire-and-forget warmup hook, called OFF the ``invoke()`` critical path.
+
+        Speculative prewarm (bu-ep4ks.13 follow-up / bu-k9te9, slice 4): as soon as the
+        spawner knows which runtime_type it will dispatch to, it fires this speculatively
+        (``asyncio.create_task``, never awaited on the dispatch path) so any expensive
+        one-time-per-process warmup an adapter needs (e.g. ``CodexAdapter``'s token
+        refresh) has already happened by the time ``invoke()`` actually runs -- ``invoke()``
+        then finds nothing left to do on its own (already-safe, already-idempotent)
+        pre-invocation warmup check.
+
+        Default implementation is a no-op (most adapters have nothing to speculatively
+        warm). Overriding adapters MUST keep this best-effort: never raise, never block
+        meaningfully, and never write ``public.model_dispatch_attempts`` provenance -- a
+        prewarm failure must never fail, delay, or alter a real dispatch.
+        """
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Adapter registry

@@ -645,6 +645,41 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
         logger.warning("codex pre-warm: unexpected error", exc_info=True)
 
 
+async def _maybe_speculative_codex_prewarm(codex_binary: str) -> None:
+    """Best-effort, fire-and-forget codex token pre-warm (bu-ep4ks.13 follow-up / bu-k9te9).
+
+    Mirrors the exact condition ``CodexAdapter.invoke()`` uses to decide whether the
+    "first invoke() per process" pre-warm is needed (stale on-disk token, not already
+    pre-warmed this process — see ``CodexAdapter._prewarm_done``), so that when
+    ``invoke()`` actually runs it finds the SAME condition already satisfied and skips
+    its own (on-critical-path) ``run_codex_pre_warm`` call entirely. Idempotent with
+    ``invoke()``'s own check via the shared class-level ``_prewarm_done`` set — whichever
+    of the two runs first wins, the other is then a no-op.
+
+    Never raises: swallows every failure internally (mirrors ``run_codex_pre_warm``'s own
+    best-effort contract) so a caller can safely fire this via ``asyncio.create_task``
+    without awaiting or wrapping it.
+    """
+    try:
+        real_home = _resolve_canonical_home(os.environ.get("HOME", ""))
+        if real_home is None:
+            return
+        real_codex_dir = real_home / ".codex"
+        if not (real_codex_dir / "auth.json").exists():
+            # Unauthenticated state — nothing to refresh.
+            return
+        if not _token_needs_refresh(real_codex_dir):
+            return
+        prewarm_key = str(real_codex_dir)
+        if prewarm_key in CodexAdapter._prewarm_done:
+            return
+        logger.debug("codex speculative pre-warm: running (prewarm_key=%s)", prewarm_key)
+        await run_codex_pre_warm(real_codex_dir, codex_binary)
+        CodexAdapter._prewarm_done.add(prewarm_key)
+    except Exception:
+        logger.debug("codex speculative pre-warm failed (non-fatal)", exc_info=True)
+
+
 def _extract_text_field(value: Any) -> str | None:
     """Recursively extract a human-readable text field from JSON-like payloads."""
     if isinstance(value, str):
@@ -1401,6 +1436,15 @@ class CodexAdapter(RuntimeAdapter):
         if self._codex_binary is not None:
             return self._codex_binary
         return _find_codex_binary()
+
+    async def speculative_prewarm(self) -> None:
+        """Fire-and-forget token pre-warm, called OFF the ``invoke()`` critical path.
+
+        See ``RuntimeAdapter.speculative_prewarm`` for the contract this fulfills and
+        ``_maybe_speculative_codex_prewarm`` for the exact idempotent condition shared
+        with ``invoke()``'s own on-path pre-warm check.
+        """
+        await _maybe_speculative_codex_prewarm(self._get_binary())
 
     @staticmethod
     def _compose_exec_prompt(prompt: str, system_prompt: str) -> str:

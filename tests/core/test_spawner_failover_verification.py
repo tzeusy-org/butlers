@@ -43,7 +43,7 @@ from butlers.core.failover_classifier import (
     FailoverContext,
     classify_failover_eligibility,
 )
-from butlers.core.model_routing import QuotaStatus
+from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
@@ -198,6 +198,26 @@ def _catalog_fallback(
     return (runtime_type, model, [], _FALLBACK_ID, 1800)
 
 
+def _catalog_primary_quota_exhausted(
+    model: str = "primary-model",
+    runtime_type: str = DEFAULT_RUNTIME_TYPE,
+    tier: str = "workhorse",
+) -> TierQuotaExhausted:
+    """The exhaustion signal a quota_aware=True resolve raises for `_catalog_primary(...)`.
+
+    resolve_model_with_effective_tier is called with quota_aware=True by the spawner
+    (bu-ep4ks.13 follow-up / bu-k9te9), so a test whose intent is "the primary candidate is
+    quota-exhausted at resolution time" must mock the resolve call to raise this instead of
+    returning `_catalog_primary(...)` directly -- otherwise the spawner's fast path treats
+    quota as pre-confirmed and skips the check_token_quota/next_same_tier_candidate loop these
+    tests exercise entirely.
+    """
+    return TierQuotaExhausted(
+        effective_tier=tier,
+        representative=_catalog_primary(model=model, runtime_type=runtime_type, tier=tier),
+    )
+
+
 def _dispatch_rows_with_outcome(mock_pool: AsyncMock, outcome: str) -> list[tuple]:
     """Return positional args from pool.execute calls that match the given outcome."""
     rows = []
@@ -239,7 +259,7 @@ class TestQuotaSkipProvenance:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_primary(model="primary-model"),
+                side_effect=_catalog_primary_quota_exhausted(model="primary-model"),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -282,7 +302,7 @@ class TestQuotaSkipProvenance:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_primary(model="primary-model"),
+                side_effect=_catalog_primary_quota_exhausted(model="primary-model"),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -340,7 +360,9 @@ class TestExhaustedQuota:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=_catalog_primary(model="primary-model", tier="workhorse"),
+                side_effect=_catalog_primary_quota_exhausted(
+                    model="primary-model", tier="workhorse"
+                ),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",

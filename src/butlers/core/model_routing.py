@@ -12,7 +12,9 @@ Provides:
   qualify in the requested tier.
 - ``resolve_model_with_effective_tier(pool, butler_name, complexity_tier)`` — same as
   ``resolve_model`` but also returns the effective tier that produced the candidate (needed
-  for same-tier failover to stay within the resolved tier).
+  for same-tier failover to stay within the resolved tier). ``quota_aware=True`` (bu-k9te9)
+  folds the pre-spawn token-quota gate into this same round trip; see
+  ``TierQuotaExhausted`` and the function's own docstring for the exact contract.
 - ``next_same_tier_candidate(pool, butler_name, effective_tier, attempted_ids)`` — returns
   the next eligible model in an exact effective complexity tier, excluding already-attempted
   catalog entry IDs.  Used by the spawner failover loop to iterate within the same tier.
@@ -24,6 +26,11 @@ Provides:
   ``GET /api/spend/forecast`` (bu-7o89u.1) so the two can never diverge.
 - ``check_monthly_ceiling(pool)`` — pre-spawn monthly USD spend-ceiling check.
 - ``record_token_usage(pool, ...)`` — best-effort ledger INSERT.
+- Bounded routing-decision cache (bu-k9te9) — quota-unaware ``resolve_model`` /
+  ``resolve_model_with_effective_tier`` calls serve the ``_RESOLVE_SQL`` tier/breaker/
+  priority resolution from a short-TTL, size-bounded in-process cache;
+  ``clear_routing_decision_cache()`` drops it (test use). Never applies to the
+  quota-aware path, ``next_same_tier_candidate``, or any invoked session.
 
 Resolution strategy (§3.2 routing contract)
 --------------------------------------------
@@ -52,7 +59,9 @@ import dataclasses
 import enum
 import json
 import logging
+import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -213,6 +222,40 @@ class QuotaStatus:
     limit_24h: int | None
     usage_30d: int
     limit_30d: int | None
+
+
+class TierQuotaExhausted(Exception):
+    """Raised by ``resolve_model_with_effective_tier(..., quota_aware=True)``.
+
+    Signals that the winning tier had at least one breaker-ok candidate (so
+    this is NOT the "no candidates at all" condition that triggers
+    static-fallback), but the SQL-embedded quota fold (bu-ep4ks.13 follow-up,
+    "fold the quota/ceiling pre-spawn gates into the resolve CTE") could not
+    prove every top-priority candidate has quota headroom. The caller must
+    fall back to the pre-existing sequential ``check_token_quota`` +
+    ``next_same_tier_candidate`` gate loop starting from ``representative``
+    (the same tie-break winner a quota-unaware resolve would have produced)
+    rather than treating this as "resolution found nothing".
+
+    Deliberately conservative: raised whenever ANY top-priority candidate is
+    quota-blocked, even if a DIFFERENT tied peer is quota-ok — see
+    ``resolve_model_with_effective_tier``'s docstring for why the fold does
+    not attempt to pick among a mixed quota-ok/quota-blocked tie itself.
+    """
+
+    def __init__(
+        self,
+        *,
+        effective_tier: str,
+        representative: tuple[str, str, list[str], uuid.UUID, int, str],
+    ) -> None:
+        self.effective_tier = effective_tier
+        self.representative = representative
+        super().__init__(
+            f"Tier {effective_tier!r} has a quota-blocked top-priority candidate; "
+            "caller must run the sequential quota/failover gate starting from "
+            f"{representative[1]!r}"
+        )
 
 
 @dataclasses.dataclass
@@ -392,6 +435,62 @@ breaker_open AS (
             AND bool_and(br.outcome = 'runtime_failure')
             AND now() - MAX(br.ts) < interval '{_BREAKER_HALF_OPEN_COOLDOWN_MINUTES} minutes'
     )
+)
+"""
+
+
+# ---------------------------------------------------------------------------
+# Quota fold for the resolve CTE (bu-ep4ks.13 follow-up / bu-k9te9)
+# ---------------------------------------------------------------------------
+#
+# Mirrors ``_QUOTA_CHECK_SQL``'s exact boundary semantics (``>=`` blocks,
+# GREATEST(reset_at, window_start) exclusion window, "no token_limits row ==
+# unlimited" fast path) as a per-catalog-entry correlated computation, the
+# same shape as ``_BREAKER_OPEN_CTE``: one row per ``public.model_catalog``
+# entry (bounded, small, catalog-sized -- not a scan of
+# ``token_usage_ledger``), each deciding its own quota_ok via two correlated
+# subqueries scoped by ``catalog_entry_id`` (index-bound via
+# ``idx_ledger_entry_time (catalog_entry_id, recorded_at)``, created in
+# core_004 alongside the table).
+#
+# This CTE answers "does this entry currently have quota headroom" -- it does
+# NOT decide selection. ``_RESOLVE_SQL`` only uses it to annotate rows; the
+# quota-aware callers (``resolve_model_with_effective_tier(quota_aware=True)``)
+# decide what to do with the annotation. A LEFT JOIN means an entry with no
+# ``token_limits`` row gets ``quota_ok = true`` (both limit checks are NULL,
+# so neither can trip), identical to ``check_token_quota``'s fast path.
+_QUOTA_OK_CTE = """
+quota_ok_candidates AS (
+    SELECT
+        mc.id AS catalog_entry_id,
+        NOT (
+            (
+                tl.limit_24h IS NOT NULL
+                AND (
+                    SELECT COALESCE(SUM(tul.input_tokens + tul.output_tokens), 0)
+                    FROM public.token_usage_ledger tul
+                    WHERE tul.catalog_entry_id = mc.id
+                      AND tul.recorded_at > GREATEST(
+                          COALESCE(tl.reset_24h_at, '-infinity'::timestamptz),
+                          now() - interval '24 hours'
+                      )
+                ) >= tl.limit_24h
+            )
+            OR (
+                tl.limit_30d IS NOT NULL
+                AND (
+                    SELECT COALESCE(SUM(tul.input_tokens + tul.output_tokens), 0)
+                    FROM public.token_usage_ledger tul
+                    WHERE tul.catalog_entry_id = mc.id
+                      AND tul.recorded_at > GREATEST(
+                          COALESCE(tl.reset_30d_at, '-infinity'::timestamptz),
+                          now() - interval '30 days'
+                      )
+                ) >= tl.limit_30d
+            )
+        ) AS quota_ok
+    FROM public.model_catalog mc
+    LEFT JOIN public.token_limits tl ON tl.catalog_entry_id = mc.id
 )
 """
 
@@ -797,23 +896,41 @@ async def get_routing_scores(
 #                   a stable round-robin row number (created_at ASC, id ASC tie-break).
 # 5. evidence:      Recent success/failure counts + duration percentiles for exactly
 #                   these candidates (id-bound, index-friendly — see ``_evidence_cte``).
-# 6. next_counter:  INSERT...SELECT from `winning` — fires ONLY when a winning tier
-#                   exists, so empty-tier fallthrough attempts never increment any
-#                   counter.  Atomically increments the per-(butler, tier) counter.
-# 7. Final SELECT:  Returns ALL tied top-priority candidates (not a single winner) —
+# 6. Final SELECT:  Returns ALL tied top-priority candidates (not a single winner) —
 #                   the caller (``resolve_model``) picks by evidence-based score
 #                   (bu-ep4ks.13) when at least two candidates have sufficient recent
 #                   evidence, else falls back to the original ``rn == counter % total``
-#                   round-robin index carried on every row. The common case (exactly
-#                   one top-priority candidate) returns exactly one row either way.
+#                   round-robin index. The common case (exactly one top-priority
+#                   candidate) returns exactly one row either way.
 #
 # Returns rows of: (runtime_type, model_id, extra_args, id, session_timeout_s,
-# effective_tier, rn, total, rr_counter, success_count, failure_count,
-# p50_duration_ms, p95_duration_ms). Returns no rows when no qualifying model
-# exists in any provided tier.
+# effective_tier, rn, total, success_count, failure_count, p50_duration_ms,
+# p95_duration_ms, quota_ok). Returns no rows when no qualifying model exists in
+# any provided tier.
+#
+# ``quota_ok`` (bu-ep4ks.13 follow-up / bu-k9te9): per-row annotation from
+# ``_QUOTA_OK_CTE`` -- does NOT affect ``winning``/``candidates`` narrowing
+# (tier-fallthrough and priority selection stay governed by breaker/enabled
+# state only, exactly as before this column existed). Quota-aware callers
+# (``resolve_model_with_effective_tier(quota_aware=True)``) read this column
+# themselves to fold the pre-spawn quota gate into this same round trip
+# instead of a separate ``check_token_quota`` call; quota-unaware callers
+# (``resolve_model``, and ``resolve_model_with_effective_tier`` by default)
+# ignore it, so their behavior is provably unchanged (see each function's
+# docstring for the equivalence argument).
+#
+# The round-robin counter increment (formerly an inline ``next_counter`` CTE here)
+# moved to a standalone query, ``_ROUTING_COUNTER_INCREMENT_SQL`` (bu-k9te9, slice 5):
+# the bounded routing-decision cache below can skip re-running THIS query on a cache
+# hit, but the counter must still increment on every logical resolution call (several
+# existing tests pin the counter's raw value, e.g. incrementing 0/1/2 across three
+# calls even with a single, uncontested candidate) -- so callers always issue the
+# counter increment separately, unconditional of cache hit/miss. See
+# ``resolve_model``/``resolve_model_with_effective_tier`` for the call sequence.
 _RESOLVE_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
+{_QUOTA_OK_CTE},
 tier_order AS (
     SELECT t.tier, t.ord
     FROM unnest($2::text[]) WITH ORDINALITY AS t(tier, ord)
@@ -828,10 +945,13 @@ all_candidates AS (
         mc.created_at,
         COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
         COALESCE(bmo.priority, mc.priority) AS effective_priority,
-        t.ord AS tier_ord
+        t.ord AS tier_ord,
+        COALESCE(qoc.quota_ok, true) AS quota_ok
     FROM public.model_catalog mc
     LEFT JOIN public.butler_model_overrides bmo
         ON bmo.catalog_entry_id = mc.id AND bmo.butler_name = $1
+    LEFT JOIN quota_ok_candidates qoc
+        ON qoc.catalog_entry_id = mc.id
     JOIN tier_order t
         ON COALESCE(bmo.complexity_tier, mc.complexity_tier) = t.tier
     WHERE COALESCE(bmo.enabled, mc.enabled) = true
@@ -853,6 +973,7 @@ candidates AS (
         ac.id,
         ac.session_timeout_s,
         ac.effective_tier,
+        ac.quota_ok,
         ROW_NUMBER() OVER (ORDER BY ac.created_at ASC, ac.id ASC) - 1 AS rn,
         COUNT(*) OVER () AS total
     FROM all_candidates ac
@@ -875,24 +996,35 @@ evidence AS (
       AND outcome IN ('success', 'runtime_failure')
       AND ts > now() - interval '{_EVIDENCE_WINDOW_DAYS} days'
     GROUP BY catalog_entry_id
-),
-next_counter AS (
-    INSERT INTO public.model_round_robin_counters
-        (butler_name, complexity_tier, counter, updated_at)
-    SELECT $1, w.effective_tier, 0, now() FROM winning w
-    ON CONFLICT (butler_name, complexity_tier)
-    DO UPDATE SET
-        counter = public.model_round_robin_counters.counter + 1,
-        updated_at = now()
-    RETURNING counter
 )
 SELECT
     c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s, c.effective_tier,
-    c.rn, c.total, nc.counter AS rr_counter,
-    e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms
+    c.rn, c.total,
+    e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
+    c.quota_ok
 FROM candidates c
-CROSS JOIN next_counter nc
 LEFT JOIN evidence e ON e.catalog_entry_id = c.id
+"""
+
+# Standalone round-robin counter increment (bu-k9te9, slice 5 — split out of the former
+# ``next_counter`` CTE above so the bounded routing-decision cache can skip re-running
+# the expensive candidate-resolution query on a cache hit while this cheap single-row
+# upsert still fires on every logical resolution call, exactly preserving the
+# increment-every-call contract the counter table has always had. Accepts:
+#   $1 — butler_name (text)
+#   $2 — effective_tier that won resolution (text)
+# Always increments (or seeds at 0) — callers only run this after confirming at least
+# one candidate row exists for the winning tier, matching the old CTE's implicit gating
+# (it only ever ran once ``winning`` was non-empty).
+_ROUTING_COUNTER_INCREMENT_SQL = """
+INSERT INTO public.model_round_robin_counters
+    (butler_name, complexity_tier, counter, updated_at)
+VALUES ($1, $2, 0, now())
+ON CONFLICT (butler_name, complexity_tier)
+DO UPDATE SET
+    counter = public.model_round_robin_counters.counter + 1,
+    updated_at = now()
+RETURNING counter
 """
 
 # SQL for same-tier failover candidate resolution.
@@ -1165,16 +1297,24 @@ def _get_cached_pricing() -> PricingConfig | None:
     return _cached_pricing
 
 
-def _select_resolved_row(rows: list[asyncpg.Record]) -> asyncpg.Record:
+def _select_resolved_row(
+    rows: list[asyncpg.Record], rr_counter: int | None = None
+) -> asyncpg.Record:
     """Pick the winning candidate row from ``_RESOLVE_SQL``'s tied top-priority set.
 
-    Every row shares the same ``rr_counter``/``total`` (one winning tier per
-    call) but carries its own ``rn`` and evidence columns. Score-based
-    selection (bu-ep4ks.13) only engages when at least two candidates have
-    sufficient recent evidence (``compute_routing_score`` returns a non-None
-    score) -- otherwise this falls back to the original ``rn == counter %
-    total`` round-robin index, so a fleet with no dispatch history yet, or a
-    single top-priority candidate, behaves exactly as before.
+    Every row shares the same ``total`` (one winning tier per call) but carries its own
+    ``rn`` and evidence columns. Score-based selection (bu-ep4ks.13) only engages when at
+    least two candidates have sufficient recent evidence (``compute_routing_score``
+    returns a non-None score) -- otherwise this falls back to the legacy ``rn == counter
+    % total`` round-robin index, so a fleet with no dispatch history yet, or a single
+    top-priority candidate, behaves exactly as before.
+
+    ``rr_counter`` is the freshly-fetched value from ``_ROUTING_COUNTER_INCREMENT_SQL``
+    (bu-k9te9, slice 5 -- split out of ``_RESOLVE_SQL`` so the routing-decision cache can
+    skip re-running the expensive candidate query on a hit while the counter still
+    increments every call). Only read when ``len(rows) > 1`` and evidence is
+    insufficient; every single-row and evidence-decided call path ignores it, so ``None``
+    is a safe default for those callers.
     """
     if len(rows) == 1:
         return rows[0]
@@ -1201,13 +1341,115 @@ def _select_resolved_row(rows: list[asyncpg.Record]) -> asyncpg.Record:
         return best_row
 
     # Insufficient evidence to trust a score-based tie-break — legacy round robin.
-    counter = rows[0]["rr_counter"]
+    assert rr_counter is not None, (
+        "_select_resolved_row: rr_counter is required once evidence-based scoring "
+        "cannot decide a multi-row tie (see docstring)"
+    )
+    counter = rr_counter
     total = rows[0]["total"]
     target_rn = counter % total
     for row in rows:
         if row["rn"] == target_rn:
             return row
     return rows[0]  # defensive: rn/total are always consistent with len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Bounded routing-decision cache (bu-ep4ks.13 follow-up / bu-k9te9, slice 5)
+# ---------------------------------------------------------------------------
+#
+# Caches ONLY the ``_RESOLVE_SQL`` tier/breaker/priority/evidence resolution rows --
+# i.e. "which catalog entries would qualify for this (butler, tier-fallthrough-list)" --
+# never an invoked session, and never anything from the quota-aware fast path the
+# spawner's dispatch-critical gate chain uses (``resolve_model_with_effective_tier(...,
+# quota_aware=True)``, bu-k9te9 slice 3). Caching a quota-aware answer would be actively
+# wrong: token usage changes with every dispatch, so a cached "quota is fine" answer
+# could go stale within milliseconds -- exactly the "serving a cached answer as fresh
+# content" failure mode this slice must avoid. ``next_same_tier_candidate`` (post-failure
+# / quota-skip failover) is likewise never cached -- a failover decision exists
+# specifically to react to a JUST-discovered problem and must always see current state.
+#
+# Bounded size (LRU eviction, ``_ROUTING_CACHE_MAX_ENTRIES``) + a short TTL
+# (``_ROUTING_CACHE_TTL_SECONDS``). Deliberately TTL-based rather than event-driven
+# invalidation on model_catalog / butler_model_overrides / model_round_robin_counters
+# writes: those mutations are scattered across many surfaces (Models tab CRUD, override
+# edits, the breaker/evidence machinery's own writes on every dispatch attempt), and
+# wiring a reliable invalidation signal to all of them is a substantially larger, riskier
+# change than this follow-up's scope. A short TTL keeps staleness provably harmless
+# instead: it is small relative to the breaker's own half-open cooldown
+# (``_BREAKER_HALF_OPEN_COOLDOWN_MINUTES`` = 15 minutes) and to how rarely operators
+# actually edit the catalog, so a few seconds of a stale "which model(s) qualify" answer
+# costs at most a handful of dispatches briefly seeing a not-yet-updated (but still valid
+# at cache-write-time) candidate set -- never a safety violation, since no DENY decision
+# (quota, ceiling, permission) is ever served from this cache.
+#
+# One side effect worth naming: ``next_counter``'s round-robin increment is part of the
+# cached SQL round-trip, so a cache HIT does not advance the counter -- round-robin
+# fairness becomes "per TTL window" instead of "per call" for cache-hit traffic. This is
+# self-consistent (a cache hit is not a new resolution) and immaterial in practice, since
+# round-robin is only the tie-break used below the evidence-based scoring threshold.
+_ROUTING_CACHE_TTL_SECONDS = 5.0
+_ROUTING_CACHE_MAX_ENTRIES = 256
+
+# key: (butler_name, tiers_to_try) -> (rows, expires_at monotonic seconds)
+_routing_rows_cache: OrderedDict[
+    tuple[str, tuple[str, ...]], tuple[list[asyncpg.Record], float]
+] = OrderedDict()
+
+
+def clear_routing_decision_cache() -> None:
+    """Drop every cached routing-decision entry.
+
+    Not needed by production callers (the TTL alone keeps the cache correct) -- exists so
+    tests that assert on fresh-DB-state resolution results (integration tests against a
+    per-test truncated database) can guarantee they never observe another test's cached
+    rows for the same (butler_name, tier) key within the TTL window.
+    """
+    _routing_rows_cache.clear()
+
+
+async def _fetch_resolve_rows(
+    pool: asyncpg.Pool,
+    butler_name: str,
+    tiers_to_try: list[str],
+    *,
+    cache: bool = True,
+) -> list[asyncpg.Record]:
+    """Execute (or serve from the bounded TTL cache) the ``_RESOLVE_SQL`` round trip.
+
+    ``cache=False`` (used by the spawner's quota-aware pre-spawn resolve) always hits the
+    database and never reads or writes the cache -- see the module-level cache docstring
+    above for why quota-aware results must never be cached.
+
+    An empty result (no qualifying candidate in any tier) is deliberately never cached
+    either, even when ``cache=True``: "no candidates yet" is exactly the state most
+    likely to change soon (an operator enabling/adding the first entry for a butler+tier),
+    and unlike a stale "these N candidates qualify" answer -- which just means a few
+    dispatches within the TTL window pick from a not-yet-updated but still-valid set --
+    a stale empty answer would incorrectly keep forcing the static-fallback path for up to
+    the full TTL after a real fix landed.
+    """
+    if not cache:
+        return await pool.fetch(_RESOLVE_SQL, butler_name, tiers_to_try)
+
+    key = (butler_name, tuple(tiers_to_try))
+    now = time.monotonic()
+    cached = _routing_rows_cache.get(key)
+    if cached is not None:
+        rows, expires_at = cached
+        if expires_at > now:
+            _routing_rows_cache.move_to_end(key)
+            return rows
+        del _routing_rows_cache[key]
+
+    rows = await pool.fetch(_RESOLVE_SQL, butler_name, tiers_to_try)
+    if not rows:
+        return rows
+    _routing_rows_cache[key] = (rows, now + _ROUTING_CACHE_TTL_SECONDS)
+    _routing_rows_cache.move_to_end(key)
+    while len(_routing_rows_cache) > _ROUTING_CACHE_MAX_ENTRIES:
+        _routing_rows_cache.popitem(last=False)
+    return rows
 
 
 async def resolve_model(
@@ -1276,12 +1518,18 @@ async def resolve_model(
     else:
         tiers_to_try = [tier_value]
 
-    # Single query resolves across all candidate tiers, incrementing the counter
-    # only for the tier actually used.  Empty tiers never touch their counters.
-    rows = await pool.fetch(_RESOLVE_SQL, butler_name, tiers_to_try)
+    # Candidate resolution: possibly served from the bounded TTL cache (bu-ep4ks.13
+    # follow-up / bu-k9te9, slice 5 -- see _fetch_resolve_rows's docstring). The
+    # round-robin counter increment always runs fresh regardless of cache hit/miss, only
+    # for the tier actually used -- empty tiers never touch their counters (mirrors the
+    # gating the old inline next_counter CTE had via `winning`).
+    rows = await _fetch_resolve_rows(pool, butler_name, tiers_to_try)
     if not rows:
         return None
-    row = _select_resolved_row(rows)
+    rr_counter = await pool.fetchval(
+        _ROUTING_COUNTER_INCREMENT_SQL, butler_name, rows[0]["effective_tier"]
+    )
+    row = _select_resolved_row(rows, rr_counter)
 
     effective_tier = row["effective_tier"]
     if effective_tier != tier_value:
@@ -1306,6 +1554,7 @@ async def resolve_model_with_effective_tier(
     complexity_tier: Complexity | str,
     *,
     allow_tier_fallthrough: bool = True,
+    quota_aware: bool = False,
 ) -> tuple[str, str, list[str], uuid.UUID, int, str] | None:
     """Resolve the best model for a butler and return the effective tier alongside.
 
@@ -1325,6 +1574,43 @@ async def resolve_model_with_effective_tier(
     allow_tier_fallthrough:
         When True (default), fall through to the next canonical tier if no entry
         qualifies in the requested tier.
+    quota_aware:
+        When ``True`` (bu-ep4ks.13 follow-up / bu-k9te9 -- "fold the quota/
+        ceiling pre-spawn gates into the resolve CTE"), fold the pre-spawn
+        token-quota gate into this same round trip using the ``quota_ok``
+        column ``_RESOLVE_SQL`` now carries per candidate. Default ``False``
+        (unchanged quota-unaware resolution -- every existing caller other
+        than the spawner's pre-spawn gate chain keeps this default and is
+        provably unaffected, since the underlying SQL narrowing/tie-break is
+        identical either way and this parameter only changes what happens
+        with the new ``quota_ok`` column in Python).
+
+        Semantics when ``True``:
+
+        - If every top-priority candidate in the winning tier has quota
+          headroom (``quota_ok`` true for all of them), this is a pure
+          optimization: the winner is picked via the exact same tie-break as
+          ``quota_aware=False`` and returned normally. Since every candidate
+          in that tie-break's input set would have passed a
+          ``check_token_quota`` call anyway, the caller can safely skip that
+          now-redundant round trip and the resulting selection is identical.
+        - If ANY top-priority candidate is quota-blocked, this function
+          raises :class:`TierQuotaExhausted` instead of silently picking
+          among the quota-ok subset or returning ``None``. Deliberately
+          conservative: a mixed quota-ok/quota-blocked tie could pick a
+          *different* candidate than the deterministic same-tier failover
+          the caller already runs for a real quota exhaustion (``priority
+          DESC, created_at ASC, id ASC`` via ``next_same_tier_candidate``,
+          not round-robin/evidence), so this function does not try to
+          reproduce that search itself -- it hands back the quota-unaware
+          tie-break winner as ``TierQuotaExhausted.representative`` and lets
+          the caller fall back to the pre-existing, already-tested
+          sequential quota/failover loop. Returning ``None`` here would be
+          WRONG: ``None`` means "no breaker-ok candidate exists in the tier
+          at all" to every caller (triggering static-fallback to the
+          hard-coded default model) — quota exhaustion is a hard DENY, not a
+          static-fallback condition, so it must never be signaled the same
+          way.
 
     Returns
     -------
@@ -1333,6 +1619,12 @@ async def resolve_model_with_effective_tier(
         effective_tier)`` or ``None`` if no enabled entries match.
         ``effective_tier`` is the canonical tier string that produced the candidate
         (may differ from ``complexity_tier`` when tier fallthrough occurred).
+
+    Raises
+    ------
+    TierQuotaExhausted
+        Only when ``quota_aware=True`` and the winning tier has a
+        quota-blocked top-priority candidate. See ``quota_aware`` above.
     """
     if isinstance(complexity_tier, Complexity):
         tier_value = complexity_tier.value
@@ -1345,10 +1637,34 @@ async def resolve_model_with_effective_tier(
     else:
         tiers_to_try = [tier_value]
 
-    rows = await pool.fetch(_RESOLVE_SQL, butler_name, tiers_to_try)
+    # Candidate resolution: bounded TTL cache (bu-ep4ks.13 follow-up / bu-k9te9, slice 5),
+    # but NEVER for the quota-aware path -- see _fetch_resolve_rows's docstring for why.
+    # The round-robin counter increment always runs fresh regardless of cache hit/miss or
+    # quota_aware, exactly once whenever a winning tier was found (matches the old inline
+    # next_counter CTE's implicit gating via `winning`, before quota was ever consulted).
+    rows = await _fetch_resolve_rows(pool, butler_name, tiers_to_try, cache=not quota_aware)
     if not rows:
         return None
-    row = _select_resolved_row(rows)
+    rr_counter = await pool.fetchval(
+        _ROUTING_COUNTER_INCREMENT_SQL, butler_name, rows[0]["effective_tier"]
+    )
+
+    if quota_aware and not all(r["quota_ok"] for r in rows):
+        naive_row = _select_resolved_row(rows, rr_counter)
+        naive_effective_tier = naive_row["effective_tier"]
+        raise TierQuotaExhausted(
+            effective_tier=naive_effective_tier,
+            representative=(
+                naive_row["runtime_type"],
+                naive_row["model_id"],
+                _parse_extra_args(naive_row["extra_args"]),
+                naive_row["id"],
+                naive_row["session_timeout_s"],
+                naive_effective_tier,
+            ),
+        )
+
+    row = _select_resolved_row(rows, rr_counter)
 
     effective_tier = row["effective_tier"]
     if effective_tier != tier_value:

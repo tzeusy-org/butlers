@@ -22,7 +22,7 @@ import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.failover_classifier import FailoverDecision
-from butlers.core.model_routing import QuotaStatus
+from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
@@ -43,6 +43,28 @@ _QUOTA_DENIED_24H = QuotaStatus(
 )
 
 _ATTEMPTS_INSERT = "INSERT INTO public.model_dispatch_attempts"
+
+# Same 6-tuple every "primary candidate resolved" mock in this file used before the
+# resolve-CTE quota fold (bu-ep4ks.13 follow-up / bu-k9te9). resolve_model_with_effective_tier
+# is now called with quota_aware=True by the spawner, so a test whose intent is "the primary
+# candidate is quota-exhausted at resolution time" must mock the resolve call itself to raise
+# TierQuotaExhausted (as the real quota-aware fold does) rather than returning this tuple
+# directly — otherwise the spawner's fast path (see _quota_fast_path_ok in spawner.py) treats
+# quota as pre-confirmed and skips the check_token_quota/next_same_tier_candidate loop these
+# tests exercise entirely.
+_PRIMARY_RESOLVED = (
+    DEFAULT_RUNTIME_TYPE,
+    "claude-primary",
+    [],
+    _PRIMARY_ID,
+    1800,
+    "workhorse",
+)
+
+
+def _primary_quota_exhausted_at_resolve() -> TierQuotaExhausted:
+    """Build the exhaustion signal a quota_aware=True resolve raises for `_PRIMARY_RESOLVED`."""
+    return TierQuotaExhausted(effective_tier="workhorse", representative=_PRIMARY_RESOLVED)
 
 
 # ---------------------------------------------------------------------------
@@ -138,14 +160,7 @@ class TestQuotaSkipProvenance:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_primary_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -197,14 +212,7 @@ class TestQuotaSkipProvenance:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_primary_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.next_same_tier_candidate",
@@ -240,14 +248,7 @@ class TestQuotaSkipProvenance:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_primary_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.next_same_tier_candidate",
@@ -814,14 +815,7 @@ class TestDispatchAttemptBestEffort:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_primary_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -872,14 +866,7 @@ class TestLogicalSessionIdCorrelation:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_primary_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -925,14 +912,7 @@ class TestLogicalSessionIdCorrelation:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_primary_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -1104,14 +1084,7 @@ class TestAttemptIndexAccuracy:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-primary",
-                    [],
-                    _PRIMARY_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_primary_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",

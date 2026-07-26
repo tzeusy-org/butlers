@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
-from butlers.core.model_routing import QuotaStatus
+from butlers.core.model_routing import QuotaStatus, TierQuotaExhausted
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
@@ -123,6 +123,26 @@ def _quota_unlimited() -> QuotaStatus:
     return QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)
 
 
+# Same tuple every "resolved primary candidate" mock in this file used before the
+# resolve-CTE quota fold (bu-ep4ks.13 follow-up / bu-k9te9). resolve_model_with_effective_tier
+# is now called with quota_aware=True by the spawner, so a "primary candidate is
+# quota-exhausted" test must mock the resolve call to raise TierQuotaExhausted (matching what
+# the real quota-aware fold does) instead of returning this tuple directly -- otherwise the
+# spawner's fast path treats quota as pre-confirmed and never calls check_token_quota.
+_FAKE_CATALOG_RESOLVED = (
+    DEFAULT_RUNTIME_TYPE,
+    "claude-haiku",
+    [],
+    _FAKE_CATALOG_ID,
+    1800,
+    "workhorse",
+)
+
+
+def _fake_catalog_quota_exhausted_at_resolve() -> TierQuotaExhausted:
+    return TierQuotaExhausted(effective_tier="workhorse", representative=_FAKE_CATALOG_RESOLVED)
+
+
 # ---------------------------------------------------------------------------
 # Quota enforcement tests
 # ---------------------------------------------------------------------------
@@ -144,14 +164,7 @@ class TestSpawnerQuotaEnforcement:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-haiku",
-                    [],
-                    _FAKE_CATALOG_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_fake_catalog_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -176,14 +189,7 @@ class TestSpawnerQuotaEnforcement:
             patch(
                 "butlers.core.spawner.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
-                return_value=(
-                    DEFAULT_RUNTIME_TYPE,
-                    "claude-haiku",
-                    [],
-                    _FAKE_CATALOG_ID,
-                    1800,
-                    "workhorse",
-                ),
+                side_effect=_fake_catalog_quota_exhausted_at_resolve(),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
