@@ -16,11 +16,11 @@
 
 - [x] 3.1 Add the `proactive-insight-engine` spec delta (context-bus gating requirement broadened; clustering + `held_by` telemetry requirements added).
 - [x] 3.2 Run `openspec validate --strict` on the changed spec.
-- [ ] 3.3 Run backend lint/format/targeted tests and a full non-e2e pytest pass.
+- [x] 3.3 Run backend lint/format/targeted tests and a full non-e2e pytest pass.
 
-## 4. Deferred (reported as follow-up, not implemented here)
+## 4. Deferred (bu-iq8as follow-up)
 
-- [ ] 4.1 LLM one-sentence synthesis per cluster (slice 3), under the existing delivery budget.
-- [ ] 4.2 Conflict-cluster routing to the Owner Decision Desk (slice 4), integrating with `bu-ckkpz`.
-- [ ] 4.3 Hold-until-first-active briefings with hard fallback deadline + travel-day skip/defer (slice 5).
-- [ ] 4.4 Wire `entity_id`/`event_window`/`event_date` into real producer metadata (finance, travel, health, relationship) so clustering activates on production data.
+- [x] 4.1 LLM one-sentence synthesis per cluster (slice 3), under the existing delivery budget. `_synthesize_cluster_sentence()` in `broker.py`; direct-API runtime lane only, fails open, no new budget knob.
+- [ ] 4.2 Conflict-cluster routing to the Owner Decision Desk (slice 4), integrating with `bu-ckkpz`. **Still deferred** — see bu-iq8as's report: the Decision Desk convention/dashboard/cron (`bu-ckkpz.1/.2/.4`) is landed, but no runtime write path exists anywhere in this codebase for application code to file a decision bead programmatically (`bu-ckkpz.3`, the attention-ledger routing slice, remains `blocked`), and inventing one un-reviewed inside this bead was judged out of scope. Needs its own scoped design.
+- [x] 4.3 Hold-until-first-active briefings with hard fallback deadline + travel-day skip/defer (slice 5). `daily_hold_mode` in `delivery_cycle()`; windowed cron `15,45 6-11 * * *` replaces the fixed `0 8 * * *` slot.
+- [x] 4.4 Wire `entity_id`/`event_window`/`event_date` into real producer metadata so clustering activates on production data. **Partial**: health's `measurement_door.since/until` now also emits `event_window` (the recommended first target). Finance/travel/relationship producers are still unwired — follow-up.

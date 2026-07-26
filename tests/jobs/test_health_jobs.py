@@ -144,22 +144,30 @@ async def test_measurement_gap_submits_typed_door_metadata():
     pool = _RoutingPool(fetch_router)
     captured, fake = _capture_proposals()
 
+    before = datetime.now(UTC)
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
         side_effect=fake,
     ):
         health_jobs = load_roster_jobs("health")
         await health_jobs.run_insight_scan(pool)
+    after = datetime.now(UTC)
 
     gap = [candidate for candidate in captured if candidate["category"] == "measurement-gap"]
     assert len(gap) == 1
-    assert gap[0]["metadata"] == {
-        "measurement_door": {
-            "type": "weight",
-            "since": history[0].date().isoformat(),
-            "until": now.date().isoformat(),
-        }
+    metadata = gap[0]["metadata"]
+    assert metadata["measurement_door"] == {
+        "type": "weight",
+        "since": history[0].date().isoformat(),
+        "until": now.date().isoformat(),
     }
+    # bu-ep4ks.9 adoption: event_window carries the same since/until at full
+    # datetime precision (the shape broker._candidate_time_window expects).
+    # `since` (most_recent) is deterministic from the test's own `history`;
+    # `until` is the job's own internal now_utc, only bounded here.
+    assert metadata["event_window"]["start"] == history[0].isoformat()
+    event_window_end = datetime.fromisoformat(metadata["event_window"]["end"])
+    assert before <= event_window_end <= after
 
 
 async def test_adherence_symptom_correlation_submits_via_mcp_tool():
@@ -249,7 +257,13 @@ async def test_measurement_drift_correlation_submits_via_mcp_tool():
             "type": "weight",
             "since": (now - timedelta(days=8)).date().isoformat(),
             "until": now.date().isoformat(),
-        }
+        },
+        # bu-ep4ks.9 adoption: event_window mirrors since/until (min/max of
+        # `readings`) at full datetime precision, deterministic from `now`.
+        "event_window": {
+            "start": (now - timedelta(days=8)).isoformat(),
+            "end": now.isoformat(),
+        },
     }
     assert voice_lint_passes(cand["message"])
 

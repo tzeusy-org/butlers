@@ -915,7 +915,7 @@ class TestQuietHours:
 class TestDigestFormatting:
     """Digest formatting: multiple butlers contribute to a single digest message."""
 
-    def test_digest_header_labels_and_numbering(self):
+    async def test_digest_header_labels_and_numbering(self):
         """Digest starts with count header, includes butler labels, and is numbered."""
         from butlers.tools.switchboard.insight.broker import _format_digest
 
@@ -924,7 +924,7 @@ class TestDigestFormatting:
             {"origin_butler": "health", "message": "Log blood pressure"},
             {"origin_butler": "finance", "message": "Unusual spending detected"},
         ]
-        msg = _format_digest(candidates)
+        msg = await _format_digest(candidates)
         assert msg.startswith("Daily Insights (3):")
         assert "[Relationship]" in msg
         assert "[Health]" in msg
@@ -1270,7 +1270,7 @@ class TestClusteredDigest:
         clusters = _cluster_candidates(candidates)
         assert len(clusters) == 2
 
-    def test_format_digest_labels_correlated_cluster_and_keeps_singleton_numbering(self):
+    async def test_format_digest_labels_correlated_cluster_and_keeps_singleton_numbering(self):
         from butlers.tools.switchboard.insight.broker import _format_digest
 
         candidates = [
@@ -1286,7 +1286,7 @@ class TestClusteredDigest:
             },
             {"origin_butler": "health", "message": "Vaccination due", "metadata": None},
         ]
-        msg = _format_digest(candidates)
+        msg = await _format_digest(candidates)
         assert msg.startswith("Daily Insights (3):")
         assert "Correlated (2):" in msg
         assert "- [Travel] Flight to Tokyo departs Tuesday" in msg

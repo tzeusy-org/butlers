@@ -720,3 +720,223 @@ class TestFailedDeliveryLedgerRecording:
         for c in failed:
             assert c["reason"] == "delivery_error:digest boom"
             assert c["source"] == "insight"
+
+
+# ===========================================================================
+# daily_hold_mode: hold-until-first-active daily cadence (bu-ep4ks.9 slice 5)
+# ===========================================================================
+
+
+class TestDailyHoldMode:
+    """delivery_cycle(daily_hold_mode=True) only changes behaviour when the
+    cycle would otherwise be fully suppressed with no urgent candidate
+    pending: it bypasses dnd/meeting/sleeping/quiet_hours suppression once
+    the hard fallback deadline is reached, but a travel day always defers
+    regardless of the deadline. daily_hold_mode=False (the default, used by
+    every pre-slice-5 call site) must behave identically to before."""
+
+    async def _seed(self, pool, *, dedup_key: str = "health:routine:dh1:2026"):
+        await pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
+        """)
+        await _insert_candidate(pool, dedup_key=dedup_key, priority=70)
+
+    async def test_default_mode_never_bypasses_deadline(self, insight_pool):
+        """daily_hold_mode=False (default): suppressed with no urgent pending
+        stays skipped even at/after the hard fallback hour — unchanged from
+        pre-slice-5 behaviour."""
+        from butlers.tools.switchboard.insight.broker import (
+            _DAILY_HOLD_FALLBACK_UTC_HOUR,
+            delivery_cycle,
+        )
+
+        await self._seed(insight_pool)
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value="dnd"),
+        ):
+            result = await delivery_cycle(
+                insight_pool,
+                notify_fn=notify_mock,
+                now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR + 2, 0, tzinfo=UTC),
+            )
+
+        assert result["skipped"] is True
+        notify_mock.assert_not_awaited()
+
+    async def test_before_hard_deadline_still_holds(self, insight_pool):
+        """daily_hold_mode=True, before the hard fallback hour: still held,
+        exactly like the non-hold-mode suppression skip."""
+        from butlers.tools.switchboard.insight.broker import (
+            _DAILY_HOLD_FALLBACK_UTC_HOUR,
+            delivery_cycle,
+        )
+
+        await self._seed(insight_pool, dedup_key="health:routine:dh2:2026")
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value="dnd"),
+        ):
+            result = await delivery_cycle(
+                insight_pool,
+                notify_fn=notify_mock,
+                daily_hold_mode=True,
+                now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR - 1, 0, tzinfo=UTC),
+            )
+
+        assert result["skipped"] is True
+        notify_mock.assert_not_awaited()
+        row = await insight_pool.fetchrow(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'health:routine:dh2:2026'"
+        )
+        assert row["status"] == "pending"
+
+    async def test_hard_deadline_bypasses_dnd_suppression(self, insight_pool):
+        """daily_hold_mode=True, at/after the hard fallback hour: a dnd-held
+        routine digest is force-delivered rather than skipped for the day."""
+        from butlers.tools.switchboard.insight.broker import (
+            _DAILY_HOLD_FALLBACK_UTC_HOUR,
+            delivery_cycle,
+        )
+
+        await self._seed(insight_pool, dedup_key="health:routine:dh3:2026")
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value="dnd"),
+        ):
+            result = await delivery_cycle(
+                insight_pool,
+                notify_fn=notify_mock,
+                daily_hold_mode=True,
+                now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR, 0, tzinfo=UTC),
+            )
+
+        assert result["skipped"] is False
+        notify_mock.assert_awaited_once()
+        row = await insight_pool.fetchrow(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'health:routine:dh3:2026'"
+        )
+        assert row["status"] == "delivered"
+
+    async def test_travel_day_defers_even_past_hard_deadline(self, insight_pool):
+        """daily_hold_mode=True with `traveling` as the suppressing signal:
+        never force-delivered by the hard fallback deadline, unlike
+        dnd/meeting/sleeping/quiet_hours."""
+        from butlers.tools.switchboard.insight.broker import (
+            delivery_cycle,
+        )
+
+        await self._seed(insight_pool, dedup_key="health:routine:dh4:2026")
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value="traveling"),
+        ):
+            result = await delivery_cycle(
+                insight_pool,
+                notify_fn=notify_mock,
+                daily_hold_mode=True,
+                now=datetime(2026, 1, 15, 23, 0, tzinfo=UTC),
+            )
+
+        assert result["skipped"] is True
+        notify_mock.assert_not_awaited()
+        row = await insight_pool.fetchrow(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'health:routine:dh4:2026'"
+        )
+        assert row["status"] == "pending"
+
+    async def test_travel_day_defer_ledger_reason(self, insight_pool):
+        """The travel-day defer records its own distinct reason/held_by,
+        separate from the generic context_bus:traveling suppression reason."""
+        from butlers.tools.switchboard.insight.broker import (
+            _DAILY_HOLD_FALLBACK_UTC_HOUR,
+            delivery_cycle,
+        )
+
+        await self._seed(insight_pool, dedup_key="health:routine:dh5:2026")
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                new=AsyncMock(return_value="traveling"),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.record_attention_event",
+                new=AsyncMock(return_value="fake-id"),
+            ) as ledger_mock,
+        ):
+            result = await delivery_cycle(
+                insight_pool,
+                notify_fn=notify_mock,
+                daily_hold_mode=True,
+                now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR, 0, tzinfo=UTC),
+            )
+
+        assert result["skipped"] is True
+        ledger_mock.assert_awaited_once()
+        _, kwargs = ledger_mock.call_args
+        assert kwargs["outcome"] == "suppressed"
+        assert kwargs["reason"] == "travel_day_defer"
+        assert kwargs["metadata"] == {"held_by": "traveling"}
+
+    async def test_urgent_candidate_still_bypasses_on_travel_day(self, insight_pool):
+        """An urgent (priority>=90) candidate is delivered on a travel day
+        exactly as it would be for any other suppressing signal — travel-day
+        defer only changes the no-urgent-pending fallback path."""
+        from butlers.tools.switchboard.insight.broker import (
+            _DAILY_HOLD_FALLBACK_UTC_HOUR,
+            delivery_cycle,
+        )
+
+        await self._seed(insight_pool, dedup_key="health:routine:dh6:2026")
+        await _insert_candidate(insight_pool, dedup_key="health:urgent:dh6:2026", priority=95)
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value="traveling"),
+        ):
+            result = await delivery_cycle(
+                insight_pool,
+                notify_fn=notify_mock,
+                daily_hold_mode=True,
+                now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR, 0, tzinfo=UTC),
+            )
+
+        assert result["skipped"] is False
+        notify_mock.assert_awaited_once()
+        urgent_row = await insight_pool.fetchrow(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'health:urgent:dh6:2026'"
+        )
+        routine_row = await insight_pool.fetchrow(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'health:routine:dh6:2026'"
+        )
+        assert urgent_row["status"] == "delivered"
+        assert routine_row["status"] == "pending"
+
+    async def test_no_suppression_daily_hold_mode_delivers_normally(self, insight_pool):
+        """daily_hold_mode=True has no effect when the cycle isn't
+        suppressed at all."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await self._seed(insight_pool, dedup_key="health:routine:dh7:2026")
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await delivery_cycle(
+                insight_pool,
+                notify_fn=notify_mock,
+                daily_hold_mode=True,
+                now=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+            )
+
+        assert result["skipped"] is False
+        notify_mock.assert_awaited_once()

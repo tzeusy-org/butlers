@@ -26,9 +26,10 @@ class InsightBrokerModule(Module):
 
     This module wires the Switchboard's insight broker into the MCP server,
     enabling downstream butlers to propose insight candidates for delivery.
-    The insight-delivery-cycle scheduled job (cron ``0 8 * * *``) orchestrates
-    the delivery pipeline — filtering, deduplication, budget enforcement, and
-    notification dispatch.
+    The insight-delivery-cycle scheduled job (windowed cron
+    ``15,45 6-11 * * *`` — hold-until-first-active daily cadence, bu-ep4ks.9
+    slice 5) orchestrates the delivery pipeline — filtering, deduplication,
+    budget enforcement, and notification dispatch.
     """
 
     def __init__(self) -> None:

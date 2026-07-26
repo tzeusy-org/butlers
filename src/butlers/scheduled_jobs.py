@@ -234,12 +234,19 @@ async def _run_switchboard_insight_delivery_cycle_job(
 
     Builds the production notify_fn from the pool so that delivery_cycle
     actually dispatches candidates via the Switchboard's notification path.
+
+    Runs with ``daily_hold_mode=True`` (bu-ep4ks.9 slice 5): the schedule
+    entry for this job is a windowed cron (several ticks across the
+    morning, see ``roster/switchboard/butler.toml``) rather than a single
+    fixed 08:00 UTC slot, so the digest holds until the owner is first not
+    suppressed (or a hard fallback deadline passes) instead of firing
+    regardless of whether the owner is reachable yet.
     """
     del job_args
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
     notify_fn = _build_switchboard_insight_notify_fn(pool)
-    return await delivery_cycle(pool, notify_fn=notify_fn)
+    return await delivery_cycle(pool, notify_fn=notify_fn, daily_hold_mode=True)
 
 
 async def _run_switchboard_insight_urgent_subcycle_job(

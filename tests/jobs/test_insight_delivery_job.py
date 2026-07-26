@@ -314,8 +314,10 @@ class TestSwitchboardInsightDeliveryJobWiring:
             *,
             notify_fn: Any = None,
             now: Any = None,
+            daily_hold_mode: bool = False,
         ) -> dict[str, Any]:
             captured["notify_fn"] = notify_fn
+            captured["daily_hold_mode"] = daily_hold_mode
             return {"skipped": False, "delivered": [], "expired": 0, "effective_budget": 1}
 
         with patch(
@@ -329,6 +331,10 @@ class TestSwitchboardInsightDeliveryJobWiring:
             "notify_fn must NOT be None — delivery would be skipped"
         )
         assert callable(captured["notify_fn"]), "notify_fn must be callable"
+        assert captured["daily_hold_mode"] is True, (
+            "the daily job must pass daily_hold_mode=True (bu-ep4ks.9 slice 5) "
+            "or the windowed cron degenerates into a plain fixed-time cycle"
+        )
 
     @pytest.mark.asyncio
     async def test_job_delivers_when_candidate_exists(self):
@@ -343,6 +349,7 @@ class TestSwitchboardInsightDeliveryJobWiring:
             *,
             notify_fn: Any = None,
             now: Any = None,
+            daily_hold_mode: bool = False,
         ) -> dict[str, Any]:
             # Simulate actual delivery by calling notify_fn
             assert notify_fn is not None

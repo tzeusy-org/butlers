@@ -110,3 +110,76 @@ without parsing the free-text `reason` field.
   quiet-hours window (not the context bus)
 - **THEN** the resulting `outcome="suppressed"` ledger row has
   `reason="quiet_hours"` and `metadata={"held_by": "quiet_hours"}`
+
+### Requirement: Best-Effort LLM Synthesis for Correlated Clusters
+The delivery cycle SHALL attempt a best-effort one-sentence LLM synthesis for
+each correlated cluster (see "Correlated-Candidate Clustering in Digest
+Formatting") with more than one member when composing a multi-candidate
+digest, rendering the synthesis inline with the cluster's `Correlated (N):`
+label on success. Synthesis SHALL use only the "cheap"
+model-catalog complexity tier resolved for the delivering butler via the
+direct-API runtime lane (`runtime_type="api"`); when that tier resolves to
+any other runtime, is unavailable, is over its token quota, times out, or
+returns a blank response, synthesis SHALL fail open and the cluster renders
+with its pre-existing plain bullet-list formatting. Synthesis SHALL NOT
+introduce a new delivery budget knob — call volume is bounded by the
+existing per-day candidate budget alone (at most one call per multi-candidate
+cluster within an already-budgeted selection).
+
+#### Scenario: Successful synthesis is rendered inline with the cluster label
+- **WHEN** a correlated cluster resolves a non-blank one-sentence LLM
+  synthesis
+- **THEN** the digest renders `Correlated (N): <sentence>` for that cluster,
+  followed by its member bullets unchanged
+
+#### Scenario: Synthesis fails open to the plain cluster label
+- **WHEN** the cheap tier resolves to a runtime other than the direct-API
+  lane, is unavailable, is over quota, times out, or returns a blank response
+- **THEN** the cluster renders as `Correlated (N):` with no inline sentence,
+  identical to digest formatting before this requirement existed
+
+#### Scenario: No new budget knob is introduced
+- **WHEN** cluster synthesis is attempted
+- **THEN** the number of synthesis calls in a cycle never exceeds the number
+  of multi-candidate clusters within that cycle's already-computed
+  `effective_budget` selection — no separate LLM-call budget setting exists
+
+### Requirement: Hold-Until-First-Active Daily Digest Cadence
+The daily (non-urgent) delivery cycle SHALL support a `daily_hold_mode` in
+which a fully suppressed cycle with no pending urgent (priority >=
+`URGENT_PRIORITY_THRESHOLD`) candidate does not unconditionally skip until
+the next scheduled daily cron slot. Instead:
+- if the active suppressing signal is `traveling`, the cycle SHALL defer the
+  routine digest entirely for that tick (`reason="travel_day_defer"`),
+  regardless of how long `traveling` has been active, and SHALL NOT
+  force-deliver it via the hard fallback deadline below;
+- otherwise (an active `dnd`, `meeting`, `sleeping`, or quiet-hours
+  suppression), the cycle SHALL bypass suppression for the full routine
+  pending set once the delivery cycle's `now` reaches the hard fallback
+  deadline (11:00 UTC), so a held digest is never silently skipped for an
+  entire day.
+
+`daily_hold_mode` has no effect on a cycle that is not suppressed, nor on the
+`urgent_only` hourly sub-cycle (which already bypasses this suppression
+consult unconditionally per RFC 0011 Amendment 1).
+
+#### Scenario: A travel day defers the routine digest without a deadline override
+- **WHEN** `daily_hold_mode=True`, the active suppressing signal is
+  `traveling`, and no urgent candidate is pending
+- **AND** the delivery cycle's `now` is past the hard fallback deadline
+- **THEN** the cycle is still skipped with `reason="travel_day_defer"` — the
+  hard fallback deadline does not force delivery on a travel day
+
+#### Scenario: The hard fallback deadline force-delivers a held routine digest
+- **WHEN** `daily_hold_mode=True`, the active suppressing signal is `dnd`,
+  `meeting`, `sleeping`, or quiet-hours, no urgent candidate is pending, and
+  the delivery cycle's `now` has reached the hard fallback deadline
+- **THEN** the cycle proceeds with the full routine pending candidate set as
+  if unsuppressed
+
+#### Scenario: Before the hard fallback deadline, a held digest keeps waiting
+- **WHEN** `daily_hold_mode=True`, a non-traveling suppressing signal is
+  active, no urgent candidate is pending, and `now` has not yet reached the
+  hard fallback deadline
+- **THEN** the cycle is skipped with the original suppression reason,
+  identical to `daily_hold_mode=False` behavior

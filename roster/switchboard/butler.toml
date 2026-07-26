@@ -61,19 +61,29 @@ cron = "*/5 * * * *"
 dispatch_mode = "job"
 job_name = "eligibility_sweep"
 
-# Proactive insight delivery — runs daily at 08:00 UTC
+# Proactive insight delivery — hold-until-first-active daily cadence
+# (bu-ep4ks.9 slice 5). Ticks every 30 minutes across a 06:15-11:45 UTC
+# window instead of a single fixed 08:00 UTC slot: delivery_cycle's
+# daily_hold_mode=True holds the digest until the owner is first not
+# suppressed by dnd/meeting/sleeping/quiet_hours, force-delivers past the
+# hard fallback deadline (11:00 UTC — the 11:15/11:45 ticks in this window
+# guarantee at least one attempt after it), and defers the whole digest on
+# a travel day. Idempotent across ticks: once a tick delivers, candidates
+# flip to status='delivered' and a later tick that morning simply finds
+# nothing pending. Offset to :15/:45 (not :00/:30) so it never lands on the
+# exact same tick as the hourly urgent sub-cycle below.
 [[butler.schedule]]
 name = "insight-delivery-cycle"
-cron = "0 8 * * *"
+cron = "15,45 6-11 * * *"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
 
 # Hourly urgent insight sub-cycle (bu-o8233, JARVIS pursuit move 8 slice 4) —
-# priority>=90 candidates must not wait for the next daily 08:00 slot. Offset
-# to :30 past the hour so it never lands on the exact same tick as the daily
-# cycle above (both would still dispatch correctly if they did — the
-# scheduler dispatches due tasks serially within one tick — but the offset
-# avoids the redundant back-to-back dispatch at 08:00).
+# priority>=90 candidates must not wait for the next daily hold-until-active
+# window (bu-ep4ks.9 slice 5). Offset to :30 past the hour so it never lands
+# on the exact same tick as the daily cycle above (both would still dispatch
+# correctly if they did — the scheduler dispatches due tasks serially within
+# one tick — but the offset avoids redundant back-to-back dispatches).
 [[butler.schedule]]
 name = "insight-urgent-subcycle"
 cron = "30 * * * *"

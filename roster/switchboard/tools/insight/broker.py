@@ -14,6 +14,7 @@ Database tables used (all in the ``public`` schema):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -866,13 +867,138 @@ def _cluster_candidates(candidates: list[dict[str, Any]]) -> list[list[dict[str,
     return [groups[root] for root in sorted(groups)]
 
 
-def _format_digest(candidates: list[dict[str, Any]]) -> str:
+# ---------------------------------------------------------------------------
+# LLM cluster synthesis (bu-ep4ks.9 slice 3 — one sentence per correlated
+# cluster, best-effort, no new budget knob)
+# ---------------------------------------------------------------------------
+
+# Only the direct-Anthropic-Messages "api" runtime lane (``butlers.core.
+# runtimes.api.ApiAdapter``) is fast/cheap enough to sit inline in a
+# scheduled delivery cycle — see that module's docstring and
+# ``roster.switchboard.tools.routing.structured_classify``'s identical gate
+# for switchboard classification (migration ``core_157`` flips a butler's
+# "cheap" catalog tier onto ``runtime_type="api"`` specifically for this
+# reason). Any other resolved runtime means no such override is configured
+# for this butler/tier — a CLI subprocess adapter (claude_code/codex/gemini/
+# opencode) pays a multi-second cold start per invocation, which is not
+# acceptable inline latency for a cron tick — so synthesis fails open
+# instead of ever spawning one.
+_SYNTHESIS_MAX_SENTENCE_CHARS = 280
+_SYNTHESIS_TIMEOUT_SECONDS = 12
+
+
+async def _synthesize_cluster_sentence(
+    pool: asyncpg.Pool,
+    cluster: list[dict[str, Any]],
+    *,
+    butler_name: str = "switchboard",
+    credential_store: Any | None = None,
+) -> str | None:
+    """Best-effort one-sentence LLM synthesis for one correlated cluster.
+
+    Deliberately reuses the EXISTING per-day candidate budget instead of
+    adding a new LLM-call budget knob: this only ever fires once per
+    multi-candidate cluster within a single cycle's already-budgeted
+    selection (``effective_budget``, itself <= ``VERBOSITY_BUDGETS["verbose"]``
+    == 5), so call volume is inherently bounded by the existing insight-count
+    budget — no separate accounting is needed.
+
+    Fails open to ``None`` on ANY error: no model resolved for the "cheap"
+    tier, a non-"api" resolved runtime, over quota, a timeout, or a blank
+    response. The caller falls back to the pre-slice-3 plain bullet list —
+    synthesis is a cosmetic enhancement, never a correctness-relevant
+    dependency of digest delivery.
+    """
+    try:
+        from butlers.core.model_routing import (
+            Complexity,
+            check_token_quota,
+            record_token_usage,
+            resolve_model_with_effective_tier,
+        )
+        from butlers.core.runtimes.base import create_adapter
+
+        catalog_result = await resolve_model_with_effective_tier(
+            pool, butler_name, Complexity.CHEAP
+        )
+        if catalog_result is None:
+            return None
+        (
+            runtime_type,
+            model_id,
+            _extra_args,
+            catalog_entry_id,
+            session_timeout_s,
+            _effective_tier,
+        ) = catalog_result
+        if runtime_type != "api":
+            return None
+
+        quota = await check_token_quota(pool, catalog_entry_id)
+        if not quota.allowed:
+            return None
+
+        bullets = "\n".join(f"- [{c.get('origin_butler', '')}] {c['message']}" for c in cluster)
+        prompt = (
+            "These notes were flagged as related. In ONE short sentence "
+            "(under 20 words), state what connects them. Respond with just "
+            "the sentence — no preamble, no quotes, no markdown.\n\n" + bullets
+        )
+        adapter = create_adapter("api", credential_store=credential_store, butler_name=butler_name)
+        text, _tool_calls, usage = await asyncio.wait_for(
+            adapter.invoke(
+                prompt,
+                "",
+                {},
+                {},
+                model=model_id,
+                timeout=min(session_timeout_s, _SYNTHESIS_TIMEOUT_SECONDS),
+            ),
+            timeout=_SYNTHESIS_TIMEOUT_SECONDS,
+        )
+
+        if usage and usage.get("input_tokens") is not None:
+            await record_token_usage(
+                pool,
+                catalog_entry_id=catalog_entry_id,
+                butler_name=butler_name,
+                session_id=None,
+                input_tokens=usage.get("input_tokens") or 0,
+                output_tokens=usage.get("output_tokens") or 0,
+                cached_input_tokens=usage.get("cache_read_input_tokens", 0) or 0,
+                cache_creation_tokens=usage.get("cache_creation_input_tokens", 0) or 0,
+                purpose="insight_cluster_synthesis",
+            )
+
+        if not text or not text.strip():
+            return None
+        sentence = text.strip().splitlines()[0].strip()
+        return sentence[:_SYNTHESIS_MAX_SENTENCE_CHARS] or None
+    except Exception:
+        logger.debug(
+            "insight-delivery-cycle: cluster synthesis failed; falling back to bullet list",
+            exc_info=True,
+        )
+        return None
+
+
+async def _format_digest(
+    candidates: list[dict[str, Any]],
+    *,
+    pool: asyncpg.Pool | None = None,
+    credential_store: Any | None = None,
+) -> str:
     """Format multiple candidates as a digest message.
 
     Candidates correlated by shared entity or overlapping event time window
     (see ``_cluster_candidates``) render as one labeled sub-group instead of
     unrelated flat bullets. Uncorrelated candidates render exactly as before
     this slice — a single numbered ``[Butler] message`` line.
+
+    When ``pool`` is given, a multi-candidate cluster gets a best-effort
+    one-sentence LLM synthesis (bu-ep4ks.9 slice 3) prepended to its
+    ``Correlated (N):`` label. ``pool=None`` (the default, matching every
+    call site before slice 3) skips synthesis entirely.
     """
     count = len(candidates)
     header = f"Daily Insights ({count}):"
@@ -885,7 +1011,15 @@ def _format_digest(candidates: list[dict[str, Any]]) -> str:
             label = f"[{butler.capitalize()}]" if butler else ""
             lines.append(f"{i}. {label} {msg}".strip())
         else:
-            lines.append(f"{i}. Correlated ({len(cluster)}):")
+            synthesis = (
+                await _synthesize_cluster_sentence(pool, cluster, credential_store=credential_store)
+                if pool is not None
+                else None
+            )
+            if synthesis:
+                lines.append(f"{i}. Correlated ({len(cluster)}): {synthesis}")
+            else:
+                lines.append(f"{i}. Correlated ({len(cluster)}):")
             for c in cluster:
                 butler = c.get("origin_butler", "")
                 msg = c["message"]
@@ -960,6 +1094,36 @@ async def get_suppressing_context_signal(
 
 
 # ---------------------------------------------------------------------------
+# Hold-until-first-active daily cadence (bu-ep4ks.9 slice 5)
+# ---------------------------------------------------------------------------
+
+# Only consulted when delivery_cycle(daily_hold_mode=True) — the cron-side
+# companion to this mode is a windowed cron (several ticks across the
+# morning) replacing the old single fixed-clock 08:00 UTC slot: instead of
+# firing once regardless of whether the owner is even reachable yet, each
+# tick asks "is the owner not currently suppressed?" and delivers on the
+# FIRST tick that says yes. Deliberately a UTC clock-hour comparison, not
+# owner-local time: every other time comparison in this module (dnd/meeting/
+# sleeping/traveling max-hold TTLs) is already relative-duration-based
+# rather than local-clock-based, and the Owner Attention Policy quiet-hours
+# check (which IS owner-local, via ``is_policy_quiet_now``) already ran
+# above this — this constant only bounds how long "hold until active" is
+# allowed to wait past whatever quiet-hours already permitted.
+_DAILY_HOLD_FALLBACK_UTC_HOUR = 11
+
+
+def _daily_hold_fallback_reached(now: datetime) -> bool:
+    """True once the hard fallback deadline for a held daily digest has
+    passed — past this point, dnd/meeting/sleeping/quiet_hours suppression
+    is bypassed so the digest is not silently skipped for the whole day.
+
+    Deliberately NOT bypassed for ``traveling`` — see the ``daily_hold_mode``
+    branch in :func:`delivery_cycle` for the travel-day skip/defer rationale.
+    """
+    return now.hour >= _DAILY_HOLD_FALLBACK_UTC_HOUR
+
+
+# ---------------------------------------------------------------------------
 # Main delivery cycle
 # ---------------------------------------------------------------------------
 
@@ -970,6 +1134,8 @@ async def delivery_cycle(
     notify_fn: Any | None = None,
     now: datetime | None = None,
     urgent_only: bool = False,
+    daily_hold_mode: bool = False,
+    credential_store: Any | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
 
@@ -1022,6 +1188,35 @@ async def delivery_cycle(
         returning, so a later daily cycle (or the next hourly tick) simply
         never sees them again — the same row-status guard the daily cycle
         already relies on.
+    daily_hold_mode:
+        bu-ep4ks.9 slice 5 — hold-until-first-active daily cadence. The
+        production cron companion replaces the old single fixed 08:00 UTC
+        slot with a windowed cron (several ticks across the morning); each
+        tick calls this with ``daily_hold_mode=True``. No new persistent
+        "already ran today" flag is needed: once a tick delivers, the
+        delivered candidates flip to ``status = 'delivered'`` (the same
+        idempotency ``urgent_only`` already relies on), so a later tick that
+        same morning simply finds nothing pending and no-ops. Only changes
+        behaviour when this cycle would otherwise be fully suppressed with
+        no urgent candidate pending (see ``get_suppressing_context_signal``):
+          - if the active suppressing signal is ``traveling``, the routine
+            digest is deferred outright (never force-delivered by the hard
+            fallback deadline below) — a home-life digest is not useful
+            mid-trip, so a travel day skips/defers rather than eventually
+            firing anyway;
+          - otherwise (dnd/meeting/sleeping/quiet_hours), suppression is
+            bypassed once :func:`_daily_hold_fallback_reached` returns True
+            for ``now`` — the hard fallback deadline — so a held digest is
+            never silently skipped for the entire day just because the
+            owner stayed unreachable past the deadline.
+        No effect when ``urgent_only=True`` (that mode skips the whole
+        suppression consult) or when this cycle isn't suppressed at all.
+    credential_store:
+        Optional ``CredentialStore`` forwarded to slice 3's cluster
+        synthesis (see ``_synthesize_cluster_sentence``) for resolving the
+        Anthropic API key when the caller's environment doesn't already
+        carry one. ``None`` falls back to the ``ANTHROPIC_API_KEY``
+        environment variable.
 
     Returns
     -------
@@ -1146,7 +1341,55 @@ async def delivery_cycle(
             pending_ids,
             URGENT_PRIORITY_THRESHOLD,
         )
-        if not urgent_rows:
+        if urgent_rows:
+            # At least one urgent candidate is pending — narrow this cycle's
+            # working set to urgent candidates only. Routine (sub-threshold)
+            # candidates remain 'pending' untouched for a later, non-suppressed
+            # cycle rather than being silently dropped.
+            logger.info(
+                "insight-delivery-cycle: suppressed (%s) but %d urgent (priority>=%d) "
+                "candidate(s) pending — bypassing suppression for those only",
+                _suppression_reason,
+                len(urgent_rows),
+                URGENT_PRIORITY_THRESHOLD,
+            )
+            pending_ids = [str(row["id"]) for row in urgent_rows]
+        elif daily_hold_mode and _suppression_signal == "traveling":
+            # Slice 5 travel-day skip/defer: a routine home-life digest is
+            # not useful mid-trip, so a travel day fully defers the digest —
+            # unlike dnd/meeting/sleeping/quiet_hours below, this is never
+            # force-delivered by the hard fallback deadline. Each windowed
+            # tick re-checks; once `traveling` clears (or its own slice-2
+            # max-hold TTL lapses), a later tick the same day can still
+            # succeed before the window closes.
+            logger.info(
+                "insight-delivery-cycle: travel day — deferring routine digest, "
+                "no urgent (priority>=%d) candidates pending",
+                URGENT_PRIORITY_THRESHOLD,
+            )
+            await record_attention_event(
+                pool,
+                origin_butler="switchboard",
+                source="insight",
+                outcome="suppressed",
+                intent="insight",
+                reason="travel_day_defer",
+                metadata={"held_by": "traveling"},
+            )
+            result["skipped"] = True
+            return result
+        elif daily_hold_mode and _daily_hold_fallback_reached(now):
+            # Hard fallback deadline reached: bypass suppression for the
+            # FULL routine pending set (not just urgent) rather than holding
+            # the digest hostage for the rest of the day. pending_ids stays
+            # as the full routine set already computed above.
+            logger.info(
+                "insight-delivery-cycle: hard fallback deadline reached (now=%s); "
+                "bypassing suppression (%s) for routine delivery",
+                now.isoformat(),
+                _suppression_reason,
+            )
+        else:
             logger.info(
                 "insight-delivery-cycle: suppressed (%s), no urgent (priority>=%d) "
                 "candidates pending — skipping",
@@ -1164,18 +1407,6 @@ async def delivery_cycle(
             )
             result["skipped"] = True
             return result
-        # At least one urgent candidate is pending — narrow this cycle's
-        # working set to urgent candidates only. Routine (sub-threshold)
-        # candidates remain 'pending' untouched for a later, non-suppressed
-        # cycle rather than being silently dropped.
-        logger.info(
-            "insight-delivery-cycle: suppressed (%s) but %d urgent (priority>=%d) "
-            "candidate(s) pending — bypassing suppression for those only",
-            _suppression_reason,
-            len(urgent_rows),
-            URGENT_PRIORITY_THRESHOLD,
-        )
-        pending_ids = [str(row["id"]) for row in urgent_rows]
 
     # Step 3: Filter by cooldown
     eligible_ids = await filter_by_cooldown(pool, pending_ids, now=now)
@@ -1240,7 +1471,9 @@ async def delivery_cycle(
     if deliver_count == 1:
         delivery_message = _format_standalone(selected[0])
     else:
-        delivery_message = _format_digest(selected)
+        delivery_message = await _format_digest(
+            selected, pool=pool, credential_store=credential_store
+        )
 
     result["delivery_message"] = delivery_message
 

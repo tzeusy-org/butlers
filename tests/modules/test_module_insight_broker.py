@@ -160,7 +160,8 @@ class TestSwitchboardButlerToml:
         assert "insight_broker" in switchboard_config.modules
 
     def test_insight_delivery_cycle_schedule_fully_wired(self, switchboard_config):
-        """insight-delivery-cycle is declared as a job dispatch with cron '0 8 * * *'."""
+        """insight-delivery-cycle is a windowed hold-until-active job dispatch
+        (bu-ep4ks.9 slice 5) with cron '15,45 6-11 * * *'."""
         from butlers.config import ScheduleDispatchMode
 
         schedule_names = [s.name for s in switchboard_config.schedules]
@@ -169,6 +170,6 @@ class TestSwitchboardButlerToml:
         schedule = next(
             s for s in switchboard_config.schedules if s.name == "insight-delivery-cycle"
         )
-        assert schedule.cron == "0 8 * * *"
+        assert schedule.cron == "15,45 6-11 * * *"
         assert schedule.dispatch_mode == ScheduleDispatchMode.JOB
         assert schedule.job_name == "insight_delivery_cycle"

@@ -113,13 +113,27 @@ _CORRELATION_ENV_PRIORITY = 50
 def _measurement_door_metadata(
     *, mtype: str, since: datetime, until: datetime
 ) -> dict[str, dict[str, str]]:
-    """Build the typed date-only chart door used by measurement insights only."""
+    """Build the typed date-only chart door used by measurement insights, plus
+    the insight-broker clustering ``event_window`` (bu-ep4ks.9 adoption —
+    health is the first producer to populate correlation metadata so
+    deterministic clustering activates on real data; see
+    ``broker._candidate_time_window`` in ``roster/switchboard/tools/insight/
+    broker.py``, which expects exactly this ``{"start": ..., "end": ...}``
+    shape). ``measurement_door`` is untouched (the frontend's date-only
+    contract, see ``frontend/src/lib/measurement-door.ts``); ``event_window``
+    carries the same ``since``/``until`` at their original full datetime
+    precision, independent of that date-only truncation.
+    """
     return {
         "measurement_door": {
             "type": mtype,
             "since": since.date().isoformat(),
             "until": until.date().isoformat(),
-        }
+        },
+        "event_window": {
+            "start": since.isoformat(),
+            "end": until.isoformat(),
+        },
     }
 
 

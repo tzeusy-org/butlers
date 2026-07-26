@@ -49,7 +49,7 @@ Source: docs/redesigns/2026-07-25-jarvis-pursuit.md (rank 9, bu-ep4ks.9).
   signal name, or `"quiet_hours"`) alongside the existing free-text
   `reason`, so "held by \<signal\>" is queryable without parsing `reason`.
 
-## Out of Scope (reported as follow-up, not implemented here)
+## Out of Scope (as of the original slices 1-2 PR #3583)
 
 - LLM one-sentence synthesis per cluster (slice 3) — needs its own budget/
   cost-accounting design under the existing delivery budget; not cheap
@@ -70,6 +70,17 @@ Source: docs/redesigns/2026-07-25-jarvis-pursuit.md (rank 9, bu-ep4ks.9).
   convention. Recommended first candidate: health's existing
   `measurement_door.since/until` metadata is already the right shape to
   remap into `event_window`.
+
+**bu-iq8as follow-up update:** slice 3, slice 5, and health's
+`event_window` adoption are now implemented (see `tasks.md` section 4).
+Slice 4 (Decision Desk conflict routing) remains deferred: the decision-bead
+convention/dashboard/cron (`bu-ckkpz.1/.2/.4`) is landed, but no runtime
+write path exists anywhere in this codebase for application code to file a
+decision bead programmatically, and `bu-ckkpz.3` (the attention-ledger
+routing slice this would most naturally build on) is still `blocked` —
+inventing an unreviewed write pattern for this bead was judged out of
+scope. Finance/travel/relationship producer adoption also remains
+unwired.
 
 ## Impact
 

@@ -415,13 +415,19 @@ async def test_measurement_gap_2x_cadence_generates_warning_candidate(provisione
         assert row["priority"] == 55
         assert "health:measurement-gap:blood_pressure" == row["dedup_key"]
         assert "blood_pressure" in row["message"]
-        assert row["metadata"] == {
-            "measurement_door": {
-                "type": "blood_pressure",
-                "since": (now - timedelta(days=16)).date().isoformat(),
-                "until": now.date().isoformat(),
-            }
+        metadata = row["metadata"]
+        assert metadata["measurement_door"] == {
+            "type": "blood_pressure",
+            "since": (now - timedelta(days=16)).date().isoformat(),
+            "until": now.date().isoformat(),
         }
+        # bu-ep4ks.9 adoption: event_window carries since/until at full
+        # datetime precision. `since` (most_recent) round-trips deterministically
+        # through Postgres; `until` is the job's own internal now_utc, so only
+        # bounded (not compared for exact equality against the test's `now`).
+        event_window = metadata["event_window"]
+        assert datetime.fromisoformat(event_window["start"]) == now - timedelta(days=16)
+        assert datetime.fromisoformat(event_window["end"]) >= now
         assert result["candidates_accepted"] == 1
 
 
@@ -1199,13 +1205,17 @@ async def test_correlation_measurement_drift_generates_candidate(provisioned_pos
         assert row["priority"] == 50
         assert row["dedup_key"].startswith("health:correlation-drift:weight:")
         assert "drift" in row["message"]
-        assert row["metadata"] == {
-            "measurement_door": {
-                "type": "weight",
-                "since": (now - timedelta(days=8)).date().isoformat(),
-                "until": now.date().isoformat(),
-            }
+        metadata = row["metadata"]
+        assert metadata["measurement_door"] == {
+            "type": "weight",
+            "since": (now - timedelta(days=8)).date().isoformat(),
+            "until": now.date().isoformat(),
         }
+        # bu-ep4ks.9 adoption: event_window mirrors since/until (min/max of the
+        # inserted readings) at full datetime precision, deterministic from `now`.
+        event_window = metadata["event_window"]
+        assert datetime.fromisoformat(event_window["start"]) == now - timedelta(days=8)
+        assert datetime.fromisoformat(event_window["end"]) == now
 
 
 async def test_correlation_measurement_drift_stable_no_candidate(provisioned_postgres_pool):
