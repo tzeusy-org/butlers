@@ -2645,3 +2645,194 @@ async def test_routing_cache_never_used_by_quota_aware_resolution(pool: asyncpg.
     assert second is not None and second[1] == "qa-cache-second-model", (
         "quota_aware=True must never serve a cached (potentially quota-stale) answer"
     )
+
+
+# ---------------------------------------------------------------------------
+# Routing evidence with NULL-duration rows (bu-ot2ug)
+# ---------------------------------------------------------------------------
+#
+# The SQL evidence CTE excludes NULL-duration rows from the p95 percentile
+# calculation but includes them in the success count. This test verifies
+# both behaviors are correct in isolation and when combined through the
+# full routing score computation.
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_routing_evidence_mixed_null_and_nonnull_duration_successes(
+    pool: asyncpg.Pool,
+) -> None:
+    """Evidence correctly excludes NULL durations from percentiles but includes in success count.
+
+    Pre-migration rows (duration_ms NULL) and post-migration rows (real duration_ms)
+    must both count toward success_count, but only post-migration rows contribute
+    to percentile calculations.
+    """
+    entry_id = await _insert_catalog_entry(
+        pool, alias="mixed-duration", model_id="mixed-model", complexity_tier="workhorse"
+    )
+
+    # Insert success rows with various duration values:
+    # - 3 pre-migration style (NULL duration)
+    for _ in range(3):
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
+        )
+    # - 2 post-migration style with concrete durations: 1000ms, 2000ms
+    await _insert_dispatch_attempt(
+        pool, catalog_entry_id=entry_id, outcome="success", duration_ms=1000
+    )
+    await _insert_dispatch_attempt(
+        pool, catalog_entry_id=entry_id, outcome="success", duration_ms=2000
+    )
+    # - 2 failures (to test failure_count is separate)
+    for _ in range(2):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+
+    # Fetch evidence for this entry
+    evidence_dict = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    evidence = evidence_dict[uuid.UUID(entry_id)]
+
+    # success_count must include ALL successes (3 NULL + 2 with durations = 5)
+    assert evidence.success_count == 5, (
+        f"Expected success_count=5 (3 NULL + 2 with durations); got {evidence.success_count}"
+    )
+
+    # failure_count counts only the runtime_failure outcomes
+    assert evidence.failure_count == 2, f"Expected failure_count=2; got {evidence.failure_count}"
+
+    # p50 should be the median of [1000, 2000] = 1500.0
+    assert evidence.p50_duration_ms == pytest.approx(1500.0), (
+        f"Expected p50=1500.0 (median of [1000, 2000]); got {evidence.p50_duration_ms}"
+    )
+
+    # p95 should be 1950.0 for [1000, 2000]
+    # PERCENTILE_CONT uses linear interpolation: position = 0.95 * (n-1) = 0.95 * 1 = 0.95
+    # Value = 1000 + 0.95 * (2000 - 1000) = 1000 + 950 = 1950.0
+    assert evidence.p95_duration_ms == pytest.approx(1950.0), (
+        f"Expected p95=1950.0 (95th percentile of [1000, 2000]); got {evidence.p95_duration_ms}"
+    )
+
+    # Compute routing score: should have sufficient data and a well-defined score
+    score = compute_routing_score(evidence, cost_usd_per_call=0.0)
+    assert score.insufficient_data is False
+    assert score.sample_count == 7, f"Expected sample_count=7 (5+2); got {score.sample_count}"
+    assert score.success_rate == pytest.approx(5 / 7), (
+        f"Expected success_rate=5/7≈0.714; got {score.success_rate}"
+    )
+    assert score.score is not None and score.score > 0, (
+        "Expected a positive score with 5 successes and 2 failures"
+    )
+    # Verify latency component is set to p95 (not p50)
+    assert score.latency_p95_ms == pytest.approx(1950.0)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_routing_evidence_only_null_duration_successes_yields_defined_score(
+    pool: asyncpg.Pool,
+) -> None:
+    """A window with only NULL-duration successes (no failures) yields a well-defined score.
+
+    Pre-migration entries may have ONLY NULL-duration successes; this must
+    not crash or produce NaN. Since both p50 and p95 will be NULL, the
+    latency component of the score should handle that gracefully.
+    """
+    entry_id = await _insert_catalog_entry(
+        pool,
+        alias="null-only-success",
+        model_id="null-only-model",
+        complexity_tier="workhorse",
+    )
+
+    # Insert 5 successes, all with NULL duration (pre-migration style only)
+    for _ in range(5):
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
+        )
+
+    # Fetch evidence
+    evidence_dict = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    evidence = evidence_dict[uuid.UUID(entry_id)]
+
+    # success_count = 5
+    assert evidence.success_count == 5
+    # failure_count = 0
+    assert evidence.failure_count == 0
+    # Both percentiles should be None (no non-NULL durations to measure)
+    assert evidence.p50_duration_ms is None
+    assert evidence.p95_duration_ms is None
+
+    # Compute routing score: must not crash or return NaN
+    score = compute_routing_score(evidence, cost_usd_per_call=0.01)
+    assert score.insufficient_data is False
+    assert score.sample_count == 5
+    assert score.success_rate == pytest.approx(1.0)
+    assert score.score is not None, "Expected a well-defined score even with NULL durations"
+    assert not any(x is None for x in [score.score, score.success_rate]), (
+        "Score components must not be None"
+    )
+    # With 100% success rate, latency_ms=0 (since both p95 and p50 are None),
+    # and non-zero cost, the score should be positive
+    assert score.score > 0
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_routing_evidence_null_durations_do_not_affect_percentile_calculation(
+    pool: asyncpg.Pool,
+) -> None:
+    """NULL-duration rows are strictly excluded from p50/p95 calculation.
+
+    This test inserts many NULL-duration successes alongside a small number of
+    non-NULL successes, and verifies the percentile is computed only over the
+    non-NULL subset, not over a 0-padded representation.
+    """
+    entry_id = await _insert_catalog_entry(
+        pool,
+        alias="null-not-padded",
+        model_id="null-not-padded-model",
+        complexity_tier="workhorse",
+    )
+
+    # Insert 10 NULL-duration successes
+    for _ in range(10):
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
+        )
+    # Insert 4 non-NULL successes: 100ms, 200ms, 300ms, 400ms
+    # Sorted: [100, 200, 300, 400]
+    # p50 (median) = (200 + 300) / 2 = 250
+    # p95 = linear interpolation at position 0.95*(4-1) = 2.85 → between 300 and 400
+    #     = 300 + 0.85*(400-300) = 300 + 85 = 385
+    for duration in [100, 200, 300, 400]:
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=duration
+        )
+
+    evidence_dict = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    evidence = evidence_dict[uuid.UUID(entry_id)]
+
+    # Total success_count must include all 14 successes
+    assert evidence.success_count == 14
+
+    # p50 should be 250.0 (median of [100, 200, 300, 400])
+    assert evidence.p50_duration_ms == pytest.approx(250.0), (
+        f"Expected p50=250.0; got {evidence.p50_duration_ms}"
+    )
+
+    # p95 for [100, 200, 300, 400]:
+    # Position = 0.95 * (4-1) = 2.85, between index 2 (300) and 3 (400)
+    # Value = 300 + 0.85 * 100 = 385
+    assert evidence.p95_duration_ms == pytest.approx(385.0), (
+        f"Expected p95≈385.0; got {evidence.p95_duration_ms}"
+    )
+
+    # Verify the score still computes correctly
+    score = compute_routing_score(evidence, cost_usd_per_call=0.0)
+    assert score.insufficient_data is False
+    assert score.sample_count == 14
+    assert score.score is not None and score.score > 0
