@@ -66,3 +66,36 @@ endpoint for the home location the atmosphere feed polls.
 - **WHEN** `PATCH /api/home/atmosphere/location` is called but no owner
   entity exists to attach the `entity_info` row to
 - **THEN** the response SHALL be `503`
+
+### Requirement: Owner Atmosphere Location Panel
+
+The dashboard SHALL make Home atmosphere location configuration discoverable
+in the Home butler's existing Devices tab, using only the current-conditions
+and location-provisioning endpoints.
+
+#### Scenario: Unconfigured or configured location
+
+- **WHEN** the panel loads `GET /api/home/atmosphere/current`
+- **THEN** it SHALL render an explicit configured or unconfigured state
+- **AND** it SHALL provide labeled, keyboard-operable native numeric inputs
+  for latitude (-90..90) and longitude (-180..180)
+- **AND** it SHALL hydrate the controlled inputs from configured coordinates
+  without overwriting an owner's in-progress edit
+
+#### Scenario: Save location without claiming a synchronous refresh
+
+- **WHEN** the owner submits valid coordinates
+- **THEN** the panel SHALL send exactly those values to
+  `PATCH /api/home/atmosphere/location`
+- **AND** it SHALL invalidate and refetch the current-conditions query
+- **AND** success copy SHALL state that the next scheduled refresh picks up
+  the change, without claiming that a refresh has completed
+
+#### Scenario: Honest degraded and error states
+
+- **WHEN** the current-conditions response is loading, stale, source-failing,
+  or unavailable, or the save request is pending or fails
+- **THEN** the panel SHALL present a semantically announced, actionable state
+- **AND** client-side range errors SHALL prevent a request
+- **AND** 422, 503, and network failures SHALL retain entered coordinates and
+  identify a useful recovery path

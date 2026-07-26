@@ -7506,6 +7506,22 @@ export interface HomeSnapshotStatus {
   newest_captured_at: string | null;
 }
 
+/** Saved location and feed health used by the Home atmosphere refresh job. */
+export interface HomeAtmosphereCurrentResponse {
+  configured: boolean;
+  latitude: number | null;
+  longitude: number | null;
+  stale: boolean;
+  source_error: boolean;
+  last_error: string | null;
+}
+
+/** Coordinates accepted by the Home atmosphere location endpoint. */
+export interface HomeAtmosphereLocationUpdate {
+  latitude: number;
+  longitude: number;
+}
+
 /** A single device entry in the home butler device inventory. */
 export interface HomeDeviceEntry {
   entity_id: string;

@@ -35,11 +35,13 @@
   healthy, degraded response shapes; location patch success/no-owner/
   validation).
 
-## 5. Deferred to follow-up beads
+## 5. Owner dashboard configuration and deferred follow-up beads
 
 - [ ] 5.1 Flight-status connector (slice 2).
 - [ ] 5.2 SimpleFIN Bridge bank feed (slice 3).
 - [ ] 5.3 Feed-vs-email reconciliation (slice 4).
-- [ ] 5.4 Dashboard settings UI panel for home location.
+- [x] 5.4 Dashboard panel for home location in the Home butler's existing
+  Devices tab: controlled numeric coordinates, honest feed health, accessible
+  loading/error/pending/success states, and scheduled-refresh wording.
 - [ ] 5.5 Consumer wiring: home pre-conditioning, health advisories, travel
   destination outlook (this change lands one proving read surface only).

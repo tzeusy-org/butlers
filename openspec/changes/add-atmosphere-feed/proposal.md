@@ -41,6 +41,11 @@ read surface only.
   - `PATCH /api/home/atmosphere/location` — owner provisioning endpoint
     (stores `home_coordinates` via the existing `upsert_owner_entity_info`
     helper).
+- **Owner dashboard configuration**: the existing Home butler Devices tab
+  exposes a controlled latitude/longitude panel backed only by those two
+  endpoints. It reports configured, unconfigured, stale, and source-error
+  states without exposing the coordinates in global settings or adding a
+  synchronous refresh action.
 
 ## Degraded-mode honesty
 
@@ -61,5 +66,3 @@ read surface only.
 - Flight-status polling (slice 2), SimpleFIN Bridge bank feed (slice 3, needs
   an owner-provisioned token), and feed-vs-email reconciliation (slice 4) are
   out of scope for this change.
-- A dashboard settings UI panel for home location (beyond the raw PATCH
-  endpoint) is not built in this change.

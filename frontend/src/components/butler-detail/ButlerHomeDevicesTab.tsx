@@ -3,15 +3,17 @@
 //
 // Devices bespoke tab for the Home butler detail page.
 //
-// Layout (4-col panel grid, 3 rows):
+// Layout (4-col panel grid, 4 rows):
 //   Row 1: KPI strip (4 cells, full width)
 //     — total devices | offline | overdue maintenance | snapshot freshness
-//   Row 2: Active devices (span 2) | Maintenance queue (span 1) | Command log (span 1)
-//   Row 3: Energy · 7d chart (span 2) | Top consumers (span 2)
+//   Row 2: Atmosphere location configuration (full width)
+//   Row 3: Active devices (span 2) | Maintenance queue (span 1) | Command log (span 1)
+//   Row 4: Energy · 7d chart (span 2) | Top consumers (span 2)
 //
 // Data hooks:
 //   useHomeSnapshotStatus, useHomeDevices, useHomeMaintenance,
-//   useHomeEnergy, useHomeEnergyTopConsumers, useHomeCommandLog
+//   useHomeEnergy, useHomeEnergyTopConsumers, useHomeCommandLog,
+//   useHomeAtmosphereCurrent, useUpdateHomeAtmosphereLocation
 //
 // No backend changes — all data comes from existing hooks.
 // ---------------------------------------------------------------------------
@@ -30,6 +32,7 @@ import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
 import { Panel, KpiCell, ErrorLine } from "@/components/butler-detail/atoms";
 import { chartColor } from "@/lib/chart-colors";
+import { HomeAtmosphereLocationPanel } from "@/components/butler-detail/HomeAtmosphereLocationPanel";
 import {
   useHomeSnapshotStatus,
   useHomeDevices,
@@ -602,6 +605,8 @@ export default function ButlerHomeDevicesTab() {
         offlineError={offlineError}
         overdueError={overdueError}
       />
+
+      <HomeAtmosphereLocationPanel />
 
       {/* Row 2: Active devices (span 2) | Maintenance (span 1) | Commands (span 1) */}
       <Panel
