@@ -2888,7 +2888,7 @@ async def refresh_day_close(
         datetime.min.time().replace(hour=12),
         tzinfo=zoneinfo.ZoneInfo(body.tz),
     ).astimezone(UTC)
-    await write_day_close_cache(
+    write_outcome = await write_day_close_cache(
         pool,
         task_name=DAY_CLOSE_TASK_NAME,
         result=result,
@@ -2929,6 +2929,8 @@ async def refresh_day_close(
     return DayCloseRefreshResponse(
         cache_key=cache_key,
         cache_built_at=new_row["cache_built_at"],
+        invalid=bool(write_outcome and write_outcome.invalid_reason),
+        invalid_reason=write_outcome.invalid_reason if write_outcome else None,
     )
 
 

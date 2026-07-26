@@ -258,6 +258,15 @@ class DayCloseRefreshResponse(BaseModel):
 
     cache_key: str
     cache_built_at: datetime
+    invalid: bool = False
+    """Whether the generated candidate failed deterministic prose admission.
+
+    Invalid candidates are contained for audit and never expose their prose or
+    provenance through this response. This is distinct from cache reuse after a
+    valid candidate and from the existing rate-limit and execution-error paths.
+    """
+    invalid_reason: str | None = None
+    """``inadmissible_prose`` or ``date_mismatch`` when ``invalid`` is true."""
 
 
 class EpisodeExplainResponse(BaseModel):
