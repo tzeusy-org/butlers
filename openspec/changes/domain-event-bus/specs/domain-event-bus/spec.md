@@ -123,3 +123,53 @@ exit silently.
   missing or names different provenance
 - **THEN** the result reports `status = "conflict"`, the existing
   unrelated task is left untouched, and no second task is created
+
+### Requirement: Dashboard Subscription Visibility
+
+The dashboard API SHALL expose read-only discovery endpoints over
+`public.butler_subscriptions` and `public.domain_event_deliveries` so a
+butler's standing subscriptions and recent fan-out deliveries are
+discoverable outside its own MCP session, mirroring
+`GET /api/delegation/ledger`'s shape for `public.delegation_ledger`. A
+query failure SHALL surface as an error response, never as a fabricated
+empty result (the fleet-wide degraded-source honesty convention).
+
+#### Scenario: Listing a butler's standing subscriptions
+
+- **WHEN** `GET /api/domain-events/subscriptions?subscriber_butler=health`
+  is called
+- **THEN** the response lists every `(subscriber_butler, event_type)` row
+  for `health`, active and inactive
+
+#### Scenario: Listing recent deliveries to a butler
+
+- **WHEN** `GET /api/domain-events/deliveries?subscriber_butler=finance`
+  is called
+- **THEN** the response lists `public.domain_event_deliveries` rows for
+  `finance` joined with each delivery's `event_type`/`source_butler`/
+  `occurred_at`, most-recent first, paginated
+
+#### Scenario: A degraded read never renders as a truthful empty list
+
+- **WHEN** the underlying query for either endpoint raises (a genuine
+  failure, not "no rows")
+- **THEN** the API returns an error response; the caller must not render
+  this the same as a legitimately empty subscription or delivery list
+
+### Requirement: Derived TTL'd Advisory Events
+
+A deterministic, recurring producer publishing a derived advisory event (one carrying its own validity window in the payload, e.g. a `valid_until` field) SHALL publish at most once per distinct occurrence of the condition it advises on.
+
+Not once per scan cycle for as long as the condition holds -- the producer uses the same state-store-memoized dedup-key discipline the deterministic context-bus producers already use for their own idempotence. This folds the "generalize the context bus to domain advisories" ecosystem idea into this bus instead of building a second parallel `public.domain_advisories` vocabulary/table alongside it.
+
+#### Scenario: An ongoing condition is not re-published every scan cycle
+
+- **WHEN** a deterministic producer re-evaluates a condition that already
+  held during its previous run (same category/state, same window)
+- **THEN** no new domain event is published for that run
+
+#### Scenario: A crossing into a new window or a changed severity re-publishes
+
+- **WHEN** the condition's dedup identity changes (e.g. a new budget
+  period window, or an escalation from `"recovering"` to `"depleted"`)
+- **THEN** a fresh domain event is published with the new payload

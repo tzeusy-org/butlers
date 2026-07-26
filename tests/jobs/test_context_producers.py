@@ -12,8 +12,10 @@ Two layers:
 
 from __future__ import annotations
 
+import json
 import shutil
-from datetime import UTC, datetime, timedelta
+import uuid
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -221,6 +223,95 @@ async def test_calendar_context_producer_malformed_provenance_retains_timed_huma
     set_context_mock.assert_awaited_once()
 
 
+async def test_travel_producer_publishes_trip_active_once_per_trip():
+    """bu-317s5 slice 2: an active trip best-effort publishes travel.trip_active,
+    memoized on the trip id via publish_domain_event_once (not on every tick)."""
+    trip_id = uuid.uuid4()
+    row = {
+        "id": trip_id,
+        "name": "Work trip",
+        "destination": "Tokyo",
+        "start_date": date(2026, 7, 20),
+        "end_date": date(2026, 7, 25),
+        "status": "active",
+    }
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=row)
+    set_context_mock = AsyncMock()
+    publish_once_mock = AsyncMock(return_value={"status": "ok", "event_id": "e1", "deliveries": []})
+
+    with (
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch(
+            "butlers.core_tools._domain_events.publish_domain_event_once",
+            new=publish_once_mock,
+        ),
+    ):
+        result = await run_travel_context_producer(pool)
+
+    assert result == {"signal": "traveling", "value": "Tokyo"}
+    publish_once_mock.assert_awaited_once()
+    kwargs = publish_once_mock.await_args.kwargs
+    assert kwargs["event_type"] == "travel.trip_active"
+    assert kwargs["source_butler"] == "travel"
+    assert kwargs["dedup_namespace"] == "travel.trip_active"
+    assert kwargs["dedup_key"] == str(trip_id)
+    assert kwargs["payload"] == {
+        "trip_id": str(trip_id),
+        "name": "Work trip",
+        "destination": "Tokyo",
+        "start_date": "2026-07-20",
+        "end_date": "2026-07-25",
+        "status": "active",
+    }
+
+
+async def test_travel_producer_swallows_publish_failure():
+    """A domain-event-bus hiccup must never break the context-bus signal write."""
+    row = {
+        "id": uuid.uuid4(),
+        "name": "Work trip",
+        "destination": "Tokyo",
+        "start_date": date(2026, 7, 20),
+        "end_date": date(2026, 7, 25),
+        "status": "active",
+    }
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=row)
+    set_context_mock = AsyncMock()
+
+    with (
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch(
+            "butlers.core_tools._domain_events.publish_domain_event_once",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ),
+    ):
+        result = await run_travel_context_producer(pool)
+
+    assert result == {"signal": "traveling", "value": "Tokyo"}
+    set_context_mock.assert_awaited_once()
+
+
+async def test_travel_producer_no_active_trip_does_not_publish():
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    clear_context_mock = AsyncMock()
+    publish_once_mock = AsyncMock()
+
+    with (
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+        patch(
+            "butlers.core_tools._domain_events.publish_domain_event_once",
+            new=publish_once_mock,
+        ),
+    ):
+        result = await run_travel_context_producer(pool)
+
+    assert result == {"signal": None, "cleared": ["traveling"]}
+    publish_once_mock.assert_not_awaited()
+
+
 async def test_sleep_producer_uses_shared_exact_policy_anchor():
     """Sleep expiry is the shared end-exclusive policy anchor, never end + 1h."""
     now = datetime(2026, 1, 1, 23, 30, tzinfo=UTC)
@@ -350,9 +441,14 @@ class TestContextProducersIntegration:
         try:
             await pool.execute("TRUNCATE travel.trips CASCADE")
             await pool.execute(
+                "TRUNCATE public.domain_events, public.domain_event_deliveries CASCADE"
+            )
+            await pool.execute("DELETE FROM public.state")
+            trip_id = await pool.fetchval(
                 """
                 INSERT INTO travel.trips (name, destination, start_date, end_date, status)
                 VALUES ('Work trip', 'Tokyo', current_date - 1, current_date + 2, 'active')
+                RETURNING id
                 """
             )
             result = await run_travel_context_producer(pool)
@@ -363,6 +459,30 @@ class TestContextProducersIntegration:
                 "AND superseded_at IS NULL AND expires_at > now()"
             )
             assert row is not None and row["value"] == "Tokyo"
+
+            # bu-317s5 slice 2: the same tick best-effort published
+            # travel.trip_active exactly once, fanned out to Health (seeded,
+            # core_189) -- even with no live switchboard_client, the event row
+            # itself is durably recorded regardless of fan-out outcome.
+            event_rows = await pool.fetch(
+                "SELECT id, source_butler, payload FROM public.domain_events "
+                "WHERE event_type = 'travel.trip_active'"
+            )
+            assert len(event_rows) == 1
+            assert event_rows[0]["source_butler"] == "travel"
+            payload = event_rows[0]["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            assert payload["trip_id"] == str(trip_id)
+
+            # A second tick while the SAME trip is still active must not
+            # re-publish (dedup memoized on the trip id via state).
+            result_again = await run_travel_context_producer(pool)
+            assert result_again["signal"] == "traveling"
+            event_rows_again = await pool.fetch(
+                "SELECT id FROM public.domain_events WHERE event_type = 'travel.trip_active'"
+            )
+            assert len(event_rows_again) == 1
 
             await pool.execute("UPDATE travel.trips SET status = 'completed'")
             result2 = await run_travel_context_producer(pool)

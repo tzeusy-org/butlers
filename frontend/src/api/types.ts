@@ -9158,3 +9158,37 @@ export interface DelegationLedgerEntry {
   wake_task_name: string | null;
   wake_updated_at: string | null;
 }
+
+/**
+ * One row of public.butler_subscriptions -- a standing (subscriber_butler,
+ * event_type) registration on the domain-event bus (bu-317s5).
+ */
+export interface SubscriptionEntry {
+  id: string;
+  subscriber_butler: string;
+  event_type: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * One public.domain_event_deliveries row joined with its event -- a fan-out
+ * delivery attempt to (or from) a butler on the domain-event bus (bu-317s5).
+ */
+export interface DeliveryEntry {
+  id: string;
+  event_id: string;
+  subscriber_butler: string;
+  /** "pending" | "delivered" | "conflict" | "failed" */
+  status: string;
+  task_id: string | null;
+  task_name: string | null;
+  error_message: string | null;
+  delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+  event_type: string;
+  source_butler: string;
+  occurred_at: string;
+}

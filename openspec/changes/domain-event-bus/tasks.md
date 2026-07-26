@@ -19,12 +19,28 @@
 ## 4. Contract and verification
 
 - [x] 4.1 Add the `domain-event-bus` capability spec delta.
-- [ ] 4.2 Run `openspec validate --strict` on the changed specs.
-- [ ] 4.3 Run backend lint/format/targeted tests and a full non-e2e pytest pass.
+- [x] 4.2 Run `openspec validate --strict` on the changed specs.
+- [x] 4.3 Run backend lint/format/targeted tests and a full non-e2e pytest pass.
 
-## 5. Deferred (reported as follow-ups, not implemented here)
+## 5. Slice 2: Health consumer + dashboard subscription visibility (bu-317s5)
 
-- [ ] 5.1 Second consumer: Health medication front-load on `travel.trip_booked`/an eventual trip-active event.
-- [ ] 5.2 Subscription visibility on the dashboard.
-- [ ] 5.3 Derived advisories (Finance `budget_pressure`, Health recovery-state) publishing as TTL'd events.
-- [ ] 5.4 Retire redundant `context-bus` deterministic producers a subscription now subsumes.
+- [x] 5.1 `core_189`: seed Health standing-subscribed to `travel.trip_active`.
+- [x] 5.2 `run_travel_context_producer` best-effort publishes `travel.trip_active`, memoized once per trip via the new `publish_domain_event_once` (`butlers.core_tools._domain_events`).
+- [x] 5.3 `roster/health/AGENTS.md` documents the wake behavior (front-load medication prep using Health's own tools; no new hardcoded business logic, mirrors slice 1's Finance paragraph).
+- [x] 5.4 `GET /api/domain-events/subscriptions` + `GET /api/domain-events/deliveries` (new `butlers.core.domain_events.list_recent_deliveries` reader) + `ButlerDomainEventsPanel` on the butler-detail Overview tab (subscriptions + recent deliveries, each independently fetched so a degraded source renders its own note, never a fabricated empty list).
+- [x] 5.5 Unit + integration test coverage (mocked-pool unit tests, real-Postgres integration roundtrip, API router tests, frontend component tests).
+
+## 6. Slice 3: Derived TTL'd advisories (bu-317s5)
+
+- [x] 6.1 `publish_domain_event_once` (state-store-memoized at-most-once-per-window publish) added to `butlers.core_tools._domain_events`.
+- [x] 6.2 Finance's `insight_scan` publishes `finance.budget_pressure` on a budget-threshold crossing (same dedup identity as the owner-facing candidate).
+- [x] 6.3 Health's `insight_scan` publishes `health.recovery_state` (`compute_recovery_state`, pure/unit-tested) from the existing severity-floor-crossing symptom rows.
+- [x] 6.4 Spec delta: "Derived TTL'd Advisory Events" requirement added.
+
+## 7. Slice 4: Retire redundant context-bus producers (bu-317s5)
+
+- [x] 7.1 Investigated whether any of the four `context_producers.py` producers (calendar, home-presence, travel, sleep-window) are subsumed by the new subscriptions. Conclusion: NONE are -- they serve a durable state-query need (`get_active_context`/`is_user_in_context`, read by the spawner preamble, the notify quiet-hours gate, and the attention ledger) a fire-once domain event cannot replace without a broader redesign of those read paths. No producer removed; documented in `proposal.md`.
+
+## 8. Deferred (still reported as a follow-up, not implemented here)
+
+- [ ] 8.1 A shared `domain-event-bus` skill -- the bar ("a second manual publisher adopts the primitives") means a second *agent-authored* MCP-tool-driven publisher, not a deterministic Python job calling `publish_domain_event`/`publish_domain_event_once` directly. That bar is not yet met.

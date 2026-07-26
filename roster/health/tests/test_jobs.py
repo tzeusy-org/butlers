@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -761,6 +762,100 @@ async def test_symptom_trend_dedup_key_includes_year_week(provisioned_postgres_p
         # year-week part should be present
         year_week = now.strftime("%Y-W%W")
         assert dedup_key == f"health:symptom-trend:fatigue:{year_week}"
+
+
+async def test_recovery_state_not_published_when_no_symptoms_cross_severity_floor(
+    provisioned_postgres_pool,
+):
+    """bu-317s5 slice 3: no symptom crossed the severity floor -- nothing to advise."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    publish_once_mock = AsyncMock()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        # Below _SYMPTOM_MIN_SEVERITY (3) -- excluded from the underlying query.
+        await _insert_symptom(pool, name="mild_discomfort", severity=2, occurred_at=now)
+
+        with patch(
+            "butlers.core_tools._domain_events.publish_domain_event_once",
+            new=publish_once_mock,
+        ):
+            await run_insight_scan(pool)
+
+    publish_once_mock.assert_not_awaited()
+
+
+async def test_recovery_state_published_as_recovering_for_moderate_severity(
+    provisioned_postgres_pool,
+):
+    """bu-317s5 slice 3: a single moderate-severity symptom publishes
+    health.recovery_state(state="recovering") -- one occurrence is enough for
+    the advisory even though it does not meet the 3x/7-days symptom-trend
+    threshold for the owner-facing candidate."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    publish_once_mock = AsyncMock(return_value={"status": "ok", "event_id": "e1", "deliveries": []})
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        await _insert_symptom(pool, name="nausea", severity=4, occurred_at=now)
+
+        with patch(
+            "butlers.core_tools._domain_events.publish_domain_event_once",
+            new=publish_once_mock,
+        ):
+            await run_insight_scan(pool)
+
+    publish_once_mock.assert_awaited_once()
+    kwargs = publish_once_mock.await_args.kwargs
+    assert kwargs["event_type"] == "health.recovery_state"
+    assert kwargs["source_butler"] == "health"
+    assert kwargs["dedup_namespace"] == "health.recovery_state"
+    year_week = now.strftime("%Y-W%W")
+    assert kwargs["dedup_key"] == f"{year_week}-recovering"
+    assert kwargs["payload"]["state"] == "recovering"
+    assert kwargs["payload"]["max_severity"] == 4
+    assert kwargs["payload"]["symptom_count"] == 1
+    # Privacy-minimized: specific symptom names never leave Health's schema
+    # via this cross-butler event.
+    assert "distinct_symptoms" not in kwargs["payload"]
+    assert "valid_until" in kwargs["payload"]
+
+
+async def test_recovery_state_published_as_depleted_for_high_severity(
+    provisioned_postgres_pool,
+):
+    """A severity >= 7 symptom escalates the advisory to state='depleted'."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    publish_once_mock = AsyncMock(return_value={"status": "ok", "event_id": "e1", "deliveries": []})
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        await _insert_symptom(pool, name="migraine", severity=8, occurred_at=now)
+
+        with patch(
+            "butlers.core_tools._domain_events.publish_domain_event_once",
+            new=publish_once_mock,
+        ):
+            await run_insight_scan(pool)
+
+    publish_once_mock.assert_awaited_once()
+    kwargs = publish_once_mock.await_args.kwargs
+    assert kwargs["payload"]["state"] == "depleted"
+    assert kwargs["payload"]["max_severity"] == 8
+    year_week = now.strftime("%Y-W%W")
+    assert kwargs["dedup_key"] == f"{year_week}-depleted"
 
 
 async def test_symptom_trend_excludes_symptoms_outside_7_days(provisioned_postgres_pool):

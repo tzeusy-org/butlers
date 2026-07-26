@@ -165,6 +165,55 @@ async def test_state_cas_concurrent_exactly_one_wins(pool):
 
 
 # ---------------------------------------------------------------------------
+# state_claim_if_changed (bu-317s5 review remediation: atomic dedup claim
+# for publish_domain_event_once)
+# ---------------------------------------------------------------------------
+
+
+async def test_state_claim_if_changed_wins_on_absent_key(pool):
+    """Claiming a key that doesn't exist yet wins."""
+    from butlers.core.state import state_claim_if_changed, state_get
+
+    won = await state_claim_if_changed(pool, "claim-key", "value-a")
+    assert won is True
+    assert await state_get(pool, "claim-key") == "value-a"
+
+
+async def test_state_claim_if_changed_loses_on_same_value(pool):
+    """Re-claiming the same value that's already stored loses (no-op)."""
+    from butlers.core.state import state_claim_if_changed
+
+    assert await state_claim_if_changed(pool, "claim-key", "value-a") is True
+    assert await state_claim_if_changed(pool, "claim-key", "value-a") is False
+
+
+async def test_state_claim_if_changed_wins_on_different_value(pool):
+    """Claiming a new, different value wins even though the key already exists."""
+    from butlers.core.state import state_claim_if_changed, state_get
+
+    assert await state_claim_if_changed(pool, "claim-key", "value-a") is True
+    won = await state_claim_if_changed(pool, "claim-key", "value-b")
+    assert won is True
+    assert await state_get(pool, "claim-key") == "value-b"
+
+
+async def test_state_claim_if_changed_concurrent_same_value_exactly_one_wins(pool):
+    """Two overlapping claims for the same (key, value) pair: exactly one wins.
+
+    This is the primitive publish_domain_event_once's atomic dedup claim
+    relies on to close the check-then-act race two overlapping invocations
+    used to hit (both read the pre-update value, both published).
+    """
+    from butlers.core.state import state_claim_if_changed
+
+    results = await asyncio.gather(
+        state_claim_if_changed(pool, "race-claim-key", "trip-race"),
+        state_claim_if_changed(pool, "race-claim-key", "trip-race"),
+    )
+    assert sorted(results) == [False, True]
+
+
+# ---------------------------------------------------------------------------
 # _decode_jsonb helper
 # ---------------------------------------------------------------------------
 

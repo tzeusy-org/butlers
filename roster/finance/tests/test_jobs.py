@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, date, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -678,6 +679,88 @@ async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
         budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
         assert len(budget_cands) == 1
         assert budget_cands[0]["priority"] == 70
+
+
+async def test_insight_scan_budget_pressure_published_on_crossing(provisioned_postgres_pool):
+    """bu-317s5 slice 3: a budget crossing its threshold best-effort publishes
+    finance.budget_pressure as a TTL'd derived-advisory domain event, once per
+    (category, window, severity) -- the same dedup identity as the owner
+    notification."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    publish_once_mock = AsyncMock(return_value={"status": "ok", "event_id": "e1", "deliveries": []})
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="groceries", amount="500.00", alert_threshold="0.9000")
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Whole Foods",
+            amount="460.00",
+            direction="debit",
+            category="groceries",
+            posted_at=tx_date,
+        )
+
+        with patch(
+            "butlers.core_tools._domain_events.publish_domain_event_once",
+            new=publish_once_mock,
+        ):
+            await run_insight_scan(pool)
+            # A second run in the same window (condition still holds) must not
+            # re-publish -- publish_domain_event_once itself is responsible
+            # for the memoized dedup, so this only proves the caller passes a
+            # STABLE dedup_key across runs, not a fresh one every time.
+            await run_insight_scan(pool)
+
+    assert publish_once_mock.await_count == 2
+    first_call, second_call = publish_once_mock.await_args_list
+    assert first_call.kwargs["event_type"] == "finance.budget_pressure"
+    assert first_call.kwargs["source_butler"] == "finance"
+    assert first_call.kwargs["dedup_namespace"] == "finance.budget_pressure:groceries"
+    assert first_call.kwargs["dedup_key"] == second_call.kwargs["dedup_key"]
+    assert first_call.kwargs["dedup_key"].startswith("finance:budget-threshold:groceries:")
+    assert first_call.kwargs["dedup_key"].endswith("-exceeded")
+    payload = first_call.kwargs["payload"]
+    assert payload["category"] == "groceries"
+    assert payload["status"] == "exceeded"
+    assert payload["currency"] == "USD"
+    assert "valid_until" in payload
+
+
+async def test_insight_scan_budget_below_threshold_does_not_publish_pressure_event(
+    provisioned_postgres_pool,
+):
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    publish_once_mock = AsyncMock()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="groceries", amount="500.00")
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
+        # 50% utilisation -- well below the default 80% warn_threshold.
+        await _insert_transaction(
+            pool,
+            merchant="Whole Foods",
+            amount="250.00",
+            direction="debit",
+            category="groceries",
+            posted_at=tx_date,
+        )
+
+        with patch(
+            "butlers.core_tools._domain_events.publish_domain_event_once",
+            new=publish_once_mock,
+        ):
+            await run_insight_scan(pool)
+
+    publish_once_mock.assert_not_awaited()
 
 
 async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_pool):

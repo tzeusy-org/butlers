@@ -23,6 +23,7 @@ import {
   Panel,
 } from "@/components/butler-detail/atoms"
 import { ButlerDelegationsPanel } from "@/components/butler-detail/ButlerDelegationsPanel"
+import { ButlerDomainEventsPanel } from "@/components/butler-detail/ButlerDomainEventsPanel"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer"
 import { Button } from "@/components/ui/button"
@@ -555,6 +556,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       </Panel>
 
       <ButlerDelegationsPanel butlerName={butlerName} />
+      <ButlerDomainEventsPanel butlerName={butlerName} />
     </ButlerPanelGrid>
 
     <SessionDetailDrawer

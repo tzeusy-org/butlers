@@ -8,18 +8,34 @@ Mirrors the fake-``_core_tool``-registry harness from
 
 from __future__ import annotations
 
+import asyncio
+import shutil
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
 from butlers.config import ButlerType
 from butlers.core_tools import _domain_events
 from butlers.core_tools._base import ToolContext
-from butlers.core_tools._domain_events import fan_out_event, register_domain_event_tools
+from butlers.core_tools._domain_events import (
+    fan_out_event,
+    publish_domain_event_once,
+    register_domain_event_tools,
+)
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = pytest.mark.unit
+
+docker_available = shutil.which("docker") is not None
+_integration = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.asyncio(loop_scope="session"),
+]
 
 
 def _register(butler_name: str = "finance", butler_type=ButlerType.BUTLER, switchboard_client=None):
@@ -46,6 +62,29 @@ def _register(butler_name: str = "finance", butler_type=ButlerType.BUTLER, switc
     )
     register_domain_event_tools(ctx, mcp, _core_tool)
     return registered
+
+
+# ---------------------------------------------------------------------------
+# Real-Postgres fixtures for TestPublishDomainEventOnce's concurrency
+# regression -- mocking asyncpg's acquire/transaction chaining would test the
+# mock, not the atomic-claim contract (see tests/core/test_infra_conditions.py
+# for the same rationale), so those specific tests run against a real,
+# migrated database instead.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _dedup_migrated_db_url(postgres_container) -> str:
+    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+
+
+@pytest.fixture
+async def real_pool(_dedup_migrated_db_url: str):
+    p = await asyncpg.create_pool(
+        _dedup_migrated_db_url, min_size=2, max_size=5, init=register_jsonb_codec
+    )
+    yield p
+    await p.close()
 
 
 def test_staffer_gets_no_domain_event_tools():
@@ -143,6 +182,215 @@ class TestReceiveDomainEvent:
         assert result == {"status": "ok", "state": "task_created"}
         assert handler_mock.await_args.kwargs["subscriber_butler"] == "finance"
         assert handler_mock.await_args.kwargs["event_id"] == "event-1"
+
+
+class TestPublishDomainEventOnce:
+    """publish_domain_event_once's dedup gate is now an atomic claim
+    (``_claim_and_record_event`` / ``state_claim_if_changed``), not a
+    check-then-act ``state_get`` + ``state_set`` pair -- see that function's
+    docstring for why. These tests mock ``_claim_and_record_event`` and
+    ``fan_out_event`` as units (mocking asyncpg's acquire/transaction
+    chaining here would test the mock, not the atomicity contract); the
+    atomicity itself is verified against a real Postgres pool below.
+    """
+
+    async def test_publishes_when_no_prior_key_recorded(self, monkeypatch):
+        pool = AsyncMock()
+        claim_mock = AsyncMock(return_value="e1")
+        monkeypatch.setattr(_domain_events, "_claim_and_record_event", claim_mock)
+        fanout_mock = AsyncMock(return_value={"deliveries": []})
+        monkeypatch.setattr(_domain_events, "fan_out_event", fanout_mock)
+
+        result = await publish_domain_event_once(
+            pool,
+            None,
+            event_type="travel.trip_active",
+            source_butler="travel",
+            dedup_namespace="travel.trip_active",
+            dedup_key="trip-1",
+            payload={"trip_id": "trip-1"},
+        )
+
+        assert result == {"status": "ok", "event_id": "e1", "deliveries": []}
+        claim_mock.assert_awaited_once_with(
+            pool,
+            state_key="domain_event_once:travel.trip_active:travel.trip_active",
+            dedup_key="trip-1",
+            event_type="travel.trip_active",
+            source_butler="travel",
+            payload={"trip_id": "trip-1"},
+        )
+        fanout_mock.assert_awaited_once()
+
+    async def test_skips_when_key_unchanged(self, monkeypatch):
+        pool = AsyncMock()
+        claim_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(_domain_events, "_claim_and_record_event", claim_mock)
+        fanout_mock = AsyncMock()
+        monkeypatch.setattr(_domain_events, "fan_out_event", fanout_mock)
+
+        result = await publish_domain_event_once(
+            pool,
+            None,
+            event_type="travel.trip_active",
+            source_butler="travel",
+            dedup_namespace="travel.trip_active",
+            dedup_key="trip-1",
+            payload={"trip_id": "trip-1"},
+        )
+
+        assert result is None
+        claim_mock.assert_awaited_once()
+        fanout_mock.assert_not_awaited()
+
+    async def test_publishes_again_when_key_changes(self, monkeypatch):
+        pool = AsyncMock()
+        claim_mock = AsyncMock(return_value="e2")
+        monkeypatch.setattr(_domain_events, "_claim_and_record_event", claim_mock)
+        fanout_mock = AsyncMock(return_value={"deliveries": []})
+        monkeypatch.setattr(_domain_events, "fan_out_event", fanout_mock)
+
+        result = await publish_domain_event_once(
+            pool,
+            None,
+            event_type="travel.trip_active",
+            source_butler="travel",
+            dedup_namespace="travel.trip_active",
+            dedup_key="trip-2",
+            payload={"trip_id": "trip-2"},
+        )
+
+        assert result == {"status": "ok", "event_id": "e2", "deliveries": []}
+        claim_mock.assert_awaited_once_with(
+            pool,
+            state_key="domain_event_once:travel.trip_active:travel.trip_active",
+            dedup_key="trip-2",
+            event_type="travel.trip_active",
+            source_butler="travel",
+            payload={"trip_id": "trip-2"},
+        )
+
+    async def test_invalid_event_type_short_circuits_before_claim(self, monkeypatch):
+        pool = AsyncMock()
+        claim_mock = AsyncMock()
+        monkeypatch.setattr(_domain_events, "_claim_and_record_event", claim_mock)
+        fanout_mock = AsyncMock()
+        monkeypatch.setattr(_domain_events, "fan_out_event", fanout_mock)
+
+        result = await publish_domain_event_once(
+            pool,
+            None,
+            event_type="not valid",
+            source_butler="travel",
+            dedup_namespace="travel.trip_active",
+            dedup_key="trip-1",
+        )
+
+        assert result == {
+            "status": "error",
+            "error": (
+                "event_type='not valid' must match '<namespace>.<event>' "
+                "(lowercase, e.g. 'travel.trip_booked')."
+            ),
+        }
+        # Never attempts to claim the dedup slot for a publish that was
+        # never going to happen -- otherwise a bad event_type would burn the
+        # dedup_key and silently mask a subsequent, valid publish attempt.
+        claim_mock.assert_not_awaited()
+        fanout_mock.assert_not_awaited()
+
+    # -----------------------------------------------------------------
+    # Real-Postgres: the atomic-claim regression (bu-317s5 review
+    # remediation). Two overlapping publish_domain_event_once calls for the
+    # same dedup_namespace/dedup_key (overlapping consecutive cron
+    # occurrences, or a dashboard run-now racing cron) must have exactly one
+    # publish; a distinct dedup_key must still publish independently.
+    # -----------------------------------------------------------------
+
+    @pytest.mark.integration
+    @pytest.mark.skipif(not docker_available, reason="Docker not available")
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_concurrent_same_key_publishes_exactly_once(self, real_pool):
+        results = await asyncio.gather(
+            publish_domain_event_once(
+                real_pool,
+                None,
+                event_type="travel.dedup_concurrency_test",
+                source_butler="travel",
+                dedup_namespace="travel.dedup_concurrency_test",
+                dedup_key="trip-race",
+                payload={"n": 1},
+            ),
+            publish_domain_event_once(
+                real_pool,
+                None,
+                event_type="travel.dedup_concurrency_test",
+                source_butler="travel",
+                dedup_namespace="travel.dedup_concurrency_test",
+                dedup_key="trip-race",
+                payload={"n": 1},
+            ),
+        )
+
+        published = [r for r in results if r is not None]
+        assert len(published) == 1
+        assert published[0]["status"] == "ok"
+
+        count = await real_pool.fetchval(
+            "SELECT count(*) FROM public.domain_events WHERE event_type = $1",
+            "travel.dedup_concurrency_test",
+        )
+        assert count == 1
+
+        state_row = await real_pool.fetchval(
+            "SELECT value FROM state WHERE key = $1",
+            "domain_event_once:travel.dedup_concurrency_test:travel.dedup_concurrency_test",
+        )
+        assert state_row == "trip-race"
+
+    @pytest.mark.integration
+    @pytest.mark.skipif(not docker_available, reason="Docker not available")
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_sequential_distinct_keys_both_publish(self, real_pool):
+        first = await publish_domain_event_once(
+            real_pool,
+            None,
+            event_type="travel.dedup_sequential_test",
+            source_butler="travel",
+            dedup_namespace="travel.dedup_sequential_test",
+            dedup_key="key-1",
+            payload={"n": 1},
+        )
+        second = await publish_domain_event_once(
+            real_pool,
+            None,
+            event_type="travel.dedup_sequential_test",
+            source_butler="travel",
+            dedup_namespace="travel.dedup_sequential_test",
+            dedup_key="key-2",
+            payload={"n": 2},
+        )
+        # A repeat of the second key must not publish again.
+        third = await publish_domain_event_once(
+            real_pool,
+            None,
+            event_type="travel.dedup_sequential_test",
+            source_butler="travel",
+            dedup_namespace="travel.dedup_sequential_test",
+            dedup_key="key-2",
+            payload={"n": 2},
+        )
+
+        assert first is not None and first["status"] == "ok"
+        assert second is not None and second["status"] == "ok"
+        assert first["event_id"] != second["event_id"]
+        assert third is None
+
+        count = await real_pool.fetchval(
+            "SELECT count(*) FROM public.domain_events WHERE event_type = $1",
+            "travel.dedup_sequential_test",
+        )
+        assert count == 2
 
 
 class TestFanOutEvent:

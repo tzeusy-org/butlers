@@ -62,9 +62,38 @@ still honoring the MCP-only rule.
 - Finance: `roster/finance/butler.toml` gains the `domain_events` core
   group; Travel's `core_groups` is unset (all groups enabled), so no toml
   change was needed there.
-- Deferred (reported as follow-ups, not implemented in this change): a
-  second consumer (Health medication front-load on trip-active) and
-  subscription visibility on the dashboard; derived advisories (Finance
-  `budget_pressure`, Health recovery-state) publishing as TTL'd events;
-  retiring redundant `context-bus` deterministic producers a subscription
-  now subsumes.
+- (bu-317s5, slice 2) Second consumer: `butlers.jobs.context_producers.
+  run_travel_context_producer` best-effort publishes `travel.trip_active`
+  (memoized once per trip via `publish_domain_event_once`) when a trip
+  transitions into its active window; Health is seeded (`core_189`) as a
+  standing subscriber and reacts via the existing generic wake
+  reconciliation -- no new hardcoded business logic, per this change's own
+  design. Dashboard subscription visibility ships as
+  `GET /api/domain-events/{subscriptions,deliveries}` plus a
+  `ButlerDomainEventsPanel` on the butler-detail Overview tab.
+- (bu-317s5, slice 3) Derived TTL'd advisories: Finance's `insight_scan`
+  publishes `finance.budget_pressure` on a budget-threshold crossing (same
+  dedup identity as its owner-facing candidate); Health's `insight_scan`
+  publishes `health.recovery_state` (`"recovering"`/`"depleted"`) from the
+  same severity-floor-crossing symptom rows the symptom-trend insight
+  already reads -- privacy-minimized like `medication_travel_snapshot`
+  (state/counts only, never the specific symptom names). Both use
+  `publish_domain_event_once` for at-most-once-per-window publishing --
+  folds the "derived-advisory read layer" ecosystem idea into this bus
+  (TTL info lives in the event payload, not a second `public.
+  domain_advisories` table).
+- (bu-317s5, slice 4) Retiring redundant `context-bus` deterministic
+  producers: investigated and NOT done. The four producers in
+  `context_producers.py` (calendar, home-presence, travel, sleep-window)
+  serve a durable *state query* need (`get_active_context`/
+  `is_user_in_context`, consumed by the spawner preamble, the notify
+  quiet-hours gate, and the attention ledger) that a fire-once domain
+  event cannot replace without a broader redesign of those read paths.
+  None is subsumed by the new subscriptions; no producer was removed.
+- Deferred (still reported as a follow-up): a shared `domain-event-bus`
+  skill. Not added in this change -- the new publish call sites (Travel's
+  context producer, Finance's and Health's insight-scan jobs) are
+  deterministic Python producers calling `publish_domain_event`/
+  `publish_domain_event_once` directly, not a second *agent-authored*
+  (MCP-tool-driven) manual publisher, so the "second manual publisher
+  adopts the primitives" bar for adding the skill is not yet met.

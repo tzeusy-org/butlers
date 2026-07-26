@@ -142,6 +142,52 @@ async def state_compare_and_set(
     )
 
 
+async def state_claim_if_changed(
+    pool: asyncpg.Pool | asyncpg.Connection, key: str, value: Any
+) -> bool:
+    """Atomically upsert *key* to *value* only if the stored value differs.
+
+    Returns ``True`` if this call performed the write -- the caller "won"
+    the claim, either because *key* was absent or its stored value differed
+    from *value* -- and ``False`` if *key* already held *value* (a
+    concurrent or earlier caller already won).
+
+    Unlike :func:`state_set` (a bare upsert), this is safe for concurrent
+    check-then-act dedup/claim patterns: two overlapping callers racing to
+    claim the same ``(key, value)`` pair will have exactly one see
+    ``True``. Postgres serializes concurrent ``INSERT ... ON CONFLICT DO
+    UPDATE`` targeting the same key via the unique index's row lock -- the
+    loser blocks until the winner commits, then re-evaluates the ``WHERE``
+    clause against the winner's now-committed value, finds no difference,
+    and the ``UPDATE`` (and its ``RETURNING`` row) is skipped. Mirrors
+    ``butlers.core.domain_events.claim_delivery``'s ``INSERT ... ON
+    CONFLICT DO NOTHING ... RETURNING`` claim, generalized to "claim unless
+    the value already matches" instead of "claim unless a row exists".
+
+    Callers that need this atomicity to extend to a further write (e.g.
+    durably recording what the claim was *for*) should pass a single
+    ``asyncpg.Connection`` already inside a transaction, and perform that
+    further write on the same connection before committing -- see
+    ``butlers.core_tools._domain_events.publish_domain_event_once`` for the
+    reference caller.
+    """
+    row = await pool.fetchrow(
+        """
+        INSERT INTO state (key, value, updated_at, version)
+        VALUES ($1, $2, now(), 1)
+        ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                updated_at = now(),
+                version = state.version + 1
+        WHERE state.value IS DISTINCT FROM EXCLUDED.value
+        RETURNING version
+        """,
+        key,
+        value,
+    )
+    return row is not None
+
+
 async def state_delete(pool: asyncpg.Pool, key: str) -> None:
     """Delete *key* from the state store.  No-op if the key does not exist."""
     await pool.execute("DELETE FROM state WHERE key = $1", key)

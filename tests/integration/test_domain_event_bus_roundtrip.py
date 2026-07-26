@@ -33,6 +33,7 @@ from butlers.core.domain_event_wake import handle_receive_domain_event, task_nam
 from butlers.core.domain_events import (
     claim_delivery,
     get_active_subscribers,
+    list_recent_deliveries,
     list_subscriptions,
 )
 from butlers.core_tools._domain_events import fan_out_event, publish_domain_event
@@ -122,6 +123,19 @@ async def test_migration_seeds_finance_trip_booked_subscription(pool: asyncpg.Po
 
     rows = await list_subscriptions(
         pool, subscriber_butler="finance", event_type="travel.trip_booked"
+    )
+    assert len(rows) == 1
+    assert rows[0]["active"] is True
+
+
+async def test_migration_seeds_health_trip_active_subscription(pool: asyncpg.Pool) -> None:
+    """bu-317s5 slice 2 (core_189): Health standing-subscribes to Travel's
+    trip-active transition so it can front-load medication prep."""
+    subscribers = await get_active_subscribers(pool, "travel.trip_active")
+    assert "health" in subscribers
+
+    rows = await list_subscriptions(
+        pool, subscriber_butler="health", event_type="travel.trip_active"
     )
     assert len(rows) == 1
     assert rows[0]["active"] is True
@@ -362,3 +376,75 @@ async def test_fanout_records_conflict_on_delivery_ledger(pool: asyncpg.Pool) ->
         event_id,
     )
     assert delivery_row["status"] == "conflict"
+
+
+# ---------------------------------------------------------------------------
+# Dashboard subscription visibility (bu-317s5 slice 2): list_recent_deliveries
+# ---------------------------------------------------------------------------
+
+
+async def test_list_recent_deliveries_filters_by_subscriber_and_status(
+    pool: asyncpg.Pool,
+) -> None:
+    client = _ReceivingClient(pool)
+
+    await publish_domain_event(
+        pool,
+        client,
+        event_type="travel.trip_booked",
+        source_butler="travel",
+        payload={"trip_id": "trip-recent-1"},
+    )
+    # A second event of a type nobody subscribes to -- no delivery row at all,
+    # so it must never appear in a subscriber-filtered read.
+    await publish_domain_event(
+        pool,
+        client,
+        event_type="travel.trip_unsubscribed_event",
+        source_butler="travel",
+        payload={},
+    )
+
+    total, rows = await list_recent_deliveries(pool, subscriber_butler="finance")
+    assert total >= 1
+    assert all(row["subscriber_butler"] == "finance" for row in rows)
+    assert any(
+        row["event_type"] == "travel.trip_booked" and row["source_butler"] == "travel"
+        for row in rows
+    )
+
+    total_delivered, rows_delivered = await list_recent_deliveries(
+        pool, subscriber_butler="finance", status="delivered"
+    )
+    assert total_delivered >= 1
+    assert all(row["status"] == "delivered" for row in rows_delivered)
+
+    total_none, rows_none = await list_recent_deliveries(
+        pool, subscriber_butler="a-butler-with-no-deliveries"
+    )
+    assert total_none == 0
+    assert rows_none == []
+
+
+async def test_list_recent_deliveries_orders_most_recent_first(pool: asyncpg.Pool) -> None:
+    client = _ReceivingClient(pool)
+
+    first = await publish_domain_event(
+        pool,
+        client,
+        event_type="travel.trip_booked",
+        source_butler="travel",
+        payload={"trip_id": "trip-order-1"},
+    )
+    second = await publish_domain_event(
+        pool,
+        client,
+        event_type="travel.trip_booked",
+        source_butler="travel",
+        payload={"trip_id": "trip-order-2"},
+    )
+
+    _total, rows = await list_recent_deliveries(pool, subscriber_butler="finance", limit=2)
+    event_ids = [row["event_id"] for row in rows[:2]]
+    assert str(event_ids[0]) == second["event_id"]
+    assert str(event_ids[1]) == first["event_id"]

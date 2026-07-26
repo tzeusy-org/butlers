@@ -345,6 +345,8 @@ import type {
   ConditionsFacts,
   HealingDispatchEvent,
   DelegationLedgerEntry,
+  SubscriptionEntry,
+  DeliveryEntry,
   DeploymentFacts,
   ModuleStatus,
   Briefing,
@@ -5842,6 +5844,59 @@ export function listDelegationLedger(
   const qs = query.toString();
   return apiFetch<PaginatedResponse<DelegationLedgerEntry>>(
     `/delegation/ledger${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Params for listDomainEventSubscriptions(). */
+export interface DomainEventSubscriptionsParams {
+  subscriber_butler?: string;
+  event_type?: string;
+  active_only?: boolean;
+}
+
+/**
+ * List standing (subscriber_butler, event_type) domain-event-bus
+ * subscriptions from GET /api/domain-events/subscriptions (bu-317s5).
+ */
+export function listDomainEventSubscriptions(
+  params: DomainEventSubscriptionsParams = {},
+): Promise<ApiResponse<SubscriptionEntry[]>> {
+  const query = new URLSearchParams();
+  if (params.subscriber_butler) query.set("subscriber_butler", params.subscriber_butler);
+  if (params.event_type) query.set("event_type", params.event_type);
+  if (params.active_only) query.set("active_only", "true");
+  const qs = query.toString();
+  return apiFetch<ApiResponse<SubscriptionEntry[]>>(
+    `/domain-events/subscriptions${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Params for listDomainEventDeliveries(). */
+export interface DomainEventDeliveriesParams {
+  subscriber_butler?: string;
+  source_butler?: string;
+  /** "pending" | "delivered" | "conflict" | "failed" */
+  status?: string;
+  offset?: number;
+  limit?: number;
+}
+
+/**
+ * List domain-event-bus fan-out deliveries from GET /api/domain-events/deliveries
+ * (bu-317s5), most-recent first.
+ */
+export function listDomainEventDeliveries(
+  params: DomainEventDeliveriesParams = {},
+): Promise<PaginatedResponse<DeliveryEntry>> {
+  const query = new URLSearchParams();
+  if (params.subscriber_butler) query.set("subscriber_butler", params.subscriber_butler);
+  if (params.source_butler) query.set("source_butler", params.source_butler);
+  if (params.status) query.set("status", params.status);
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<DeliveryEntry>>(
+    `/domain-events/deliveries${qs ? `?${qs}` : ""}`,
   );
 }
 

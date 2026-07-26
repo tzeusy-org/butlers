@@ -265,6 +265,16 @@ async def fan_out_event(
     return {"event_id": event_id, "deliveries": outcomes}
 
 
+def _invalid_event_type_error(event_type: str) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "error": (
+            f"event_type={event_type!r} must match '<namespace>.<event>' "
+            "(lowercase, e.g. 'travel.trip_booked')."
+        ),
+    }
+
+
 async def publish_domain_event(
     pool: Any,
     switchboard_client: Any,
@@ -282,17 +292,130 @@ async def publish_domain_event(
     mirrors ``_delegation.dispatch_delegated_ask``.
     """
     if not is_valid_event_type(event_type):
-        return {
-            "status": "error",
-            "error": (
-                f"event_type={event_type!r} must match '<namespace>.<event>' "
-                "(lowercase, e.g. 'travel.trip_booked')."
-            ),
-        }
+        return _invalid_event_type_error(event_type)
 
     event_id = await record_event(
         pool, event_type=event_type, source_butler=source_butler, payload=payload
     )
+    fanout = await fan_out_event(
+        pool,
+        switchboard_client,
+        event_id=event_id,
+        event_type=event_type,
+        source_butler=source_butler,
+        payload=payload or {},
+    )
+    return {"status": "ok", "event_id": event_id, "deliveries": fanout["deliveries"]}
+
+
+async def _claim_and_record_event(
+    pool: Any,
+    *,
+    state_key: str,
+    dedup_key: str,
+    event_type: str,
+    source_butler: str,
+    payload: dict[str, Any] | None,
+) -> str | None:
+    """Atomically claim *state_key* for *dedup_key* and, only if the claim is
+    won, durably record the event -- both in one Postgres transaction.
+
+    This is the fix for a check-then-act race in the old
+    ``publish_domain_event_once`` (state_get the last key, publish, state_set
+    the new key): two overlapping callers for the same dedup_key could both
+    read the pre-update value and both publish. ``state_claim_if_changed``
+    (see ``butlers.core.state``) is a single atomic ``INSERT ... ON CONFLICT
+    DO UPDATE ... WHERE value IS DISTINCT FROM ... RETURNING`` claim -- of two
+    concurrent callers racing the same ``(state_key, dedup_key)`` pair,
+    exactly one gets ``True`` back (mirrors ``claim_delivery``'s atomic
+    claim-before-dispatch, generalized from "row absent" to "value unchanged").
+
+    Performing the event-log insert (:func:`record_event`) on the *same*
+    connection, inside the *same* transaction as the claim, means the two
+    outcomes commit atomically together: either both the claim and the event
+    row land, or neither does (a raised exception inside the ``async with``
+    rolls the claim back too) -- so a losing claim never leaves an orphaned
+    event, and a winning claim never leaves the dedup key pointing at an
+    event that was never recorded. Fan-out (:func:`fan_out_event`) happens
+    *outside* this transaction, on the caller's own pool, deliberately -- it
+    makes network calls (via ``switchboard_client``) that must not hold a DB
+    transaction/row-lock open, and its own failure surface (a single
+    subscriber's dispatch failing) is already handled per-subscriber via the
+    delivery ledger (``claim_delivery``/``mark_delivery_failed``), exactly as
+    for the ordinary ``publish_domain_event`` path -- it never risks a lost
+    or duplicated *event*, only a fan-out that a caller/reconciliation sweep
+    may need to retry against the now-durably-recorded event_id.
+
+    Returns the new event_id, or ``None`` if the claim was lost (dedup_key
+    unchanged since the last successful claim for this state_key).
+    """
+    from butlers.core.state import state_claim_if_changed
+
+    async with pool.acquire() as conn, conn.transaction():
+        claimed = await state_claim_if_changed(conn, state_key, dedup_key)
+        if not claimed:
+            return None
+        return await record_event(
+            conn, event_type=event_type, source_butler=source_butler, payload=payload
+        )
+
+
+async def publish_domain_event_once(
+    pool: Any,
+    switchboard_client: Any,
+    *,
+    event_type: str,
+    source_butler: str,
+    dedup_namespace: str,
+    dedup_key: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Publish *event_type* unless *dedup_key* was the last one published for
+    *dedup_namespace*.
+
+    For a deterministic, recurring producer (a scheduled job re-evaluating the
+    same condition every run -- e.g. Finance's ``budget_pressure`` or Health's
+    ``recovery_state`` derived advisory, or Travel's ``trip_active`` transition
+    detector) calling :func:`publish_domain_event` unconditionally would
+    re-publish -- and re-wake every subscriber -- on every single run for as
+    long as the condition holds, rather than once per distinct occurrence.
+    This wraps the publish with a state-store-memoized "last key I published
+    for this namespace" check (mirrors the deterministic idempotence pattern
+    ``butlers.jobs.context_producers`` and the insight broker's ``dedup_key``
+    both use, applied here to the fan-out side instead of the owner-
+    notification side).
+
+    ``dedup_namespace`` scopes the memory (e.g. ``"travel.trip_active"`` or
+    ``f"finance.budget_pressure:{category}"``); ``dedup_key`` is the value that
+    must change for a new publish to occur (e.g. a trip id, or a
+    ``f"{period_scope}-{status}"`` token). Uses the caller's own pool's
+    ``state`` table (per-butler-schema KV store) -- never a sibling schema's.
+
+    The dedup claim is atomic (see :func:`_claim_and_record_event`): two
+    overlapping invocations for the same dedup_namespace/dedup_key (e.g.
+    overlapping consecutive cron occurrences, or a dashboard run-now racing
+    cron) will have exactly one claim and publish; the other observes the
+    claim as already taken and returns ``None`` without publishing.
+
+    Returns ``None`` when skipped as a duplicate of the last publish for this
+    namespace; otherwise the :func:`publish_domain_event`-shaped result
+    (``{"status": "ok", "event_id": ..., "deliveries": [...]}``).
+    """
+    if not is_valid_event_type(event_type):
+        return _invalid_event_type_error(event_type)
+
+    state_key = f"domain_event_once:{event_type}:{dedup_namespace}"
+    event_id = await _claim_and_record_event(
+        pool,
+        state_key=state_key,
+        dedup_key=dedup_key,
+        event_type=event_type,
+        source_butler=source_butler,
+        payload=payload,
+    )
+    if event_id is None:
+        return None
+
     fanout = await fan_out_event(
         pool,
         switchboard_client,

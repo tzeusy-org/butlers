@@ -882,11 +882,15 @@ export {
   getSystemConditions,
   getDeploymentFacts,
   listDelegationLedger,
+  listDomainEventSubscriptions,
+  listDomainEventDeliveries,
   getHealingDispatchEvents,
 } from "./client.ts";
 
 export type {
   DelegationLedgerParams,
+  DomainEventSubscriptionsParams,
+  DomainEventDeliveriesParams,
   HealingDispatchEventsParams,
   SystemConditionsParams,
 } from "./client.ts";
@@ -899,6 +903,7 @@ export type {
   ConditionsFacts,
   DatabaseFacts,
   DelegationLedgerEntry,
+  DeliveryEntry,
   DeploymentFacts,
   DeploymentRecord,
   DriftEntry,
@@ -910,6 +915,7 @@ export type {
   InsightDeliveryState,
   InstanceFacts,
   SchemaSize,
+  SubscriptionEntry,
   TableSize,
 } from "./types.ts";
 

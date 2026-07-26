@@ -175,6 +175,64 @@ def _budget_period_scope_token(period: str, period_start: date) -> str:
     raise ValueError(f"Unsupported budget period: {period!r}")
 
 
+async def _publish_budget_pressure_event(
+    db_pool: asyncpg.Pool,
+    *,
+    category: str,
+    period: str,
+    status: str,
+    spent: Decimal,
+    budget_amount: Decimal,
+    currency: str,
+    utilisation_pct: float,
+    period_start: date,
+    period_end: date,
+    dedup_key: str,
+) -> None:
+    """Best-effort, at-most-once-per-window publish of ``finance.budget_pressure``.
+
+    A derived, TTL'd advisory (bu-317s5 slice 3, folding the "derived-advisory
+    read layer" ecosystem idea into the domain-event bus rather than a second
+    parallel vocabulary/table) -- other butlers may subscribe to react before
+    proposing discretionary spend against a category under pressure. Isolated
+    from the owner-facing candidate above so a domain-event-bus hiccup can
+    never break that delivery path (mirrors ``context_producers.
+    _publish_trip_active_event``'s isolation of the context-bus write from
+    the domain-event publish).
+    """
+    from butlers.core.tool_call_capture import get_current_switchboard_client
+    from butlers.core_tools._domain_events import publish_domain_event_once
+
+    valid_until = _end_of_period_dt(period_end)
+    try:
+        await publish_domain_event_once(
+            db_pool,
+            get_current_switchboard_client(),
+            event_type="finance.budget_pressure",
+            source_butler="finance",
+            dedup_namespace=f"finance.budget_pressure:{category}",
+            dedup_key=dedup_key,
+            payload={
+                "category": category,
+                "period": period,
+                "status": status,
+                "spent": str(spent),
+                "budget_amount": str(budget_amount),
+                "currency": currency,
+                "utilization_pct": utilisation_pct,
+                "period_start": period_start.isoformat(),
+                "period_end": period_end.isoformat(),
+                "valid_until": valid_until.isoformat(),
+            },
+        )
+    except Exception:
+        logger.warning(
+            "Finance insight scan: failed to publish finance.budget_pressure for category=%s",
+            category,
+            exc_info=True,
+        )
+
+
 async def _propose(
     pool: asyncpg.Pool,
     *,
@@ -596,6 +654,27 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         # so the broker's 4-segment dedup-key regex still matches.
         scope_token = _budget_period_scope_token(period, period_start)
         dedup_key = f"finance:budget-threshold:{category}:{scope_token}-{status}"
+
+        # bu-317s5 slice 3: publish the same crossing as a TTL'd
+        # finance.budget_pressure domain event -- a derived cross-butler
+        # advisory (distinct from the owner-facing candidate below), valid
+        # until this budget period ends. Reuses the exact same dedup_key as
+        # the owner notification above so the event publishes at most once
+        # per (category, window, severity) crossing, not on every daily scan
+        # while the condition holds.
+        await _publish_budget_pressure_event(
+            db_pool,
+            category=category,
+            period=period,
+            status=status,
+            spent=spent,
+            budget_amount=budget_amount,
+            currency=item["currency"],
+            utilisation_pct=utilisation_pct,
+            period_start=period_start,
+            period_end=period_end,
+            dedup_key=dedup_key,
+        )
 
         # Cooldown spans the remainder of the current period window, so each
         # (budget, window, severity) crossing fires at most once per window;

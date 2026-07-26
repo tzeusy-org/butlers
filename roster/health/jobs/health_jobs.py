@@ -68,6 +68,12 @@ _SYMPTOM_MIN_SEVERITY = 3  # on a 1-10 scale (spec says 1-5 scale; see implement
 _SYMPTOM_PRIORITY = 70
 _SYMPTOM_EXPIRES_DAYS = 3
 
+# Recovery-state derived advisory (bu-317s5 slice 3): classifies the SAME
+# severity->=3-within-7-days symptom rows the symptom-trend insight above
+# already fetches -- no second query. A max severity at/above this floor
+# escalates the state from "recovering" to "depleted".
+_RECOVERY_STATE_DEPLETED_SEVERITY = 7
+
 # Health streak milestones (days)
 _STREAK_MILESTONES = [7, 30, 60, 90, 180, 365]
 _STREAK_PRIORITY = 25
@@ -108,6 +114,87 @@ _CORRELATION_DRIFT_PRIORITY = 50
 _ENV_SLEEP_SHORT_HOURS = 6.0
 _ENV_CORRELATION_MIN_DAYS = 2
 _CORRELATION_ENV_PRIORITY = 50
+
+
+def compute_recovery_state(symptom_rows: list[Any]) -> dict[str, Any] | None:
+    """Classify an overall recovery-state advisory from recent flagged symptoms.
+
+    ``symptom_rows`` is the raw ``(name, severity, occurred_at)`` rows the
+    symptom-trend insight's own query already fetched (severity >=
+    ``_SYMPTOM_MIN_SEVERITY`` within ``_SYMPTOM_WINDOW_DAYS`` days, ungrouped)
+    -- deliberately reused rather than a second query, as either
+    ``asyncpg.Record`` rows or plain dicts (both support ``[]``/``.get()``).
+    Returns ``None`` when nothing crossed the severity floor in the window
+    (nothing to advise; mirrors ``budget_status``'s ``on_track`` -- no
+    domain event either).
+
+    A max severity at/above ``_RECOVERY_STATE_DEPLETED_SEVERITY`` classifies
+    as ``"depleted"``; any lower (but still floor-crossing) severity
+    classifies as ``"recovering"``.
+    """
+    severities = [row["severity"] for row in symptom_rows if row.get("severity") is not None]
+    if not severities:
+        return None
+
+    max_severity = max(severities)
+    state = "depleted" if max_severity >= _RECOVERY_STATE_DEPLETED_SEVERITY else "recovering"
+    return {
+        "state": state,
+        "max_severity": max_severity,
+        "symptom_count": len(symptom_rows),
+        "distinct_symptoms": sorted({row["name"] for row in symptom_rows}),
+        "window_days": _SYMPTOM_WINDOW_DAYS,
+    }
+
+
+async def _publish_recovery_state_event(
+    db_pool: asyncpg.Pool,
+    *,
+    recovery: dict[str, Any],
+    now_utc: datetime,
+    dedup_key: str,
+) -> None:
+    """Best-effort, at-most-once-per-window publish of ``health.recovery_state``.
+
+    A derived, TTL'd advisory (bu-317s5 slice 3, folding the "derived-advisory
+    read layer" ecosystem idea into the domain-event bus rather than a second
+    parallel vocabulary/table) -- other butlers (e.g. General/Lifestyle) may
+    subscribe to defer non-essential scheduling while recovery state is
+    depleted. Isolated from the owner-facing symptom-trend candidate so a
+    domain-event-bus hiccup can never break that delivery path.
+
+    Privacy-minimized like ``medication_travel_snapshot``: the payload
+    carries the state classification and counts a consuming butler needs to
+    decide whether to defer, but deliberately omits ``distinct_symptoms``
+    (specific symptom names) -- a scheduling consumer needs "depleted", not
+    which condition caused it.
+    """
+    from butlers.core.tool_call_capture import get_current_switchboard_client
+    from butlers.core_tools._domain_events import publish_domain_event_once
+
+    valid_until = now_utc + timedelta(days=_SYMPTOM_EXPIRES_DAYS)
+    try:
+        await publish_domain_event_once(
+            db_pool,
+            get_current_switchboard_client(),
+            event_type="health.recovery_state",
+            source_butler="health",
+            dedup_namespace="health.recovery_state",
+            dedup_key=dedup_key,
+            payload={
+                "state": recovery["state"],
+                "max_severity": recovery["max_severity"],
+                "symptom_count": recovery["symptom_count"],
+                "window_days": recovery["window_days"],
+                "valid_until": valid_until.isoformat(),
+            },
+        )
+    except Exception:
+        logger.warning(
+            "Health insight scan: failed to publish health.recovery_state (state=%s)",
+            recovery["state"],
+            exc_info=True,
+        )
 
 
 def _measurement_door_metadata(
@@ -481,6 +568,21 @@ async def run_insight_scan(
 
     # Determine ISO year-week for dedup_key
     year_week = now_utc.strftime("%Y-W%W")
+
+    # bu-317s5 slice 3: derive an overall recovery-state advisory from these
+    # same severity-floor-crossing rows and best-effort publish it as a
+    # TTL'd domain event -- distinct from the per-symptom-name owner
+    # notification loop below (this is a fleet-wide advisory, not an
+    # owner-facing message), so it runs regardless of that loop's own
+    # verbosity-driven early exit.
+    recovery = compute_recovery_state(symptom_rows)
+    if recovery is not None:
+        await _publish_recovery_state_event(
+            db_pool,
+            recovery=recovery,
+            now_utc=now_utc,
+            dedup_key=f"{year_week}-{recovery['state']}",
+        )
 
     for symptom_name, severities in symptom_groups.items():
         if len(severities) < _SYMPTOM_MIN_COUNT:

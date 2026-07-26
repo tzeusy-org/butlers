@@ -372,3 +372,70 @@ async def list_deliveries_for_event(
         uuid.UUID(str(event_id)),
     )
     return [_row_to_dict(r) for r in rows]
+
+
+async def list_recent_deliveries(
+    pool: asyncpg.Pool,
+    *,
+    subscriber_butler: str | None = None,
+    source_butler: str | None = None,
+    status: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> tuple[int, list[dict[str, Any]]]:
+    """List fan-out deliveries joined with their event, most-recent first.
+
+    Dashboard subscription-visibility read (bu-317s5 slice 2): unlike
+    :func:`list_deliveries_for_event` (all deliveries for one known event),
+    this is the fleet-wide "what has this butler recently been fanned out to
+    (or fanned out itself)" query, so it joins in ``event_type``/
+    ``source_butler``/``occurred_at`` from ``public.domain_events`` rather
+    than requiring the caller to already know the event id.
+
+    Returns ``(total, rows)`` where ``total`` is the unfiltered-by-page count
+    matching the given filters (for pagination).
+    """
+    conditions: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    if subscriber_butler is not None:
+        conditions.append(f"d.subscriber_butler = ${idx}")
+        args.append(subscriber_butler)
+        idx += 1
+    if source_butler is not None:
+        conditions.append(f"e.source_butler = ${idx}")
+        args.append(source_butler)
+        idx += 1
+    if status is not None:
+        conditions.append(f"d.status = ${idx}")
+        args.append(status)
+        idx += 1
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    total = await pool.fetchval(
+        f"""
+        SELECT count(*)
+        FROM public.domain_event_deliveries d
+        JOIN public.domain_events e ON e.id = d.event_id
+        {where}
+        """,
+        *args,
+    )
+    rows = await pool.fetch(
+        f"""
+        SELECT d.id, d.event_id, d.subscriber_butler, d.status, d.task_id, d.task_name,
+               d.error_message, d.delivered_at, d.created_at, d.updated_at,
+               e.event_type, e.source_butler, e.occurred_at
+        FROM public.domain_event_deliveries d
+        JOIN public.domain_events e ON e.id = d.event_id
+        {where}
+        ORDER BY d.created_at DESC
+        OFFSET ${idx} LIMIT ${idx + 1}
+        """,
+        *args,
+        offset,
+        limit,
+    )
+    return int(total or 0), [_row_to_dict(r) for r in rows]

@@ -254,11 +254,23 @@ async def run_travel_context_producer(
     is the container for its legs). Sets ``traveling`` with the destination as
     value; clears it when no trip is underway. Uses the default ``traveling``
     TTL as a crash backstop; the clear path handles the normal trip end.
+
+    bu-317s5 (domain-event bus slice 2): also best-effort publishes the
+    ``travel.trip_active`` domain event exactly once per trip's activation --
+    this same query already detects "a trip is underway right now," so rather
+    than a second deterministic job re-deriving the same condition, this
+    reuses the detection and fans the transition out via
+    ``publish_domain_event_once`` (memoized on the trip id, so the 15-minute
+    poll cadence re-observing the same active trip does not re-publish or
+    re-wake subscribers on every tick). Health is seeded (core_189) as a
+    standing subscriber to front-load medication prep. A bus hiccup here must
+    never break the context-bus signal write this producer is otherwise
+    responsible for.
     """
     del job_args
     row = await pool.fetchrow(
         """
-        SELECT destination, end_date, status
+        SELECT id, name, destination, start_date, end_date, status
         FROM travel.trips
         WHERE status = 'active'
            OR (status IN ('planned', 'active')
@@ -281,7 +293,46 @@ async def run_travel_context_producer(
         confidence=1.0,
         metadata={"source": "travel_trip", "status": row["status"]},
     )
+    await _publish_trip_active_event(pool, row)
     return {"signal": "traveling", "value": row["destination"]}
+
+
+async def _publish_trip_active_event(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
+    """Best-effort, at-most-once-per-trip publish of ``travel.trip_active``.
+
+    Isolated from :func:`run_travel_context_producer` so a domain-event-bus
+    failure (fan-out hiccup, Switchboard unavailable) can never fail the
+    context-bus signal write that already succeeded above -- mirrors
+    ``roster/travel/modules/tools.py::record_booking``'s best-effort publish
+    of ``travel.trip_booked``.
+    """
+    from butlers.core.tool_call_capture import get_current_switchboard_client
+    from butlers.core_tools._domain_events import publish_domain_event_once
+
+    trip_id = str(row["id"])
+    try:
+        await publish_domain_event_once(
+            pool,
+            get_current_switchboard_client(),
+            event_type="travel.trip_active",
+            source_butler="travel",
+            dedup_namespace="travel.trip_active",
+            dedup_key=trip_id,
+            payload={
+                "trip_id": trip_id,
+                "name": row["name"],
+                "destination": row["destination"],
+                "start_date": row["start_date"].isoformat(),
+                "end_date": row["end_date"].isoformat(),
+                "status": row["status"],
+            },
+        )
+    except Exception:
+        logger.warning(
+            "context_producer_travel: failed to publish travel.trip_active for trip_id=%s",
+            trip_id,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

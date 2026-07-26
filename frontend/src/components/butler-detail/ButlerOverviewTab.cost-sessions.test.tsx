@@ -79,6 +79,11 @@ vi.mock("@/hooks/use-delegation", () => ({
   useDelegationLedger: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }));
 
+vi.mock("@/hooks/use-domain-events", () => ({
+  useDomainEventSubscriptions: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useDomainEventDeliveries: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+}));
+
 // Stub heavy child components not under test here.
 vi.mock("@/components/notifications/notification-feed", () => ({
   NotificationFeed: () => <div data-testid="notification-feed" />,
