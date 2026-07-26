@@ -100,4 +100,48 @@ describe("useUndoWindow", () => {
     expect(runA).not.toHaveBeenCalled();
     expect(runB).toHaveBeenCalledTimes(1);
   });
+
+  it("scheduled action survives component unmount and fires after window elapses", () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    const { result, unmount } = renderHook(() => useUndoWindow("test-unmount-survives"));
+
+    act(() => {
+      result.current.schedule("a", run, 1000);
+    });
+    expect(run).not.toHaveBeenCalled();
+    expect(result.current.isScheduled("a")).toBe(true);
+
+    // Unmount the component mid-window — the action should still fire later
+    unmount();
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("action cancelled before unmount does not fire after unmount and window elapse", () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    const { result, unmount } = renderHook(() => useUndoWindow("test-unmount-cancelled"));
+
+    act(() => {
+      result.current.schedule("a", run, 1000);
+    });
+
+    // Cancel before unmounting
+    act(() => {
+      result.current.cancel("a");
+    });
+    expect(result.current.isScheduled("a")).toBe(false);
+
+    // Unmount the component
+    unmount();
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
 });
