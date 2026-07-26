@@ -55,7 +55,7 @@ import {
   chartableMeasurementTypes,
   selectKpiMeasurementSlots,
 } from "@/lib/measurement-vocabulary";
-import type { LatestMeasurementEntry, MeasurementSource } from "@/api/types.ts";
+import type { LatestMeasurementEntry, MeasurementSource, MeasurementTypeInfo } from "@/api/types.ts";
 import type { InsightCandidate } from "@/api/types.ts";
 
 import { AttentionList } from "@/components/overview/AttentionList.tsx";
@@ -277,6 +277,7 @@ function toAttentionItems(
 // ---------------------------------------------------------------------------
 
 const INSIGHT_PARAMS = { butler: "health", status: "pending" };
+const EMPTY_MEASUREMENT_TYPES: readonly MeasurementTypeInfo[] = [];
 
 export default function HealthOverviewPage() {
   // --- Voice briefing (no refetchInterval — LLM cost guard) ---
@@ -294,7 +295,7 @@ export default function HealthOverviewPage() {
     isError: measurementTypesError,
     refetch: refetchMeasurementTypes,
   } = useMeasurementTypes();
-  const measurementTypes = measurementTypesData?.types ?? [];
+  const measurementTypes = measurementTypesData?.types ?? EMPTY_MEASUREMENT_TYPES;
   const chartEligibleTypes = useMemo(
     () =>
       new Set(

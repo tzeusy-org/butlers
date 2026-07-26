@@ -1944,17 +1944,18 @@ export default function SpendPage() {
   // range. Its implicit fallback instead follows the Spend ledger's trailing
   // seven UTC days.
   const timeWindow = useTimeWindow(OWNER_TZ_DEFAULT)
+  const { setCustomRange } = timeWindow
   const [spendSearchParams] = useSearchParams()
   const usesImplicitUtcWindow = !hasExplicitSpendRange(spendSearchParams)
   const implicitUtcWindow = useMemo(() => utcDateWindow(7), [])
   const setImplicitSpendRange = useCallback(
     (from: Date, to: Date) => {
-      timeWindow.setCustomRange(
+      setCustomRange(
         toExplicitSpendRangeDate(from),
         toExplicitSpendRangeDate(to),
       )
     },
-    [timeWindow.setCustomRange],
+    [setCustomRange],
   )
   const spendWindow = usesImplicitUtcWindow
     ? {
