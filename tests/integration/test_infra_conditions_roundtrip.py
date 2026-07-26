@@ -23,6 +23,7 @@ mocked pool.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 
 import asyncpg
@@ -416,16 +417,11 @@ class TestEscalationProgression:
 # ---------------------------------------------------------------------------
 
 
-class TestIdentityVersionBumpTotality:
-    async def test_episode_under_a_retired_fingerprint_resolves_on_next_complete_snapshot(
+class TestIdentityVersionBumpProvenance:
+    async def test_complete_v2_snapshot_marks_v1_absence_as_superseded_and_links_episodes(
         self, pool: asyncpg.Pool
     ) -> None:
-        """A producer bumping its identity-payload version (Decision #1) stops
-        emitting the old fingerprint. This proves the old episode is not a
-        dead end: it exits on the very next complete snapshot under the new
-        identity scheme, exactly like an ordinary recovery -- see the
-        "Identity-version-bump totality" section of the infra_conditions
-        module docstring."""
+        """A declared v2 successor makes the v1 absence honest, not recovery."""
         source = "migration_drift"
         old_fp = compute_fingerprint(source, 1, {"chain": "core"})
         new_fp = compute_fingerprint(source, 2, {"chain": "core"})
@@ -434,7 +430,7 @@ class TestIdentityVersionBumpTotality:
         opened = await reconcile_snapshot(
             pool,
             source=source,
-            observations=[Observation(fingerprint=old_fp)],
+            observations=[Observation(fingerprint=old_fp, identity_version=1)],
             snapshot_complete=True,
             initial_grace_seconds=3600,
         )
@@ -445,7 +441,13 @@ class TestIdentityVersionBumpTotality:
         migrated = await reconcile_snapshot(
             pool,
             source=source,
-            observations=[Observation(fingerprint=new_fp)],
+            observations=[
+                Observation(
+                    fingerprint=new_fp,
+                    identity_version=2,
+                    predecessor_fingerprint=old_fp,
+                )
+            ],
             snapshot_complete=True,
             initial_grace_seconds=3600,
         )
@@ -458,3 +460,99 @@ class TestIdentityVersionBumpTotality:
         new_active = await get_active_condition(pool, source=source, fingerprint=new_fp)
         assert new_active is not None
         assert new_active["state"] == "open"
+        old_episode = await pool.fetchrow(
+            "SELECT id, metadata FROM public.infra_conditions WHERE source = $1 AND fingerprint = $2",
+            source,
+            old_fp,
+        )
+        assert old_episode is not None
+        assert json.loads(old_episode["metadata"])["identity_payload"] == {
+            "version": 1,
+            "resolution_reason": "superseded_by_identity_version_bump",
+            "successor": {
+                "condition_id": str(new_active["id"]),
+                "fingerprint": new_fp,
+                "version": 2,
+            },
+        }
+        reconfirmed = await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=new_fp, identity_version=2)],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+        assert reconfirmed[0].transition == "confirmed"
+        new_active = await get_active_condition(pool, source=source, fingerprint=new_fp)
+        assert new_active is not None
+        assert new_active["metadata"]["identity_payload"] == {
+            "version": 2,
+            "predecessor": {
+                "condition_id": str(old_episode["id"]),
+                "fingerprint": old_fp,
+                "version": 1,
+            },
+        }
+
+    async def test_complete_absence_without_version_successor_remains_ordinary_recovery(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        source = "ordinary_recovery"
+        fp = compute_fingerprint(source, 1, {"chain": "core"})
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp, identity_version=1)],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+
+        resolved = await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+
+        assert resolved[0].transition == "resolved"
+        row = await pool.fetchrow(
+            "SELECT metadata FROM public.infra_conditions WHERE source = $1 AND fingerprint = $2",
+            source,
+            fp,
+        )
+        assert row is not None
+        assert json.loads(row["metadata"])["identity_payload"] == {"version": 1}
+
+    async def test_incomplete_v2_snapshot_never_resolves_or_links_v1_episode(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        source = "incomplete_version_bump"
+        old_fp = compute_fingerprint(source, 1, {"chain": "core"})
+        new_fp = compute_fingerprint(source, 2, {"chain": "core"})
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=old_fp, identity_version=1)],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+
+        transitions = await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[
+                Observation(
+                    fingerprint=new_fp,
+                    identity_version=2,
+                    predecessor_fingerprint=old_fp,
+                )
+            ],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+
+        assert [transition.transition for transition in transitions] == ["opened"]
+        old_active = await get_active_condition(pool, source=source, fingerprint=old_fp)
+        assert old_active is not None
+        assert old_active["metadata"]["identity_payload"] == {"version": 1}

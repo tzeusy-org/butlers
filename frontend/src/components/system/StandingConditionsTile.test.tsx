@@ -231,6 +231,33 @@ describe("StandingConditionsTile -- resolved condition (auto-resolve provenance)
     expect(html).toContain("Resolved")
     expect(html).toContain("recovered after 1h")
   })
+
+  it("renders supersession rather than recovery for an identity-version successor", () => {
+    mockSuppressionCounts = new Map()
+    mockSuppressionIsError = false
+    mockConditionsResult = {
+      isPending: false,
+      data: makeFacts({
+        conditions: [
+          {
+            ...resolvedCondition,
+            metadata: {
+              identity_payload: {
+                version: 1,
+                resolution_reason: "superseded_by_identity_version_bump",
+                successor: { fingerprint: "c".repeat(64), version: 2 },
+              },
+            },
+          },
+        ],
+        total: 1,
+      }),
+    }
+
+    const html = render()
+    expect(html).toContain("Superseded by identity version v2")
+    expect(html).not.toContain("recovered after 1h")
+  })
 })
 
 // ---------------------------------------------------------------------------

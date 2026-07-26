@@ -53,15 +53,12 @@ resolves — see :func:`~butlers.core.condition_ledger._reconcile_source_locked`
 absence pass, which is keyed by ``source`` and never re-filters by
 fingerprint version.
 
-What this deliberately does NOT do (left to bu-rxo0l): it does not forward
-the old episode's identity/history onto the new fingerprint's first episode,
-and it does not give an operator an explicit "resolved because superseded by
-an identity-version bump" reason distinct from "resolved because it actually
-recovered" — both currently read as an ordinary snapshot-absence resolution.
-The guarantee this module makes is narrower but load-bearing: the state is
-never a dead end. An in-flight episode under a retired fingerprint exits on
-the producer's very next complete snapshot under the new identity scheme,
-the same way any other recovered condition does.
+When the first observation under the newer contract explicitly names the
+retired fingerprint as its predecessor, the shared ledger persists reciprocal
+episode links and records ``superseded_by_identity_version_bump`` rather than
+presenting the absence as recovery. The old fingerprint remains immutable;
+unlinked version changes and incomplete snapshots retain the ordinary
+snapshot-absence behavior.
 """
 
 from __future__ import annotations

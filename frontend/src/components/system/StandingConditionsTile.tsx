@@ -71,6 +71,18 @@ function conditionDotState(state: string): DispatchState {
   return "ok"
 }
 
+function supersedingIdentityVersion(condition: ConditionEntry): number | null {
+  if (condition.ledger !== "infra" || !condition.metadata) return null
+  const payload = condition.metadata.identity_payload
+  if (!payload || typeof payload !== "object") return null
+  const { resolution_reason: reason, successor } = payload as Record<string, unknown>
+  if (reason !== "superseded_by_identity_version_bump" || !successor || typeof successor !== "object") {
+    return null
+  }
+  const version = (successor as Record<string, unknown>).version
+  return typeof version === "number" ? version : null
+}
+
 function ConditionRow({
   condition,
   suppressedCount,
@@ -80,6 +92,7 @@ function ConditionRow({
   suppressedCount: number | null
 }) {
   const isResolved = condition.state === "resolved"
+  const supersededByVersion = supersedingIdentityVersion(condition)
   return (
     <li className="text-sm" data-testid="standing-condition-row">
       <div className="flex items-center justify-between gap-2">
@@ -107,12 +120,18 @@ function ConditionRow({
       ) : null}
       <div className="text-muted-foreground text-xs">
         {isResolved ? (
-          <>
-            Resolved <Time value={condition.resolved_at ?? condition.last_confirmed_at} mode="relative" />
-            {condition.recovered_after_s != null
-              ? ` (recovered after ${formatDurationCompact(condition.recovered_after_s * 1000)})`
-              : null}
-          </>
+          supersededByVersion !== null ? (
+            <>
+              Superseded by identity version v{supersededByVersion} <Time value={condition.resolved_at ?? condition.last_confirmed_at} mode="relative" />
+            </>
+          ) : (
+            <>
+              Resolved <Time value={condition.resolved_at ?? condition.last_confirmed_at} mode="relative" />
+              {condition.recovered_after_s != null
+                ? ` (recovered after ${formatDurationCompact(condition.recovered_after_s * 1000)})`
+                : null}
+            </>
+          )
         ) : (
           <>
             Detected <Time value={condition.first_detected_at} mode="relative" />
