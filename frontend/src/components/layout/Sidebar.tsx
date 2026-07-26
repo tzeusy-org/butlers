@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
 import { useSpendSummary } from '@/hooks/use-spend'
 import { useBadgeCounts } from '@/hooks/use-qa-badge'
+import { useRouteChunkPrefetchOnIntent } from '@/hooks/use-route-chunk-prefetch-on-intent'
 import { ButlerMark } from '@/components/ui/ButlerMark'
 import {
   Tooltip,
@@ -196,6 +197,9 @@ function FlatNavLink({
   const location = useLocation()
   const isActive = isPathActive(location.pathname, item.path, item.end)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
+  // Hover/focus intent -> route JS-chunk prefetch (bu-ep4ks.15). A no-op for
+  // any path not in lib/route-chunk-registry.ts's map.
+  const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
 
   return (
     <Tooltip>
@@ -204,6 +208,10 @@ function FlatNavLink({
           to={item.path}
           end={item.end}
           onClick={onNavClick}
+          onPointerEnter={chunkPrefetch.onPointerEnter}
+          onPointerLeave={chunkPrefetch.onPointerLeave}
+          onFocus={chunkPrefetch.onFocus}
+          onBlur={chunkPrefetch.onBlur}
           className={railItemClassName(isActive)}
           aria-label={item.tooltip ?? item.label}
         >
@@ -298,28 +306,62 @@ function NavGroup({
         {item.children.map((child) => {
           const childActive = isPathActive(location.pathname, child.path, child.end)
           return (
-            <Tooltip key={child.path}>
-              <TooltipTrigger asChild>
-                <NavLink
-                  to={child.path}
-                  end={child.end}
-                  onClick={onNavClick}
-                  className={[railItemClassName(childActive), 'pl-2'].join(' ')}
-                  aria-label={child.label}
-                >
-                  <span className="flex size-5 items-center justify-center rounded text-[10px] font-semibold text-muted-foreground/70">
-                    {child.label[0]}
-                  </span>
-                </NavLink>
-              </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>
-                {child.label}
-              </TooltipContent>
-            </Tooltip>
+            <NavGroupChildLink
+              key={child.path}
+              path={child.path}
+              end={child.end}
+              label={child.label}
+              isActive={childActive}
+              onNavClick={onNavClick}
+            />
           )
         })}
       </div>
     </div>
+  )
+}
+
+// One rail-group child link -- split out from NavGroup's `.map()` so
+// useRouteChunkPrefetchOnIntent (bu-ep4ks.15) can be called once per child
+// path rather than once per group (Rules of Hooks forbids calling a hook
+// inside the `.map()` callback directly).
+function NavGroupChildLink({
+  path,
+  end,
+  label,
+  isActive,
+  onNavClick,
+}: {
+  path: string
+  end?: boolean
+  label: string
+  isActive: boolean
+  onNavClick?: () => void
+}) {
+  const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <NavLink
+          to={path}
+          end={end}
+          onClick={onNavClick}
+          onPointerEnter={chunkPrefetch.onPointerEnter}
+          onPointerLeave={chunkPrefetch.onPointerLeave}
+          onFocus={chunkPrefetch.onFocus}
+          onBlur={chunkPrefetch.onBlur}
+          className={[railItemClassName(isActive), 'pl-2'].join(' ')}
+          aria-label={label}
+        >
+          <span className="flex size-5 items-center justify-center rounded text-[10px] font-semibold text-muted-foreground/70">
+            {label[0]}
+          </span>
+        </NavLink>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -667,12 +709,17 @@ function MobileFlatLink({
   const count = item.badgeKey && badgeCounts ? (badgeCounts[item.badgeKey] ?? 0) : 0
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
+  const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
 
   return (
     <NavLink
       to={item.path}
       end={item.end}
       onClick={onNavClick}
+      onPointerEnter={chunkPrefetch.onPointerEnter}
+      onPointerLeave={chunkPrefetch.onPointerLeave}
+      onFocus={chunkPrefetch.onFocus}
+      onBlur={chunkPrefetch.onBlur}
       className={({ isActive }) =>
         [
           'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
@@ -774,28 +821,58 @@ function MobileNavGroup({
         }`}
       >
         {item.children.map((child) => (
-          <NavLink
+          <MobileNavGroupChildLink
             key={child.path}
-            to={child.path}
+            path={child.path}
             end={child.end}
-            onClick={onNavClick}
-            className={({ isActive }) =>
-              [
-                'flex items-center gap-3 rounded-md pl-9 pr-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-sidebar-primary text-sidebar-primary-foreground'
-                  : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
-              ].join(' ')
-            }
-          >
-            <span className="flex size-5 items-center justify-center rounded text-[10px] font-semibold">
-              {child.label[0]}
-            </span>
-            <span className="flex-1">{child.label}</span>
-          </NavLink>
+            label={child.label}
+            onNavClick={onNavClick}
+          />
         ))}
       </div>
     </div>
+  )
+}
+
+// One mobile-group child link -- split out from MobileNavGroup's `.map()` so
+// useRouteChunkPrefetchOnIntent (bu-ep4ks.15) can be called once per child
+// path rather than once per group (Rules of Hooks forbids calling a hook
+// inside the `.map()` callback directly).
+function MobileNavGroupChildLink({
+  path,
+  end,
+  label,
+  onNavClick,
+}: {
+  path: string
+  end?: boolean
+  label: string
+  onNavClick?: () => void
+}) {
+  const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
+  return (
+    <NavLink
+      to={path}
+      end={end}
+      onClick={onNavClick}
+      onPointerEnter={chunkPrefetch.onPointerEnter}
+      onPointerLeave={chunkPrefetch.onPointerLeave}
+      onFocus={chunkPrefetch.onFocus}
+      onBlur={chunkPrefetch.onBlur}
+      className={({ isActive }) =>
+        [
+          'flex items-center gap-3 rounded-md pl-9 pr-3 py-2 text-sm font-medium transition-colors',
+          isActive
+            ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+            : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
+        ].join(' ')
+      }
+    >
+      <span className="flex size-5 items-center justify-center rounded text-[10px] font-semibold">
+        {label[0]}
+      </span>
+      <span className="flex-1">{label}</span>
+    </NavLink>
   )
 }
 

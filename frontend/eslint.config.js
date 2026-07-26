@@ -208,29 +208,18 @@ const ANIMATE_PULSE_SELECTORS = [
   },
 ]
 
-// bu-qvnce.14 slice 3: poll-policy lint. A bare numeric refetchInterval
-// hides whether an interval is the PRIMARY update path or a safety-net
-// reconciliation sweep sitting behind a live bus event -- see
-// src/lib/poll-policy.ts. Scoped to exactly the files already migrated onto
-// named tokens (POLL_BUS_RECONCILE_MS or an equally-named local constant)
-// rather than repo-wide: ~140 other refetchInterval call sites across the
-// app (use-health.ts, use-memory.ts, use-finance.ts, use-whatsapp.ts, etc.)
-// have not been migrated yet -- broadening this list is tracked as a
-// bu-qvnce.14 follow-up, not silently expanded here (a blanket rule would
-// break CI on every one of those pre-existing, legitimate intervals).
-const POLL_POLICY_FILES = [
-  'src/hooks/use-butlers.ts',
-  'src/hooks/use-timeline.ts',
-  'src/hooks/use-messenger.ts',
-  'src/hooks/use-sessions.ts',
-  'src/hooks/use-approvals.ts',
-  'src/hooks/use-spend.ts',
-  'src/hooks/use-issues.ts',
-  // bu-01r64.3: the 8th bus-covered hook -- previously had NO refetchInterval
-  // at all, now onto the same named-token pattern as the other seven.
-  'src/hooks/use-notifications.ts',
-]
-
+// bu-qvnce.14 slice 3 / bu-ep4ks.15: poll-policy lint. A bare numeric
+// refetchInterval hides whether an interval is the PRIMARY update path or a
+// safety-net reconciliation sweep sitting behind a live bus event -- see
+// src/lib/poll-policy.ts. Originally scoped to only the 8 files already
+// migrated onto named tokens (~140 other call sites deferred as a follow-up)
+// -- bu-ep4ks.15 closed that gap by migrating every remaining refetchInterval
+// site onto a named token (either POLL_BUS_RECONCILE_MS/an equally-named
+// shared token for bus-covered surfaces, or a locally-declared *_POLL_MS
+// constant for surfaces with no fleet-bus event type -- see e.g.
+// use-butlers.ts's BUTLERS_POLL_MS, use-health.ts's HEALTH_POLL_MS) and
+// applying POLL_POLICY_SELECTORS repo-wide via the base '**/*.ts' / '**/*.tsx'
+// blocks below instead of a hand-maintained file allowlist.
 const POLL_POLICY_SELECTORS = [
   {
     // Descendant (not direct-child) combinator: also catches a numeric
@@ -241,7 +230,10 @@ const POLL_POLICY_SELECTORS = [
       'refetchInterval must use a named poll-policy token (POLL_BUS_RECONCILE_MS from ' +
       'src/lib/poll-policy.ts, or an equally-named local constant), not a raw numeric ' +
       'literal -- a bare number hides whether this interval is a bus-covered reconciliation ' +
-      'sweep or the primary update path (bu-qvnce.14 slice 3).',
+      'sweep or the primary update path (bu-qvnce.14 slice 3, repo-wide since bu-ep4ks.15). ' +
+      'If this is a test asserting the actual resolved cadence (not the hook echoing its ' +
+      'own constant back), use a line-level eslint-disable-next-line with a one-line reason ' +
+      'instead of importing the constant, which would make the assertion tautological.',
   },
 ]
 
@@ -332,6 +324,103 @@ const NO_WINDOW_CONFIRM_SELECTORS = [
       'window.confirm is banned in this file (bu-ep4ks.11). Use ConfirmDialog ' +
       '(components/ui/confirm-dialog.tsx) instead -- it shows a pending state, can carry ' +
       'evidence, and matches the fleet\'s AlertDialog visual language.',
+  },
+]
+
+// bu-ep4ks.15: ban var(--category-N) (a chart/categorical hue, e.g. the blue
+// --category-1) standing in for a STATUS color. StateDot.tsx's exported
+// TONE_COLORS/STATE_COLORS registry is now the canonical status-color source
+// (green/amber/red/neutral only, per dashboard-design-language spec § State
+// Color Discipline) -- a categorical hue reused as a live status signal is
+// the exact "unguarded blue/purple" drift the population-coverage audit
+// flagged (TopologyGraph.tsx's staffer identity blue is the one deliberate,
+// reviewed exception, kept via a documented inline eslint-disable rather than
+// silently exempted from the rule).
+//
+// Scoped to NO_CATEGORICAL_STATUS_FILES (the two files this bead's registry
+// consolidation touches) rather than repo-wide: a broader audit of the ~17
+// files found using raw blue/purple/etc Tailwind shades for various badges
+// and banners (rule-promotion-banner.tsx, ingestion/StatusBadge.tsx,
+// education/QuizHistoryList.tsx, etc.) is a separate, larger sweep -- most of
+// those are informational-tone banners or fixed categorical tags, not all a
+// "healthy" status collision, and need per-file judgment this bead's scope
+// doesn't cover. Follow-up, not silently expanded here (mirrors the
+// POLL_POLICY_FILES / NO_WINDOW_CONFIRM_FILES scoping precedent above).
+const NO_CATEGORICAL_STATUS_FILES = [
+  'src/components/ui/StateDot.tsx',
+  'src/components/topology/TopologyGraph.tsx',
+]
+
+const NO_CATEGORICAL_STATUS_SELECTORS = [
+  {
+    selector: 'Literal[value=/var\\(--category-\\d+\\)/]',
+    message:
+      'var(--category-N) is a chart/categorical hue, not one of the three sanctioned status ' +
+      'colors (var(--red)/var(--amber)/var(--green), see StateDot.tsx\'s exported ' +
+      'TONE_COLORS/STATE_COLORS) -- using it as a live status signal is the "unguarded ' +
+      'blue/purple" drift bu-ep4ks.15 flagged. If this is a deliberate, reviewed exception ' +
+      '(e.g. a fixed identity hue), add a line-level eslint-disable-next-line with a ' +
+      'one-line reason instead of a rule-wide escape hatch.',
+  },
+]
+
+// bu-ep4ks.15: every raw <th> must declare a `scope` attribute (jsx-a11y has
+// no built-in rule for this -- it only validates `scope` when present, not
+// its absence). A screen reader announcing a data table with unscoped
+// headers cannot associate a cell with its column/row header at all. Applied
+// repo-wide via the base '**/*.tsx' block below rather than a file
+// allowlist: unlike POLL_POLICY_FILES/NO_WINDOW_CONFIRM_FILES, EVERY existing
+// <th> in this codebase was migrated onto `scope` in the same change that
+// added this rule (5 hand-rolled data tables -- ButlerRelationshipContactsTab,
+// ButlerFinanceFinancesTab, ButlerHomeDevicesTab, ButlerGeneralCollectionsTab,
+// ButlerQaInvestigationsTab -- plus the two pre-existing compliant sites,
+// components/ui/table.tsx's TableHead primitive and
+// approvals/attention-ledger-panel.tsx's scope="row"), so there is no
+// narrower starting scope to pick.
+const TH_SCOPE_SELECTORS = [
+  {
+    selector: 'JSXOpeningElement[name.name="th"]:not(:has(JSXAttribute[name.name="scope"]))',
+    message:
+      'A raw <th> must declare scope="col" (or scope="row" for a row header) -- without it, ' +
+      'a screen reader cannot associate the header with its column/row (bu-ep4ks.15). Prefer ' +
+      'TableHead from components/ui/table.tsx (defaults to scope="col") where the shadcn ' +
+      'Table primitives already fit; otherwise add scope directly.',
+  },
+]
+
+// bu-ep4ks.15: the secrets passport's hand-styled form fields strip the
+// native focus outline (`outline-none`) without adding any replacement focus
+// indicator -- a keyboard user tabbing through the Add/Edit Secret forms
+// gets zero visual feedback on which field is focused. Fixed at the four
+// cited sites (GoogleAppCredentials.tsx, Spine.tsx, ProviderConfigDrawer.tsx,
+// pages.tsx) onto the same `focus-visible:ring-[3px] focus-visible:ring-ring/50`
+// pattern components/ui/input.tsx and textarea.tsx already establish.
+//
+// Scoped to NO_UNGUARDED_OUTLINE_NONE_FILES (the passport family this bead
+// touches) rather than repo-wide: several other outline-none sites elsewhere
+// in the app already have a DIFFERENT replacement indicator (e.g.
+// ApprovalsPage.tsx's `focus:border-destructive/50`), and several are
+// deliberately-unfocusable sr-only headings (tabIndex={-1} programmatic
+// focus targets for a11y announcements, not real Tab-stops needing a visible
+// ring) -- both are legitimate, and a blanket repo-wide rule would false-
+// positive on them. Broadening this to a full repo audit is a follow-up, not
+// silently expanded here (mirrors the POLL_POLICY_FILES scoping precedent).
+const NO_UNGUARDED_OUTLINE_NONE_FILES = [
+  'src/components/secrets/passport/pages.tsx',
+  'src/components/secrets/passport/ProviderConfigDrawer.tsx',
+  'src/components/secrets/passport/GoogleAppCredentials.tsx',
+  'src/components/secrets/passport/Spine.tsx',
+]
+
+const NO_UNGUARDED_OUTLINE_NONE_SELECTORS = [
+  {
+    selector:
+      'Literal[value=/^(?!.*focus-visible:ring)(?!.*focus:ring)(?=.*\\boutline-none\\b).*$/s]',
+    message:
+      'outline-none strips the native focus indicator with no replacement (bu-ep4ks.15) -- a ' +
+      'keyboard user gets no visual feedback that this field is focused. Add ' +
+      'focus-visible:ring-[3px] focus-visible:ring-ring/50 (the pattern components/ui/input.tsx ' +
+      'and textarea.tsx already use), or another visible focus-visible indicator.',
   },
 ]
 
@@ -433,6 +522,7 @@ export default defineConfig([
         'error',
         ...HSL_VAR_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
@@ -452,9 +542,11 @@ export default defineConfig([
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
         ...HANDROLLED_OVERLAY_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
+        ...TH_SCOPE_SELECTORS,
       ],
     },
   },
@@ -469,30 +561,11 @@ export default defineConfig([
         ...HSL_VAR_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
-        ...ANIMATE_PULSE_SELECTORS,
-        ...FORMAT_CLONE_SELECTORS,
-        ...KEYDOWN_LISTENER_SELECTORS,
-      ],
-    },
-  },
-  {
-    // bu-qvnce.14 slice 3: poll-policy token enforcement, .ts hook files.
-    // Every one of these files has been fully migrated off raw numeric
-    // refetchInterval -- see the POLL_POLICY_FILES comment above for why
-    // this is scoped rather than repo-wide. Must repeat the base .ts
-    // selectors (HSL/STATUS) here too: flat config's `no-restricted-syntax`
-    // does NOT merge across matching blocks for the same file, so this block
-    // fully replaces (not adds to) the generic '**/*.ts' block for these files.
-    files: POLL_POLICY_FILES,
-    rules: {
-      'no-restricted-syntax': [
-        'error',
-        ...HSL_VAR_SELECTORS,
-        ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
+        ...TH_SCOPE_SELECTORS,
       ],
     },
   },
@@ -515,6 +588,7 @@ export default defineConfig([
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
+        ...TH_SCOPE_SELECTORS,
       ],
     },
   },
@@ -528,6 +602,7 @@ export default defineConfig([
         'error',
         ...HSL_VAR_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
       ],
@@ -543,8 +618,10 @@ export default defineConfig([
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
         ...HANDROLLED_OVERLAY_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
+        ...TH_SCOPE_SELECTORS,
       ],
     },
   },
@@ -562,10 +639,62 @@ export default defineConfig([
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
         ...HANDROLLED_OVERLAY_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...TH_SCOPE_SELECTORS,
+      ],
+    },
+  },
+  {
+    // bu-ep4ks.15: no-categorical-status-color, scoped -- see
+    // NO_CATEGORICAL_STATUS_FILES comment above for why this isn't repo-wide.
+    // Must repeat the general '**/*.tsx' block's full selector set (flat
+    // config does not merge no-restricted-syntax across matching blocks for
+    // the same file). Harmless to apply the non-ui selector set (including
+    // PRIMITIVE_REDECLARATION/HANDROLLED_OVERLAY) to StateDot.tsx too -- it
+    // declares neither, so those simply never match there.
+    files: NO_CATEGORICAL_STATUS_FILES,
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...HEX_COLOR_SELECTORS,
+        ...PRIMITIVE_REDECLARATION_SELECTORS,
+        ...HANDROLLED_OVERLAY_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
+        ...NO_CATEGORICAL_STATUS_SELECTORS,
+        ...TH_SCOPE_SELECTORS,
+      ],
+    },
+  },
+  {
+    // bu-ep4ks.15: no-unguarded-outline-none, scoped -- see
+    // NO_UNGUARDED_OUTLINE_NONE_FILES comment above for why this isn't
+    // repo-wide. Must repeat the general '**/*.tsx' block's full selector set
+    // (flat config does not merge no-restricted-syntax across matching
+    // blocks for the same file).
+    files: NO_UNGUARDED_OUTLINE_NONE_FILES,
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...HEX_COLOR_SELECTORS,
+        ...PRIMITIVE_REDECLARATION_SELECTORS,
+        ...HANDROLLED_OVERLAY_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
+        ...TH_SCOPE_SELECTORS,
+        ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
       ],
     },
   },

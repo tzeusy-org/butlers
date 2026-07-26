@@ -200,9 +200,9 @@ function CollectionsDirectory({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    <th className="py-1.5 pr-3 text-left font-medium">Name</th>
-                    <th className="py-1.5 pr-3 text-left font-medium">Items</th>
-                    <th className="py-1.5 text-left font-medium">Created</th>
+                    <th scope="col" className="py-1.5 pr-3 text-left font-medium">Name</th>
+                    <th scope="col" className="py-1.5 pr-3 text-left font-medium">Items</th>
+                    <th scope="col" className="py-1.5 text-left font-medium">Created</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">

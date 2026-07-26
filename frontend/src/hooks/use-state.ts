@@ -7,13 +7,21 @@ import { toast } from "sonner";
 
 import { deleteButlerState, getButlerState, setButlerState } from "@/api/index.ts";
 
+/**
+ * Primary poll interval for butler state store queries (bu-ep4ks.15).
+ * No fleet-bus event type covers this domain (see
+ * event-cache-registry.ts's EVENT_CACHE_REGISTRY) -- this cadence IS
+ * the update path, not a reconciliation sweep.
+ */
+const BUTLER_STATE_POLL_MS = 30_000;
+
 /** Fetch all state entries for a butler with auto-refresh. */
 export function useButlerState(butlerName: string) {
   return useQuery({
     queryKey: ["butlers", butlerName, "state"],
     queryFn: () => getButlerState(butlerName),
     enabled: !!butlerName,
-    refetchInterval: 30_000,
+    refetchInterval: BUTLER_STATE_POLL_MS,
   });
 }
 

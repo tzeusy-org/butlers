@@ -353,6 +353,16 @@ const CHART_W = 800
 const CHART_H = 200
 const CHART_PAD = { top: 16, right: 24, bottom: 32, left: 56 }
 
+/**
+ * Daily-spend poll fallback used by this page (bu-ep4ks.15). Explicitly
+ * overrides useDailySpend's own bus-aware default -- "daily-costs" IS
+ * bus-covered (spendPatch, event-cache-registry.ts), so this fixed 60s only
+ * governs the gap between bus events, not staleness beyond that. Preserved
+ * as-is (pre-existing behavior); not reclassified onto useBusAwarePollInterval
+ * here, which would be a cadence behavior change outside this coverage pass.
+ */
+const SPEND_DAILY_POLL_OVERRIDE_MS = 60_000
+
 interface ForecastChartProps {
   days: ForecastDay[]
   ceiling_usd: number | null
@@ -1868,7 +1878,7 @@ export default function SpendPage() {
     isLoading: dailyLoading,
     isError: dailyError,
   } = useDailySpend(spendWindow.from, spendWindow.to, {
-    refetchInterval: spendWindow.pollingDisabled ? false : 60_000,
+    refetchInterval: spendWindow.pollingDisabled ? false : SPEND_DAILY_POLL_OVERRIDE_MS,
     ...(spendDateKeyTimezone ? { dateKeyTimezone: spendDateKeyTimezone } : {}),
   })
   const dailySourceError = dailyResponse?.meta?.source_error === true

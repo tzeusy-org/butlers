@@ -66,7 +66,12 @@ describe("rule-promotion polling", () => {
   it("polls the pending surface every 30 seconds for scheduler transitions", () => {
     useRulePromotions();
 
+    // Hardcoded 30_000 (not RULE_PROMOTION_POLL_MS) is intentional: this test
+    // verifies the ACTUAL configured cadence, not that the hook echoes back
+    // whatever its own constant happens to hold -- importing the constant
+    // here would make the assertion tautological (bu-ep4ks.15).
     expect(vi.mocked(useQuery)).toHaveBeenCalledWith(
+      // eslint-disable-next-line no-restricted-syntax -- see reason above
       expect.objectContaining({ refetchInterval: 30_000 }),
     );
   });
@@ -75,6 +80,7 @@ describe("rule-promotion polling", () => {
     useRulePromotionStats();
 
     expect(vi.mocked(useQuery)).toHaveBeenCalledWith(
+      // eslint-disable-next-line no-restricted-syntax -- see reason above
       expect.objectContaining({ refetchInterval: 30_000 }),
     );
   });

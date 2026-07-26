@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
-import { StateDot } from "./StateDot"
+import { StateDot, STATE_COLORS, STATE_LABELS, TONE_COLORS } from "./StateDot"
 
 // ---------------------------------------------------------------------------
 // Color tokens per state
@@ -35,6 +35,26 @@ describe("StateDot: state-to-color mapping", () => {
       expect(html).toContain(token)
     })
   }
+})
+
+// ---------------------------------------------------------------------------
+// Exported registry (bu-ep4ks.15) -- STATE_COLORS/STATE_LABELS/TONE_COLORS
+// must stay public so other files import them instead of hand-rolling copies.
+// ---------------------------------------------------------------------------
+
+describe("StateDot: exported color registry", () => {
+  it("exports STATE_COLORS and STATE_LABELS with matching key sets", () => {
+    expect(Object.keys(STATE_COLORS).sort()).toEqual(Object.keys(STATE_LABELS).sort())
+  })
+
+  it("exports TONE_COLORS covering the canonical CellTone vocabulary", () => {
+    expect(TONE_COLORS).toEqual({
+      green: "var(--green)",
+      amber: "var(--amber)",
+      red: "var(--red)",
+      neutral: "var(--dim)",
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

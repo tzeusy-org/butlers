@@ -70,6 +70,17 @@ export const ingestionEventKeys = {
     ["ingestion", "events-histogram", params] as const,
 };
 
+/**
+ * Default reconciliation-poll fallback for the events list (bu-ep4ks.15).
+ * ingestionEventKeys.list's ["ingestion", "events", ...] prefix IS invalidated
+ * by ingestionPatch (event-cache-registry.ts) on every "ingestion" bus event,
+ * so this is a safety-net sweep, not the primary path -- kept at its
+ * existing 30s value rather than reclassified onto the blessed 5-minute
+ * POLL_BUS_RECONCILE_MS pattern, which would be a cadence behavior change
+ * outside this coverage pass's scope.
+ */
+const INGESTION_EVENTS_POLL_DEFAULT_MS = 30_000;
+
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
@@ -111,7 +122,10 @@ export function useIngestionEvents(
     staleTime: 30_000,
     // Refetch only the first page at the interval; infinite queries refetch all
     // loaded pages but we only need freshness from the newest (first) page.
-    refetchInterval: options?.refetchInterval !== undefined ? options.refetchInterval : 30_000,
+    refetchInterval:
+      options?.refetchInterval !== undefined
+        ? options.refetchInterval
+        : INGESTION_EVENTS_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
     // Never-blank list (JARVIS audit move 10): keep the previous filter's
     // pages visible while a filter change re-keys the query and refetches.

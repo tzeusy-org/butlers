@@ -20,12 +20,21 @@ import type {
   QuizResponseParams,
 } from "@/api/index.ts";
 
+/**
+ * Primary poll intervals for education queries (bu-ep4ks.15). No fleet-bus event
+ * type covers this domain (see event-cache-registry.ts's EVENT_CACHE_REGISTRY)
+ * -- these cadences ARE the update path, not a reconciliation sweep. Distinct
+ * constants preserve each endpoint's existing (pre-lint) cadence choice.
+ */
+const EDUCATION_POLL_MS = 30_000;
+const EDUCATION_POLL_SLOW_MS = 60_000;
+
 /** List mind maps with optional status filter and pagination. */
 export function useMindMaps(params?: MindMapListParams) {
   return useQuery({
     queryKey: ["education", "mind-maps", params],
     queryFn: () => getEducationMindMaps(params),
-    refetchInterval: 30_000,
+    refetchInterval: EDUCATION_POLL_MS,
   });
 }
 
@@ -35,7 +44,7 @@ export function useMindMap(mindMapId: string | null) {
     queryKey: ["education", "mind-map", mindMapId],
     queryFn: () => getEducationMindMap(mindMapId!),
     enabled: !!mindMapId,
-    refetchInterval: 30_000,
+    refetchInterval: EDUCATION_POLL_MS,
   });
 }
 
@@ -45,7 +54,7 @@ export function useFrontierNodes(mindMapId: string | null) {
     queryKey: ["education", "frontier", mindMapId],
     queryFn: () => getEducationMindMapFrontier(mindMapId!),
     enabled: !!mindMapId,
-    refetchInterval: 30_000,
+    refetchInterval: EDUCATION_POLL_MS,
   });
 }
 
@@ -55,7 +64,7 @@ export function useMindMapAnalytics(mindMapId: string | null, trendDays?: number
     queryKey: ["education", "analytics", mindMapId, trendDays],
     queryFn: () => getEducationMindMapAnalytics(mindMapId!, trendDays),
     enabled: !!mindMapId,
-    refetchInterval: 30_000,
+    refetchInterval: EDUCATION_POLL_MS,
   });
 }
 
@@ -65,7 +74,7 @@ export function useMasterySummary(mindMapId: string | null) {
     queryKey: ["education", "mastery-summary", mindMapId],
     queryFn: () => getEducationMasterySummary(mindMapId!),
     enabled: !!mindMapId,
-    refetchInterval: 30_000,
+    refetchInterval: EDUCATION_POLL_MS,
   });
 }
 
@@ -191,7 +200,7 @@ export function useQuizResponses(params?: QuizResponseParams) {
     queryKey: ["education", "quiz-responses", params],
     queryFn: () => getEducationQuizResponses(params),
     enabled: !!(params?.mind_map_id || params?.node_id),
-    refetchInterval: 30_000,
+    refetchInterval: EDUCATION_POLL_MS,
   });
 }
 
@@ -200,7 +209,7 @@ export function useCrossTopicAnalytics() {
   return useQuery({
     queryKey: ["education", "cross-topic"],
     queryFn: () => getEducationCrossTopicAnalytics(),
-    refetchInterval: 30_000,
+    refetchInterval: EDUCATION_POLL_MS,
   });
 }
 
@@ -239,7 +248,7 @@ export function useMindMapAnalyticsTrend(mindMapId: string | null, days: number 
     queryKey: ["education", "analytics-trend", mindMapId, days],
     queryFn: () => getEducationMindMapAnalyticsTrend(mindMapId!, days),
     enabled: !!mindMapId,
-    refetchInterval: 60_000,
+    refetchInterval: EDUCATION_POLL_SLOW_MS,
     // Align staleTime with the polling interval so window-focus/mount refetches
     // don't fire extra requests between poll cycles (same rationale as
     // useAllPendingReviews / useAllMasterySummaries).

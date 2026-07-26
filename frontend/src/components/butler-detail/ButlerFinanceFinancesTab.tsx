@@ -386,7 +386,7 @@ function TransactionsPanel({
             <table className="w-full text-sm" data-testid="transactions-table">
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
-                  <th className="py-1 pr-3 text-left font-medium w-8">
+                  <th scope="col" className="py-1 pr-3 text-left font-medium w-8">
                     <Checkbox
                       checked={allSelected}
                       onCheckedChange={(c) => onToggleAll(rowIds, c === true)}
@@ -394,10 +394,10 @@ function TransactionsPanel({
                       data-testid="select-all-checkbox"
                     />
                   </th>
-                  <th className="py-1 pr-3 text-left font-medium">Date</th>
-                  <th className="py-1 pr-3 text-left font-medium">Merchant</th>
-                  <th className="py-1 pr-3 text-left font-medium">Category</th>
-                  <th className="py-1 text-right font-medium">Amount</th>
+                  <th scope="col" className="py-1 pr-3 text-left font-medium">Date</th>
+                  <th scope="col" className="py-1 pr-3 text-left font-medium">Merchant</th>
+                  <th scope="col" className="py-1 pr-3 text-left font-medium">Category</th>
+                  <th scope="col" className="py-1 text-right font-medium">Amount</th>
                 </tr>
               </thead>
               <tbody className="divide-y">

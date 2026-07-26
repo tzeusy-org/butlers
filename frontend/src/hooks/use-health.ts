@@ -62,12 +62,21 @@ import type {
   SymptomUpdateRequest,
 } from "@/api/index.ts";
 
+/**
+ * Primary poll intervals for health butler queries (bu-ep4ks.15). No fleet-bus event
+ * type covers this domain (see event-cache-registry.ts's EVENT_CACHE_REGISTRY)
+ * -- these cadences ARE the update path, not a reconciliation sweep. Distinct
+ * constants preserve each endpoint's existing (pre-lint) cadence choice.
+ */
+const HEALTH_POLL_MS = 30_000;
+const HEALTH_POLL_SLOW_MS = 60_000;
+
 /** Fetch the observed active measurement vocabulary for Health read surfaces. */
 export function useMeasurementTypes() {
   return useQuery({
     queryKey: ["health-measurement-types"],
     queryFn: getMeasurementTypes,
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -79,7 +88,7 @@ export function useMeasurements(
   return useQuery({
     queryKey: ["health-measurements", params],
     queryFn: () => getMeasurements(params),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
     enabled: options?.enabled ?? true,
   });
 }
@@ -97,7 +106,7 @@ export function useMeasurementTrend(
   return useQuery({
     queryKey: ["health-measurement-trend", params],
     queryFn: () => getMeasurementsTrend(params),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
     enabled: !!params.type && (options?.enabled ?? true),
   });
 }
@@ -154,7 +163,7 @@ export function useMedications(params?: MedicationParams) {
   return useQuery({
     queryKey: ["health-medications", params],
     queryFn: () => getMedications(params),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -167,7 +176,7 @@ export function useMedicationDoses(
     queryKey: ["health-medication-doses", medicationId, params],
     queryFn: () => getMedicationDoses(medicationId, params),
     enabled: !!medicationId,
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -186,7 +195,7 @@ export function useMedicationAdherence(
     queryKey: ["health-medication-adherence", medicationId, params],
     queryFn: () => getMedicationAdherence(medicationId, params),
     enabled: !!medicationId,
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -259,7 +268,7 @@ export function useConditions(params?: { offset?: number; limit?: number }) {
   return useQuery({
     queryKey: ["health-conditions", params],
     queryFn: () => getConditions(params),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -311,7 +320,7 @@ export function useSymptoms(params?: SymptomParams) {
   return useQuery({
     queryKey: ["health-symptoms", params],
     queryFn: () => getSymptoms(params),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -363,7 +372,7 @@ export function useMeals(params?: MealParams) {
   return useQuery({
     queryKey: ["health-meals", params],
     queryFn: () => getMeals(params),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -422,7 +431,7 @@ export function useNutritionSummary(params: Partial<NutritionSummaryParams>) {
     queryFn: () =>
       getNutritionSummary({ start: params.start!, end: params.end! }),
     enabled: Boolean(params.start && params.end),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -431,7 +440,7 @@ export function useResearch(params?: ResearchParams) {
   return useQuery({
     queryKey: ["health-research", params],
     queryFn: () => getResearch(params),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
   });
 }
 
@@ -486,7 +495,7 @@ export function useMeasurementsLatest(types: string[]) {
   return useQuery({
     queryKey: ["health-measurements-latest", types],
     queryFn: () => getMeasurementsLatest(types),
-    refetchInterval: 30_000,
+    refetchInterval: HEALTH_POLL_MS,
     enabled: types.length > 0,
   });
 }
@@ -500,7 +509,7 @@ export function useSleepLatest() {
   return useQuery({
     queryKey: ["health-sleep-latest"],
     queryFn: () => getSleepLatest(),
-    refetchInterval: 60_000,
+    refetchInterval: HEALTH_POLL_SLOW_MS,
   });
 }
 
@@ -513,6 +522,6 @@ export function useMeasurementSources() {
   return useQuery({
     queryKey: ["health-measurement-sources"],
     queryFn: () => getMeasurementSources(),
-    refetchInterval: 60_000,
+    refetchInterval: HEALTH_POLL_SLOW_MS,
   });
 }

@@ -25,6 +25,12 @@ export const whatsappKeys = {
   pairPoll: () => ["whatsapp", "pair-poll"] as const,
 };
 
+/**
+ * Fast poll while the QR pairing modal is open (bu-ep4ks.15). No fleet-bus
+ * event type covers WhatsApp pairing -- this cadence IS the update path.
+ */
+const WHATSAPP_PAIR_POLL_MS = 2_000;
+
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
@@ -53,7 +59,7 @@ export function useWhatsAppPairPoll({ enabled = true }: { enabled?: boolean } = 
   return useQuery({
     queryKey: whatsappKeys.pairPoll(),
     queryFn: () => pollWhatsAppPairing(),
-    refetchInterval: enabled ? 2_000 : false,
+    refetchInterval: enabled ? WHATSAPP_PAIR_POLL_MS : false,
     retry: false,
   });
 }

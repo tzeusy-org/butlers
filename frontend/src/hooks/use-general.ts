@@ -27,12 +27,21 @@ import {
   useOptimisticMutation,
 } from "@/hooks/use-optimistic-mutation";
 
+/**
+ * Primary poll intervals for General butler and Switchboard queries (bu-ep4ks.15). No fleet-bus event
+ * type covers this domain (see event-cache-registry.ts's EVENT_CACHE_REGISTRY)
+ * -- these cadences ARE the update path, not a reconciliation sweep. Distinct
+ * constants preserve each endpoint's existing (pre-lint) cadence choice.
+ */
+const GENERAL_POLL_MS = 30_000;
+const GENERAL_POLL_SLOW_MS = 60_000;
+
 /** Fetch the switchboard routing log. */
 export function useRoutingLog(params?: RoutingLogParams) {
   return useQuery({
     queryKey: ["switchboard-routing-log", params],
     queryFn: () => getRoutingLog(params),
-    refetchInterval: 30_000,
+    refetchInterval: GENERAL_POLL_MS,
   });
 }
 
@@ -41,7 +50,7 @@ export function useRegistry() {
   return useQuery({
     queryKey: ["switchboard-registry"],
     queryFn: () => getRegistry(),
-    refetchInterval: 30_000,
+    refetchInterval: GENERAL_POLL_MS,
   });
 }
 
@@ -83,7 +92,7 @@ export function useGeneralStats() {
   return useQuery({
     queryKey: ["general-stats"],
     queryFn: () => getGeneralStats(),
-    refetchInterval: 60_000,
+    refetchInterval: GENERAL_POLL_SLOW_MS,
   });
 }
 
@@ -92,7 +101,7 @@ export function useGeneralCollections(params?: GeneralCollectionsParams) {
   return useQuery({
     queryKey: ["general-collections", params],
     queryFn: () => getGeneralCollections(params),
-    refetchInterval: 60_000,
+    refetchInterval: GENERAL_POLL_SLOW_MS,
   });
 }
 
@@ -101,6 +110,6 @@ export function useGeneralEntities(params?: GeneralEntitiesParams) {
   return useQuery({
     queryKey: ["general-entities", params],
     queryFn: () => getGeneralEntities(params),
-    refetchInterval: 60_000,
+    refetchInterval: GENERAL_POLL_SLOW_MS,
   });
 }

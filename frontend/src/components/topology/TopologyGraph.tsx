@@ -11,6 +11,7 @@ import "@xyflow/react/dist/style.css";
 
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { SourceDegradedNote } from "../ui/query-boundary";
+import { TONE_COLORS } from "../ui/StateDot";
 import type { CellTone } from "@/hooks/use-butler-status-board";
 
 interface ButlerNode {
@@ -64,9 +65,13 @@ const STATUS_COLORS: Record<string, string> = {
 
 // Staffers keep a fixed identity blue (--category-1) rather than the
 // per-butler hash used elsewhere, matching the pre-existing convention this
-// map already encoded before bu-86c4c.6 replaced the raw hex.
+// map already encoded before bu-86c4c.6 replaced the raw hex. Deliberate,
+// reviewed deviation from the three-status-color rule -- see
+// STAFFER_TONE_COLORS below for the fuller rationale (bu-ep4ks.15).
 const STAFFER_STATUS_COLORS: Record<string, string> = {
+  // eslint-disable-next-line no-restricted-syntax -- see reason above
   ok: "var(--category-1)",
+  // eslint-disable-next-line no-restricted-syntax -- see reason above
   online: "var(--category-1)",
   down: "var(--red)",
   offline: "var(--red)",
@@ -74,22 +79,17 @@ const STAFFER_STATUS_COLORS: Record<string, string> = {
   stale: "var(--amber)",
 };
 
-// Canonical tone -> color. Butlers use the same green/amber/red/neutral
-// vocabulary as the roster board; staffers get a blue "healthy" hue to keep
-// the vision's butler/staffer distinction visible, per the pre-existing
-// STAFFER_STATUS_COLORS convention.
-const TONE_COLORS: Record<CellTone, string> = {
-  green: "var(--green)",
-  amber: "var(--amber)",
-  red: "var(--red)",
-  neutral: "var(--dim)",
-};
-
+// Staffers keep a fixed identity blue (--category-1) for the "green"/healthy
+// tone rather than the roster board's canonical var(--green), to keep the
+// vision's butler/staffer distinction visible -- per the pre-existing
+// STAFFER_STATUS_COLORS convention above. This is a deliberate, reviewed
+// deviation from the dashboard's three-status-color rule (bu-86c4c.6), not
+// an accidental invented color -- a categorical identity hue reused for a
+// "this is healthy" signal, same tradeoff STAFFER_STATUS_COLORS already made.
 const STAFFER_TONE_COLORS: Record<CellTone, string> = {
+  ...TONE_COLORS,
+  // eslint-disable-next-line no-restricted-syntax -- see reason above (bu-ep4ks.15)
   green: "var(--category-1)",
-  amber: "var(--amber)",
-  red: "var(--red)",
-  neutral: "var(--dim)",
 };
 
 function getStatusColor(status: string, agentType?: string, tone?: CellTone): string {
@@ -270,7 +270,8 @@ function buildEdges(
         id: `conn-${connId}`,
         source: connId,
         target: "switchboard",
-        style: { stroke: "var(--category-2)" }, // violet for connector edges (categorical, not state)
+        // eslint-disable-next-line no-restricted-syntax -- violet for connector edges (categorical, not a status signal)
+        style: { stroke: "var(--category-2)" },
         animated: connector.liveness === "online",
       });
     }

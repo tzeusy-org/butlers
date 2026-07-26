@@ -13,6 +13,14 @@ import {
   getOwnTracksStatus,
 } from "@/api/index.ts";
 
+/**
+ * Primary poll interval for OwnTracks status queries (bu-ep4ks.15).
+ * No fleet-bus event type covers this domain (see
+ * event-cache-registry.ts's EVENT_CACHE_REGISTRY) -- this cadence IS
+ * the update path, not a reconciliation sweep.
+ */
+const OWNTRACKS_POLL_MS = 60_000;
+
 // ---------------------------------------------------------------------------
 // Query keys
 // ---------------------------------------------------------------------------
@@ -37,7 +45,7 @@ export function useOwnTracksStatus() {
   return useQuery({
     queryKey: ownTracksKeys.status(),
     queryFn: () => getOwnTracksStatus(),
-    refetchInterval: 60_000,
+    refetchInterval: OWNTRACKS_POLL_MS,
     retry: false,
   });
 }

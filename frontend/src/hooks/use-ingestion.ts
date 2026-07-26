@@ -31,6 +31,16 @@ import {
 } from "@/api/index.ts";
 import type { IngestionPeriod } from "@/api/index.ts";
 
+/**
+ * Primary poll intervals for ingestion connector overview/stats queries (bu-ep4ks.15). No fleet-bus event
+ * type covers this domain (see event-cache-registry.ts's EVENT_CACHE_REGISTRY)
+ * -- these cadences ARE the update path, not a reconciliation sweep. Distinct
+ * constants preserve each endpoint's existing (pre-lint) cadence choice.
+ */
+const INGESTION_POLL_MS = 60_000;
+const INGESTION_POLL_FAST_MS = 30_000;
+const INGESTION_POLL_SLOW_MS = 120_000;
+
 // ---------------------------------------------------------------------------
 // Query key factory
 // ---------------------------------------------------------------------------
@@ -95,7 +105,7 @@ export function useConnectorSummaries(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ingestionKeys.connectorsList(),
     queryFn: () => listConnectorSummaries(),
-    refetchInterval: 60_000,
+    refetchInterval: INGESTION_POLL_MS,
     enabled: options?.enabled !== false,
   });
 }
@@ -114,7 +124,7 @@ export function useConnectorDetail(
     ),
     queryFn: () => getConnectorDetail(connectorType!, endpointIdentity!),
     enabled: !!connectorType && !!endpointIdentity,
-    refetchInterval: 30_000,
+    refetchInterval: INGESTION_POLL_FAST_MS,
   });
 }
 
@@ -136,7 +146,7 @@ export function useConnectorStats(
     queryFn: () => getConnectorStats(connectorType!, endpointIdentity!, period),
     enabled:
       !!connectorType && !!endpointIdentity && options?.enabled !== false,
-    refetchInterval: 60_000,
+    refetchInterval: INGESTION_POLL_MS,
   });
 }
 
@@ -244,7 +254,7 @@ export function useConnectorSummariesWithAggregates(options?: { enabled?: boolea
   return useQuery({
     queryKey: ingestionKeys.connectorSummariesWithAggregates(),
     queryFn: () => getConnectorSummariesWithAggregates(),
-    refetchInterval: 60_000,
+    refetchInterval: INGESTION_POLL_MS,
     enabled: options?.enabled !== false,
   });
 }
@@ -260,7 +270,7 @@ export function usePipelineStats(
   return useQuery({
     queryKey: ingestionKeys.pipelineStats(window),
     queryFn: () => getPipelineStats(window),
-    refetchInterval: 60_000,
+    refetchInterval: INGESTION_POLL_MS,
     enabled: options?.enabled !== false,
   });
 }
@@ -285,7 +295,7 @@ export function useConnectorEvents(
     queryFn: () => getConnectorEvents(connectorType!, endpointIdentity!, limit),
     enabled:
       !!connectorType && !!endpointIdentity && options?.enabled !== false,
-    refetchInterval: 60_000,
+    refetchInterval: INGESTION_POLL_MS,
   });
 }
 
@@ -309,7 +319,7 @@ export function useConnectorIncidents(
     queryFn: () => getConnectorIncidents(connectorType!, endpointIdentity!, limit),
     enabled:
       !!connectorType && !!endpointIdentity && options?.enabled !== false,
-    refetchInterval: 60_000,
+    refetchInterval: INGESTION_POLL_MS,
   });
 }
 
@@ -332,6 +342,6 @@ export function useConnectorRoutingRules(
     queryFn: () => getConnectorRoutingRules(connectorType!, endpointIdentity!),
     enabled:
       !!connectorType && !!endpointIdentity && options?.enabled !== false,
-    refetchInterval: 120_000,
+    refetchInterval: INGESTION_POLL_SLOW_MS,
   });
 }

@@ -95,6 +95,17 @@ export const chroniclesKeys = {
     [...chroniclesKeys.all, "routines", params ?? {}] as const,
 };
 
+/**
+ * Default reconciliation-poll fallback for chronicles queries (bu-ep4ks.15).
+ * Every chroniclesKeys.* query is bus-covered (chroniclesPatch invalidates
+ * the whole ["chronicles"] prefix on every "chronicles" event), so this is a
+ * safety-net sweep, not the primary path -- but kept at its existing 30s
+ * value rather than reclassified onto the blessed 5-minute
+ * POLL_BUS_RECONCILE_MS pattern, which would be a cadence behavior change
+ * outside this coverage pass's scope.
+ */
+const CHRONICLES_POLL_DEFAULT_MS = 30_000;
+
 // ---------------------------------------------------------------------------
 // Family-prefix keys (bu-ep4ks.5) -- no params, so react-query's default
 // prefix matching invalidates every cached param variant of the family in
@@ -144,7 +155,7 @@ export function useChroniclesEpisodes(
   return useQuery({
     queryKey: chroniclesKeys.episodes(params),
     queryFn: () => getChroniclerEpisodes(params),
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    refetchInterval: options?.refetchInterval ?? CHRONICLES_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
   });
 }
@@ -172,7 +183,7 @@ export function useChroniclesEpisodesInfinite(
       if (!lastPage.meta.has_more) return undefined;
       return lastPage.meta.offset + lastPage.meta.limit;
     },
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    refetchInterval: options?.refetchInterval ?? CHRONICLES_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
   });
 }
@@ -187,7 +198,7 @@ export function useChroniclesSourceState(options?: ChroniclesHookOptions) {
   return useQuery({
     queryKey: chroniclesKeys.sourceState(),
     queryFn: () => getChroniclerSourceState(),
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    refetchInterval: options?.refetchInterval ?? CHRONICLES_POLL_DEFAULT_MS,
     refetchOnWindowFocus: true,
     enabled: options?.enabled !== false,
   });
@@ -442,7 +453,7 @@ export function useChroniclesPointEvents(
   return useQuery({
     queryKey: chroniclesKeys.pointEvents(params),
     queryFn: () => getChroniclerEvents(params),
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    refetchInterval: options?.refetchInterval ?? CHRONICLES_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
   });
 }

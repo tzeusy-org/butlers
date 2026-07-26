@@ -15,10 +15,14 @@
  * use-spend.ts already established (the "blessed Approvals pattern" the
  * 2026-07-04 JARVIS pursuit doc cites).
  *
- * Not every refetchInterval in the app has been migrated onto a named token
- * yet — see the eslint.config.js `POLL_POLICY_FILES` comment for the exact
- * (currently small) set of files this is enforced on, and the bu-qvnce.14
- * worker report for the follow-up to broaden it.
+ * Every refetchInterval site in the app is now enforced onto a named token
+ * (bu-ep4ks.15 broadened the lint from an 8-file allowlist to the generic
+ * TS/TSX blocks in eslint.config.js, i.e. repo-wide). Bus-covered surfaces
+ * should generally use POLL_BUS_RECONCILE_MS or useBusAwarePollInterval()
+ * (use-bus-aware-poll-interval.ts); surfaces with no matching fleet-bus event
+ * type declare their own locally-scoped `*_POLL_MS` constant instead (e.g.
+ * use-butlers.ts's BUTLERS_POLL_MS, use-health.ts's HEALTH_POLL_MS) — see
+ * each hook file for its own reasoning.
  */
 
 /**

@@ -17,6 +17,13 @@ import type {
   FinanceUpcomingBillsParams,
 } from "@/api/index.ts";
 
+/**
+ * Primary poll interval for finance butler queries (bu-ep4ks.15). No fleet-bus event
+ * type covers this domain (see event-cache-registry.ts's EVENT_CACHE_REGISTRY)
+ * -- this cadence IS the update path, not a reconciliation sweep.
+ */
+const FINANCE_POLL_MS = 60_000;
+
 // Never-blank floor (bu-nhcp5): every read hook below sets placeholderData so
 // a params change (e.g. a future date-range/filter control) keeps rendering
 // the outgoing window's rows instead of flashing back to a loading state.
@@ -27,7 +34,7 @@ export function useFinanceTransactions(params?: FinanceTransactionListParams) {
   return useQuery({
     queryKey: ["finance", "transactions", params],
     queryFn: () => getFinanceTransactions(params),
-    refetchInterval: 60_000,
+    refetchInterval: FINANCE_POLL_MS,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -37,7 +44,7 @@ export function useFinanceSubscriptions(params?: FinanceSubscriptionListParams) 
   return useQuery({
     queryKey: ["finance", "subscriptions", params],
     queryFn: () => getFinanceSubscriptions(params),
-    refetchInterval: 60_000,
+    refetchInterval: FINANCE_POLL_MS,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -47,7 +54,7 @@ export function useFinanceUpcomingBills(params?: FinanceUpcomingBillsParams) {
   return useQuery({
     queryKey: ["finance", "upcoming-bills", params],
     queryFn: () => getFinanceUpcomingBills(params),
-    refetchInterval: 60_000,
+    refetchInterval: FINANCE_POLL_MS,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -57,7 +64,7 @@ export function useFinanceSpendingSummary(params?: FinanceSpendingSummaryParams)
   return useQuery({
     queryKey: ["finance", "spending-summary", params],
     queryFn: () => getFinanceSpendingSummary(params),
-    refetchInterval: 60_000,
+    refetchInterval: FINANCE_POLL_MS,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -67,7 +74,7 @@ export function useFinanceAccounts(params?: FinanceAccountListParams) {
   return useQuery({
     queryKey: ["finance", "accounts", params],
     queryFn: () => getFinanceAccounts(params),
-    refetchInterval: 60_000,
+    refetchInterval: FINANCE_POLL_MS,
     placeholderData: (previousData) => previousData,
   });
 }

@@ -73,6 +73,15 @@ const WORKSPACE_PAGE_SIZE = 500;
 /** Safety cap on cursor follows so a runaway window can't loop forever. */
 const WORKSPACE_MAX_PAGES = 20;
 
+/**
+ * Primary poll interval for the connected-accounts list (bu-ep4ks.15).
+ * Unlike the workspace queries above, ["calendar-accounts"] is NOT one of
+ * the keys calendarPatch invalidates (see event-cache-registry.ts) -- account
+ * connect/disconnect is a settings action, not a projection update the bus
+ * carries, so this stays on its own fixed poll rather than useBusAwarePollInterval.
+ */
+const CALENDAR_ACCOUNTS_POLL_MS = 60_000;
+
 interface CalendarSourceSyncEnabledSnapshot {
   queryKey: readonly unknown[];
   sourceId: string;
@@ -465,7 +474,7 @@ export function useCalendarAccounts(options?: CalendarWorkspaceQueryOptions) {
     queryKey: ["calendar-accounts"],
     queryFn: () => getCalendarAccounts(),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 60_000,
+    refetchInterval: options?.refetchInterval ?? CALENDAR_ACCOUNTS_POLL_MS,
   });
 }
 

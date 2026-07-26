@@ -22,12 +22,19 @@ import {
 } from "@/api/index.ts";
 import type { TravelTripsParams } from "@/api/index.ts";
 
+/**
+ * Primary poll interval for travel butler queries (bu-ep4ks.15). No fleet-bus event
+ * type covers this domain (see event-cache-registry.ts's EVENT_CACHE_REGISTRY)
+ * -- this cadence IS the update path, not a reconciliation sweep.
+ */
+const TRAVEL_POLL_MS = 60_000;
+
 /** Fetch upcoming travel overview with urgency-ranked pre-trip actions. */
 export function useUpcomingTravel(withinDays?: number) {
   return useQuery({
     queryKey: ["travel", "upcoming", withinDays],
     queryFn: () => getTravelUpcoming(withinDays),
-    refetchInterval: 60_000,
+    refetchInterval: TRAVEL_POLL_MS,
   });
 }
 
@@ -36,7 +43,7 @@ export function useTravelTrips(params?: TravelTripsParams) {
   return useQuery({
     queryKey: ["travel", "trips", params],
     queryFn: () => getTravelTrips(params),
-    refetchInterval: 60_000,
+    refetchInterval: TRAVEL_POLL_MS,
   });
 }
 
@@ -57,6 +64,6 @@ export function useExpiringDocuments(days?: number) {
   return useQuery({
     queryKey: ["travel", "documents", "expiring", effectiveDays],
     queryFn: () => getTravelExpiringDocuments(effectiveDays),
-    refetchInterval: 60_000,
+    refetchInterval: TRAVEL_POLL_MS,
   });
 }

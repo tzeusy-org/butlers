@@ -15,6 +15,14 @@ import { useQuery } from "@tanstack/react-query";
 import { getButlerLogs } from "@/api/index.ts";
 import type { ButlerLogsParams } from "@/api/index.ts";
 
+/**
+ * Primary poll interval for butler logs queries (bu-ep4ks.15).
+ * No fleet-bus event type covers this domain (see
+ * event-cache-registry.ts's EVENT_CACHE_REGISTRY) -- this cadence IS
+ * the update path, not a reconciliation sweep.
+ */
+const BUTLER_LOGS_POLL_MS = 5_000;
+
 export function useButlerLogs(
   name: string,
   params?: ButlerLogsParams,
@@ -24,7 +32,7 @@ export function useButlerLogs(
     queryKey: ["butlers", name, "logs", params],
     queryFn: () => getButlerLogs(name, params),
     enabled: !!name && enabled,
-    refetchInterval: 5_000,
+    refetchInterval: BUTLER_LOGS_POLL_MS,
     // Keep previous data visible while re-fetching to avoid flicker.
     placeholderData: (prev) => prev,
   });

@@ -193,11 +193,11 @@ function DeviceInventory({ devices, isLoading, isError }: DeviceInventoryProps) 
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b text-xs text-muted-foreground">
-            <th className="pb-2 text-left font-medium">Device</th>
-            <th className="pb-2 text-left font-medium hidden sm:table-cell">Domain</th>
-            <th className="pb-2 text-left font-medium hidden md:table-cell">Area</th>
-            <th className="pb-2 text-left font-medium">State</th>
-            <th className="pb-2 text-right font-medium">Health</th>
+            <th scope="col" className="pb-2 text-left font-medium">Device</th>
+            <th scope="col" className="pb-2 text-left font-medium hidden sm:table-cell">Domain</th>
+            <th scope="col" className="pb-2 text-left font-medium hidden md:table-cell">Area</th>
+            <th scope="col" className="pb-2 text-left font-medium">State</th>
+            <th scope="col" className="pb-2 text-right font-medium">Health</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-border">

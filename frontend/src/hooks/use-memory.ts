@@ -51,12 +51,22 @@ import {
   useOptimisticMutation,
 } from "@/hooks/use-optimistic-mutation";
 
+/**
+ * Primary poll intervals for memory API queries (bu-ep4ks.15). No fleet-bus event
+ * type covers this domain (see event-cache-registry.ts's EVENT_CACHE_REGISTRY)
+ * -- these cadences ARE the update path, not a reconciliation sweep. Distinct
+ * constants preserve each endpoint's existing (pre-lint) cadence choice.
+ */
+const MEMORY_POLL_MS = 30_000;
+const MEMORY_POLL_FAST_MS = 15_000;
+const MEMORY_POLL_SLOW_MS = 60_000;
+
 /** Fetch aggregated memory statistics. */
 export function useMemoryStats() {
   return useQuery({
     queryKey: ["memory-stats"],
     queryFn: () => getMemoryStats(),
-    refetchInterval: 30_000,
+    refetchInterval: MEMORY_POLL_MS,
   });
 }
 
@@ -71,7 +81,7 @@ export function useMemoryRecentWrites(butler: string, limit = 10) {
   return useQuery({
     queryKey: ["memory-recent-writes", butler, limit],
     queryFn: () => getEpisodes({ butler, limit }),
-    refetchInterval: 15_000,
+    refetchInterval: MEMORY_POLL_FAST_MS,
     enabled: butler.length > 0,
   });
 }
@@ -81,7 +91,7 @@ export function useEpisodes(params?: EpisodeParams) {
   return useQuery({
     queryKey: ["memory-episodes", params],
     queryFn: () => getEpisodes(params),
-    refetchInterval: 30_000,
+    refetchInterval: MEMORY_POLL_MS,
   });
 }
 
@@ -99,7 +109,7 @@ export function useFacts(params?: FactParams) {
   return useQuery({
     queryKey: ["memory-facts", params],
     queryFn: () => getFacts(params),
-    refetchInterval: 30_000,
+    refetchInterval: MEMORY_POLL_MS,
   });
 }
 
@@ -225,7 +235,7 @@ export function useRules(params?: RuleParams) {
   return useQuery({
     queryKey: ["memory-rules", params],
     queryFn: () => getRules(params),
-    refetchInterval: 30_000,
+    refetchInterval: MEMORY_POLL_MS,
   });
 }
 
@@ -243,7 +253,7 @@ export function useMemoryActivity(limit?: number) {
   return useQuery({
     queryKey: ["memory-activity", limit],
     queryFn: () => getMemoryActivity(limit),
-    refetchInterval: 15_000,
+    refetchInterval: MEMORY_POLL_FAST_MS,
   });
 }
 
@@ -253,7 +263,7 @@ export function useEntities(params?: EntityParams) {
   return useQuery({
     queryKey: ["memory-entities", params],
     queryFn: () => getEntities(params),
-    refetchInterval: 30_000,
+    refetchInterval: MEMORY_POLL_MS,
   });
 }
 
@@ -404,7 +414,7 @@ export function useMemoryCompactionLog(limit?: number) {
   return useQuery({
     queryKey: ["memory-compaction-log", limit],
     queryFn: () => getMemoryCompactionLog(limit),
-    refetchInterval: 60_000,
+    refetchInterval: MEMORY_POLL_SLOW_MS,
   });
 }
 
@@ -466,6 +476,6 @@ export function useButlerFacts({
       return res.data ?? [];
     },
     select,
-    refetchInterval: 60_000,
+    refetchInterval: MEMORY_POLL_SLOW_MS,
   });
 }

@@ -17,6 +17,7 @@
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
+import type { CellTone } from "@/hooks/use-butler-status-board"
 
 /**
  * Entity states that drive dot color.
@@ -52,8 +53,13 @@ export interface StateDotProps extends React.HTMLAttributes<HTMLSpanElement> {
   size?: number
 }
 
-/** Maps each state to its CSS custom-property color. */
-const STATE_COLORS: Record<AnyDotState, string> = {
+/**
+ * Maps each state to its CSS custom-property color (bu-ep4ks.15: exported --
+ * this was the "private const while ~15 files hand-roll copies" the
+ * population-coverage audit flagged. Import this instead of re-declaring a
+ * local state/tone -> color map).
+ */
+export const STATE_COLORS: Record<AnyDotState, string> = {
   // Entity curation states
   unidentified: "var(--state-unidentified)",
   "duplicate-candidate": "var(--amber)",
@@ -67,8 +73,21 @@ const STATE_COLORS: Record<AnyDotState, string> = {
   waiting: "var(--dim,oklch(0.55_0_0))",
 }
 
+/**
+ * Canonical CellTone -> color map (bu-ep4ks.15). CellTone (neutral/green/
+ * amber/red, see use-butler-status-board.ts) is the OTHER status vocabulary
+ * duplicated across the dashboard (e.g. TopologyGraph.tsx's TONE_COLORS was
+ * a byte-for-byte copy of this same mapping) -- import this instead.
+ */
+export const TONE_COLORS: Record<CellTone, string> = {
+  green: "var(--green)",
+  amber: "var(--amber)",
+  red: "var(--red)",
+  neutral: "var(--dim)",
+}
+
 /** Human-readable label for each state (used as aria-label fallback). */
-const STATE_LABELS: Record<AnyDotState, string> = {
+export const STATE_LABELS: Record<AnyDotState, string> = {
   // Entity curation states
   unidentified: "Unidentified",
   "duplicate-candidate": "Duplicate candidate",

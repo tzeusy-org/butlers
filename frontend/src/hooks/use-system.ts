@@ -23,12 +23,22 @@ import {
   type SystemConditionsParams,
 } from "@/api/index.ts";
 
+/**
+ * Primary poll intervals for system queries (bu-ep4ks.15). No fleet-bus event
+ * type covers this domain (see event-cache-registry.ts's EVENT_CACHE_REGISTRY)
+ * -- these cadences ARE the update path, not a reconciliation sweep. Distinct
+ * constants preserve each endpoint's existing (pre-lint) cadence choice.
+ */
+const SYSTEM_POLL_MS = 60_000;
+const SYSTEM_POLL_SLOW_MS = 120_000;
+const SYSTEM_POLL_FAST_MS = 30_000;
+
 /** Fetch software version, process uptime, and start timestamp. */
 export function useInstanceFacts() {
   return useQuery({
     queryKey: ["system-instance"],
     queryFn: () => getInstanceFacts(),
-    refetchInterval: 60_000,
+    refetchInterval: SYSTEM_POLL_MS,
   });
 }
 
@@ -37,7 +47,7 @@ export function useDatabaseFacts() {
   return useQuery({
     queryKey: ["system-database"],
     queryFn: () => getDatabaseFacts(),
-    refetchInterval: 60_000,
+    refetchInterval: SYSTEM_POLL_MS,
   });
 }
 
@@ -46,7 +56,7 @@ export function useBackupFacts() {
   return useQuery({
     queryKey: ["system-backups"],
     queryFn: () => getBackupFacts(),
-    refetchInterval: 120_000,
+    refetchInterval: SYSTEM_POLL_SLOW_MS,
   });
 }
 
@@ -79,7 +89,7 @@ export function useButlerHeartbeats() {
   return useQuery({
     queryKey: ["system-butler-heartbeats"],
     queryFn: () => getButlerHeartbeats(),
-    refetchInterval: 30_000,
+    refetchInterval: SYSTEM_POLL_FAST_MS,
   });
 }
 
@@ -95,7 +105,7 @@ export function useHealthPosture() {
     queryKey: ["system-health-posture"],
     queryFn: () => getHealth(),
     // Posture is static across a process lifetime; check infrequently.
-    refetchInterval: 120_000,
+    refetchInterval: SYSTEM_POLL_SLOW_MS,
   });
 }
 
@@ -111,7 +121,7 @@ export function useInsightDeliveryState() {
   return useQuery({
     queryKey: ["system-insight-delivery"],
     queryFn: () => getInsightDeliveryState(),
-    refetchInterval: 60_000,
+    refetchInterval: SYSTEM_POLL_MS,
   });
 }
 
@@ -125,7 +135,7 @@ export function useDriftFacts() {
   return useQuery({
     queryKey: ["system-drift"],
     queryFn: () => getDriftFacts(),
-    refetchInterval: 60_000,
+    refetchInterval: SYSTEM_POLL_MS,
   });
 }
 
@@ -141,7 +151,7 @@ export function useDeploymentFacts() {
   return useQuery({
     queryKey: ["system-deployments"],
     queryFn: () => getDeploymentFacts(),
-    refetchInterval: 60_000,
+    refetchInterval: SYSTEM_POLL_MS,
   });
 }
 
@@ -156,6 +166,6 @@ export function useSystemConditions(params: SystemConditionsParams = {}) {
   return useQuery({
     queryKey: ["system-conditions", params],
     queryFn: () => getSystemConditions(params),
-    refetchInterval: 30_000,
+    refetchInterval: SYSTEM_POLL_FAST_MS,
   });
 }

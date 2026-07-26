@@ -287,7 +287,7 @@ export function HomeAssistantDrawerContent() {
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="http://homeassistant.local:8123"
-              className="font-mono text-[11px] p-2 outline-none w-full"
+              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -305,7 +305,7 @@ export function HomeAssistantDrawerContent() {
               value={token}
               onChange={(e) => setToken(e.target.value)}
               placeholder="paste long-lived access token"
-              className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+              className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -876,7 +876,7 @@ export function SteamDrawerContent() {
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="Steam Web API key"
-              className="font-mono text-[11px] p-2 outline-none w-full"
+              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -894,7 +894,7 @@ export function SteamDrawerContent() {
               value={steamId}
               onChange={(e) => setSteamId(e.target.value)}
               placeholder="76561198000000000"
-              className="font-mono text-[11px] p-2 outline-none w-full"
+              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -1165,7 +1165,7 @@ export function SpotifyDrawerContent() {
               value={clientId}
               onChange={(e) => setClientId(e.target.value)}
               placeholder="Spotify app client_id"
-              className="font-mono text-[11px] p-2 outline-none w-full"
+              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",

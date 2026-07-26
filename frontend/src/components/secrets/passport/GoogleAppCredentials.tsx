@@ -95,7 +95,7 @@ function Field({
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className="font-mono text-[12px] px-2.5 py-1.5 outline-none disabled:opacity-40"
+        className="font-mono text-[12px] px-2.5 py-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-40"
         style={{
           background: "var(--bg)",
           color: "var(--fg)",

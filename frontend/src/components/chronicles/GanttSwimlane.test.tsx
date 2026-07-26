@@ -16,7 +16,7 @@
 //   8. Tooltip uses Radix primitive: sensitive masking, "View details" link
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import { act } from "react"
 import { createRoot } from "react-dom/client"
@@ -485,7 +485,7 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
     )
     expect(html).toContain("gantt-bar-ep-cal-coord")
     // Bar has cursor-pointer class indicating clickability
-    expect(html).toContain('class="cursor-pointer"')
+    expect(html).toContain("cursor-pointer")
   })
 
   it("renders a calendar bar when payload has an unparseable location string", () => {
@@ -1034,5 +1034,67 @@ describe("GanttSwimlaneInner privacy contract (bu-6c5i6)", () => {
     // Note: Radix TooltipContent renders via portal and is not present in
     // static markup. Tooltip content (duration + category label for sensitive)
     // is exercised by interactive / e2e tests.
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 12. Keyboard reachability (bu-ep4ks.15)
+//
+// The bar is a hand-rolled `<g role="button">`, not a native <button> --
+// browsers do not make role="button" elements keyboard-focusable or
+// space/enter-activatable for free. Before this it had no tabIndex and no
+// onKeyDown, so it was reachable by mouse only.
+// ---------------------------------------------------------------------------
+
+describe("GanttSwimlaneInner keyboard reachability (bu-ep4ks.15)", () => {
+  it("is present in the tab order (tabIndex=0)", () => {
+    const ep = makeEpisode({ id: "ep-kbd-tabindex" })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain('tabindex="0"')
+  })
+
+  it("activates the episode click handler on Enter and Space", async () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    try {
+      const ep = makeEpisode({ id: "ep-kbd-activate" })
+      const onEpisodeClick = vi.fn()
+      await act(async () => {
+        root.render(
+          <GanttSwimlaneInner
+            episodes={[ep]}
+            windowStart={WINDOW_START}
+            windowEnd={WINDOW_END}
+            onEpisodeClick={onEpisodeClick}
+          />,
+        )
+      })
+
+      const bar = container.querySelector('[data-testid="gantt-bar-ep-kbd-activate"]')
+      expect(bar).not.toBeNull()
+
+      await act(async () => {
+        bar!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))
+      })
+      expect(onEpisodeClick).toHaveBeenCalledWith("ep-kbd-activate")
+
+      onEpisodeClick.mockClear()
+      await act(async () => {
+        bar!.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }))
+      })
+      expect(onEpisodeClick).toHaveBeenCalledWith("ep-kbd-activate")
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      document.body.removeChild(container)
+    }
   })
 })

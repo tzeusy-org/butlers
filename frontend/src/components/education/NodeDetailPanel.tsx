@@ -5,15 +5,8 @@ import { Time } from "@/components/ui/time";
 import { X } from "lucide-react";
 import { useMindMap } from "@/hooks/use-education";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
+import { masteryStatusBadgeClassName } from "./mastery-status";
 import QuizHistoryList from "./QuizHistoryList";
-
-const STATUS_COLORS: Record<string, string> = {
-  mastered: "bg-[var(--green)]/10 text-[var(--green)]",
-  reviewing: "bg-blue-100 text-blue-800",
-  learning: "bg-[var(--amber)]/10 text-[var(--amber-text)]",
-  diagnosed: "bg-slate-100 text-slate-800",
-  unseen: "bg-gray-100 text-gray-800",
-};
 
 interface NodeDetailPanelProps {
   mindMapId: string | null;
@@ -64,7 +57,7 @@ export default function NodeDetailPanel({
         <CardHeader className="flex flex-row items-start justify-between space-y-0">
           <div className="space-y-1">
             <CardTitle className="text-lg">{node.label}</CardTitle>
-            <Badge className={STATUS_COLORS[node.mastery_status] ?? STATUS_COLORS.unseen}>
+            <Badge className={masteryStatusBadgeClassName(node.mastery_status)}>
               {node.mastery_status}
             </Badge>
           </div>

@@ -1610,7 +1610,7 @@ export function PageUser({
             value={rotateValue}
             onChange={(e) => setRotateValue(e.target.value)}
             placeholder="paste token here"
-            className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
             style={{
               border: "1px solid var(--border-strong)",
               background: "var(--bg)",
@@ -2152,7 +2152,7 @@ export function PageSystem({
             value={setValue}
             onChange={(e) => setSetValue(e.target.value)}
             placeholder="paste value here"
-            className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
             style={{
               border: "1px solid var(--border-strong)",
               background: "var(--bg)",
@@ -2203,7 +2203,7 @@ export function PageSystem({
               <select
                 value={overrideButler}
                 onChange={(e) => setOverrideButler(e.target.value)}
-                className="font-mono text-[11px] p-1.5 outline-none"
+                className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 style={{
                   border: "1px solid var(--border-strong)",
                   background: "var(--bg)",
@@ -2223,7 +2223,7 @@ export function PageSystem({
             value={overrideValue}
             onChange={(e) => setOverrideValue(e.target.value)}
             placeholder="paste override value here"
-            className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
             style={{
               border: "1px solid var(--border-strong)",
               background: "var(--bg)",
@@ -2874,7 +2874,7 @@ export function PageCli({
             value={setTokenValue}
             onChange={(e) => setSetTokenValue(e.target.value)}
             placeholder={isApiKeyMode ? "paste api key here" : "paste token here"}
-            className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+            className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
             style={{
               border: "1px solid var(--border-strong)",
               background: "var(--bg)",
@@ -3435,7 +3435,7 @@ export function PassportAddPanel({
               onChange={(e) => handleSystemKeyChange(e.target.value)}
               placeholder="SECRET_KEY_NAME"
               list="system-key-suggestions"
-              className="font-mono text-[11px] p-2 outline-none w-full"
+              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -3462,7 +3462,7 @@ export function PassportAddPanel({
               value={systemValue}
               onChange={(e) => setSystemValue(e.target.value)}
               placeholder="paste value here"
-              className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+              className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -3478,7 +3478,7 @@ export function PassportAddPanel({
             <select
               value={systemCategory}
               onChange={(e) => setSystemCategory(e.target.value as SecretCategory)}
-              className="font-mono text-[11px] p-1.5 outline-none"
+              className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -3500,7 +3500,7 @@ export function PassportAddPanel({
               value={systemTarget}
               onChange={(e) => setSystemTarget(e.target.value)}
               placeholder="shared"
-              className="font-mono text-[11px] p-2 outline-none w-full"
+              className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
               style={{
                 border: "1px solid var(--border-strong)",
                 background: "var(--bg)",
@@ -3631,7 +3631,7 @@ export function PassportAddPanel({
                 <select
                   value={userType}
                   onChange={(e) => handleUserTypeChange(e.target.value)}
-                  className="font-mono text-[11px] p-1.5 outline-none"
+                  className="font-mono text-[11px] p-1.5 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                   style={{
                     border: "1px solid var(--border-strong)",
                     background: "var(--bg)",
@@ -3662,7 +3662,7 @@ export function PassportAddPanel({
                   value={userValue}
                   onChange={(e) => setUserValue(e.target.value)}
                   placeholder={USER_SECRET_TEMPLATES.find((t) => t.type === userType)?.description ?? "credential value"}
-                  className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+                  className="font-mono text-[11px] p-2 resize-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
                   style={{
                     border: "1px solid var(--border-strong)",
                     background: "var(--bg)",
@@ -3680,7 +3680,7 @@ export function PassportAddPanel({
                   value={userLabel}
                   onChange={(e) => setUserLabel(e.target.value)}
                   placeholder="human-readable label"
-                  className="font-mono text-[11px] p-2 outline-none w-full"
+                  className="font-mono text-[11px] p-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 w-full"
                   style={{
                     border: "1px solid var(--border-strong)",
                     background: "var(--bg)",

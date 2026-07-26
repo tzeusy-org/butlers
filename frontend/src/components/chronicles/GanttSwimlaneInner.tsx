@@ -311,8 +311,15 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
           role="button"
           aria-label={isSensitive ? "Private activity" : (episode.canonical_title ?? episode.source_name)}
           data-testid={`gantt-bar-${episode.id}`}
-          className="cursor-pointer"
+          className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
+          tabIndex={0}
           onClick={handleClick}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault()
+              handleClick()
+            }
+          }}
         >
           {/* Bar body */}
           <rect

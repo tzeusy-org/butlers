@@ -50,7 +50,7 @@ export function SpineSearch({
         onChange={(e) => onChange(e.target.value)}
         placeholder="search"
         aria-label="Search credentials"
-        className="w-full py-1.5 pl-4 pr-6 bg-transparent border-none outline-none font-mono text-[11px] tracking-[0.04em] text-fg placeholder:text-[var(--dim)]"
+        className="w-full py-1.5 pl-4 pr-6 bg-transparent border-none outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 font-mono text-[11px] tracking-[0.04em] text-fg placeholder:text-[var(--dim)]"
         data-spine-search="true"
       />
       <span

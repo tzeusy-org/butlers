@@ -13,6 +13,17 @@ import { reauthorizeCliCredential } from "@/api/client.ts";
 import type { CLIAuthSessionResponse } from "@/api/index.ts";
 import { secretsInventoryKeys } from "@/hooks/use-secrets-inventory.ts";
 
+/**
+ * Primary poll interval for CLI auth providers queries (bu-ep4ks.15).
+ * No fleet-bus event type covers this domain (see
+ * event-cache-registry.ts's EVENT_CACHE_REGISTRY) -- this cadence IS
+ * the update path, not a reconciliation sweep.
+ */
+const CLI_AUTH_POLL_MS = 30_000;
+
+/** Fast poll while a device-code auth session is pending (bu-ep4ks.15). */
+const CLI_AUTH_SESSION_POLL_MS = 2_000;
+
 // ---------------------------------------------------------------------------
 // Query keys
 // ---------------------------------------------------------------------------
@@ -31,7 +42,7 @@ export function useCLIAuthProviders() {
   return useQuery({
     queryKey: cliAuthKeys.providers(),
     queryFn: () => listCLIAuthProviders(),
-    refetchInterval: 30_000,
+    refetchInterval: CLI_AUTH_POLL_MS,
   });
 }
 
@@ -46,7 +57,7 @@ export function useCLIAuthSession(sessionId: string | null) {
       if (state === "success" || state === "failed" || state === "expired") {
         return false; // Stop polling
       }
-      return 2_000; // Poll every 2s while in progress
+      return CLI_AUTH_SESSION_POLL_MS; // Poll while in progress
     },
   });
 }

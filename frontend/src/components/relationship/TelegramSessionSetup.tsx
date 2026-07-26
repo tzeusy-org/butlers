@@ -17,6 +17,14 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRevealEntitySecret } from "@/hooks/use-memory";
 
+/**
+ * Primary poll interval for Telegram CLI-auth session polling queries (bu-ep4ks.15).
+ * No fleet-bus event type covers this domain (see
+ * event-cache-registry.ts's EVENT_CACHE_REGISTRY) -- this cadence IS
+ * the update path, not a reconciliation sweep.
+ */
+const TELEGRAM_SESSION_POLL_MS = 30_000;
+
 type TelegramStep =
   | "idle"
   | "loading_creds"
@@ -82,7 +90,7 @@ export function TelegramSessionSetup({
   const { data: status, isLoading } = useQuery({
     queryKey: ["telegram-session-status"],
     queryFn: getTelegramSessionStatus,
-    refetchInterval: 30_000,
+    refetchInterval: TELEGRAM_SESSION_POLL_MS,
   });
 
   const apiIdEntry = entries.find((entry) => entry.type === "telegram_api_id");

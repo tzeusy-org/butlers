@@ -65,7 +65,11 @@ describe("useButlers -- polling config (bu-bm58r.2)", () => {
 
   it("passes refetchInterval=30_000 to useQuery", () => {
     useButlers();
+    // Hardcoded 30_000 (not BUTLERS_POLL_MS) is intentional: this test
+    // verifies the ACTUAL configured cadence, not that the hook echoes back
+    // whatever its own constant happens to hold (bu-ep4ks.15).
     expect(vi.mocked(useQuery)).toHaveBeenCalledWith(
+      // eslint-disable-next-line no-restricted-syntax -- see reason above
       expect.objectContaining({ refetchInterval: 30_000 }),
     );
   });
@@ -138,7 +142,10 @@ describe("useApprovalMetrics -- polling config (bu-bm58r.2, demoted bu-86c4c.8)"
   // 5-minute reconciliation sweep rather than the 30s primary path.
   it("passes refetchInterval=5*60_000 (5-minute reconciliation sweep) to useQuery", () => {
     useApprovalMetrics();
+    // Hardcoded (not POLL_BUS_RECONCILE_MS) is intentional -- see reason on
+    // the useButlers assertion above (bu-ep4ks.15).
     expect(vi.mocked(useQuery)).toHaveBeenCalledWith(
+      // eslint-disable-next-line no-restricted-syntax -- see reason above
       expect.objectContaining({ refetchInterval: 5 * 60_000 }),
     );
   });

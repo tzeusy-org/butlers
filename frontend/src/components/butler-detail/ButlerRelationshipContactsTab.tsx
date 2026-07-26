@@ -370,10 +370,10 @@ function WatchlistPanel({ ranking, isLoading, isError, selectedContactId, onSele
       <table className="w-full text-sm" data-testid="watchlist-table">
         <thead className="sticky top-0 bg-card">
           <tr className="border-b text-xs text-muted-foreground">
-            <th className="py-1.5 pr-4 text-left font-medium">Name</th>
-            <th className="py-1.5 pr-4 text-left font-medium">Tier</th>
-            <th className="py-1.5 pr-4 text-left font-medium">Last contact</th>
-            <th className="py-1.5 text-right font-medium tnum">Warmth</th>
+            <th scope="col" className="py-1.5 pr-4 text-left font-medium">Name</th>
+            <th scope="col" className="py-1.5 pr-4 text-left font-medium">Tier</th>
+            <th scope="col" className="py-1.5 pr-4 text-left font-medium">Last contact</th>
+            <th scope="col" className="py-1.5 text-right font-medium tnum">Warmth</th>
           </tr>
         </thead>
         <tbody className="divide-y">

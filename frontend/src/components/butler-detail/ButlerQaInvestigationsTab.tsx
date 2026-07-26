@@ -307,12 +307,12 @@ function RecentInvestigationsTable({
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
-                  <th className="py-1.5 pr-3 text-left font-medium">ID</th>
-                  <th className="py-1.5 pr-3 text-left font-medium">Sev</th>
-                  <th className="py-1.5 pr-3 text-left font-medium">Title</th>
-                  <th className="py-1.5 pr-3 text-left font-medium">Butler</th>
-                  <th className="py-1.5 pr-3 text-left font-medium">Age</th>
-                  <th className="py-1.5 text-left font-medium">State</th>
+                  <th scope="col" className="py-1.5 pr-3 text-left font-medium">ID</th>
+                  <th scope="col" className="py-1.5 pr-3 text-left font-medium">Sev</th>
+                  <th scope="col" className="py-1.5 pr-3 text-left font-medium">Title</th>
+                  <th scope="col" className="py-1.5 pr-3 text-left font-medium">Butler</th>
+                  <th scope="col" className="py-1.5 pr-3 text-left font-medium">Age</th>
+                  <th scope="col" className="py-1.5 text-left font-medium">State</th>
                 </tr>
               </thead>
               <tbody className="divide-y">

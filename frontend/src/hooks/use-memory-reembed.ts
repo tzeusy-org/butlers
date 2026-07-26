@@ -12,6 +12,14 @@ import { getReembedPending, runReembed } from "@/api/index.ts";
 import type { ReembedRunRequest } from "@/api/types.ts";
 
 /**
+ * Primary poll interval for memory re-embed pending count queries (bu-ep4ks.15).
+ * No fleet-bus event type covers this domain (see
+ * event-cache-registry.ts's EVENT_CACHE_REGISTRY) -- this cadence IS
+ * the update path, not a reconciliation sweep.
+ */
+const MEMORY_REEMBED_POLL_MS = 30_000;
+
+/**
  * Fetch stale-embedding counts per tier.
  *
  * Polling-friendly: refetches every 30 s so the counts stay current without
@@ -22,7 +30,7 @@ export function useReembedPending(butler?: string) {
   return useQuery({
     queryKey: ["memory-reembed-pending", butler ?? null],
     queryFn: () => getReembedPending(butler),
-    refetchInterval: 30_000,
+    refetchInterval: MEMORY_REEMBED_POLL_MS,
   });
 }
 

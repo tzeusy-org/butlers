@@ -15,13 +15,21 @@ import {
 import type { Schedule, ScheduleCreate, ScheduleUpdate } from "@/api/types.ts";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
+/**
+ * Primary poll interval for schedules queries (bu-ep4ks.15).
+ * No fleet-bus event type covers this domain (see
+ * event-cache-registry.ts's EVENT_CACHE_REGISTRY) -- this cadence IS
+ * the update path, not a reconciliation sweep.
+ */
+const SCHEDULES_POLL_MS = 30_000;
+
 /** Fetch all schedules for a butler with auto-refresh. */
 export function useSchedules(butlerName: string) {
   return useQuery({
     queryKey: ["butlers", butlerName, "schedules"],
     queryFn: () => getButlerSchedules(butlerName),
     enabled: !!butlerName,
-    refetchInterval: 30_000,
+    refetchInterval: SCHEDULES_POLL_MS,
   });
 }
 
