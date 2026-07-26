@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -58,6 +59,13 @@ logger = logging.getLogger(__name__)
 
 # Name of the scheduled task this writer handles.
 DAY_CLOSE_TASK_NAME = "chronicler_day_close"
+
+
+@dataclass(frozen=True)
+class DayCloseCacheWriteOutcome:
+    """Deterministic admission outcome for a completed day-close candidate."""
+
+    invalid_reason: str | None = None
 
 
 def _coerce_zone(tz: str | ZoneInfo | None) -> ZoneInfo:
@@ -196,7 +204,7 @@ async def write_day_close_cache(
     result: Any,
     run_at: datetime,
     tz: str | ZoneInfo = "UTC",
-) -> None:
+) -> DayCloseCacheWriteOutcome | None:
     """Post-execution hook: record coverage and persist day-close prose.
 
     Called by the scheduler tick after ``chronicler_day_close`` dispatches.
@@ -288,7 +296,7 @@ async def write_day_close_cache(
                     cache_key,
                     invalid_reason,
                 )
-                return
+                return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
             # No existing admissible row: persist the invalid candidate for
             # audit/recovery. The reader never returns its prose.
             await upsert_tier2_cache(
@@ -306,7 +314,7 @@ async def write_day_close_cache(
                 cache_key,
                 invalid_reason,
             )
-            return
+            return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
 
         await upsert_tier2_cache(
             pool,
@@ -323,6 +331,7 @@ async def write_day_close_cache(
             cache_key,
             len(provenance_refs),
         )
+        return DayCloseCacheWriteOutcome()
     except Exception:
         logger.exception(
             "day_close_writer: failed to write tier2_cache[%s] — cache miss will occur",

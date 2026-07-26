@@ -4,6 +4,8 @@ Covers:
 - Rate-limit triggers 429 with ErrorResponse envelope (code=day_close_rate_limited,
   details.retry_after_seconds).
 - Successful refresh writes fresh cache row via write_day_close_cache().
+- Invalid candidates are distinguishable whether they are contained behind an
+  admissible cache row or retained as an audit-only invalid row.
 - 404-equivalent: no cached row does NOT trigger rate-limit (falls through to dispatch).
 - 503 when no dispatch callable is wired.
 - 400 on invalid timezone.
@@ -269,6 +271,8 @@ class TestDayCloseRefreshSuccess:
         body = resp.json()
         assert body["cache_key"] == _CACHE_KEY
         assert "cache_built_at" in body
+        assert body["invalid"] is False
+        assert body["invalid_reason"] is None
 
         # Verify the dispatch was called with trigger_source indicating API origin.
         dispatch_fn.assert_awaited_once()
@@ -305,6 +309,73 @@ class TestDayCloseRefreshSuccess:
             resp = await _post_refresh(app)
 
         assert resp.status_code == 200
+        mock_upsert.assert_awaited_once()
+
+    async def test_contained_invalid_candidate_is_externally_distinguishable(self):
+        """Invalid prose cannot replace an admissible row but is reported to the caller."""
+        preserved_built_at = datetime.now(UTC) - timedelta(hours=25)
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                _row({"cache_built_at": _T_OUTSIDE_24H}),
+                _row({"prompt": "Day close prompt."}),
+                _row({"invalid_reason": None}),
+                _row({"cache_built_at": preserved_built_at}),
+            ]
+        )
+        dispatch_fn = AsyncMock(
+            return_value=_make_spawner_result(
+                output='```json\n{"tool": "chronicler_list_episodes"}\n```'
+            )
+        )
+
+        with patch(
+            "butlers.chronicler.day_close_writer.upsert_tier2_cache",
+            new_callable=AsyncMock,
+        ) as mock_upsert:
+            app = _make_app_with_dispatch(pool, dispatch_fn)
+            resp = await _post_refresh(app)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {
+            "cache_key": _CACHE_KEY,
+            "cache_built_at": preserved_built_at.isoformat().replace("+00:00", "Z"),
+            "invalid": True,
+            "invalid_reason": "inadmissible_prose",
+        }
+        mock_upsert.assert_not_awaited()
+
+    async def test_audit_only_invalid_candidate_returns_no_prose(self):
+        """An invalid candidate without an admissible row remains audit-only."""
+        invalid_built_at = datetime.now(UTC)
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                None,
+                _row({"prompt": "Day close prompt."}),
+                None,
+                _row({"cache_built_at": invalid_built_at}),
+            ]
+        )
+        dispatch_fn = AsyncMock(
+            return_value=_make_spawner_result(
+                date_label="2026-04-23",
+                output="This prose is bound to the wrong day.",
+            )
+        )
+
+        with patch(
+            "butlers.chronicler.day_close_writer.upsert_tier2_cache",
+            new_callable=AsyncMock,
+        ) as mock_upsert:
+            app = _make_app_with_dispatch(pool, dispatch_fn)
+            resp = await _post_refresh(app)
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["invalid"] is True
+        assert body["invalid_reason"] == "date_mismatch"
+        assert body["cache_key"] == _CACHE_KEY
+        assert "prose" not in body
+        assert "provenance_refs" not in body
         mock_upsert.assert_awaited_once()
 
     async def test_dispatch_called_with_prompt_from_scheduled_tasks(self):
