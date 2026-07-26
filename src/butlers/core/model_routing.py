@@ -358,25 +358,40 @@ _BREAKER_HALF_OPEN_COOLDOWN_MINUTES = 15
 # Inlined as a CTE into every resolver query that picks a live dispatch
 # candidate from public.model_catalog. References only fixed module
 # constants (not caller input), so it is safe to inline as a literal.
+#
+# Bounded per catalog entry (bu-ep4ks.13), not a window over the whole table:
+# the original form ran ROW_NUMBER() OVER (PARTITION BY catalog_entry_id ...)
+# across every row public.model_dispatch_attempts has EVER held, for every
+# butler and every model, on every single dispatch resolution -- a full-table
+# scan that only grows as the fleet dispatches. public.model_catalog is small
+# (order of dozens of rows) and bounded, so this instead runs one correlated
+# subquery per catalog entry ("for THIS mc.id, are its most recent
+# _BREAKER_FAILURE_THRESHOLD qualifying attempts all runtime_failure") which
+# Postgres can satisfy with an index-range scan on
+# idx_model_dispatch_attempts_catalog_ts (catalog_entry_id, ts DESC) LIMIT
+# _BREAKER_FAILURE_THRESHOLD, instead of touching the rest of the table.
+# Same trigger condition, same result set -- see
+# tests/core/test_model_routing.py's breaker scenarios, unchanged by this
+# rewrite.
 _BREAKER_OPEN_CTE = f"""
-breaker_recent AS (
-    SELECT
-        catalog_entry_id,
-        outcome,
-        ts,
-        ROW_NUMBER() OVER (PARTITION BY catalog_entry_id ORDER BY ts DESC) AS rn
-    FROM public.model_dispatch_attempts
-    WHERE outcome IN ('runtime_failure', 'success')
-),
 breaker_open AS (
-    SELECT catalog_entry_id
-    FROM breaker_recent
-    WHERE rn <= {_BREAKER_FAILURE_THRESHOLD}
-    GROUP BY catalog_entry_id
-    HAVING
-        COUNT(*) >= {_BREAKER_FAILURE_THRESHOLD}
-        AND bool_and(outcome = 'runtime_failure')
-        AND now() - MAX(ts) < interval '{_BREAKER_HALF_OPEN_COOLDOWN_MINUTES} minutes'
+    SELECT mc.id AS catalog_entry_id
+    FROM public.model_catalog mc
+    WHERE EXISTS (
+        SELECT 1
+        FROM (
+            SELECT outcome, ts
+            FROM public.model_dispatch_attempts
+            WHERE catalog_entry_id = mc.id
+              AND outcome IN ('runtime_failure', 'success')
+            ORDER BY ts DESC
+            LIMIT {_BREAKER_FAILURE_THRESHOLD}
+        ) br
+        HAVING
+            COUNT(*) >= {_BREAKER_FAILURE_THRESHOLD}
+            AND bool_and(br.outcome = 'runtime_failure')
+            AND now() - MAX(br.ts) < interval '{_BREAKER_HALF_OPEN_COOLDOWN_MINUTES} minutes'
+    )
 )
 """
 
@@ -389,8 +404,10 @@ def _breaker_recent_cte(*, filter_by_ids: bool) -> str:
     ``idx_model_dispatch_attempts_catalog_ts (catalog_entry_id, ts DESC)``
     index instead of windowing the entire ``model_dispatch_attempts`` table
     on every call. Only safe when the caller supplies concrete entry ids
-    (single-entry and batch-with-ids callers); the resolver's own
-    ``_BREAKER_OPEN_CTE`` genuinely needs every entry, so it stays unfiltered.
+    (single-entry and batch-with-ids callers); ``get_breaker_states(pool)``
+    with no ids still needs every entry, so that one call stays unfiltered.
+    (The resolver's own ``_BREAKER_OPEN_CTE`` is a separate, always
+    catalog-bounded query -- see its docstring, bu-ep4ks.13.)
     """
     id_filter = "AND catalog_entry_id = ANY($1)" if filter_by_ids else ""
     return f"""
@@ -517,6 +534,250 @@ class BreakerState:
     last_attempt_at: datetime | None
 
 
+# ---------------------------------------------------------------------------
+# Evidence-based routing score (bu-ep4ks.13)
+# ---------------------------------------------------------------------------
+#
+# The dispatch-outcome breaker (above) answers "is this entry systemically
+# broken" with a hard exclude. This answers a softer question the breaker
+# does not: among several enabled, non-broken, same-priority candidates,
+# which one has actually been fast, cheap, and reliable recently? Before this,
+# ``_RESOLVE_SQL`` broke priority ties with a blind round-robin counter --
+# duration_ms was computed by the spawner for the audit log and ledger, then
+# discarded before it ever reached ``public.model_dispatch_attempts``, so a
+# working-but-slow model (cf. the 436s opencode incident) was rotated into
+# exactly as often as a fast one.
+#
+# Evidence-gated, not evidence-mandatory: a candidate needs
+# ``_EVIDENCE_MIN_SAMPLES`` recent success/runtime_failure attempts before its
+# score counts for anything. Below that, ``compute_routing_score`` returns
+# ``score=None`` and the tie-break degrades to the original round-robin
+# counter -- a brand-new or rarely-used model is never penalized for lacking
+# history, and the routing decision never fabricates confidence it doesn't
+# have (the same doctrine the Models-tab degraded-source fields follow).
+_EVIDENCE_WINDOW_DAYS = 7
+_EVIDENCE_MIN_SAMPLES = 5
+
+# A fixed token profile used only to rank candidates against each other on a
+# comparable per-call USD basis -- not a prediction of any real call's cost.
+_SCORE_REFERENCE_INPUT_TOKENS = 2000
+_SCORE_REFERENCE_OUTPUT_TOKENS = 500
+
+
+@dataclasses.dataclass(frozen=True)
+class RoutingEvidence:
+    """Recent dispatch-outcome evidence for one catalog entry.
+
+    Derived from ``public.model_dispatch_attempts`` rows within the trailing
+    ``_EVIDENCE_WINDOW_DAYS`` window. ``success_count``/``failure_count`` only
+    count ``success``/``runtime_failure`` outcomes -- ``quota_skip``,
+    ``suppressed``, and ``exhausted`` are not systemic-failure or -success
+    signals about the model itself (same exclusion the circuit breaker uses).
+    """
+
+    success_count: int
+    failure_count: int
+    p50_duration_ms: float | None
+    p95_duration_ms: float | None
+
+    @property
+    def sample_count(self) -> int:
+        return self.success_count + self.failure_count
+
+
+@dataclasses.dataclass(frozen=True)
+class RoutingScore:
+    """A composite evidence-based score for one catalog entry, or why it has none.
+
+    ``score`` is ``None`` (never a fabricated number) whenever the entry has
+    fewer than ``_EVIDENCE_MIN_SAMPLES`` qualifying attempts in the evidence
+    window -- ``insufficient_data`` is then ``True`` and ``reason`` explains
+    why, for honest display on the Models tab (never render an absent score
+    as a 0 or an all-clear).
+    """
+
+    score: float | None
+    success_rate: float | None
+    latency_p95_ms: float | None
+    cost_usd_per_call: float | None
+    sample_count: int
+    insufficient_data: bool
+    reason: str | None
+
+
+def compute_routing_score(
+    evidence: RoutingEvidence,
+    cost_usd_per_call: float | None,
+    *,
+    min_samples: int = _EVIDENCE_MIN_SAMPLES,
+) -> RoutingScore:
+    """Combine recent success rate, tail latency, and per-call cost into one score.
+
+    Higher is better. ``score = success_rate / ((1 + p95_seconds/60) * (1 + cost*100))``:
+    success rate is the dominant term (a flaky model is never worth routing to
+    regardless of speed or price); latency and cost are then applied as
+    diminishing-return penalties so neither alone can zero out an otherwise
+    reliable model. Unpriced models (``cost_usd_per_call=None``, e.g. no
+    ``pricing.toml`` entry) are treated as cost-neutral (0), not excluded --
+    an operator may run a genuinely free/local/subscription model.
+
+    Returns ``score=None`` (``insufficient_data=True``) when the entry has
+    fewer than ``min_samples`` qualifying attempts -- callers MUST treat that
+    as "no opinion", never as a low score.
+    """
+    total = evidence.sample_count
+    if total < min_samples:
+        return RoutingScore(
+            score=None,
+            success_rate=None,
+            latency_p95_ms=evidence.p95_duration_ms,
+            cost_usd_per_call=cost_usd_per_call,
+            sample_count=total,
+            insufficient_data=True,
+            reason=f"insufficient dispatch history (n={total}, need >= {min_samples})",
+        )
+    success_rate = evidence.success_count / total
+    latency_ms = (
+        evidence.p95_duration_ms
+        if evidence.p95_duration_ms is not None
+        else evidence.p50_duration_ms
+    )
+    latency_s = (latency_ms or 0.0) / 1000.0
+    cost = cost_usd_per_call if cost_usd_per_call is not None else 0.0
+    score = success_rate / ((1.0 + latency_s / 60.0) * (1.0 + cost * 100.0))
+    return RoutingScore(
+        score=round(score, 6),
+        success_rate=success_rate,
+        latency_p95_ms=evidence.p95_duration_ms,
+        cost_usd_per_call=cost_usd_per_call,
+        sample_count=total,
+        insufficient_data=False,
+        reason=None,
+    )
+
+
+def _reference_cost_usd(pricing: PricingConfig | None, model_id: str) -> float | None:
+    """Estimate a comparable per-call USD cost for *model_id* under a fixed token profile.
+
+    Returns ``None`` when no pricing config is available or the model has no
+    configured price -- callers treat that as cost-neutral (0), not excluded.
+    """
+    if pricing is None:
+        return None
+    try:
+        return pricing.estimate_cost(
+            model_id, _SCORE_REFERENCE_INPUT_TOKENS, _SCORE_REFERENCE_OUTPUT_TOKENS
+        )
+    except Exception:
+        logger.debug("Reference cost estimate failed for model_id=%s", model_id, exc_info=True)
+        return None
+
+
+def _evidence_cte(*, filter_by_ids: bool, window_days: int = _EVIDENCE_WINDOW_DAYS) -> str:
+    """Build the ``evidence`` CTE: per-entry success/failure counts and duration percentiles.
+
+    Returns the CTE body text (no leading ``WITH``) named ``evidence``.
+
+    ``window_days`` is always a trusted internal int (module constant or an
+    explicit caller value coerced with ``int()``), never raw user input --
+    interpolated directly since asyncpg has no parameterized ``interval``.
+    """
+    id_filter = "AND catalog_entry_id = ANY($1)" if filter_by_ids else ""
+    return f"""
+    evidence AS (
+        SELECT
+            catalog_entry_id,
+            COUNT(*) FILTER (WHERE outcome = 'success') AS success_count,
+            COUNT(*) FILTER (WHERE outcome = 'runtime_failure') AS failure_count,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)
+                FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p50_duration_ms,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)
+                FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p95_duration_ms
+        FROM public.model_dispatch_attempts
+        WHERE outcome IN ('success', 'runtime_failure')
+          AND ts > now() - interval '{int(window_days)} days'
+          {id_filter}
+        GROUP BY catalog_entry_id
+    )
+    """
+
+
+async def get_routing_evidence(
+    pool: asyncpg.Pool,
+    catalog_entry_ids: list[uuid.UUID] | None = None,
+    *,
+    window_days: int = _EVIDENCE_WINDOW_DAYS,
+) -> dict[uuid.UUID, RoutingEvidence]:
+    """Batch-fetch recent dispatch evidence for one round trip (no N+1).
+
+    Mirrors ``get_breaker_states``: when ``catalog_entry_ids`` is provided,
+    every id is present in the result (defaulting to zero-sample evidence),
+    and the query is bound by the id list so Postgres can use
+    ``idx_model_dispatch_attempts_catalog_ts`` instead of scanning the whole
+    table. Used by the Models tab (``GET /api/settings/models``) to annotate
+    every row's routing score without an N+1 query.
+    """
+    cte = _evidence_cte(filter_by_ids=catalog_entry_ids is not None, window_days=window_days)
+    query = f"""
+        WITH {cte}
+        SELECT catalog_entry_id, success_count, failure_count, p50_duration_ms, p95_duration_ms
+        FROM evidence
+        """
+    rows = (
+        await pool.fetch(query, catalog_entry_ids)
+        if catalog_entry_ids is not None
+        else await pool.fetch(query)
+    )
+    evidence = {
+        row["catalog_entry_id"]: RoutingEvidence(
+            success_count=int(row["success_count"] or 0),
+            failure_count=int(row["failure_count"] or 0),
+            p50_duration_ms=(
+                float(row["p50_duration_ms"]) if row["p50_duration_ms"] is not None else None
+            ),
+            p95_duration_ms=(
+                float(row["p95_duration_ms"]) if row["p95_duration_ms"] is not None else None
+            ),
+        )
+        for row in rows
+    }
+    if catalog_entry_ids is not None:
+        return {
+            cid: evidence.get(cid, RoutingEvidence(0, 0, None, None)) for cid in catalog_entry_ids
+        }
+    return evidence
+
+
+async def get_routing_scores(
+    pool: asyncpg.Pool,
+    entries: list[tuple[uuid.UUID, str]],
+    *,
+    pricing: PricingConfig | None = None,
+) -> dict[uuid.UUID, RoutingScore]:
+    """Batch-compute routing scores for the Models tab (one round trip, no N+1).
+
+    ``entries`` is ``[(catalog_entry_id, model_id), ...]`` — the model_id is
+    needed alongside the id to look up its reference cost. Mirrors
+    ``get_breaker_states``/``get_routing_evidence``: every id in ``entries``
+    is present in the result.
+
+    ``pricing`` defaults to the same process-cached ``PricingConfig`` the
+    resolver's tie-break uses (see ``_get_cached_pricing``), so the score
+    shown on the Models tab matches what routing actually saw. Pass an
+    explicit ``PricingConfig`` (e.g. the FastAPI ``get_pricing`` dependency)
+    to avoid a redundant load from the caller's own request context.
+    """
+    ids = [cid for cid, _ in entries]
+    evidence_by_id = await get_routing_evidence(pool, ids)
+    effective_pricing = pricing if pricing is not None else _get_cached_pricing()
+    return {
+        cid: compute_routing_score(
+            evidence_by_id[cid], _reference_cost_usd(effective_pricing, model_id)
+        )
+        for cid, model_id in entries
+    }
+
+
 # SQL that resolves the best model across an ordered tier list in a single round-trip.
 #
 # Accepts:
@@ -534,13 +795,22 @@ class BreakerState:
 #                   top-priority entries only.
 # 4. candidates:    Narrow to top-priority models in the winning tier, decorated with
 #                   a stable round-robin row number (created_at ASC, id ASC tie-break).
-# 5. next_counter:  INSERT...SELECT from `winning` — fires ONLY when a winning tier
+# 5. evidence:      Recent success/failure counts + duration percentiles for exactly
+#                   these candidates (id-bound, index-friendly — see ``_evidence_cte``).
+# 6. next_counter:  INSERT...SELECT from `winning` — fires ONLY when a winning tier
 #                   exists, so empty-tier fallthrough attempts never increment any
 #                   counter.  Atomically increments the per-(butler, tier) counter.
-# 6. Final SELECT:  Picks the candidate at index (counter % total).
+# 7. Final SELECT:  Returns ALL tied top-priority candidates (not a single winner) —
+#                   the caller (``resolve_model``) picks by evidence-based score
+#                   (bu-ep4ks.13) when at least two candidates have sufficient recent
+#                   evidence, else falls back to the original ``rn == counter % total``
+#                   round-robin index carried on every row. The common case (exactly
+#                   one top-priority candidate) returns exactly one row either way.
 #
-# Returns: (runtime_type, model_id, extra_args, id, session_timeout_s, effective_tier)
-# Returns no rows when no qualifying model exists in any provided tier.
+# Returns rows of: (runtime_type, model_id, extra_args, id, session_timeout_s,
+# effective_tier, rn, total, rr_counter, success_count, failure_count,
+# p50_duration_ms, p95_duration_ms). Returns no rows when no qualifying model
+# exists in any provided tier.
 _RESOLVE_SQL = f"""
 WITH
 {_BREAKER_OPEN_CTE},
@@ -591,6 +861,21 @@ candidates AS (
         AND ac.tier_ord = w.tier_ord
         AND ac.effective_priority = w.max_priority
 ),
+evidence AS (
+    SELECT
+        catalog_entry_id,
+        COUNT(*) FILTER (WHERE outcome = 'success') AS success_count,
+        COUNT(*) FILTER (WHERE outcome = 'runtime_failure') AS failure_count,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)
+            FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p50_duration_ms,
+        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)
+            FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p95_duration_ms
+    FROM public.model_dispatch_attempts
+    WHERE catalog_entry_id IN (SELECT id FROM candidates)
+      AND outcome IN ('success', 'runtime_failure')
+      AND ts > now() - interval '{_EVIDENCE_WINDOW_DAYS} days'
+    GROUP BY catalog_entry_id
+),
 next_counter AS (
     INSERT INTO public.model_round_robin_counters
         (butler_name, complexity_tier, counter, updated_at)
@@ -601,9 +886,13 @@ next_counter AS (
         updated_at = now()
     RETURNING counter
 )
-SELECT c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s, c.effective_tier
-FROM candidates c, next_counter nc
-WHERE c.rn = (nc.counter % c.total)
+SELECT
+    c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s, c.effective_tier,
+    c.rn, c.total, nc.counter AS rr_counter,
+    e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms
+FROM candidates c
+CROSS JOIN next_counter nc
+LEFT JOIN evidence e ON e.catalog_entry_id = c.id
 """
 
 # SQL for same-tier failover candidate resolution.
@@ -856,6 +1145,71 @@ def _parse_extra_args(raw_extra: object) -> list[str]:
     return []
 
 
+# Process-global pricing cache, mirroring ``spawner._cached_pricing``. Pricing is
+# only used here to rank same-priority candidates against each other (never to
+# gate resolution), so a load failure fails open to cost-neutral (see
+# ``_reference_cost_usd``), not to a resolution error.
+_cached_pricing: PricingConfig | None = None
+
+
+def _get_cached_pricing() -> PricingConfig | None:
+    global _cached_pricing
+    if _cached_pricing is None:
+        try:
+            from butlers.api.pricing import load_pricing
+
+            _cached_pricing = load_pricing()
+        except Exception:
+            logger.debug("Pricing config load failed for routing score (non-fatal)", exc_info=True)
+            return None
+    return _cached_pricing
+
+
+def _select_resolved_row(rows: list[asyncpg.Record]) -> asyncpg.Record:
+    """Pick the winning candidate row from ``_RESOLVE_SQL``'s tied top-priority set.
+
+    Every row shares the same ``rr_counter``/``total`` (one winning tier per
+    call) but carries its own ``rn`` and evidence columns. Score-based
+    selection (bu-ep4ks.13) only engages when at least two candidates have
+    sufficient recent evidence (``compute_routing_score`` returns a non-None
+    score) -- otherwise this falls back to the original ``rn == counter %
+    total`` round-robin index, so a fleet with no dispatch history yet, or a
+    single top-priority candidate, behaves exactly as before.
+    """
+    if len(rows) == 1:
+        return rows[0]
+
+    pricing = _get_cached_pricing()
+    scored = []
+    for row in rows:
+        evidence = RoutingEvidence(
+            success_count=int(row["success_count"] or 0),
+            failure_count=int(row["failure_count"] or 0),
+            p50_duration_ms=(
+                float(row["p50_duration_ms"]) if row["p50_duration_ms"] is not None else None
+            ),
+            p95_duration_ms=(
+                float(row["p95_duration_ms"]) if row["p95_duration_ms"] is not None else None
+            ),
+        )
+        cost = _reference_cost_usd(pricing, row["model_id"])
+        scored.append((row, compute_routing_score(evidence, cost)))
+
+    eligible = [(row, s) for row, s in scored if s.score is not None]
+    if len(eligible) >= 2:
+        best_row, _ = max(eligible, key=lambda pair: pair[1].score)
+        return best_row
+
+    # Insufficient evidence to trust a score-based tie-break — legacy round robin.
+    counter = rows[0]["rr_counter"]
+    total = rows[0]["total"]
+    target_rn = counter % total
+    for row in rows:
+        if row["rn"] == target_rn:
+            return row
+    return rows[0]  # defensive: rn/total are always consistent with len(rows)
+
+
 async def resolve_model(
     pool: asyncpg.Pool,
     butler_name: str,
@@ -873,7 +1227,11 @@ async def resolve_model(
         in the requested tier, falls through to the next tier in canonical order:
         reasoning → workhorse → cheap → specialty → local → legacy.
       - When multiple entries share the highest effective priority for a tier,
-        selection rotates round-robin via an atomic counter.
+        selection prefers the entry with the best recent evidence-based score
+        (success rate × latency × cost, see ``compute_routing_score``) once at
+        least two candidates have sufficient dispatch history; otherwise (new
+        catalog, sparse history, or all-tied scores) selection falls back to
+        round-robin via an atomic counter (bu-ep4ks.13).
 
     Deprecation shim: if the caller passes a legacy tier string
     (trivial/medium/high/extra_high/discretion/self_healing), a LOUD WARNING is
@@ -920,9 +1278,10 @@ async def resolve_model(
 
     # Single query resolves across all candidate tiers, incrementing the counter
     # only for the tier actually used.  Empty tiers never touch their counters.
-    row = await pool.fetchrow(_RESOLVE_SQL, butler_name, tiers_to_try)
-    if row is None:
+    rows = await pool.fetch(_RESOLVE_SQL, butler_name, tiers_to_try)
+    if not rows:
         return None
+    row = _select_resolved_row(rows)
 
     effective_tier = row["effective_tier"]
     if effective_tier != tier_value:
@@ -986,9 +1345,10 @@ async def resolve_model_with_effective_tier(
     else:
         tiers_to_try = [tier_value]
 
-    row = await pool.fetchrow(_RESOLVE_SQL, butler_name, tiers_to_try)
-    if row is None:
+    rows = await pool.fetch(_RESOLVE_SQL, butler_name, tiers_to_try)
+    if not rows:
         return None
+    row = _select_resolved_row(rows)
 
     effective_tier = row["effective_tier"]
     if effective_tier != tier_value:

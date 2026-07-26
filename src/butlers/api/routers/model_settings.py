@@ -31,7 +31,12 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
-from butlers.core.model_routing import get_breaker_states, resolve_model
+from butlers.core.model_routing import (
+    RoutingScore,
+    get_breaker_states,
+    get_routing_scores,
+    resolve_model,
+)
 from butlers.core.runtimes.base import get_adapter
 from butlers.core.spawner import resolve_provider_config
 
@@ -92,6 +97,17 @@ class ModelCatalogEntry(BaseModel):
     # last_verified_ok / enabled.
     breaker_open: bool = False
     breaker_consecutive_failures: int = 0
+    # Evidence-based routing score (bu-ep4ks.13), fully derived from recent
+    # public.model_dispatch_attempts rows — see model_routing.get_routing_scores.
+    # routing_score is None (never a fabricated number) whenever
+    # routing_score_insufficient_data is True; render "insufficient data",
+    # not a 0 or an all-clear, when that flag is set.
+    routing_score: float | None = None
+    routing_score_insufficient_data: bool = True
+    routing_score_reason: str | None = None
+    routing_success_rate: float | None = None
+    routing_p95_duration_ms: float | None = None
+    routing_sample_count: int = 0
 
 
 class ModelPriorityDelta(BaseModel):
@@ -136,6 +152,7 @@ class DispatchAttemptEntry(BaseModel):
     tool_call_count: int | None = None
     session_id: str | None = None
     logical_session_id: str | None = None
+    duration_ms: int | None = None
 
 
 class ModelCatalogCreate(BaseModel):
@@ -310,6 +327,21 @@ def _coerce_extra_args(raw: Any) -> list[str]:
     return []
 
 
+def _apply_routing_score(entry: ModelCatalogEntry, score: RoutingScore) -> None:
+    """Merge a computed RoutingScore onto a ModelCatalogEntry in place.
+
+    ``score.score`` is only ever ``None`` when ``insufficient_data`` is
+    True — the fields are copied verbatim so a caller reading
+    ``routing_score_insufficient_data`` never has to guess.
+    """
+    entry.routing_score = score.score
+    entry.routing_score_insufficient_data = score.insufficient_data
+    entry.routing_score_reason = score.reason
+    entry.routing_success_rate = score.success_rate
+    entry.routing_p95_duration_ms = score.latency_p95_ms
+    entry.routing_sample_count = score.sample_count
+
+
 def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
     """Convert an asyncpg Record to a ModelCatalogEntry."""
     raw_usage_24h = _row_value(row, "usage_24h", 0)
@@ -429,11 +461,12 @@ async def list_catalog_entries(
             mc.alias ASC
         """
     )
-    # Breaker state (bu-hmdqz.2) is fully derived from
-    # public.model_dispatch_attempts, not a model_catalog column, so it is
-    # batch-fetched separately and merged in Python — one extra round trip
-    # for the whole list, not N+1.
+    # Breaker state (bu-hmdqz.2) and routing score (bu-ep4ks.13) are both fully
+    # derived from public.model_dispatch_attempts, not model_catalog columns, so
+    # each is batch-fetched separately and merged in Python — two extra round
+    # trips for the whole list, not N+1 per row.
     breaker_states = await get_breaker_states(pool, [row["id"] for row in rows])
+    routing_scores = await get_routing_scores(pool, [(row["id"], row["model_id"]) for row in rows])
     entries = []
     for row in rows:
         entry = _row_to_catalog_entry(row)
@@ -441,6 +474,9 @@ async def list_catalog_entries(
         if state is not None:
             entry.breaker_open = state.open
             entry.breaker_consecutive_failures = state.consecutive_failures
+        score = routing_scores.get(row["id"])
+        if score is not None:
+            _apply_routing_score(entry, score)
         entries.append(entry)
     return ApiResponse[list[ModelCatalogEntry]](data=entries)
 
@@ -959,7 +995,7 @@ async def get_model_attempts(
             """
             SELECT ts, butler, outcome, attempt_index,
                    failure_reason, error_code, error_message,
-                   tool_call_count, session_id, logical_session_id
+                   tool_call_count, session_id, logical_session_id, duration_ms
             FROM public.model_dispatch_attempts
             WHERE catalog_entry_id = $1
               AND ts >= $2
@@ -995,6 +1031,7 @@ async def get_model_attempts(
             tool_call_count=row["tool_call_count"],
             session_id=str(row["session_id"]) if row["session_id"] else None,
             logical_session_id=row["logical_session_id"],
+            duration_ms=_row_value(row, "duration_ms"),
         )
         for row in rows
     ]
@@ -1371,10 +1408,11 @@ async def resolve_model_preview(
 ) -> ApiResponse[ResolveModelResponse]:
     """Preview which model would be selected for a butler + complexity tier.
 
-    Calls the shared ``resolve_model()`` function (same round-robin logic the
-    spawner uses).  Also returns actual quota status by querying the ledger
-    directly (does not use the check_token_quota fast-path that returns zeroes
-    for unlimited entries).
+    Calls the shared ``resolve_model()`` function (same evidence-based /
+    round-robin selection the spawner uses, see model_routing.resolve_model).
+    Also returns actual quota status by querying the ledger directly (does
+    not use the check_token_quota fast-path that returns zeroes for
+    unlimited entries).
     """
     _validate_complexity_tier(complexity)
     pool = _shared_pool(db)
@@ -1734,7 +1772,7 @@ async def get_dispatch_attempts(
                 f"""
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id
+                       tool_call_count, session_id, logical_session_id, duration_ms
                 FROM public.model_dispatch_attempts
                 WHERE {where_sql}
                 ORDER BY ts {order_sql}
@@ -1752,7 +1790,7 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id
+                       tool_call_count, session_id, logical_session_id, duration_ms
                 FROM public.model_dispatch_attempts
                 WHERE session_id = $1::uuid
                    OR logical_session_id = $2
@@ -1774,7 +1812,7 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id
+                       tool_call_count, session_id, logical_session_id, duration_ms
                 FROM public.model_dispatch_attempts
                 WHERE session_id = $1::uuid
                 ORDER BY attempt_index ASC
@@ -1792,7 +1830,7 @@ async def get_dispatch_attempts(
                 """
                 SELECT ts, butler, outcome, attempt_index,
                        failure_reason, error_code, error_message,
-                       tool_call_count, session_id, logical_session_id
+                       tool_call_count, session_id, logical_session_id, duration_ms
                 FROM public.model_dispatch_attempts
                 WHERE logical_session_id = $1
                 ORDER BY attempt_index ASC
@@ -1823,6 +1861,7 @@ async def get_dispatch_attempts(
             tool_call_count=row["tool_call_count"],
             session_id=str(row["session_id"]) if row["session_id"] else None,
             logical_session_id=row["logical_session_id"],
+            duration_ms=_row_value(row, "duration_ms"),
         )
         for row in rows
     ]

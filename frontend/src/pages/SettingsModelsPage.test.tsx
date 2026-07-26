@@ -104,6 +104,12 @@ function makeModel(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntr
     last_verified_error: null,
     breaker_open: false,
     breaker_consecutive_failures: 0,
+    routing_score: null,
+    routing_score_insufficient_data: true,
+    routing_score_reason: "insufficient dispatch history (n=0, need >= 5)",
+    routing_success_rate: null,
+    routing_p95_duration_ms: null,
+    routing_sample_count: 0,
     ...overrides,
   };
 }

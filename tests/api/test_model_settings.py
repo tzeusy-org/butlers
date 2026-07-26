@@ -118,14 +118,21 @@ async def test_catalog_list_and_503(app):
         _make_catalog_row(alias="claude-haiku", complexity_tier="cheap"),
         _make_catalog_row(alias="claude-sonnet", complexity_tier="workhorse"),
     ]
-    # Happy path. Breaker state (bu-hmdqz.2) is fetched via a second,
-    # differently-shaped query (get_breaker_states) — patched directly here
-    # rather than threaded through the generic catalog-row mock rows, which
-    # model the model_catalog list shape, not model_dispatch_attempts.
+    # Happy path. Breaker state (bu-hmdqz.2) and routing score (bu-ep4ks.13)
+    # are each fetched via a second, differently-shaped query
+    # (get_breaker_states / get_routing_scores) — patched directly here rather
+    # than threaded through the generic catalog-row mock rows, which model
+    # the model_catalog list shape, not model_dispatch_attempts.
     _app_with_pool(app, fetch_rows=rows)
-    with patch(
-        "butlers.api.routers.model_settings.get_breaker_states",
-        new=AsyncMock(return_value={}),
+    with (
+        patch(
+            "butlers.api.routers.model_settings.get_breaker_states",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "butlers.api.routers.model_settings.get_routing_scores",
+            new=AsyncMock(return_value={}),
+        ),
     ):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -134,6 +141,7 @@ async def test_catalog_list_and_503(app):
     assert resp.status_code == 200
     assert len(resp.json()["data"]) == 2
     assert resp.json()["data"][0]["breaker_open"] is False
+    assert resp.json()["data"][0]["routing_score_insufficient_data"] is True
 
     # 503 when pool unavailable
     _app_with_pool(app, pool_raises=KeyError("No shared pool"))

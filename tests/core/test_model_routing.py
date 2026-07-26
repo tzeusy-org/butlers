@@ -22,17 +22,22 @@ import pytest
 from butlers.core.model_routing import (
     _BREAKER_FAILURE_THRESHOLD,
     _BREAKER_HALF_OPEN_COOLDOWN_MINUTES,
+    _EVIDENCE_MIN_SAMPLES,
     BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     TIER_FALLTHROUGH_ORDER,
     Complexity,
+    RoutingEvidence,
     _check_deprecated_tier,
     _parse_max_cost_per_call,
     _rule_condition_matches,
     apply_spend_routing_rules,
     coerce_complexity_tier,
+    compute_routing_score,
     get_breaker_state,
     get_breaker_states,
+    get_routing_evidence,
+    get_routing_scores,
     next_same_tier_candidate,
     resolve_model,
     resolve_model_with_effective_tier,
@@ -173,6 +178,90 @@ def test_coerce_complexity_tier_lenient_fails_open_on_garbage(
 
     assert len(caplog.records) == 1
     assert "not_a_real_tier" in caplog.records[0].message
+
+
+# ---------------------------------------------------------------------------
+# compute_routing_score (bu-ep4ks.13) — pure function, no DB required
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_compute_routing_score_insufficient_data_below_min_samples() -> None:
+    """Fewer than min_samples qualifying attempts -> score=None, never a fabricated number."""
+    evidence = RoutingEvidence(
+        success_count=2, failure_count=1, p50_duration_ms=1000.0, p95_duration_ms=1500.0
+    )
+    result = compute_routing_score(evidence, cost_usd_per_call=0.01, min_samples=5)
+    assert result.score is None
+    assert result.insufficient_data is True
+    assert result.success_rate is None
+    assert "n=3" in result.reason
+    assert "need >= 5" in result.reason
+
+
+@pytest.mark.unit
+def test_compute_routing_score_exactly_at_min_samples_produces_a_score() -> None:
+    """min_samples qualifying attempts is enough -- the threshold is inclusive."""
+    evidence = RoutingEvidence(
+        success_count=5, failure_count=0, p50_duration_ms=1000.0, p95_duration_ms=1200.0
+    )
+    result = compute_routing_score(evidence, cost_usd_per_call=0.0, min_samples=5)
+    assert result.insufficient_data is False
+    assert result.score is not None
+    assert result.success_rate == 1.0
+    assert result.sample_count == 5
+
+
+@pytest.mark.unit
+def test_compute_routing_score_penalizes_failures() -> None:
+    """A model that fails more often scores lower than an otherwise-identical reliable one."""
+    reliable = RoutingEvidence(
+        success_count=10, failure_count=0, p50_duration_ms=1000.0, p95_duration_ms=1000.0
+    )
+    flaky = RoutingEvidence(
+        success_count=5, failure_count=5, p50_duration_ms=1000.0, p95_duration_ms=1000.0
+    )
+    reliable_score = compute_routing_score(reliable, cost_usd_per_call=0.0)
+    flaky_score = compute_routing_score(flaky, cost_usd_per_call=0.0)
+    assert reliable_score.score > flaky_score.score
+
+
+@pytest.mark.unit
+def test_compute_routing_score_penalizes_latency() -> None:
+    """A slower model scores lower than an otherwise-identical fast one."""
+    fast = RoutingEvidence(
+        success_count=10, failure_count=0, p50_duration_ms=1000.0, p95_duration_ms=1000.0
+    )
+    slow = RoutingEvidence(
+        success_count=10, failure_count=0, p50_duration_ms=1000.0, p95_duration_ms=436_000.0
+    )
+    fast_score = compute_routing_score(fast, cost_usd_per_call=0.0)
+    slow_score = compute_routing_score(slow, cost_usd_per_call=0.0)
+    assert fast_score.score > slow_score.score
+
+
+@pytest.mark.unit
+def test_compute_routing_score_penalizes_cost() -> None:
+    """A more expensive model scores lower than an otherwise-identical cheap one."""
+    cheap = RoutingEvidence(
+        success_count=10, failure_count=0, p50_duration_ms=1000.0, p95_duration_ms=1000.0
+    )
+    result_cheap = compute_routing_score(cheap, cost_usd_per_call=0.001)
+    result_expensive = compute_routing_score(cheap, cost_usd_per_call=1.0)
+    assert result_cheap.score > result_expensive.score
+
+
+@pytest.mark.unit
+def test_compute_routing_score_unpriced_model_treated_as_cost_neutral() -> None:
+    """cost_usd_per_call=None (unpriced/free/local model) is not excluded or penalized to zero."""
+    evidence = RoutingEvidence(
+        success_count=10, failure_count=0, p50_duration_ms=1000.0, p95_duration_ms=1000.0
+    )
+    result = compute_routing_score(evidence, cost_usd_per_call=None)
+    assert result.score is not None
+    assert result.score > 0
+    # Same as an explicit cost of 0.0.
+    assert result.score == compute_routing_score(evidence, cost_usd_per_call=0.0).score
 
 
 # ---------------------------------------------------------------------------
@@ -1644,17 +1733,19 @@ async def _insert_dispatch_attempt(
     catalog_entry_id: str,
     outcome: str,
     butler: str = "general",
+    duration_ms: int | None = None,
 ) -> None:
-    """Insert one public.model_dispatch_attempts row for breaker tests."""
+    """Insert one public.model_dispatch_attempts row for breaker/evidence tests."""
     await pool.execute(
         """
         INSERT INTO public.model_dispatch_attempts
-            (catalog_entry_id, butler, outcome, attempt_index)
-        VALUES ($1, $2, $3, 0)
+            (catalog_entry_id, butler, outcome, attempt_index, duration_ms)
+        VALUES ($1, $2, $3, 0, $4)
         """,
         uuid.UUID(catalog_entry_id),
         butler,
         outcome,
+        duration_ms,
     )
 
 
@@ -2000,3 +2091,140 @@ async def test_breaker_override_outcome_ignored_by_breaker_derivation(pool: asyn
     assert state.consecutive_failures == 0
     # Prefix constant is greppable on the trail (documents the recorded fact).
     assert BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX == "Spend rule routed to breaker-open model"
+
+
+# ---------------------------------------------------------------------------
+# Evidence-based routing score integration (bu-ep4ks.13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_routing_evidence_aggregates_success_and_failure_counts(
+    pool: asyncpg.Pool,
+) -> None:
+    """get_routing_evidence counts success/runtime_failure and computes duration percentiles."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="evidence-a", model_id="evidence-a-model", complexity_tier="workhorse"
+    )
+    for duration in (1000, 2000, 3000):
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=duration
+        )
+    await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+    # Ignored outcomes must not count toward sample_count.
+    await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="quota_skip")
+    await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="suppressed")
+
+    evidence = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    e = evidence[uuid.UUID(entry_id)]
+    assert e.success_count == 3
+    assert e.failure_count == 1
+    assert e.sample_count == 4
+    assert e.p50_duration_ms == 2000.0
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_routing_evidence_defaults_missing_ids_to_zero(pool: asyncpg.Pool) -> None:
+    """A requested id with no dispatch_attempts rows gets zero-sample evidence, not omission."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="fresh-evidence", model_id="fresh-evidence-model", complexity_tier="workhorse"
+    )
+    evidence = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    e = evidence[uuid.UUID(entry_id)]
+    assert e.success_count == 0
+    assert e.failure_count == 0
+    assert e.sample_count == 0
+    assert e.p50_duration_ms is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_routing_scores_marks_insufficient_data_below_threshold(
+    pool: asyncpg.Pool,
+) -> None:
+    """get_routing_scores never fabricates a score for a sparse-history entry."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="sparse", model_id="sparse-model", complexity_tier="workhorse"
+    )
+    for _ in range(_EVIDENCE_MIN_SAMPLES - 1):
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=1000
+        )
+
+    scores = await get_routing_scores(pool, [(uuid.UUID(entry_id), "sparse-model")])
+    score = scores[uuid.UUID(entry_id)]
+    assert score.insufficient_data is True
+    assert score.score is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_prefers_evidence_based_winner_over_round_robin(
+    pool: asyncpg.Pool,
+) -> None:
+    """Once both same-priority candidates have sufficient evidence, the better one always wins.
+
+    Without evidence-based scoring this would round-robin between the two
+    (cf. test_resolve_round_robin) regardless of how the 436s-slow one has
+    been performing -- the exact gap bu-ep4ks.13 closes.
+    """
+    fast_id = await _insert_catalog_entry(
+        pool, alias="fast", model_id="fast-model", complexity_tier="workhorse", priority=10
+    )
+    slow_id = await _insert_catalog_entry(
+        pool, alias="slow", model_id="slow-model", complexity_tier="workhorse", priority=10
+    )
+    for _ in range(_EVIDENCE_MIN_SAMPLES):
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=fast_id, outcome="success", duration_ms=500
+        )
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=slow_id, outcome="success", duration_ms=436_000
+        )
+
+    for _ in range(5):
+        result = await resolve_model(
+            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        )
+        assert result is not None
+        assert result[1] == "fast-model", (
+            f"Expected the fast, reliable model to always win once evidence "
+            f"exists, got {result[1]!r}"
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_falls_back_to_round_robin_when_evidence_insufficient(
+    pool: asyncpg.Pool,
+) -> None:
+    """With no dispatch history at all, resolution still round-robins exactly as before."""
+    await _insert_catalog_entry(
+        pool,
+        alias="no-history-a",
+        model_id="no-history-a-model",
+        complexity_tier="workhorse",
+        priority=10,
+    )
+    await _insert_catalog_entry(
+        pool,
+        alias="no-history-b",
+        model_id="no-history-b-model",
+        complexity_tier="workhorse",
+        priority=10,
+    )
+
+    r1 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+    r2 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+    r3 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+    assert r1 is not None and r2 is not None and r3 is not None
+    seen = {r1[1], r2[1]}
+    assert seen == {"no-history-a-model", "no-history-b-model"}
+    assert r3[1] == r1[1]  # wraps back to the first after both are rotated through

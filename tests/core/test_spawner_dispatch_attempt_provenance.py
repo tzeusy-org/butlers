@@ -6,7 +6,8 @@ each key point in the failover flow:
 1. quota_skip — candidate skipped pre-invocation because quota is exhausted
 2. runtime_failure — eligible failover; a next candidate is tried
 3. suppressed — failover ineligible (side effects or unknown error)
-4. success — fallback attempt succeeded (only when prior attempts exist)
+4. success — written on every successful attempt, including direct primary
+   success with no prior failover (bu-ep4ks.13); carries duration_ms
 5. Best-effort: insert failure does not propagate and does not affect the result
 """
 
@@ -739,8 +740,13 @@ class TestSuccessProvenance:
         outcomes = [a[4] for a in attempts]
         assert "success" in outcomes, f"Expected success row when fallback wins: {outcomes}"
 
-    async def test_no_success_row_when_primary_succeeds_directly(self, tmp_path: Path) -> None:
-        """No success row when no failover occurred (primary succeeded first try)."""
+    async def test_success_row_written_when_primary_succeeds_directly(self, tmp_path: Path) -> None:
+        """A success row is written even when no failover occurred (bu-ep4ks.13).
+
+        Previously this case wrote nothing, so a working-but-slow primary model
+        (the common case) left no duration_ms evidence anywhere in
+        model_dispatch_attempts for evidence-based routing to consult.
+        """
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         mock_pool = AsyncMock()
@@ -777,10 +783,11 @@ class TestSuccessProvenance:
 
         assert result.success is True
         attempts = _execute_calls_with_fragment(mock_pool, _ATTEMPTS_INSERT)
-        # No attempt rows at all when no failover occurred
-        assert len(attempts) == 0, (
-            f"Expected no dispatch attempt rows on direct success, got: {attempts}"
-        )
+        assert len(attempts) == 1, f"Expected exactly one success row, got: {attempts}"
+        row = attempts[0]
+        assert row[4] == "success"
+        assert row[9] == 0  # attempt_index=0: direct success, no prior attempts
+        assert isinstance(row[11], int) and row[11] >= 0  # duration_ms measured, not None
 
 
 # ---------------------------------------------------------------------------

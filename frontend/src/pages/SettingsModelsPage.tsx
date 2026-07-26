@@ -1441,8 +1441,40 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
             </span>
           )}
         </div>
-        <div className="font-mono text-[10px] text-muted-foreground truncate">
-          {model.model_id} · {model.runtime_type}
+        <div className="font-mono text-[10px] text-muted-foreground truncate flex items-center gap-2">
+          <span className="truncate">
+            {model.model_id} · {model.runtime_type}
+          </span>
+          {/* Evidence-based routing score (bu-ep4ks.13): success rate x latency x
+              cost over recent dispatch attempts, only shown once there is enough
+              history to trust it — never a fabricated number for a sparse-history
+              entry (defensive ?? here since a rolling deploy can briefly serve a
+              response from before this field existed). */}
+          {model.routing_score_insufficient_data ?? true ? (
+            <span
+              className="shrink-0 text-muted-foreground/60"
+              title={model.routing_score_reason ?? "insufficient dispatch history"}
+            >
+              score: n/a
+            </span>
+          ) : (
+            <span
+              className="shrink-0"
+              title={[
+                model.routing_success_rate != null
+                  ? `${Math.round(model.routing_success_rate * 100)}% success`
+                  : null,
+                model.routing_p95_duration_ms != null
+                  ? `p95 ${Math.round(model.routing_p95_duration_ms)}ms`
+                  : null,
+                `n=${model.routing_sample_count ?? 0}`,
+              ]
+                .filter(Boolean)
+                .join(", ")}
+            >
+              score: {model.routing_score?.toFixed(3) ?? "n/a"}
+            </span>
+          )}
         </div>
       </div>
 

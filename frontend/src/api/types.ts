@@ -4717,6 +4717,23 @@ export interface ModelCatalogEntry {
   /** Count of trailing consecutive runtime_failure dispatch attempts feeding
    *  the breaker (capped at the breaker's own threshold). */
   breaker_consecutive_failures: number;
+  /** Evidence-based routing score (bu-ep4ks.13), fully derived from recent
+   *  model_dispatch_attempts. Null whenever routing_score_insufficient_data
+   *  is true -- render "insufficient data", never a fabricated 0. */
+  routing_score: number | null;
+  /** True when the entry has fewer than the minimum qualifying dispatch
+   *  attempts for a trustworthy score; routing_score is then always null. */
+  routing_score_insufficient_data: boolean;
+  /** Human-readable reason when routing_score_insufficient_data is true. */
+  routing_score_reason: string | null;
+  /** Recent success rate (0-1) feeding the score; null when insufficient data. */
+  routing_success_rate: number | null;
+  /** p95 latency in ms feeding the score; null when no successful attempts
+   *  have a recorded duration yet. */
+  routing_p95_duration_ms: number | null;
+  /** Number of qualifying (success + runtime_failure) attempts in the
+   *  evidence window, regardless of whether that met the min-samples bar. */
+  routing_sample_count: number;
 }
 
 /** Request body for PUT /api/settings/models/{id}/priority. */

@@ -321,8 +321,8 @@ _DISPATCH_ATTEMPTS_INSERT = """
     INSERT INTO public.model_dispatch_attempts
         (session_id, catalog_entry_id, butler, outcome,
          failure_reason, error_code, error_message,
-         tool_call_count, attempt_index, logical_session_id)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         tool_call_count, attempt_index, logical_session_id, duration_ms)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
 
 
@@ -339,6 +339,7 @@ async def _write_dispatch_attempt(
     error_message: str | None = None,
     tool_call_count: int | None = None,
     logical_session_id: str | None = None,
+    duration_ms: int | None = None,
 ) -> None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
 
@@ -348,6 +349,14 @@ async def _write_dispatch_attempt(
     - ``'suppressed'``    — failover decision was ineligible (side effects / unknown)
     - ``'exhausted'``     — all same-tier candidates tried, none succeeded
     - ``'success'``       — this attempt produced the final successful result
+
+    ``duration_ms`` is the wall-clock time of the runtime invocation this
+    attempt represents (from the top of the per-attempt failover loop
+    iteration to the outcome that produced this row). It is ``None`` for
+    outcomes that never invoked a runtime (``quota_skip``, breaker-open rule
+    overrides) — a duration would be fabricated, not measured, for those.
+    Consumed by ``model_routing.get_routing_evidence`` for evidence-based
+    routing (bu-ep4ks.13).
 
     Never raises — write failures are logged at DEBUG and silently ignored so
     the caller session is never disrupted by provenance instrumentation.
@@ -366,6 +375,7 @@ async def _write_dispatch_attempt(
             tool_call_count,
             attempt_index,
             logical_session_id,
+            duration_ms,
         )
     except Exception:
         logger.debug(
@@ -1585,6 +1595,12 @@ class Spawner:
 
             while True:
                 _attempt_count += 1
+                # Per-attempt clock (distinct from the outer `t0`, which spans the
+                # whole session including pre-invoke setup and post-invoke guardrail
+                # checks). Used to attribute duration_ms to the specific catalog
+                # entry this iteration invoked, not the whole failover chain —
+                # necessary for per-model evidence (bu-ep4ks.13).
+                _attempt_t0 = time.monotonic()
 
                 # Build per-attempt invoke kwargs using current (possibly updated) model.
                 runtime_invoked = True
@@ -1765,6 +1781,7 @@ class Spawner:
                             error_message=str(_attempt_exc),
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
+                            duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
                         )
                     # Mark as already classified so the outer except handler does not
                     # double-emit the suppressed metric for this exception.
@@ -1777,6 +1794,7 @@ class Spawner:
                 # attempt that just failed before advancing to the next candidate.
                 _failed_catalog_entry_id = catalog_entry_id
                 _failed_attempt_index = len(_attempted_ids)
+                _failed_attempt_duration_ms = int((time.monotonic() - _attempt_t0) * 1000)
                 if self._pool is not None and _failed_catalog_entry_id is not None:
                     await _write_dispatch_attempt(
                         self._pool,
@@ -1790,6 +1808,7 @@ class Spawner:
                         error_message=str(_attempt_exc),
                         tool_call_count=len(_attempt_tool_calls),
                         logical_session_id=effective_request_id,
+                        duration_ms=_failed_attempt_duration_ms,
                     )
                     # Circuit breaker (bu-hmdqz.2): check whether this write just
                     # tripped (or re-tripped, after a failed half-open probe) the
@@ -1869,6 +1888,7 @@ class Spawner:
                             error_message=str(_attempt_exc),
                             tool_call_count=len(_attempt_tool_calls),
                             logical_session_id=effective_request_id,
+                            duration_ms=_failed_attempt_duration_ms,
                         )
                     preconsumed_runtime_tool_calls = _attempt_tool_calls
                     raise _attempt_exc
@@ -2041,10 +2061,15 @@ class Spawner:
                             exc_info=True,
                         )
 
-                # Record successful fallback attempt provenance when failover occurred.
-                # Only written when _attempted_ids is non-empty (meaning at least one
-                # prior attempt failed or was skipped before this success).
-                if _attempted_ids and self._pool is not None and catalog_entry_id is not None:
+                # Record successful-attempt provenance. Written on EVERY success, not
+                # only when failover occurred (attempt_index=0, no prior _attempted_ids,
+                # is the common single-shot case) -- otherwise a model that always
+                # succeeds on the first try but is slow (cf. the 436s opencode incident)
+                # never leaves a duration_ms trace anywhere evidence-based routing can
+                # see it (bu-ep4ks.13). `_attempt_t0` is the per-attempt clock from the
+                # failover loop iteration that just succeeded (still in scope after the
+                # `break`, whether or not that loop ever retried).
+                if self._pool is not None and catalog_entry_id is not None:
                     await _write_dispatch_attempt(
                         self._pool,
                         catalog_entry_id=catalog_entry_id,
@@ -2054,6 +2079,7 @@ class Spawner:
                         session_id=session_id,
                         tool_call_count=len(tool_calls) if tool_calls else 0,
                         logical_session_id=effective_request_id,
+                        duration_ms=int((time.monotonic() - _attempt_t0) * 1000),
                     )
 
                 # Write process-level diagnostics (best-effort, never blocks result)
