@@ -478,6 +478,104 @@ describe("FloatingChatWidget — page-context capture", () => {
 });
 
 // ---------------------------------------------------------------------------
+// dispatch_accepted SSE routing receipt
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — dispatch_accepted routing receipt", () => {
+  it("announces and links the actual routed butler while waiting for a reply", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-route-1", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: "relationship" } },
+    ];
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "remember this" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    const activity = screen.getByTestId("chat-activity-status");
+    expect(activity.textContent).toBe("Routed to relationship; waiting for a reply.");
+    expect(activity.getAttribute("role")).toBe("status");
+    expect(activity.getAttribute("aria-live")).toBe("polite");
+    expect(activity.getAttribute("aria-atomic")).toBe("true");
+
+    const routedButler = screen.getByRole("link", { name: "relationship" });
+    expect(routedButler.getAttribute("href")).toBe("/butlers/relationship");
+  });
+
+  it("does not invent a domain route for a targetless acceptance", async () => {
+    // The resumed thread has a persisted `relationship` route. An explicit
+    // targetless receipt for this turn must override it rather than showing
+    // stale accountability.
+    sendMessageMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "dispatch_accepted", data: { routed_butler: null } }];
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "log this" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Received by Switchboard; waiting for a reply.",
+    );
+    expect(screen.queryByRole("link", { name: "relationship" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "switchboard" })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Conversation read recovery
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — conversation read recovery", () => {
+  it("keeps the draft available and offers retry when resumed history cannot load", async () => {
+    const refetchMessages = vi.fn();
+    const noConversationResult = {
+      data: { data: [], meta: {} },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useConversationMessages>;
+    const failedHistoryResult = {
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: refetchMessages,
+    } as unknown as ReturnType<typeof useConversationMessages>;
+    vi.mocked(useConversationMessages).mockImplementation(
+      (_butlerName: string, conversationId: string | null) =>
+        (conversationId === "conv-2"
+          ? failedHistoryResult
+          : noConversationResult) as ReturnType<typeof useConversationMessages>,
+    );
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not load conversation history.");
+    expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
+
+    const input = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    expect(input.value).toBe("Keep this draft");
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(refetchMessages).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Unread-reply badge (bu-p6ey8.4)
 // ---------------------------------------------------------------------------
 

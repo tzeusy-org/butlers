@@ -393,6 +393,141 @@ describe("ChatContent — conversation_created SSE handling", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Conversation read recovery
+// ---------------------------------------------------------------------------
+
+function mockHistoryReadFailureAfterInitialLoad() {
+  const refetchMessages = vi.fn();
+  const historyMessage: Message = {
+    id: "history-message-1",
+    conversation_id: "conv-1",
+    role: "assistant",
+    content: "Already loaded history stays visible",
+    tool_calls: null,
+    error: null,
+    model: null,
+    input_tokens: null,
+    output_tokens: null,
+    duration_ms: null,
+    session_id: null,
+    request_id: null,
+    created_at: "2026-07-04T12:00:00.000Z",
+  };
+  const noConversationResult = {
+    data: { data: [], meta: {} },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  let activeConversationResult = {
+    data: { data: [historyMessage], meta: {} },
+    isLoading: false,
+    isError: false,
+    refetch: refetchMessages,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+
+  vi.mocked(useConversations).mockReturnValue({
+    data: { data: EXISTING_CONVERSATIONS, meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversations>);
+  vi.mocked(useConversationMessages).mockImplementation(
+    (_butlerName: string, conversationId: string | null) =>
+      (conversationId === "conv-1"
+        ? activeConversationResult
+        : noConversationResult) as ReturnType<typeof useConversationMessages>,
+  );
+  vi.mocked(useConversationSearch).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationSearch>);
+
+  return {
+    failHistory() {
+      activeConversationResult = {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        refetch: refetchMessages,
+      } as unknown as ReturnType<typeof useConversationMessages>;
+    },
+    refetchMessages,
+  };
+}
+
+describe("ChatContent — conversation read recovery", () => {
+  it("keeps loaded history and the draft visible when history refresh fails, with retry", async () => {
+    const { failHistory, refetchMessages } = mockHistoryReadFailureAfterInitialLoad();
+    const view = renderChatContent();
+
+    await waitFor(() => {
+      expect(screen.getByText("Already loaded history stays visible")).toBeDefined();
+    });
+
+    failHistory();
+    view.rerenderChatContent();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not load conversation history.");
+    const input = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    expect(input.value).toBe("Keep this draft");
+    expect(screen.getByText("Already loaded history stays visible")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(refetchMessages).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispatch_accepted SSE routing receipt
+// ---------------------------------------------------------------------------
+
+describe("ChatContent — dispatch_accepted routing receipt", () => {
+  it("announces and links the actual routed butler while waiting for a reply", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-route-1", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: "finance" } },
+    ];
+
+    renderChatContent();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "categorize this" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Routed to finance; waiting for a reply.",
+    );
+    const routedButler = screen.getByRole("link", { name: "finance" });
+    expect(routedButler.getAttribute("href")).toBe("/butlers/finance");
+  });
+
+  it("does not label a targetless acceptance as a domain route", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-route-2", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: null } },
+    ];
+
+    renderChatContent();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "capture this" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Received by Switchboard; waiting for a reply.",
+    );
+    expect(screen.queryByRole("link", { name: "switchboard" })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Send-error classification parity with FloatingChatWidget (bu-o0ab2)
 // ---------------------------------------------------------------------------
 

@@ -289,7 +289,8 @@ async def _stream_conversation_response(
     1. Optionally emit ``conversation_created`` (for new conversations).
     2. Submit the ingest envelope to the Switchboard; stamp sticky
        ``routed_butler`` on first classification route (widget conversations
-       only — pinned conversations are already deterministic).
+       only — pinned conversations are already deterministic), then emit a
+       truthful ``dispatch_accepted`` routing receipt before polling.
     3. Poll for the routed butler's ``conversation_reply`` message, streaming
        keepalives every 15 s.
     4. On arrival, emit ``message_complete`` + ``done`` for the (already
@@ -384,6 +385,17 @@ async def _stream_conversation_response(
         }
 
     try:
+        # A Switchboard acceptance only confirms that the envelope was
+        # accepted. Surface a domain butler only when Switchboard explicitly
+        # routed this turn; every other accepted decision is intentionally
+        # represented as null rather than mislabelled as a domain route.
+        # Keep this inside the active-turn try/finally: a client that closes
+        # immediately after the receipt must not leave a dangling cancel handle.
+        yield _sse_event(
+            "dispatch_accepted",
+            {"routed_butler": triage_target if routed_this_turn else None},
+        )
+
         # Step 3: Poll for the conversation_reply message, with keepalive.
         start_ts = time.monotonic()
         last_keepalive_ts = start_ts

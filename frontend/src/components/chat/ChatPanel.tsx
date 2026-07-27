@@ -31,6 +31,7 @@ import type { Message, ConversationSummary } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
+import { ConversationReadError } from "./ConversationReadError.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
@@ -98,10 +99,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   );
 
   // Fetch messages for the active conversation
-  const { data: messagesData, isLoading: isLoadingMessages } = useConversationMessages(
-    butlerName,
-    activeConversationId,
-  );
+  const {
+    data: messagesData,
+    isLoading: isLoadingMessages,
+    isError: isMessagesError,
+    refetch: refetchMessages,
+  } = useConversationMessages(butlerName, activeConversationId);
 
   // Sync server messages into local state
   // Avoid overwriting optimistic/streaming messages while an SSE stream is active.
@@ -289,6 +292,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
               );
               break;
             }
+            case "dispatch_accepted": {
+              const data = event.data as { routed_butler?: unknown };
+              const routedButler =
+                typeof data.routed_butler === "string" ? data.routed_butler : null;
+              setStreaming((prev) =>
+                prev ? { ...prev, dispatchReceipt: { routedButler } } : null,
+              );
+              break;
+            }
             case "token": {
               const token =
                 typeof event.data === "string"
@@ -432,6 +444,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           conversation={activeConversation}
           messages={localMessages}
           pricingMap={pricingMap}
+          routedButler={streaming?.dispatchReceipt?.routedButler}
         />
 
         {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
@@ -442,6 +455,14 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             streaming={streaming}
             pricingMap={pricingMap}
             conversationId={activeConversationId}
+            suppressEmptyState={isMessagesError}
+          />
+        )}
+
+        {isMessagesError && (
+          <ConversationReadError
+            label="conversation history"
+            onRetry={() => void refetchMessages()}
           />
         )}
 

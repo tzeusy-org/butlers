@@ -253,6 +253,10 @@ export interface StreamingState {
   cancelled?: boolean;
   /** Set when a cancel attempt failed — surfaced honestly, never dropped. */
   cancelError?: string | null;
+  /** Switchboard's accepted-dispatch receipt, before an assistant reply arrives. */
+  dispatchReceipt?: {
+    routedButler: string | null;
+  };
 }
 
 export interface MessageThreadProps {
@@ -260,6 +264,16 @@ export interface MessageThreadProps {
   streaming: StreamingState | null;
   pricingMap: PricingMap | null;
   conversationId: string | null;
+  /** Avoid presenting an unavailable history query as a successful empty thread. */
+  suppressEmptyState?: boolean;
+}
+
+function pendingActivityStatus(streaming: StreamingState): string {
+  if (!streaming.dispatchReceipt) return "Sending to Switchboard.";
+
+  return streaming.dispatchReceipt.routedButler
+    ? `Routed to ${streaming.dispatchReceipt.routedButler}; waiting for a reply.`
+    : "Received by Switchboard; waiting for a reply.";
 }
 
 export function MessageThread({
@@ -267,6 +281,7 @@ export function MessageThread({
   streaming,
   pricingMap,
   conversationId,
+  suppressEmptyState = false,
 }: MessageThreadProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -285,12 +300,14 @@ export function MessageThread({
     if (!userScrolledUp) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages.length, streaming?.content, userScrolledUp]);
+  }, [messages.length, streaming?.content, streaming?.dispatchReceipt?.routedButler, userScrolledUp]);
 
   const isStreamingThisConversation =
-    streaming !== null && streaming.conversationId === conversationId;
+    streaming !== null &&
+    (streaming.conversationId === conversationId ||
+      (streaming.conversationId === "pending" && conversationId === null));
 
-  if (messages.length === 0 && !isStreamingThisConversation) {
+  if (messages.length === 0 && !isStreamingThisConversation && !suppressEmptyState) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
         No messages yet. Start the conversation below.
@@ -326,8 +343,21 @@ export function MessageThread({
         );
       })}
 
-      {/* Typing indicator — shown while pending (before first token) */}
-      {isStreamingThisConversation && streaming.pending && <TypingIndicator />}
+      {/* The visible dots are decorative; the status text communicates progress. */}
+      {isStreamingThisConversation && streaming.pending && (
+        <div className="flex flex-col gap-1">
+          <p
+            className="text-xs text-muted-foreground"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            data-testid="chat-activity-status"
+          >
+            {pendingActivityStatus(streaming)}
+          </p>
+          <TypingIndicator />
+        </div>
+      )}
 
       {/* Streaming assistant message (before it's committed to messages list) */}
       {isStreamingThisConversation &&

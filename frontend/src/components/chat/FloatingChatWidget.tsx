@@ -59,6 +59,7 @@ import type {
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
+import { ConversationReadError } from "./ConversationReadError.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
@@ -159,10 +160,12 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     [conversationsData],
   );
 
-  const { data: messagesData, isLoading: isLoadingMessages } = useConversationMessages(
-    WIDGET_BUTLER,
-    activeConversationId,
-  );
+  const {
+    data: messagesData,
+    isLoading: isLoadingMessages,
+    isError: isMessagesError,
+    refetch: refetchMessages,
+  } = useConversationMessages(WIDGET_BUTLER, activeConversationId);
 
   useEffect(() => {
     if (streaming) return;
@@ -276,6 +279,15 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
                 prev.map((m) =>
                   m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
                 ),
+              );
+              break;
+            }
+            case "dispatch_accepted": {
+              const data = event.data as { routed_butler?: unknown };
+              const routedButler =
+                typeof data.routed_butler === "string" ? data.routed_butler : null;
+              setStreaming((prev) =>
+                prev ? { ...prev, dispatchReceipt: { routedButler } } : null,
               );
               break;
             }
@@ -491,6 +503,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             conversation={activeConversation}
             messages={localMessages}
             pricingMap={pricingMap}
+            routedButler={streaming?.dispatchReceipt?.routedButler}
           />
 
           {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
@@ -501,6 +514,14 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               streaming={streaming}
               pricingMap={pricingMap}
               conversationId={activeConversationId}
+              suppressEmptyState={isMessagesError}
+            />
+          )}
+
+          {isMessagesError && (
+            <ConversationReadError
+              label="conversation history"
+              onRetry={() => void refetchMessages()}
             />
           )}
 

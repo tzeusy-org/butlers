@@ -925,6 +925,70 @@ class _FakeRequest:
         return False
 
 
+@pytest.mark.parametrize(
+    ("triage_decision", "triage_target", "expected_routed_butler"),
+    [
+        ("route_to", "relationship", "relationship"),
+        ("file_bug_report", None, None),
+    ],
+)
+async def test_stream_conversation_response_emits_dispatch_accepted_truthfully(
+    triage_decision: str,
+    triage_target: str | None,
+    expected_routed_butler: str | None,
+):
+    """Accepted dispatches surface the actual domain route, if one exists.
+
+    A Switchboard acceptance is not itself a domain route.  The receipt must
+    therefore preserve the route target only for ``route_to`` decisions and
+    explicitly send ``null`` for accepted, non-routing decisions.
+    """
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(uuid4()),
+                "status": "accepted",
+                "triage_decision": triage_decision,
+                "triage_target": triage_target,
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    shared_pool.execute = AsyncMock(return_value=None)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
+    )
+
+    events: list[str] = []
+    async for chunk in _stream_conversation_response(
+        request=_FakeRequest(),
+        butler_name=_SWITCHBOARD_BUTLER,
+        conversation_id=_CONV_ID,
+        message_created_at=_NOW - timedelta(seconds=1),
+        envelope=envelope,
+        db=mock_db,
+        mcp_mgr=mgr,
+    ):
+        events.append(chunk)
+
+    receipt_index = next(
+        index for index, event in enumerate(events) if "event: dispatch_accepted" in event
+    )
+    token_index = next(index for index, event in enumerate(events) if "event: token" in event)
+    receipt = events[receipt_index]
+
+    assert receipt_index < token_index
+    assert f"data: {json.dumps({'routed_butler': expected_routed_butler})}" in receipt
+
+
 async def test_stream_conversation_response_times_out_gracefully(monkeypatch):
     """No conversation_reply lands before the poll window closes: emits a
     graceful SESSION_TIMEOUT error carrying the routed session's id, and the
