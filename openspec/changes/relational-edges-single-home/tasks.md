@@ -31,6 +31,11 @@ so the boundary cannot silently re-diverge.
   (spec: "Skill edge vocabulary stays a subset of the registry")
 - [ ] B4 — Tests for B2: registry-relational predicate rejected; narrative edge
   (`planned_dinner_with`) still stored and visible via `memory_entity_neighbors`.
+- [x] B5 — Guard the consolidation producer: retain valid narrative
+  `object_entity_id` values, reject malformed target UUIDs instead of downgrading
+  them to property facts, reject registry-relational edges before lower-level
+  memory storage, and align the consolidation skill examples with the single-home
+  boundary.
 
 ## Track C — Backfill (blocked by A1, B2)
 

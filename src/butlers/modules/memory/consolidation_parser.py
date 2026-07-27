@@ -32,6 +32,7 @@ class NewFact:
     importance: float = 5.0
     tags: list[str] = field(default_factory=list)
     entity_id: str | None = None
+    object_entity_id: str | None = None
     valid_at: datetime | None = None
 
 
@@ -189,6 +190,15 @@ def _parse_new_fact(raw: dict, errors: list[str]) -> NewFact | None:
     entity_id = (
         entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
     )
+    object_entity_id_raw = raw.get("object_entity_id")
+    object_entity_id = None
+    if object_entity_id_raw is not None:
+        if not isinstance(object_entity_id_raw, str) or not _is_uuid(object_entity_id_raw):
+            msg = "Skipping new_fact: invalid object_entity_id"
+            logger.warning(msg)
+            errors.append(msg)
+            return None
+        object_entity_id = object_entity_id_raw
     valid_at, valid_at_ok = _parse_valid_at(raw, "new_fact", errors)
     if not valid_at_ok:
         return None
@@ -201,6 +211,7 @@ def _parse_new_fact(raw: dict, errors: list[str]) -> NewFact | None:
         importance=importance,
         tags=tags,
         entity_id=entity_id,
+        object_entity_id=object_entity_id,
         valid_at=valid_at,
     )
 

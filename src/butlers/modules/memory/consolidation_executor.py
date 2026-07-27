@@ -35,6 +35,11 @@ from butlers.modules.memory.storage import (
     store_fact,
     store_rule,
 )
+from butlers.modules.memory.tools.writing import (
+    is_relational_registry_predicate,
+    normalize_predicate,
+    refresh_relational_registry_predicates,
+)
 
 if TYPE_CHECKING:
     from asyncpg import Pool
@@ -121,6 +126,21 @@ async def execute_consolidation(
     for fact in parsed.new_facts:
         try:
             fact_entity_id = uuid.UUID(fact.entity_id) if fact.entity_id else None
+            fact_object_entity_id = (
+                uuid.UUID(fact.object_entity_id) if fact.object_entity_id else None
+            )
+            if fact_object_entity_id is not None:
+                normalized_predicate = normalize_predicate(fact.predicate)
+                relational_predicates = await refresh_relational_registry_predicates(pool)
+                if is_relational_registry_predicate(
+                    normalized_predicate,
+                    relational_predicates,
+                ):
+                    raise ValueError(
+                        f"Registry-relational predicate {fact.predicate!r} is out of scope "
+                        "for memory consolidation edge-facts; use "
+                        "relationship_assert_fact(object_kind='entity')"
+                    )
             if fact_entity_id is None:
                 logger.warning(
                     "Consolidation: new fact %s/%s has no entity_id — "
@@ -140,6 +160,7 @@ async def execute_consolidation(
                 tags=fact.tags,
                 source_butler=butler_name,
                 entity_id=fact_entity_id,
+                object_entity_id=fact_object_entity_id,
                 valid_at=fact.valid_at,
                 tenant_id=tenant_id,
                 request_id=request_id,

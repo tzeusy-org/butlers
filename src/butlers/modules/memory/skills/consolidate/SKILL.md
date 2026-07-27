@@ -37,7 +37,7 @@ Respond with a JSON block:
 {
   "new_facts": [
     {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>", "valid_at": "<ISO-8601 timestamp>"},
-    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>", "object_entity_id": "<uuid of target entity>"}
+    {"subject": "...", "predicate": "planned_dinner_with", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>", "object_entity_id": "<uuid of target entity>"}
   ],
   "updated_facts": [
     {"target_id": "uuid-of-existing-fact", "subject": "...", "predicate": "...", "content": "...", "permanence": "...", "entity_id": "<uuid of subject entity>"}
@@ -53,13 +53,23 @@ Respond with a JSON block:
 
 - **Property-fact** (default): Describes an attribute of a single entity. Omit `object_entity_id`.
   - Example: `{"subject": "Alice", "predicate": "lives_in", "content": "Seattle"}`
-- **Edge-fact**: Describes a directed relationship between two entities. Include `object_entity_id` set to the UUID of the target entity.
-  - Example: `{"subject": "Alice", "predicate": "works_at", "content": "senior engineer", "object_entity_id": "<uuid of Acme Corp>"}`
+- **Narrative edge-fact**: Describes episodic or coordination context involving two
+  entities. Include `object_entity_id` set to the UUID of the target entity.
+  - Example: `{"subject": "Alice", "predicate": "planned_dinner_with", "content": "dinner next Friday", "object_entity_id": "<uuid of Bob>"}`
 
-**When to emit edge-facts:**
-- The fact describes a relationship between two known entities (person→person, person→organization, etc.)
+**When to emit narrative edge-facts:**
+- The fact describes episodic or coordination context between two known entities
 - Both the subject entity and the object entity have been resolved to entity IDs
-- Predicates like `works_at`, `friend_of`, `sibling_of`, `married_to`, `member_of`, `reports_to`, `lives_with` are strong signals for edge-facts
+- Predicates like `planned_dinner_with`, `wake_coordination`, and
+  `social_exchange_with` are appropriate narrative edges
+
+**Registry-relational edges are not memory facts:**
+- Do not emit structural relationship predicates such as `works_at`, `friend_of`,
+  `sibling_of`, `married_to`, `member_of`, `reports_to`, or `lives_with`
+- Those edges belong in `relationship.entity_facts` through
+  `relationship_assert_fact(object_kind="entity")`, not in consolidation output
+- Never omit or discard an available target UUID to turn a structural edge into a
+  property fact; omit the extraction instead
 
 **When to emit property-facts:**
 - The fact describes an attribute, preference, or state of a single entity

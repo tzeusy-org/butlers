@@ -87,6 +87,43 @@ class TestValidParsing:
         assert result.new_facts[0].valid_at == datetime.fromisoformat("2026-07-21T09:30:00+08:00")
         assert result.parse_errors == []
 
+    def test_edge_fact_object_entity_id_is_parsed(self) -> None:
+        payload = {
+            "new_facts": [
+                {
+                    "subject": "person",
+                    "predicate": "works_at",
+                    "content": "engineer",
+                    "entity_id": UUID1,
+                    "object_entity_id": UUID2,
+                }
+            ],
+        }
+
+        result = parse(_json(payload))
+
+        assert result.new_facts[0].entity_id == UUID1
+        assert result.new_facts[0].object_entity_id == UUID2
+        assert result.parse_errors == []
+
+    def test_invalid_edge_fact_object_entity_id_rejects_fact(self) -> None:
+        payload = {
+            "new_facts": [
+                {
+                    "subject": "person",
+                    "predicate": "planned_dinner_with",
+                    "content": "dinner next Friday",
+                    "entity_id": UUID1,
+                    "object_entity_id": "not-a-uuid",
+                }
+            ],
+        }
+
+        result = parse(_json(payload))
+
+        assert result.new_facts == []
+        assert result.parse_errors == ["Skipping new_fact: invalid object_entity_id"]
+
     def test_temporal_fact_timestamp_with_surrounding_whitespace_is_parsed(self) -> None:
         payload = {
             "new_facts": [
