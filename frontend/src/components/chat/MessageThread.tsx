@@ -298,7 +298,7 @@ export function MessageThread({
   // Auto-scroll to bottom when new messages arrive, unless user scrolled up
   useEffect(() => {
     if (!userScrolledUp) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      bottomRef.current?.scrollIntoView();
     }
   }, [messages.length, streaming?.content, streaming?.dispatchReceipt?.routedButler, userScrolledUp]);
 

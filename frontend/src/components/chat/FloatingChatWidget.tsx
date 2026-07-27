@@ -132,6 +132,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   const [inputValue, setInputValue] = useState("");
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  const localMessagesConversationIdRef = useRef<string | null>(null);
   const [sendError, setSendError] = useState<SendError | null>(null);
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
@@ -172,13 +173,20 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     // Guard against the transient `messagesData === undefined` window that
     // TanStack Query passes through while refetching after switching
     // `activeConversationId` (staleTime: 0 means every switch refetches).
-    // Without this guard, the query-loading gap briefly clears
-    // `localMessages` to `[]`, flashing an empty thread before the real
-    // messages land.
+    // Preserve the previous conversation's cached local state for a
+    // same-thread retry, but never reconcile it into the selected conversation.
     if (messagesData?.data) {
-      setLocalMessages((previous) =>
-        reconcileConversationMessages(messagesData.data, previous, activeConversationId),
-      );
+      const previousBelongsToActiveConversation =
+        localMessagesConversationIdRef.current === activeConversationId;
+      localMessagesConversationIdRef.current = activeConversationId;
+      setLocalMessages((previous) => {
+        const activeMessages = previousBelongsToActiveConversation ? previous : [];
+        return reconcileConversationMessages(
+          messagesData.data,
+          activeMessages,
+          activeConversationId,
+        );
+      });
     }
   }, [activeConversationId, messagesData, streaming]);
 
@@ -228,9 +236,15 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
         request_id: null,
         created_at: new Date().toISOString(),
       };
-      setLocalMessages((prev) =>
-        prev.some((message) => message.id === userMessage.id) ? prev : [...prev, userMessage],
-      );
+      const previousBelongsToActiveConversation =
+        localMessagesConversationIdRef.current === activeConversationId;
+      localMessagesConversationIdRef.current = activeConversationId;
+      setLocalMessages((previous) => {
+        const activeMessages = previousBelongsToActiveConversation ? previous : [];
+        return activeMessages.some((message) => message.id === userMessage.id)
+          ? activeMessages
+          : [...activeMessages, userMessage];
+      });
 
       let currentConversationId = activeConversationId;
 
@@ -275,6 +289,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               setStreaming((prev) =>
                 prev ? { ...prev, conversationId: data.conversation_id } : null,
               );
+              localMessagesConversationIdRef.current = data.conversation_id;
               setLocalMessages((prev) =>
                 prev.map((m) =>
                   m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
@@ -396,6 +411,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 
   function handleNewConversation() {
     setActiveConversationId(null);
+    localMessagesConversationIdRef.current = null;
     setLocalMessages([]);
     setStreaming(null);
     setSendError(null);
@@ -410,6 +426,9 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       });
     }
   }
+
+  const visibleMessages =
+    localMessagesConversationIdRef.current === activeConversationId ? localMessages : [];
 
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="dialog" + onKeyDown provides the shared Escape/focus choreography; the rule's static role allowlist does not recognize the WAI-ARIA dialog pattern.
@@ -501,16 +520,16 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           <ConversationHeader
             butlerName={WIDGET_BUTLER}
             conversation={activeConversation}
-            messages={localMessages}
+            messages={visibleMessages}
             pricingMap={pricingMap}
             routedButler={streaming?.dispatchReceipt?.routedButler}
           />
 
-          {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
+          {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (
             <MessageThreadSkeleton />
           ) : (
             <MessageThread
-              messages={localMessages}
+              messages={visibleMessages}
               streaming={streaming}
               pricingMap={pricingMap}
               conversationId={activeConversationId}

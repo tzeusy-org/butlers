@@ -241,7 +241,7 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
 });
 
 // ---------------------------------------------------------------------------
-// Retained thread during conversation-key refetch (bu-zu265)
+// Conversation-key refetch isolation (bu-zu265)
 // ---------------------------------------------------------------------------
 
 const SWITCHING_CONVERSATIONS = [
@@ -328,11 +328,19 @@ function mockHooksForConversationRefetchGap() {
         isLoading: false,
       } as unknown as ReturnType<typeof useConversationMessages>;
     },
+    failNextThread() {
+      nextMessagesResult = {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useConversationMessages>;
+    },
   };
 }
 
 describe("ChatContent — conversation switch refetch floor (bu-zu265)", () => {
-  it("keeps the current thread visible while loading, then synchronizes the next thread", async () => {
+  it("hides the previous thread while loading, then synchronizes the next thread", async () => {
     const { resolveNextThread } = mockHooksForConversationRefetchGap();
     const view = renderChatContent();
 
@@ -341,10 +349,10 @@ describe("ChatContent — conversation switch refetch floor (bu-zu265)", () => {
     fireEvent.click(screen.getByText("Next thread"));
 
     // The conversation selection changes immediately and TanStack Query's
-    // pending result has no data. Retain the rendered thread instead of
-    // replacing it with a loading skeleton during that gap.
+    // pending result has no data. Never render the previous conversation's
+    // messages under the newly selected conversation's header.
     expect(screen.getAllByText("Next thread")).toHaveLength(2);
-    expect(screen.getByText("Retained while the next thread refetches")).toBeDefined();
+    expect(screen.queryByText("Retained while the next thread refetches")).toBeNull();
     expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
 
     resolveNextThread();
@@ -352,6 +360,23 @@ describe("ChatContent — conversation switch refetch floor (bu-zu265)", () => {
 
     await waitFor(() => expect(screen.getByText("Rendered when the next thread arrives")).toBeDefined());
     expect(screen.queryByText("Retained while the next thread refetches")).toBeNull();
+  });
+
+  it("does not expose the previous thread when the selected thread fails to load", async () => {
+    const { failNextThread } = mockHooksForConversationRefetchGap();
+    const view = renderChatContent();
+
+    expect(screen.getByText("Retained while the next thread refetches")).toBeDefined();
+    fireEvent.click(screen.getByText("Next thread"));
+
+    failNextThread();
+    view.rerenderChatContent();
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Could not load conversation history.",
+    );
+    expect(screen.queryByText("Retained while the next thread refetches")).toBeNull();
+    expect(screen.getAllByText("Next thread")).toHaveLength(2);
   });
 });
 

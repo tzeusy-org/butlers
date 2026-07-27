@@ -68,6 +68,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
   // Local messages during / after stream (committed messages from cache)
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  const localMessagesConversationIdRef = useRef<string | null>(null);
   // Classified SSE/transport send error (offline / timeout / generic) —
   // mirrors FloatingChatWidget's sendError seam, see ./send-error.tsx.
   const [sendError, setSendError] = useState<SendError | null>(null);
@@ -111,12 +112,21 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   useEffect(() => {
     if (streaming) return;
     // A conversation-key switch can briefly expose `messagesData` as undefined
-    // before the next query result lands. Keep the rendered thread during that
-    // gap rather than treating it as a successful empty conversation.
+    // before the next query result lands. Preserve the previous conversation's
+    // cached local state for a same-thread retry, but never reconcile it into
+    // the newly selected conversation.
     if (messagesData?.data) {
-      setLocalMessages((previous) =>
-        reconcileConversationMessages(messagesData.data, previous, activeConversationId),
-      );
+      const previousBelongsToActiveConversation =
+        localMessagesConversationIdRef.current === activeConversationId;
+      localMessagesConversationIdRef.current = activeConversationId;
+      setLocalMessages((previous) => {
+        const activeMessages = previousBelongsToActiveConversation ? previous : [];
+        return reconcileConversationMessages(
+          messagesData.data,
+          activeMessages,
+          activeConversationId,
+        );
+      });
     }
   }, [activeConversationId, messagesData, streaming]);
 
@@ -201,6 +211,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     abortRef.current = null;
     hasResumedRef.current = false;
     setActiveConversationId(null);
+    localMessagesConversationIdRef.current = null;
     setLocalMessages([]);
     setStreaming(null);
     setSendError(null);
@@ -242,9 +253,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         request_id: null,
         created_at: new Date().toISOString(),
       };
-      setLocalMessages((prev) =>
-        prev.some((message) => message.id === userMessage.id) ? prev : [...prev, userMessage],
-      );
+      const previousBelongsToActiveConversation =
+        localMessagesConversationIdRef.current === activeConversationId;
+      localMessagesConversationIdRef.current = activeConversationId;
+      setLocalMessages((previous) => {
+        const activeMessages = previousBelongsToActiveConversation ? previous : [];
+        return activeMessages.some((message) => message.id === userMessage.id)
+          ? activeMessages
+          : [...activeMessages, userMessage];
+      });
 
       let currentConversationId = activeConversationId;
 
@@ -285,6 +302,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
                 prev ? { ...prev, conversationId: data.conversation_id } : null,
               );
               // Update optimistic user message with real conversation_id
+              localMessagesConversationIdRef.current = data.conversation_id;
               setLocalMessages((prev) =>
                 prev.map((m) =>
                   m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
@@ -409,6 +427,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   function handleNewConversation() {
     setActiveConversationId(null);
+    localMessagesConversationIdRef.current = null;
     setLocalMessages([]);
     setStreaming(null);
     setSendError(null);
@@ -422,6 +441,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       });
     }
   }
+
+  const visibleMessages =
+    localMessagesConversationIdRef.current === activeConversationId ? localMessages : [];
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -442,16 +464,16 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         <ConversationHeader
           butlerName={butlerName}
           conversation={activeConversation}
-          messages={localMessages}
+          messages={visibleMessages}
           pricingMap={pricingMap}
           routedButler={streaming?.dispatchReceipt?.routedButler}
         />
 
-        {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
+        {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (
           <MessageThreadSkeleton />
         ) : (
           <MessageThread
-            messages={localMessages}
+            messages={visibleMessages}
             streaming={streaming}
             pricingMap={pricingMap}
             conversationId={activeConversationId}

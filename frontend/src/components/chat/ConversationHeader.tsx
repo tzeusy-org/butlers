@@ -73,7 +73,7 @@ export function ConversationHeader({
                 Handled by{" "}
                 <a
                   href={`/butlers/${encodeURIComponent(accountableButler)}`}
-                  className="underline underline-offset-2 hover:text-foreground"
+                  className="underline underline-offset-4 hover:text-foreground"
                 >
                   {accountableButler}
                 </a>

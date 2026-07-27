@@ -219,6 +219,14 @@ function mockHooksForConversationRefetchGap() {
         isLoading: false,
       } as unknown as ReturnType<typeof useConversationMessages>;
     },
+    failOlderThread() {
+      olderMessagesResult = {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useConversationMessages>;
+    },
   };
 }
 
@@ -371,7 +379,7 @@ describe("FloatingChatWidget — history view", () => {
     expect(screen.getByTestId("chat-widget-history-button")).toBeDefined();
   });
 
-  it("keeps the current thread visible while loading, then synchronizes the selected thread", async () => {
+  it("hides the current thread while loading, then synchronizes the selected thread", async () => {
     const { resolveOlderThread } = mockHooksForConversationRefetchGap();
     const view = renderWidget();
 
@@ -381,7 +389,7 @@ describe("FloatingChatWidget — history view", () => {
     fireEvent.click(screen.getByTestId("chat-widget-history-button"));
     fireEvent.click(screen.getByText("Older thread"));
 
-    expect(screen.getByText("Alice is child-of Bob")).toBeDefined();
+    expect(screen.queryByText("Alice is child-of Bob")).toBeNull();
     expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
 
     resolveOlderThread();
@@ -391,6 +399,25 @@ describe("FloatingChatWidget — history view", () => {
       expect(screen.getByText("Rendered when the older thread arrives")).toBeDefined();
     });
     expect(screen.queryByText("Alice is child-of Bob")).toBeNull();
+  });
+
+  it("does not expose the previous thread when the selected thread fails to load", async () => {
+    const { failOlderThread } = mockHooksForConversationRefetchGap();
+    const view = renderWidget();
+
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    expect(screen.getByText("Alice is child-of Bob")).toBeDefined();
+
+    fireEvent.click(screen.getByTestId("chat-widget-history-button"));
+    fireEvent.click(screen.getByText("Older thread"));
+    failOlderThread();
+    view.rerenderWidget();
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Could not load conversation history.",
+    );
+    expect(screen.queryByText("Alice is child-of Bob")).toBeNull();
+    expect(screen.getByText("Older thread")).toBeDefined();
   });
 
   it("New button from history resets to a fresh conversation in thread view", () => {

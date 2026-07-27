@@ -8,7 +8,7 @@ A typing indicator SHALL provide visual and assistive-technology feedback while 
 
 - **WHEN** a user message has been sent and the assistant response has not started streaming
 - **THEN** a typing indicator renders at the bottom of the message thread, left-aligned (assistant position)
-- **AND** the indicator shows three animated dots with a bounce animation (staggered `animation-delay`)
+- **AND** the indicator shows three static muted dots without decorative animation
 - **AND** a single polite, atomic status region announces the current dispatch activity without exposing the decorative dots to assistive technology
 
 #### Scenario: Typing indicator during streaming
@@ -104,3 +104,9 @@ The chat interface SHALL distinguish failed conversation reads from an empty con
 - **WHEN** the active conversation's message-history query fails
 - **THEN** the active chat area SHALL render a visible `role="alert"` failure message with a retry control
 - **AND** any already-visible local messages, selected conversation, and draft text SHALL remain available while the error is shown and during retry
+
+#### Scenario: Selected conversation fails to load after switching threads
+
+- **WHEN** the user selects a different conversation and its message-history query fails
+- **THEN** messages retained for the previously selected conversation SHALL NOT render under the newly selected conversation
+- **AND** the newly selected conversation and draft text SHALL remain available with the retryable failure message
