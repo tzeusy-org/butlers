@@ -25,6 +25,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.switchboard.operator import controls as _operator
     from butlers.tools.switchboard.registry import registry as _registry
     from butlers.tools.switchboard.routing import correct_route as _correct_route
+    from butlers.tools.switchboard.routing import post_mail as _post_mail
     from butlers.tools.switchboard.routing import route as _route
 
     def _tool(group: str):
@@ -76,7 +77,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Deliver a message to another butler's mailbox via the Switchboard."""
-        return await _route.post_mail(
+        return await _post_mail(
             module._get_pool(),
             target_butler,
             sender,
