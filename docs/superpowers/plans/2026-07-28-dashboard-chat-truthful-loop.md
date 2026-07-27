@@ -211,6 +211,6 @@ Run: `openspec validate make-dashboard-chat-truthful --strict`
 
 Expected: strict validation exits 0 with both modified capabilities recognized.
 
-- [ ] **Step 3: Record completion and hand off a reviewable branch**
+- [x] **Step 3: Record completion and hand off a reviewable branch**
 
 Mark every completed OpenSpec checkbox, inspect `git diff --check`, commit only the scoped files, push `codex/dashboard-chat-truth-loop-20260728`, and open a PR whose body lists the exact tests and confirms no live owner message was sent during validation.

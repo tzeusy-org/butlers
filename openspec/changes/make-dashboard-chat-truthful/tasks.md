@@ -20,4 +20,4 @@
 
 - [x] 4.1 Run focused backend and frontend test suites, then lint/format the touched files.
 - [x] 4.2 Validate `make-dashboard-chat-truthful` with strict OpenSpec validation and walk the keyboard/screen-reader state contract from tests.
-- [ ] 4.3 Commit the scoped change, push the branch, open a clean PR, and record its verification evidence.
+- [x] 4.3 Commit the scoped change, push the branch, open a clean PR, and record its verification evidence in draft PR #3618.
