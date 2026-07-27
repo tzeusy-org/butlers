@@ -212,6 +212,7 @@ The consolidation executor SHALL apply parsed consolidation results to the datab
 
 - **WHEN** consolidation output contains an `updated_facts` entry with a non-null `valid_at`
 - **THEN** the parser MUST reject the entry and the executor MUST NOT write it
+- **AND** when `valid_at` is omitted but the predicate registry marks the predicate as temporal, the executor MUST reject the entry before calling `store_fact`
 - **AND** the consolidation prompt MUST direct temporal observations to `new_facts`, where `valid_at` preserves coexistence rather than supersession
 
 #### Scenario: New rules stored with tenant context

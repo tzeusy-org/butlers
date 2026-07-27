@@ -169,6 +169,22 @@ async def execute_consolidation(
     # --- Updated facts ---
     for fact in parsed.updated_facts:
         try:
+            predicate_is_temporal = await pool.fetchval(
+                "SELECT is_temporal FROM predicate_registry "
+                "WHERE name = $1 OR $1 = ANY(aliases) "
+                "ORDER BY ($1 = ANY(aliases)) DESC LIMIT 1",
+                fact.predicate,
+            )
+            if predicate_is_temporal:
+                logger.warning(
+                    "Consolidation: skipping updated fact %s because predicate %s "
+                    "is registered as temporal; temporal observations must use new_facts",
+                    fact.target_id,
+                    fact.predicate,
+                )
+                errors.append(f"Skipped temporal updated fact ({fact.target_id})")
+                continue
+
             fact_entity_id = uuid.UUID(fact.entity_id) if fact.entity_id else None
             if fact_entity_id is None:
                 logger.warning(
