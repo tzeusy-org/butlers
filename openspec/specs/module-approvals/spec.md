@@ -203,7 +203,7 @@ All actual execution — auto-approved actions and manually approved actions dis
 
 ### Requirement: Immutable Audit Events
 
-The `approval_events` table MUST be an append-only audit log. Events include `event_type`, `action_id`, `rule_id`, `actor`, `reason`, `event_metadata` (JSONB), and `occurred_at`. A database trigger prevents UPDATE and DELETE operations. An event's `action_id` is immutable historical provenance rather than a deletion-blocking foreign key, so terminal action retention does not mutate or delete the event.
+The `approval_events` table MUST be an append-only audit log. Events include `event_type`, `action_id`, `rule_id`, `actor`, `reason`, `event_metadata` (JSONB), and `occurred_at`. A database trigger prevents UPDATE and DELETE operations. An event's `action_id` and `rule_id` are immutable historical provenance rather than deletion-blocking foreign keys, so terminal-action and inactive-rule retention do not mutate or delete the event. A newly inserted non-null action or rule reference MUST still resolve to its live row when the event is written.
 
 #### Scenario: Audit event creation for all state transitions
 
@@ -221,6 +221,12 @@ The `approval_events` table MUST be an append-only audit log. Events include `ev
 - **WHEN** an UPDATE or DELETE is attempted on `approval_events`
 - **THEN** the database trigger rejects the operation
 - **AND** the row remains unchanged
+
+#### Scenario: Historical audit references preserve new-write validation
+
+- **WHEN** a new event is inserted with a non-null `action_id` or `rule_id`
+- **THEN** that identifier must reference a live pending action or approval rule when the event is written
+- **AND** a retained event may continue to expose that identifier after its referenced terminal action or inactive rule is cleaned under the shorter retention policy
 
 ### Requirement: Redaction
 
@@ -262,6 +268,8 @@ The module MUST support configurable retention windows for approvals data: `pend
 
 - **WHEN** `cleanup_old_rules` runs
 - **THEN** only inactive rules (`active=false`) older than the retention window are deleted
+- **AND** immutable rule events remain unchanged with their historical `rule_id` until their separate 365-day event-retention window
+- **AND** rerunning the cleanup after an eligible rule is deleted returns no additional rule deletion and never mutates or deletes the retained event
 
 #### Scenario: Cleanup old events requires privilege
 

@@ -194,7 +194,8 @@ async def cleanup_old_rules(
         logger.info("DRY RUN: would delete %d rules", count)
         return count
 
-    # Delete old inactive rules
+    # Delete old inactive rules. approval_events retains an immutable historical
+    # rule_id until its separate event-retention window expires.
     await pool.execute(
         """
         DELETE FROM approval_rules

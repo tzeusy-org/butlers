@@ -140,3 +140,16 @@ def test_rule_creator_provenance_outlives_terminal_action_retention() -> None:
     assert "trg_approval_rules_created_from_reference" in normalized
     assert "after insert or update of created_from on approval_rules" in normalized
     assert "deferrable initially deferred" in normalized
+
+
+def test_rule_event_provenance_outlives_rule_retention() -> None:
+    """Rule-event references validate on insert without blocking rule retention."""
+    mod = _load_migration("011_retain_event_rule_provenance.py")
+    normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
+
+    assert mod.revision == "approvals_011"
+    assert mod.down_revision == "approvals_010"
+    assert "drop constraint if exists approval_events_rule_id_fkey" in normalized
+    assert "validate_approval_event_rule_reference" in normalized
+    assert "for key share" in normalized
+    assert "create trigger trg_approval_events_rule_reference" in normalized

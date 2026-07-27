@@ -13,7 +13,11 @@ import pytest
 from alembic import command
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
-from butlers.modules.approvals.retention import RetentionPolicy, cleanup_old_actions
+from butlers.modules.approvals.retention import (
+    RetentionPolicy,
+    cleanup_old_actions,
+    cleanup_old_rules,
+)
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
@@ -82,6 +86,26 @@ async def _insert_old_action(
         execution_result,
     )
     return action_id
+
+
+async def _insert_old_inactive_rule(pool) -> UUID:
+    """Insert a rule that is safely outside the default rule-retention window."""
+    rule_id = uuid4()
+    await pool.execute(
+        """
+        INSERT INTO approval_rules (
+            id, tool_name, arg_constraints, description, created_at, active
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        rule_id,
+        "memory_entity_merge",
+        {"source_entity_id": "source", "target_entity_id": "target"},
+        "Inactive rule eligible for retention cleanup",
+        datetime.now(UTC) - timedelta(days=365),
+        False,
+    )
+    return rule_id
 
 
 async def test_old_approved_unexecuted_action_is_excluded_from_retention_dry_run(
@@ -354,6 +378,88 @@ async def test_new_action_event_requires_a_live_action(approvals_pool) -> None:
         )
 
 
+async def test_rule_retention_keeps_immutable_rule_event_as_provenance_and_is_idempotent(
+    approvals_pool,
+) -> None:
+    """An event-backed inactive rule can clean without mutating its audit history."""
+    rule_id = await _insert_old_inactive_rule(approvals_pool)
+    event_id = await approvals_pool.fetchval(
+        """
+        INSERT INTO approval_events (
+            rule_id, event_type, actor, reason, event_metadata, occurred_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING event_id
+        """,
+        rule_id,
+        "rule_revoked",
+        "human:owner",
+        "Rule revoked before retention cleanup",
+        {"source": "retention-regression"},
+        datetime.now(UTC) - timedelta(days=364),
+    )
+    original_event = await approvals_pool.fetchrow(
+        """
+        SELECT rule_id, event_type, actor, reason, event_metadata, occurred_at
+        FROM approval_events
+        WHERE event_id = $1
+        """,
+        event_id,
+    )
+    assert original_event is not None
+
+    deleted = await cleanup_old_rules(
+        approvals_pool,
+        RetentionPolicy(approval_rules_retention_days=180),
+    )
+
+    assert deleted == 1
+    assert (
+        await approvals_pool.fetchval("SELECT id FROM approval_rules WHERE id = $1", rule_id)
+        is None
+    )
+    retained_event = await approvals_pool.fetchrow(
+        """
+        SELECT rule_id, event_type, actor, reason, event_metadata, occurred_at
+        FROM approval_events
+        WHERE event_id = $1
+        """,
+        event_id,
+    )
+    assert retained_event is not None
+    assert dict(retained_event) == dict(original_event)
+    assert retained_event["rule_id"] == rule_id
+
+    assert (
+        await cleanup_old_rules(
+            approvals_pool,
+            RetentionPolicy(approval_rules_retention_days=180),
+        )
+        == 0
+    )
+    rerun_event = await approvals_pool.fetchrow(
+        "SELECT rule_id, event_type, actor, reason, event_metadata, occurred_at "
+        "FROM approval_events WHERE event_id = $1",
+        event_id,
+    )
+    assert rerun_event is not None
+    assert dict(rerun_event) == dict(original_event)
+
+
+async def test_new_rule_event_requires_a_live_rule(approvals_pool) -> None:
+    """Historical rule provenance must not permit invalid newly written audit events."""
+    with pytest.raises(asyncpg.ForeignKeyViolationError, match="live approval rule"):
+        await approvals_pool.execute(
+            """
+            INSERT INTO approval_events (rule_id, event_type, actor)
+            VALUES ($1, $2, $3)
+            """,
+            uuid4(),
+            "rule_created",
+            "human:owner",
+        )
+
+
 def _create_approvals_007_database(postgres_container) -> str:
     """Create the actual approvals schema immediately before the retention fix."""
     db_url = create_migration_db(postgres_container, migration_db_name())
@@ -370,6 +476,16 @@ def _create_approvals_008_database(postgres_container) -> str:
     command.upgrade(
         _build_alembic_config(db_url, chains=["approvals"]),
         "approvals@approvals_008",
+    )
+    return db_url
+
+
+def _create_approvals_010_database(postgres_container) -> str:
+    """Create the approvals schema immediately before rule-event provenance support."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    command.upgrade(
+        _build_alembic_config(db_url, chains=["approvals"]),
+        "approvals@approvals_010",
     )
     return db_url
 
@@ -515,5 +631,66 @@ async def test_approvals_upgrade_keeps_existing_rule_creator_for_terminal_retent
         )
         assert rule is not None
         assert dict(rule) == {"created_from": executed_id, "active": True}
+    finally:
+        await upgraded_pool.close()
+
+
+async def test_approvals_upgrade_keeps_existing_rule_event_for_rule_retention(
+    postgres_container,
+) -> None:
+    """A populated approvals_010 schema upgrades before its event-backed rule cleans."""
+    db_url = await asyncio.to_thread(_create_approvals_010_database, postgres_container)
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        rule_id = await _insert_old_inactive_rule(pool)
+        event_id = await pool.fetchval(
+            """
+            INSERT INTO approval_events (rule_id, event_type, actor, occurred_at)
+            VALUES ($1, $2, $3, $4)
+            RETURNING event_id
+            """,
+            rule_id,
+            "rule_revoked",
+            "human:owner",
+            datetime.now(UTC) - timedelta(days=364),
+        )
+    finally:
+        await pool.close()
+
+    await asyncio.to_thread(_upgrade_approvals_to_head, db_url)
+
+    upgraded_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        assert (
+            await cleanup_old_rules(
+                upgraded_pool,
+                RetentionPolicy(approval_rules_retention_days=180),
+            )
+            == 1
+        )
+        assert (
+            await upgraded_pool.fetchval("SELECT id FROM approval_rules WHERE id = $1", rule_id)
+            is None
+        )
+        event = await upgraded_pool.fetchrow(
+            "SELECT rule_id, event_type, actor FROM approval_events WHERE event_id = $1",
+            event_id,
+        )
+        assert event is not None
+        assert dict(event) == {
+            "rule_id": rule_id,
+            "event_type": "rule_revoked",
+            "actor": "human:owner",
+        }
     finally:
         await upgraded_pool.close()

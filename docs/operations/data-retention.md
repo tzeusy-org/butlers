@@ -107,6 +107,25 @@ Dry-run logs candidate count without deleting.
 
 ---
 
+### `{butler_schema}.approval_rules` / `approval_events`
+
+**Decision: SPLIT RETENTION WINDOW — inactive rules after 180 days; immutable audit events after 365 days**
+
+When an owner-approved retention job runs, `cleanup_old_rules()` may delete only
+rules where `active = false` and the rule is older than 180 days. The linked
+`approval_events` row is not cascaded, deleted, or rewritten: its `rule_id`
+remains queryable historical provenance until the event reaches the separate
+365-day audit retention window. Rerunning rule cleanup after a successful
+deletion is idempotent and does not change retained audit rows.
+
+This is not a validation bypass. A new approval event with a non-null `rule_id`
+must still reference a live approval rule when it is inserted. Only previously
+valid immutable audit history may outlive the rule it records. Event cleanup is
+separate, requires the explicit privileged path, and applies only after its
+365-day window.
+
+---
+
 ### `connectors.filtered_events`
 
 **Decision: MONTHLY PARTITIONED — old partition pruner implemented, disabled by default (see Follow-up [B])**
