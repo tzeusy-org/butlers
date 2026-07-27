@@ -1686,3 +1686,71 @@ def test_backfill_excludes_confidential_and_pii_facts_and_rules(memory_migrated_
     result = asyncio.run(_backfill_excludes_sensitive(memory_migrated_db))
     assert result["confidential_fact_cataloged"] is False, result
     assert result["pii_rule_cataloged"] is False, result
+
+
+async def _backfill_rule_catalog_metadata(
+    db_url: str, *, sensitive_sensitivity: str
+) -> dict[str, object]:
+    """Backfill a normal rule while ensuring a sensitive peer stays excluded."""
+    from butlers.modules.memory.storage import run_memory_catalog_backfill, store_rule
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        unique = uuid.uuid4().hex[:8]
+
+        normal_rule_id = await store_rule(
+            pool,
+            content=f"normal rule metadata marker {unique}",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            retention_class="rule",
+            sensitivity="normal",
+            enable_shared_catalog=False,
+        )
+        sensitive_rule_id = await store_rule(
+            pool,
+            content=f"{sensitive_sensitivity} rule exclusion marker {unique}",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            retention_class="rule",
+            sensitivity=sensitive_sensitivity,
+            enable_shared_catalog=False,
+        )
+
+        await run_memory_catalog_backfill(pool, source_schema="public", batch_size=200)
+
+        normal_row = await pool.fetchrow(
+            "SELECT retention_class, sensitivity FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            normal_rule_id,
+        )
+        sensitive_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            sensitive_rule_id,
+        )
+        return {
+            "normal_row": dict(normal_row) if normal_row is not None else None,
+            "sensitive_cataloged": sensitive_row is not None,
+        }
+    finally:
+        await pool.close()
+
+
+@pytest.mark.parametrize("sensitive_sensitivity", ["pii", "confidential"])
+def test_backfill_rules_forwards_normal_metadata_without_cataloging_sensitive_rules(
+    memory_migrated_db: str, sensitive_sensitivity: str
+) -> None:
+    """Rules backfill preserves normal metadata and keeps pii/confidential excluded."""
+    result = asyncio.run(
+        _backfill_rule_catalog_metadata(
+            memory_migrated_db, sensitive_sensitivity=sensitive_sensitivity
+        )
+    )
+    assert result["normal_row"] == {"retention_class": "rule", "sensitivity": "normal"}, result
+    assert result["sensitive_cataloged"] is False, result

@@ -608,7 +608,7 @@ async def _backfill_rules_to_catalog(
     sql = f"""
         WITH candidates AS (
             SELECT r.id, r.content, r.embedding, r.scope, r.confidence,
-                   r.tenant_id, r.source_butler
+                   r.retention_class, r.sensitivity, r.tenant_id, r.source_butler
             FROM rules r
             WHERE COALESCE(r.metadata ->> 'forgotten', 'false') <> 'true'
               AND NOT (COALESCE(r.sensitivity, 'normal') = ANY($3))
@@ -625,7 +625,7 @@ async def _backfill_rules_to_catalog(
             INSERT INTO public.memory_catalog (
                 source_schema, source_table, source_id, source_butler, tenant_id,
                 entity_id, summary, embedding, search_vector, memory_type,
-                title, scope, confidence, updated_at
+                title, scope, confidence, retention_class, sensitivity, updated_at
             )
             SELECT
                 $1, 'rules', c.id, c.source_butler, c.tenant_id,
@@ -634,7 +634,8 @@ async def _backfill_rules_to_catalog(
                 c.embedding,
                 {tsvector_sql("c.content")},
                 'rule',
-                LEFT(c.content, 100), c.scope, c.confidence, now()
+                LEFT(c.content, 100), c.scope, c.confidence,
+                c.retention_class, c.sensitivity, now()
             FROM candidates c
             ON CONFLICT (source_schema, source_table, source_id) DO NOTHING
             RETURNING 1
