@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1663,6 +1664,97 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path) -> None:
     )
     assert result3["status"] == "error"
     assert result3["error"]["class"] == "validation_error"
+
+
+@pytest.mark.parametrize(
+    ("intent", "delivery_fields", "notify_context", "expected_tool", "expected_args"),
+    [
+        (
+            "send",
+            {"recipient": "recipient@example.com", "subject": "Status"},
+            None,
+            "email_send_message",
+            {
+                "to": "recipient@example.com",
+                "subject": "[health] Status",
+                "body": "Requested update.",
+            },
+        ),
+        (
+            "reply",
+            {"subject": "Re: Status"},
+            {
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+                "source_channel": "email",
+                "source_endpoint_identity": "gmail",
+                "source_sender_identity": "recipient@example.com",
+                "source_thread_identity": "thread-123",
+            },
+            "email_reply_to_thread",
+            {
+                "to": "recipient@example.com",
+                "thread_id": "thread-123",
+                "body": "Requested update.",
+                "subject": "[health] Re: Status",
+            },
+        ),
+    ],
+)
+async def test_route_execute_parks_email_actions_with_native_tool_args(
+    tmp_path: Path,
+    intent: str,
+    delivery_fields: dict[str, str],
+    notify_context: dict[str, str] | None,
+    expected_tool: str,
+    expected_args: dict[str, str],
+) -> None:
+    """Approved route deliveries must replay with the registered email tool contract."""
+    from butlers.modules.approvals.email_guard import EmailGuardDecision
+
+    butler_dir = _make_butler_toml(
+        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
+    patches = _patch_infra()
+    _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+
+    action_id = uuid.uuid4()
+    guard = AsyncMock(
+        return_value=EmailGuardDecision(
+            allowed=False,
+            reason="parked",
+            action_id=action_id,
+            contact_desc="unknown contact",
+        )
+    )
+    notify_request: dict[str, Any] = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": intent,
+            "channel": "email",
+            "message": "Requested update.",
+            **delivery_fields,
+        },
+    }
+    if notify_context is not None:
+        notify_request["request_context"] = notify_context
+
+    with patch("butlers.core.approvals_hooks.check_email_recipient", new=guard):
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {"notify_request": notify_request},
+            },
+        )
+
+    assert result["status"] == "error"
+    assert result["error"]["class"] == "validation_error"
+    call_kwargs = guard.await_args.kwargs
+    assert call_kwargs["park_tool_name"] == expected_tool
+    assert call_kwargs["park_tool_args"] == expected_args
 
 
 async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path) -> None:

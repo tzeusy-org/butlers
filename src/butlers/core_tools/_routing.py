@@ -1015,6 +1015,14 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 # route.execute calls module methods directly (not MCP tools),
                 # so MCP-level approval wrappers are not in the path.
                 # Enforce role-based email delivery gating here.
+                raw_subject = notify_request.delivery.subject or (
+                    "Approval requested" if intent == "approval_request" else "Notification"
+                )
+                normalized_subject = (
+                    raw_subject
+                    if notify_prefix.lower() in raw_subject.lower()
+                    else f"{notify_prefix} {raw_subject}"
+                )
                 email_target: str | None = None
                 if intent in {"send", "approval_request"}:
                     email_target = notify_request.delivery.recipient
@@ -1029,24 +1037,32 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         gate_tool_name = (
                             "email_send_message" if intent == "send" else "email_reply_to_thread"
                         )
+                        if intent == "send":
+                            park_tool_args = {
+                                "to": email_target,
+                                "subject": normalized_subject,
+                                "body": message_text,
+                            }
+                        else:
+                            thread_id = (
+                                notify_context.source_thread_identity
+                                if notify_context is not None
+                                and notify_context.source_thread_identity
+                                else notify_request_id
+                            )
+                            park_tool_args = {
+                                "to": email_target,
+                                "thread_id": thread_id,
+                                "body": message_text,
+                                "subject": normalized_subject,
+                            }
                         decision = await check_email_recipient(
                             approval_pool,
                             email_target=email_target,
                             rule_tool_name=gate_tool_name,
                             rule_match_args={"to": email_target},
                             park_tool_name=gate_tool_name,
-                            park_tool_args={
-                                "to": email_target,
-                                "channel": channel,
-                                "intent": intent,
-                                "message": message_text,
-                                "subject": (
-                                    notify_request.delivery.subject
-                                    if notify_request.delivery.subject
-                                    else None
-                                ),
-                                "origin_butler": origin,
-                            },
+                            park_tool_args=park_tool_args,
                             park_summary=(
                                 f"route.execute blocked: email to {email_target!r}. "
                                 f"Message: {message_text!r}"
@@ -1072,14 +1088,6 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"(action_id={decision.action_id})."
                             )
 
-                raw_subject = notify_request.delivery.subject or (
-                    "Approval requested" if intent == "approval_request" else "Notification"
-                )
-                normalized_subject = (
-                    raw_subject
-                    if notify_prefix.lower() in raw_subject.lower()
-                    else f"{notify_prefix} {raw_subject}"
-                )
                 if intent in {"send", "approval_request"}:
                     recipient = (
                         approval_recipient
