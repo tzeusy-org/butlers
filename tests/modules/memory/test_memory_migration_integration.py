@@ -453,6 +453,239 @@ def test_runtime_fact_provenance_guard_and_recent_episode_filter(memory_migrated
     asyncio.run(_assert_runtime_fact_provenance_guard(memory_migrated_db))
 
 
+async def _assert_expected_supersession_target_guard(db_url: str) -> None:
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=4,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+        unique_subject = f"expected-target-{uuid.uuid4()}"
+
+        original = await store_fact(
+            pool,
+            subject=unique_subject,
+            predicate="favorite_color",
+            content="blue",
+            embedding_engine=engine,
+            tenant_id="shared",
+            source_butler="travel",
+        )
+        replacement = await store_fact(
+            pool,
+            subject=unique_subject,
+            predicate="favorite_color",
+            content="green",
+            embedding_engine=engine,
+            tenant_id="shared",
+            source_butler="travel",
+            expected_supersedes_id=original["id"],
+        )
+        assert replacement["supersedes_id"] == original["id"]
+
+        with pytest.raises(ValueError, match="no longer current"):
+            await store_fact(
+                pool,
+                subject=unique_subject,
+                predicate="favorite_color",
+                content="red",
+                embedding_engine=engine,
+                tenant_id="shared",
+                source_butler="travel",
+                expected_supersedes_id=original["id"],
+            )
+
+        current = await pool.fetchrow(
+            "SELECT id, content FROM facts "
+            "WHERE tenant_id = 'shared' AND subject = $1 "
+            "AND predicate = 'favorite_color' AND validity IN ('active', 'fading') "
+            "AND valid_at IS NULL",
+            unique_subject,
+        )
+        assert current is not None
+        assert current["id"] == replacement["id"]
+        assert current["content"] == "green"
+    finally:
+        await pool.close()
+
+
+def test_expected_supersession_target_is_checked_atomically(memory_migrated_db: str) -> None:
+    """A stale target cannot overwrite the fact that replaced it."""
+    asyncio.run(_assert_expected_supersession_target_guard(memory_migrated_db))
+
+
+async def _assert_concurrent_expected_supersession_target_guard(db_url: str) -> None:
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=2,
+        max_size=4,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+        unique_subject = f"concurrent-target-{uuid.uuid4()}"
+        original = await store_fact(
+            pool,
+            subject=unique_subject,
+            predicate="favorite_color",
+            content="blue",
+            embedding_engine=engine,
+            tenant_id="shared",
+            source_butler="travel",
+        )
+
+        async def _replace(content: str):
+            return await store_fact(
+                pool,
+                subject=unique_subject,
+                predicate="favorite_color",
+                content=content,
+                embedding_engine=engine,
+                tenant_id="shared",
+                source_butler="travel",
+                expected_supersedes_id=original["id"],
+            )
+
+        outcomes = await asyncio.gather(
+            _replace("green"),
+            _replace("red"),
+            return_exceptions=True,
+        )
+        successes = [result for result in outcomes if isinstance(result, dict)]
+        failures = [result for result in outcomes if isinstance(result, Exception)]
+        assert len(successes) == 1
+        assert len(failures) == 1
+        assert isinstance(failures[0], ValueError)
+        assert "no longer current" in str(failures[0])
+
+        current = await pool.fetchrow(
+            "SELECT id, supersedes_id FROM facts "
+            "WHERE tenant_id = 'shared' AND subject = $1 "
+            "AND predicate = 'favorite_color' AND validity IN ('active', 'fading') "
+            "AND valid_at IS NULL",
+            unique_subject,
+        )
+        assert current is not None
+        assert current["id"] == successes[0]["id"]
+        assert current["supersedes_id"] == original["id"]
+    finally:
+        await pool.close()
+
+
+def test_concurrent_writers_cannot_share_expected_supersession_target(
+    memory_migrated_db: str,
+) -> None:
+    """Only one concurrent writer may consume a live target authority."""
+    asyncio.run(_assert_concurrent_expected_supersession_target_guard(memory_migrated_db))
+
+
+async def _assert_consolidation_target_boundaries(db_url: str) -> None:
+    from butlers.modules.memory.consolidation_executor import execute_consolidation
+    from butlers.modules.memory.consolidation_parser import ConsolidationResult, UpdatedFact
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+        suffix = uuid.uuid4().hex
+        subject_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type) "
+            "VALUES ($1, 'person') RETURNING id",
+            f"boundary-subject-{suffix}",
+        )
+        object_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type) "
+            "VALUES ($1, 'person') RETURNING id",
+            f"boundary-object-{suffix}",
+        )
+        edge_predicate = await pool.fetchval(
+            "SELECT name FROM predicate_registry "
+            "WHERE is_edge AND NOT is_temporal ORDER BY name LIMIT 1"
+        )
+        assert edge_predicate is not None
+
+        cross_tenant = await store_fact(
+            pool,
+            subject=f"boundary-subject-{suffix}",
+            predicate="favorite_color",
+            content="blue",
+            embedding_engine=engine,
+            entity_id=subject_id,
+            tenant_id=f"other-{suffix}",
+            source_butler="travel",
+        )
+        cross_source = await store_fact(
+            pool,
+            subject=f"boundary-subject-{suffix}",
+            predicate="preference",
+            content="quiet rooms",
+            embedding_engine=engine,
+            entity_id=subject_id,
+            tenant_id="shared",
+            source_butler="health",
+        )
+        edge = await store_fact(
+            pool,
+            subject=f"boundary-subject-{suffix}",
+            predicate=edge_predicate,
+            content=f"boundary-object-{suffix}",
+            embedding_engine=engine,
+            entity_id=subject_id,
+            object_entity_id=object_id,
+            tenant_id="shared",
+            source_butler="travel",
+        )
+
+        targets = (cross_tenant["id"], cross_source["id"], edge["id"])
+        parsed = ConsolidationResult(
+            updated_facts=[
+                UpdatedFact(
+                    target_id=str(target_id),
+                    content="must not overwrite",
+                )
+                for target_id in targets
+            ],
+        )
+        result = await execute_consolidation(
+            pool=pool,
+            embedding_engine=engine,
+            parsed=parsed,
+            source_episode_ids=[],
+            butler_name="travel",
+            tenant_id="shared",
+        )
+
+        assert result["facts_updated"] == 0
+        assert result["errors"] == [f"Failed to update fact ({target_id})" for target_id in targets]
+        rows = await pool.fetch(
+            "SELECT id, validity FROM facts WHERE id = ANY($1::uuid[])",
+            list(targets),
+        )
+        assert {row["id"]: row["validity"] for row in rows} == {
+            target_id: "active" for target_id in targets
+        }
+    finally:
+        await pool.close()
+
+
+def test_consolidation_rejects_cross_tenant_cross_source_and_edge_targets(
+    memory_migrated_db: str,
+) -> None:
+    """Only a same-tenant, same-source live property fact can authorize an update."""
+    asyncio.run(_assert_consolidation_target_boundaries(memory_migrated_db))
+
+
 async def _supersede_and_search_catalog(db_url: str) -> dict:
     """Store a property fact, supersede it, and probe the discovery catalog.
 

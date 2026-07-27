@@ -70,7 +70,8 @@ async def execute_consolidation(
 
     For each action in the ConsolidationResult:
     1. New facts: store via store_fact(), create derived_from links to source episodes
-    2. Updated facts: store via store_fact() (auto-supersedes), create derived_from links
+    2. Updated facts: reload the target's identity key, store via store_fact()
+       (auto-supersedes), create derived_from links
     3. New rules: store via store_rule(), create derived_from links to source episodes
     4. Confirmations: call confirm_memory() for each referenced fact UUID
     5. Mark all source episodes as consolidated (terminal state), clearing leases
@@ -190,23 +191,51 @@ async def execute_consolidation(
     # --- Updated facts ---
     for fact in parsed.updated_facts:
         try:
+            target_id = uuid.UUID(fact.target_id)
+            target = await pool.fetchrow(
+                """
+                SELECT subject, predicate, entity_id, scope
+                FROM facts
+                WHERE id = $1
+                  AND tenant_id = $2
+                  AND source_butler = $3
+                  AND validity IN ('active', 'fading')
+                  AND valid_at IS NULL
+                  AND object_entity_id IS NULL
+                """,
+                target_id,
+                tenant_id,
+                butler_name,
+            )
+            if target is None:
+                raise ValueError(
+                    f"target fact {target_id!r} is not a live property fact "
+                    f"for tenant {tenant_id!r} and butler {butler_name!r}"
+                )
+
             predicate_is_temporal = await pool.fetchval(
                 "SELECT is_temporal FROM predicate_registry "
                 "WHERE name = $1 OR $1 = ANY(aliases) "
                 "ORDER BY ($1 = ANY(aliases)) DESC LIMIT 1",
-                fact.predicate,
+                target["predicate"],
             )
             if predicate_is_temporal:
                 logger.warning(
                     "Consolidation: skipping updated fact %s because predicate %s "
                     "is registered as temporal; temporal observations must use new_facts",
                     fact.target_id,
-                    fact.predicate,
+                    target["predicate"],
                 )
                 errors.append(f"Skipped temporal updated fact ({fact.target_id})")
                 continue
 
-            fact_entity_id = uuid.UUID(fact.entity_id) if fact.entity_id else None
+            # ``target_id`` is the authority for an update's identity key. The
+            # model repeats subject/predicate/entity_id in its output, but those
+            # values can be stale or malformed by the time execution begins.
+            # Reloading the persisted row prevents an update from being
+            # accidentally retargeted and guarantees store_fact supersedes the
+            # selected fact's current identity key.
+            fact_entity_id = target["entity_id"]
             if fact_entity_id is None:
                 logger.warning(
                     "Consolidation: updated fact %s has no entity_id — "
@@ -215,16 +244,17 @@ async def execute_consolidation(
                 )
             store_result = await store_fact(
                 pool,
-                fact.subject,
-                fact.predicate,
+                target["subject"],
+                target["predicate"],
                 fact.content,
                 embedding_engine,
                 permanence=fact.permanence,
-                scope=effective_scope,
+                scope=target["scope"],
                 source_butler=butler_name,
                 entity_id=fact_entity_id,
                 tenant_id=tenant_id,
                 request_id=request_id,
+                expected_supersedes_id=target_id,
                 enable_shared_catalog=enable_shared_catalog,
                 source_schema=source_schema,
             )

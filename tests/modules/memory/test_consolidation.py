@@ -56,9 +56,7 @@ class TestValidParsing:
     def test_full_payload(self) -> None:
         payload = {
             "new_facts": [{"subject": "s", "predicate": "p", "content": "c", "importance": 7.0}],
-            "updated_facts": [
-                {"target_id": UUID1, "subject": "s", "predicate": "p", "content": "c"}
-            ],
+            "updated_facts": [{"target_id": UUID1, "content": "c"}],
             "new_rules": [{"content": "Always greet", "tags": ["ux"]}],
             "confirmations": [UUID1, UUID2],
         }
@@ -68,6 +66,51 @@ class TestValidParsing:
         assert len(result.updated_facts) == 1
         assert len(result.new_rules) == 1
         assert result.confirmations == [UUID1, UUID2]
+        assert result.parse_errors == []
+
+    def test_updated_fact_requires_only_target_and_content(self) -> None:
+        result = parse(
+            _json(
+                {
+                    "updated_facts": [
+                        {
+                            "target_id": UUID1,
+                            "content": "new value",
+                            "permanence": "stable",
+                        }
+                    ]
+                }
+            )
+        )
+
+        assert len(result.updated_facts) == 1
+        assert result.updated_facts[0].target_id == UUID1
+        assert result.updated_facts[0].content == "new value"
+        assert result.updated_facts[0].permanence == "stable"
+        assert result.parse_errors == []
+
+    def test_updated_fact_ignores_legacy_identity_fields(self) -> None:
+        result = parse(
+            _json(
+                {
+                    "updated_facts": [
+                        {
+                            "target_id": UUID1,
+                            "content": "new value",
+                            "subject": "stale subject",
+                            "predicate": "stale_predicate",
+                            "entity_id": UUID2,
+                            "scope": "stale_scope",
+                        }
+                    ]
+                }
+            )
+        )
+
+        assert len(result.updated_facts) == 1
+        assert not hasattr(result.updated_facts[0], "subject")
+        assert not hasattr(result.updated_facts[0], "predicate")
+        assert not hasattr(result.updated_facts[0], "entity_id")
         assert result.parse_errors == []
 
     def test_temporal_fact_timestamps_are_parsed(self) -> None:
@@ -146,8 +189,6 @@ class TestValidParsing:
             "updated_facts": [
                 {
                     "target_id": UUID1,
-                    "subject": "s",
-                    "predicate": "upcoming_event",
                     "content": "updated event details",
                     "valid_at": "2026-07-22T01:30:00Z",
                 }
@@ -201,11 +242,7 @@ class TestErrorHandling:
         assert len(result.parse_errors) == 1
 
     def test_invalid_updated_fact_uuid_skipped(self) -> None:
-        payload = {
-            "updated_facts": [
-                {"target_id": "not-a-uuid", "subject": "s", "predicate": "p", "content": "c"}
-            ]
-        }
+        payload = {"updated_facts": [{"target_id": "not-a-uuid", "content": "c"}]}
         result = parse(_json(payload))
         assert result.updated_facts == [] and len(result.parse_errors) == 1
 
@@ -291,3 +328,13 @@ def test_consolidation_prompt_requires_valid_at_for_temporal_facts() -> None:
     assert "Temporal observations belong in `new_facts`" in prompt
     assert "registered temporal predicate" in prompt
     assert "valid_at=2026-07-21 01:30:00+00:00" in prompt
+
+
+def test_consolidation_prompt_derives_updated_fact_identity_from_target() -> None:
+    from butlers.modules.memory.prompt_template import build_consolidation_prompt
+
+    prompt = build_consolidation_prompt([], [], [], "relationship")
+    normalized_prompt = " ".join(prompt.split())
+
+    assert '{"target_id": "uuid-of-existing-fact", "content": "...", "permanence": "..."}' in prompt
+    assert "Do not repeat `subject`, `predicate`, `entity_id`, or `scope`" in normalized_prompt

@@ -1321,6 +1321,7 @@ async def store_fact(
     tenant_id: str = "shared",
     request_id: str | None = None,
     idempotency_key: str | None = None,
+    expected_supersedes_id: uuid.UUID | None = None,
     retention_class: str = "operational",
     sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
@@ -1374,6 +1375,11 @@ async def store_fact(
             ``(tenant_id, idempotency_key)`` is a no-op; the existing fact's ID
             is returned instead.  Property facts (``valid_at IS NULL``) always
             have ``idempotency_key = NULL`` and use supersession instead.
+        expected_supersedes_id: Optional optimistic-concurrency guard for a
+            property-fact update.  When set, the current fact matching the
+            supersession identity key must have this exact ID.  The check and
+            supersession happen in the same transaction; otherwise a
+            ``ValueError`` is raised and no fact is written.
         retention_class: Retention policy class for the fact (default
             'operational').  Controls lifecycle management behaviour.
         sensitivity: Data sensitivity classification (default 'normal').
@@ -1643,6 +1649,8 @@ async def store_fact(
             skip_supersession = fact_valid_at is not None
 
             supersedes_id = None
+            if skip_supersession and expected_supersedes_id is not None:
+                raise ValueError("expected_supersedes_id cannot be used for a temporal fact")
             if not skip_supersession:
                 # Check for an existing *property* active fact using the appropriate key.
                 # Only consider rows with valid_at IS NULL (property facts).
@@ -1657,7 +1665,8 @@ async def store_fact(
                         "SELECT id FROM facts "
                         "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id = $3 "
                         "AND scope = $4 AND predicate = $5 "
-                        "AND validity IN ('active', 'fading') AND valid_at IS NULL",
+                        "AND validity IN ('active', 'fading') AND valid_at IS NULL"
+                        + (" FOR UPDATE" if expected_supersedes_id is not None else ""),
                         tenant_id,
                         entity_id,
                         object_entity_id,
@@ -1670,7 +1679,8 @@ async def store_fact(
                         "SELECT id FROM facts "
                         "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id IS NULL "
                         "AND scope = $3 AND predicate = $4 "
-                        "AND validity IN ('active', 'fading') AND valid_at IS NULL",
+                        "AND validity IN ('active', 'fading') AND valid_at IS NULL"
+                        + (" FOR UPDATE" if expected_supersedes_id is not None else ""),
                         tenant_id,
                         entity_id,
                         scope,
@@ -1681,10 +1691,18 @@ async def store_fact(
                         "SELECT id FROM facts "
                         "WHERE tenant_id = $1 AND entity_id IS NULL "
                         "AND subject = $2 AND predicate = $3 "
-                        "AND validity IN ('active', 'fading') AND valid_at IS NULL",
+                        "AND validity IN ('active', 'fading') AND valid_at IS NULL"
+                        + (" FOR UPDATE" if expected_supersedes_id is not None else ""),
                         tenant_id,
                         subject,
                         predicate,
+                    )
+
+                current_id = existing["id"] if existing else None
+                if expected_supersedes_id is not None and current_id != expected_supersedes_id:
+                    raise ValueError(
+                        f"expected supersession target {expected_supersedes_id!r} "
+                        "is no longer current"
                     )
 
                 if existing:

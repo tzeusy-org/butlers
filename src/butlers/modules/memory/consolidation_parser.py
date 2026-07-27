@@ -39,11 +39,8 @@ class NewFact:
 @dataclass
 class UpdatedFact:
     target_id: str  # UUID string of fact to supersede
-    subject: str
-    predicate: str
     content: str
     permanence: str = "standard"
-    entity_id: str | None = None
 
 
 @dataclass
@@ -225,17 +222,11 @@ def _parse_updated_fact(raw: dict, errors: list[str]) -> UpdatedFact | None:
         return None
 
     target_id = raw.get("target_id")
-    subject = raw.get("subject")
-    predicate = raw.get("predicate")
     content = raw.get("content")
 
     missing = []
     if not target_id:
         missing.append("target_id")
-    if not subject:
-        missing.append("subject")
-    if not predicate:
-        missing.append("predicate")
     if not content:
         missing.append("content")
 
@@ -253,18 +244,10 @@ def _parse_updated_fact(raw: dict, errors: list[str]) -> UpdatedFact | None:
 
     permanence = _validate_permanence(raw.get("permanence", "standard"))
 
-    entity_id_raw = raw.get("entity_id")
-    entity_id = (
-        entity_id_raw if isinstance(entity_id_raw, str) and _is_uuid(entity_id_raw) else None
-    )
-
     return UpdatedFact(
         target_id=target_id,
-        subject=subject,
-        predicate=predicate,
         content=content,
         permanence=permanence,
-        entity_id=entity_id,
     )
 
 
