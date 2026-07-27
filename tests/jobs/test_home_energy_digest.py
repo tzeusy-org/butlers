@@ -6,12 +6,12 @@ _build_digest_message, run_energy_digest, and daemon registry.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.connectors.home_assistant_statistics import HAStatisticsError
 from butlers.jobs.home import (
     _build_digest_message,
     _compute_device_totals,
@@ -122,87 +122,48 @@ def test_compute_device_totals():
 
 
 async def test_fetch_weekly_statistics_uses_ha_websocket_recorder_command():
-    """Historical energy statistics use HA's WebSocket-only recorder API."""
-    websocket = MagicMock()
-    websocket.receive_json = AsyncMock(
-        side_effect=[
-            {"type": "auth_required", "ha_version": "2026.7.0"},
-            {"type": "auth_ok", "ha_version": "2026.7.0"},
-            {
-                "id": 1,
-                "type": "result",
-                "success": True,
-                "result": {
-                    "sensor.energy": [
-                        {"start": 1, "end": 2, "sum": 105.0, "change": 5.0, "mean": 1.8},
-                        {"start": 2, "end": 3, "sum": 112.5, "change": 7.5, "mean": 2.4},
-                    ]
-                },
-            },
-            {
-                "id": 2,
-                "type": "result",
-                "success": True,
-                "result": {
-                    "sensor.energy": [
-                        {"start": 1, "end": 2, "sum": 105.0, "change": 5.0, "mean": 1.2},
-                        {"start": 2, "end": 3, "sum": 112.5, "change": 7.5, "mean": 2.4},
-                    ]
-                },
-            },
+    """The digest reuses the shared client for aligned hourly and daily data."""
+    hourly = {
+        "sensor.energy": [
+            {"start": 1, "end": 2, "sum": 105.0, "change": 5.0},
+            {"start": 2, "end": 3, "sum": 112.5, "change": 7.5},
         ]
-    )
-    websocket.send_json = AsyncMock()
+    }
+    daily = {
+        "sensor.energy": [
+            {"start": 1, "end": 2, "sum": 105.0, "change": 5.0},
+            {"start": 2, "end": 3, "sum": 112.5, "change": 7.5},
+        ]
+    }
+    client = MagicMock()
+    client.get_statistics = AsyncMock(side_effect=[hourly, daily])
 
-    websocket_context = MagicMock()
-    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
-    websocket_context.__aexit__ = AsyncMock(return_value=None)
-
-    session = MagicMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=None)
-    session.ws_connect.return_value = websocket_context
-
-    with (
-        patch("aiohttp.ClientSession", return_value=session),
-        patch("aiohttp.TCPConnector"),
-    ):
+    with patch(
+        "butlers.jobs.home.HAStatisticsClient",
+        return_value=client,
+    ) as client_factory:
         result = await _fetch_weekly_statistics(
-            MagicMock(),
             ["sensor.energy"],
             ha_url="http://ha.local:8123/",
             ha_token="token",
         )
 
-    session.ws_connect.assert_called_once_with(
-        "ws://ha.local:8123/api/websocket",
-        heartbeat=30.0,
+    client_factory.assert_called_once_with(
+        ha_url="http://ha.local:8123/",
+        ha_token="token",
+        verify_ssl=False,
     )
-    sent = [call.args[0] for call in websocket.send_json.await_args_list]
-    assert sent[0] == {"type": "auth", "access_token": "token"}
-    assert [message["type"] for message in sent[1:]] == [
-        "recorder/statistics_during_period",
-        "recorder/statistics_during_period",
-    ]
-    assert [message["period"] for message in sent[1:]] == ["hour", "day"]
-    assert [message["id"] for message in sent[1:]] == [1, 2]
-    assert [message["types"] for message in sent[1:]] == [
-        ["change"],
-        ["change"],
-    ]
-    aggregate_start = datetime.fromisoformat(sent[1]["start_time"])
-    aggregate_end = datetime.fromisoformat(sent[1]["end_time"])
-    assert aggregate_end - aggregate_start == timedelta(days=7)
-    assert (aggregate_end.minute, aggregate_end.second, aggregate_end.microsecond) == (0, 0, 0)
+    calls = client.get_statistics.await_args_list
+    assert [call.kwargs["period"] for call in calls] == ["hour", "day"]
+    assert all(call.kwargs["types"] == ("change",) for call in calls)
+    assert calls[0].kwargs["start"] == calls[1].kwargs["start"]
+    assert calls[0].kwargs["end"] == calls[1].kwargs["end"]
     assert result == {
         "available": True,
         "statistics": {
             "sensor.energy": {
                 "weekly_sum": 12.5,
-                "daily": [
-                    {"start": 1, "end": 2, "sum": 105.0, "change": 5.0, "mean": 1.2},
-                    {"start": 2, "end": 3, "sum": 112.5, "change": 7.5, "mean": 2.4},
-                ],
+                "daily": daily["sensor.energy"],
             }
         },
         "unsupported_entity_ids": [],
@@ -211,30 +172,13 @@ async def test_fetch_weekly_statistics_uses_ha_websocket_recorder_command():
 
 async def test_fetch_weekly_statistics_returns_empty_when_authentication_is_rejected():
     """Authentication rejection preserves the digest's graceful fallback."""
-    websocket = MagicMock()
-    websocket.receive_json = AsyncMock(
-        side_effect=[
-            {"type": "auth_required", "ha_version": "2026.7.0"},
-            {"type": "auth_invalid", "message": "Invalid access token"},
-        ]
+    client = MagicMock()
+    client.get_statistics = AsyncMock(
+        side_effect=HAStatisticsError("unauthorized", scope="connection")
     )
-    websocket.send_json = AsyncMock()
 
-    websocket_context = MagicMock()
-    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
-    websocket_context.__aexit__ = AsyncMock(return_value=None)
-
-    session = MagicMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=None)
-    session.ws_connect.return_value = websocket_context
-
-    with (
-        patch("aiohttp.ClientSession", return_value=session),
-        patch("aiohttp.TCPConnector"),
-    ):
+    with patch("butlers.jobs.home.HAStatisticsClient", return_value=client):
         result = await _fetch_weekly_statistics(
-            MagicMock(),
             ["sensor.energy"],
             ha_url="http://ha.local:8123/",
             ha_token="token",
@@ -245,55 +189,17 @@ async def test_fetch_weekly_statistics_returns_empty_when_authentication_is_reje
         "statistics": {},
         "unsupported_entity_ids": [],
     }
-    websocket.send_json.assert_awaited_once_with({"type": "auth", "access_token": "token"})
 
 
 async def test_fetch_weekly_statistics_returns_empty_when_aggregate_command_is_rejected(caplog):
-    """A daily-only partial response must not masquerade as a zero-consumption week."""
-    untrusted_secret = "ha-access-token-value-that-must-not-be-logged"
-    websocket = MagicMock()
-    websocket.receive_json = AsyncMock(
-        side_effect=[
-            {"type": "auth_required", "ha_version": "2026.7.0"},
-            {"type": "auth_ok", "ha_version": "2026.7.0"},
-            {
-                "id": 1,
-                "type": "result",
-                "success": False,
-                "error": {
-                    "code": "unknown_error",
-                    "message": f"Statistics unavailable: token={untrusted_secret}",
-                },
-            },
-            {
-                "id": 2,
-                "type": "result",
-                "success": True,
-                "result": {
-                    "sensor.energy": [
-                        {"start": 1, "end": 2, "change": 5.0, "mean": 1.2},
-                    ]
-                },
-            },
-        ]
+    """A rejected aggregate response is unavailable and logs only its bounded code."""
+    client = MagicMock()
+    client.get_statistics = AsyncMock(
+        side_effect=HAStatisticsError("unknown_error", scope="command")
     )
-    websocket.send_json = AsyncMock()
 
-    websocket_context = MagicMock()
-    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
-    websocket_context.__aexit__ = AsyncMock(return_value=None)
-
-    session = MagicMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=None)
-    session.ws_connect.return_value = websocket_context
-
-    with (
-        patch("aiohttp.ClientSession", return_value=session),
-        patch("aiohttp.TCPConnector"),
-    ):
+    with patch("butlers.jobs.home.HAStatisticsClient", return_value=client):
         result = await _fetch_weekly_statistics(
-            MagicMock(),
             ["sensor.energy"],
             ha_url="http://ha.local:8123/",
             ha_token="token",
@@ -305,7 +211,6 @@ async def test_fetch_weekly_statistics_returns_empty_when_aggregate_command_is_r
         "unsupported_entity_ids": [],
     }
     assert "unknown_error" in caplog.text
-    assert untrusted_secret not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -313,7 +218,8 @@ async def test_fetch_weekly_statistics_returns_empty_when_aggregate_command_is_r
     [
         pytest.param(None, id="missing"),
         pytest.param("not-a-number", id="nonnumeric"),
-        pytest.param(float("inf"), id="nonfinite"),
+        pytest.param(float("inf"), id="infinite"),
+        pytest.param(float("nan"), id="nan"),
     ],
 )
 async def test_fetch_weekly_statistics_marks_incomplete_change_series_unsupported(invalid_change):
@@ -322,46 +228,16 @@ async def test_fetch_weekly_statistics_marks_incomplete_change_series_unsupporte
     if invalid_change is not None:
         invalid_row["change"] = invalid_change
 
-    websocket = MagicMock()
-    websocket.receive_json = AsyncMock(
+    client = MagicMock()
+    client.get_statistics = AsyncMock(
         side_effect=[
-            {"type": "auth_required", "ha_version": "2026.7.0"},
-            {"type": "auth_ok", "ha_version": "2026.7.0"},
-            {
-                "id": 1,
-                "type": "result",
-                "success": True,
-                "result": {"sensor.instantaneous_power": [invalid_row]},
-            },
-            {
-                "id": 2,
-                "type": "result",
-                "success": True,
-                "result": {
-                    "sensor.instantaneous_power": [
-                        {"start": 1, "end": 2, "mean": 750.0},
-                    ]
-                },
-            },
+            {"sensor.instantaneous_power": [invalid_row]},
+            {"sensor.instantaneous_power": [{"start": 1, "end": 2, "mean": 750.0}]},
         ]
     )
-    websocket.send_json = AsyncMock()
 
-    websocket_context = MagicMock()
-    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
-    websocket_context.__aexit__ = AsyncMock(return_value=None)
-
-    session = MagicMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=None)
-    session.ws_connect.return_value = websocket_context
-
-    with (
-        patch("aiohttp.ClientSession", return_value=session),
-        patch("aiohttp.TCPConnector"),
-    ):
+    with patch("butlers.jobs.home.HAStatisticsClient", return_value=client):
         result = await _fetch_weekly_statistics(
-            MagicMock(),
             ["sensor.instantaneous_power"],
             ha_url="http://ha.local:8123/",
             ha_token="token",
@@ -376,50 +252,16 @@ async def test_fetch_weekly_statistics_marks_incomplete_change_series_unsupporte
 
 async def test_fetch_weekly_statistics_accepts_explicit_zero_change():
     """An explicit finite zero is a supported zero-consumption series, not missing data."""
-    websocket = MagicMock()
-    websocket.receive_json = AsyncMock(
+    client = MagicMock()
+    client.get_statistics = AsyncMock(
         side_effect=[
-            {"type": "auth_required", "ha_version": "2026.7.0"},
-            {"type": "auth_ok", "ha_version": "2026.7.0"},
-            {
-                "id": 1,
-                "type": "result",
-                "success": True,
-                "result": {
-                    "sensor.cumulative_energy": [
-                        {"start": 1, "end": 2, "change": 0, "mean": 0.0},
-                    ]
-                },
-            },
-            {
-                "id": 2,
-                "type": "result",
-                "success": True,
-                "result": {
-                    "sensor.cumulative_energy": [
-                        {"start": 1, "end": 2, "change": 0, "mean": 0.0},
-                    ]
-                },
-            },
+            {"sensor.cumulative_energy": [{"start": 1, "end": 2, "change": 0}]},
+            {"sensor.cumulative_energy": [{"start": 1, "end": 2, "change": 0}]},
         ]
     )
-    websocket.send_json = AsyncMock()
 
-    websocket_context = MagicMock()
-    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
-    websocket_context.__aexit__ = AsyncMock(return_value=None)
-
-    session = MagicMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=None)
-    session.ws_connect.return_value = websocket_context
-
-    with (
-        patch("aiohttp.ClientSession", return_value=session),
-        patch("aiohttp.TCPConnector"),
-    ):
+    with patch("butlers.jobs.home.HAStatisticsClient", return_value=client):
         result = await _fetch_weekly_statistics(
-            MagicMock(),
             ["sensor.cumulative_energy"],
             ha_url="http://ha.local:8123/",
             ha_token="token",
@@ -430,9 +272,33 @@ async def test_fetch_weekly_statistics_accepts_explicit_zero_change():
         "statistics": {
             "sensor.cumulative_energy": {
                 "weekly_sum": 0.0,
-                "daily": [{"start": 1, "end": 2, "change": 0, "mean": 0.0}],
+                "daily": [{"start": 1, "end": 2, "change": 0}],
             }
         },
+        "unsupported_entity_ids": [],
+    }
+
+
+async def test_fetch_weekly_statistics_preserves_hourly_data_when_daily_fetch_fails():
+    """Daily enrichment failure does not discard a valid cumulative-energy total."""
+    client = MagicMock()
+    client.get_statistics = AsyncMock(
+        side_effect=[
+            {"sensor.energy": [{"start": 1, "end": 2, "change": 4.5}]},
+            HAStatisticsError("protocol_error", scope="command"),
+        ]
+    )
+
+    with patch("butlers.jobs.home.HAStatisticsClient", return_value=client):
+        result = await _fetch_weekly_statistics(
+            ["sensor.energy"],
+            ha_url="http://ha.local:8123/",
+            ha_token="token",
+        )
+
+    assert result == {
+        "available": True,
+        "statistics": {"sensor.energy": {"weekly_sum": 4.5}},
         "unsupported_entity_ids": [],
     }
 

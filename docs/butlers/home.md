@@ -38,7 +38,7 @@ The butler's philosophy is that smart home technology should feel invisible: res
 - `ha_list_areas` -- Discover all configured rooms and areas.
 - `ha_list_services` -- Discover available services by domain.
 - `ha_get_history` -- State history for entities over a time window for trend analysis.
-- `ha_get_statistics` -- Aggregated statistics (min, max, mean, sum) for sensor entities over configurable periods (5-minute, hourly, daily, weekly, monthly).
+- `ha_get_statistics` -- Aggregated statistics (min, max, mean, cumulative sum, state, and per-period change) for sensor entities over configurable periods (5-minute, hourly, daily, weekly, monthly).
 - `ha_render_template` -- Render Jinja2 templates server-side on the HA instance for computed values.
 - `ha_call_service` -- Call any Home Assistant service: device control, automation triggers, scene creation. Takes domain, service, optional target (entity/area/device), and optional service-specific data.
 - `ha_activate_scene` -- Activate a Home Assistant scene with optional transition time.

@@ -17,14 +17,16 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from httpx import AsyncClient as HttpxAsyncClient
-from httpx import ConnectError as HttpxConnectError
-from httpx import TimeoutException as HttpxTimeoutException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.connectors.home_assistant_statistics import (
+    HAStatisticsClient,
+    HAStatisticsError,
+    parse_statistics_change_series,
+)
 from butlers.credential_store import upsert_owner_entity_info
 
 # Dynamically load models module from the same directory
@@ -69,6 +71,13 @@ _THRESHOLD_OFFLINE_KEY = "home:thresholds:offline_hours"
 _THRESHOLD_COMFORT_DEFAULTS_KEY = "home:thresholds:comfort_defaults"
 _THRESHOLD_COMFORT_DEVIATION_KEY = "home:thresholds:comfort_deviation"
 _THRESHOLD_ENERGY_KEY = "home:thresholds:energy"
+
+_ENERGY_UNAVAILABLE_DETAIL = (
+    "Energy statistics unavailable: discovered sensors do not provide "
+    "finite cumulative-energy change data"
+)
+_ENERGY_DATA_STATUS_HEADER = "X-Butlers-Energy-Data-Status"
+_ENERGY_OMITTED_SENSORS_HEADER = "X-Butlers-Omitted-Sensors"
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -470,8 +479,48 @@ async def _get_ha_credentials(pool) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _statistics_timestamp(value: object) -> datetime | None:
+    """Normalize an HA statistics timestamp to an aware datetime."""
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value / 1000, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _partition_energy_statistics(
+    statistic_ids: list[str],
+    ha_data: dict[str, Any],
+) -> tuple[dict[str, tuple[list[dict[str, Any]], list[float]]], list[str]]:
+    """Separate supported cumulative-energy series from unsupported sensors."""
+    supported: dict[str, tuple[list[dict[str, Any]], list[float]]] = {}
+    unsupported: list[str] = []
+    for entity_id in statistic_ids:
+        series = ha_data.get(entity_id)
+        changes = parse_statistics_change_series(series)
+        if changes is None:
+            unsupported.append(entity_id)
+            continue
+        supported[entity_id] = (series, changes)
+    return supported, unsupported
+
+
+def _set_partial_energy_headers(response: Response, omitted_count: int) -> None:
+    if omitted_count:
+        response.headers[_ENERGY_DATA_STATUS_HEADER] = "partial"
+        response.headers[_ENERGY_OMITTED_SENSORS_HEADER] = str(omitted_count)
+
+
 @router.get("/energy")
 async def get_energy(
+    response: Response,
     period: str = Query("day", description="Aggregation period: 'day' or 'hour'"),
     start: str | None = Query(None, description="Start date (ISO 8601). Default: 7 days ago."),
     end: str | None = Query(None, description="End date (ISO 8601). Default: now."),
@@ -479,10 +528,12 @@ async def get_energy(
 ) -> list[dict[str, Any]]:
     """Return energy consumption time-series data.
 
-    Proxies to HA REST API ``recorder/get_statistics_during_period``.
+    Queries HA's ``recorder/statistics_during_period`` WebSocket command.
     Returns 503 if Home Assistant is unavailable.
     """
     pool = _pool(db)
+    if period not in {"day", "hour"}:
+        raise HTTPException(status_code=422, detail="Period must be 'day' or 'hour'")
 
     # Default date range
     now = datetime.now(UTC)
@@ -533,64 +584,43 @@ async def get_energy(
     if not statistic_ids:
         return []
 
-    # Proxy to HA REST API
-    headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"}
-    payload = {
-        "start_time": start_dt.isoformat(),
-        "end_time": end_dt.isoformat(),
-        "period": period,
-        "statistic_ids": statistic_ids,
-        "types": ["sum", "mean"],
-    }
-
+    statistics_client = HAStatisticsClient(ha_url=ha_url, ha_token=ha_token)
     try:
-        async with HttpxAsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{ha_url.rstrip('/')}/api/recorder/get_statistics_during_period",
-                headers=headers,
-                json=payload,
-            )
-    except (HttpxConnectError, HttpxTimeoutException) as exc:
-        logger.warning("HA REST API unreachable: %s", exc)
-        raise HTTPException(status_code=503, detail="Home Assistant is unavailable")
+        ha_data = await statistics_client.get_statistics(
+            statistic_ids=statistic_ids,
+            start=start_dt.isoformat(),
+            end=end_dt.isoformat(),
+            period=period,
+            types=("change",),
+        )
+    except HAStatisticsError as exc:
+        logger.warning("HA energy statistics unavailable: code=%s", exc.code)
+        raise HTTPException(
+            status_code=503,
+            detail="Home Assistant is unavailable",
+        ) from None
 
-    if resp.status_code != 200:
-        logger.warning("HA energy API returned %d: %s", resp.status_code, resp.text)
-        raise HTTPException(status_code=503, detail="Home Assistant is unavailable")
-
-    # Parse HA statistics response format into EnergyDataPoint list
-    # HA returns: {entity_id: [{start, end, sum, mean, ...}]}
-    try:
-        ha_data: dict[str, list[dict]] = resp.json()
-    except Exception:
-        raise HTTPException(status_code=503, detail="Home Assistant returned invalid data")
+    supported, unsupported = _partition_energy_statistics(statistic_ids, ha_data)
+    if not supported:
+        raise HTTPException(status_code=503, detail=_ENERGY_UNAVAILABLE_DETAIL)
+    _set_partial_energy_headers(response, len(unsupported))
 
     # Aggregate by timestamp bucket
-    buckets: dict[str, dict[str, float]] = {}
-    for entity_id, stat_list in ha_data.items():
-        for stat in stat_list:
+    buckets: dict[datetime, dict[str, float]] = {}
+    for entity_id, (stat_list, changes) in supported.items():
+        for stat, kwh in zip(stat_list, changes, strict=True):
             ts = stat.get("start") or stat.get("end")
-            if ts is None:
+            ts_dt = _statistics_timestamp(ts)
+            if ts_dt is None:
                 continue
-            sum_val = stat.get("sum")
-            if sum_val is not None:
-                raw_value = sum_val
-            else:
-                mean_val = stat.get("mean")
-                raw_value = mean_val if mean_val is not None else 0
-            kwh = float(raw_value)
-            if ts not in buckets:
-                buckets[ts] = {}
-            buckets[ts][entity_id] = buckets[ts].get(entity_id, 0) + kwh
+            if ts_dt not in buckets:
+                buckets[ts_dt] = {}
+            buckets[ts_dt][entity_id] = buckets[ts_dt].get(entity_id, 0) + kwh
 
     result = []
-    for ts_str in sorted(buckets.keys()):
-        device_map = buckets[ts_str]
+    for ts_dt in sorted(buckets):
+        device_map = buckets[ts_dt]
         total_kwh = sum(device_map.values())
-        try:
-            ts_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        except ValueError:
-            continue
         result.append(
             EnergyDataPoint(
                 timestamp=ts_dt,
@@ -609,6 +639,7 @@ async def get_energy(
 
 @router.get("/energy/top-consumers")
 async def get_energy_top_consumers(
+    response: Response,
     start: str | None = Query(None, description="Start date (ISO 8601). Default: 7 days ago."),
     end: str | None = Query(None, description="End date (ISO 8601). Default: now."),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -670,47 +701,29 @@ async def get_energy_top_consumers(
     if not statistic_ids:
         return []
 
-    headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"}
-    payload = {
-        "start_time": start_dt.isoformat(),
-        "end_time": end_dt.isoformat(),
-        "period": "day",
-        "statistic_ids": statistic_ids,
-        "types": ["sum"],
-    }
-
+    statistics_client = HAStatisticsClient(ha_url=ha_url, ha_token=ha_token)
     try:
-        async with HttpxAsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{ha_url.rstrip('/')}/api/recorder/get_statistics_during_period",
-                headers=headers,
-                json=payload,
-            )
-    except (HttpxConnectError, HttpxTimeoutException) as exc:
-        logger.warning("HA REST API unreachable: %s", exc)
-        raise HTTPException(status_code=503, detail="Home Assistant is unavailable")
+        ha_data = await statistics_client.get_statistics(
+            statistic_ids=statistic_ids,
+            start=start_dt.isoformat(),
+            end=end_dt.isoformat(),
+            period="day",
+            types=("change",),
+        )
+    except HAStatisticsError as exc:
+        logger.warning("HA top-consumer statistics unavailable: code=%s", exc.code)
+        raise HTTPException(
+            status_code=503,
+            detail="Home Assistant is unavailable",
+        ) from None
 
-    if resp.status_code != 200:
-        raise HTTPException(status_code=503, detail="Home Assistant is unavailable")
-
-    try:
-        ha_data: dict[str, list[dict]] = resp.json()
-    except Exception:
-        raise HTTPException(status_code=503, detail="Home Assistant returned invalid data")
-
-    def _get_stat_value(s: dict) -> float:
-        value = s.get("sum")
-        if value is None:
-            value = s.get("mean")
-        if value is None:
-            return 0.0
-        return float(value)
+    supported, unsupported = _partition_energy_statistics(statistic_ids, ha_data)
+    if not supported:
+        raise HTTPException(status_code=503, detail=_ENERGY_UNAVAILABLE_DETAIL)
+    _set_partial_energy_headers(response, len(unsupported))
 
     # Sum per device
-    device_totals: dict[str, float] = {}
-    for entity_id, stat_list in ha_data.items():
-        total = sum(_get_stat_value(s) for s in stat_list)
-        device_totals[entity_id] = total
+    device_totals = {entity_id: sum(changes) for entity_id, (_series, changes) in supported.items()}
 
     grand_total = sum(device_totals.values())
 

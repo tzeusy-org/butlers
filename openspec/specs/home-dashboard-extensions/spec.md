@@ -43,8 +43,8 @@ An endpoint returning energy consumption time-series data for dashboard charts.
 #### Scenario: Daily energy consumption
 
 - **WHEN** `GET /api/home/energy?period=day&start=2026-03-01&end=2026-03-25` is called
-- **THEN** it SHALL proxy the request to the HA REST API `recorder/get_statistics_during_period` with `period="day"`
-- **AND** it SHALL return a list of daily data points with `timestamp`, `total_kwh`, and per-device breakdown (`devices`)
+- **THEN** it SHALL use the shared Home Assistant statistics client to send the WebSocket command `recorder/statistics_during_period` with `period="day"` and `types=["change"]`
+- **AND** it SHALL return a list of daily data points with `timestamp`, `total_kwh`, and per-device breakdown (`devices`) computed from per-period `change` values rather than cumulative `sum` values
 
 #### Scenario: Hourly energy consumption
 
@@ -66,10 +66,25 @@ An endpoint returning energy consumption time-series data for dashboard charts.
 - **WHEN** `GET /api/home/energy/top-consumers?start=2026-03-18&end=2026-03-25` is called
 - **THEN** it SHALL return the top 10 energy-consuming devices for the period
 - **AND** each entry SHALL include `entity_id`, `friendly_name`, `total_kwh`, and `percentage` of total consumption
+- **AND** totals SHALL be computed by summing per-period `change` values rather than cumulative `sum` values
+
+#### Scenario: Partial cumulative-energy statistics
+
+- **WHEN** at least one discovered sensor has a non-empty series whose every bucket contains a finite numeric `change` and at least one discovered sensor does not
+- **THEN** both energy endpoints SHALL omit each unsupported sensor instead of substituting zero
+- **AND** an explicit numeric `change=0` SHALL remain valid zero consumption
+- **AND** the response list body SHALL retain its existing schema
+- **AND** the response SHALL include `X-Butlers-Energy-Data-Status: partial` and `X-Butlers-Omitted-Sensors: <count>` headers
+
+#### Scenario: No cumulative-energy statistics
+
+- **WHEN** every discovered sensor lacks a complete finite numeric `change` series
+- **THEN** both energy endpoints SHALL return HTTP 503 indicating that cumulative-energy change data is unavailable
+- **AND** they SHALL NOT fabricate zero consumption
 
 #### Scenario: HA unavailable fallback
 
-- **WHEN** the HA REST API is unreachable during an energy endpoint call
+- **WHEN** the HA WebSocket API is unreachable during an energy endpoint call
 - **THEN** the endpoint SHALL return HTTP 503 with a message indicating Home Assistant is unavailable
 
 ### Requirement: Maintenance Calendar Endpoint

@@ -53,7 +53,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import re
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
@@ -61,6 +60,11 @@ from typing import Any, TypedDict
 
 import asyncpg
 
+from butlers.connectors.home_assistant_statistics import (
+    HAStatisticsClient,
+    HAStatisticsError,
+    parse_statistics_change_series,
+)
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,
@@ -1301,7 +1305,6 @@ async def _discover_energy_sensors(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 
 
 async def _fetch_weekly_statistics(
-    pool: asyncpg.Pool,
     entity_ids: list[str],
     *,
     ha_url: str,
@@ -1309,8 +1312,8 @@ async def _fetch_weekly_statistics(
 ) -> _WeeklyStatisticsResult:
     """Fetch weekly energy statistics via the HA WebSocket API.
 
-    Calls ``recorder/statistics_during_period`` with ``period="hour"`` over
-    an hour-aligned seven-day window for aggregate totals, and with
+    Calls the shared HA statistics client with ``period="hour"`` over an
+    hour-aligned seven-day window for aggregate totals, and with
     ``period="day"`` for daily breakdowns.
 
     ``statistics`` contains only entities whose every hourly bucket has a
@@ -1319,139 +1322,62 @@ async def _fetch_weekly_statistics(
     ``mean`` and are reported in ``unsupported_entity_ids`` instead of being
     coerced to zero consumption.
     """
-    import aiohttp
-
     end_dt = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
     start_dt = end_dt - timedelta(days=7)
     start_iso = start_dt.isoformat()
     end_iso = end_dt.isoformat()
 
-    base_url = ha_url.rstrip("/")
-    if base_url.startswith("https://"):
-        ws_url = "wss://" + base_url.removeprefix("https://")
-    elif base_url.startswith("http://"):
-        ws_url = "ws://" + base_url.removeprefix("http://")
-    else:
-        ws_url = base_url
-    ws_url += "/api/websocket"
-
-    result: dict[str, dict[str, Any]] = {}
-
-    async def _request_statistics(
-        websocket: aiohttp.ClientWebSocketResponse,
-        *,
-        command_id: int,
-        period: str,
-    ) -> dict[str, Any] | None:
-        await websocket.send_json(
-            {
-                "id": command_id,
-                "type": "recorder/statistics_during_period",
-                "start_time": start_iso,
-                "end_time": end_iso,
-                "statistic_ids": entity_ids,
-                "period": period,
-                "types": ["change"],
-            }
-        )
-        message = await websocket.receive_json(timeout=30.0)
-        if (
-            message.get("type") != "result"
-            or message.get("id") != command_id
-            or not message.get("success")
-        ):
-            error = message.get("error") or {}
-            error_code = error.get("code")
-            if (
-                not isinstance(error_code, str)
-                or re.fullmatch(r"[a-z0-9_]{1,64}", error_code) is None
-            ):
-                error_code = "unknown"
-            logger.error(
-                "HA WebSocket error fetching %s stats: code=%s",
-                period,
-                error_code,
-            )
-            return None
-
-        data = message.get("result")
-        if not isinstance(data, dict):
-            logger.error("HA WebSocket returned invalid %s statistics payload", period)
-            return None
-        return data
-
+    client = HAStatisticsClient(
+        ha_url=ha_url,
+        ha_token=ha_token,
+        verify_ssl=False,
+    )
     try:
-        timeout = aiohttp.ClientTimeout(total=70.0, connect=10.0)
-        connector = aiohttp.TCPConnector(
-            ssl=False,  # noqa: S501 — local HA instances often use self-signed certs
+        weekly_data = await client.get_statistics(
+            statistic_ids=entity_ids,
+            start=start_iso,
+            end=end_iso,
+            period="hour",
+            types=("change",),
         )
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            async with session.ws_connect(ws_url, heartbeat=30.0) as websocket:
-                auth_required = await websocket.receive_json(timeout=10.0)
-                if auth_required.get("type") != "auth_required":
-                    raise RuntimeError("Home Assistant WebSocket did not request authentication")
-
-                await websocket.send_json({"type": "auth", "access_token": ha_token})
-                auth_result = await websocket.receive_json(timeout=10.0)
-                if auth_result.get("type") != "auth_ok":
-                    raise RuntimeError("Home Assistant WebSocket authentication failed")
-
-                weekly_data = await _request_statistics(
-                    websocket,
-                    command_id=1,
-                    period="hour",
-                )
-                if weekly_data is None:
-                    return {
-                        "available": False,
-                        "statistics": {},
-                        "unsupported_entity_ids": [],
-                    }
-
-                unsupported_entity_ids: list[str] = []
-                for eid in entity_ids:
-                    stats_list = weekly_data.get(eid)
-                    if not isinstance(stats_list, list) or not stats_list:
-                        unsupported_entity_ids.append(eid)
-                        continue
-
-                    changes: list[float] = []
-                    for stat in stats_list:
-                        if not isinstance(stat, dict) or "change" not in stat:
-                            break
-                        try:
-                            change = float(stat["change"])
-                        except (TypeError, ValueError):
-                            break
-                        if not math.isfinite(change):
-                            break
-                        changes.append(change)
-                    else:
-                        result[eid] = {"weekly_sum": sum(changes)}
-                        continue
-
-                    unsupported_entity_ids.append(eid)
-
-                daily_data = await _request_statistics(
-                    websocket,
-                    command_id=2,
-                    period="day",
-                )
-                if daily_data is not None:
-                    for eid, stats_list in daily_data.items():
-                        if eid not in result or not isinstance(stats_list, list):
-                            continue
-                        result[eid]["daily"] = stats_list
-    except (aiohttp.ClientError, TimeoutError, RuntimeError, ValueError, TypeError) as exc:
+    except HAStatisticsError as exc:
         logger.warning(
-            "HA WebSocket API unavailable for energy statistics — skipping historical data: %s",
-            exc,
+            "HA WebSocket API unavailable for weekly energy statistics: code=%s",
+            exc.code,
         )
         return {
             "available": False,
             "statistics": {},
             "unsupported_entity_ids": [],
         }
+
+    result: dict[str, dict[str, Any]] = {}
+    unsupported_entity_ids: list[str] = []
+    for entity_id in entity_ids:
+        changes = parse_statistics_change_series(weekly_data.get(entity_id))
+        if changes is None:
+            unsupported_entity_ids.append(entity_id)
+            continue
+        result[entity_id] = {"weekly_sum": sum(changes)}
+
+    try:
+        daily_data = await client.get_statistics(
+            statistic_ids=entity_ids,
+            start=start_iso,
+            end=end_iso,
+            period="day",
+            types=("change",),
+        )
+    except HAStatisticsError as exc:
+        logger.warning(
+            "HA WebSocket API unavailable for daily energy statistics: code=%s",
+            exc.code,
+        )
+    else:
+        for entity_id, data in result.items():
+            daily_series = daily_data.get(entity_id)
+            if isinstance(daily_series, list):
+                data["daily"] = daily_series
 
     return {
         "available": True,
@@ -1762,7 +1688,6 @@ async def run_energy_digest(
 
     if ha_url and ha_token:
         stats_result = await _fetch_weekly_statistics(
-            pool,
             entity_ids,
             ha_url=ha_url,
             ha_token=ha_token,

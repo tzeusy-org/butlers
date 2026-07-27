@@ -237,8 +237,8 @@ Returns aggregated hourly/daily statistics for sensor entities from HA's recorde
 #### Scenario: Fetch statistics
 
 - **WHEN** `ha_get_statistics(statistic_ids=["sensor.total_energy_kwh"], start="2026-02-01T00:00:00Z", end="2026-02-28T00:00:00Z", period="day")` is called
-- **THEN** the module SHALL send a `recorder/get_statistics_during_period` WebSocket command
-- **AND** return the parsed response with per-period mean, min, max, sum, and state values
+- **THEN** the module SHALL use the shared Home Assistant statistics client to send a `recorder/statistics_during_period` WebSocket command
+- **AND** return the parsed response with per-period mean, min, max, cumulative sum, state, and change values
 
 #### Scenario: Valid period values
 

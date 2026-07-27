@@ -29,6 +29,10 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
+from butlers.connectors.home_assistant_statistics import (
+    VALID_STATISTICS_PERIODS,
+    HAStatisticsClient,
+)
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 
 logger = logging.getLogger(__name__)
@@ -561,7 +565,7 @@ class HomeAssistantModule(Module):
         ) -> dict[str, Any]:
             """Return aggregated statistics for sensor entities from HA's recorder.
 
-            Sends a ``recorder/get_statistics_during_period`` WebSocket command.
+            Sends a ``recorder/statistics_during_period`` WebSocket command.
 
             Parameters
             ----------
@@ -1814,8 +1818,6 @@ class HomeAssistantModule(Module):
         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
     )
 
-    _VALID_STATISTICS_PERIODS = frozenset({"5minute", "hour", "day", "week", "month"})
-
     async def _get_statistics(
         self,
         statistic_ids: list[str],
@@ -1823,7 +1825,7 @@ class HomeAssistantModule(Module):
         end: str,
         period: str = "hour",
     ) -> dict[str, Any]:
-        """Fetch aggregated statistics via the ``recorder/get_statistics_during_period`` WS command.
+        """Fetch aggregated statistics through the shared recorder statistics client.
 
         Parameters
         ----------
@@ -1843,24 +1845,20 @@ class HomeAssistantModule(Module):
         RuntimeError
             If the WebSocket is not connected.
         """
-        if period not in self._VALID_STATISTICS_PERIODS:
+        if period not in VALID_STATISTICS_PERIODS:
             raise ValueError(
                 f"Invalid period {period!r}. "
-                f"Must be one of: {', '.join(sorted(self._VALID_STATISTICS_PERIODS))}."
+                f"Must be one of: {', '.join(sorted(VALID_STATISTICS_PERIODS))}."
             )
 
-        result = await self._ws_command(
-            {
-                "type": "recorder/get_statistics_during_period",
-                "statistic_ids": statistic_ids,
-                "start_time": start,
-                "end_time": end,
-                "period": period,
-                "types": ["mean", "min", "max", "sum", "state"],
-            },
-            timeout=30.0,
+        client = HAStatisticsClient(command_sender=self._ws_command)
+        return await client.get_statistics(
+            statistic_ids=statistic_ids,
+            start=start,
+            end=end,
+            period=period,
+            types=("mean", "min", "max", "sum", "state", "change"),
         )
-        return result
 
     async def _render_template(self, template: str) -> str:
         """Render a Jinja2 template via ``POST /api/template``.

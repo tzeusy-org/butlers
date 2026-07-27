@@ -479,6 +479,27 @@ class TestEntityCache:
 
 
 class TestToolBehaviors:
+    async def test_get_statistics_uses_current_recorder_command(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        statistics = {
+            "sensor.energy": [{"start": 1_785_171_600_000, "sum": 1_012.5, "change": 7.5}]
+        }
+        command = AsyncMock(return_value=statistics)
+        ha_module._ws_command = command
+
+        result = await ha_module._get_statistics(
+            statistic_ids=["sensor.energy"],
+            start="2026-07-20T00:00:00+00:00",
+            end="2026-07-27T00:00:00+00:00",
+            period="hour",
+        )
+
+        assert result == statistics
+        payload = command.await_args.args[0]
+        assert payload["type"] == "recorder/statistics_during_period"
+        assert payload["types"] == ["mean", "min", "max", "sum", "state", "change"]
+
     async def test_invalid_entity_id_raises(self, ha_module: HomeAssistantModule) -> None:
         ha_module._client = MagicMock()
         with pytest.raises(ValueError):
