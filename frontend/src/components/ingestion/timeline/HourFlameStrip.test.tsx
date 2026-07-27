@@ -130,11 +130,35 @@ describe("HourFlameStrip", () => {
     expect(failedButton!.getAttribute("aria-label")).toContain("4 errors");
   });
 
-  it("stacks mixed-status minutes with error, replay, ingested, and filtered/skipped segments", () => {
+  it("treats replay_failed as a destructive, announced failure instead of a replay category", () => {
+    const buckets = [bucket("2026-05-17T14:07:00Z", { replay_failed: 1 })];
+    act(() => {
+      root.render(renderStrip({ hourStart: HOUR_START, buckets, bucketMinutes: 1 }));
+    });
+
+    const failedReplayButton = container.querySelector(
+      "[data-testid='hour-strip-minute'][data-minute-iso='2026-05-17T14:07:00.000Z']",
+    );
+    expect(failedReplayButton).not.toBeNull();
+    expect(failedReplayButton!.getAttribute("data-has-error")).toBe("true");
+    expect(failedReplayButton!.getAttribute("aria-label")).toContain("1 replay failure");
+
+    const segments = failedReplayButton!.querySelectorAll(":scope > div > div");
+    expect(segments).toHaveLength(1);
+    expect(segments[0].classList.contains("bg-destructive")).toBe(true);
+    expect((segments[0] as HTMLElement).style.height).toBe("100%");
+
+    const group = container.querySelector("[role='group']");
+    expect(group!.getAttribute("aria-label")).toContain("1 replay failure");
+  });
+
+  it("stacks mixed-status minutes with destructive failures, neutral pending replays, and green completed replays", () => {
     const buckets = [
       bucket("2026-05-17T14:10:00Z", {
         error: 1,
+        replay_failed: 1,
         replay_pending: 1,
+        replay_complete: 1,
         ingested: 2,
         filtered: 1,
         skipped: 1,
@@ -147,12 +171,17 @@ describe("HourFlameStrip", () => {
       "[data-testid='hour-strip-minute'][data-minute-iso='2026-05-17T14:10:00.000Z']",
     );
     expect(minuteButton).not.toBeNull();
+    expect(minuteButton!.getAttribute("data-has-error")).toBe("true");
+    expect(minuteButton!.getAttribute("aria-label")).toContain("1 replay failure");
+    expect(minuteButton!.getAttribute("aria-label")).toContain("1 replay pending");
+    expect(minuteButton!.getAttribute("aria-label")).toContain("1 replay complete");
     const segmentClasses = Array.from(minuteButton!.querySelectorAll(":scope > div > div")).map(
       (el) => el.className,
     );
     expect(segmentClasses).toEqual([
       "bg-destructive",
-      "bg-blue-500",
+      "bg-[var(--dim)]",
+      "bg-[var(--green)]",
       "bg-foreground/30",
       "bg-foreground/10",
     ]);
@@ -195,6 +224,20 @@ describe("HourFlameStrip", () => {
     expect(group!.getAttribute("aria-hidden")).toBeNull();
     expect(group!.getAttribute("aria-label")).toContain("14:00");
     expect(group!.getAttribute("aria-label")).toContain("2 errors");
+  });
+
+  it("keeps a direct error's announced start separate from an earlier replay failure", () => {
+    const buckets = [
+      bucket("2026-05-17T14:05:00Z", { replay_failed: 1 }),
+      bucket("2026-05-17T14:10:00Z", { error: 1 }),
+    ];
+    act(() => {
+      root.render(renderStrip({ hourStart: HOUR_START, buckets, bucketMinutes: 1 }));
+    });
+
+    const group = container.querySelector("[role='group']");
+    expect(group!.getAttribute("aria-label")).toContain("1 error starting 14:10");
+    expect(group!.getAttribute("aria-label")).toContain("1 replay failure");
   });
 
   it("shows a hover label with time and per-status counts", () => {

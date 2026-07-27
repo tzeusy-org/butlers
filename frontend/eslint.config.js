@@ -366,6 +366,52 @@ const NO_CATEGORICAL_STATUS_SELECTORS = [
   },
 ]
 
+// bu-d3z0t: blue/purple shades are not an operational-status dialect. This
+// guard is deliberately scoped to the post-bu-ep4ks.15 audit population,
+// rather than promoted repo-wide before every remaining informational and
+// categorical use has received the same semantic review. A documented
+// line-level exemption is allowed only for a fixed category or informational
+// prompt; live process state must use StateDot's exported registry/tokens.
+const BLUE_PURPLE_STATUS_AUDIT_FILES = [
+  'src/components/approvals/approval-teaching-digest.tsx',
+  'src/components/approvals/autonomy-panel.tsx',
+  'src/components/approvals/autonomy-suggestions-banner.tsx',
+  'src/components/approvals/rule-promotion-banner.tsx',
+  'src/components/approvals/rule-promotion-stats.tsx',
+  'src/components/butler-detail/ButlerQaInvestigationsTab.tsx',
+  'src/components/education/CurriculumActions.tsx',
+  'src/components/education/QuizHistoryList.tsx',
+  'src/components/ingestion/StatusBadge.tsx',
+  'src/components/ingestion/TimelineTab.tsx',
+  'src/components/ingestion/timeline/HourFlameStrip.tsx',
+  'src/components/qa/PRPanel.tsx',
+  'src/components/relationship/ContactChannelCard.tsx',
+  'src/components/schedules/ScheduleTable.tsx',
+  'src/components/timeline/TimelineLedger.tsx',
+  'src/pages/ApprovalsPage.tsx',
+]
+
+const BLUE_PURPLE_STATUS_SELECTORS = [
+  {
+    selector:
+      'Literal[value=/\\b(?:bg|text|border|ring|decoration|from|via|to|fill|stroke|outline|divide|caret|accent|shadow)-(?:sky|cyan|blue|indigo|violet|purple|fuchsia)-(?:50|100|150|200|300|400|500|600|700|800|900|950)\\b/]',
+    message:
+      'Raw blue/purple Tailwind status classes are banned in audited files (bu-d3z0t). ' +
+      'Use StateDot\'s exported state/tone registry for live operational state. A fixed ' +
+      'category or informational prompt may retain its shade only with a line-level ' +
+      'eslint-disable-next-line and one-line semantic reason.',
+  },
+  {
+    selector:
+      'TemplateElement[value.raw=/\\b(?:bg|text|border|ring|decoration|from|via|to|fill|stroke|outline|divide|caret|accent|shadow)-(?:sky|cyan|blue|indigo|violet|purple|fuchsia)-(?:50|100|150|200|300|400|500|600|700|800|900|950)\\b/]',
+    message:
+      'Raw blue/purple Tailwind status classes are banned in audited files (bu-d3z0t). ' +
+      'Use StateDot\'s exported state/tone registry for live operational state. A fixed ' +
+      'category or informational prompt may retain its shade only with a line-level ' +
+      'eslint-disable-next-line and one-line semantic reason.',
+  },
+]
+
 // bu-ep4ks.15: every raw <th> must declare a `scope` attribute (jsx-a11y has
 // no built-in rule for this -- it only validates `scope` when present, not
 // its absence). A screen reader announcing a data table with unscoped
@@ -682,6 +728,29 @@ export default defineConfig([
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_UNGUARDED_OUTLINE_NONE_SELECTORS,
+        ...NO_WINDOW_CONFIRM_SELECTORS,
+      ],
+    },
+  },
+  {
+    // bu-d3z0t: status-color audit guard. It comes after every generic and
+    // per-file no-restricted-syntax block because flat-config arrays replace,
+    // rather than merge.
+    files: BLUE_PURPLE_STATUS_AUDIT_FILES,
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...HEX_COLOR_SELECTORS,
+        ...PRIMITIVE_REDECLARATION_SELECTORS,
+        ...HANDROLLED_OVERLAY_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
+        ...KEYDOWN_LISTENER_SELECTORS,
+        ...BLUE_PURPLE_STATUS_SELECTORS,
+        ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
       ],
     },

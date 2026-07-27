@@ -19,6 +19,10 @@ interface ApprovalTeachingDigestProps {
   onDismiss: () => void;
 }
 
+const TEACHING_PROMPT_CLASS =
+  // eslint-disable-next-line no-restricted-syntax -- informational post-approval teaching prompt, not operational status.
+  "mx-6 mt-4 rounded border border-blue-500/35 bg-blue-500/5 px-4 py-3";
+
 export function ApprovalTeachingDigest({ actionId, onDismiss }: ApprovalTeachingDigestProps) {
   const [confirming, setConfirming] = useState(false);
   const suggestionQuery = useQuery({
@@ -34,7 +38,7 @@ export function ApprovalTeachingDigest({ actionId, onDismiss }: ApprovalTeaching
   return (
     <section
       aria-label="Teach this approval"
-      className="mx-6 mt-4 rounded border border-blue-500/35 bg-blue-500/5 px-4 py-3"
+      className={TEACHING_PROMPT_CLASS}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">

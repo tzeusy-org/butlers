@@ -75,6 +75,7 @@ import { ApprovalTeachingDigest } from "@/components/approvals/approval-teaching
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
+import { TONE_COLORS } from "@/components/ui/StateDot";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -142,7 +143,7 @@ function statusColor(status: string): string {
     case "approved":
       return "text-[var(--amber-text)]";
     case "executed":
-      return "text-blue-600 dark:text-blue-400";
+      return "";
     case "rejected":
       return "text-[var(--red-text)]";
     case "expired":
@@ -150,6 +151,10 @@ function statusColor(status: string): string {
     default:
       return "text-foreground";
   }
+}
+
+function statusStyle(status: string) {
+  return status === "executed" ? { color: TONE_COLORS.green } : undefined;
 }
 
 // Human label for a status badge. "approved" reads as "stalled" — it is an
@@ -379,6 +384,7 @@ function RailItem({
         </span>
         <span
           className={`font-mono text-[10px] uppercase tracking-wider ${statusColor(summary.status)}`}
+          style={statusStyle(summary.status)}
         >
           {statusLabel(summary.status)}
         </span>
@@ -700,6 +706,7 @@ function Dossier({
           </h2>
           <span
             className={`text-xs font-mono uppercase tracking-wide ${statusColor(detail.status)}`}
+            style={statusStyle(detail.status)}
           >
             {statusLabel(detail.status)}
           </span>
@@ -1296,6 +1303,7 @@ function HistorySection() {
           >
             <span
               className={`font-mono text-[10px] uppercase w-16 shrink-0 ${statusColor(item.status)}`}
+              style={statusStyle(item.status)}
             >
               {statusLabel(item.status)}
             </span>

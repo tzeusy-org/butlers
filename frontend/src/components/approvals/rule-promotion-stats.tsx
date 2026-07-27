@@ -21,6 +21,9 @@ import { SourceDegradedNote } from "@/components/ui/query-boundary";
 const SRC_SUGGESTIONS = "suggestion_counts";
 const SRC_PROMOTED_RULES = "promoted_rules";
 const SRC_VERDICT = "verdict_metrics";
+const PROMOTION_STATS_ICON_CLASS =
+  // eslint-disable-next-line no-restricted-syntax -- informational section icon, not live operational status.
+  "h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0";
 
 interface StatCellProps {
   eyebrow: string;
@@ -65,7 +68,7 @@ export function RulePromotionStatsTile({
     <Card data-testid="rule-promotion-stats">
       <CardHeader className="pb-2">
         <div className="flex items-center gap-2">
-          <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0" />
+          <TrendingUp className={PROMOTION_STATS_ICON_CLASS} />
           <CardTitle className="text-sm font-semibold">Rule promotion</CardTitle>
         </div>
       </CardHeader>

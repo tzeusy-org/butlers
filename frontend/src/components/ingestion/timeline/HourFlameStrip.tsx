@@ -16,13 +16,11 @@
  * component owns bucket alignment, stacking, and honesty directly.
  *
  * Stack order within a bar, top (most visible) to bottom (baseline):
- * error+failed → replay (pending/complete/failed combined) → ingested →
- * filtered/skipped. "failed" (routing failure after ingestion, bu-lkzsf.1)
- * shares the error segment — same destructive severity, just a later
- * pipeline stage — rather than adding a fifth stacked lane.
- * Segment fills reuse the app's existing status color vocabulary (StatusBadge /
- * RowStatus: destructive for error, blue-500 for replay) — no new color
- * tokens are introduced.
+ * error+failed+replay failed → replay pending → replay complete → ingested →
+ * filtered/skipped. Both "failed" (routing failure after ingestion, bu-lkzsf.1)
+ * and "replay_failed" share the destructive segment: each is a live failure,
+ * not an informational replay category. Pending replays remain neutral; completed
+ * replays use the existing success color.
  *
  * The strip is always 60px wide (bucketMinutes * slotCount == 60) so the
  * timeline column width stays stable regardless of bucket granularity.
@@ -74,16 +72,28 @@ function countsTotal(c: IngestionHistogramCounts): number {
 }
 
 /**
- * "error" and "failed" (routing failure after ingestion, bu-lkzsf.1) share one
- * destructive-severity bucket here — same trouble, different pipeline stage —
- * rather than a fifth stacked lane.
+ * Every terminal failure shares the destructive segment. `replay_failed` is a
+ * failed outcome, not a replay category, so it must remain visible to both the
+ * error marker and assistive-technology summaries.
  */
 function errorTotal(c: IngestionHistogramCounts): number {
+  return c.error + c.failed + c.replay_failed;
+}
+
+function directErrorTotal(c: IngestionHistogramCounts): number {
   return c.error + c.failed;
 }
 
-function replayTotal(c: IngestionHistogramCounts): number {
-  return c.replay_pending + c.replay_complete + c.replay_failed;
+function replayPendingTotal(c: IngestionHistogramCounts): number {
+  return c.replay_pending;
+}
+
+function replayCompleteTotal(c: IngestionHistogramCounts): number {
+  return c.replay_complete;
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function formatClock(iso: string, tz: string): string {
@@ -98,10 +108,19 @@ function formatMinuteSummary(slot: MinuteSlot, tz: string): string {
   if (slot.total === 0) return `${label} · no events`;
   const { counts } = slot;
   const parts: string[] = [];
-  const errors = errorTotal(counts);
-  if (errors > 0) parts.push(`${errors} ${errors === 1 ? "error" : "errors"}`);
-  const replays = replayTotal(counts);
-  if (replays > 0) parts.push(`${replays} ${replays === 1 ? "replay" : "replays"}`);
+  const directErrors = directErrorTotal(counts);
+  if (directErrors > 0) parts.push(countLabel(directErrors, "error"));
+  if (counts.replay_failed > 0) {
+    parts.push(countLabel(counts.replay_failed, "replay failure", "replay failures"));
+  }
+  const pendingReplays = replayPendingTotal(counts);
+  if (pendingReplays > 0) {
+    parts.push(countLabel(pendingReplays, "replay pending", "replays pending"));
+  }
+  const completeReplays = replayCompleteTotal(counts);
+  if (completeReplays > 0) {
+    parts.push(countLabel(completeReplays, "replay complete", "replays complete"));
+  }
   if (counts.filtered > 0) parts.push(`${counts.filtered} filtered`);
   if (counts.skipped > 0) parts.push(`${counts.skipped} skipped`);
   if (counts.ingested > 0) parts.push(`${counts.ingested} ingested`);
@@ -118,17 +137,29 @@ function buildAriaSummary(hourStart: string, slots: MinuteSlot[], tz: string): s
   if (totalEvents === 0) return `Activity ${startLabel}–${endLabel}, no events`;
 
   const peakSlot = slots.reduce((best, s) => (s.total > best.total ? s : best), slots[0]);
-  const errorCount = slots.reduce((sum, s) => sum + errorTotal(s.counts), 0);
-  const replaysTotal = slots.reduce((sum, s) => sum + replayTotal(s.counts), 0);
+  const directErrorCount = slots.reduce((sum, s) => sum + directErrorTotal(s.counts), 0);
+  const replayFailureCount = slots.reduce((sum, s) => sum + s.counts.replay_failed, 0);
+  const pendingReplayCount = slots.reduce((sum, s) => sum + replayPendingTotal(s.counts), 0);
+  const completeReplayCount = slots.reduce((sum, s) => sum + replayCompleteTotal(s.counts), 0);
 
   let summary = `Activity ${startLabel}–${endLabel}, peak ${formatClock(peakSlot.minuteIso, tz)}`;
-  if (errorCount > 0) {
-    const firstError = slots.find((s) => errorTotal(s.counts) > 0);
-    summary += `, ${errorCount} ${errorCount === 1 ? "error" : "errors"}`;
+  if (directErrorCount > 0) {
+    const firstError = slots.find((s) => directErrorTotal(s.counts) > 0);
+    summary += `, ${countLabel(directErrorCount, "error")}`;
     if (firstError) summary += ` starting ${formatClock(firstError.minuteIso, tz)}`;
   }
-  if (replaysTotal > 0) {
-    summary += `, ${replaysTotal} ${replaysTotal === 1 ? "replay" : "replays"}`;
+  if (replayFailureCount > 0) {
+    const firstFailure = slots.find((s) => s.counts.replay_failed > 0);
+    summary += `, ${countLabel(replayFailureCount, "replay failure", "replay failures")}`;
+    if (firstFailure && directErrorCount === 0) {
+      summary += ` starting ${formatClock(firstFailure.minuteIso, tz)}`;
+    }
+  }
+  if (pendingReplayCount > 0) {
+    summary += `, ${countLabel(pendingReplayCount, "replay pending", "replays pending")}`;
+  }
+  if (completeReplayCount > 0) {
+    summary += `, ${countLabel(completeReplayCount, "replay complete", "replays complete")}`;
   }
   return summary;
 }
@@ -204,13 +235,14 @@ export function HourFlameStrip({
           const isEmpty = slot.total === 0;
           const barH = isEmpty ? 1 : Math.max(1, (slot.total / peak) * height);
           // Stack order, first-rendered (top of bar, most visible) to
-          // last-rendered (baseline): error+failed, replay, ingested,
-          // filtered/skipped.
+          // last-rendered (baseline): terminal failures, pending replay,
+          // completed replay, ingested, filtered/skipped.
           const segments = isEmpty
             ? []
             : [
                 { count: errorTotal(slot.counts), className: "bg-destructive" },
-                { count: replayTotal(slot.counts), className: "bg-blue-500" },
+                { count: replayPendingTotal(slot.counts), className: "bg-[var(--dim)]" },
+                { count: replayCompleteTotal(slot.counts), className: "bg-[var(--green)]" },
                 { count: slot.counts.ingested, className: "bg-foreground/30" },
                 { count: slot.counts.filtered + slot.counts.skipped, className: "bg-foreground/10" },
               ].filter((seg) => seg.count > 0);

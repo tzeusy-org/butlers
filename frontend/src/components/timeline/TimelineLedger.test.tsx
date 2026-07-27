@@ -285,9 +285,9 @@ describe("TimelineLedger — failed delivery honesty", () => {
     renderLedger({ events });
     const row = container.querySelector('[data-testid="timeline-row"]') as HTMLElement;
     expect(row.textContent).toContain("failed");
-    // The destructive dot is applied (calm purple is reserved for delivered).
+    // The destructive dot is applied (the categorical notification dot is reserved for delivered).
     expect(row.querySelector(".bg-destructive")).not.toBeNull();
-    expect(row.querySelector(".bg-purple-500")).toBeNull();
+    expect(row.querySelector(".bg-\\[var\\(--categorical-2\\)\\]")).toBeNull();
   });
 
   it("keeps a delivered notification row on the calm neutral dot", () => {
@@ -300,7 +300,7 @@ describe("TimelineLedger — failed delivery honesty", () => {
     ];
     renderLedger({ events });
     const row = container.querySelector('[data-testid="timeline-row"]') as HTMLElement;
-    expect(row.querySelector(".bg-purple-500")).not.toBeNull();
+    expect(row.querySelector(".bg-\\[var\\(--categorical-2\\)\\]")).not.toBeNull();
     expect(row.querySelector(".bg-destructive")).toBeNull();
   });
 });

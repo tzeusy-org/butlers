@@ -149,7 +149,7 @@ export function ScheduleTable({
                   {dispatchMode === "prompt" ? (
                     <Badge variant="secondary">prompt</Badge>
                   ) : (
-                    <Badge className="bg-blue-600 text-white hover:bg-blue-600/90">job</Badge>
+                    <Badge variant="secondary">job</Badge>
                   )}
                 </TableCell>
                 <TableCell className="max-w-xs text-sm">
@@ -248,4 +248,3 @@ export function ScheduleTable({
     </Table>
   );
 }
-

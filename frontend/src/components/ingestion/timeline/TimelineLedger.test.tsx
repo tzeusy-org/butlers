@@ -404,6 +404,53 @@ describe("TimelineTab — hour grouping", () => {
     expect(summary!.textContent).toContain("4 errors");
   });
 
+  it("reports replay_failed as a destructive error rather than hiding it in the replay total", () => {
+    const events = [
+      makeEvent({
+        id: "id-replay-failed",
+        received_at: "2026-05-17T14:05:00Z",
+        status: "replay_failed",
+      }),
+    ];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+      makeHistogramResult([
+        makeHistogramBucket("2026-05-17T14:05:00Z", { replay_failed: 1 }),
+      ]) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["replay_failed"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const summary = container.querySelector("[data-testid='hour-group-summary']");
+    expect(summary).not.toBeNull();
+    expect(summary!.textContent).toContain("1 event");
+    expect(summary!.textContent).toContain("1 error");
+    expect(summary!.textContent).not.toContain("replay");
+    expect(summary!.querySelector(".text-destructive")?.textContent).toContain("1 error");
+
+    const stripMinute = container.querySelector(
+      "[data-testid='hour-strip-minute'][data-minute-iso='2026-05-17T14:05:00.000Z']",
+    );
+    expect(stripMinute).not.toBeNull();
+    expect(stripMinute!.getAttribute("data-has-error")).toBe("true");
+    expect(stripMinute!.getAttribute("aria-label")).toContain("1 replay failure");
+
+    const rowStatus = container.querySelector("[data-testid='row-status'][data-status='replay_failed']");
+    expect(rowStatus).not.toBeNull();
+    expect(rowStatus!.classList.contains("text-destructive")).toBe(true);
+    expect(rowStatus!.textContent).toBe("replay failed");
+  });
+
   it("clicking a strip minute with a loaded ledger row scrolls it into view", () => {
     const scrollIntoViewMock = vi.fn();
     HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;

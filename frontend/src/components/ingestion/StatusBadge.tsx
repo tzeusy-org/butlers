@@ -8,7 +8,7 @@
  * - error         → red (destructive)
  * - failed        → red (destructive) — routing failed after ingestion
  *   (see ingestion_event_mark_failed); same severity treatment as error
- * - replay_pending → blue (custom)
+ * - replay_pending → neutral outline (waiting, not a health signal)
  * - replay_complete → green outline
  * - replay_failed  → red outline
  *
@@ -18,6 +18,7 @@
  */
 
 import { Badge } from "@/components/ui/badge";
+import { TONE_COLORS } from "@/components/ui/StateDot";
 import {
   Tooltip,
   TooltipContent,
@@ -71,7 +72,10 @@ function BadgeInner({ status }: { status: IngestionEventStatus }) {
       );
     case "replay_pending":
       return (
-        <Badge className="bg-blue-500 text-white hover:bg-blue-600">
+        <Badge
+          variant="outline"
+          style={{ borderColor: TONE_COLORS.neutral, color: TONE_COLORS.neutral }}
+        >
           {STATUS_LABELS.replay_pending}
         </Badge>
       );
@@ -162,6 +166,8 @@ interface RowStatusStyle {
   dot: string;
   /** Foreground text color class. */
   text: string;
+  /** Canonical StateDot tone for a live status that cannot use a raw class. */
+  tone?: keyof typeof TONE_COLORS;
 }
 
 const ROW_STATUS_STYLE: Record<IngestionEventStatus, RowStatusStyle> = {
@@ -170,7 +176,7 @@ const ROW_STATUS_STYLE: Record<IngestionEventStatus, RowStatusStyle> = {
   filtered: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
   error: { dot: "bg-destructive", text: "text-destructive" },
   failed: { dot: "bg-destructive", text: "text-destructive" },
-  replay_pending: { dot: "border border-blue-500", text: "text-blue-600" },
+  replay_pending: { dot: "border", text: "", tone: "neutral" },
   replay_complete: { dot: "border border-[var(--green)]", text: "text-[var(--green)]" },
   replay_failed: { dot: "border border-destructive", text: "text-destructive" },
 };
@@ -183,6 +189,7 @@ export interface RowStatusProps {
 /** Quiet 6px-dot + mono status word for ledger rows. Never a filled pill. */
 export function RowStatus({ status, className }: RowStatusProps) {
   const style = ROW_STATUS_STYLE[status];
+  const toneColor = style.tone ? TONE_COLORS[style.tone] : undefined;
   return (
     <span
       className={[
@@ -192,10 +199,15 @@ export function RowStatus({ status, className }: RowStatusProps) {
       ]
         .filter(Boolean)
         .join(" ")}
+      style={toneColor ? { color: toneColor } : undefined}
       data-testid="row-status"
       data-status={status}
     >
-      <span className={["inline-block size-1.5 rounded-full shrink-0", style.dot].join(" ")} aria-hidden />
+      <span
+        className={["inline-block size-1.5 rounded-full shrink-0", style.dot].join(" ")}
+        style={toneColor ? { borderColor: toneColor } : undefined}
+        aria-hidden
+      />
       {ROW_STATUS_WORDS[status]}
     </span>
   );

@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TONE_COLORS } from "@/components/ui/StateDot";
 import { Time } from "@/components/ui/time";
 import {
   useQaCircuitBreaker,
@@ -55,19 +56,33 @@ const SEV_LABELS: Record<number, string> = {
   4: "info",
 };
 
-const SEV_CLASS: Record<number, string> = {
-  0: "bg-[var(--red)] text-white hover:bg-[var(--red)]/90",
-  1: "bg-[var(--amber)] text-white hover:bg-[var(--amber)]/90",
-  2: "bg-[var(--amber)] text-white hover:bg-[var(--amber)]/90",
-  3: "bg-slate-400 text-white hover:bg-slate-400/90",
-  4: "bg-sky-400 text-white hover:bg-sky-400/90",
+type StatusTone = keyof typeof TONE_COLORS;
+
+const SEV_TONE: Record<number, StatusTone> = {
+  0: "red",
+  1: "red",
+  2: "amber",
+  3: "neutral",
+  4: "neutral",
 };
+
+function statusToneStyle(tone: StatusTone) {
+  return {
+    borderColor: TONE_COLORS[tone],
+    color:
+      tone === "amber"
+        ? "var(--amber-text)"
+        : tone === "red"
+          ? "var(--red-text)"
+          : TONE_COLORS[tone],
+  };
+}
 
 function SeverityBadge({ severity }: { severity: number }) {
   const label = SEV_LABELS[severity] ?? String(severity);
-  const cls = SEV_CLASS[severity] ?? "";
+  const tone = SEV_TONE[severity] ?? "neutral";
   return (
-    <Badge className={cls} data-testid="severity-badge">
+    <Badge variant="outline" style={statusToneStyle(tone)} data-testid="severity-badge">
       {label}
     </Badge>
   );
@@ -77,26 +92,22 @@ function SeverityBadge({ severity }: { severity: number }) {
 // Investigation status badge
 // ---------------------------------------------------------------------------
 
-const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  dispatch_pending: { label: "pending", className: "border-slate-400 text-slate-500" },
-  investigating: { label: "investigating", className: "border-[var(--amber)] text-[var(--amber-text)]" },
-  pr_open: { label: "PR open", className: "border-blue-500 text-blue-600" },
-  pr_merged: { label: "PR merged", className: "bg-[var(--green)] text-white hover:bg-[var(--green)]/90" },
-  failed: { label: "failed", className: "" },
-  timeout: { label: "timeout", className: "" },
-  unfixable: { label: "unfixable", className: "" },
-  anonymization_failed: { label: "anon failed", className: "" },
+const STATUS_CONFIG: Record<string, { label: string; tone: StatusTone }> = {
+  dispatch_pending: { label: "pending", tone: "neutral" },
+  investigating: { label: "investigating", tone: "amber" },
+  pr_open: { label: "PR open", tone: "neutral" },
+  pr_merged: { label: "PR merged", tone: "green" },
+  failed: { label: "failed", tone: "red" },
+  timeout: { label: "timeout", tone: "red" },
+  unfixable: { label: "unfixable", tone: "red" },
+  anonymization_failed: { label: "anon failed", tone: "red" },
 };
-
-const TERMINAL_STATUSES = new Set(["failed", "timeout", "unfixable", "anonymization_failed"]);
 
 function StatusBadge({ status }: { status: string }) {
   const c = STATUS_CONFIG[status];
   if (!c) return <Badge variant="outline">{status}</Badge>;
-  if (status === "pr_merged") return <Badge className={c.className}>{c.label}</Badge>;
-  if (TERMINAL_STATUSES.has(status)) return <Badge variant="destructive">{c.label}</Badge>;
   return (
-    <Badge variant="outline" className={c.className}>
+    <Badge variant="outline" style={statusToneStyle(c.tone)}>
       {c.label}
     </Badge>
   );

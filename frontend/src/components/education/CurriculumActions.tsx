@@ -11,13 +11,19 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { TONE_COLORS } from "@/components/ui/StateDot";
 import { useUpdateMindMapStatus } from "@/hooks/use-education";
 
-const STATUS_BADGE: Record<string, string> = {
-  active: "bg-[var(--green)]/10 text-[var(--green)]",
-  completed: "bg-blue-100 text-blue-800",
-  abandoned: "bg-gray-100 text-gray-800",
+const STATUS_TONE: Record<string, keyof typeof TONE_COLORS> = {
+  active: "green",
+  completed: "green",
+  abandoned: "neutral",
 };
+
+function statusBadgeStyle(status: string) {
+  const tone = STATUS_TONE[status] ?? "green";
+  return { borderColor: TONE_COLORS[tone], color: TONE_COLORS[tone] };
+}
 
 interface CurriculumActionsProps {
   mindMapId: string;
@@ -47,7 +53,7 @@ export default function CurriculumActions({
 
   return (
     <div className="flex items-center gap-3">
-      <Badge className={STATUS_BADGE[status] ?? STATUS_BADGE.active}>
+      <Badge variant="outline" style={statusBadgeStyle(status)}>
         {status}
       </Badge>
 

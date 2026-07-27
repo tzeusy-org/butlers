@@ -63,12 +63,14 @@ describe("StatusBadge", () => {
     expect(badge!.getAttribute("data-variant")).toBe("destructive");
   });
 
-  it("renders 'replay_pending' with blue badge", () => {
+  it("renders 'replay_pending' with the neutral status-token outline", () => {
     render("replay_pending");
     expect(container.textContent).toContain("replay pending");
     const badge = container.querySelector("[data-slot='badge']");
     expect(badge).not.toBeNull();
-    expect(badge!.className).toContain("blue");
+    expect(badge!.getAttribute("data-variant")).toBe("outline");
+    expect((badge as HTMLElement).style.borderColor).toBe("var(--dim)");
+    expect((badge as HTMLElement).style.color).toBe("var(--dim)");
   });
 
   it("renders 'replay_complete' with green outline badge", () => {

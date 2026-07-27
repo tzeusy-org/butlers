@@ -10,12 +10,15 @@ const QUALITY_LABELS: Record<number, { label: string; className: string }> = {
   1: { label: "Wrong", className: "bg-[var(--red)]/10 text-[var(--red-text)]" },
   2: { label: "Hard", className: "bg-[var(--amber)]/10 text-[var(--amber-text)]" },
   3: { label: "Okay", className: "bg-[var(--amber)]/10 text-[var(--amber-text)]" },
+  // eslint-disable-next-line no-restricted-syntax -- fixed response-quality tier, not a live operational status.
   4: { label: "Good", className: "bg-blue-100 text-blue-800" },
   5: { label: "Easy", className: "bg-[var(--green)]/10 text-[var(--green)]" },
 };
 
 const RESPONSE_TYPE_LABELS: Record<string, { label: string; className: string }> = {
+  // eslint-disable-next-line no-restricted-syntax -- fixed response-type category, not a live operational status.
   diagnostic: { label: "Diagnostic", className: "bg-purple-100 text-purple-800" },
+  // eslint-disable-next-line no-restricted-syntax -- fixed response-type category, not a live operational status.
   teach: { label: "Teach", className: "bg-sky-100 text-sky-800" },
   review: { label: "Review", className: "bg-slate-100 text-slate-800" },
 };

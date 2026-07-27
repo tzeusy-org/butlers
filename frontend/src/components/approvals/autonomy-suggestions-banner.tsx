@@ -22,6 +22,17 @@ interface SuggestionCardProps {
   isPending: boolean;
 }
 
+const PROMOTION_ACCENT_CLASSES = {
+  // eslint-disable-next-line no-restricted-syntax -- informational promotion prompt, not live operational status.
+  card: "border-blue-200 bg-blue-50/30 dark:border-blue-800 dark:bg-blue-950/20",
+  // eslint-disable-next-line no-restricted-syntax -- informational promotion prompt, not live operational status.
+  icon: "h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5",
+  // eslint-disable-next-line no-restricted-syntax -- informational promotion prompt, not live operational status.
+  title: "text-sm font-semibold text-blue-900 dark:text-blue-100",
+  // eslint-disable-next-line no-restricted-syntax -- informational promotion prompt action, not live operational status.
+  action: "bg-blue-600 hover:bg-blue-700 text-white",
+} as const;
+
 function VelocityIndicator({ suggestion }: { suggestion: AutonomySuggestion }) {
   const velocity = suggestion.velocity;
   if (!velocity || velocity.sample_count === 0) return null;
@@ -62,12 +73,12 @@ function ApprovalLink({ actionId }: { actionId: string | null | undefined }) {
 
 function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: SuggestionCardProps) {
   return (
-    <Card className="border-blue-200 bg-blue-50/30 dark:border-blue-800 dark:bg-blue-950/20">
+    <Card className={PROMOTION_ACCENT_CLASSES.card}>
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
-            <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-            <CardTitle className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+            <TrendingUp className={PROMOTION_ACCENT_CLASSES.icon} />
+            <CardTitle className={PROMOTION_ACCENT_CLASSES.title}>
               Promote to standing rule
             </CardTitle>
           </div>
@@ -99,7 +110,7 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
         <Button
           size="sm"
           variant="default"
-          className="bg-blue-600 hover:bg-blue-700 text-white"
+          className={PROMOTION_ACCENT_CLASSES.action}
           onClick={() => onConfirm(suggestion.id)}
           disabled={isPending}
         >

@@ -207,16 +207,16 @@ It SHALL include:
   `GET /api/ingestion/events/histogram` for that hour and its active
   filters, and are correct even when only some pages of that hour have
   loaded into the ledger
-- **AND** the event and error counts include `failed` events (routing
-  failures recorded after ingestion) — a `failed` event counts as both an
-  event and an error, the same as `error`, so it never silently vanishes
-  from the honest hourly total
+- **AND** the event and error counts include `failed` and `replay_failed`
+  events (terminal failures recorded after ingestion or replay) — each counts
+  as both an event and an error, the same as `error`, so it never silently
+  vanishes from the honest hourly total
 - **AND** the per-minute strip renders each minute as a status-stacked bar:
   ingested at a low foreground alpha, filtered/skipped at a lower foreground
-  alpha, error and failed together in the destructive color, and replay
-  states in blue
-- **AND** a minute where every event errored or failed renders as solid
-  destructive color
+  alpha, error/failed/replay failed together in the destructive color, replay
+  pending in neutral, and replay complete in green
+- **AND** a minute where every event errored, failed, or replay-failed renders
+  as solid destructive color
 - **AND** the strip exposes an `aria-label` summarizing the hour's activity
   instead of being hidden from assistive technology
 

@@ -1,4 +1,5 @@
 import type { QaCaseDossier, QaPrSummary } from "@/api/types";
+import { TONE_COLORS } from "@/components/ui/StateDot";
 import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
 
@@ -24,14 +25,20 @@ interface PRPanelProps {
   className?: string;
 }
 
-const prStateClassName: Record<QaPrSummary["state"], string> = {
-  closed: "border-muted-foreground/40 text-muted-foreground",
-  drafted: "border-sky-500/40 text-sky-500",
-  // bu-86c4c.6: merged/open are real states (success/pending) -> Dispatch
-  // tokens. --amber-text is the AA-contrast-safe text variant (bu-86c4c.16).
-  merged: "border-[var(--green)]/40 text-[var(--green)]",
-  open: "border-[var(--amber)]/40 text-[var(--amber-text)]",
+const PR_STATE_TONES: Record<QaPrSummary["state"], keyof typeof TONE_COLORS> = {
+  closed: "neutral",
+  drafted: "neutral",
+  open: "amber",
+  merged: "green",
 };
+
+function prStateStyle(state: QaPrSummary["state"]) {
+  const tone = PR_STATE_TONES[state];
+  return {
+    borderColor: TONE_COLORS[tone],
+    color: tone === "amber" ? "var(--amber-text)" : TONE_COLORS[tone],
+  };
+}
 
 export function PRPanel({ pr, whyThisFix, diffSnapshot, stage, className }: PRPanelProps) {
   if (!pr) {
@@ -63,8 +70,8 @@ export function PRPanel({ pr, whyThisFix, diffSnapshot, stage, className }: PRPa
           <span
             className={cn(
               "border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] tnum",
-              prStateClassName[pr.state],
             )}
+            style={prStateStyle(pr.state)}
           >
             {pr.state}
           </span>

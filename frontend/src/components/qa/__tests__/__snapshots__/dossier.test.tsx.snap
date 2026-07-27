@@ -319,7 +319,8 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
             class="flex flex-wrap items-center gap-2"
           >
             <span
-              class="border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] tnum border-[var(--amber)]/40 text-[var(--amber-text)]"
+              class="border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] tnum"
+              style="border-color: var(--amber); color: var(--amber-text);"
             >
               open
             </span>

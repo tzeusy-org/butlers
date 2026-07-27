@@ -40,10 +40,14 @@ function ruleTier(rule: ApprovalRule): "full autonomy" | "scoped" {
   return isWildcardConstraints(rule.arg_constraints) ? "full autonomy" : "scoped";
 }
 
+const SCOPED_RULE_TIER_CLASS =
+  // eslint-disable-next-line no-restricted-syntax -- fixed rule-scope label, not a live operational status.
+  "text-blue-600 dark:text-blue-400";
+
 function tierClass(tier: "full autonomy" | "scoped"): string {
   return tier === "full autonomy"
     ? "text-[var(--red-text)]"
-    : "text-blue-600 dark:text-blue-400";
+    : SCOPED_RULE_TIER_CLASS;
 }
 
 function RuleRow({ rule }: { rule: ApprovalRule }) {

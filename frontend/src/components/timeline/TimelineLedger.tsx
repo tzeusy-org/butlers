@@ -60,13 +60,13 @@ export interface TimelineLedgerProps {
 // ---------------------------------------------------------------------------
 
 const TYPE_DOT_CLASS: Record<string, string> = {
-  session: "bg-blue-500",
+  session: "bg-[var(--categorical-1)]",
   error: "bg-destructive",
-  notification: "bg-purple-500",
+  notification: "bg-[var(--categorical-2)]",
 };
 
 // A notification whose delivery bounced (data.status === "failed") is a
-// failure impersonating health if rendered with the calm purple dot — an
+// failure impersonating health if rendered with the calm categorical dot — an
 // hours-long bounced-alert outage read as routine. Give it the destructive
 // mark so the row is legible as an error at a glance, matching the Errors lens
 // that now also selects these deliveries server-side (bu-hmdqz.14).

@@ -1156,11 +1156,9 @@ function HourGroup({
       const c = b.counts;
       // "failed" (routing failure after ingestion, bu-lkzsf.1) counts as an
       // error for this honest-total header, same severity class as "error",
-      // just a later pipeline stage. This is a deliberate SUBSET of the
-      // backend's incident grouping (ingestion_connectors.py::_INCIDENT_STATUSES
-      // = {error, failed, replay_failed}), not a full mirror: replay_failed
-      // stays in the separate replay lane (counted below as a replay), never
-      // folded into the error total.
+      // just a later pipeline stage. `replay_failed` is also terminal failure
+      // and must stay in the destructive/error total rather than disappearing
+      // into the informational replay count.
       total +=
         c.ingested +
         c.skipped +
@@ -1170,8 +1168,8 @@ function HourGroup({
         c.replay_pending +
         c.replay_complete +
         c.replay_failed;
-      errors += c.error + c.failed;
-      replays += c.replay_pending + c.replay_complete + c.replay_failed;
+      errors += c.error + c.failed + c.replay_failed;
+      replays += c.replay_pending + c.replay_complete;
     }
     return { total, errors, replays };
   }, [histogramBuckets]);
@@ -1227,7 +1225,7 @@ function HourGroup({
                 <>
                   {" "}
                   ·{" "}
-                  <span className="text-blue-600">
+                  <span className="text-[var(--categorical-1)]">
                     {hourTotals.replays} {hourTotals.replays === 1 ? "replay" : "replays"}
                   </span>
                 </>

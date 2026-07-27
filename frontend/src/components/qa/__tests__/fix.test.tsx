@@ -153,18 +153,20 @@ describe("QA dossier fix-column components", () => {
   // "rejected" is NOT a valid state — the backend _pr_state_for_case() only emits
   // drafted | open | merged | closed (spec correction: G11-GAP-8).
   it.each([
-    ["drafted", "border-sky-500/40"],
-    ["open", "border-[var(--amber)]/40"],
-    ["merged", "border-[var(--green)]/40"],
-    ["closed", "border-muted-foreground/40"],
+    ["drafted", "var(--dim)"],
+    ["open", "var(--amber)"],
+    ["merged", "var(--green)"],
+    ["closed", "var(--dim)"],
   ] as [QaPrSummary["state"], string][])(
     "test_pr_panel_state_chip_%s",
-    (state, expectedBorderClass) => {
+    (state, expectedBorderColor) => {
       render(<PRPanel pr={{ ...pr, state }} whyThisFix={null} stage="pr" />);
 
       const chips = screen.getAllByText(state);
-      // At least one chip element (the state badge span) should carry the border class.
-      const chip = chips.find((el) => el.className.includes(expectedBorderClass));
+      // The chip takes its status colour from StateDot's exported tone registry.
+      const chip = chips.find(
+        (el) => (el as HTMLElement).style.borderColor === expectedBorderColor,
+      );
       expect(chip).toBeTruthy();
     },
   );

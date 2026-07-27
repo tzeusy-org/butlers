@@ -361,7 +361,7 @@ export function ExpandedContactInfoRow({
         <span className="text-muted-foreground text-xs w-32 shrink-0">
           {contactInfoTypeLabel(entry.type)}
           {entry.is_primary && (
-            <span className="ml-1 text-blue-500">(primary)</span>
+            <span className="ml-1 text-[var(--dim)]">(primary)</span>
           )}
         </span>
         <Input
@@ -412,7 +412,7 @@ export function ExpandedContactInfoRow({
       <span className="text-muted-foreground text-xs w-32 shrink-0 flex items-center gap-1">
         {contactInfoTypeLabel(entry.type)}
         {entry.is_primary && (
-          <span className="ml-1 text-blue-500">(primary)</span>
+          <span className="ml-1 text-[var(--dim)]">(primary)</span>
         )}
         {/* Amber dot: unverified entity_facts channel */}
         {isEntityFacts && !entry.verified && (
