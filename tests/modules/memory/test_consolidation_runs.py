@@ -182,21 +182,40 @@ class _FakePool:
 
 
 class _FakeSpawnerResult:
-    def __init__(self):
-        self.success = True
-        self.output = "{}"
-        self.error = None
+    def __init__(
+        self,
+        *,
+        output: str | None = "{}",
+        success: bool = True,
+        error: str | None = None,
+    ):
+        self.success = success
+        self.output = output
+        self.error = error
 
 
 class _FakeSpawner:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        output: str | None = "{}",
+        success: bool = True,
+        error: str | None = None,
+    ):
         self.calls = 0
         self.trigger_sources: list[str] = []
+        self.output = output
+        self.success = success
+        self.error = error
 
     async def trigger(self, *, prompt: str, trigger_source: str):
         self.calls += 1
         self.trigger_sources.append(trigger_source)
-        return _FakeSpawnerResult()
+        return _FakeSpawnerResult(
+            output=self.output,
+            success=self.success,
+            error=self.error,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +370,67 @@ class TestRunConsolidationWritesAuditRow:
         )
         assert pool.consolidation_run_inserts() == []
         assert stats["groups_consolidated"] == 0
+
+    @pytest.mark.parametrize("output", [None, " \n\t"])
+    async def test_missing_runtime_output_records_actionable_failure(
+        self, output: str | None
+    ) -> None:
+        claim_rows = [
+            {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "butler": "relationship",
+                "content": "c",
+                "importance": 5.0,
+                "metadata": {},
+                "created_at": None,
+                "tenant_id": "t1",
+                "consolidation_attempts": 0,
+            }
+        ]
+        pool = _FakePool(claim_rows=claim_rows)
+
+        stats = await consolidation_module.run_consolidation(
+            pool,
+            embedding_engine=None,
+            cc_spawner=_FakeSpawner(output=output),
+        )
+
+        detail = "runtime session returned no consolidation output"
+        assert stats["groups_consolidated"] == 0
+        assert stats["errors"] == [f"runtime session failed for relationship: {detail}"]
+        failure_updates = [
+            args for query, args in pool.executes if "last_consolidation_error" in query
+        ]
+        assert failure_updates[0][0] == detail
+
+    async def test_unsuccessful_runtime_without_error_records_fallback_detail(self) -> None:
+        claim_rows = [
+            {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "butler": "relationship",
+                "content": "c",
+                "importance": 5.0,
+                "metadata": {},
+                "created_at": None,
+                "tenant_id": "t1",
+                "consolidation_attempts": 0,
+            }
+        ]
+        pool = _FakePool(claim_rows=claim_rows)
+
+        stats = await consolidation_module.run_consolidation(
+            pool,
+            embedding_engine=None,
+            cc_spawner=_FakeSpawner(success=False, error=None),
+        )
+
+        detail = "unsuccessful runtime result contained no error detail"
+        assert stats["groups_consolidated"] == 0
+        assert stats["errors"] == [f"runtime session failed for relationship: {detail}"]
+        failure_updates = [
+            args for query, args in pool.executes if "last_consolidation_error" in query
+        ]
+        assert failure_updates[0][0] == detail
 
 
 # ---------------------------------------------------------------------------
