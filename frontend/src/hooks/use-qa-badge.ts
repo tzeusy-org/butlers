@@ -38,20 +38,21 @@ export function useApprovalsPendingBadge(): number {
 }
 
 /**
- * Returns the count of open decision-marked beads for the sidebar badge
- * (bu-ckkpz.2). `meta.decisions_available === false` (beads export
- * unreachable) degrades to 0 rather than an error state -- the badge has no
- * "unavailable" affordance, unlike the /decisions page's own verdict opener,
- * which does surface that flag loudly.
+ * The Decisions badge needs to distinguish a readable empty digest from an
+ * unavailable one. Other sidebar badges remain simple numeric counts.
  */
-export function useDecisionsOpenBadge(): number {
-  const { data } = useDecisions()
-  if (!data || data.meta?.decisions_available === false) return 0
-  return data.data.length
+export type DecisionsBadgeState =
+  | { kind: 'count'; count: number }
+  | { kind: 'unavailable' }
+
+export function useDecisionsOpenBadge(): DecisionsBadgeState {
+  const { data, isError } = useDecisions()
+  if (isError || data?.meta?.decisions_available === false) return { kind: 'unavailable' }
+  return { kind: 'count', count: data?.data.length ?? 0 }
 }
 
-/** Badge registry — maps badgeKey to a hook that returns a count (or 0). */
-export function useBadgeCounts(): Record<string, number> {
+/** Badge registry — only Decisions carries an explicit availability state. */
+export function useBadgeCounts(): Record<string, number | DecisionsBadgeState> {
   const qaEscalations = useQaEscalationsBadge()
   const approvalsPending = useApprovalsPendingBadge()
   const decisionsOpen = useDecisionsOpenBadge()

@@ -836,6 +836,65 @@ describe("Sidebar", () => {
     });
   });
 
+  describe("Decisions badge availability", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: { data: [], meta: {} },
+      });
+    });
+
+    it.each([
+      ["rail", () => render()],
+      ["expanded desktop", () => renderExpanded()],
+      ["mobile", () => renderMobile()],
+    ])("keeps an available empty Decisions digest quiet in %s", (_variant, renderSidebar) => {
+      vi.mocked(useBadgeCounts).mockReturnValue({
+        "decisions-open": { kind: "count", count: 0 },
+      });
+
+      renderSidebar();
+
+      const decisionsLink = container.querySelector('a[href="/decisions"]');
+      expect(decisionsLink).toBeTruthy();
+      expect(decisionsLink?.querySelector('[aria-label="Decisions digest unavailable"]')).toBeNull();
+      expect(decisionsLink?.textContent).not.toContain("0");
+    });
+
+    it.each([
+      ["rail", () => render()],
+      ["expanded desktop", () => renderExpanded()],
+      ["mobile", () => renderMobile()],
+    ])("renders a numeric Decisions count when available in %s", (_variant, renderSidebar) => {
+      vi.mocked(useBadgeCounts).mockReturnValue({
+        "decisions-open": { kind: "count", count: 2 },
+      });
+
+      renderSidebar();
+
+      const decisionsLink = container.querySelector('a[href="/decisions"]');
+      expect(decisionsLink).toBeTruthy();
+      expect(decisionsLink?.textContent).toContain("2");
+      expect(decisionsLink?.querySelector('[aria-label="Decisions digest unavailable"]')).toBeNull();
+    });
+
+    it.each([
+      ["rail", () => render()],
+      ["expanded desktop", () => renderExpanded()],
+      ["mobile", () => renderMobile()],
+    ])("renders an accessible unavailable Decisions marker in %s", (_variant, renderSidebar) => {
+      vi.mocked(useBadgeCounts).mockReturnValue({
+        "decisions-open": { kind: "unavailable" },
+      });
+
+      renderSidebar();
+
+      const decisionsLink = container.querySelector('a[href="/decisions"]');
+      expect(decisionsLink).toBeTruthy();
+      expect(decisionsLink?.querySelector('[aria-label="Decisions digest unavailable"]')).toBeTruthy();
+      expect(decisionsLink?.textContent).not.toContain("0");
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Relationships nav removal
   // -------------------------------------------------------------------------

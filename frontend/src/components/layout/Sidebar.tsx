@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
 import { useSpendSummary } from '@/hooks/use-spend'
-import { useBadgeCounts } from '@/hooks/use-qa-badge'
+import { type DecisionsBadgeState, useBadgeCounts } from '@/hooks/use-qa-badge'
 import { usePrefetchOnIntent } from '@/hooks/use-prefetch-on-intent'
 import { useRouteChunkPrefetchOnIntent } from '@/hooks/use-route-chunk-prefetch-on-intent'
 import { ButlerMark } from '@/components/ui/ButlerMark'
+import { StateDot } from '@/components/ui/StateDot'
 import {
   Tooltip,
   TooltipContent,
@@ -42,6 +43,9 @@ function isPathActive(pathname: string, itemPath: string, end?: boolean): boolea
 interface ButlerStatusMap {
   [name: string]: string
 }
+
+type SidebarBadgeValue = number | DecisionsBadgeState
+type SidebarBadgeCounts = Record<string, SidebarBadgeValue>
 
 function useFilteredNavSections(sections: NavSection[]): {
   sections: NavSection[]
@@ -104,6 +108,30 @@ function StatusDot({ status }: { status: string | undefined }) {
   )
 }
 
+function resolveSidebarBadge(
+  item: NavFlatItem,
+  badgeCounts?: SidebarBadgeCounts,
+): { count: number; decisionsUnavailable: boolean } {
+  const value = item.badgeKey && badgeCounts ? (badgeCounts[item.badgeKey] ?? 0) : 0
+  if (typeof value === 'number') return { count: value, decisionsUnavailable: false }
+
+  return {
+    count: value.kind === 'count' ? value.count : 0,
+    decisionsUnavailable: item.badgeKey === 'decisions-open' && value.kind === 'unavailable',
+  }
+}
+
+function DecisionsUnavailableMarker({ className }: { className?: string }) {
+  return (
+    <StateDot
+      state="degraded"
+      size={6}
+      className={className}
+      aria-label="Decisions digest unavailable"
+    />
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Badge indicator (reauth=red, approvals=amber, default=primary)
 // ---------------------------------------------------------------------------
@@ -148,9 +176,9 @@ function ItemGlyph({
   item: NavFlatItem
   section: NavSection
   butlerStatus?: string
-  badgeCounts?: Record<string, number>
+  badgeCounts?: SidebarBadgeCounts
 }) {
-  const count = item.badgeKey && badgeCounts ? (badgeCounts[item.badgeKey] ?? 0) : 0
+  const { count, decisionsUnavailable } = resolveSidebarBadge(item, badgeCounts)
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
 
   return (
@@ -165,7 +193,9 @@ function ItemGlyph({
         </span>
       )}
       {/* Badge takes precedence over status dot when both would render */}
-      {count > 0 ? (
+      {decisionsUnavailable ? (
+        <DecisionsUnavailableMarker className="absolute right-1 top-1 ring-2 ring-background" />
+      ) : count > 0 ? (
         <BadgeIndicator
           count={count}
           variant={item.badgeVariant}
@@ -192,7 +222,7 @@ function FlatNavLink({
   section: NavSection
   onNavClick?: () => void
   butlerStatusMap?: ButlerStatusMap
-  badgeCounts?: Record<string, number>
+  badgeCounts?: SidebarBadgeCounts
 }) {
   // Radix TooltipTrigger asChild stringifies a function className via clsx,
   // so we compute isActive here and pass className as a string.
@@ -384,7 +414,7 @@ function NavSectionGroup({
   isFirst: boolean
   onNavClick?: () => void
   butlerStatusMap?: ButlerStatusMap
-  badgeCounts?: Record<string, number>
+  badgeCounts?: SidebarBadgeCounts
 }) {
   return (
     <div className={!isFirst ? 'mt-1' : ''}>
@@ -661,7 +691,7 @@ function ExpandedNavSection({
   isFirst: boolean
   onNavClick?: () => void
   butlerStatusMap?: ButlerStatusMap
-  badgeCounts?: Record<string, number>
+  badgeCounts?: SidebarBadgeCounts
 }) {
   return (
     <div className={!isFirst ? 'mt-2' : ''}>
@@ -708,9 +738,9 @@ function MobileFlatLink({
   section: NavSection
   onNavClick?: () => void
   butlerStatusMap?: ButlerStatusMap
-  badgeCounts?: Record<string, number>
+  badgeCounts?: SidebarBadgeCounts
 }) {
-  const count = item.badgeKey && badgeCounts ? (badgeCounts[item.badgeKey] ?? 0) : 0
+  const { count, decisionsUnavailable } = resolveSidebarBadge(item, badgeCounts)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
   const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
@@ -748,7 +778,9 @@ function MobileFlatLink({
         <StatusDot status={butlerStatus} />
       </span>
       <span className="flex-1">{item.label}</span>
-      {count > 0 && (
+      {decisionsUnavailable ? (
+        <DecisionsUnavailableMarker className="ml-auto" />
+      ) : count > 0 ? (
         <span
           className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
             item.badgeVariant === 'red'
@@ -760,7 +792,7 @@ function MobileFlatLink({
         >
           {count > 99 ? '99+' : count}
         </span>
-      )}
+      ) : null}
     </NavLink>
   )
 }
@@ -890,7 +922,7 @@ function MobileSidebar({
 }: {
   sections: NavSection[]
   butlerStatusMap: ButlerStatusMap
-  badgeCounts: Record<string, number>
+  badgeCounts: SidebarBadgeCounts
   onNavClick?: () => void
 }) {
   const { data: costResponse, isLoading } = useSpendSummary('today')

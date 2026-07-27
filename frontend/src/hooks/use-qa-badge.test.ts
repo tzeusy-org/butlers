@@ -11,9 +11,9 @@
 //     - success with count > 0: returns total_pending
 //     - success with count == 0: returns 0
 //   useDecisionsOpenBadge:
-//     - loading state (data undefined): returns 0
-//     - success with count > 0: returns data.data.length
-//     - meta.decisions_available === false: returns 0 (never a fabricated count)
+//     - loading state (data undefined): returns a quiet zero count state
+//     - success with count > 0: returns a numeric count state
+//     - meta.decisions_available === false and direct errors: return unavailable
 //   useBadgeCounts:
 //     - includes qa-escalations, approvals-pending, and decisions-open keys
 // ---------------------------------------------------------------------------
@@ -138,12 +138,13 @@ describe("useApprovalsPendingBadge", () => {
 function mockDecisions(
   rows: Array<{ id: string }> | undefined,
   decisionsAvailable = true,
+  isError = false,
 ) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result: any =
     rows === undefined
-      ? { data: undefined }
-      : { data: { data: rows, meta: { decisions_available: decisionsAvailable } } }
+      ? { data: undefined, isError }
+      : { data: { data: rows, meta: { decisions_available: decisionsAvailable } }, isError }
   vi.mocked(useDecisions).mockReturnValue(result)
 }
 
@@ -152,24 +153,29 @@ describe("useDecisionsOpenBadge", () => {
     vi.clearAllMocks()
   })
 
-  it("returns 0 when data is still loading (undefined)", () => {
+  it("returns a quiet zero count when data is still loading (undefined)", () => {
     mockDecisions(undefined)
-    expect(useDecisionsOpenBadge()).toBe(0)
+    expect(useDecisionsOpenBadge()).toEqual({ kind: "count", count: 0 })
   })
 
-  it("returns the open-decisions count when greater than 0", () => {
+  it("returns a numeric count when open decisions are available", () => {
     mockDecisions([{ id: "bu-a" }, { id: "bu-b" }])
-    expect(useDecisionsOpenBadge()).toBe(2)
+    expect(useDecisionsOpenBadge()).toEqual({ kind: "count", count: 2 })
   })
 
-  it("returns 0 when the digest is genuinely empty", () => {
+  it("returns a quiet zero count when the digest is genuinely empty", () => {
     mockDecisions([])
-    expect(useDecisionsOpenBadge()).toBe(0)
+    expect(useDecisionsOpenBadge()).toEqual({ kind: "count", count: 0 })
   })
 
-  it("returns 0 (never a fabricated count) when decisions_available is false", () => {
+  it("returns unavailable when decisions_available is false", () => {
     mockDecisions([{ id: "bu-a" }], false)
-    expect(useDecisionsOpenBadge()).toBe(0)
+    expect(useDecisionsOpenBadge()).toEqual({ kind: "unavailable" })
+  })
+
+  it("returns unavailable when the Decisions query errors directly", () => {
+    mockDecisions(undefined, true, true)
+    expect(useDecisionsOpenBadge()).toEqual({ kind: "unavailable" })
   })
 
   // Regression: a permissive catch-all mock/proxy (e.g. Playwright's
@@ -179,11 +185,11 @@ describe("useDecisionsOpenBadge", () => {
   // (no optional chaining) throws in that shape and crashes the sidebar —
   // rendered on every route — taking down unrelated pages. Locks in the
   // `data.meta?.decisions_available` guard.
-  it("does not throw and returns 0 when meta is entirely absent", () => {
+  it("does not throw and returns a quiet zero count when meta is entirely absent", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.mocked(useDecisions).mockReturnValue({ data: { data: [] } } as any)
     expect(() => useDecisionsOpenBadge()).not.toThrow()
-    expect(useDecisionsOpenBadge()).toBe(0)
+    expect(useDecisionsOpenBadge()).toEqual({ kind: "count", count: 0 })
   })
 })
 
@@ -215,7 +221,7 @@ describe("useBadgeCounts", () => {
     mockDecisions([{ id: "bu-a" }])
     const counts = useBadgeCounts()
     expect("decisions-open" in counts).toBe(true)
-    expect(counts["decisions-open"]).toBe(1)
+    expect(counts["decisions-open"]).toEqual({ kind: "count", count: 1 })
   })
 
   it("approvals-pending is 0 when data is loading", () => {
