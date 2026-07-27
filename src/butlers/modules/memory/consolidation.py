@@ -280,16 +280,23 @@ async def run_consolidation(
                     trigger_source="schedule:consolidation",
                 )
 
-                if not result.success or result.output is None:
-                    error_msg = f"runtime session failed for {butler_name}"
-                    logger.error("%s: %s", error_msg, result.error)
+                output_missing = result.output is None or not result.output.strip()
+                if not result.success or output_missing:
+                    if output_missing and result.success:
+                        failure_detail = "runtime session returned no consolidation output"
+                    else:
+                        failure_detail = (
+                            result.error or "unsuccessful runtime result contained no error detail"
+                        )
+                    error_msg = f"runtime session failed for {butler_name}: {failure_detail}"
+                    logger.error("%s", error_msg)
                     all_errors.append(error_msg)
                     # Clear leases so episodes can be retried / dead-lettered
                     group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
                     await _mark_group_failed(
                         pool,
                         group_episode_ids,
-                        f"runtime session failed: {result.error}",
+                        failure_detail,
                         tenant_id=tenant_id,
                     )
                     continue

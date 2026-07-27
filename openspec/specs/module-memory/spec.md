@@ -166,6 +166,7 @@ The consolidation pipeline SHALL transform unconsolidated episodes into durable 
 - **WHEN** a `cc_spawner` is provided to `run_consolidation`
 - **THEN** for each `(tenant_id, butler)` group, a runtime session MUST be spawned with `trigger_source='schedule:consolidation'`
 - **AND** the runtime output MUST be parsed for a JSON block containing `new_facts`, `updated_facts`, `new_rules`, and `confirmations`
+- **AND** a successful runtime result with missing or blank output MUST fail the group with an actionable error so its episodes remain eligible for retry rather than being marked consolidated
 - **AND** partial failures in one group MUST NOT block other groups from processing
 
 #### Scenario: Scheduled consolidation uses the catalog-backed daemon spawner
