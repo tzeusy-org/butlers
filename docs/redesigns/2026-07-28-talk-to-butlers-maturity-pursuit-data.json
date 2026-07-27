@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "run": "talk-to-butlers-maturity-pursuit",
+  "date": "2026-07-28",
+  "scope": "Focused JARVIS-style audit of the Talk to Butlers dashboard front door",
+  "north_star": "A durable specialist-roster front door that never fabricates routing, filing, or Stop success.",
+  "live_baseline": {
+    "api_health": "ok",
+    "frontend_http_status": 200,
+    "butlers_total": 12,
+    "butlers_ok": 12,
+    "owner_message_sent_for_audit": false,
+    "interpretation": "Availability confirmed locally; no live end-to-end owner-message proof was claimed."
+  },
+  "maturity": {
+    "overall": "functional_not_mature",
+    "dimensions": [
+      {
+        "name": "availability",
+        "verdict": "functional",
+        "evidence": "Local health ok, frontend 200, 12/12 roster status ok."
+      },
+      {
+        "name": "specialist_routing",
+        "verdict": "functional",
+        "evidence": "Dashboard ingress and two-lane routing exist; no silent General fallback."
+      },
+      {
+        "name": "durable_stop",
+        "verdict": "in_flight",
+        "evidence": "PR #3624 is open; canonical message-scoped Stop implementation is not merged."
+      },
+      {
+        "name": "terminal_effect_recovery",
+        "verdict": "weak",
+        "evidence": "Existing bu-s3qvp identifies crash ambiguity after external action reservation."
+      },
+      {
+        "name": "generic_questions",
+        "verdict": "intentionally_unapproved",
+        "evidence": "No owner-approved taxonomy or General residual authority."
+      }
+    ]
+  },
+  "active_work": {
+    "pr_3624": {
+      "title": "Durable dashboard Stop and route handoff",
+      "head_at_audit": "acc8ef6cab43a12e3df55b28ce4255f801c2700e",
+      "state": "open",
+      "required_next_gate": "Fresh hosted checks must be green on this exact head before merge."
+    },
+    "pr_3618": {
+      "title": "Truthful dashboard dispatch receipt",
+      "head_at_audit": "d58ce54db375f53b0acb61e33bb2d608f27b36e7",
+      "state": "open_draft_on_stale_base",
+      "required_next_gate": "After #3624, rebase and independently validate or close as superseded."
+    },
+    "bead_bu_s3qvp": {
+      "title": "Reconcile ambiguous dashboard terminal external actions",
+      "state": "open_live_p1",
+      "safety": "Not claimed or mutated by this planning run; requires an owner-created HOLD-gated graph before dispatch."
+    }
+  },
+  "authored_changes": [
+    "reconcile-dashboard-conversation-contracts",
+    "durable-dashboard-terminal-action-recovery"
+  ],
+  "contract_highlights": [
+    "message-scoped cancellation response gains an additive durable outcome discriminator with legacy boolean mapping",
+    "targetless ingress exposes pending, retryable, rejected, and pending-Stop truth without inventing a lane",
+    "a stalled ingress reaches a durable 60-second boundary and can be recovered only by an owner action on the same immutable message",
+    "one dashboard lane reservation per immutable message, with route_pending to dead_letter only on definite no-side-effect evidence",
+    "unknown route/effect outcomes become durable ambiguity rather than automatic duplicate delivery",
+    "bug report, dead-letter capture, and acknowledgement reply each carry their own durable receipt/idempotency boundary",
+    "reconciliation defaults to owner-controlled observe mode and needs a canary before active retries"
+  ],
+  "reconciliation_passes": 4,
+  "gates": {
+    "openspec_strict": "pass for both authored changes",
+    "traceability": "no new errors against the existing 2579-error repository baseline",
+    "implementation_tests": "not yet applicable; requirements are planned and have expected pre-implementation citation warnings"
+  },
+  "unresolved_owner_decision": "Whether ambiguous owner questions remain truthful dead-letter/rephrase cases, gain a bounded clarification lane, or receive constrained General authority."
+}
