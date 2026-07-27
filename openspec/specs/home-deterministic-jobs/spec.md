@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Deterministic Python job handlers for the Home butler's scheduled monitoring tasks. These handlers replace prompt-based LLM dispatch with threshold-based classification, memory storage, and Telegram notifications — eliminating LLM costs for formulaic monitoring work. Jobs read current entity state from the connector-populated `ha_entity_snapshot` table and load monitoring thresholds from the state store (`home:thresholds:*`), falling back to direct HA REST API calls only for historical statistics queries.
+Deterministic Python job handlers for the Home butler's scheduled monitoring tasks. These handlers replace prompt-based LLM dispatch with threshold-based classification, memory storage, and Telegram notifications — eliminating LLM costs for formulaic monitoring work. Jobs read current entity state from the connector-populated `ha_entity_snapshot` table and load monitoring thresholds from the state store (`home:thresholds:*`), falling back to direct HA WebSocket API calls only for historical statistics queries.
 
 ## Requirements
 
@@ -193,8 +193,24 @@ The `energy_digest` job fetches weekly energy statistics, computes top consumers
 #### Scenario: Weekly statistics retrieval
 
 - **WHEN** energy sensors are discovered
-- **THEN** the job SHALL call the HA REST API `recorder/get_statistics_during_period` with `period="day"` for the past 7 days (this is a REST-only fallback — historical statistics are not available in the connector cache)
-- **AND** it SHALL also call with `period="week"` for aggregate totals per device
+- **THEN** the job SHALL call the HA WebSocket API command `recorder/statistics_during_period` with `period="day"` for the past 7 days (historical statistics are not available in the connector cache)
+- **AND** it SHALL also call over an hour-aligned 168-hour window with `period="hour"` and sum the returned per-period `change` values for aggregate consumption per device
+- **AND** a device series SHALL be supported only when every hourly bucket contains a finite numeric `change`; an explicit `change=0` SHALL remain valid zero consumption
+- **AND** the job SHALL NOT substitute missing, non-numeric, or non-finite `change` values with zero or integrate `mean` power values as energy
+
+#### Scenario: No cumulative-energy statistics available
+
+- **WHEN** every discovered sensor lacks a complete finite hourly `change` series
+- **THEN** the job SHALL notify the owner that cumulative-energy statistics are unavailable and recommend configuring a Home Assistant energy helper for power-only sensors
+- **AND** it SHALL return `{"error": "no_cumulative_energy_statistics", "unsupported_sensors": [...]}` with the omitted entity IDs
+- **AND** it SHALL NOT compute or store an energy baseline
+
+#### Scenario: Partial cumulative-energy statistics
+
+- **WHEN** at least one discovered sensor has a complete finite hourly `change` series and at least one does not
+- **THEN** the job SHALL report only the supported device series and identify the omitted sensors visibly
+- **AND** it SHALL NOT present a whole-home total, whole-home trend, savings claim, or percentage share
+- **AND** it SHALL NOT read or store an overall energy baseline, though supported per-device baselines and anomalies MAY still be processed
 
 #### Scenario: Baseline comparison
 
@@ -216,7 +232,7 @@ The `energy_digest` job fetches weekly energy statistics, computes top consumers
 
 #### Scenario: Baseline memory update
 
-- **WHEN** the digest is composed
+- **WHEN** a complete digest is composed with cumulative-energy statistics for every discovered sensor
 - **THEN** the job SHALL call `store_fact` with `predicate="energy_baseline"`, `permanence="standard"`, containing the current week's total and top consumer breakdown
 - **AND** if anomalies were detected, it SHALL call `store_fact` with `predicate="energy_spike"`, `permanence="volatile"`, for each anomalous device
 
@@ -234,12 +250,14 @@ The `energy_digest` job fetches weekly energy statistics, computes top consumers
 
 #### Scenario: Job return value
 
-- **WHEN** the job completes successfully
+- **WHEN** the job completes successfully with cumulative-energy statistics for every discovered sensor
 - **THEN** it SHALL return a dict with keys `total_kwh` (float), `devices_ranked` (int), `anomalies_found` (int), `baseline_updated` (bool)
+- **WHEN** the job completes with both supported and unsupported sensor series
+- **THEN** it SHALL return a dict with `partial=true`, `omitted_sensors` (list of entity IDs), `devices_ranked` (int), `anomalies_found` (int), and `baseline_updated=false`, without a `total_kwh` key
 
-### Requirement: Entity State Access and HA REST Fallback for Jobs
+### Requirement: Entity State Access and HA Statistics Fallback for Jobs
 
-Job handlers read current entity state from the connector-populated `ha_entity_snapshot` table. A short-lived HA REST client is available for historical statistics queries that the connector does not provide.
+Job handlers read current entity state from the connector-populated `ha_entity_snapshot` table. A short-lived HA WebSocket client is available for historical statistics queries that the connector does not provide.
 
 #### Scenario: Entity state from connector cache
 
@@ -247,23 +265,22 @@ Job handlers read current entity state from the connector-populated `ha_entity_s
 - **THEN** it SHALL query the `ha_entity_snapshot` table via the `asyncpg.Pool`
 - **AND** it SHALL NOT call `GET /api/states` on the HA REST API for current state data
 
-#### Scenario: REST client for historical statistics
+#### Scenario: WebSocket client for historical statistics
 
-- **WHEN** a home job handler needs historical data (e.g., `recorder/get_statistics_during_period` for the energy digest)
+- **WHEN** a home job handler needs historical data (e.g., `recorder/statistics_during_period` for the energy digest)
 - **THEN** it SHALL resolve the HA URL and access token from the home butler's configuration and owner contact info
-- **AND** it SHALL create a short-lived `httpx.AsyncClient` with `Authorization: Bearer <token>` header
+- **AND** it SHALL create a short-lived WebSocket connection to `/api/websocket` and authenticate with the access token
 - **AND** the client SHALL be closed after the job completes
 
-#### Scenario: API error handling
+#### Scenario: Statistics command error handling
 
-- **WHEN** an HA REST API call returns a non-2xx status
-- **THEN** the job SHALL log the error with status code and response body
-- **AND** it SHALL continue processing remaining work (non-fatal for individual API calls)
-- **AND** the error SHALL be reflected in the job return value
+- **WHEN** an HA statistics command returns an unsuccessful result
+- **THEN** the job SHALL log an allowlisted error code and SHALL omit the server-controlled error message
+- **AND** it SHALL continue processing remaining work without the rejected statistics
 
-#### Scenario: HA unreachable for REST-only queries
+#### Scenario: HA unreachable for historical queries
 
-- **WHEN** the HA REST API is unreachable (connection refused, timeout) and the job requires historical data
+- **WHEN** the HA WebSocket API is unreachable, rejects authentication, or times out and the job requires historical data
 - **THEN** the job SHALL skip the historical data portion and note the omission in the notification
 - **AND** it SHALL still process any work that can be completed from the entity snapshot cache alone
 

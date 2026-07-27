@@ -6,7 +6,7 @@ costs for formulaic monitoring work.
 
 Jobs read current entity state from the connector-populated ``ha_entity_snapshot``
 table and load monitoring thresholds from the state store (``home:thresholds:*``),
-falling back to direct HA REST API calls only for historical statistics queries
+falling back to direct HA WebSocket calls only for historical statistics queries
 (energy digest) or hardcoded defaults (environment report).
 
 The ``run_maintenance_schedule_check`` function is fully implemented: it queries
@@ -53,13 +53,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict
 
 import asyncpg
-import httpx
 
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
@@ -475,6 +475,14 @@ _ENERGY_KEYWORDS = ("energy", "power", "kwh", "consumption", "watt")
 
 # Number of top consumers to rank and report
 _TOP_N_CONSUMERS = 5
+
+
+class _WeeklyStatisticsResult(TypedDict):
+    """Outcome of the short-lived Home Assistant statistics fetch."""
+
+    available: bool
+    statistics: dict[str, dict[str, Any]]
+    unsupported_entity_ids: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -1298,93 +1306,158 @@ async def _fetch_weekly_statistics(
     *,
     ha_url: str,
     ha_token: str,
-) -> dict[str, Any]:
-    """Fetch weekly energy statistics via HA REST API.
+) -> _WeeklyStatisticsResult:
+    """Fetch weekly energy statistics via the HA WebSocket API.
 
-    Calls ``recorder/get_statistics_during_period`` with ``period="week"``
-    for aggregate totals and ``period="day"`` for daily breakdowns.
+    Calls ``recorder/statistics_during_period`` with ``period="hour"`` over
+    an hour-aligned seven-day window for aggregate totals, and with
+    ``period="day"`` for daily breakdowns.
 
-    Returns a dict mapping entity_id → ``{"weekly_sum": float, "daily": [...]}``
-    or an empty dict if HA is unreachable.
+    ``statistics`` contains only entities whose every hourly bucket has a
+    finite numeric ``change``. Home Assistant derives ``change`` from
+    cumulative statistics; instantaneous power sensors commonly expose only
+    ``mean`` and are reported in ``unsupported_entity_ids`` instead of being
+    coerced to zero consumption.
     """
-    end_dt = datetime.now(tz=UTC)
+    import aiohttp
+
+    end_dt = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
     start_dt = end_dt - timedelta(days=7)
     start_iso = start_dt.isoformat()
     end_iso = end_dt.isoformat()
 
     base_url = ha_url.rstrip("/")
-    headers = {
-        "Authorization": f"Bearer {ha_token}",
-        "Content-Type": "application/json",
-    }
+    if base_url.startswith("https://"):
+        ws_url = "wss://" + base_url.removeprefix("https://")
+    elif base_url.startswith("http://"):
+        ws_url = "ws://" + base_url.removeprefix("http://")
+    else:
+        ws_url = base_url
+    ws_url += "/api/websocket"
 
-    result: dict[str, Any] = {}
+    result: dict[str, dict[str, Any]] = {}
 
-    async with httpx.AsyncClient(
-        headers=headers,
-        timeout=httpx.Timeout(30.0, connect=10.0),
-        verify=False,  # noqa: S501 — local HA instances often use self-signed certs
-    ) as client:
-        # Fetch weekly aggregate totals
-        try:
-            resp = await client.post(
-                f"{base_url}/api/recorder/get_statistics_during_period",
-                json={
-                    "start_time": start_iso,
-                    "end_time": end_iso,
-                    "statistic_ids": entity_ids,
-                    "period": "week",
-                    "types": ["sum", "mean"],
-                },
+    async def _request_statistics(
+        websocket: aiohttp.ClientWebSocketResponse,
+        *,
+        command_id: int,
+        period: str,
+    ) -> dict[str, Any] | None:
+        await websocket.send_json(
+            {
+                "id": command_id,
+                "type": "recorder/statistics_during_period",
+                "start_time": start_iso,
+                "end_time": end_iso,
+                "statistic_ids": entity_ids,
+                "period": period,
+                "types": ["change"],
+            }
+        )
+        message = await websocket.receive_json(timeout=30.0)
+        if (
+            message.get("type") != "result"
+            or message.get("id") != command_id
+            or not message.get("success")
+        ):
+            error = message.get("error") or {}
+            error_code = error.get("code")
+            if (
+                not isinstance(error_code, str)
+                or re.fullmatch(r"[a-z0-9_]{1,64}", error_code) is None
+            ):
+                error_code = "unknown"
+            logger.error(
+                "HA WebSocket error fetching %s stats: code=%s",
+                period,
+                error_code,
             )
-            if resp.status_code >= 400:
-                logger.error(
-                    "HA API error fetching weekly stats: status=%d body=%r",
-                    resp.status_code,
-                    resp.text[:200],
+            return None
+
+        data = message.get("result")
+        if not isinstance(data, dict):
+            logger.error("HA WebSocket returned invalid %s statistics payload", period)
+            return None
+        return data
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=70.0, connect=10.0)
+        connector = aiohttp.TCPConnector(
+            ssl=False,  # noqa: S501 — local HA instances often use self-signed certs
+        )
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            async with session.ws_connect(ws_url, heartbeat=30.0) as websocket:
+                auth_required = await websocket.receive_json(timeout=10.0)
+                if auth_required.get("type") != "auth_required":
+                    raise RuntimeError("Home Assistant WebSocket did not request authentication")
+
+                await websocket.send_json({"type": "auth", "access_token": ha_token})
+                auth_result = await websocket.receive_json(timeout=10.0)
+                if auth_result.get("type") != "auth_ok":
+                    raise RuntimeError("Home Assistant WebSocket authentication failed")
+
+                weekly_data = await _request_statistics(
+                    websocket,
+                    command_id=1,
+                    period="hour",
                 )
-            else:
-                weekly_data = resp.json()
-                for eid, stats_list in weekly_data.items():
+                if weekly_data is None:
+                    return {
+                        "available": False,
+                        "statistics": {},
+                        "unsupported_entity_ids": [],
+                    }
+
+                unsupported_entity_ids: list[str] = []
+                for eid in entity_ids:
+                    stats_list = weekly_data.get(eid)
                     if not isinstance(stats_list, list) or not stats_list:
+                        unsupported_entity_ids.append(eid)
                         continue
-                    # Sum the 'sum' values across all returned entries
-                    total = sum(float(s.get("sum") or 0) for s in stats_list if isinstance(s, dict))
-                    result.setdefault(eid, {})["weekly_sum"] = total
-        except httpx.RequestError as exc:
-            logger.warning(
-                "HA REST API unreachable for weekly stats — skipping historical data: %s", exc
-            )
-            return {}
 
-        # Fetch daily breakdown
-        try:
-            resp = await client.post(
-                f"{base_url}/api/recorder/get_statistics_during_period",
-                json={
-                    "start_time": start_iso,
-                    "end_time": end_iso,
-                    "statistic_ids": entity_ids,
-                    "period": "day",
-                    "types": ["sum", "mean"],
-                },
-            )
-            if resp.status_code >= 400:
-                logger.error(
-                    "HA API error fetching daily stats: status=%d body=%r",
-                    resp.status_code,
-                    resp.text[:200],
+                    changes: list[float] = []
+                    for stat in stats_list:
+                        if not isinstance(stat, dict) or "change" not in stat:
+                            break
+                        try:
+                            change = float(stat["change"])
+                        except (TypeError, ValueError):
+                            break
+                        if not math.isfinite(change):
+                            break
+                        changes.append(change)
+                    else:
+                        result[eid] = {"weekly_sum": sum(changes)}
+                        continue
+
+                    unsupported_entity_ids.append(eid)
+
+                daily_data = await _request_statistics(
+                    websocket,
+                    command_id=2,
+                    period="day",
                 )
-            else:
-                daily_data = resp.json()
-                for eid, stats_list in daily_data.items():
-                    if not isinstance(stats_list, list):
-                        continue
-                    result.setdefault(eid, {})["daily"] = stats_list
-        except httpx.RequestError as exc:
-            logger.warning("HA REST API unreachable for daily stats: %s", exc)
+                if daily_data is not None:
+                    for eid, stats_list in daily_data.items():
+                        if eid not in result or not isinstance(stats_list, list):
+                            continue
+                        result[eid]["daily"] = stats_list
+    except (aiohttp.ClientError, TimeoutError, RuntimeError, ValueError, TypeError) as exc:
+        logger.warning(
+            "HA WebSocket API unavailable for energy statistics — skipping historical data: %s",
+            exc,
+        )
+        return {
+            "available": False,
+            "statistics": {},
+            "unsupported_entity_ids": [],
+        }
 
-    return result
+    return {
+        "available": True,
+        "statistics": result,
+        "unsupported_entity_ids": unsupported_entity_ids,
+    }
 
 
 async def _load_energy_baselines(pool: asyncpg.Pool) -> dict[str, Any]:
@@ -1533,26 +1606,36 @@ def _build_digest_message(
     top_consumers: list[dict[str, Any]],
     anomalies: list[dict[str, Any]],
     baseline_total: float | None,
+    *,
+    omitted_sensor_names: list[str] | None = None,
 ) -> str:
     """Compose the weekly energy digest Telegram message."""
     lines: list[str] = ["**Weekly Energy Digest**"]
+    is_partial = bool(omitted_sensor_names)
 
-    # Total with trend
-    trend_str = ""
-    if baseline_total is not None and baseline_total > 0:
-        delta_pct = (total_kwh - baseline_total) / baseline_total * 100
-        sign = "+" if delta_pct >= 0 else ""
-        trend_str = f" ({sign}{delta_pct:.1f}% vs baseline)"
-    lines.append(f"\nTotal: {total_kwh:.1f} kWh{trend_str}")
+    if is_partial:
+        omitted = ", ".join(omitted_sensor_names)
+        lines.append(
+            "\n⚠️ Partial data: omitted sensors without cumulative-energy statistics: "
+            f"{omitted}. Configure Home Assistant energy helpers for complete reporting."
+        )
+    else:
+        trend_str = ""
+        if baseline_total is not None and baseline_total > 0:
+            delta_pct = (total_kwh - baseline_total) / baseline_total * 100
+            sign = "+" if delta_pct >= 0 else ""
+            trend_str = f" ({sign}{delta_pct:.1f}% vs baseline)"
+        lines.append(f"\nTotal: {total_kwh:.1f} kWh{trend_str}")
 
     # Top consumers
     if top_consumers:
-        lines.append("\n**Top consumers:**")
+        heading = "**Supported device consumption:**" if is_partial else "**Top consumers:**"
+        lines.append(f"\n{heading}")
         for item in top_consumers[:_TOP_N_CONSUMERS]:
-            lines.append(
-                f"  • {item['friendly_name']}: {item['weekly_kwh']:.1f} kWh "
-                f"({item['share_pct']:.0f}%)"
-            )
+            line = f"  • {item['friendly_name']}: {item['weekly_kwh']:.1f} kWh"
+            if not is_partial:
+                line += f" ({item['share_pct']:.0f}%)"
+            lines.append(line)
 
     # Anomaly alerts
     if anomalies:
@@ -1572,12 +1655,12 @@ def _build_digest_message(
             f"Check {high_severity_devices[0]['friendly_name']} — "
             f"consumption is more than double its baseline."
         )
-    if top_consumers:
+    if top_consumers and not is_partial:
         top_name = top_consumers[0]["friendly_name"]
         recs.append(
             f"Review {top_name} usage patterns — it accounts for the most energy this week."
         )
-    if total_kwh > 0 and not anomalies:
+    if total_kwh > 0 and not anomalies and not is_partial:
         recs.append("Energy usage within normal range this week.")
 
     if recs:
@@ -1602,8 +1685,8 @@ async def run_energy_digest(
     Steps:
     1. Discover energy sensors from ha_entity_snapshot.
     2. Load energy thresholds from state store (``home:thresholds:energy``).
-    3. Resolve HA credentials (URL, token) for REST API calls.
-    4. Fetch weekly historical statistics via HA REST API.
+    3. Resolve HA credentials (URL, token) for WebSocket API calls.
+    4. Fetch weekly historical statistics via HA WebSocket API.
     5. Compute top consumers and percentage shares.
     6. Compare vs baselines (from ``energy_baseline`` memory facts).
     7. Detect anomalies using configurable thresholds.
@@ -1617,8 +1700,9 @@ async def run_energy_digest(
     Returns:
         ``{"total_kwh": float, "devices_ranked": int, "anomalies_found": int,
         "baseline_updated": bool}`` on success, or
-        ``{"error": "no_energy_sensors"}`` / ``{"error": "no_entity_snapshot"}``
-        on early-exit conditions.
+        ``{"partial": true, "omitted_sensors": [...], ...}`` when only some
+        sensors expose cumulative-energy statistics, or an ``error`` result on
+        early-exit conditions.
     """
     del job_args  # reserved for future parameterisation
 
@@ -1669,19 +1753,23 @@ async def run_energy_digest(
     ha_url = await resolve_owner_entity_info(pool, "home_assistant_url")
     ha_token = await resolve_owner_entity_info(pool, "home_assistant_token")
 
-    stats: dict[str, Any] = {}
+    stats_result: _WeeklyStatisticsResult = {
+        "available": False,
+        "statistics": {},
+        "unsupported_entity_ids": [],
+    }
     ha_unreachable = False
 
     if ha_url and ha_token:
-        stats = await _fetch_weekly_statistics(
+        stats_result = await _fetch_weekly_statistics(
             pool,
             entity_ids,
             ha_url=ha_url,
             ha_token=ha_token,
         )
-        if not stats:
+        if not stats_result["available"]:
             ha_unreachable = True
-            logger.warning("run_energy_digest: HA REST API returned no data")
+            logger.warning("run_energy_digest: HA WebSocket API returned no data")
     else:
         ha_unreachable = True
         logger.warning(
@@ -1689,6 +1777,26 @@ async def run_energy_digest(
             "(home_assistant_url or home_assistant_token missing) — "
             "historical statistics unavailable"
         )
+
+    stats = stats_result["statistics"]
+    unsupported_entity_ids = stats_result["unsupported_entity_ids"]
+    is_partial = bool(unsupported_entity_ids)
+
+    if stats_result["available"] and unsupported_entity_ids and not stats:
+        logger.warning(
+            "run_energy_digest: no cumulative-energy statistics for discovered sensors: %s",
+            ", ".join(unsupported_entity_ids),
+        )
+        await _send_notify(
+            pool,
+            "⚠️ Weekly energy digest unavailable: discovered sensors do not provide "
+            "cumulative-energy statistics. Configure a Home Assistant energy helper "
+            "for power-only sensors, then run the digest again.",
+        )
+        return {
+            "error": "no_cumulative_energy_statistics",
+            "unsupported_sensors": unsupported_entity_ids,
+        }
 
     # ------------------------------------------------------------------
     # 5. Compute device totals and rank
@@ -1700,7 +1808,7 @@ async def run_energy_digest(
     # ------------------------------------------------------------------
     # 6. Load baselines and compute anomalies
     # ------------------------------------------------------------------
-    baselines = await _load_energy_baselines(pool)
+    baselines = {} if is_partial else await _load_energy_baselines(pool)
     anomalies = detect_anomalies(
         device_totals,
         baselines,
@@ -1710,16 +1818,17 @@ async def run_energy_digest(
 
     # Baseline total from the "overall" energy_baseline fact, if present
     baseline_total_kwh: float | None = None
-    for key, bval in baselines.items():
-        content = bval.get("content", "")
-        if "overall" in key.lower() or "total" in key.lower():
-            m = re.search(r"(\d+(?:\.\d+)?)\s*kwh", content, re.IGNORECASE)
-            if m:
-                try:
-                    baseline_total_kwh = float(m.group(1))
-                except ValueError:
-                    pass
-            break
+    if not is_partial:
+        for key, bval in baselines.items():
+            content = bval.get("content", "")
+            if "overall" in key.lower() or "total" in key.lower():
+                m = re.search(r"(\d+(?:\.\d+)?)\s*kwh", content, re.IGNORECASE)
+                if m:
+                    try:
+                        baseline_total_kwh = float(m.group(1))
+                    except ValueError:
+                        pass
+                break
 
     # ------------------------------------------------------------------
     # 7. Store baseline and spike facts in memory
@@ -1728,30 +1837,35 @@ async def run_energy_digest(
     if total_kwh > 0:
         eng = _NoOpEmbeddingEngine()
 
-        # Store overall energy baseline fact
-        try:
-            top_summary = ", ".join(
-                f"{d['friendly_name']}={d['weekly_kwh']:.1f}kWh" for d in top_consumers
-            )
-            await store_fact(
-                pool,
-                subject="overall",
-                predicate="energy_baseline",
-                content=(
-                    f"Weekly energy total: {total_kwh:.1f} kWh. Top consumers: {top_summary}."
-                ),
-                embedding_engine=eng,
-                importance=5.0,
-                permanence="standard",
-                tags=["energy", "baseline", "weekly"],
-                source_butler="home",
-            )
-            baseline_updated = True
-            logger.info(
-                "run_energy_digest: stored energy_baseline fact (total_kwh=%.1f)", total_kwh
-            )
-        except Exception:
-            logger.warning("run_energy_digest: failed to store energy_baseline fact", exc_info=True)
+        if not is_partial:
+            # Store an overall baseline only when every discovered sensor is represented.
+            try:
+                top_summary = ", ".join(
+                    f"{d['friendly_name']}={d['weekly_kwh']:.1f}kWh" for d in top_consumers
+                )
+                await store_fact(
+                    pool,
+                    subject="overall",
+                    predicate="energy_baseline",
+                    content=(
+                        f"Weekly energy total: {total_kwh:.1f} kWh. Top consumers: {top_summary}."
+                    ),
+                    embedding_engine=eng,
+                    importance=5.0,
+                    permanence="standard",
+                    tags=["energy", "baseline", "weekly"],
+                    source_butler="home",
+                )
+                baseline_updated = True
+                logger.info(
+                    "run_energy_digest: stored energy_baseline fact (total_kwh=%.1f)",
+                    total_kwh,
+                )
+            except Exception:
+                logger.warning(
+                    "run_energy_digest: failed to store energy_baseline fact",
+                    exc_info=True,
+                )
 
         # Store per-device energy baseline facts so anomaly detection can compare on next run
         for device in device_totals:
@@ -1805,27 +1919,40 @@ async def run_energy_digest(
     # ------------------------------------------------------------------
     if ha_unreachable and not device_totals:
         message = (
-            "⚠️ Weekly energy digest: Home Assistant REST API was unreachable. "
+            "⚠️ Weekly energy digest: Home Assistant statistics API was unreachable. "
             "Historical statistics are unavailable this week."
         )
     else:
+        sensor_names = {sensor["entity_id"]: sensor["friendly_name"] for sensor in sensors}
         message = _build_digest_message(
             total_kwh=total_kwh,
             top_consumers=top_consumers,
             anomalies=anomalies,
             baseline_total=baseline_total_kwh,
+            omitted_sensor_names=[
+                sensor_names.get(entity_id, entity_id) for entity_id in unsupported_entity_ids
+            ],
         )
         if ha_unreachable:
-            message += "\n\n⚠️ Note: HA REST API unreachable — statistics may be incomplete."
+            message += "\n\n⚠️ Note: HA statistics API unreachable — statistics may be incomplete."
 
     await _send_notify(pool, message)
 
-    result = {
-        "total_kwh": float(round(total_kwh, 3)),
-        "devices_ranked": len(device_totals),
-        "anomalies_found": len(anomalies),
-        "baseline_updated": baseline_updated,
-    }
+    if is_partial:
+        result = {
+            "partial": True,
+            "omitted_sensors": unsupported_entity_ids,
+            "devices_ranked": len(device_totals),
+            "anomalies_found": len(anomalies),
+            "baseline_updated": baseline_updated,
+        }
+    else:
+        result = {
+            "total_kwh": float(round(total_kwh, 3)),
+            "devices_ranked": len(device_totals),
+            "anomalies_found": len(anomalies),
+            "baseline_updated": baseline_updated,
+        }
     logger.info("run_energy_digest: completed — %s", result)
     return result
 

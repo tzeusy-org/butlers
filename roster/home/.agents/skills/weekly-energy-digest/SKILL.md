@@ -42,18 +42,27 @@ ha_get_statistics(
 )
 ```
 
-This returns daily aggregated statistics (min, max, mean, sum) per sensor.
+This returns daily aggregated statistics per sensor for the device breakdown.
 
-For each device sensor, also call with `period="week"` for a single aggregate total:
+For aggregate consumption, request an hour-aligned 168-hour window:
 
 ```
 ha_get_statistics(
     statistic_ids=<per_device_sensor_ids>,
-    start=<7 days ago, ISO 8601, midnight>,
-    end=<now, ISO 8601>,
-    period="week"
+    start=<168 hours before the latest UTC hour boundary>,
+    end=<latest UTC hour boundary>,
+    period="hour"
 )
 ```
+
+Sum only finite numeric per-hour `change` values. Home Assistant derives `change` from
+cumulative-energy statistics; do not integrate `mean` power values. Treat a series with any
+missing, non-numeric, or non-finite `change` as unsupported. An explicit `change=0` is valid
+zero consumption.
+
+If every sensor is unsupported, notify the owner that cumulative-energy statistics are
+unavailable and recommend configuring a Home Assistant energy helper for power-only sensors.
+Do not compute or store a baseline.
 
 ### Step 3: Retrieve Baselines from Memory
 
@@ -162,7 +171,8 @@ Use `intent="send"` — this is a scheduled proactive delivery, not a reply.
 ## Exit Criteria
 
 - `ha_list_entities(domain="sensor")` called to discover energy sensors
-- `ha_get_statistics()` called for weekly period to retrieve consumption data
+- `ha_get_statistics()` called with an hour-aligned 168-hour window and `period="hour"` to
+  retrieve finite per-hour `change` values
 - `memory_recall()` called to retrieve stored energy baselines
 - Top 5 consumers ranked; anomalies identified
 - 2-3 recommendations generated
@@ -178,9 +188,11 @@ Use `intent="send"` — this is a scheduled proactive delivery, not a reply.
 - Exit cleanly.
 
 ### Partial Data (Sensor Gaps)
-- Include note in digest: "Note: [device] sensor was offline [N] hours this week. Data for that
-  period is estimated."
-- Do not skip the digest — deliver with the available data.
+- Omit any sensor whose hourly series has a missing, non-numeric, or non-finite `change`.
+- Name omitted sensors visibly and recommend configuring a Home Assistant energy helper.
+- Report supported device consumption only. Do not estimate gaps or present a whole-home total,
+  trend, savings claim, percentage share, or overall baseline from incomplete coverage.
+- Do not skip the digest when at least one supported device series remains.
 
 ### No Stored Baselines Yet
 - This may be the first digest. Compose digest without trend comparison.

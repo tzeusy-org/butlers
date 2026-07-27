@@ -1315,7 +1315,7 @@ async def _run_home_energy_digest_job(
     """Run weekly energy digest job for the home butler.
 
     Delegates to ``butlers.jobs.home.run_energy_digest`` which discovers energy
-    sensors, fetches weekly statistics via HA REST API, computes top consumers,
+    sensors, fetches weekly statistics via the HA WebSocket API, computes top consumers,
     detects anomalies, and sends a structured digest via Telegram.
     """
     from butlers.jobs.home import run_energy_digest

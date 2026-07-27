@@ -6,6 +6,7 @@ _build_digest_message, run_energy_digest, and daemon registry.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +15,7 @@ import pytest
 from butlers.jobs.home import (
     _build_digest_message,
     _compute_device_totals,
+    _fetch_weekly_statistics,
     _is_energy_entity,
     detect_anomalies,
     run_energy_digest,
@@ -115,6 +117,327 @@ def test_compute_device_totals():
 
 
 # ---------------------------------------------------------------------------
+# _fetch_weekly_statistics
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_weekly_statistics_uses_ha_websocket_recorder_command():
+    """Historical energy statistics use HA's WebSocket-only recorder API."""
+    websocket = MagicMock()
+    websocket.receive_json = AsyncMock(
+        side_effect=[
+            {"type": "auth_required", "ha_version": "2026.7.0"},
+            {"type": "auth_ok", "ha_version": "2026.7.0"},
+            {
+                "id": 1,
+                "type": "result",
+                "success": True,
+                "result": {
+                    "sensor.energy": [
+                        {"start": 1, "end": 2, "sum": 105.0, "change": 5.0, "mean": 1.8},
+                        {"start": 2, "end": 3, "sum": 112.5, "change": 7.5, "mean": 2.4},
+                    ]
+                },
+            },
+            {
+                "id": 2,
+                "type": "result",
+                "success": True,
+                "result": {
+                    "sensor.energy": [
+                        {"start": 1, "end": 2, "sum": 105.0, "change": 5.0, "mean": 1.2},
+                        {"start": 2, "end": 3, "sum": 112.5, "change": 7.5, "mean": 2.4},
+                    ]
+                },
+            },
+        ]
+    )
+    websocket.send_json = AsyncMock()
+
+    websocket_context = MagicMock()
+    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
+    websocket_context.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.ws_connect.return_value = websocket_context
+
+    with (
+        patch("aiohttp.ClientSession", return_value=session),
+        patch("aiohttp.TCPConnector"),
+    ):
+        result = await _fetch_weekly_statistics(
+            MagicMock(),
+            ["sensor.energy"],
+            ha_url="http://ha.local:8123/",
+            ha_token="token",
+        )
+
+    session.ws_connect.assert_called_once_with(
+        "ws://ha.local:8123/api/websocket",
+        heartbeat=30.0,
+    )
+    sent = [call.args[0] for call in websocket.send_json.await_args_list]
+    assert sent[0] == {"type": "auth", "access_token": "token"}
+    assert [message["type"] for message in sent[1:]] == [
+        "recorder/statistics_during_period",
+        "recorder/statistics_during_period",
+    ]
+    assert [message["period"] for message in sent[1:]] == ["hour", "day"]
+    assert [message["id"] for message in sent[1:]] == [1, 2]
+    assert [message["types"] for message in sent[1:]] == [
+        ["change"],
+        ["change"],
+    ]
+    aggregate_start = datetime.fromisoformat(sent[1]["start_time"])
+    aggregate_end = datetime.fromisoformat(sent[1]["end_time"])
+    assert aggregate_end - aggregate_start == timedelta(days=7)
+    assert (aggregate_end.minute, aggregate_end.second, aggregate_end.microsecond) == (0, 0, 0)
+    assert result == {
+        "available": True,
+        "statistics": {
+            "sensor.energy": {
+                "weekly_sum": 12.5,
+                "daily": [
+                    {"start": 1, "end": 2, "sum": 105.0, "change": 5.0, "mean": 1.2},
+                    {"start": 2, "end": 3, "sum": 112.5, "change": 7.5, "mean": 2.4},
+                ],
+            }
+        },
+        "unsupported_entity_ids": [],
+    }
+
+
+async def test_fetch_weekly_statistics_returns_empty_when_authentication_is_rejected():
+    """Authentication rejection preserves the digest's graceful fallback."""
+    websocket = MagicMock()
+    websocket.receive_json = AsyncMock(
+        side_effect=[
+            {"type": "auth_required", "ha_version": "2026.7.0"},
+            {"type": "auth_invalid", "message": "Invalid access token"},
+        ]
+    )
+    websocket.send_json = AsyncMock()
+
+    websocket_context = MagicMock()
+    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
+    websocket_context.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.ws_connect.return_value = websocket_context
+
+    with (
+        patch("aiohttp.ClientSession", return_value=session),
+        patch("aiohttp.TCPConnector"),
+    ):
+        result = await _fetch_weekly_statistics(
+            MagicMock(),
+            ["sensor.energy"],
+            ha_url="http://ha.local:8123/",
+            ha_token="token",
+        )
+
+    assert result == {
+        "available": False,
+        "statistics": {},
+        "unsupported_entity_ids": [],
+    }
+    websocket.send_json.assert_awaited_once_with({"type": "auth", "access_token": "token"})
+
+
+async def test_fetch_weekly_statistics_returns_empty_when_aggregate_command_is_rejected(caplog):
+    """A daily-only partial response must not masquerade as a zero-consumption week."""
+    untrusted_secret = "ha-access-token-value-that-must-not-be-logged"
+    websocket = MagicMock()
+    websocket.receive_json = AsyncMock(
+        side_effect=[
+            {"type": "auth_required", "ha_version": "2026.7.0"},
+            {"type": "auth_ok", "ha_version": "2026.7.0"},
+            {
+                "id": 1,
+                "type": "result",
+                "success": False,
+                "error": {
+                    "code": "unknown_error",
+                    "message": f"Statistics unavailable: token={untrusted_secret}",
+                },
+            },
+            {
+                "id": 2,
+                "type": "result",
+                "success": True,
+                "result": {
+                    "sensor.energy": [
+                        {"start": 1, "end": 2, "change": 5.0, "mean": 1.2},
+                    ]
+                },
+            },
+        ]
+    )
+    websocket.send_json = AsyncMock()
+
+    websocket_context = MagicMock()
+    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
+    websocket_context.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.ws_connect.return_value = websocket_context
+
+    with (
+        patch("aiohttp.ClientSession", return_value=session),
+        patch("aiohttp.TCPConnector"),
+    ):
+        result = await _fetch_weekly_statistics(
+            MagicMock(),
+            ["sensor.energy"],
+            ha_url="http://ha.local:8123/",
+            ha_token="token",
+        )
+
+    assert result == {
+        "available": False,
+        "statistics": {},
+        "unsupported_entity_ids": [],
+    }
+    assert "unknown_error" in caplog.text
+    assert untrusted_secret not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "invalid_change",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param("not-a-number", id="nonnumeric"),
+        pytest.param(float("inf"), id="nonfinite"),
+    ],
+)
+async def test_fetch_weekly_statistics_marks_incomplete_change_series_unsupported(invalid_change):
+    """A series without finite hourly changes must never be coerced to zero consumption."""
+    invalid_row = {"start": 1, "end": 2, "mean": 750.0}
+    if invalid_change is not None:
+        invalid_row["change"] = invalid_change
+
+    websocket = MagicMock()
+    websocket.receive_json = AsyncMock(
+        side_effect=[
+            {"type": "auth_required", "ha_version": "2026.7.0"},
+            {"type": "auth_ok", "ha_version": "2026.7.0"},
+            {
+                "id": 1,
+                "type": "result",
+                "success": True,
+                "result": {"sensor.instantaneous_power": [invalid_row]},
+            },
+            {
+                "id": 2,
+                "type": "result",
+                "success": True,
+                "result": {
+                    "sensor.instantaneous_power": [
+                        {"start": 1, "end": 2, "mean": 750.0},
+                    ]
+                },
+            },
+        ]
+    )
+    websocket.send_json = AsyncMock()
+
+    websocket_context = MagicMock()
+    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
+    websocket_context.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.ws_connect.return_value = websocket_context
+
+    with (
+        patch("aiohttp.ClientSession", return_value=session),
+        patch("aiohttp.TCPConnector"),
+    ):
+        result = await _fetch_weekly_statistics(
+            MagicMock(),
+            ["sensor.instantaneous_power"],
+            ha_url="http://ha.local:8123/",
+            ha_token="token",
+        )
+
+    assert result == {
+        "available": True,
+        "statistics": {},
+        "unsupported_entity_ids": ["sensor.instantaneous_power"],
+    }
+
+
+async def test_fetch_weekly_statistics_accepts_explicit_zero_change():
+    """An explicit finite zero is a supported zero-consumption series, not missing data."""
+    websocket = MagicMock()
+    websocket.receive_json = AsyncMock(
+        side_effect=[
+            {"type": "auth_required", "ha_version": "2026.7.0"},
+            {"type": "auth_ok", "ha_version": "2026.7.0"},
+            {
+                "id": 1,
+                "type": "result",
+                "success": True,
+                "result": {
+                    "sensor.cumulative_energy": [
+                        {"start": 1, "end": 2, "change": 0, "mean": 0.0},
+                    ]
+                },
+            },
+            {
+                "id": 2,
+                "type": "result",
+                "success": True,
+                "result": {
+                    "sensor.cumulative_energy": [
+                        {"start": 1, "end": 2, "change": 0, "mean": 0.0},
+                    ]
+                },
+            },
+        ]
+    )
+    websocket.send_json = AsyncMock()
+
+    websocket_context = MagicMock()
+    websocket_context.__aenter__ = AsyncMock(return_value=websocket)
+    websocket_context.__aexit__ = AsyncMock(return_value=None)
+
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.ws_connect.return_value = websocket_context
+
+    with (
+        patch("aiohttp.ClientSession", return_value=session),
+        patch("aiohttp.TCPConnector"),
+    ):
+        result = await _fetch_weekly_statistics(
+            MagicMock(),
+            ["sensor.cumulative_energy"],
+            ha_url="http://ha.local:8123/",
+            ha_token="token",
+        )
+
+    assert result == {
+        "available": True,
+        "statistics": {
+            "sensor.cumulative_energy": {
+                "weekly_sum": 0.0,
+                "daily": [{"start": 1, "end": 2, "change": 0, "mean": 0.0}],
+            }
+        },
+        "unsupported_entity_ids": [],
+    }
+
+
+# ---------------------------------------------------------------------------
 # detect_anomalies
 # ---------------------------------------------------------------------------
 
@@ -202,8 +525,12 @@ async def test_run_energy_digest_full_run_with_anomalies():
     ]
     pool = _make_pool(snapshot_count=2, snapshot_rows=energy_rows)
     weekly_stats = {
-        "sensor.hvac_energy": {"weekly_sum": 120.0},
-        "sensor.water_heater_energy": {"weekly_sum": 200.0},
+        "available": True,
+        "statistics": {
+            "sensor.hvac_energy": {"weekly_sum": 120.0},
+            "sensor.water_heater_energy": {"weekly_sum": 200.0},
+        },
+        "unsupported_entity_ids": [],
     }
     baselines = {
         "sensor.hvac_energy": {"content": "50.0 kWh weekly baseline"},
@@ -241,6 +568,108 @@ async def test_run_energy_digest_full_run_with_anomalies():
     assert result["devices_ranked"] == 2 and result["anomalies_found"] == 2
     assert mock_store.await_count == 5
     assert all(call.kwargs["source_butler"] == "home" for call in mock_store.await_args_list)
+
+
+async def test_run_energy_digest_rejects_all_unsupported_statistics():
+    """Power-only sensors require an HA cumulative-energy helper instead of a fake zero."""
+    pool = _make_pool(
+        snapshot_count=1,
+        snapshot_rows=[
+            _make_energy_row("sensor.instantaneous_power", "750", "Instantaneous Power"),
+        ],
+    )
+
+    with (
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify,
+        patch(
+            "butlers.jobs.home.resolve_owner_entity_info",
+            new_callable=AsyncMock,
+            return_value="configured",
+        ),
+        patch(
+            "butlers.jobs.home._fetch_weekly_statistics",
+            new_callable=AsyncMock,
+            return_value={
+                "available": True,
+                "statistics": {},
+                "unsupported_entity_ids": ["sensor.instantaneous_power"],
+            },
+        ),
+        patch(
+            "butlers.jobs.home._load_energy_baselines",
+            new_callable=AsyncMock,
+        ) as mock_load_baselines,
+        patch("butlers.jobs.home.store_fact", new_callable=AsyncMock) as mock_store,
+    ):
+        result = await run_energy_digest(pool, None)
+
+    assert result == {
+        "error": "no_cumulative_energy_statistics",
+        "unsupported_sensors": ["sensor.instantaneous_power"],
+    }
+    notification = mock_notify.await_args.args[1]
+    assert "cumulative-energy statistics" in notification
+    assert "energy helper" in notification
+    mock_load_baselines.assert_not_awaited()
+    mock_store.assert_not_awaited()
+
+
+async def test_run_energy_digest_mixed_statistics_is_visibly_partial():
+    """A partial sensor set reports device data without inventing a whole-home total."""
+    pool = _make_pool(
+        snapshot_count=2,
+        snapshot_rows=[
+            _make_energy_row("sensor.hvac_energy", "120", "HVAC Energy"),
+            _make_energy_row("sensor.instantaneous_power", "750", "Instantaneous Power"),
+        ],
+    )
+
+    with (
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify,
+        patch(
+            "butlers.jobs.home.resolve_owner_entity_info",
+            new_callable=AsyncMock,
+            return_value="configured",
+        ),
+        patch(
+            "butlers.jobs.home._fetch_weekly_statistics",
+            new_callable=AsyncMock,
+            return_value={
+                "available": True,
+                "statistics": {"sensor.hvac_energy": {"weekly_sum": 12.0}},
+                "unsupported_entity_ids": ["sensor.instantaneous_power"],
+            },
+        ),
+        patch(
+            "butlers.jobs.home._load_energy_baselines",
+            new_callable=AsyncMock,
+            return_value={},
+        ) as mock_load_baselines,
+        patch(
+            "butlers.jobs.home._load_energy_thresholds",
+            new_callable=AsyncMock,
+            return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0},
+        ),
+        patch("butlers.jobs.home.store_fact", new_callable=AsyncMock) as mock_store,
+    ):
+        result = await run_energy_digest(pool, None)
+
+    assert result == {
+        "partial": True,
+        "omitted_sensors": ["sensor.instantaneous_power"],
+        "devices_ranked": 1,
+        "anomalies_found": 0,
+        "baseline_updated": False,
+    }
+    notification = mock_notify.await_args.args[1]
+    assert "Partial data" in notification
+    assert "Instantaneous Power" in notification
+    assert "HVAC Energy: 12.0 kWh" in notification
+    assert "Total:" not in notification
+    assert "vs baseline" not in notification
+    assert "%" not in notification
+    mock_load_baselines.assert_not_awaited()
+    assert all(call.kwargs["subject"] != "overall" for call in mock_store.await_args_list)
 
 
 def test_all_home_deterministic_jobs_registered():
