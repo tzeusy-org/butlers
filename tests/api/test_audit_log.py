@@ -61,7 +61,12 @@ _DELETE_PATTERN = re.compile(
 
 # This file itself describes the pattern in comments — skip it.
 _THIS_FILE = Path(__file__).resolve()
-_DIRECT_AUDIT_PRODUCER_ROOT = _REPO_ROOT / "src" / "butlers"
+# Direct audit producers live in the framework and roster production trees.
+_DIRECT_AUDIT_PRODUCER_ROOTS = (
+    _REPO_ROOT / "src" / "butlers",
+    _REPO_ROOT / "roster",
+)
+_AUDIT_RESULT_GUARD_FIXTURE_ROOT = _REPO_ROOT / "tests" / "fixtures" / "audit_result_guard"
 
 
 def _iter_python_files():
@@ -107,6 +112,18 @@ def _direct_audit_result_omissions(source: str, path: Path) -> list[str]:
     return omissions
 
 
+def _direct_audit_result_omissions_in_roots(
+    roots: tuple[Path, ...], *, relative_to: Path
+) -> list[str]:
+    """Return direct-writer omissions across the supplied production roots."""
+    omissions: list[str] = []
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            source = path.read_text(encoding="utf-8", errors="replace")
+            omissions.extend(_direct_audit_result_omissions(source, path.relative_to(relative_to)))
+    return omissions
+
+
 def test_no_delete_from_audit_log_in_repo():
     """Fail CI if any .py file in src/, tests/, or roster/ contains a
     destructive SQL statement targeting audit_log.  The table is append-only
@@ -131,11 +148,11 @@ def test_no_delete_from_audit_log_in_repo():
 
 
 def test_direct_production_audit_writers_supply_explicit_results():
-    """Every direct producer owns an outcome; generic append callers remain optional."""
-    omissions: list[str] = []
-    for path in sorted(_DIRECT_AUDIT_PRODUCER_ROOT.rglob("*.py")):
-        source = path.read_text(encoding="utf-8", errors="replace")
-        omissions.extend(_direct_audit_result_omissions(source, path.relative_to(_REPO_ROOT)))
+    """Direct producers in src/butlers and roster own outcomes; aliases remain optional."""
+    omissions = _direct_audit_result_omissions_in_roots(
+        _DIRECT_AUDIT_PRODUCER_ROOTS,
+        relative_to=_REPO_ROOT,
+    )
 
     assert not omissions, (
         "Direct production audit writers must pass a producer-meaningful result:\n"
@@ -150,6 +167,19 @@ def test_direct_audit_result_guard_reports_missing_writer_location():
     )
 
     assert omissions == ["synthetic_direct_writer.py:2"]
+
+
+def test_direct_audit_result_guard_scans_roster_fixture():
+    """Roster direct writers are covered; generic aliases remain optional."""
+    omissions = _direct_audit_result_omissions_in_roots(
+        (
+            _AUDIT_RESULT_GUARD_FIXTURE_ROOT / "src" / "butlers",
+            _AUDIT_RESULT_GUARD_FIXTURE_ROOT / "roster",
+        ),
+        relative_to=_AUDIT_RESULT_GUARD_FIXTURE_ROOT,
+    )
+
+    assert omissions == ["roster/switchboard/violating_audit_writer.py:5"]
 
 
 # ---------------------------------------------------------------------------

@@ -48,11 +48,12 @@ and break unrelated valid append callers.
 
 ### Guard direct call syntax with focused source-level coverage
 
-A contract test parses production Python under `src/butlers` and finds direct
-`audit_router.append(...)` calls. It fails with `path:line` for any call that
-does not provide the `result` keyword, and a fixture proves the missing-result
-failure path. Producer tests retain the semantic assertion that the
-model-breaker delivery uses `delivered`.
+A contract test parses production Python under `src/butlers` and `roster` and
+finds direct `audit_router.append(...)` calls. It fails with `path:line` for any
+call that does not provide the `result` keyword, and a fixture proves both the
+roster missing-result failure path and the generic-alias compatibility path.
+Producer tests retain the semantic assertion that the model-breaker delivery
+uses `delivered`.
 
 An audit-table trigger was rejected because it would impose a global result
 policy and cannot know a producer's actual outcome vocabulary.
