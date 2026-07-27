@@ -226,8 +226,9 @@ _RATE_LIMIT_MARKERS: tuple[str, ...] = (
 
 # Substrings matched (lowercased) against the exception message to detect a
 # runtime/provider process that exited successfully but produced no usable
-# output, tool calls, usage, or stderr. With no tool calls (Gate 1), this is a
-# pre-work systemic failure and should be eligible for same-tier failover.
+# output or tool calls. Token usage or benign stderr can describe an attempt,
+# but neither is a usable session result. With no tool calls (Gate 1), this is
+# a pre-work systemic failure and should be eligible for same-tier failover.
 _EMPTY_RESPONSE_MARKERS: tuple[str, ...] = (
     "no response",
     "empty response",

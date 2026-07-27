@@ -330,6 +330,15 @@ failover is safe.
 - **THEN** the spawner MAY attempt same-tier model failover if another eligible
   candidate exists
 
+#### Scenario: Empty normal return is classified after merging tool-call evidence
+- **WHEN** a runtime adapter returns normally without result text
+- **THEN** the spawner SHALL merge adapter-reported tool calls with daemon-captured
+  runtime-session tool calls before classifying the attempt
+- **AND** when the merged records contain no non-command MCP tool call, the spawner
+  SHALL treat the attempt as an empty-response failure even if token usage was reported
+- **AND** when the merged records contain a confirmed non-command MCP tool call, the
+  tool-only attempt SHALL remain successful and SHALL NOT trigger model failover
+
 #### Scenario: Captured tool calls make failure ineligible
 - **WHEN** captured tool calls for the failed attempt are non-empty
 - **THEN** the spawner SHALL classify the failure as not failover-eligible

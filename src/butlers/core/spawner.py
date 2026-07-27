@@ -1937,6 +1937,50 @@ class Spawner:
                     elif runtime_session_id:
                         _attempt_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
 
+                # An adapter returning normally is not sufficient evidence of a
+                # successful session.  Some CLIs can exit zero after reporting
+                # token usage but produce neither a final response nor an MCP
+                # action.  Merge daemon-side capture before deciding: a tool-only
+                # session is valid, while a response with no text and no confirmed
+                # MCP call must enter the normal failure/failover path.
+                if _attempt_exc is None and (result_text is None or not result_text.strip()):
+                    result_text = None
+                    executed_tool_calls = (
+                        consume_runtime_session_tool_calls(runtime_session_id)
+                        if runtime_session_id
+                        else []
+                    )
+                    tool_calls = _merge_tool_call_records(
+                        tool_calls,
+                        executed_tool_calls,
+                        butler_name=self._config.name,
+                    )
+                    merged_runtime_capture = True
+                    if not _has_non_command_tool_calls(tool_calls):
+                        if (
+                            usage
+                            and self._pool is not None
+                            and catalog_entry_id is not None
+                            and usage.get("input_tokens") is not None
+                        ):
+                            await record_token_usage(
+                                self._pool,
+                                catalog_entry_id=catalog_entry_id,
+                                butler_name=self._config.name,
+                                session_id=session_id,
+                                input_tokens=usage["input_tokens"],
+                                output_tokens=usage.get("output_tokens") or 0,
+                                cached_input_tokens=usage.get("cache_read_input_tokens") or 0,
+                                cache_creation_tokens=(
+                                    usage.get("cache_creation_input_tokens") or 0
+                                ),
+                                purpose=trigger_source,
+                            )
+                        _attempt_exc = RuntimeError(
+                            "Runtime returned no response: no result text or MCP tool calls"
+                        )
+                        _attempt_tool_calls = list(tool_calls)
+
                 # ------------------------------------------------------------------
                 # Handle the attempt outcome.
                 # ------------------------------------------------------------------

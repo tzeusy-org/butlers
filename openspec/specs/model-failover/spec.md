@@ -31,6 +31,19 @@ a catalog candidate is selected but cannot safely complete the invocation.
 - **AND** it SHALL preserve the original prompt, context, trigger source, request_id,
   and runtime session correlation for the logical session
 
+#### Scenario: Empty returned attempt fails over after token accounting
+- **WHEN** a catalog-resolved runtime invocation returns no result text and no confirmed
+  non-command MCP tool call after adapter and daemon-captured records are merged
+- **THEN** the spawner SHALL classify the attempt as an empty-response failure even when
+  the adapter reported token usage
+- **AND** reported usage SHALL be recorded against the failed catalog entry before the
+  spawner makes any failover decision
+- **AND** same-tier failover SHALL proceed only when the merged tool-call list is empty
+- **AND** command-execution evidence SHALL be preserved on the failed attempt and SHALL
+  suppress failover because shell work may have produced side effects
+- **AND** a return with a confirmed non-command MCP tool call SHALL remain a successful
+  tool-only completion and SHALL NOT be retried
+
 #### Scenario: Side effects suppress failover
 - **WHEN** a runtime invocation fails after one or more MCP tool calls have been captured
 - **THEN** the spawner SHALL NOT automatically retry with another model

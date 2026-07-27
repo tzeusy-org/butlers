@@ -1567,8 +1567,8 @@ class TestFullFlow:
 # ---------------------------------------------------------------------------
 
 
-def _make_noop_adapter() -> MockAdapter:
-    """Adapter that returns empty result (no error)."""
+def _make_blank_result_adapter() -> MockAdapter:
+    """Adapter that returns a blank result without tool calls."""
     return MockAdapter(result_text="")
 
 
@@ -1598,7 +1598,12 @@ def _make_slow_adapter() -> MockAdapter:
 @pytest.mark.parametrize(
     "adapter_factory,expected_result,expected_error",
     [
-        pytest.param(_make_noop_adapter, "", None, id="noop-adapter"),
+        pytest.param(
+            _make_blank_result_adapter,
+            None,
+            "Runtime returned no response",
+            id="blank-result-adapter",
+        ),
         pytest.param(_make_result_adapter, "Hello from adapter!", None, id="result-adapter"),
         pytest.param(_make_error_adapter, None, "adapter connection failed", id="error-adapter"),
     ],

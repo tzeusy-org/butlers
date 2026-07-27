@@ -178,6 +178,55 @@ class _FailThenOkAdapter(RuntimeAdapter):
         return ""
 
 
+class _EmptyThenOkAdapter(_OkAdapter):
+    """Adapter that reports usage but no usable result on its first call."""
+
+    def __init__(
+        self,
+        *,
+        empty_result_text: str | None = None,
+        result_text: str = "ok",
+    ) -> None:
+        super().__init__(result_text=result_text)
+        self._empty_result_text = empty_result_text
+
+    async def invoke(self, *_a: Any, **_kw: Any) -> tuple[str | None, list, dict[str, int] | None]:
+        self.invoke_calls += 1
+        if self.invoke_calls == 1:
+            return self._empty_result_text, [], {"input_tokens": 10, "output_tokens": 0}
+        return self._result_text, [], None
+
+
+class _ToolOnlyAdapter(_OkAdapter):
+    """Adapter that completes through an MCP action without final response text."""
+
+    async def invoke(
+        self, *_a: Any, **_kw: Any
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, int] | None]:
+        self.invoke_calls += 1
+        return None, [{"id": "call-1", "name": "notify", "input": {}}], None
+
+
+class _CommandOnlyAdapter(_OkAdapter):
+    """Adapter that reports shell work but no final response text."""
+
+    async def invoke(
+        self, *_a: Any, **_kw: Any
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, int] | None]:
+        self.invoke_calls += 1
+        return (
+            None,
+            [
+                {
+                    "id": "command-1",
+                    "name": "command_execution",
+                    "input": {"command": "true"},
+                }
+            ],
+            None,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -411,6 +460,199 @@ class TestEligibleRuntimeFailureRetry:
 
     Verify provenance: primary=runtime_failure, fallback=success.
     """
+
+    @pytest.mark.parametrize(
+        "empty_result_text",
+        [None, "", " \t\n"],
+        ids=["none", "empty-string", "whitespace"],
+    )
+    async def test_empty_adapter_result_triggers_failover(
+        self,
+        tmp_path: Path,
+        empty_result_text: str | None,
+    ) -> None:
+        """No text or tool calls is a failed attempt even when usage was reported."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _EmptyThenOkAdapter(
+            empty_result_text=empty_result_text,
+            result_text="fallback-ok",
+        )
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as mock_usage,
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model", tier="workhorse"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_OK,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=_catalog_fallback(model="fallback-model"),
+            ),
+        ):
+            mock_sc.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("consolidate", "schedule:consolidation")
+
+        assert result.success is True
+        assert result.output == "fallback-ok"
+        assert result.model == "fallback-model"
+        assert adapter.invoke_calls == 2
+
+        runtime_failures = _dispatch_rows_with_outcome(mock_pool, "runtime_failure")
+        assert len(runtime_failures) == 1
+        assert runtime_failures[0][2] == _PRIMARY_ID
+        assert runtime_failures[0][5].startswith("empty_runtime_response")
+        mock_usage.assert_awaited_once_with(
+            mock_pool,
+            catalog_entry_id=_PRIMARY_ID,
+            butler_name="test-butler",
+            session_id=_SESSION_ID,
+            input_tokens=10,
+            output_tokens=0,
+            cached_input_tokens=0,
+            cache_creation_tokens=0,
+            purpose="schedule:consolidation",
+        )
+
+    async def test_tool_only_adapter_result_remains_successful(self, tmp_path: Path) -> None:
+        """A confirmed MCP action is a usable result even without final text."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        adapter = _ToolOnlyAdapter()
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            runtime=adapter,
+        )
+
+        with patch.object(spawner, "_ensure_mcp_endpoints_warmed", new_callable=AsyncMock):
+            result = await spawner.trigger("notify", "tick")
+
+        assert result.success is True
+        assert result.output is None
+        assert result.tool_calls == [{"id": "call-1", "name": "notify", "input": {}}]
+        assert adapter.invoke_calls == 1
+
+    async def test_daemon_captured_tool_only_result_remains_successful(
+        self, tmp_path: Path
+    ) -> None:
+        """Daemon-confirmed MCP work prevents failover after an empty adapter return."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _EmptyThenOkAdapter(result_text="fallback-must-not-run")
+        captured_call = {
+            "id": "call-captured",
+            "name": "notify",
+            "input": {"message": "done"},
+        }
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
+            patch.object(Spawner, "_ensure_mcp_endpoints_warmed", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model", tier="workhorse"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_OK,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+            ) as mock_next,
+            patch(
+                "butlers.core.spawner.consume_runtime_session_tool_calls",
+                return_value=[captured_call],
+            ) as mock_capture,
+        ):
+            mock_sc.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("notify", "tick")
+
+        assert result.success is True
+        assert result.output is None
+        assert result.model == "primary-model"
+        assert result.tool_calls == [captured_call]
+        assert adapter.invoke_calls == 1
+        mock_capture.assert_called_once_with(str(_SESSION_ID))
+        mock_next.assert_not_awaited()
+
+    async def test_command_only_empty_result_fails_without_failover(self, tmp_path: Path) -> None:
+        """Shell-work evidence makes an empty result fail closed without retry."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _CommandOnlyAdapter()
+        command_call = {
+            "id": "command-1",
+            "name": "command_execution",
+            "input": {"command": "true"},
+        }
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_sc,
+            patch(
+                "butlers.core.spawner.session_complete",
+                new_callable=AsyncMock,
+            ) as mock_complete,
+            patch.object(Spawner, "_ensure_mcp_endpoints_warmed", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model", tier="workhorse"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_OK,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+            ) as mock_next,
+            patch(
+                "butlers.core.spawner.consume_runtime_session_tool_calls",
+                return_value=[],
+            ),
+        ):
+            mock_sc.return_value = _SESSION_ID
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("inspect", "tick")
+
+        assert result.success is False
+        assert result.output is None
+        assert adapter.invoke_calls == 1
+        mock_next.assert_not_awaited()
+        assert mock_complete.await_args.kwargs["tool_calls"] == [command_call]
 
     async def test_rate_limit_triggers_failover_provenance(self, tmp_path: Path) -> None:
         """Rate-limit error before any tool call: classifier eligible → retry succeeds."""
