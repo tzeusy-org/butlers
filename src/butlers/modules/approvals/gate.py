@@ -72,6 +72,55 @@ def _pop_dossier_value(tool_args: dict[str, Any], private_name: str, public_name
     return private_value if private_value is not _MISSING else public_value
 
 
+def _unexpected_tool_argument_error(
+    tool_name: str,
+    original_fn: Any,
+    tool_args: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Reject arguments outside the wrapped tool's declared callable contract.
+
+    The approval wrapper accepts ``**kwargs`` so MCP clients can supply gate-only
+    dossier metadata. Once those fields are removed, validate the remaining
+    names before contact resolution, persistence, or execution. Without this
+    boundary, an extra argument reaches the original strict handler and becomes
+    an internal ``TypeError`` rather than a repairable tool-input error.
+    """
+    try:
+        parameters = inspect.signature(original_fn).parameters
+    except (TypeError, ValueError):
+        return None
+
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return None
+
+    allowed_fields = sorted(
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    )
+    unexpected_fields = sorted(set(tool_args) - set(allowed_fields))
+    if not unexpected_fields:
+        return None
+
+    field = unexpected_fields[0]
+    return {
+        "status": "error",
+        "error": {
+            "code": "unexpected_tool_argument",
+            "field": field,
+            "message": (
+                f"{tool_name} does not accept argument {field!r}; "
+                "remove it and retry with the advertised tool fields."
+            ),
+            "retryable": True,
+            "allowed_fields": allowed_fields,
+            "unexpected_fields": unexpected_fields,
+        },
+        "retryable": True,
+    }
+
+
 def _add_dossier_metadata_to_tool_schema(tool_obj: Any) -> None:
     """Expose gate metadata to MCP clients without coupling individual tools to it."""
     parameters = getattr(tool_obj, "parameters", None)
@@ -555,9 +604,6 @@ def _make_gate_wrapper(
 
     async def gate_wrapper(**kwargs: Any) -> dict[str, Any]:
         tool_args = dict(kwargs)
-        action_id = uuid.uuid4()
-        now = datetime.now(UTC)
-        expires_at = now + timedelta(hours=expiry_hours)
 
         # Dossier metadata is always gate-only and is never forwarded to target
         # resolution, standing-rule matching, persistence as tool args, or the
@@ -567,6 +613,14 @@ def _make_gate_wrapper(
         raw_evidence = _pop_dossier_value(tool_args, "_evidence", "evidence")
         raw_blast_radius = _pop_dossier_value(tool_args, "_blast_radius", "blast_radius")
         raw_reversibility = _pop_dossier_value(tool_args, "_reversibility", "reversibility")
+
+        argument_error = _unexpected_tool_argument_error(tool_name, original_fn, tool_args)
+        if argument_error is not None:
+            return argument_error
+
+        action_id = uuid.uuid4()
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(hours=expiry_hours)
 
         # Sanitize tool_args into a fully JSON-safe dict (UUID/datetime -> str)
         # via a json.dumps/loads round-trip, mirroring audit.append()'s pattern

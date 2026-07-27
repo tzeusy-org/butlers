@@ -69,6 +69,49 @@ def _make_original_fn() -> AsyncMock:
     return fn
 
 
+class TestToolArgumentBoundary:
+    """Gated tools retain the strict argument contract they registered."""
+
+    async def test_unexpected_argument_is_rejected_before_gate_side_effects(self) -> None:
+        async def email_reply_to_thread(
+            to: str,
+            thread_id: str,
+            body: str,
+            subject: str | None = None,
+        ) -> dict[str, str]:
+            return {"status": "sent"}
+
+        pool = _make_pool()
+        wrapper = _make_gate_wrapper(
+            tool_name="email_reply_to_thread",
+            original_fn=email_reply_to_thread,
+            pool=pool,
+            expiry_hours=72,
+            risk_tier=MagicMock(value="medium"),
+            rule_precedence=("contact_role", "standing_rule"),
+        )
+
+        with patch(
+            "butlers.modules.approvals.gate.resolve_action_target_contact",
+            new=AsyncMock(),
+        ) as resolve_target:
+            result = await wrapper(
+                to="recipient@example.test",
+                thread_id="thread-123",
+                body="Reply body",
+                intent="reply",
+            )
+
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+        assert result["error"]["code"] == "unexpected_tool_argument"
+        assert result["error"]["field"] == "intent"
+        assert result["error"]["allowed_fields"] == ["body", "subject", "thread_id", "to"]
+        resolve_target.assert_not_awaited()
+        pool.execute.assert_not_awaited()
+        pool.fetch.assert_not_awaited()
+
+
 async def _call_gate(
     tool_args: dict,
     *,
