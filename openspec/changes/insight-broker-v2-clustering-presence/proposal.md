@@ -26,12 +26,21 @@ Source: docs/redesigns/2026-07-25-jarvis-pursuit.md (rank 9, bu-ep4ks.9).
 - **Deterministic clustering (zero-LLM):** `_cluster_candidates` groups a
   digest's candidates by shared `metadata.entity_id` or overlapping event
   time window (`metadata.event_window: {start, end}` or `metadata.event_date`),
-  using union-find so transitive links fold into one group. `_format_digest`
-  renders each multi-candidate group as one labeled `Correlated (N):`
-  sub-list instead of unrelated flat bullets; a candidate with no
-  correlation data (every producer today) renders exactly as before this
-  change — this is a pure addition, not a behavior change for current
-  production data.
+  using strict positive-duration half-open `[start, end)` bounds. An explicit
+  event window is authoritative; event date is a fallback only when that key
+  is absent. Union-find folds transitive links into one group.
+  `_format_digest` renders each multi-candidate group as one
+  labeled `Correlated (N):` sub-list instead of unrelated flat bullets; a
+  candidate with no correlation data renders exactly as before this change.
+- **Source-grounded producer adoption:** health maps its measurement-door
+  `since`/`until` to `event_window`; finance emits only the stored bill due or
+  subscription renewal `event_date` (there is no established cross-domain
+  entity relation); travel emits its stored `travel.trips.id` plus the stored
+  departure or document-expiry `event_date`; and relationship emits resolved
+  contact entity IDs plus actual upcoming-occasion dates for upcoming-date and
+  pending-gift candidates. Stale-contact and interaction-milestone candidates
+  carry their resolved entity only. The adoption deliberately emits no
+  synthetic IDs, aggregate/scan-window dates, or stale-path dates.
 - **Presence-aware context-bus suppression:** the insight broker's own
   `get_suppressing_context_signal` (previously imported from the shared
   `butlers.core.attention_ledger` helper) becomes a broker-local function
@@ -61,35 +70,26 @@ Source: docs/redesigns/2026-07-25-jarvis-pursuit.md (rank 9, bu-ep4ks.9).
 - Hold-until-first-active briefings with travel-day skip/defer (slice 5) —
   a scheduling-cadence change orthogonal to clustering/suppression, better
   scoped on its own.
-- Wiring `entity_id`/`event_window`/`event_date` into real producer
-  metadata (finance, travel, health, relationship) so clustering activates
-  on production data — the broker-side mechanism ships here with clean
-  extension points; no caller populates these fields today (confirmed by
-  grep across every `propose_insight_candidate` call site), so clustering
-  is inert on live traffic until at least one producer adopts the
-  convention. Recommended first candidate: health's existing
-  `measurement_door.since/until` metadata is already the right shape to
-  remap into `event_window`.
-
-**bu-iq8as follow-up update:** slice 3, slice 5, and health's
-`event_window` adoption are now implemented (see `tasks.md` section 4).
+**bu-iq8as / bu-0rflx follow-up update:** slice 3, slice 5, health's
+`event_window` adoption, and the source-grounded Finance/Travel/Relationship
+producer adoption above are now implemented (see `tasks.md` section 4).
 Slice 4 (Decision Desk conflict routing) remains deferred: the decision-bead
 convention/dashboard/cron (`bu-ckkpz.1/.2/.4`) is landed, but no runtime
 write path exists anywhere in this codebase for application code to file a
 decision bead programmatically, and `bu-ckkpz.3` (the attention-ledger
 routing slice this would most naturally build on) is still `blocked` —
-inventing an unreviewed write pattern for this bead was judged out of
-scope. Finance/travel/relationship producer adoption also remains
-unwired.
+inventing an unreviewed write pattern for this bead was judged out of scope.
 
 ## Impact
 
 - Affected specs: `proactive-insight-engine` (context-bus gating requirement
   broadened; new clustering requirement; new `held_by` telemetry
   requirement).
-- Affected code: `roster/switchboard/tools/insight/broker.py` only. No
-  migration, no new table, no cross-butler schema change.
-- Affected tests: `tests/modules/test_insight_engine.py` (new
-  `TestClusteredDigest`), `tests/modules/test_insight_context_bus_suppression.py`
-  (new file), `tests/modules/test_insight_attention_ledger.py` (extended
+- Affected code: `roster/switchboard/tools/insight/broker.py` and the
+  Finance/Travel/Relationship insight jobs. No migration, no new table, and
+  no cross-butler schema change.
+- Affected tests: `tests/modules/test_insight_engine.py` (cluster boundary
+  regression), the Finance/Travel/Relationship job tests (source-grounded
+  metadata), `tests/modules/test_insight_context_bus_suppression.py` (new
+  file), and `tests/modules/test_insight_attention_ledger.py` (extended
   `TestContextBusGating`).

@@ -1088,6 +1088,54 @@ async def test_insight_scan_pretrip_departing_today_has_future_expiry(
         assert expires_at > _utcnow()
 
 
+async def test_insight_scan_trip_candidates_include_correlation_metadata(
+    provisioned_postgres_pool,
+    monkeypatch,
+):
+    """Trip-linked insight candidates carry only their stored trip/date facts."""
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
+    from butlers.tools.travel import health as travel_health
+
+    monkeypatch.setattr(
+        travel_health,
+        "request_health_medication_snapshot",
+        AsyncMock(return_value=_active_medication_snapshot()),
+    )
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+        departure = _today() + timedelta(days=5)
+        trip_id = await _insert_trip(
+            pool,
+            start_date=departure,
+            end_date=departure + timedelta(days=4),
+        )
+        expiry = _today() + timedelta(days=20)
+        await _insert_document(pool, trip_id=trip_id, doc_type="visa", expiry_date=expiry)
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT category, metadata FROM insight_candidates WHERE category = ANY($1::text[])",
+            ["pre-trip", "document-expiry", "medication-prep"],
+        )
+        metadata_by_category = {row["category"]: row["metadata"] for row in rows}
+
+        assert metadata_by_category["pre-trip"] == {
+            "entity_id": trip_id,
+            "event_date": departure.isoformat(),
+        }
+        assert metadata_by_category["document-expiry"] == {
+            "entity_id": trip_id,
+            "event_date": expiry.isoformat(),
+        }
+        assert metadata_by_category["medication-prep"] == {
+            "entity_id": trip_id,
+            "event_date": departure.isoformat(),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Tests: run_insight_scan — document expiry
 # ---------------------------------------------------------------------------

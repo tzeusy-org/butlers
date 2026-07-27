@@ -302,6 +302,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         message: str,
         expires_at: datetime,
         cooldown_days: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Submit one candidate; return False if verbosity=off (early-exit signal)."""
         stats["candidates_proposed"] += 1
@@ -314,6 +315,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             message=message,
             expires_at=expires_at,
             cooldown_days=cooldown_days,
+            metadata=metadata,
         )
         status = result.get("status", "error")
         if status == "accepted":
@@ -427,6 +429,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             message=message,
             expires_at=expires_at,
             cooldown_days=cooldown,
+            metadata={
+                "entity_id": str(entity_id),
+                "event_date": upcoming_date.isoformat(),
+            },
         )
         if not should_continue:
             logger.info(
@@ -533,6 +539,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             dedup_key=dedup_key,
             message=message,
             expires_at=stale_expires_at,
+            # A stale-contact candidate concerns this entity, but its weekly
+            # scan boundary is not an event date and must not drive clustering.
+            metadata={"entity_id": str(entity_id)},
         )
         if not should_continue:
             logger.info(
@@ -574,6 +583,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 """
                 SELECT
                     cem.contact_id AS id,
+                    cem.entity_id,
                     COALESCE(e.canonical_name, 'Unknown') AS contact_name
                 FROM contact_entity_map cem
                 JOIN public.entities e ON e.id = cem.entity_id
@@ -582,6 +592,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 gift_contact_ids,
             )
             gift_contact_name_map = {row["id"]: row["contact_name"] for row in gift_contact_rows}
+            gift_contact_entity_map = {
+                row["id"]: str(row["entity_id"]) for row in gift_contact_rows
+            }
 
             # Find contacts with upcoming important dates within 14 days
             contacts_with_upcoming = await db_pool.fetch(
@@ -626,6 +639,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 if upcoming_info is None:
                     continue  # No upcoming date for this contact
 
+                entity_id = gift_contact_entity_map.get(contact_id)
+                if entity_id is None:
+                    continue  # Do not invent an entity association for the gift
+
                 gift_id = str(row["gift_id"])
                 description = row["description"] or "gift"
                 contact_name = gift_contact_name_map.get(contact_id, "Unknown")
@@ -652,6 +669,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     dedup_key=dedup_key,
                     message=message,
                     expires_at=expires_at,
+                    metadata={
+                        "entity_id": entity_id,
+                        "event_date": upcoming_date.isoformat(),
+                    },
                 )
                 if not should_continue:
                     logger.info(
@@ -672,6 +693,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         """
         SELECT
             cem.contact_id AS contact_id,
+            cem.entity_id,
             COALESCE(e.canonical_name, 'Unknown') AS contact_name,
             COUNT(f.id)  AS interaction_count,
             MIN(f.valid_at) AS first_interaction_at
@@ -683,7 +705,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE e.listed = true
-        GROUP BY cem.contact_id, e.canonical_name
+        GROUP BY cem.contact_id, cem.entity_id, e.canonical_name
         HAVING COUNT(f.id) > 0
         ORDER BY e.canonical_name
         """
@@ -691,6 +713,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     for row in interaction_stats_rows:
         contact_id = row["contact_id"]
+        entity_id = str(row["entity_id"])
         contact_name = row["contact_name"]
         interaction_count = int(row["interaction_count"])
         first_interaction_at = row["first_interaction_at"]
@@ -709,6 +732,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 message=message,
                 expires_at=milestone_expires_at,
                 cooldown_days=_MILESTONE_COOLDOWN_DAYS,
+                # Interaction counts are entity-scoped, but are not a dated
+                # occasion; preserve only the proven contact identity.
+                metadata={"entity_id": entity_id},
             )
             if not should_continue:
                 logger.info(
@@ -743,6 +769,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                             message=message,
                             expires_at=milestone_expires_at,
                             cooldown_days=_MILESTONE_COOLDOWN_DAYS,
+                            metadata={"entity_id": entity_id},
                         )
                         if not should_continue:
                             logger.info(

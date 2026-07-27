@@ -593,6 +593,58 @@ async def test_insight_scan_birthday_message_includes_contact_name(provisioned_p
         assert "Isabella" in rows[0]["message"]
 
 
+async def test_insight_scan_contact_candidates_include_entity_and_event_metadata(
+    provisioned_postgres_pool,
+):
+    """Relationship candidates preserve the contact entity and real occasion date."""
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_relationship_schema(pool)
+        await _setup_insight_tables(pool)
+        entity_id = str(uuid.uuid4())
+        contact_id = await _insert_contact(
+            pool,
+            first_name="Cora",
+            entity_id=entity_id,
+            stay_in_touch_days=7,
+        )
+        upcoming_date = _today() + timedelta(days=3)
+        await _insert_important_date(
+            pool,
+            contact_id=contact_id,
+            label="birthday",
+            month=upcoming_date.month,
+            day=upcoming_date.day,
+        )
+        await _insert_gift_fact(pool, contact_id=contact_id, description="tea", status="idea")
+        for offset in range(10):
+            await _insert_interaction_fact(
+                pool,
+                contact_id=contact_id,
+                occurred_at=_utcnow() - timedelta(days=30 + offset),
+            )
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT category, metadata FROM insight_candidates WHERE category = ANY($1::text[])",
+            ["birthday", "stale-contact", "pending-gift", "milestone"],
+        )
+        metadata_by_category = {row["category"]: row["metadata"] for row in rows}
+
+        assert metadata_by_category["birthday"] == {
+            "entity_id": entity_id,
+            "event_date": upcoming_date.isoformat(),
+        }
+        assert metadata_by_category["stale-contact"] == {"entity_id": entity_id}
+        assert metadata_by_category["pending-gift"] == {
+            "entity_id": entity_id,
+            "event_date": upcoming_date.isoformat(),
+        }
+        assert metadata_by_category["milestone"] == {"entity_id": entity_id}
+
+
 # ---------------------------------------------------------------------------
 # Tests: run_insight_scan — stale contact insights
 # ---------------------------------------------------------------------------

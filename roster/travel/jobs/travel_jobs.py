@@ -404,6 +404,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         message: str,
         expires_at: datetime,
         cooldown_days: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Submit one candidate; return False if verbosity=off (early exit signal)."""
         stats["candidates_proposed"] += 1
@@ -416,6 +417,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             message=message,
             expires_at=expires_at,
             cooldown_days=cooldown_days,
+            metadata=metadata,
         )
         status = result.get("status", "error")
         if status == "accepted":
@@ -485,6 +487,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
+            # Trip IDs are the travel domain's deterministic object identity;
+            # trip source columns are dates, not precise timestamps.
+            metadata={"entity_id": trip_id, "event_date": start_d.isoformat()},
         )
         if not should_continue:
             logger.info("Travel insight scan: verbosity=off, exiting early after pre-trip check")
@@ -497,7 +502,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     doc_window_end = today + timedelta(days=_EXPIRY_INFO_DAYS)
     doc_rows = await db_pool.fetch(
         """
-        SELECT d.id, d.type, d.expiry_date, t.name AS trip_name
+        SELECT d.id, d.trip_id, d.type, d.expiry_date, t.name AS trip_name
         FROM travel.documents d
         JOIN travel.trips t ON t.id = d.trip_id
         WHERE d.expiry_date IS NOT NULL
@@ -517,6 +522,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             continue
 
         days_until_expiry = (expiry_d - today).days
+        trip_id = str(row["trip_id"])
         doc_type = row["type"]
         trip_name = row["trip_name"]
 
@@ -546,6 +552,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             message=message,
             expires_at=expires_at,
             cooldown_days=cooldown,
+            metadata={"entity_id": trip_id, "event_date": expiry_d.isoformat()},
         )
         if not should_continue:
             logger.info(
@@ -620,6 +627,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     dedup_key=f"travel:medication-prep:{trip_id}",
                     message=message,
                     expires_at=expires_at,
+                    metadata={"entity_id": trip_id, "event_date": start_d.isoformat()},
                 )
                 if not should_continue:
                     logger.info(

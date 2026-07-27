@@ -778,30 +778,37 @@ def _candidate_time_window(candidate: dict[str, Any]) -> tuple[datetime, datetim
 
     Supports two producer shapes: an explicit ``event_window: {start, end}``
     (ISO 8601 timestamps), or a coarser ``event_date`` (ISO date, normalized to
-    a full UTC day). Malformed or partial values fail open to "no correlation
-    data" (returns None) rather than raising — a producer's metadata typo must
-    not break digest formatting.
+    a full UTC day). Both forms use half-open ``[start, end)`` semantics, so
+    adjacent windows share no event time. An explicit ``event_window`` is
+    authoritative: ``event_date`` is considered only when the window key is
+    absent. Explicit windows must have positive duration; malformed, partial,
+    or non-positive values fail open to "no correlation data" (returns None)
+    rather than raising — a producer's metadata typo must not break digest
+    formatting or silently choose a different correlation shape.
     """
     metadata = candidate.get("metadata")
     if not isinstance(metadata, dict):
         return None
 
-    window = metadata.get("event_window")
-    if isinstance(window, dict):
+    if "event_window" in metadata:
+        window = metadata["event_window"]
+        if not isinstance(window, dict):
+            return None
         start_raw, end_raw = window.get("start"), window.get("end")
-        if start_raw and end_raw:
-            try:
-                start = datetime.fromisoformat(str(start_raw))
-                end = datetime.fromisoformat(str(end_raw))
-            except ValueError:
-                return None
-            if start.tzinfo is None:
-                start = start.replace(tzinfo=UTC)
-            if end.tzinfo is None:
-                end = end.replace(tzinfo=UTC)
-            if end < start:
-                return None
-            return (start, end)
+        if not start_raw or not end_raw:
+            return None
+        try:
+            start = datetime.fromisoformat(str(start_raw))
+            end = datetime.fromisoformat(str(end_raw))
+        except ValueError:
+            return None
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        if end <= start:
+            return None
+        return (start, end)
 
     event_date = metadata.get("event_date")
     if isinstance(event_date, str):
@@ -821,13 +828,10 @@ def _cluster_candidates(candidates: list[dict[str, Any]]) -> list[list[dict[str,
 
     Two candidates link when they share a non-null ``metadata.entity_id``, or
     when both resolve a time window (``metadata.event_window`` or
-    ``metadata.event_date``) and those windows overlap. Linkage is transitive
-    (union-find), so a chain of pairwise links folds into one group.
-    Candidates with no correlation data of their own remain singleton groups
-    — this is exactly the pre-clustering behaviour, so a digest built from
-    candidates with no correlation metadata (every producer today — see
-    bu-ep4ks.9 follow-up to wire entity_id/event_window into producer
-    metadata) formats identically to before this slice.
+    ``metadata.event_date``) and those half-open windows overlap. Linkage is
+    transitive (union-find), so a chain of pairwise links folds into one group.
+    Candidates with no correlation data of their own remain singleton groups,
+    preserving pre-clustering digest formatting for those entries.
 
     Group order follows each group's earliest-appearing member in
     ``candidates`` (already priority-ordered by the caller), so both
@@ -857,7 +861,7 @@ def _cluster_candidates(candidates: list[dict[str, Any]]) -> list[list[dict[str,
                 continue
             if windows[i] is not None and windows[j] is not None:
                 (s1, e1), (s2, e2) = windows[i], windows[j]
-                if s1 <= e2 and s2 <= e1:
+                if s1 < e2 and s2 < e1:
                     union(i, j)
 
     groups: dict[int, list[dict[str, Any]]] = {}

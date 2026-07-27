@@ -3,7 +3,7 @@
 - [x] 1.1 `_candidate_entity_key` / `_candidate_time_window` metadata extraction helpers, fail-open on malformed data.
 - [x] 1.2 `_cluster_candidates` union-find grouping by shared entity or overlapping time window, transitive.
 - [x] 1.3 `_format_digest` renders multi-candidate groups as a labeled `Correlated (N):` sub-list; singleton groups format identically to before this change.
-- [x] 1.4 Unit tests: entity grouping, time-window overlap, non-overlap, `event_date` normalization, transitive chains, no-correlation-data regression, malformed-metadata fail-open, determinism.
+- [x] 1.4 Unit tests: entity grouping, time-window overlap, non-overlap, empty-window fail-open, explicit-window precedence over `event_date` (partial/empty/wrong-type/zero-length/reversed), `event_date` normalization, transitive chains, no-correlation-data regression, malformed-metadata fail-open, determinism.
 
 ## 2. Presence-aware context-bus suppression (slice 2)
 
@@ -23,4 +23,4 @@
 - [x] 4.1 LLM one-sentence synthesis per cluster (slice 3), under the existing delivery budget. `_synthesize_cluster_sentence()` in `broker.py`; direct-API runtime lane only, fails open, no new budget knob.
 - [ ] 4.2 Conflict-cluster routing to the Owner Decision Desk (slice 4), integrating with `bu-ckkpz`. **Still deferred** — see bu-iq8as's report: the Decision Desk convention/dashboard/cron (`bu-ckkpz.1/.2/.4`) is landed, but no runtime write path exists anywhere in this codebase for application code to file a decision bead programmatically (`bu-ckkpz.3`, the attention-ledger routing slice, remains `blocked`), and inventing one un-reviewed inside this bead was judged out of scope. Needs its own scoped design.
 - [x] 4.3 Hold-until-first-active briefings with hard fallback deadline + travel-day skip/defer (slice 5). `daily_hold_mode` in `delivery_cycle()`; windowed cron `15,45 6-11 * * *` replaces the fixed `0 8 * * *` slot.
-- [x] 4.4 Wire `entity_id`/`event_window`/`event_date` into real producer metadata so clustering activates on production data. **Partial**: health's `measurement_door.since/until` now also emits `event_window` (the recommended first target). Finance/travel/relationship producers are still unwired — follow-up.
+- [x] 4.4 Wire `entity_id`/`event_window`/`event_date` into real producer metadata so clustering activates on production data. Health maps `measurement_door.since/until` to `event_window`; Finance emits only stored bill-due/subscription-renewal `event_date` values; Travel emits stored trip IDs plus stored departure/document-expiry dates; and Relationship emits resolved contact entity IDs plus actual upcoming-occasion dates, with stale-contact and milestone paths entity-only. Source grounding excludes synthetic IDs, aggregate/scan-window dates, and stale-path dates.

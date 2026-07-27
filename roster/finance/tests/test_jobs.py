@@ -1332,6 +1332,33 @@ async def test_insight_scan_subscription_dedup_key_format(provisioned_postgres_p
         assert sub_cands[0]["dedup_key"] == expected_key
 
 
+async def test_insight_scan_deadline_candidates_include_event_date_metadata(
+    provisioned_postgres_pool,
+):
+    """Bills and renewals expose their source deadline for broker correlation."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        bill_due = _today() + timedelta(days=2)
+        renewal_date = _today() + timedelta(days=5)
+        await _insert_bill_returning_id(pool, due_date=bill_due)
+        await _insert_subscription(pool, next_renewal=renewal_date)
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT category, metadata FROM insight_candidates WHERE category = ANY($1::text[])",
+            ["bill-due", "subscription-renewal"],
+        )
+        metadata_by_category = {row["category"]: row["metadata"] for row in rows}
+
+        assert metadata_by_category["bill-due"]["event_date"] == bill_due.isoformat()
+        assert (
+            metadata_by_category["subscription-renewal"]["event_date"] == renewal_date.isoformat()
+        )
+
+
 async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
     provisioned_postgres_pool,
 ):

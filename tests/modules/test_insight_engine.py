@@ -1190,6 +1190,92 @@ class TestClusteredDigest:
         clusters = _cluster_candidates(candidates)
         assert len(clusters) == 2
 
+    async def test_cluster_candidates_empty_event_window_stays_singleton(self):
+        """An empty half-open range cannot overlap a covering event window."""
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {
+                "origin_butler": "finance",
+                "message": "Empty window",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-08-04T12:00:00+00:00",
+                        "end": "2026-08-04T12:00:00+00:00",
+                    }
+                },
+            },
+            {
+                "origin_butler": "travel",
+                "message": "Covering window",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-08-04T11:00:00+00:00",
+                        "end": "2026-08-04T13:00:00+00:00",
+                    }
+                },
+            },
+        ]
+
+        clusters = _cluster_candidates(candidates)
+
+        assert len(clusters) == 2
+        assert all(len(cluster) == 1 for cluster in clusters)
+
+    @pytest.mark.parametrize(
+        ("invalid_window", "case"),
+        [
+            ({"start": "2026-08-04T09:00:00+00:00"}, "partial"),
+            ({}, "empty"),
+            ("not-a-window", "wrong-type"),
+            (
+                {
+                    "start": "2026-08-04T10:00:00+00:00",
+                    "end": "2026-08-04T10:00:00+00:00",
+                },
+                "zero-length",
+            ),
+            (
+                {
+                    "start": "2026-08-04T11:00:00+00:00",
+                    "end": "2026-08-04T10:00:00+00:00",
+                },
+                "reversed",
+            ),
+        ],
+    )
+    async def test_cluster_candidates_explicit_invalid_event_window_does_not_fallback_to_event_date(
+        self, invalid_window, case
+    ):
+        """An explicit invalid window is authoritative over a valid event date."""
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {
+                "origin_butler": "finance",
+                "message": f"{case} explicit window",
+                "metadata": {
+                    "event_window": invalid_window,
+                    "event_date": "2026-08-04",
+                },
+            },
+            {
+                "origin_butler": "travel",
+                "message": "Valid overlapping window",
+                "metadata": {
+                    "event_window": {
+                        "start": "2026-08-04T10:00:00+00:00",
+                        "end": "2026-08-04T11:00:00+00:00",
+                    }
+                },
+            },
+        ]
+
+        clusters = _cluster_candidates(candidates)
+
+        assert len(clusters) == 2
+        assert all(len(cluster) == 1 for cluster in clusters)
+
     def test_cluster_candidates_event_date_normalizes_to_full_day_window(self):
         from butlers.tools.switchboard.insight.broker import _cluster_candidates
 
@@ -1209,6 +1295,27 @@ class TestClusteredDigest:
         clusters = _cluster_candidates(candidates)
         assert len(clusters) == 1
         assert len(clusters[0]) == 2
+
+    async def test_cluster_candidates_adjacent_event_dates_stay_separate(self):
+        """UTC dates represent adjacent full-day windows, not one shared instant."""
+        from butlers.tools.switchboard.insight.broker import _cluster_candidates
+
+        candidates = [
+            {
+                "origin_butler": "finance",
+                "message": "Tuesday",
+                "metadata": {"event_date": "2026-08-04"},
+            },
+            {
+                "origin_butler": "travel",
+                "message": "Wednesday",
+                "metadata": {"event_date": "2026-08-05"},
+            },
+        ]
+
+        clusters = _cluster_candidates(candidates)
+
+        assert len(clusters) == 2
 
     def test_cluster_candidates_transitive_chain_folds_into_one_group(self):
         """A links to B via entity_id; B links to C via overlapping window ->

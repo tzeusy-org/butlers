@@ -553,6 +553,10 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 "payee": payee,
                 "amount": str(amount),
                 "currency": currency,
+                # Bills have no established public-entity relation; the stored
+                # deadline is the only broker correlation fact this candidate
+                # can state without inventing an association.
+                "event_date": due.isoformat(),
             },
         )
         if not keep_going:
@@ -759,6 +763,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 "service": service,
                 "amount": str(amount),
                 "currency": currency,
+                # As with bills, preserve the source renewal date rather than
+                # treating a finance-local ID as a cross-domain entity identity.
+                "event_date": renewal_date.isoformat(),
             },
         )
         if not keep_going:
