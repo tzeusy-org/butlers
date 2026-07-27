@@ -740,7 +740,10 @@ async def entity_neighbors(
           AND f.entity_id != ALL(n.path)
           AND n.depth < $2{pred_clause}"""
     else:  # both
-        base_sql = f"""
+        # PostgreSQL permits only one reference to the recursive CTE in the
+        # recursive term. Group the two seed directions, then expand both
+        # directions through a single join to ``neighbors``.
+        base_sql = f"""(
         SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'outgoing'::text AS dir,
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
@@ -753,25 +756,32 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
-          AND f.validity IN ('active', 'fading'){pred_clause}"""
+          AND f.validity IN ('active', 'fading'){pred_clause}
+        )"""
         rec_sql = f"""
-        SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
-               'outgoing'::text AS dir,
-               n.depth + 1, n.path || f.object_entity_id
+        SELECT CASE
+                   WHEN f.entity_id = n.neighbor_id THEN f.object_entity_id
+                   ELSE f.entity_id
+               END AS neighbor_id,
+               f.predicate, f.content, f.id AS fact_id,
+               CASE
+                   WHEN f.entity_id = n.neighbor_id THEN 'outgoing'::text
+                   ELSE 'incoming'::text
+               END AS dir,
+               n.depth + 1,
+               n.path || CASE
+                   WHEN f.entity_id = n.neighbor_id THEN f.object_entity_id
+                   ELSE f.entity_id
+               END
         FROM neighbors n
-        JOIN facts f ON f.entity_id = n.neighbor_id
-        WHERE f.object_entity_id IS NOT NULL
-          AND f.validity IN ('active', 'fading')
-          AND f.object_entity_id != ALL(n.path)
-          AND n.depth < $2{pred_clause}
-        UNION ALL
-        SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
-               'incoming'::text AS dir,
-               n.depth + 1, n.path || f.entity_id
-        FROM neighbors n
-        JOIN facts f ON f.object_entity_id = n.neighbor_id
+        JOIN facts f
+          ON (f.entity_id = n.neighbor_id AND f.object_entity_id IS NOT NULL)
+          OR (f.object_entity_id = n.neighbor_id AND f.entity_id IS NOT NULL)
         WHERE f.validity IN ('active', 'fading')
-          AND f.entity_id != ALL(n.path)
+          AND CASE
+                  WHEN f.entity_id = n.neighbor_id THEN f.object_entity_id
+                  ELSE f.entity_id
+              END != ALL(n.path)
           AND n.depth < $2{pred_clause}"""
 
     sql = f"""

@@ -153,15 +153,16 @@ async def test_entity_resolve_excludes_credential_anchor_companions(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_entity_neighbors_excludes_credential_anchor_companions(
+async def test_entity_neighbors_default_both_traverses_and_excludes_companions(
     provisioned_postgres_pool,
 ) -> None:
-    """entity_neighbors must not surface google_account or steam_account companions."""
+    """Default bidirectional traversal works and excludes credential companions."""
     async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as pool:
         await pool.execute(_SCHEMA_SQL)
 
         hub_id = await _add_entity(pool, canonical_name="Hub", roles=[])
         normal_neighbor = await _add_entity(pool, canonical_name="Friend", roles=[])
+        second_hop = await _add_entity(pool, canonical_name="Friend of Friend", roles=[])
         google_neighbor = await _add_entity(
             pool, canonical_name="GMail Anchor", roles=["google_account"], entity_type="other"
         )
@@ -171,15 +172,18 @@ async def test_entity_neighbors_excludes_credential_anchor_companions(
 
         for obj in (normal_neighbor, google_neighbor, steam_neighbor):
             await _add_edge(pool, subject=hub_id, obj=obj)
+        await _add_edge(pool, subject=second_hop, obj=normal_neighbor)
 
-        # direction="outgoing" yields a single non-recursive + single recursive
-        # term (a valid WITH RECURSIVE). The default direction="both" emits a
-        # multi-UNION-ALL recursive CTE that Postgres rejects — a PRE-EXISTING
-        # bug unrelated to this exclusion change (see follow-up bead).
-        neighbors = await entity_neighbors(pool, str(hub_id), direction="outgoing")
+        neighbors = await entity_neighbors(pool, str(hub_id))
         neighbor_ids = {n["entity"]["id"] for n in neighbors}
 
         assert str(normal_neighbor) in neighbor_ids, "ordinary neighbor must be returned"
+        assert any(
+            neighbor["entity"]["id"] == str(second_hop)
+            and neighbor["direction"] == "incoming"
+            and neighbor["depth"] == 2
+            for neighbor in neighbors
+        ), "default traversal must follow incoming edges recursively"
         assert str(google_neighbor) not in neighbor_ids, "google_account companion excluded"
         assert str(steam_neighbor) not in neighbor_ids, "steam_account companion excluded"
 
