@@ -148,6 +148,7 @@ MUTATION_STATUS_FAILED = "failed"
 MUTATION_STATUS_NOOP = "noop"
 BUTLER_EVENT_SOURCE_SCHEDULED = "scheduled_task"
 BUTLER_EVENT_SOURCE_REMINDER = "butler_reminder"
+ButlerEventSourceHint = Literal["scheduled_task", "butler_reminder"]
 # Default action string used when no explicit action is provided for a butler calendar event.
 # When the stored prompt equals this sentinel (or is empty), the scheduler fires with no
 # meaningful context, causing the session to improvise.  calendar_create_butler_event detects
@@ -4289,7 +4290,7 @@ class CalendarModule(Module):
             until_at: datetime | None = None,
             action: str = _CALENDAR_EVENT_DEFAULT_ACTION,
             action_args: dict[str, Any] | None = None,
-            source_hint: str | None = None,
+            source_hint: ButlerEventSourceHint | None = None,
             request_id: str | None = None,
             _approval_bypass: bool = False,
         ) -> dict[str, Any]:
@@ -4300,6 +4301,10 @@ class CalendarModule(Module):
             projection, and pushed to the Butlers Google subcalendar event. They
             let butler-authored events (e.g. accepted calendar proposals) preserve
             the proposal's description/location instead of dropping them.
+
+            ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
+            When omitted, one-off events use reminders when available; recurring
+            events use scheduled tasks.
             """
             normalized_butler = butler_name.strip()
             if not normalized_butler:
@@ -4531,7 +4536,7 @@ class CalendarModule(Module):
             cron: str | None = None,
             until_at: datetime | None = None,
             enabled: bool | None = None,
-            source_hint: str | None = None,
+            source_hint: ButlerEventSourceHint | None = None,
             body: str | None = None,
             entity_ids: list[uuid.UUID] | None = None,
             request_id: str | None = None,
@@ -4539,6 +4544,7 @@ class CalendarModule(Module):
         ) -> dict[str, Any]:
             """Update a butler schedule/reminder event.
 
+            ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
             ``body`` is accepted for forward-compatibility and is recorded in the
             audit log but is not written to the scheduler/reminder source tables —
             butler events are internal and their underlying storage does not carry
@@ -4696,11 +4702,14 @@ class CalendarModule(Module):
         async def calendar_delete_butler_event(
             event_id: str,
             scope: Literal["series"] = "series",
-            source_hint: str | None = None,
+            source_hint: ButlerEventSourceHint | None = None,
             request_id: str | None = None,
             _approval_bypass: bool = False,
         ) -> dict[str, Any]:
-            """Delete a butler schedule/reminder event."""
+            """Delete a butler schedule/reminder event.
+
+            ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
+            """
             if scope != "series":
                 raise ValueError("Only scope='series' is supported in v1")
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
@@ -4812,11 +4821,14 @@ class CalendarModule(Module):
         async def calendar_toggle_butler_event(
             event_id: str,
             enabled: bool,
-            source_hint: str | None = None,
+            source_hint: ButlerEventSourceHint | None = None,
             request_id: str | None = None,
             _approval_bypass: bool = False,
         ) -> dict[str, Any]:
-            """Pause/resume a butler schedule/reminder event."""
+            """Pause/resume a butler schedule/reminder event.
+
+            ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
+            """
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
@@ -9575,13 +9587,12 @@ class CalendarModule(Module):
     @staticmethod
     def _normalize_butler_event_source_hint(
         source_hint: str | None,
-    ) -> Literal["scheduled_task", "butler_reminder"] | None:
+    ) -> ButlerEventSourceHint | None:
         if source_hint is None:
             return None
-        normalized = source_hint.strip().lower()
-        if normalized in {"scheduled_task", "schedule", "scheduler"}:
+        if source_hint == BUTLER_EVENT_SOURCE_SCHEDULED:
             return BUTLER_EVENT_SOURCE_SCHEDULED
-        if normalized in {"butler_reminder", "reminder", "reminders"}:
+        if source_hint == BUTLER_EVENT_SOURCE_REMINDER:
             return BUTLER_EVENT_SOURCE_REMINDER
         raise ValueError("source_hint must be one of: scheduled_task | butler_reminder")
 
@@ -9656,8 +9667,8 @@ class CalendarModule(Module):
         self,
         *,
         event_id: str,
-        source_hint: Literal["scheduled_task", "butler_reminder"] | None,
-    ) -> tuple[Literal["scheduled_task", "butler_reminder"], uuid.UUID]:
+        source_hint: ButlerEventSourceHint | None,
+    ) -> tuple[ButlerEventSourceHint, uuid.UUID]:
         normalized = event_id.strip()
         if not normalized:
             raise ValueError("event_id must be a non-empty string")

@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.core.temporal.scheduling import SchedulingPreferences
@@ -302,6 +303,52 @@ class TestModuleStartup:
         )
         assert isinstance(mod._config, CalendarConfig)
         assert mod._config.provider == "google"
+
+    async def test_butler_event_source_hint_schema_limits_values(self):
+        """The MCP schema must expose the runtime's accepted source types."""
+        mod = CalendarModule()
+        mcp = FastMCP("calendar-source-hint-schema")
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google"},
+            db=None,
+            butler_name="test-butler",
+        )
+
+        for tool_name in (
+            "calendar_create_butler_event",
+            "calendar_update_butler_event",
+            "calendar_delete_butler_event",
+            "calendar_toggle_butler_event",
+        ):
+            tool = await mcp.get_tool(tool_name)
+            source_hint_schema = tool.parameters["properties"]["source_hint"]
+
+            assert {
+                "enum": ["scheduled_task", "butler_reminder"],
+                "type": "string",
+            } in source_hint_schema["anyOf"]
+
+    @pytest.mark.parametrize(
+        "source_hint",
+        [
+            "schedule",
+            "scheduler",
+            "reminder",
+            "reminders",
+            "SCHEDULED_TASK",
+            " scheduled_task ",
+        ],
+    )
+    def test_butler_event_source_hint_normalizer_rejects_noncanonical_values(
+        self,
+        source_hint: str,
+    ):
+        with pytest.raises(
+            ValueError,
+            match="source_hint must be one of: scheduled_task \\| butler_reminder",
+        ):
+            CalendarModule._normalize_butler_event_source_hint(source_hint)
 
 
 # ---------------------------------------------------------------------------
