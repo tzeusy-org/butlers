@@ -24,8 +24,8 @@ remain in flight.
 
 | Dimension | Verdict | Evidence / gap |
 | --- | --- | --- |
-| Availability | components reachable; configured browser/API path unproven | The local API is `ok`, the local frontend returns HTTP 200, and `/api/butlers` reported 12/12 `ok` on 2026-07-28; the configured widget API path and remote Tailscale ingress are not independently proven from this host. |
-| Specialist routing | functional in the backplane | In the last 24 hours, 39 successful Switchboard classification sessions each called `route_to_butler`; a fresh widget send-to-reply trace is not yet live-proven. |
+| Availability | components reachable; remote ingress unproven | The local API is `ok`, the local frontend returns HTTP 200, and `/api/butlers` reported 12/12 `ok` on 2026-07-28. The running frontend is configured for the Tailscale sibling API path; only a remote client has not independently proven that ingress. |
+| Specialist routing | functional in the backplane | The refreshed 2026-07-28 aggregate found 37 successful Switchboard classification sessions; a fresh widget send-to-reply trace is not yet live-proven. |
 | Truthful dispatch / Stop | blocked upstream | PR #3624 has durable message-scoped Stop and route handoff work, but its green head is based behind `main`. Independent review found a processing-lease ownership race that can invoke after recovery has reclaimed a row, plus normative recovery/API contract drift. It needs those fixes, current-base exact-head evidence, and a review pass before the next contract is signed off. |
 | Terminal bug/dead-letter effects | weak | A crash after reservation can leave `external_action_in_progress` with no durable per-effect proof or recovery owner; existing P1 `bu-s3qvp` names this gap. |
 | Owner-visible recovery | weak | No durable read/UI contract yet exposes a route-only ambiguous outcome or a partially completed terminal action. |
@@ -34,12 +34,15 @@ remain in flight.
 
 The local components are reachable, not a configured-browser or production
 end-to-end proof: no new owner message was sent for this audit, and the active
-dev checkout is not an exact deployment of either review branch. A headless
-local browser reached the panel, but bare Vite issued its intended Tailscale-mounted
-`/butlers-dev-api/api/...` request and received 404; direct dashboard API and
-Vite `/api/...` proxy requests were 200. The host's self-request to the stated
-Tailscale URL also returned 404 despite advertised Serve paths, but it resolves
-back to the host itself. That is **[Unknown]** remote-tailnet behavior, not proof
+dev checkout at `73031a850` is not an exact deployment of either review branch
+or the current `origin/main` (it is 27 commits behind). The running
+frontend is mounted from this checkout with `--base /butlers-dev/` and
+`VITE_API_URL=/butlers-dev-api/api`; Tailscale Serve owns that sibling API path.
+A direct request to the bare Vite port at `/butlers-dev-api/api/...` returns 404
+because Vite only proxies `/api/...`, which is expected topology rather than a
+widget defect. Direct dashboard API and Vite `/api/...` proxy requests were 200.
+The host's self-request to the stated Tailscale URL still returned 404 and uses a
+self-origin TLS path, so it is **[Unknown]** remote-tailnet behavior, not proof
 that the owner's remote browser is broken. A remote-tailnet smoke must establish
 the intended path before this surface is called externally verified.
 
@@ -48,6 +51,9 @@ the intended path before this surface is called externally verified.
 - `POST /api/butlers/{name}/conversation-turns/{message_id}/cancel` is the
   canonical message-scoped Stop endpoint on PR #3624; the legacy
   conversation-scoped endpoint remains a compatibility path.
+- The running stack mounts the root checkout's frontend, API source, and roster;
+  frontend history calls target the configured sibling path through Tailscale,
+  while local Vite's `/api` proxy remains a separate development convenience.
 - The current response remains boolean-shaped. The proposed recovery contract
   adds a durable, additive outcome discriminator rather than forcing the UI to
   infer recovery state from `cancelled` / `already_finished`.
@@ -82,8 +88,11 @@ its historical-base CI being green:
 3. Its dashboard-specific no-replay/ambiguous-recovery behavior contradicts the
    blanket stale-row replay language in RFC 0001 and RFC 0003, and its canonical
    message-scoped cancel endpoint/outcomes are absent from the declared dashboard
-   API inventories. The same change must reconcile those normative contracts,
-   rather than leave operators with instructions that defeat Stop safety.
+   API inventories. The completed but unarchived
+   `chat-stop-button-server-cancel` delta also still declares the old
+   conversation-scoped Stop endpoint. The same correction must reconcile those
+   normative contracts, rather than leave operators with instructions that defeat
+   Stop safety.
 
 Before final #3624 signoff, also add regressions for a retry after durable
 ingress acceptance that does not resubmit Switchboard and for a second chat
