@@ -424,13 +424,35 @@ describe("SettingsPermissionsPage — audit reel filters operational noise [bu-9
     expect(screen.getByText("No recent audit entries.")).toBeTruthy();
   });
 
+  it("keeps a paused initial audit query visibly pending", async () => {
+    useAuditLogMock.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isPending: true,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useAuditLogMock>);
+
+    await act(async () => {
+      renderPage();
+    });
+
+    const auditSection = screen.getByText("Audit reel").closest("section");
+    expect(auditSection).not.toBeNull();
+    expect(auditSection!.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(5);
+    expect(screen.queryByText("No recent audit entries.")).toBeNull();
+    expect(screen.queryByTestId("audit-reel-degraded")).toBeNull();
+    expect(within(auditSection!).queryByText("Full audit log")).toBeNull();
+  });
+
   it("shows a degraded note (not the empty state) when the audit log query errors [bu-ep4ks.5]", async () => {
+    const refetch = vi.fn();
     useAuditLogMock.mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
       error: new Error("audit log fetch failed"),
-      refetch: vi.fn(),
+      refetch,
     } as unknown as ReturnType<typeof useAuditLogMock>);
 
     await act(async () => {
@@ -439,6 +461,18 @@ describe("SettingsPermissionsPage — audit reel filters operational noise [bu-9
 
     expect(screen.getByTestId("audit-reel-degraded")).toBeTruthy();
     expect(screen.queryByText("No recent audit entries.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps cached audit rows visibly degraded when refresh fails", async () => {
+    useAuditLogMock.mockReturnValue({
+      data: { data: [{ id: "a", ts: "2026-01-01T00:00:00Z", actor: "owner", action: "permission.changed" }] },
+      isLoading: false, isError: true, error: new Error("refresh failed"), refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useAuditLogMock>);
+    await act(async () => { renderPage(); });
+    expect(screen.getByTestId("audit-reel-degraded")).toBeTruthy();
+    expect(screen.getByText("permission.changed")).toBeTruthy();
   });
 });
 

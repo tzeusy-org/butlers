@@ -412,12 +412,12 @@ function isDestructiveAction(action: string): boolean {
 }
 
 function AuditReelSection() {
-  const { data, isLoading, isError, refetch } = useAuditLog({ limit: 15, kind: "privileged" });
+  const { data, isPending, isError, refetch } = useAuditLog({ limit: 15, kind: "privileged" });
   const entries = data?.data ?? [];
 
   return (
     <div className="flex flex-col gap-0 border-t border-l border-border/60">
-      {isLoading && (
+      {isPending && (
         <div className="flex flex-col gap-0">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="border-r border-b border-border/60 px-4 py-2">
@@ -426,7 +426,7 @@ function AuditReelSection() {
           ))}
         </div>
       )}
-      {!isLoading && isError && (
+      {!isPending && isError && (
         <div className="border-r border-b border-border/60 px-4 py-3">
           <SourceDegradedNote
             label="Audit reel"
@@ -436,7 +436,7 @@ function AuditReelSection() {
           />
         </div>
       )}
-      {!isLoading && !isError && (
+      {!isPending && (data != null) && (
         <>
           {entries.map((entry) => (
             <div
@@ -459,7 +459,7 @@ function AuditReelSection() {
               </span>
             </div>
           ))}
-          {entries.length === 0 && (
+          {!isError && entries.length === 0 && (
             <div className="border-r border-b border-border/60 px-4 py-3">
               <p className="font-serif italic text-sm text-muted-foreground">
                 No recent audit entries.
