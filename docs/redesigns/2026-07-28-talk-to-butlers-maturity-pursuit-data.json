@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "run": "talk-to-butlers-maturity-pursuit",
+  "date": "2026-07-28",
+  "scope": "Focused JARVIS-style audit of the Talk to Butlers dashboard front door",
+  "north_star": "A durable specialist-roster front door that never fabricates routing, filing, or Stop success.",
+  "live_baseline": {
+    "api_health": "ok",
+    "frontend_http_status": 200,
+    "butlers_total": 12,
+    "butlers_ok": 12,
+    "owner_message_sent_for_audit": false,
+    "remote_tailnet_smoke": "unknown_from_this_host_self_request",
+    "widget_send_reply_stop_trace": "not_created_without_authorized_test_content",
+    "interpretation": "Local components are reachable from a root checkout at 73031a850 that is 27 commits behind origin/main; remote-tailnet ingress and live end-to-end owner-message flow were not proven."
+  },
+  "maturity": {
+    "overall": "functional_not_mature",
+    "dimensions": [
+      {
+        "name": "availability",
+        "verdict": "components_reachable_remote_ingress_unproven",
+        "evidence": "Local health ok, frontend 200, 12/12 roster status ok. The live frontend deliberately uses the Tailscale sibling API prefix, so its 404 on bare Vite is expected because Vite proxies only /api. Host self-request to the configured Tailscale path remains inconclusive for a remote tailnet client."
+      },
+      {
+        "name": "specialist_routing",
+        "verdict": "functional_backplane",
+        "evidence": "A refreshed 2026-07-28 aggregate found 37 successful Switchboard classifications; fresh widget-to-reply evidence was not created."
+      },
+      {
+        "name": "durable_stop",
+        "verdict": "blocked_upstream_review",
+        "evidence": "PR #3624 is open and not merged. Its historical-base checks are green, but independent review found a lease-loss race that can invoke after a recovery reclaim, plus normative recovery/API contract drift."
+      },
+      {
+        "name": "terminal_effect_recovery",
+        "verdict": "weak",
+        "evidence": "Existing bu-s3qvp identifies crash ambiguity after external action reservation."
+      },
+      {
+        "name": "operator_flow_evidence",
+        "verdict": "weak",
+        "evidence": "Panel renders locally, but no fresh send, reply, or Stop trace and no per-message/session causal linkage were observed."
+      },
+      {
+        "name": "generic_questions",
+        "verdict": "intentionally_unapproved",
+        "evidence": "No owner-approved taxonomy or General residual authority."
+      }
+    ]
+  },
+  "active_work": {
+    "pr_3624": {
+      "title": "Durable dashboard Stop and route handoff",
+      "head_at_audit": "d5827d42fe23cfda07508896db433695b1a0a53c",
+      "state": "open_green_historical_base_with_review_blockers",
+      "required_next_gate": "Repair the processing-lease ownership race, reconcile RFC 0001/RFC 0003/dashboard API inventory and the completed but unarchived chat-stop-button-server-cancel delta with dashboard-specific no-replay ambiguity and canonical cancel behavior, add post-acceptance retry and cross-client Stop regressions, then rebase and obtain current-base exact-head or validated merge-result evidence before owner-authorized merge; after landing, rebase and fully reconcile the recovery packet's replacement Stop/SSE contract."
+    },
+    "pr_3618": {
+      "title": "Truthful dashboard dispatch receipt",
+      "head_at_audit": "e40dc2505ac0a26a4d9628f5e04718eca7a2f305",
+      "state": "open_draft_on_stale_base",
+      "required_next_gate": "After #3624, rebase and independently validate, or record an owner-approved per-guarantee disposition before closing: retain or explicitly reject the routed-versus-targetless dispatch receipt, routed-butler accountability, and non-destructive read recovery."
+    },
+    "bead_bu_s3qvp": {
+      "title": "Reconcile ambiguous dashboard terminal external actions",
+      "state": "open_live_p1",
+      "safety": "Not claimed or mutated by this planning run; requires an owner-created HOLD-gated graph before dispatch."
+    }
+  },
+  "authored_changes": [
+    "reconcile-dashboard-conversation-contracts",
+    "durable-dashboard-terminal-action-recovery"
+  ],
+  "contract_highlights": [
+    "message-scoped cancellation becomes the outcome-only contract; repository-owned conversation-scoped and boolean compatibility surfaces are deleted after same-change caller migration",
+    "targetless ingress exposes pending, retryable, rejected, and pending-Stop truth without inventing a lane",
+    "a stalled ingress reaches a durable 60-second boundary and can be recovered only by an owner action on the same immutable message",
+    "one dashboard lane reservation per immutable message, with route_pending to dead_letter only on definite no-side-effect evidence",
+    "unknown route/effect outcomes become durable ambiguity rather than automatic duplicate delivery",
+    "bug report, dead-letter capture, and acknowledgement reply each carry their own durable receipt/idempotency boundary",
+    "dashboard QA receipt is a durable inbox with fenced claim/acknowledgement before any patrol-owned finding ID is shown",
+    "dashboard QA mode requires a receiver-validated Switchboard-router MCP principal; source arguments cannot authorize writes or receipt lookup",
+    "the implementation change amends RFC 0015 plus the QA and Switchboard manifestos with authorization, ownership, recovery, permissions, and service-level contracts",
+    "manual ambiguity assessment remains an immutable overlay, never a fabricated receiver receipt",
+    "reconciliation defaults to owner-controlled observe mode and needs a canary before active retries"
+  ],
+  "reconciliation_passes": 4,
+  "reconciliation_pass_basis": "one live workflow/implementation inventory plus three independent artifact reconciliations",
+  "gates": {
+    "openspec_strict": "pass for both authored changes",
+    "traceability": "whole-tree authoring trace remains blocked by 2589 repository-wide errors; targeted strict validation is the authored-packet gate",
+    "implementation_tests": "not yet applicable; requirements are planned and have expected pre-implementation citation warnings"
+  },
+  "unresolved_owner_decision": "Approve a narrow dashboard operator-ingress exception, choose whether current maturity stops at route acknowledgement versus includes durable downstream session/reply outcome, choose generic-question behavior (truthful dead-letter/rephrase, bounded clarification, or constrained General authority), choose whether to authorize an anonymized send/reply/Stop canary after a remote-tailnet passive smoke, and after #3624 disposition #3618's truthful dispatch receipt, routed-butler accountability, and non-destructive read recovery: retain each in the surviving packet or explicitly reject it."
+}
