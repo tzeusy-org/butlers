@@ -254,6 +254,11 @@ def _should_include_entry(
     #     failed pre-tool-call attempt before same-tier failover can recover.
     #     If recovery does not happen, session_records carries the final failed
     #     session with IDs and trigger context.
+    #   * OpenCode non-zero exit diagnostics — likewise emitted for each
+    #     pre-tool-call attempt. The spawner emits a separate ERROR if the
+    #     logical session ultimately fails. The wrapper stays visible in
+    #     log-scanner-only deployments and is suppressed when session_records
+    #     provides structured terminal-failure coverage.
     #   * "codex_refresh_lock: lock held" / "codex_refresh_lock: waiting" —
     #     these contain the word "deadlock" while describing the adapter's
     #     non-fatal fallback path. It is operational contention, not a crash
@@ -289,12 +294,23 @@ def _should_include_entry(
 
     if entry.logger == "butlers.core.runtimes.opencode":
         event_lower = entry.event.lower()
+        if event_lower.startswith("opencode cli exited with code "):
+            return False
         if event_lower.startswith("opencode cli returned no response:") and (
             "no result" in event_lower
             and "tool calls" in event_lower
             and ("token usage" in event_lower or "tokens" in event_lower)
         ):
             return False
+
+    if (
+        suppress_session_duplicate_timeouts
+        and entry.logger == "butlers.core.spawner"
+        and entry.event.startswith(
+            "Runtime invocation failed: RuntimeError: OpenCode CLI exited with code "
+        )
+    ):
+        return False
 
     if (
         suppress_session_duplicate_timeouts
