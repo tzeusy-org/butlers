@@ -261,7 +261,12 @@ pending actions the system must make truthful.
 
 ## Migration Plan
 
-1. Merge and independently verify #3624 so the dashboard-turn authority exists.
+1. Resolve and independently verify #3624 so the dashboard-turn authority
+   exists: repair the processing-lease handoff race before any slow anchor I/O
+   can outlive ownership, reconcile the dashboard no-replay/ambiguous rule and
+   canonical cancel endpoint with the normative RFC/API inventory, add the
+   post-acceptance-retry and cross-client Stop regressions, then obtain
+   current-base exact-head or validated merge-result evidence.
 2. Add parent/effect journal tables, state/lease constraints, indexes, QA receipt
    storage, and unique action boundaries in migrations; deploy these before any
    worker begins claiming.

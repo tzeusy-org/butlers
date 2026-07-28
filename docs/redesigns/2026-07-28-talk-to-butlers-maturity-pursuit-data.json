@@ -29,8 +29,8 @@
       },
       {
         "name": "durable_stop",
-        "verdict": "in_flight",
-        "evidence": "PR #3624 is open; canonical message-scoped Stop implementation is not merged."
+        "verdict": "blocked_upstream_review",
+        "evidence": "PR #3624 is open and not merged. Its historical-base checks are green, but independent review found a lease-loss race that can invoke after a recovery reclaim, plus normative recovery/API contract drift."
       },
       {
         "name": "terminal_effect_recovery",
@@ -53,8 +53,8 @@
     "pr_3624": {
       "title": "Durable dashboard Stop and route handoff",
       "head_at_audit": "d5827d42fe23cfda07508896db433695b1a0a53c",
-      "state": "open_green_exact_head",
-      "required_next_gate": "Independently review and obtain current-base exact-head or validated merge-result evidence before owner-authorized merge; after landing, rebase and fully reconcile the recovery packet's replacement Stop/SSE contract."
+      "state": "open_green_historical_base_with_review_blockers",
+      "required_next_gate": "Repair the processing-lease ownership race, reconcile RFC 0001/RFC 0003/dashboard API inventory with dashboard-specific no-replay ambiguity and canonical cancel behavior, add post-acceptance retry and cross-client Stop regressions, then rebase and obtain current-base exact-head or validated merge-result evidence before owner-authorized merge; after landing, rebase and fully reconcile the recovery packet's replacement Stop/SSE contract."
     },
     "pr_3618": {
       "title": "Truthful dashboard dispatch receipt",

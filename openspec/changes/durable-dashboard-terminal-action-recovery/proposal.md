@@ -80,8 +80,13 @@ This is the implementation contract for existing P1 Bead `bu-s3qvp` ("Reconcile
 ambiguous dashboard terminal external actions"). It is currently an open live
 Bead; this planning run neither claims nor mutates it. Before implementation is
 dispatched, the owner must approve this changeset and create an explicit HOLD-
-gated execution graph rather than treating this text as a release gate. After
-#3624 lands at an independently verified current-base head, this change must
+gated execution graph rather than treating this text as a release gate. #3624
+must first resolve its processing-lease ownership race (a slow conversation
+anchor must not permit a displaced worker to invoke), reconcile RFC 0001/RFC
+0003/dashboard API inventory vocabulary with dashboard-only no-replay ambiguity,
+cover post-acceptance retry and cross-client `SESSION_CANCELLED`, and rebase with
+exact-head or merge-result evidence. After #3624 lands at that independently
+verified current-base head, this change must
 rebase on that exact landing commit and fully reconcile its replacement
 `dashboard-chat-ui` → `SSE Client Integration` requirement: preserve or
 explicitly owner-approve supersession of every landed Stop clause, including

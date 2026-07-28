@@ -10,6 +10,11 @@
   `SESSION_CANCELLED` SSE, and truthful non-calm failure. Preserve each clause
   or record an explicit owner-approved supersession before this change is signed
   off; do not rely on a prior green head from an older base.
+  Before that merge, #3624 SHALL repair the claim-to-anchor lease-loss race and
+  prove a reclaimed worker cannot invoke, reconcile dashboard-only no-replay
+  recovery and the canonical message-scoped cancel endpoint with RFC 0001, RFC
+  0003, and the dashboard API inventory, and cover both no-resubmit retry after
+  accepted ingress and observer-side `SESSION_CANCELLED` rendering.
 - [ ] 1.2 After #3624 lands, decide PR #3618 explicitly: rebase it onto the
   landing and independently revalidate its truthful dispatch receipt/UI scope,
   or close it as superseded only after an owner-approved per-guarantee

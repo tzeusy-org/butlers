@@ -26,7 +26,7 @@ remain in flight.
 | --- | --- | --- |
 | Availability | components reachable; configured browser/API path unproven | The local API is `ok`, the local frontend returns HTTP 200, and `/api/butlers` reported 12/12 `ok` on 2026-07-28; the configured widget API path and remote Tailscale ingress are not independently proven from this host. |
 | Specialist routing | functional in the backplane | In the last 24 hours, 39 successful Switchboard classification sessions each called `route_to_butler`; a fresh widget send-to-reply trace is not yet live-proven. |
-| Truthful dispatch / Stop | in flight | PR #3624 has durable message-scoped Stop and route handoff work. Its current head is green but based behind `main`; it needs independent current-base evidence, merge, and recovery-spec rebase before the next contract is signed off. |
+| Truthful dispatch / Stop | blocked upstream | PR #3624 has durable message-scoped Stop and route handoff work, but its green head is based behind `main`. Independent review found a processing-lease ownership race that can invoke after recovery has reclaimed a row, plus normative recovery/API contract drift. It needs those fixes, current-base exact-head evidence, and a review pass before the next contract is signed off. |
 | Terminal bug/dead-letter effects | weak | A crash after reservation can leave `external_action_in_progress` with no durable per-effect proof or recovery owner; existing P1 `bu-s3qvp` names this gap. |
 | Owner-visible recovery | weak | No durable read/UI contract yet exposes a route-only ambiguous outcome or a partially completed terminal action. |
 | Operator-flow evidence | weak | The panel renders locally, but no fresh dashboard send → Switchboard route → reply → Stop trace was created for this audit; the only persisted widget conversation is stale and lacks per-message/session linkage. |
@@ -63,6 +63,33 @@ the intended path before this surface is called externally verified.
 - Existing conversation and inbox rows do not carry enough per-message/session
   linkage for support-grade causal tracing; this is a distinct observability gap,
   not evidence that the recent backplane routes failed.
+
+## Independent #3624 review gates
+
+Three focused exact-head reviews found that #3624 is not merge-ready, despite
+its historical-base CI being green:
+
+1. Its head `d5827d42` is not descended from the current `main` head
+   `c442a860`. It must rebase and rerun checks on the exact resulting head or a
+   validated merge result.
+2. Its route worker claims a processing lease, then awaits conversation-anchor
+   I/O before it starts a heartbeat. If that I/O crosses the ten-second recovery
+   grace, another daemon can reclaim the row; the original worker has not yet
+   observed loss and can still call `Spawner.trigger()`. The fix must begin and
+   verify fenced lease ownership before anchor I/O and immediately before spawn,
+   with a regression that stalls anchor creation past recovery/reclaim and proves
+   the displaced worker never invokes.
+3. Its dashboard-specific no-replay/ambiguous-recovery behavior contradicts the
+   blanket stale-row replay language in RFC 0001 and RFC 0003, and its canonical
+   message-scoped cancel endpoint/outcomes are absent from the declared dashboard
+   API inventories. The same change must reconcile those normative contracts,
+   rather than leave operators with instructions that defeat Stop safety.
+
+Before final #3624 signoff, also add regressions for a retry after durable
+ingress acceptance that does not resubmit Switchboard and for a second chat
+surface receiving `SESSION_CANCELLED` without having issued the local Stop.
+Those tests protect the intended post-ack/reload and cross-client owner-visible
+truth contracts.
 
 ## Changeset direction
 
@@ -116,10 +143,10 @@ second send or a success-shaped toast.
    `/butlers-dev-api/api/butlers` proxy check instead. An end-to-end
    send/reply/Stop canary needs separately authorized test content and must
    record only safe request/message/session evidence.
-2. Independently review #3624, recheck its current head/base, and merge only
-   with current-base exact-head or validated merge-result evidence. Rebase the
-   recovery packet on that landing and preserve or explicitly supersede every
-   Stop/SSE clause before its signoff.
+2. Resolve the #3624 review gates above, then independently recheck its current
+   head/base and merge only with current-base exact-head or validated merge-result
+   evidence. Rebase the recovery packet on that landing and preserve or
+   explicitly supersede every Stop/SSE clause before its signoff.
 3. On that merged base, explicitly rebase-and-review PR #3618, or record an
    owner-approved disposition of each of its distinct receipt, accountability,
    and read-recovery guarantees; transplant retained guarantees into the
