@@ -66,7 +66,10 @@ classification prompts or fallback code.
 No new Bead graph is created by this design. Existing `bu-s3qvp` is live and
 must not be treated as HOLD-gated merely because this document exists. Before
 the owner may approve the product choices and OpenSpec changesets, #3624 must
-land and its exact head must be independently verified; then #3618 must be
-rebased and independently reconciled or closed as superseded. Only then create
-a new HOLD-first graph for the documentation reconciliation and bounded
-recovery implementation leaves.
+land at an independently verified current-base head and the recovery packet must
+rebase and reconcile its full Stop/SSE replacement against that landing; then
+#3618 must be rebased and independently reconciled, or its truthful dispatch receipt,
+routed-butler accountability, and non-destructive read-recovery guarantees must
+each be retained in the surviving packet or explicitly owner-rejected before it
+is closed as superseded. Only then create a new HOLD-first graph for the
+documentation reconciliation and bounded recovery implementation leaves.

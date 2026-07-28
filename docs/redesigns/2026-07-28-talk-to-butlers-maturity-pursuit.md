@@ -24,16 +24,24 @@ remain in flight.
 
 | Dimension | Verdict | Evidence / gap |
 | --- | --- | --- |
-| Availability | functional | Local API health is `ok`, the frontend returns HTTP 200, and `/api/butlers` reported 12/12 `ok` on 2026-07-28. |
-| Specialist routing | functional | Dashboard ingress uses `dashboard` / `internal`, data/correction and bug/system lanes, and refuses a silent General fallback. |
-| Truthful dispatch / Stop | in flight | PR #3624 has durable message-scoped Stop and route handoff work. Its exact current head is green, but it remains open pending independent review and merge. |
+| Availability | components reachable; configured browser/API path unproven | The local API is `ok`, the local frontend returns HTTP 200, and `/api/butlers` reported 12/12 `ok` on 2026-07-28; the configured widget API path and remote Tailscale ingress are not independently proven from this host. |
+| Specialist routing | functional in the backplane | In the last 24 hours, 39 successful Switchboard classification sessions each called `route_to_butler`; a fresh widget send-to-reply trace is not yet live-proven. |
+| Truthful dispatch / Stop | in flight | PR #3624 has durable message-scoped Stop and route handoff work. Its current head is green but based behind `main`; it needs independent current-base evidence, merge, and recovery-spec rebase before the next contract is signed off. |
 | Terminal bug/dead-letter effects | weak | A crash after reservation can leave `external_action_in_progress` with no durable per-effect proof or recovery owner; existing P1 `bu-s3qvp` names this gap. |
 | Owner-visible recovery | weak | No durable read/UI contract yet exposes a route-only ambiguous outcome or a partially completed terminal action. |
+| Operator-flow evidence | weak | The panel renders locally, but no fresh dashboard send → Switchboard route → reply → Stop trace was created for this audit; the only persisted widget conversation is stale and lacks per-message/session linkage. |
 | Generic questions | intentionally absent | The current lane taxonomy has no approved question lane. That is a product decision, not a defect to paper over with General. |
 
-The local stack shows product availability, not a production end-to-end proof: no
-new owner message was sent for this audit, and the active dev checkout is not an
-exact deployment of either review branch.
+The local components are reachable, not a configured-browser or production
+end-to-end proof: no new owner message was sent for this audit, and the active
+dev checkout is not an exact deployment of either review branch. A headless
+local browser reached the panel, but bare Vite issued its intended Tailscale-mounted
+`/butlers-dev-api/api/...` request and received 404; direct dashboard API and
+Vite `/api/...` proxy requests were 200. The host's self-request to the stated
+Tailscale URL also returned 404 despite advertised Serve paths, but it resolves
+back to the host itself. That is **[Unknown]** remote-tailnet behavior, not proof
+that the owner's remote browser is broken. A remote-tailnet smoke must establish
+the intended path before this surface is called externally verified.
 
 ## What is true today
 
@@ -45,10 +53,16 @@ exact deployment of either review branch.
   infer recovery state from `cancelled` / `already_finished`.
 - PR #3618 (`make-dashboard-chat-truthful`) is an open draft based on an older
   base. Its dispatch-receipt/UI work must be rebased and revalidated after
-  #3624, or explicitly closed as superseded; it cannot be silently folded in.
+  #3624, or its truthful routed-versus-targetless receipt, routed-butler
+  accountability, and non-destructive read recovery must each be retained in the
+  surviving packet or explicitly owner-rejected before it is closed as
+  superseded; it cannot be silently folded in.
 - A route acknowledgement, a QA report, a dead-letter capture, and an
   in-thread reply are distinct visible effects. One turn row alone cannot prove
   their independent crash boundaries.
+- Existing conversation and inbox rows do not carry enough per-message/session
+  linkage for support-grade causal tracing; this is a distinct observability gap,
+  not evidence that the recent backplane routes failed.
 
 ## Changeset direction
 
@@ -65,7 +79,7 @@ Two intentionally narrow OpenSpec changes carry the proposed work:
    language, and an observe-first rollout.
 
 Both strict OpenSpec validations pass. The whole-tree authoring trace check still
-fails on 2,579 repository-wide errors, so it is recorded as a legacy evidence
+fails on 2,589 repository-wide errors, so it is recorded as a legacy evidence
 limitation rather than a pass gate for this packet. Planned-work test-citation
 warnings are expected; they are not evidence that the proposed behavior has
 shipped.
@@ -93,14 +107,29 @@ second send or a success-shaped toast.
 
 ## Ordered work, once approved
 
-1. Independently review and merge PR #3624 only at its green exact head.
-2. On that merged base, explicitly rebase-and-review PR #3618 or close it as
-   superseded.
-3. Apply the documentation-only reconciliation change.
-4. Implement the `bu-s3qvp` recovery contract behind an owner-held observe
+1. Before claiming configured or intended-host availability, have the owner or
+   an explicitly owner-authorized separate tailnet client passively smoke the
+   configured `/butlers-dev/` panel and the actual widget request `GET
+   /butlers-dev-api/api/butlers/switchboard/conversations?limit=1`, recording
+   only route, status, and timestamp. That list can reveal conversation titles
+   and routed-butler metadata; if its read is not authorized, use the narrower
+   `/butlers-dev-api/api/butlers` proxy check instead. An end-to-end
+   send/reply/Stop canary needs separately authorized test content and must
+   record only safe request/message/session evidence.
+2. Independently review #3624, recheck its current head/base, and merge only
+   with current-base exact-head or validated merge-result evidence. Rebase the
+   recovery packet on that landing and preserve or explicitly supersede every
+   Stop/SSE clause before its signoff.
+3. On that merged base, explicitly rebase-and-review PR #3618, or record an
+   owner-approved disposition of each of its distinct receipt, accountability,
+   and read-recovery guarantees; transplant retained guarantees into the
+   surviving packet before closing #3618 as superseded.
+4. Apply the documentation-only reconciliation change.
+5. Implement the `bu-s3qvp` recovery contract behind an owner-held observe
    mode; promote to active only after a compose kill/restart canary and metric
    review.
-5. Consider first-token streaming, unified read surfaces, or a question lane
+6. Consider per-message/session traceability, first-token streaming, unified
+   read surfaces, or a question lane
    only as separate decisions after the reliability spine is real.
 
 ## Bead safety and release state
@@ -115,8 +144,8 @@ The proposed graph is deliberately only a preview:
 
 ```text
 [HOLD: owner decides product boundary and approves changesets]
-  ├─ exact-head #3624 gate
-  ├─ #3618 rebase-or-close decision gate
+  ├─ current-base #3624 and recovery-SSE-rebase gate
+  ├─ #3618 rebase-or-per-guarantee-disposition gate
   ├─ reconciliation documentation change
   └─ bu-s3qvp recovery leaves
        ├─ receipt/idempotency boundaries
@@ -135,7 +164,9 @@ changesets are approved.
 | Dashboard product boundary | Document a narrow owner-only operator-ingress exception; rework the surface back to read-only; or treat it as a general chat surface | Document the narrow exception: direct `dashboard` / `internal` ingress through the standard Switchboard spine, not a public/general chat system. |
 | What “mature” includes now | Stop at truthful ingress/route acknowledgement plus terminal bug/dead-letter effects; or add durable downstream routed-session/reply outcome now | Stop at the current reliability slice. A downstream session/reply durability contract is valuable but must be a separately approved change. |
 | Ambiguous generic questions | Truthful dead-letter/rephrase; bounded domain clarification; or deliberately constrained General authority | Keep truthful dead-letter/rephrase behavior. The current system must not invent General residual authority. |
-| Direction-packet approval | Approve both narrow changesets after the above choices and, after #3624 lands, disposition #3618 by rebase-and-reconcile or close-as-superseded; or revise their scope | Approve only after the product boundary and maturity definition are explicit and the #3618 HOLD is resolved. |
+| Intended-host evidence | Owner-run or explicitly authorized remote-tailnet passive smoke of the actual widget request; or authorize an anonymized send/reply/Stop canary after passive success | Require the privacy-bounded passive smoke before any configured/external availability claim; authorize a content-safe canary only if end-to-end proof is needed before the recovery release. |
+| #3618 truthful-UI disposition | Rebase and independently reconcile #3618; or, after per-guarantee review, retain its routed-versus-targetless receipt, routed-butler accountability, and read-recovery behavior in the surviving packet; or explicitly reject one or more guarantees | Preserve all three guarantees, through a rebase or explicit transplant after #3618 no longer actively modifies the same requirements. |
+| Direction-packet approval | Approve both narrow changesets after the above choices and, after #3624 lands, resolve #3618 through rebase-and-reconcile or owner-approved per-guarantee retention/rejection before closing it; or revise their scope | Approve only after the product boundary and maturity definition are explicit and the #3618 HOLD is resolved without silently discarding a truthful UI behavior. |
 
 ## Conclusion
 
@@ -143,9 +174,13 @@ changesets are approved.
 surface whose receipt, Stop, route, and recovery claims are independently
 provable.
 
-**Work on next**: resolve #3624 at a green exact head, decide #3618 on that
-base, then release the owner-approved recovery packet under a HOLD gate.
+**Work on next**: establish remote-tailnet availability evidence, resolve #3624
+with current-base exact-head evidence and rebase the recovery SSE replacement,
+decide #3618 on that base while preserving or explicitly rejecting each distinct
+truthful UI guarantee, then release the owner-approved recovery packet under a
+HOLD gate.
 
-**Stop pretending**: that a reachable chat widget is mature, that a boolean Stop
-response proves every terminal side effect, or that an unapproved generic
-question lane can be safely inferred from ambiguity.
+**Stop pretending**: that locally reachable components prove the configured
+browser path or intended host works, that a boolean Stop response proves every
+terminal side effect, or that an unapproved generic question lane can be safely
+inferred from ambiguity.

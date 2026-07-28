@@ -80,14 +80,26 @@ This is the implementation contract for existing P1 Bead `bu-s3qvp` ("Reconcile
 ambiguous dashboard terminal external actions"). It is currently an open live
 Bead; this planning run neither claims nor mutates it. Before implementation is
 dispatched, the owner must approve this changeset and create an explicit HOLD-
-gated execution graph rather than treating this text as a release gate. PR #3618
-must be explicitly rebased and independently reconciled against this delta, or
-closed as superseded, before this changeset may be approved: both touch the
-dashboard Stop/SSE contract and cannot remain competing active requirements.
+gated execution graph rather than treating this text as a release gate. After
+#3624 lands at an independently verified current-base head, this change must
+rebase on that exact landing commit and fully reconcile its replacement
+`dashboard-chat-ui` → `SSE Client Integration` requirement: preserve or
+explicitly owner-approve supersession of every landed Stop clause, including
+pre-conversation immutable identity, accessible pending intent, ingress/runtime
+fencing, terminal `SESSION_CANCELLED` SSE, and truthful non-calm failure. PR
+#3618 must then be explicitly rebased and independently reconciled against this
+delta, or closed as superseded only after the owner dispositions each of its
+distinct guarantees: the truthful `dispatch_accepted` routed-versus-targetless
+receipt and accessible announcement, accountable routed-butler link, and
+non-destructive conversation-list/history read recovery. After #3618 no longer
+actively modifies the same main requirements, every retained guarantee must be
+transplanted into the surviving delta and independently validated; an omitted
+guarantee needs an explicit owner rejection. The changes cannot remain competing
+active requirements.
 This change depends on the durable route/runtime authority in PR #3624 landing
 first and on `reconcile-dashboard-conversation-contracts` landing its RFC 0003
 vocabulary/provenance amendment before this change applies its separate RFC
-recovery amendment. No recovery implementation may silently duplicate #3618's
-dashboard receipt/UI changes. It
+recovery amendment. No recovery implementation may silently duplicate or discard
+#3618's dashboard receipt/UI changes. It
 deliberately does not add a question lane, silently retry an unknown external
 action, or duplicate route-inbox cancellation work.

@@ -37,10 +37,21 @@ pretends an effect was filed or cancelled when the system cannot establish that.
   effect, or silently collapse ambiguity into failure/success.
 - Add a generic question lane, first-token streaming, or a cross-channel reader.
 
-**Pre-signoff HOLD:** PR #3618's active dashboard Stop/SSE delta must be rebased
-and reconciled with this change, or closed as superseded, before this changeset
-can be approved. The two changes cannot define competing requirements for the
-same owner-visible cancellation path.
+**Pre-signoff HOLD:** PR #3624 must first land at an independently verified
+current-base head. This delta must then rebase on its exact landing commit and
+fully reconcile the replaced `dashboard-chat-ui` → `SSE Client Integration`
+requirement, preserving or explicitly owner-approving supersession of every
+landed Stop clause, including immutable pre-conversation `message_id`, accessible
+pending intent, ingress/runtime fencing, terminal `SESSION_CANCELLED` SSE, and
+truthful non-calm failure. PR #3618's active dashboard Stop/SSE delta must also
+be rebased and reconciled with this change, or closed as superseded only after
+the owner dispositions each distinct guarantee: its truthful
+`dispatch_accepted` receipt and accessible routed-versus-targetless announcement,
+accountable routed-butler link, and non-destructive list/history read recovery.
+Retained guarantees MUST be transplanted into the surviving delta after #3618 no
+longer actively modifies the same main requirement; an omission needs an explicit
+owner rejection. The changes cannot define competing requirements for the same
+owner-visible cancellation path or silently discard a truthful UI behavior.
 
 ## Decisions
 

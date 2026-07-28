@@ -30,14 +30,22 @@ Scope: v1-mandatory
 
 - **WHEN** the owner clicks Stop during streaming
 - **THEN** the frontend SHALL call `POST
-  /api/butlers/{name}/conversation-turns/{message_id}/cancel` with a pending
-  (`Stopping…`) state on the Stop button, disabling it against a second click
-- **AND** when the exact immutable turn owns an in-flight routed runtime, the
-  backend SHALL resolve it and kill the routed butler subprocess through
-  `cancel_session`; it SHALL not merely detach a watcher or persist intent alone
+  /api/butlers/{name}/conversation-turns/{message_id}/cancel`, where
+  `message_id` is the client-created immutable user-turn identifier and SHALL
+  work before a new conversation has delivered its `conversation_id` over SSE
+- **AND** the Stop button SHALL enter a pending (`Stopping…`) state that prevents
+  a second request and exposes its state to assistive technology
+- **AND** the backend SHALL record cancellation intent against that durable turn,
+  preventing a later Switchboard ingress claim, classifier, target route,
+  recovery, or runtime invocation from starting work for it
+- **AND** when the exact immutable turn owns one or more in-flight routed
+  runtimes, the backend SHALL resolve every exact registered runtime session and
+  kill the corresponding subprocesses through `cancel_session`; it SHALL not
+  merely detach a watcher or persist intent alone
 - **AND** when the turn instead owns a terminal action, the backend SHALL persist
   and linearize terminal-action Stop intent against that action
-- **AND** only after the API returns `outcome: "cancelled"` may the frontend
+- **AND** only after the API returns `outcome: "cancelled"` or emits the terminal
+  `SESSION_CANCELLED` SSE outcome from the durable turn record may the frontend
   abort its own SSE watch (`AbortController`) and render the partial assistant
   message with `Cancelled by owner`, distinct from the generic `Interrupted`
   indicator used for unrelated client-side aborts
@@ -69,9 +77,12 @@ Scope: v1-mandatory
 
 #### Scenario: Cancel request fails before a durable outcome
 
-- **WHEN** the cancel request itself fails without a durable action outcome
-- **THEN** the frontend SHALL surface the failure inline and re-enable the
-  Stop control
+- **WHEN** the cancel request itself fails without a durable action outcome, an
+  already-ended runtime is still settling, or an irreversible action was already
+  committed without a cancellation result
+- **THEN** the frontend SHALL surface the returned safe explanation or durable
+  outcome inline; it SHALL re-enable the Stop control only when the server has
+  not persisted a pending, terminal, or ambiguous outcome
 - **AND** it SHALL not render `Cancelled by owner`, `Interrupted`, or any other
   terminal-state indicator implying that the runtime or action actually stopped
 

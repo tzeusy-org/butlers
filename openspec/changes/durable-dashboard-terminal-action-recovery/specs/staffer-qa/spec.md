@@ -190,7 +190,6 @@ canonical payload hash, or dashboard delivery while `butler_reports` is
 disabled. A source-disabled rejection SHALL create neither a receipt nor a
 buffered finding and SHALL be a proven terminal delivery failure for the calling
 Switchboard effect.
-
 In dashboard mode, QA SHALL durably upsert one dashboard-report inbox record
 before it returns `accepted`. The inbox uniqueness boundary SHALL be
 `(terminal_action_id, terminal_effect_id)` and SHALL retain the stable
@@ -200,7 +199,6 @@ state, and any canonical finding linkage. The acceptance receipt SHALL be
 {"terminal_action_id": "...", "terminal_effect_id": "...",
 "inbox_state": "pending", "created_at": "..."}}`; it SHALL NOT expose or
 invent a `finding_id` before a patrol has durably acknowledged one.
-
 When `butler_reports` is enabled, its patrol path SHALL drain durable
 dashboard-report inbox records as well as the ordinary volatile relay buffer. A
 durable inbox record SHALL transition only through `pending`, fenced `claimed`,
