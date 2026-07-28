@@ -329,7 +329,6 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 
 ### Calendar projection linkage schema contract
 - Core `scheduled_tasks` now includes calendar-linkage columns (`timezone`, `start_at`, `end_at`, `until_at`, `display_title`, `calendar_event_id`) with bounds checks and a partial unique index on `calendar_event_id`.
-- Relationship `reminders` now includes projection fields (`timezone`, `until_at`, `updated_at`, `calendar_event_id`), and reminder writes/dismissals must preserve `updated_at` for deterministic projector upserts.
 
 ### Required-schema module startup gate
 - `ButlerDaemon` now filters `load_all()` results via `_select_startup_modules`: if a module defines required `config_schema` fields and its `[modules.<name>]` section is absent, startup skips that module (info log) instead of config-failing on missing required fields.
@@ -345,13 +344,16 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 Each butler has a `MANIFESTO.md` that defines its public identity and value proposition. Features, tools, and UX decisions for a butler should be deeply aligned with its manifesto. The manifesto is the source of truth for *what this butler is for* — CLAUDE.md is *how it behaves*, butler.toml is *what it runs*. When proposing new features or evaluating scope, check the manifesto first.
 
 ### Calendar module config reminder
-- Calendar configs run through `src/butlers/daemon.py::_validate_module_configs`, which loads the module's `config_schema` and rejects extra/missing fields; `CalendarConfig` in `src/butlers/modules/calendar.py:906-925` demands `provider` + `calendar_id`, so any butler must populate them before the module can enable.
-- Calendar module today only persists sync metadata via `_state_get/_state_set` (aka the shared `state` table) and exposes Google-backed tools (list/get, create/update/delete, add/remove attendees, sync status/force) plus the background poller; there is no `calendar_events`/`scheduled_tasks` projection wiring or workspace tooling described in `docs/modules/calendar.md`.
+- Calendar configs run through `src/butlers/daemon.py::_validate_module_configs`, which loads the module's `config_schema` and rejects extra/missing fields; `CalendarConfig` requires `provider`, while `calendar_id` is optional and resolved during startup when omitted.
 
 ### Calendar projection sync contract
-- `CalendarModule._sync_calendar` now materializes unified projection rows: provider deltas upsert into `calendar_events` + `calendar_event_instances`, and internal scheduler/reminder sources refresh into the same tables with deterministic `origin_ref` linkage (`scheduled_tasks.id` / `reminders.id`).
+- `CalendarModule._sync_calendar` now materializes unified projection rows: provider deltas upsert into `calendar_events` + `calendar_event_instances`, and internal scheduler/reminder sources refresh into the same tables with deterministic `origin_ref` linkage (`scheduled_tasks.id` / native `calendar_events.id`).
 - Projection checkpoints are persisted in `calendar_sync_cursors` (`provider_sync` for provider pulls, `projection` for internal sources), and each sync refresh records action status in `calendar_action_log`.
 - `calendar_sync_status` and `calendar_force_sync` now include `projection_freshness` (`last_refreshed_at`, `staleness_ms`, per-source `sync_state=fresh|stale|failed`); projection writes hard-gate on strict `to_regclass(...) IS TRUE` checks so pre-migration DBs/tests safely no-op.
+
+### Calendar-native reminder provider mirror contract
+- Runtime reminder lifecycle and target resolution are native-only (`calendar_events` with `source_kind='internal_reminders'`); the retired physical `reminders` table is migration history, not a runtime fallback or test fixture.
+- The dedicated Butlers provider-calendar mirror stores its durable provider id in `calendar_events.metadata.provider_event_id`. Refreshes update that same event with description/body, location, and RRULE recurrence; active ids participate in orphan protection, and series deletion removes the provider copy before deleting the authoritative local row.
 
 ### Calendar workspace contract coverage
 - Calendar workspace frontend tests should cover URL-backed view toggles (`view=user|butler`), butler-lane rendering/grouping, and both user/butler create-edit mutation payload shapes.
@@ -530,11 +532,6 @@ uv run ruff format --check src/ tests/ roster/ conftest.py
 make test-qg
 ```
 
-### Calendar persistence gap
-- `docs/modules/calendar.md` defines `calendar_sources`, `calendar_events`, `calendar_event_instances`, `calendar_sync_cursors`, and `calendar_action_log` as the target-state stores plus the scheduler/reminder linkage, but no migrations or tables for those models exist today (only the doc and scheduler/reminder specs reference them).
-- `alembic/versions/core/core_001_target_state_baseline.py` still defines only the core tables (`state`, `scheduled_tasks`, `sessions`, `route_inbox`), so `scheduled_tasks` lacks the timezone/start/end/until/display_title/calendar_event_id columns the calendar projector expects.
-- Relationship reminders (`roster/relationship/migrations/001_relationship_tables.py`) only record `cron`, `due_at`, and `dismissed`, so we still need timezone/next_trigger/until tracking for reminder projection.
-
 ### Calendar workspace audit
 - Frontend now exposes a first-class `/butlers/calendar` route (`frontend/src/router.tsx`) and sidebar navigation entry (`frontend/src/components/layout/Sidebar.tsx`).
 - `frontend/src/pages/CalendarWorkspacePage.tsx` provides the initial dual-view shell: query-persisted `view=user|butler` plus `range=month|week|day|list` + `anchor` controls, a primary calendar canvas, and a right-side source/lane panel.
@@ -572,9 +569,6 @@ make test-qg
 - `CalendarEventCreate` and `CalendarEventUpdate` validate/normalize `recurrence_rule` via `_normalize_recurrence_rule`; invalid RRULEs must raise clear `ValueError`s before provider calls.
 - Recurring writes with naive datetime boundaries require explicit `timezone`; omit timezone only when datetime boundaries already carry tzinfo.
 - `calendar_update_event` is series-only for recurrence in v1 (`recurrence_scope="series"`); non-series scope values must be rejected at validation time.
-
-### Butler reminder until_at update contract
-- `CalendarModule._update_reminder_event` should only write `reminders.until_at` when an explicit `until_at` value is provided; omitted `until_at` in calendar workspace edits must preserve the existing boundary instead of clearing it.
 
 ### Switchboard Classification Contract
 - `classify_message()` returns decomposition entries (`list[{"butler","prompt"}]`), not a bare butler string. Callers must normalize both legacy string and list formats before routing.

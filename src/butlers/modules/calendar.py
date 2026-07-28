@@ -80,6 +80,7 @@ CALENDAR_ROLE_DEFAULT_TARGET = "default_target"
 BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
 BUTLER_GENERATED_PRIVATE_KEY = "butler_generated"
 BUTLER_NAME_PRIVATE_KEY = "butler_name"
+NATIVE_REMINDER_PROVIDER_EVENT_ID_KEY = "provider_event_id"
 DEFAULT_BUTLER_NAME = "butler"
 VALID_CONFLICT_POLICIES = {"suggest", "fail", "allow_overlap"}
 DEFAULT_CONFLICT_SUGGESTION_COUNT = 3
@@ -4305,6 +4306,10 @@ class CalendarModule(Module):
             ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
             When omitted, one-off events use reminders when available; recurring
             events use scheduled tasks.
+
+            Calendar-native reminders support RRULE recurrence. Cron expressions,
+            executable actions, and action arguments belong to scheduled-task events
+            and are rejected when ``source_hint`` selects ``butler_reminder``.
             """
             normalized_butler = butler_name.strip()
             if not normalized_butler:
@@ -4328,20 +4333,44 @@ class CalendarModule(Module):
                 raise ValueError("end_at must be timezone-aware when provided")
             if effective_end <= start_at:
                 raise ValueError("end_at must be after start_at")
+            requested_until_at = until_at
             normalized_rule = _normalize_recurrence_rule(recurrence_rule)
             if until_at is None and normalized_rule is not None:
                 until_at = module._rrule_until(normalized_rule)
 
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
-            reminders_available = await module._table_exists("reminders")
             source_kind = normalized_source_hint
             if source_kind is None:
-                if normalized_rule is None and cron is None and reminders_available:
+                if normalized_rule is None and cron is None:
                     source_kind = BUTLER_EVENT_SOURCE_REMINDER
                 else:
                     source_kind = BUTLER_EVENT_SOURCE_SCHEDULED
-            if source_kind == BUTLER_EVENT_SOURCE_REMINDER and not reminders_available:
-                raise ValueError("Reminder source is not available on this butler")
+            if source_kind == BUTLER_EVENT_SOURCE_REMINDER:
+                if cron is not None:
+                    raise ValueError(
+                        "cron is not supported for butler_reminder events; "
+                        "use source_hint='scheduled_task'"
+                    )
+                if requested_until_at is not None:
+                    if normalized_rule is None:
+                        raise ValueError(
+                            "until_at requires recurrence_rule for butler_reminder events"
+                        )
+                    normalized_rule = _recurrence_lines_bound_until(
+                        [normalized_rule],
+                        requested_until_at,
+                    )[0]
+                    until_at = requested_until_at
+                if action.strip() not in {"", _CALENDAR_EVENT_DEFAULT_ACTION}:
+                    raise ValueError(
+                        "custom action is not supported for butler_reminder events; "
+                        "use source_hint='scheduled_task'"
+                    )
+                if action_args:
+                    raise ValueError(
+                        "action_args are not supported for butler_reminder events; "
+                        "use source_hint='scheduled_task'"
+                    )
 
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
@@ -4383,31 +4412,29 @@ class CalendarModule(Module):
             )
 
             try:
-                event_link_id = uuid.uuid4()
                 if source_kind == BUTLER_EVENT_SOURCE_REMINDER:
-                    reminder = await module._create_reminder_event(
+                    reminder_id, reminder = await module._insert_reminder_to_calendar_events(
                         title=normalized_title,
-                        start_at=start_at,
-                        timezone=effective_timezone,
-                        until_at=until_at,
-                        recurrence_rule=normalized_rule,
-                        cron=cron,
-                        action=action,
-                        action_args=action_args,
-                        calendar_event_id=event_link_id,
+                        body=None,
                         description=normalized_description,
                         location=normalized_location,
+                        starts_at=start_at,
+                        ends_at=effective_end,
+                        timezone=effective_timezone,
+                        recurrence_rule=normalized_rule,
+                        entity_ids=[],
                     )
-                    origin_ref = str(reminder["id"])
+                    origin_ref = str(reminder_id)
                     result: dict[str, Any] = {
                         "status": "created",
                         "source_type": BUTLER_EVENT_SOURCE_REMINDER,
                         "butler_name": module._butler_name,
-                        "event_id": str(reminder.get("calendar_event_id") or reminder["id"]),
-                        "reminder_id": str(reminder["id"]),
+                        "event_id": str(reminder_id),
+                        "reminder_id": str(reminder_id),
                         "reminder": reminder,
                     }
                 else:
+                    event_link_id = uuid.uuid4()
                     effective_cron = cron
                     if effective_cron is None:
                         if normalized_rule is None:
@@ -4545,11 +4572,8 @@ class CalendarModule(Module):
             """Update a butler schedule/reminder event.
 
             ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
-            ``body`` is accepted for forward-compatibility and is recorded in the
-            audit log but is not written to the scheduler/reminder source tables —
-            butler events are internal and their underlying storage does not carry
-            a free-text body.  It is included here so callers have a uniform
-            interface across create/update tool families.
+            ``body`` is stored for calendar-native reminders and remains
+            audit-only for scheduled tasks.
             """
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
             normalized_request_id = module._normalize_request_id(request_id)
@@ -4594,15 +4618,23 @@ class CalendarModule(Module):
                 if pool is None:
                     raise RuntimeError("Database pool is not available")
 
+                native_reminder_target: uuid.UUID | None = None
                 if source_type == BUTLER_EVENT_SOURCE_REMINDER:
-                    reminder = await module._update_reminder_event(
-                        reminder_id=target_id,
+                    native_reminder_target = target_id
+                    if cron is not None:
+                        raise ValueError(
+                            "cron is not supported for butler_reminder events; "
+                            "use source_hint='scheduled_task'"
+                        )
+                    reminder = await module._update_native_reminder_event(
+                        reminder_id=native_reminder_target,
                         title=title,
+                        body=body,
                         start_at=start_at,
+                        end_at=end_at,
                         timezone=timezone,
                         until_at=until_at,
                         recurrence_rule=recurrence_rule,
-                        cron=cron,
                         enabled=enabled,
                     )
                     origin_ref = str(target_id)
@@ -4610,7 +4642,7 @@ class CalendarModule(Module):
                         "status": "updated",
                         "source_type": BUTLER_EVENT_SOURCE_REMINDER,
                         "butler_name": module._butler_name,
-                        "event_id": str(reminder.get("calendar_event_id") or reminder["id"]),
+                        "event_id": str(reminder["id"]),
                         "reminder_id": str(target_id),
                         "reminder": reminder,
                     }
@@ -4666,7 +4698,12 @@ class CalendarModule(Module):
 
                 result["projection_freshness"] = await module._refresh_butler_projection()
                 # Update entity associations on the projection row if entity_ids provided.
-                if entity_ids is not None and source_id is not None:
+                if entity_ids is not None and native_reminder_target is not None:
+                    await module._upsert_event_entities(
+                        event_id=native_reminder_target,
+                        entity_ids=entity_ids,
+                    )
+                elif entity_ids is not None and source_id is not None:
                     await module._update_butler_event_entities(
                         source_id=source_id,
                         origin_ref=origin_ref,
@@ -4701,22 +4738,29 @@ class CalendarModule(Module):
         @_tool("butler_events")
         async def calendar_delete_butler_event(
             event_id: str,
-            scope: Literal["series"] = "series",
+            scope: Literal["this", "following", "series"] = "series",
+            instance_start_at: datetime | None = None,
             source_hint: ButlerEventSourceHint | None = None,
             request_id: str | None = None,
             _approval_bypass: bool = False,
         ) -> dict[str, Any]:
-            """Delete a butler schedule/reminder event.
+            """Delete a butler schedule/reminder event at the requested scope.
 
             ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
             """
+            if scope not in {"this", "following", "series"}:
+                raise ValueError("scope must be one of: this | following | series")
             if scope != "series":
-                raise ValueError("Only scope='series' is supported in v1")
+                if instance_start_at is None:
+                    raise ValueError("instance_start_at is required for scope 'this'/'following'")
+                if instance_start_at.tzinfo is None:
+                    raise ValueError("instance_start_at must be timezone-aware")
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
                 "event_id": event_id,
                 "scope": scope,
+                "instance_start_at": instance_start_at,
                 "source_hint": normalized_source_hint,
             }
             idempotency_key, replay = await module._prepare_workspace_mutation(
@@ -4733,13 +4777,14 @@ class CalendarModule(Module):
                 if normalized_source_hint == BUTLER_EVENT_SOURCE_REMINDER
                 else SOURCE_KIND_INTERNAL_SCHEDULER
             )
-            if not _approval_bypass:
+            if not _approval_bypass and scope != "this":
                 approval_result = await module._gate_high_impact_mutation(
                     action_type="workspace_butler_delete",
                     tool_name="calendar_delete_butler_event",
                     tool_args={
                         "event_id": event_id,
                         "scope": scope,
+                        "instance_start_at": instance_start_at,
                         "source_hint": source_hint,
                         "request_id": normalized_request_id,
                     },
@@ -4766,8 +4811,17 @@ class CalendarModule(Module):
                     lane="butler",
                 )
                 if source_type == BUTLER_EVENT_SOURCE_REMINDER:
-                    deleted = await module._delete_reminder_event(target_id)
+                    deleted = await module._delete_native_reminder_event(
+                        target_id,
+                        scope=scope,
+                        instance_start_at=instance_start_at,
+                    )
                 else:
+                    if scope != "series":
+                        raise ValueError(
+                            "Occurrence-scoped deletion is only supported for "
+                            "calendar-native reminders"
+                        )
                     pool = getattr(module._db, "pool", None) if module._db is not None else None
                     if pool is None:
                         raise RuntimeError("Database pool is not available")
@@ -4790,6 +4844,9 @@ class CalendarModule(Module):
                         "event_id": event_id,
                     }
                     mutation_status = MUTATION_STATUS_NOOP
+                result["scope"] = scope
+                if instance_start_at is not None:
+                    result["instance_start_at"] = instance_start_at.astimezone(UTC).isoformat()
                 result["projection_freshness"] = await module._refresh_butler_projection()
                 await module._finalize_workspace_mutation(
                     idempotency_key=idempotency_key,
@@ -4883,8 +4940,11 @@ class CalendarModule(Module):
                     lane="butler",
                 )
                 if source_type == BUTLER_EVENT_SOURCE_REMINDER:
-                    reminder = await module._toggle_reminder_event(target_id, enabled)
-                    event_link = str(reminder.get("calendar_event_id") or reminder["id"])
+                    reminder = await module._toggle_native_reminder_event(
+                        target_id,
+                        enabled,
+                    )
+                    event_link = str(reminder["id"])
                     result: dict[str, Any] = {
                         "status": "updated",
                         "source_type": source_type,
@@ -5989,113 +6049,183 @@ class CalendarModule(Module):
                     except Exception as exc:
                         logger.debug("Failed to update Google event for task %s: %s", task_id, exc)
 
-        # --- Push reminders ---
-        if await self._table_exists("reminders"):
-            cols = await self._table_columns("reminders")
-            if "calendar_event_id" not in cols:
-                logger.debug("reminders table lacks calendar_event_id column; skipping push")
-            else:
-                # Include description and location if the reminders table has them.
-                extra_select = ""
-                if "description" in cols:
-                    extra_select += ", description"
-                if "location" in cols:
-                    extra_select += ", location"
-                rows = await pool.fetch(
-                    f"""
-                    SELECT id, label, message, next_trigger_at, timezone, cron,
-                           calendar_event_id, dismissed, updated_at{extra_select}
-                    FROM reminders
-                    """
-                )
-                for row in rows:
-                    record = dict(row)
-                    reminder_id = record["id"]
-                    dismissed = bool(record.get("dismissed", False))
-                    google_event_id = record.get("calendar_event_id")
-                    title = str(record.get("label") or record.get("message") or "Reminder")
-                    timezone = str(record.get("timezone") or "UTC")
-                    remind_at = self._coerce_datetime(record.get("next_trigger_at"))
-                    reminder_description = _normalize_optional_text(record.get("description"))
-                    reminder_location = _normalize_optional_text(record.get("location"))
+        # --- Push calendar-native reminders ---
+        # The local calendar_events row is authoritative.  Its provider event id
+        # lives in metadata so repeated refreshes update one durable mirror.
+        if await self._table_exists("calendar_events"):
+            rows = await pool.fetch(
+                """
+                SELECT e.id, e.title, e.description, e.body, e.location,
+                       e.timezone, e.starts_at, e.ends_at, e.recurrence_rule,
+                       e.status, e.metadata
+                FROM calendar_events e
+                JOIN calendar_sources s ON s.id = e.source_id
+                WHERE s.source_kind = $1
+                  AND e.source_butler = $2
+                """,
+                SOURCE_KIND_INTERNAL_REMINDERS,
+                self._resolve_effective_butler_name(),
+            )
+            for row in rows:
+                record = dict(row)
+                reminder_id = record["id"]
+                metadata = self._normalize_json_object(record.get("metadata"))
+                provider_event_id = metadata.get(NATIVE_REMINDER_PROVIDER_EVENT_ID_KEY)
+                title = str(record.get("title") or "Reminder")
+                timezone = str(record.get("timezone") or "UTC")
+                starts_at = self._coerce_datetime(record.get("starts_at"))
+                ends_at = self._coerce_datetime(record.get("ends_at"))
+                description = _normalize_optional_text(record.get("description"))
+                body = _normalize_optional_text(record.get("body"))
+                location = _normalize_optional_text(record.get("location"))
+                recurrence_rule = _normalize_recurrence_rule(record.get("recurrence_rule"))
+                is_active = record.get("status") != "cancelled"
 
-                    if remind_at is None:
-                        continue
+                if starts_at is None or ends_at is None:
+                    continue
 
-                    remind_end = remind_at + timedelta(minutes=15)
-                    is_active = not dismissed
-
-                    if not is_active and google_event_id:
-                        try:
-                            await provider.delete_event(
-                                calendar_id=cal_id, event_id=str(google_event_id)
-                            )
-                        except Exception as exc:
+                if not is_active and provider_event_id:
+                    try:
+                        await provider.delete_event(
+                            calendar_id=cal_id,
+                            event_id=str(provider_event_id),
+                        )
+                    except CalendarRequestError as exc:
+                        if exc.status_code != 404:
                             logger.warning(
-                                "Failed to delete Google event for reminder %s: %s "
+                                "Failed to delete provider event for native reminder %s: %s "
                                 "(will retry next sync)",
                                 reminder_id,
                                 exc,
                             )
                             continue
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to delete provider event for native reminder %s: %s "
+                            "(will retry next sync)",
+                            reminder_id,
+                            exc,
+                        )
+                        continue
+                    await pool.execute(
+                        """
+                        UPDATE calendar_events
+                        SET metadata = metadata - $1, updated_at = now()
+                        WHERE id = $2
+                        """,
+                        NATIVE_REMINDER_PROVIDER_EVENT_ID_KEY,
+                        reminder_id,
+                    )
+                    deleted += 1
+                    continue
+                if not is_active:
+                    continue
+
+                create_payload = CalendarEventCreate(
+                    title=title,
+                    start_at=starts_at,
+                    end_at=ends_at,
+                    timezone=timezone,
+                    description=description,
+                    body=body,
+                    location=location,
+                    recurrence_rule=recurrence_rule,
+                    private_metadata={
+                        BUTLER_GENERATED_PRIVATE_KEY: "true",
+                        BUTLER_NAME_PRIVATE_KEY: self._resolve_effective_butler_name(),
+                        "reminder_id": str(reminder_id),
+                    },
+                )
+                if provider_event_id is None:
+                    try:
+                        event = await provider.create_event(
+                            calendar_id=cal_id,
+                            payload=create_payload,
+                        )
                         await pool.execute(
-                            "UPDATE reminders SET calendar_event_id = NULL WHERE id = $1",
+                            """
+                            UPDATE calendar_events
+                            SET metadata = jsonb_set(
+                                    metadata,
+                                    ARRAY[$1]::text[],
+                                    to_jsonb($2::text),
+                                    true
+                                ),
+                                updated_at = now()
+                            WHERE id = $3
+                            """,
+                            NATIVE_REMINDER_PROVIDER_EVENT_ID_KEY,
+                            event.event_id,
                             reminder_id,
                         )
-                        deleted += 1
-                    elif not is_active:
+                        pushed += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to push native reminder %s to provider calendar: %s",
+                            reminder_id,
+                            exc,
+                        )
+                    continue
+
+                try:
+                    await provider.update_event(
+                        calendar_id=cal_id,
+                        event_id=str(provider_event_id),
+                        patch=CalendarEventUpdate(
+                            title=title,
+                            start_at=starts_at,
+                            end_at=ends_at,
+                            timezone=timezone,
+                            description=description,
+                            body=body,
+                            location=location,
+                            recurrence_rule=recurrence_rule,
+                            private_metadata=create_payload.private_metadata,
+                        ),
+                    )
+                    updated += 1
+                except CalendarRequestError as exc:
+                    if exc.status_code != 404:
+                        logger.warning(
+                            "Failed to update provider event for native reminder %s: %s",
+                            reminder_id,
+                            exc,
+                        )
                         continue
-                    elif google_event_id is None:
-                        try:
-                            event = await provider.create_event(
-                                calendar_id=cal_id,
-                                payload=CalendarEventCreate(
-                                    title=title,
-                                    start_at=remind_at,
-                                    end_at=remind_end,
-                                    timezone=timezone,
-                                    description=reminder_description,
-                                    location=reminder_location,
-                                    private_metadata={
-                                        "butler_generated": "true",
-                                        "butler_name": self._butler_name,
-                                        "reminder_id": str(reminder_id),
-                                    },
+                    try:
+                        event = await provider.create_event(
+                            calendar_id=cal_id,
+                            payload=create_payload,
+                        )
+                        await pool.execute(
+                            """
+                            UPDATE calendar_events
+                            SET metadata = jsonb_set(
+                                    metadata,
+                                    ARRAY[$1]::text[],
+                                    to_jsonb($2::text),
+                                    true
                                 ),
-                            )
-                            await pool.execute(
-                                "UPDATE reminders SET calendar_event_id = $1 WHERE id = $2",
-                                event.event_id,
-                                reminder_id,
-                            )
-                            pushed += 1
-                        except Exception as exc:
-                            logger.warning(
-                                "Failed to push reminder %s to Google Calendar: %s",
-                                reminder_id,
-                                exc,
-                            )
-                    else:
-                        try:
-                            await provider.update_event(
-                                calendar_id=cal_id,
-                                event_id=str(google_event_id),
-                                patch=CalendarEventUpdate(
-                                    title=title,
-                                    start_at=remind_at,
-                                    end_at=remind_end,
-                                    timezone=timezone,
-                                    description=reminder_description,
-                                    location=reminder_location,
-                                ),
-                            )
-                            updated += 1
-                        except Exception as exc:
-                            logger.debug(
-                                "Failed to update Google event for reminder %s: %s",
-                                reminder_id,
-                                exc,
-                            )
+                                updated_at = now()
+                            WHERE id = $3
+                            """,
+                            NATIVE_REMINDER_PROVIDER_EVENT_ID_KEY,
+                            event.event_id,
+                            reminder_id,
+                        )
+                        pushed += 1
+                    except Exception as create_exc:
+                        logger.warning(
+                            "Failed to recreate missing provider event for native reminder %s: %s",
+                            reminder_id,
+                            create_exc,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to update provider event for native reminder %s: %s",
+                        reminder_id,
+                        exc,
+                    )
 
         if pushed or updated or deleted:
             logger.info(
@@ -6118,14 +6248,25 @@ class CalendarModule(Module):
                     "WHERE calendar_event_id IS NOT NULL"
                 )
                 known_event_ids.update(str(r["calendar_event_id"]) for r in task_rows)
-            if await self._table_exists("reminders"):
-                cols = await self._table_columns("reminders")
-                if "calendar_event_id" in cols:
-                    rem_rows = await pool.fetch(
-                        "SELECT calendar_event_id FROM reminders "
-                        "WHERE calendar_event_id IS NOT NULL"
-                    )
-                    known_event_ids.update(str(r["calendar_event_id"]) for r in rem_rows)
+            if await self._table_exists("calendar_events"):
+                reminder_rows = await pool.fetch(
+                    """
+                    SELECT e.metadata->>$1 AS provider_event_id
+                    FROM calendar_events e
+                    JOIN calendar_sources s ON s.id = e.source_id
+                    WHERE s.source_kind = $2
+                      AND e.source_butler = $3
+                      AND e.metadata ? $1
+                    """,
+                    NATIVE_REMINDER_PROVIDER_EVENT_ID_KEY,
+                    SOURCE_KIND_INTERNAL_REMINDERS,
+                    self._resolve_effective_butler_name(),
+                )
+                known_event_ids.update(
+                    str(row["provider_event_id"])
+                    for row in reminder_rows
+                    if row["provider_event_id"] is not None
+                )
             # Include events created via calendar_create_event (workspace
             # mutations).  These are tracked in the action log, not in
             # scheduled_tasks/reminders.
@@ -7624,11 +7765,14 @@ class CalendarModule(Module):
         event_id: uuid.UUID,
         window_start: datetime,
         window_end: datetime,
+        retain_overdue_unnotified: bool = False,
     ) -> None:
         """Delete calendar_event_instances for *event_id* that fall outside the window.
 
         This prevents unbounded row growth as the rolling projection window advances.
-        Only instances that start before window_start or after window_end are deleted.
+        Reminder delivery callers can retain overdue confirmed instances until their
+        per-occurrence ``notified_at`` marker is written; scheduler projections keep
+        the original strict rolling-window pruning behavior.
         """
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -7637,11 +7781,22 @@ class CalendarModule(Module):
             """
             DELETE FROM calendar_event_instances
             WHERE event_id = $1
-              AND (starts_at < $2 OR starts_at > $3)
+              AND (
+                  starts_at > $3
+                  OR (
+                      starts_at < $2
+                      AND (
+                          NOT $4::boolean
+                          OR status <> 'confirmed'
+                          OR metadata->>'notified_at' IS NOT NULL
+                      )
+                  )
+              )
             """,
             event_id,
             window_start,
             window_end,
+            retain_overdue_unnotified,
         )
 
     async def _scheduler_projection_fingerprint(
@@ -7885,15 +8040,51 @@ class CalendarModule(Module):
             return
         await publish_fleet_event(pool, "calendar", {"kind": kind, **(data or {})})
 
-    async def _project_internal_sources(self, *, emit_event: bool = True) -> bool:
-        """Refresh non-provider butler projection sources (scheduled tasks).
+    async def _project_native_reminder_instances(self) -> None:
+        """Extend recurring native reminders through the rolling projection window."""
+        if not await self._projection_tables_available():
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
 
-        Reminders are now native calendar events in ``calendar_events`` and are
-        projected through the standard event pipeline — no separate projection
-        pass is needed.
-        """
+        rows = await pool.fetch(
+            """
+            SELECT e.id, e.source_id, e.recurrence_rule, e.starts_at, e.ends_at, e.timezone
+            FROM calendar_events e
+            JOIN calendar_sources s ON s.id = e.source_id
+            WHERE s.source_kind = $1
+              AND e.source_butler = $2
+              AND e.status = 'confirmed'
+              AND e.recurrence_rule IS NOT NULL
+            """,
+            SOURCE_KIND_INTERNAL_REMINDERS,
+            self._resolve_effective_butler_name(),
+        )
+        window_start = datetime.now(UTC)
+        window_end = window_start + timedelta(days=RECURRENCE_PROJECTION_WINDOW_DAYS)
+        for row in rows:
+            await self._prune_recurring_instances_outside_window(
+                event_id=row["id"],
+                window_start=window_start,
+                window_end=window_end,
+                retain_overdue_unnotified=True,
+            )
+            await self._materialize_native_reminder_instances(
+                row["id"],
+                row["source_id"],
+                recurrence_rule=row["recurrence_rule"],
+                starts_at=row["starts_at"],
+                ends_at=row["ends_at"],
+                timezone=row["timezone"],
+                window_start=window_start,
+            )
+
+    async def _project_internal_sources(self, *, emit_event: bool = True) -> bool:
+        """Refresh scheduled-task projections and recurring native reminder instances."""
         try:
             material_projection = await self._project_scheduler_source()
+            await self._project_native_reminder_instances()
         except Exception as exc:
             logger.error("Internal calendar projection refresh failed: %s", exc, exc_info=True)
             return False
@@ -8860,6 +9051,7 @@ class CalendarModule(Module):
 
     async def _refresh_butler_projection(self) -> dict[str, Any]:
         await self._project_internal_sources()
+        await self._push_internal_events_to_provider()
         return await self._projection_freshness_metadata()
 
     async def _resolve_action_source_id(
@@ -9596,19 +9788,6 @@ class CalendarModule(Module):
             return BUTLER_EVENT_SOURCE_REMINDER
         raise ValueError("source_hint must be one of: scheduled_task | butler_reminder")
 
-    @staticmethod
-    def _normalize_reminder_row(row: Mapping[str, Any]) -> dict[str, Any]:
-        result = dict(row)
-        if "label" not in result and "message" in result:
-            result["label"] = result["message"]
-        if "message" not in result and "label" in result:
-            result["message"] = result["label"]
-        if "next_trigger_at" not in result and "due_at" in result:
-            result["next_trigger_at"] = result["due_at"]
-        if "due_at" not in result and "next_trigger_at" in result:
-            result["due_at"] = result["next_trigger_at"]
-        return result
-
     async def _find_scheduled_task_target(self, event_id: str) -> uuid.UUID | None:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None or not await self._table_exists("scheduled_tasks"):
@@ -9636,28 +9815,28 @@ class CalendarModule(Module):
             return None
         return row["id"]
 
-    async def _find_reminder_target(self, event_id: str) -> uuid.UUID | None:
+    async def _find_native_reminder_target(self, event_id: str) -> uuid.UUID | None:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
-        if pool is None or not await self._table_exists("reminders"):
+        if pool is None or not await self._table_exists("calendar_events"):
             return None
 
-        columns = await self._table_columns("reminders")
-        # Try calendar_event_id (text) first — works for Google Calendar IDs
-        if "calendar_event_id" in columns:
-            row = await pool.fetchrow(
-                "SELECT id FROM reminders WHERE calendar_event_id = $1 LIMIT 1",
-                event_id,
-            )
-            if row is not None:
-                return row["id"]
-        # Try as UUID primary key
         try:
             event_uuid = uuid.UUID(event_id)
         except ValueError:
             return None
         row = await pool.fetchrow(
-            "SELECT id FROM reminders WHERE id = $1 LIMIT 1",
+            """
+            SELECT e.id
+            FROM calendar_events e
+            JOIN calendar_sources s ON s.id = e.source_id
+            WHERE e.id = $1
+              AND s.source_kind = $2
+              AND e.source_butler = $3
+            LIMIT 1
+            """,
             event_uuid,
+            SOURCE_KIND_INTERNAL_REMINDERS,
+            self._resolve_effective_butler_name(),
         )
         if row is None:
             return None
@@ -9679,7 +9858,7 @@ class CalendarModule(Module):
                 raise ValueError(f"No scheduled task found for event_id '{event_id}'")
             return BUTLER_EVENT_SOURCE_SCHEDULED, schedule_id
         if source_hint == BUTLER_EVENT_SOURCE_REMINDER:
-            reminder_id = await self._find_reminder_target(normalized)
+            reminder_id = await self._find_native_reminder_target(normalized)
             if reminder_id is None:
                 raise ValueError(f"No reminder found for event_id '{event_id}'")
             return BUTLER_EVENT_SOURCE_REMINDER, reminder_id
@@ -9687,7 +9866,7 @@ class CalendarModule(Module):
         schedule_id = await self._find_scheduled_task_target(normalized)
         if schedule_id is not None:
             return BUTLER_EVENT_SOURCE_SCHEDULED, schedule_id
-        reminder_id = await self._find_reminder_target(normalized)
+        reminder_id = await self._find_native_reminder_target(normalized)
         if reminder_id is not None:
             return BUTLER_EVENT_SOURCE_REMINDER, reminder_id
         raise ValueError(f"No butler event found for event_id '{event_id}'")
@@ -9701,6 +9880,8 @@ class CalendarModule(Module):
         *,
         title: str,
         body: str | None,
+        description: str | None = None,
+        location: str | None = None,
         starts_at: datetime,
         ends_at: datetime,
         timezone: str,
@@ -9731,22 +9912,24 @@ class CalendarModule(Module):
         row = await pool.fetchrow(
             """
             INSERT INTO calendar_events (
-                source_id, origin_ref, title, body, timezone,
+                source_id, origin_ref, title, description, body, location, timezone,
                 starts_at, ends_at, all_day, status, visibility,
                 recurrence_rule, source_butler, source_session_id, metadata
             )
             VALUES (
-                $1, $2, $3, $4, $5,
-                $6, $7, FALSE, 'confirmed', 'default',
-                $8, $9, $10, '{"native": true}'::jsonb
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, FALSE, 'confirmed', 'default',
+                $10, $11, $12, '{"native": true}'::jsonb
             )
-            RETURNING id, title, body, starts_at, ends_at, status,
+            RETURNING id, title, description, body, location, starts_at, ends_at, status,
                       recurrence_rule, source_butler, source_session_id
             """,
             source_id,
             origin_ref,
             title,
+            description,
             body,
+            location,
             timezone,
             starts_at,
             ends_at,
@@ -9759,22 +9942,15 @@ class CalendarModule(Module):
 
         event_id: uuid.UUID = row["id"]
 
-        # Recurring reminders need at least one materialized instance so that
-        # reminder_dismiss can cancel the earliest confirmed occurrence.
-        # The background projection job will expand the full series on its next
-        # cycle; this seeds the initial instance at the creation time slot.
         if recurrence_rule:
-            await pool.execute(
-                """
-                INSERT INTO calendar_event_instances (
-                    event_id, starts_at, ends_at, status
-                )
-                VALUES ($1, $2, $3, 'confirmed')
-                ON CONFLICT DO NOTHING
-                """,
+            await self._materialize_native_reminder_instances(
                 event_id,
-                starts_at,
-                ends_at,
+                source_id,
+                recurrence_rule=recurrence_rule,
+                starts_at=starts_at,
+                ends_at=ends_at,
+                timezone=timezone,
+                window_start=starts_at,
             )
 
         # Insert entity associations if provided.
@@ -9789,6 +9965,376 @@ class CalendarModule(Module):
             )
 
         return event_id, dict(row)
+
+    async def _materialize_native_reminder_instances(
+        self,
+        event_id: uuid.UUID,
+        source_id: uuid.UUID,
+        *,
+        recurrence_rule: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        timezone: str,
+        window_start: datetime,
+        executor: Any | None = None,
+    ) -> None:
+        """Materialize a rolling RRULE window without overwriting dismissed instances."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+        db = executor or pool
+
+        duration_minutes = max(int((ends_at - starts_at).total_seconds() // 60), 1)
+        window_end = window_start + timedelta(days=RECURRENCE_PROJECTION_WINDOW_DAYS)
+        occurrences = _rrule_occurrences_in_window(
+            recurrence_rule,
+            starts_at,
+            window_start,
+            window_end,
+            duration_minutes=duration_minutes,
+        )
+        if not occurrences:
+            return
+
+        rows = [
+            (
+                event_id,
+                source_id,
+                f"native:{_format_ical_utc(occurrence_start)}",
+                timezone,
+                occurrence_start,
+                occurrence_end,
+            )
+            for occurrence_start, occurrence_end in occurrences
+        ]
+        await db.executemany(
+            """
+            INSERT INTO calendar_event_instances (
+                event_id, source_id, origin_instance_ref, timezone,
+                starts_at, ends_at, status, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', '{"native": true}'::jsonb)
+            ON CONFLICT (event_id, origin_instance_ref) DO NOTHING
+            """,
+            rows,
+        )
+
+    async def _update_native_reminder_event(
+        self,
+        *,
+        reminder_id: uuid.UUID,
+        title: str | None,
+        body: str | None,
+        start_at: datetime | None,
+        end_at: datetime | None,
+        timezone: str | None,
+        until_at: datetime | None,
+        recurrence_rule: str | None,
+        enabled: bool | None,
+    ) -> dict[str, Any]:
+        """Update a calendar-native reminder owned by this butler."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT e.*
+                    FROM calendar_events e
+                    JOIN calendar_sources s ON s.id = e.source_id
+                    WHERE e.id = $1
+                      AND s.source_kind = $2
+                      AND e.source_butler = $3
+                    FOR UPDATE OF e
+                    """,
+                    reminder_id,
+                    SOURCE_KIND_INTERNAL_REMINDERS,
+                    self._resolve_effective_butler_name(),
+                )
+                if row is None:
+                    raise ValueError(f"Native reminder {reminder_id} not found")
+                existing = dict(row)
+
+                effective_start = start_at or existing["starts_at"]
+                effective_end = end_at or existing["ends_at"]
+                if effective_start.tzinfo is None:
+                    raise ValueError("start_at must be timezone-aware")
+                if effective_end.tzinfo is None:
+                    raise ValueError("end_at must be timezone-aware")
+                if effective_end <= effective_start:
+                    raise ValueError("end_at must be after start_at")
+
+                updates: list[str] = []
+                params: list[Any] = [reminder_id]
+                index = 2
+
+                def add(column: str, value: Any) -> None:
+                    nonlocal index
+                    updates.append(f"{column} = ${index}")
+                    params.append(value)
+                    index += 1
+
+                if title is not None:
+                    normalized_title = title.strip()
+                    if not normalized_title:
+                        raise ValueError("title must be a non-empty string")
+                    add("title", normalized_title)
+                if body is not None:
+                    add("body", _normalize_optional_text(body))
+                if start_at is not None:
+                    add("starts_at", start_at)
+                if end_at is not None:
+                    add("ends_at", end_at)
+                if timezone is not None:
+                    normalized_timezone = timezone.strip()
+                    _ensure_valid_timezone(normalized_timezone)
+                    add("timezone", normalized_timezone)
+
+                recurrence_changed = recurrence_rule is not None or until_at is not None
+                effective_rule = (
+                    _normalize_recurrence_rule(recurrence_rule)
+                    if recurrence_rule is not None
+                    else existing.get("recurrence_rule")
+                )
+                if until_at is not None:
+                    if effective_rule is None:
+                        raise ValueError(
+                            "until_at requires recurrence_rule for butler_reminder events"
+                        )
+                    effective_rule = _recurrence_lines_bound_until([effective_rule], until_at)[0]
+                if recurrence_changed:
+                    add("recurrence_rule", effective_rule)
+                if enabled is not None:
+                    add("status", "confirmed" if enabled else "cancelled")
+
+                if not updates:
+                    return existing
+
+                updated = await conn.fetchrow(
+                    f"""
+                    UPDATE calendar_events
+                    SET {", ".join(updates)}, updated_at = now()
+                    WHERE id = $1
+                    RETURNING *
+                    """,
+                    *params,
+                )
+                if updated is None:
+                    raise RuntimeError(f"Failed to update native reminder {reminder_id}")
+                result = dict(updated)
+
+                if start_at is not None or end_at is not None or recurrence_changed:
+                    await conn.execute(
+                        """
+                        DELETE FROM calendar_event_instances
+                        WHERE event_id = $1
+                          AND starts_at > now()
+                          AND status = 'confirmed'
+                          AND metadata->>'notified_at' IS NULL
+                        """,
+                        reminder_id,
+                    )
+                    if result.get("recurrence_rule") and result.get("status") != "cancelled":
+                        await self._materialize_native_reminder_instances(
+                            reminder_id,
+                            result["source_id"],
+                            recurrence_rule=result["recurrence_rule"],
+                            starts_at=result["starts_at"],
+                            ends_at=result["ends_at"],
+                            timezone=result["timezone"],
+                            window_start=result["starts_at"],
+                            executor=conn,
+                        )
+
+                return result
+
+    async def _delete_native_reminder_event(
+        self,
+        reminder_id: uuid.UUID,
+        *,
+        scope: Literal["this", "following", "series"] = "series",
+        instance_start_at: datetime | None = None,
+    ) -> bool:
+        """Delete a calendar-native reminder series or occurrence range."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+        if scope not in {"this", "following", "series"}:
+            raise ValueError("scope must be one of: this | following | series")
+        if scope != "series":
+            if instance_start_at is None:
+                raise ValueError("instance_start_at is required for scope 'this'/'following'")
+            if instance_start_at.tzinfo is None:
+                raise ValueError("instance_start_at must be timezone-aware")
+
+        if scope == "series":
+            await self._delete_native_reminder_provider_copy(reminder_id)
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if scope == "series":
+                    row = await conn.fetchrow(
+                        """
+                        DELETE FROM calendar_events e
+                        USING calendar_sources s
+                        WHERE e.id = $1
+                          AND e.source_id = s.id
+                          AND s.source_kind = $2
+                          AND e.source_butler = $3
+                        RETURNING e.id
+                        """,
+                        reminder_id,
+                        SOURCE_KIND_INTERNAL_REMINDERS,
+                        self._resolve_effective_butler_name(),
+                    )
+                    return row is not None
+
+                event = await conn.fetchrow(
+                    """
+                    SELECT e.recurrence_rule
+                    FROM calendar_events e
+                    JOIN calendar_sources s ON s.id = e.source_id
+                    WHERE e.id = $1
+                      AND s.source_kind = $2
+                      AND e.source_butler = $3
+                    FOR UPDATE OF e
+                    """,
+                    reminder_id,
+                    SOURCE_KIND_INTERNAL_REMINDERS,
+                    self._resolve_effective_butler_name(),
+                )
+                if event is None:
+                    return False
+                recurrence_rule = event["recurrence_rule"]
+                if not recurrence_rule:
+                    raise ValueError(
+                        "Occurrence-scoped deletion requires a recurring native reminder"
+                    )
+                occurrence_start = instance_start_at.astimezone(UTC)
+                occurrence_exists = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM calendar_event_instances
+                        WHERE event_id = $1
+                          AND starts_at = $2
+                    )
+                    """,
+                    reminder_id,
+                    occurrence_start,
+                )
+                if not occurrence_exists:
+                    return False
+
+                if scope == "this":
+                    row = await conn.fetchrow(
+                        """
+                        UPDATE calendar_event_instances
+                        SET status = 'cancelled',
+                            is_exception = true,
+                            updated_at = now()
+                        WHERE event_id = $1
+                          AND starts_at = $2
+                        RETURNING id
+                        """,
+                        reminder_id,
+                        occurrence_start,
+                    )
+                    return row is not None
+
+                bounded_rule = _recurrence_lines_bound_until(
+                    [recurrence_rule],
+                    occurrence_start - timedelta(seconds=1),
+                )[0]
+                await conn.execute(
+                    """
+                    UPDATE calendar_events
+                    SET recurrence_rule = $2, updated_at = now()
+                    WHERE id = $1
+                    """,
+                    reminder_id,
+                    bounded_rule,
+                )
+                result = await conn.execute(
+                    """
+                    UPDATE calendar_event_instances
+                    SET status = 'cancelled',
+                        is_exception = true,
+                        updated_at = now()
+                    WHERE event_id = $1
+                      AND starts_at >= $2
+                    """,
+                    reminder_id,
+                    occurrence_start,
+                )
+                return result != "UPDATE 0"
+
+    async def _delete_native_reminder_provider_copy(self, reminder_id: uuid.UUID) -> None:
+        """Delete a native reminder's durable provider mirror before local series deletion."""
+        provider = self._provider
+        calendar_id = self._resolved_calendar_id
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if provider is None or calendar_id is None or pool is None:
+            return
+
+        row = await pool.fetchrow(
+            """
+            SELECT e.metadata
+            FROM calendar_events e
+            JOIN calendar_sources s ON s.id = e.source_id
+            WHERE e.id = $1
+              AND s.source_kind = $2
+              AND e.source_butler = $3
+            """,
+            reminder_id,
+            SOURCE_KIND_INTERNAL_REMINDERS,
+            self._resolve_effective_butler_name(),
+        )
+        if row is None:
+            return
+        metadata = self._normalize_json_object(row["metadata"])
+        provider_event_id = metadata.get(NATIVE_REMINDER_PROVIDER_EVENT_ID_KEY)
+        if provider_event_id is None:
+            return
+        try:
+            await provider.delete_event(
+                calendar_id=calendar_id,
+                event_id=str(provider_event_id),
+            )
+        except CalendarRequestError as exc:
+            if exc.status_code != 404:
+                raise
+
+    async def _toggle_native_reminder_event(
+        self,
+        reminder_id: uuid.UUID,
+        enabled: bool,
+    ) -> dict[str, Any]:
+        """Pause or resume a calendar-native reminder owned by this butler."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+        row = await pool.fetchrow(
+            """
+            UPDATE calendar_events e
+            SET status = $2, updated_at = now()
+            FROM calendar_sources s
+            WHERE e.id = $1
+              AND e.source_id = s.id
+              AND s.source_kind = $3
+              AND e.source_butler = $4
+            RETURNING e.*
+            """,
+            reminder_id,
+            "confirmed" if enabled else "cancelled",
+            SOURCE_KIND_INTERNAL_REMINDERS,
+            self._resolve_effective_butler_name(),
+        )
+        if row is None:
+            raise ValueError(f"Native reminder {reminder_id} not found")
+        return dict(row)
 
     async def _query_reminders(
         self,
@@ -9974,208 +10520,6 @@ class CalendarModule(Module):
             "recurrence": "recurring",
             "dismissed_instance_starts_at": instance_row["starts_at"].isoformat(),
         }
-
-    async def _create_reminder_event(
-        self,
-        *,
-        title: str,
-        start_at: datetime,
-        timezone: str,
-        until_at: datetime | None,
-        recurrence_rule: str | None,
-        cron: str | None,
-        action: str,
-        action_args: dict[str, Any] | None,
-        calendar_event_id: str,
-        description: str | None = None,
-        location: str | None = None,
-    ) -> dict[str, Any]:
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
-        if pool is None:
-            raise RuntimeError("Database pool is not available")
-        if not await self._table_exists("reminders"):
-            raise ValueError("Reminder-backed butler events are not available on this butler")
-
-        columns = await self._table_columns("reminders")
-        args = dict(action_args or {})
-        insert_columns: list[str] = []
-        insert_values: list[Any] = []
-
-        def add(column: str, value: Any) -> None:
-            insert_columns.append(column)
-            insert_values.append(value)
-
-        reminder_type = "one_time"
-        normalized_rule = _normalize_recurrence_rule(recurrence_rule)
-        if normalized_rule is not None or cron is not None:
-            reminder_type = "recurring_monthly"
-            if normalized_rule and "FREQ=YEARLY" in normalized_rule.upper():
-                reminder_type = "recurring_yearly"
-
-        if "label" in columns:
-            add("label", title)
-        if "message" in columns:
-            add("message", action)
-        if "type" in columns:
-            add("type", reminder_type)
-        if "reminder_type" in columns:
-            add("reminder_type", reminder_type)
-        if "next_trigger_at" in columns:
-            add("next_trigger_at", start_at)
-        if "due_at" in columns:
-            add("due_at", start_at)
-        if "timezone" in columns:
-            add("timezone", timezone)
-        if until_at is not None and "until_at" in columns:
-            add("until_at", until_at)
-        if "recurrence_rule" in columns:
-            add("recurrence_rule", normalized_rule)
-        if "cron" in columns:
-            add("cron", cron)
-        if description is not None and "description" in columns:
-            add("description", description)
-        if location is not None and "location" in columns:
-            add("location", location)
-        if "dismissed" in columns:
-            add("dismissed", False)
-        if "calendar_event_id" in columns:
-            add("calendar_event_id", calendar_event_id)
-        if "updated_at" in columns:
-            add("updated_at", datetime.now(UTC))
-        if "contact_id" in columns and "contact_id" in args:
-            contact_id_value = args.get("contact_id")
-            if contact_id_value is None:
-                add("contact_id", None)
-            else:
-                add("contact_id", uuid.UUID(str(contact_id_value)))
-
-        placeholders = [f"${idx}" for idx in range(1, len(insert_values) + 1)]
-        row = await pool.fetchrow(
-            f"""
-            INSERT INTO reminders ({", ".join(insert_columns)})
-            VALUES ({", ".join(placeholders)})
-            RETURNING *
-            """,
-            *insert_values,
-        )
-        if row is None:
-            raise RuntimeError("Failed to create reminder-backed event")
-        return self._normalize_reminder_row(dict(row))
-
-    async def _update_reminder_event(
-        self,
-        *,
-        reminder_id: uuid.UUID,
-        title: str | None,
-        start_at: datetime | None,
-        timezone: str | None,
-        until_at: datetime | None,
-        recurrence_rule: str | None,
-        cron: str | None,
-        enabled: bool | None,
-    ) -> dict[str, Any]:
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
-        if pool is None:
-            raise RuntimeError("Database pool is not available")
-
-        row = await pool.fetchrow("SELECT * FROM reminders WHERE id = $1", reminder_id)
-        if row is None:
-            raise ValueError(f"Reminder {reminder_id} not found")
-        existing = self._normalize_reminder_row(dict(row))
-        columns = await self._table_columns("reminders")
-
-        updates: list[str] = []
-        params: list[Any] = [reminder_id]
-        idx = 2
-
-        def add(column: str, value: Any) -> None:
-            nonlocal idx
-            updates.append(f"{column} = ${idx}")
-            params.append(value)
-            idx += 1
-
-        normalized_rule = _normalize_recurrence_rule(recurrence_rule) if recurrence_rule else None
-        effective_trigger = start_at if start_at is not None else existing.get("next_trigger_at")
-        if title is not None:
-            if "label" in columns:
-                add("label", title)
-            if "message" in columns:
-                add("message", title)
-        if effective_trigger is not None:
-            if "next_trigger_at" in columns:
-                add("next_trigger_at", effective_trigger)
-            if "due_at" in columns:
-                add("due_at", effective_trigger)
-        if timezone is not None and "timezone" in columns:
-            add("timezone", timezone)
-        if until_at is not None and "until_at" in columns:
-            add("until_at", until_at)
-        if recurrence_rule is not None and "recurrence_rule" in columns:
-            add("recurrence_rule", normalized_rule)
-        if cron is not None and "cron" in columns:
-            add("cron", cron)
-        if enabled is not None:
-            if "dismissed" in columns:
-                add("dismissed", not enabled)
-            if "next_trigger_at" in columns and not enabled:
-                add("next_trigger_at", None)
-        if "updated_at" in columns:
-            add("updated_at", datetime.now(UTC))
-
-        if not updates:
-            return existing
-
-        query = f"UPDATE reminders SET {', '.join(updates)} WHERE id = $1 RETURNING *"
-        updated = await pool.fetchrow(query, *params)
-        if updated is None:
-            raise ValueError(f"Reminder {reminder_id} not found")
-        return self._normalize_reminder_row(dict(updated))
-
-    async def _delete_reminder_event(self, reminder_id: uuid.UUID) -> bool:
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
-        if pool is None:
-            raise RuntimeError("Database pool is not available")
-        deleted = await pool.fetchval(
-            "DELETE FROM reminders WHERE id = $1 RETURNING id",
-            reminder_id,
-        )
-        return deleted is not None
-
-    async def _toggle_reminder_event(self, reminder_id: uuid.UUID, enabled: bool) -> dict[str, Any]:
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
-        if pool is None:
-            raise RuntimeError("Database pool is not available")
-        row = await pool.fetchrow("SELECT * FROM reminders WHERE id = $1", reminder_id)
-        if row is None:
-            raise ValueError(f"Reminder {reminder_id} not found")
-        existing = self._normalize_reminder_row(dict(row))
-        columns = await self._table_columns("reminders")
-        updates: list[str] = []
-        params: list[Any] = [reminder_id]
-        idx = 2
-
-        def add(column: str, value: Any) -> None:
-            nonlocal idx
-            updates.append(f"{column} = ${idx}")
-            params.append(value)
-            idx += 1
-
-        if "dismissed" in columns:
-            add("dismissed", not enabled)
-        if "next_trigger_at" in columns:
-            if enabled:
-                next_trigger = existing.get("next_trigger_at") or existing.get("due_at")
-                add("next_trigger_at", next_trigger)
-            else:
-                add("next_trigger_at", None)
-        if "updated_at" in columns:
-            add("updated_at", datetime.now(UTC))
-
-        query = f"UPDATE reminders SET {', '.join(updates)} WHERE id = $1 RETURNING *"
-        updated = await pool.fetchrow(query, *params)
-        if updated is None:
-            raise ValueError(f"Reminder {reminder_id} not found")
-        return self._normalize_reminder_row(dict(updated))
 
     @staticmethod
     def _ensure_butler_title(title: str) -> str:

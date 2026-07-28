@@ -304,6 +304,254 @@ class TestReminderCreateBehavior:
 
 
 # ---------------------------------------------------------------------------
+# calendar_create_butler_event: native reminder storage
+# ---------------------------------------------------------------------------
+
+
+class TestCreateButlerReminder:
+    async def test_uses_native_calendar_event_without_legacy_reminders_table(self):
+        """The butler-events group can create reminders on every calendar butler."""
+        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        event_id = uuid.uuid4()
+        event_row = {
+            "id": event_id,
+            "title": "Review renewal",
+            "description": "Cancel if no longer needed",
+            "location": "Online",
+            "starts_at": _DUE_AT,
+            "ends_at": _ENDS_AT,
+            "status": "confirmed",
+            "recurrence_rule": None,
+            "source_butler": "finance",
+            "source_session_id": None,
+        }
+
+        mod._table_exists = AsyncMock(return_value=False)
+        mod._prepare_workspace_mutation = AsyncMock(return_value=("key", None))
+        mod._resolve_action_source_id = AsyncMock(return_value=_SOURCE_ID)
+        mod._insert_reminder_to_calendar_events = AsyncMock(return_value=(event_id, event_row))
+        mod._refresh_butler_projection = AsyncMock(return_value={"available": True})
+        mod._finalize_workspace_mutation = AsyncMock()
+
+        result = await mcp.tools["calendar_create_butler_event"](
+            butler_name="finance",
+            title="Review renewal",
+            start_at=_DUE_AT,
+            end_at=_ENDS_AT,
+            description="Cancel if no longer needed",
+            location="Online",
+            source_hint="butler_reminder",
+        )
+
+        assert result["status"] == "created"
+        assert result["source_type"] == "butler_reminder"
+        assert result["event_id"] == str(event_id)
+        assert result["reminder_id"] == str(event_id)
+        mod._insert_reminder_to_calendar_events.assert_awaited_once_with(
+            title="Review renewal",
+            body=None,
+            description="Cancel if no longer needed",
+            location="Online",
+            starts_at=_DUE_AT,
+            ends_at=_ENDS_AT,
+            timezone="UTC",
+            recurrence_rule=None,
+            entity_ids=[],
+        )
+        assert not any(call.args == ("reminders",) for call in mod._table_exists.await_args_list)
+
+    async def test_rejects_cron_instead_of_silently_dropping_it(self):
+        """Native reminders use RRULE; cron-backed events must use scheduled tasks."""
+        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        mod._prepare_workspace_mutation = AsyncMock(return_value=("key", None))
+        mod._resolve_action_source_id = AsyncMock(return_value=_SOURCE_ID)
+        mod._insert_reminder_to_calendar_events = AsyncMock()
+
+        with pytest.raises(ValueError, match="cron.*scheduled_task"):
+            await mcp.tools["calendar_create_butler_event"](
+                butler_name="finance",
+                title="Review renewal",
+                start_at=_DUE_AT,
+                cron="0 9 * * 1",
+                source_hint="butler_reminder",
+            )
+
+        mod._insert_reminder_to_calendar_events.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("action", "action_args", "match"),
+        [
+            ("send a report", None, "custom action.*scheduled_task"),
+            ("Run butler event", {"dispatch_mode": "job"}, "action_args.*scheduled_task"),
+        ],
+    )
+    async def test_rejects_executable_fields_instead_of_silently_dropping_them(
+        self,
+        action,
+        action_args,
+        match,
+    ):
+        """Executable fields belong to scheduled tasks, not native reminders."""
+        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        mod._insert_reminder_to_calendar_events = AsyncMock()
+
+        with pytest.raises(ValueError, match=match):
+            await mcp.tools["calendar_create_butler_event"](
+                butler_name="finance",
+                title="Review renewal",
+                start_at=_DUE_AT,
+                action=action,
+                action_args=action_args,
+                source_hint="butler_reminder",
+            )
+
+        mod._insert_reminder_to_calendar_events.assert_not_awaited()
+
+    async def test_encodes_explicit_until_at_in_native_reminder_rrule(self):
+        """Native reminder recurrence keeps the requested terminal bound."""
+        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        event_id = uuid.uuid4()
+        event_row = {
+            **_event_row_dict(recurrence_rule="RRULE:FREQ=MONTHLY;UNTIL=20261231T235900Z"),
+            "id": event_id,
+            "source_butler": "finance",
+        }
+        mod._prepare_workspace_mutation = AsyncMock(return_value=("key", None))
+        mod._resolve_action_source_id = AsyncMock(return_value=_SOURCE_ID)
+        mod._insert_reminder_to_calendar_events = AsyncMock(return_value=(event_id, event_row))
+        mod._refresh_butler_projection = AsyncMock(return_value={"available": True})
+        mod._finalize_workspace_mutation = AsyncMock()
+
+        await mcp.tools["calendar_create_butler_event"](
+            butler_name="finance",
+            title="Review renewal",
+            start_at=_DUE_AT,
+            recurrence_rule="RRULE:FREQ=MONTHLY",
+            until_at=datetime(2026, 12, 31, 23, 59, tzinfo=UTC),
+            source_hint="butler_reminder",
+        )
+
+        assert (
+            mod._insert_reminder_to_calendar_events.await_args.kwargs["recurrence_rule"]
+            == "RRULE:FREQ=MONTHLY;UNTIL=20261231T235900Z"
+        )
+
+    async def test_native_reminder_supports_butler_event_lifecycle(self):
+        """A native reminder returned by create remains update/toggle/delete manageable."""
+        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        event_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
+        event_row = {
+            "id": event_id,
+            "title": "Review renewal",
+            "description": None,
+            "location": None,
+            "starts_at": _DUE_AT,
+            "ends_at": _ENDS_AT,
+            "status": "confirmed",
+            "recurrence_rule": None,
+            "source_butler": "finance",
+            "source_session_id": None,
+        }
+        updated_row = {**event_row, "title": "Review subscription"}
+        paused_row = {**updated_row, "status": "cancelled"}
+
+        mod._prepare_workspace_mutation = AsyncMock(return_value=("key", None))
+        mod._resolve_action_source_id = AsyncMock(return_value=_SOURCE_ID)
+        mod._insert_reminder_to_calendar_events = AsyncMock(return_value=(event_id, event_row))
+        mod._find_native_reminder_target = AsyncMock(return_value=event_id)
+        mod._update_native_reminder_event = AsyncMock(return_value=updated_row)
+        mod._toggle_native_reminder_event = AsyncMock(return_value=paused_row)
+        mod._delete_native_reminder_event = AsyncMock(return_value=True)
+        mod._upsert_event_entities = AsyncMock()
+        mod._gate_high_impact_mutation = AsyncMock(return_value=None)
+        mod._refresh_butler_projection = AsyncMock(return_value={"available": True})
+        mod._finalize_workspace_mutation = AsyncMock()
+
+        created = await mcp.tools["calendar_create_butler_event"](
+            butler_name="finance",
+            title="Review renewal",
+            start_at=_DUE_AT,
+            source_hint="butler_reminder",
+        )
+        updated = await mcp.tools["calendar_update_butler_event"](
+            event_id=created["event_id"],
+            title="Review subscription",
+            source_hint="butler_reminder",
+            entity_ids=[entity_id],
+        )
+        toggled = await mcp.tools["calendar_toggle_butler_event"](
+            event_id=created["event_id"],
+            enabled=False,
+            source_hint="butler_reminder",
+            _approval_bypass=True,
+        )
+        deleted = await mcp.tools["calendar_delete_butler_event"](
+            event_id=created["event_id"],
+            source_hint="butler_reminder",
+            _approval_bypass=True,
+        )
+
+        assert updated["status"] == "updated"
+        assert updated["event_id"] == str(event_id)
+        assert toggled["status"] == "updated"
+        assert toggled["event_id"] == str(event_id)
+        assert deleted["status"] == "deleted"
+        mod._update_native_reminder_event.assert_awaited_once()
+        mod._upsert_event_entities.assert_awaited_once_with(
+            event_id=event_id,
+            entity_ids=[entity_id],
+        )
+        mod._toggle_native_reminder_event.assert_awaited_once_with(event_id, False)
+        mod._delete_native_reminder_event.assert_awaited_once_with(
+            event_id,
+            scope="series",
+            instance_start_at=None,
+        )
+
+    async def test_native_reminder_delete_forwards_occurrence_scope(self):
+        """Occurrence-scoped deletion reaches the native reminder backend."""
+        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        event_id = uuid.uuid4()
+
+        mod._prepare_workspace_mutation = AsyncMock(return_value=("key", None))
+        mod._find_native_reminder_target = AsyncMock(return_value=event_id)
+        mod._resolve_action_source_id = AsyncMock(return_value=_SOURCE_ID)
+        mod._delete_native_reminder_event = AsyncMock(return_value=True)
+        mod._refresh_butler_projection = AsyncMock(return_value={"available": True})
+        mod._finalize_workspace_mutation = AsyncMock()
+
+        result = await mcp.tools["calendar_delete_butler_event"](
+            event_id=str(event_id),
+            scope="this",
+            instance_start_at=_DUE_AT,
+            source_hint="butler_reminder",
+        )
+
+        assert result["status"] == "deleted"
+        assert result["scope"] == "this"
+        mod._delete_native_reminder_event.assert_awaited_once_with(
+            event_id,
+            scope="this",
+            instance_start_at=_DUE_AT,
+        )
+
+
+class TestButlerReminderTargetResolution:
+    async def test_native_target_is_resolved_from_calendar_events(self):
+        """Native reminder IDs resolve only through calendar_events."""
+        event_id = uuid.uuid4()
+        pool = _make_pool(fetchrow_result={"id": event_id})
+        _, mod = await _make_module(butler_name="finance", pool=pool)
+        mod._table_exists = AsyncMock(side_effect=lambda table: table == "calendar_events")
+
+        resolved = await mod._find_native_reminder_target(str(event_id))
+
+        assert resolved == event_id
+        mod._table_exists.assert_awaited_once_with("calendar_events")
+
+
+# ---------------------------------------------------------------------------
 # reminder_list: behavior
 # ---------------------------------------------------------------------------
 
@@ -561,12 +809,12 @@ class TestInsertReminderToCalendarEvents:
                 entity_ids=[],
             )
 
-    async def test_recurring_reminder_inserts_initial_instance(self):
-        """A recurring reminder must seed an initial calendar_event_instances row."""
+    async def test_recurring_reminder_materializes_rolling_instance_window(self):
+        """A recurring reminder materializes every occurrence in its rolling window."""
         pool = _make_pool(
             fetchrow_side_effect=[
                 _source_row(),
-                _event_row_dict(recurrence_rule="RRULE:FREQ=YEARLY"),
+                _event_row_dict(recurrence_rule="RRULE:FREQ=MONTHLY"),
             ]
         )
         mod = CalendarModule()
@@ -585,12 +833,30 @@ class TestInsertReminderToCalendarEvents:
                 starts_at=_DUE_AT,
                 ends_at=_ENDS_AT,
                 timezone="UTC",
-                recurrence_rule="RRULE:FREQ=YEARLY",
+                recurrence_rule="RRULE:FREQ=MONTHLY",
                 entity_ids=[],
             )
 
-        # pool.execute should be called once to seed the initial instance.
-        pool.execute.assert_called_once()
+        pool.executemany.assert_awaited_once()
+        query, rows = pool.executemany.await_args.args
+        normalized_query = " ".join(query.split())
+        assert "source_id" in normalized_query
+        assert "origin_instance_ref" in normalized_query
+        assert "timezone" in normalized_query
+        assert len(rows) >= 3
+        assert all(_SOURCE_ID in row for row in rows)
+        assert all("UTC" in row for row in rows)
+
+    async def test_internal_projection_refresh_extends_native_reminder_window(self):
+        """Periodic internal refresh also extends recurring native reminder instances."""
+        mod = CalendarModule()
+        mod._project_scheduler_source = AsyncMock(return_value=False)
+        mod._project_native_reminder_instances = AsyncMock()
+
+        changed = await mod._project_internal_sources(emit_event=False)
+
+        assert changed is False
+        mod._project_native_reminder_instances.assert_awaited_once_with()
 
     async def test_one_time_reminder_does_not_insert_instance(self):
         """A one-time reminder must NOT insert into calendar_event_instances."""
@@ -621,3 +887,17 @@ class TestInsertReminderToCalendarEvents:
             )
 
         pool.execute.assert_not_called()
+
+
+async def test_butler_projection_refresh_pushes_native_changes_to_provider():
+    """A lifecycle refresh mirrors native reminder mutations immediately."""
+    mod = CalendarModule()
+    mod._project_internal_sources = AsyncMock()
+    mod._push_internal_events_to_provider = AsyncMock()
+    mod._projection_freshness_metadata = AsyncMock(return_value={"available": True})
+
+    result = await mod._refresh_butler_projection()
+
+    assert result == {"available": True}
+    mod._project_internal_sources.assert_awaited_once_with()
+    mod._push_internal_events_to_provider.assert_awaited_once_with()
