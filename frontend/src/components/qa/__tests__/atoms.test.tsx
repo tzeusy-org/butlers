@@ -121,6 +121,15 @@ describe("QA dossier atoms", () => {
     expect(screen.getByText("no repairs merged in 24h")).toBeTruthy();
   });
 
+  it("does not present a missing summary as no repairs", () => {
+    render(<QaKpiStrip kpis={undefined} active={undefined} />);
+
+    expect(screen.getByTestId("qa-kpi-mttr-value").textContent).toBe("—");
+    expect(screen.queryByText("no repairs merged in 24h")).toBeNull();
+    expect(screen.getAllByText("summary unavailable")).toHaveLength(2);
+    expect(screen.queryByText("0 awaiting CI · 0 escalated")).toBeNull();
+  });
+
   it("renders active breakdown with awaiting CI and escalated open cases", () => {
     render(<QaKpiStrip kpis={kpisWithNullMttr} active={activeBreakdown} />);
 
