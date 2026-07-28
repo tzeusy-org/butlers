@@ -1405,8 +1405,8 @@ async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
     mock_db.butler_names = ["general"]
     mock_db.pool = MagicMock(return_value=mock_pool)
 
-    # No reachable butlers — get_client raises so _dispatch_approved_action
-    # exhausts its targets and returns None (action stays 'approved').
+    # No reachable butlers — dispatch classifies the attempt as unreachable
+    # and the action stays 'approved'.
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     mock_mcp.get_client = AsyncMock(side_effect=RuntimeError("no daemon"))
@@ -2116,10 +2116,17 @@ async def test_resolve_referenced_entities_fails_open_on_db_error():
 
 
 # ---------------------------------------------------------------------------
-# Re-gate guard: _dispatch_approved_action must not record success when the
-# tool re-enters the approval gate and returns {status: pending_approval}.
+# Re-gate guard: dispatch must not record success when the tool re-enters the
+# approval gate and returns {status: pending_approval}.
 # Regression test for bu-km0y2.
 # ---------------------------------------------------------------------------
+
+
+def test_approvals_router_has_no_legacy_dispatch_result_wrapper():
+    """Approval dispatch exposes one structured internal result contract."""
+    import butlers.api.routers.approvals as approvals_router
+
+    assert not hasattr(approvals_router, "_dispatch_approved_action")
 
 
 def _build_dispatch_mocks(
@@ -2131,7 +2138,7 @@ def _build_dispatch_mocks(
     mcp_is_error: bool = False,
     mark_executed_return: dict | None = None,
 ):
-    """Build the minimal mocks needed to exercise _dispatch_approved_action."""
+    """Build the minimal mocks needed to exercise structured approval dispatch."""
     from butlers.api.db import DatabaseManager
     from butlers.api.deps import MCPClientManager
 
@@ -2190,7 +2197,7 @@ def _build_dispatch_mocks(
     return mock_mcp, mock_db, mock_pool, executed_result
 
 
-async def test_dispatch_approved_action_executes_via_butler_tool():
+async def test_dispatch_approved_action_outcome_executes_via_butler_tool():
     """Fix (bu-1q9wh): a gated tool is executed via the owning butler's un-gated
     ``dispatch_approved_action`` tool — NOT by re-calling the gated tool by name.
 
@@ -2202,7 +2209,7 @@ async def test_dispatch_approved_action_executes_via_butler_tool():
     """
     import json
 
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     executed_payload = {
@@ -2229,7 +2236,7 @@ async def test_dispatch_approved_action_executes_via_butler_tool():
         mcp_is_error=False,
     )
 
-    result = await _dispatch_approved_action(
+    outcome = await _dispatch_approved_action_outcome(
         mock_mcp,
         mock_db,
         mock_pool,
@@ -2246,18 +2253,19 @@ async def test_dispatch_approved_action_executes_via_butler_tool():
         f"Must invoke the un-gated executor, not {call.args[0]!r}"
     )
     assert call.args[1] == {"action_id": str(action_id)}
-    assert result is not None
-    assert result["status"] == "executed"
+    assert outcome.kind == "executed"
+    assert outcome.action is not None
+    assert outcome.action["status"] == "executed"
 
 
-async def test_dispatch_approved_action_butler_error_returns_none():
+async def test_dispatch_approved_action_outcome_classifies_butler_error():
     """When the owning butler cannot execute the action (error dict), and no other
-    butler can either, the dispatcher returns None so the action stays 'approved'
+    butler can either, dispatch reports rejection so the action stays 'approved'
     for retry rather than being falsely marked dispatched.
     """
     import json
 
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     err_payload = json.dumps({"error": "No tool executor wired on this butler"})
@@ -2270,7 +2278,7 @@ async def test_dispatch_approved_action_butler_error_returns_none():
         mcp_is_error=False,
     )
 
-    result = await _dispatch_approved_action(
+    outcome = await _dispatch_approved_action_outcome(
         mock_mcp,
         mock_db,
         mock_pool,
@@ -2280,7 +2288,8 @@ async def test_dispatch_approved_action_butler_error_returns_none():
         "messenger",
     )
 
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
 
 
 def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
@@ -2296,11 +2305,78 @@ def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
     return result
 
 
-async def test_dispatch_approved_action_never_falls_back_to_another_butler():
+@pytest.mark.parametrize(
+    "route_template",
+    ("/api/approvals/actions/{action_id}/retry", "/api/approvals/{action_id}/retry"),
+)
+async def test_retry_reports_unreachable_owner_truthfully(app, route_template: str):
+    action = _make_action(status="approved")
+    _app_with_mock_db(app, fetchrow_return=action)
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.get_client = AsyncMock(side_effect=RuntimeError("connection refused"))
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(route_template.format(action_id=action["id"]))
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "No reachable butler to dispatch action"
+    assert action["status"] == "approved"
+    assert action["execution_result"] is None
+
+
+@pytest.mark.parametrize(
+    "route_template",
+    ("/api/approvals/actions/{action_id}/retry", "/api/approvals/{action_id}/retry"),
+)
+async def test_retry_reports_reachable_executor_rejection_truthfully(app, route_template: str):
+    import json
+
+    action = _make_action(status="approved")
+    _app_with_mock_db(app, fetchrow_return=action)
+    client = MagicMock()
+    client.call_tool = AsyncMock(
+        return_value=_mcp_result(
+            json.dumps(
+                {
+                    "error": (
+                        "token=super-secret recipient=chatterbox97@gmail.com "
+                        "body=private-message "
+                        "email_reply_to_thread() got an unexpected "
+                        "keyword argument 'intent'"
+                    )
+                }
+            )
+        )
+    )
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.get_client = AsyncMock(return_value=client)
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api_client:
+        response = await api_client.post(route_template.format(action_id=action["id"]))
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "executor rejected" in detail.lower()
+    assert "unexpected keyword argument" in detail
+    assert "No reachable butler" not in detail
+    assert "super-secret" not in detail
+    assert "chatterbox97@gmail.com" not in detail
+    assert "private-message" not in detail
+    assert action["status"] == "approved"
+    assert action["execution_result"] is None
+
+
+async def test_dispatch_approved_action_outcome_never_falls_back_to_another_butler():
     """An action stays in its owning schema when that butler declines it."""
     import json
 
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     executed_payload = {
@@ -2331,7 +2407,7 @@ async def test_dispatch_approved_action_never_falls_back_to_another_butler():
     mock_mcp.butler_names = ["messenger", "general"]
     mock_mcp.get_client = AsyncMock(side_effect=lambda name: clients[name])
 
-    result = await _dispatch_approved_action(
+    outcome = await _dispatch_approved_action_outcome(
         mock_mcp,
         MagicMock(),
         MagicMock(),
@@ -2341,18 +2417,17 @@ async def test_dispatch_approved_action_never_falls_back_to_another_butler():
         "messenger",
     )
 
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
     # The API must not use a different butler's executor as a generic fallback:
     # it would cross the approval row's schema/MCP ownership boundary.
     assert [c.args[0] for c in mock_mcp.get_client.await_args_list] == ["messenger"]
     general_client.call_tool.assert_not_awaited()
 
 
-async def test_dispatch_approved_action_mcp_error_returns_none():
-    """An MCP-level error from the butler's tool is a failed dispatch (returns None),
-    leaving the action 'approved' for retry.
-    """
-    from butlers.api.routers.approvals import _dispatch_approved_action
+async def test_dispatch_approved_action_outcome_classifies_mcp_error():
+    """An MCP-level tool error is a rejection that leaves the action retryable."""
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     mock_client = MagicMock()
@@ -2361,7 +2436,7 @@ async def test_dispatch_approved_action_mcp_error_returns_none():
     mock_mcp.butler_names = ["messenger"]
     mock_mcp.get_client = AsyncMock(return_value=mock_client)
 
-    result = await _dispatch_approved_action(
+    outcome = await _dispatch_approved_action_outcome(
         mock_mcp,
         MagicMock(),
         MagicMock(),
@@ -2371,7 +2446,8 @@ async def test_dispatch_approved_action_mcp_error_returns_none():
         "messenger",
     )
 
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
 
 
 def test_first_json_block_handles_json_text_and_empty():
@@ -2383,7 +2459,7 @@ def test_first_json_block_handles_json_text_and_empty():
     assert _first_json_block(_mcp_result("oops")) == {"value": "oops"}
 
 
-async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_action_id(
+async def test_dispatch_approved_action_outcome_re_gate_guard_uses_pending_action_id(
     caplog: pytest.LogCaptureFixture,
 ):
     """Re-gate guard: notify email-guard path keys the phantom id as pending_action_id.
@@ -2399,7 +2475,7 @@ async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_
     from unittest.mock import patch
 
     import butlers.modules.approvals.operations as approvals_ops
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     phantom_action_id = uuid4()
@@ -2446,7 +2522,7 @@ async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_
         }
 
     with patch.object(approvals_ops, "mark_executed", side_effect=_capture):
-        result = await _dispatch_approved_action(
+        outcome = await _dispatch_approved_action_outcome(
             mock_mcp,
             mock_db,
             mock_pool,
@@ -2457,7 +2533,8 @@ async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_
 
     # The failed delivery must leave the action retryable rather than writing a
     # false terminal result. The log retains the useful phantom-id diagnosis.
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
     assert captured == {}
     assert str(phantom_action_id) in caplog.text
     assert "phantom pending_action=<unknown>" not in caplog.text
@@ -2469,7 +2546,7 @@ async def test_dispatch_approved_notify_error_payload_stays_retryable():
     from unittest.mock import patch
 
     import butlers.modules.approvals.operations as approvals_ops
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
@@ -2481,7 +2558,7 @@ async def test_dispatch_approved_notify_error_payload_stays_retryable():
     )
 
     with patch.object(approvals_ops, "mark_executed", new_callable=AsyncMock) as mark_executed:
-        result = await _dispatch_approved_action(
+        outcome = await _dispatch_approved_action_outcome(
             mock_mcp,
             mock_db,
             mock_pool,
@@ -2490,5 +2567,6 @@ async def test_dispatch_approved_notify_error_payload_stays_retryable():
             {"channel": "email", "message": "Hello", "recipient": "owner@example.com"},
         )
 
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
     mark_executed.assert_not_awaited()

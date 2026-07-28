@@ -1336,6 +1336,8 @@ def _make_route_envelope(
     message: str = "Test message",
     origin_butler: str = "relationship",
     source_sender_identity: str = DBS_ALERT_EMAIL,
+    source_thread_identity: str | None = "generated",
+    subject: str | None = None,
     decision_dossier: dict[str, Any] | None = None,
     actions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -1355,18 +1357,24 @@ def _make_route_envelope(
     }
     if recipient and intent in {"send", "approval_request"}:
         notify_request["delivery"]["recipient"] = recipient
+    if subject is not None:
+        notify_request["delivery"]["subject"] = subject
     if decision_dossier is not None:
         notify_request["decision_dossier"] = decision_dossier
     if actions is not None:
         notify_request["actions"] = actions
     if intent == "reply":
-        notify_request["request_context"] = {
+        request_context = {
             "request_id": request_id,
             "source_channel": "email",
             "source_endpoint_identity": "tze.notifications@gmail.com",
             "source_sender_identity": source_sender_identity,
-            "source_thread_identity": f"thread-{request_id[:8]}",
         }
+        if source_thread_identity == "generated":
+            request_context["source_thread_identity"] = f"thread-{request_id[:8]}"
+        elif source_thread_identity is not None:
+            request_context["source_thread_identity"] = source_thread_identity
+        notify_request["request_context"] = request_context
 
     route_request_id = generate_uuid7_string()
     return {
@@ -1385,6 +1393,18 @@ def _make_route_envelope(
             },
         },
     }
+
+
+def _parked_route_command(daemon: Any) -> tuple[str, dict[str, Any]]:
+    """Return the single native command captured by the pending-action insert."""
+    pending_inserts = [
+        call
+        for call in daemon.db.pool.execute.await_args_list
+        if "INSERT INTO pending_actions" in call.args[0]
+    ]
+    assert len(pending_inserts) == 1
+    insert = pending_inserts[0]
+    return insert.args[2], insert.args[3]
 
 
 @pytest.mark.asyncio
@@ -1429,6 +1449,18 @@ class TestRouteExecuteApprovalGate:
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
         assert result["error"]["retryable"] is False
+        thread_id = envelope["input"]["context"]["notify_request"]["request_context"][
+            "source_thread_identity"
+        ]
+        assert _parked_route_command(daemon) == (
+            "email_reply_to_thread",
+            {
+                "to": DBS_ALERT_EMAIL,
+                "thread_id": thread_id,
+                "body": "I received the DBS Card Transaction Alert but the body was empty.",
+                "subject": "[relationship] Notification",
+            },
+        )
 
     async def test_send_to_owner_email_is_allowed(self, tmp_path: Path) -> None:
         """route.execute send to owner email → MUST be allowed through."""
@@ -1494,6 +1526,47 @@ class TestRouteExecuteApprovalGate:
         )
         assert "blocked" in result["error"]["message"].lower()
         assert result["error"]["retryable"] is False
+        assert _parked_route_command(daemon) == (
+            "email_send_message",
+            {
+                "to": KNOWN_NON_OWNER_EMAIL,
+                "subject": "[relationship] Notification",
+                "body": "Hello friend",
+            },
+        )
+
+    async def test_reply_without_provider_thread_identity_fails_before_parking(
+        self, tmp_path: Path
+    ) -> None:
+        messenger_dir = _messenger_dir(tmp_path)
+        daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        envelope = _make_route_envelope(
+            channel="email",
+            intent="reply",
+            source_sender_identity=DBS_ALERT_EMAIL,
+            source_thread_identity=None,
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
+        )
+        reply_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_temp_contact()),
+            ),
+            patch.object(EmailModule, "_reply_to_thread", new=reply_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result["status"] == "error"
+        assert "source_thread_identity" in result["error"]["message"]
+        assert not any(
+            "INSERT INTO pending_actions" in call.args[0]
+            for call in daemon.db.pool.execute.await_args_list
+        )
+        reply_spy.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1527,7 +1600,7 @@ def _telegram_messenger_dir(tmp_path: Path) -> Path:
     return d
 
 
-def _whatsapp_messenger_dir(tmp_path: Path) -> Path:
+def _whatsapp_messenger_dir(tmp_path: Path, *, send_enabled: bool = True) -> Path:
     """Create a Messenger butler directory with the WhatsApp adapter enabled."""
     d = tmp_path / "messenger"
     d.mkdir()
@@ -1541,7 +1614,7 @@ def _whatsapp_messenger_dir(tmp_path: Path) -> Path:
         "[modules.telegram]\n\n"
         "[modules.whatsapp]\n"
         "send_tools = true\n"
-        "send_enabled = true\n\n"
+        f"send_enabled = {str(send_enabled).lower()}\n\n"
         "[modules.approvals]\nenabled = true\n"
     )
     (d / "MANIFESTO.md").write_text("# Messenger")
@@ -1605,6 +1678,13 @@ class TestRouteExecuteTelegramApprovalGate:
             if "INSERT INTO pending_actions" in call.args[0]
         ]
         assert len(pending_inserts) == 1
+        assert _parked_route_command(daemon) == (
+            "telegram_send_message",
+            {
+                "chat_id": KNOWN_NON_OWNER_TELEGRAM,
+                "text": "[relationship] Hello friend",
+            },
+        )
         send_spy.assert_not_awaited()
 
     async def test_send_to_owner_telegram_is_allowed(self, tmp_path: Path) -> None:
@@ -1714,6 +1794,153 @@ class TestRouteExecuteTelegramApprovalGate:
         error_obj = result.get("error", {})
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
+        assert _parked_route_command(daemon) == (
+            "telegram_send_message",
+            {
+                "chat_id": KNOWN_NON_OWNER_TELEGRAM,
+                "text": "[relationship] Hello friend",
+            },
+        )
+        send_spy.assert_not_awaited()
+
+    async def test_reply_to_non_owner_telegram_parks_native_reply_command(
+        self, tmp_path: Path
+    ) -> None:
+        messenger_dir = _telegram_messenger_dir(tmp_path)
+        daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        envelope = _make_route_envelope(
+            channel="telegram",
+            intent="reply",
+            source_sender_identity=KNOWN_NON_OWNER_TELEGRAM,
+            source_thread_identity=f"{KNOWN_NON_OWNER_TELEGRAM}:42",
+            message="Reply in place",
+            origin_butler="relationship",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
+        )
+        reply_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(TelegramModule, "_reply_to_message", new=reply_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result["status"] == "error"
+        assert _parked_route_command(daemon) == (
+            "telegram_reply_to_message",
+            {
+                "chat_id": KNOWN_NON_OWNER_TELEGRAM,
+                "message_id": 42,
+                "text": "[relationship] Reply in place",
+            },
+        )
+        reply_spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestRouteExecuteWhatsAppApprovalGate:
+    async def test_owner_send_respects_disabled_runtime_policy(self, tmp_path: Path) -> None:
+        messenger_dir = _whatsapp_messenger_dir(tmp_path, send_enabled=False)
+        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+        recipient = "15551234567@s.whatsapp.net"
+        envelope = _make_route_envelope(
+            channel="whatsapp",
+            intent="send",
+            recipient=recipient,
+            message="Policy must still apply",
+        )
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_owner_contact()),
+            ),
+            patch.object(WhatsAppModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result["status"] == "error"
+        assert "send_enabled" in result["error"]["message"]
+        send_spy.assert_not_awaited()
+
+    async def test_send_to_non_owner_parks_native_send_command(self, tmp_path: Path) -> None:
+        messenger_dir = _whatsapp_messenger_dir(tmp_path)
+        daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+        recipient = "15557654321@s.whatsapp.net"
+        envelope = _make_route_envelope(
+            channel="whatsapp",
+            intent="send",
+            recipient=recipient,
+            message="Hello friend",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
+        )
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(WhatsAppModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result["status"] == "error"
+        assert _parked_route_command(daemon) == (
+            "whatsapp_send_message",
+            {"recipient": recipient, "text": "[relationship] Hello friend"},
+        )
+        send_spy.assert_not_awaited()
+
+    async def test_reply_parks_current_native_send_semantics(self, tmp_path: Path) -> None:
+        messenger_dir = _whatsapp_messenger_dir(tmp_path)
+        daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+        thread_identity = "15557654321@s.whatsapp.net"
+        envelope = _make_route_envelope(
+            channel="whatsapp",
+            intent="reply",
+            source_sender_identity=thread_identity,
+            source_thread_identity=thread_identity,
+            message="Reply in place",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
+        )
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(WhatsAppModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result["status"] == "error"
+        assert _parked_route_command(daemon) == (
+            "whatsapp_send_message",
+            {"recipient": thread_identity, "text": "[relationship] Reply in place"},
+        )
         send_spy.assert_not_awaited()
 
 

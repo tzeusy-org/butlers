@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -966,11 +967,11 @@ async def approve_action(
         raw_args = action_row["tool_args"]
         tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
 
-        dispatch_result = await _dispatch_approved_action(
+        dispatch_outcome = await _dispatch_approved_action_outcome(
             mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
         )
-        if dispatch_result is not None:
-            result = dispatch_result
+        if dispatch_outcome.kind == "executed" and dispatch_outcome.action is not None:
+            result = dispatch_outcome.action
 
     # Build the ApprovalAction from the result dict, injecting the butler name
     result.setdefault("butler", action_butler)
@@ -1013,7 +1014,39 @@ def _first_json_block(mcp_result: Any) -> Any:
     return None
 
 
-async def _dispatch_approved_action(
+@dataclass(frozen=True, slots=True)
+class _DispatchOutcome:
+    """Internal result that preserves dispatch reachability and rejection truth."""
+
+    kind: Literal["executed", "unreachable", "rejected"]
+    action: dict[str, Any] | None = None
+    detail: str | None = None
+
+
+def _safe_dispatch_detail(value: Any) -> str:
+    """Return allowlisted operator detail without echoing arbitrary handler text."""
+    if isinstance(value, dict):
+        value = value.get("error") or value.get("message") or value.get("status")
+    raw_detail = "" if value is None else " ".join(str(value).split())
+    unexpected_arg = re.search(
+        r"unexpected keyword argument ['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]",
+        raw_detail,
+    )
+    if unexpected_arg is not None:
+        return (
+            "stored action arguments do not match the registered handler: "
+            f"unexpected keyword argument '{unexpected_arg.group(1)}'"
+        )
+    if "required positional argument" in raw_detail:
+        return "stored action is missing a required registered-handler argument"
+    if "send_enabled" in raw_detail:
+        return "delivery is disabled by the owning butler's runtime policy"
+    if "No tool executor wired" in raw_detail or "No registered handler" in raw_detail:
+        return "owning butler has no registered executor for this action"
+    return "executor returned an invalid or unsuccessful response"
+
+
+async def _dispatch_approved_action_outcome(
     mcp_mgr: MCPClientManager,
     db_mgr: DatabaseManager,
     pool: asyncpg.Pool,
@@ -1021,7 +1054,7 @@ async def _dispatch_approved_action(
     tool_name: str,
     tool_args: dict,
     action_butler: str | None = None,
-) -> dict | None:
+) -> _DispatchOutcome:
     """Execute an approved action without re-entering the approval gate.
 
     The human approval (or a standing rule) already transitioned the action to
@@ -1041,7 +1074,8 @@ async def _dispatch_approved_action(
     MCP surface. If it cannot execute the action, the row stays 'approved' for
     retry; this function never falls back to a different butler.
 
-    Returns the updated action dict on success, or None if dispatch failed.
+    Returns a classified outcome so Retry can distinguish transport failure
+    from a reachable executor rejection.
     """
     # The two paths below differ in WHERE the action is marked executed: notify
     # has no owning-butler executor, so it is marked executed here; every other
@@ -1066,11 +1100,14 @@ async def _dispatch_approved_action(
                 action_id,
                 exc_info=True,
             )
-            return None
+            return _DispatchOutcome(kind="unreachable")
 
         if mcp_result.is_error:
             logger.warning("Approved notify action %s failed in switchboard deliver", action_id)
-            return None
+            return _DispatchOutcome(
+                kind="rejected",
+                detail=_safe_dispatch_detail(_first_json_block(mcp_result)),
+            )
 
         tool_result = _first_json_block(mcp_result)
 
@@ -1087,7 +1124,10 @@ async def _dispatch_approved_action(
                 action_id,
                 tool_result,
             )
-            return None
+            return _DispatchOutcome(
+                kind="rejected",
+                detail=_safe_dispatch_detail(tool_result),
+            )
 
         # Re-gate guard: deliver should never re-park, but if it ever does, do
         # not record a phantom pending action as a successful delivery.
@@ -1101,7 +1141,10 @@ async def _dispatch_approved_action(
                 action_id,
                 phantom,
             )
-            return None
+            return _DispatchOutcome(
+                kind="rejected",
+                detail="delivery re-entered the approval gate",
+            )
 
         exec_result: dict = {"success": True}
         if tool_result is not None:
@@ -1119,7 +1162,12 @@ async def _dispatch_approved_action(
 
         async with pool.acquire() as conn:
             marked = await approvals_ops.mark_executed(conn, **mark_kwargs)
-        return None if "error" in marked else marked
+        if "error" in marked:
+            return _DispatchOutcome(
+                kind="rejected",
+                detail=_safe_dispatch_detail(marked),
+            )
+        return _DispatchOutcome(kind="executed", action=marked)
 
     # All other gated tools: run the original (un-gated) tool on the owning
     # butler via its dispatch_approved_action tool. The butler marks the action
@@ -1130,7 +1178,7 @@ async def _dispatch_approved_action(
             "Cannot dispatch approved action %s without its owning butler; action remains approved",
             action_id,
         )
-        return None
+        return _DispatchOutcome(kind="unreachable")
 
     target_butlers = [action_butler]
 
@@ -1150,7 +1198,7 @@ async def _dispatch_approved_action(
                 butler_name,
                 exc_info=True,
             )
-            continue
+            return _DispatchOutcome(kind="unreachable")
 
         result = _first_json_block(mcp_result)
         if mcp_result.is_error or not isinstance(result, dict):
@@ -1160,7 +1208,10 @@ async def _dispatch_approved_action(
                 action_id,
                 result,
             )
-            continue
+            return _DispatchOutcome(
+                kind="rejected",
+                detail=_safe_dispatch_detail(result),
+            )
         if result.get("error"):
             logger.info(
                 "Owning butler %s declined approved action %s: %s",
@@ -1168,15 +1219,29 @@ async def _dispatch_approved_action(
                 action_id,
                 result.get("error"),
             )
-            continue
-        return result
+            return _DispatchOutcome(
+                kind="rejected",
+                detail=_safe_dispatch_detail(result),
+            )
+        return _DispatchOutcome(kind="executed", action=result)
 
     logger.warning(
         "Could not dispatch approved action %s — no butler executed it; "
         "action remains in 'approved' state for retry",
         action_id,
     )
-    return None
+    return _DispatchOutcome(kind="unreachable")
+
+
+def _raise_retry_dispatch_failure(outcome: _DispatchOutcome) -> None:
+    """Map a classified dispatch failure to a truthful operator-facing error."""
+    if outcome.kind == "unreachable":
+        raise HTTPException(status_code=502, detail="No reachable butler to dispatch action")
+    detail = outcome.detail or "executor returned an unsuccessful response"
+    raise HTTPException(
+        status_code=422,
+        detail=f"Owning butler executor rejected action dispatch: {detail}",
+    )
 
 
 @router.post("/actions/{action_id}/retry")
@@ -1219,12 +1284,12 @@ async def retry_action(
     raw_args = row["tool_args"]
     tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
 
-    dispatch_result = await _dispatch_approved_action(
+    dispatch_outcome = await _dispatch_approved_action_outcome(
         mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
     )
 
-    if dispatch_result is None:
-        raise HTTPException(status_code=502, detail="No reachable butler to dispatch action")
+    if dispatch_outcome.kind != "executed":
+        _raise_retry_dispatch_failure(dispatch_outcome)
 
     # Re-read the row to get the final state after execution
     async with target_pool.acquire() as conn:
@@ -2609,7 +2674,7 @@ async def approve_approval(
         if request.edits:
             tool_args_for_dispatch.update(request.edits)
 
-        dispatch_result = await _dispatch_approved_action(
+        dispatch_outcome = await _dispatch_approved_action_outcome(
             mcp_mgr,
             db_mgr,
             target_pool,
@@ -2618,8 +2683,8 @@ async def approve_approval(
             tool_args_for_dispatch,
             action_butler,
         )
-        if dispatch_result is not None:
-            result = dispatch_result
+        if dispatch_outcome.kind == "executed" and dispatch_outcome.action is not None:
+            result = dispatch_outcome.action
 
     result.setdefault("butler", action_butler)
     action_resp = ApprovalAction(
@@ -2859,12 +2924,12 @@ async def retry_approval(
     raw_args = row["tool_args"]
     tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
 
-    dispatch_result = await _dispatch_approved_action(
+    dispatch_outcome = await _dispatch_approved_action_outcome(
         mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
     )
 
-    if dispatch_result is None:
-        raise HTTPException(status_code=502, detail="No reachable butler to dispatch action")
+    if dispatch_outcome.kind != "executed":
+        _raise_retry_dispatch_failure(dispatch_outcome)
 
     # Re-read the row to get the final state after execution.
     async with target_pool.acquire() as conn:

@@ -12,7 +12,9 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import asyncpg
@@ -202,6 +204,192 @@ def _parse_telegram_thread_identity(thread_identity: str | None) -> tuple[str, i
         return chat_id, int(message_id_raw)
     except ValueError:
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class _RoutedDeliveryCommand:
+    """One native delivery invocation shared by immediate and deferred paths."""
+
+    channel: str
+    approval_target: str
+    tool_name: str
+    tool_args: dict[str, Any]
+    execute: Callable[[], Awaitable[Any]]
+
+
+async def _build_routed_delivery_command(
+    *,
+    daemon: Any,
+    modules_by_name: dict[str, Any],
+    channel: str,
+    intent: str,
+    message_text: str,
+    origin: str,
+    recipient: str | None,
+    subject: str | None,
+    notify_context: Any,
+) -> _RoutedDeliveryCommand | None:
+    """Materialize the registered native command before approval evaluation."""
+    if intent not in {"send", "reply"}:
+        return None
+
+    notify_prefix = f"[{origin}]"
+    if channel == "email":
+        email_module = modules_by_name.get("email")
+        if email_module is None:
+            raise RuntimeError("Messenger email adapter is unavailable.")
+        raw_subject = subject or "Notification"
+        normalized_subject = (
+            raw_subject
+            if notify_prefix.lower() in raw_subject.lower()
+            else f"{notify_prefix} {raw_subject}"
+        )
+        if intent == "send":
+            if not recipient:
+                raise ValueError("notify_request.delivery.recipient is required for send intent.")
+            tool_args = {
+                "to": recipient,
+                "subject": normalized_subject,
+                "body": message_text,
+            }
+            return _RoutedDeliveryCommand(
+                channel=channel,
+                approval_target=recipient,
+                tool_name="email_send_message",
+                tool_args=tool_args,
+                execute=partial(
+                    email_module._send_email,
+                    recipient,
+                    normalized_subject,
+                    message_text,
+                ),
+            )
+
+        if notify_context is None:
+            raise ValueError("notify_request.request_context is required for reply intent.")
+        thread_id = notify_context.source_thread_identity
+        if not thread_id:
+            raise ValueError(
+                "notify_request.request_context.source_thread_identity is required "
+                "for email reply intent."
+            )
+        target = notify_context.source_sender_identity
+        tool_args = {
+            "to": target,
+            "thread_id": thread_id,
+            "body": message_text,
+            "subject": normalized_subject,
+        }
+        return _RoutedDeliveryCommand(
+            channel=channel,
+            approval_target=target,
+            tool_name="email_reply_to_thread",
+            tool_args=tool_args,
+            execute=partial(
+                email_module._reply_to_thread,
+                target,
+                thread_id,
+                message_text,
+                normalized_subject,
+            ),
+        )
+
+    rendered_text = (
+        message_text
+        if message_text.lstrip().startswith(notify_prefix)
+        else f"{notify_prefix} {message_text}"
+    )
+    if channel == "telegram":
+        telegram_module = modules_by_name.get("telegram")
+        if telegram_module is None:
+            raise RuntimeError("Messenger telegram adapter is unavailable.")
+        if intent == "send":
+            if not recipient:
+                raise ValueError("notify_request.delivery.recipient is required for send intent.")
+            return _RoutedDeliveryCommand(
+                channel=channel,
+                approval_target=recipient,
+                tool_name="telegram_send_message",
+                tool_args={"chat_id": recipient, "text": rendered_text},
+                execute=partial(telegram_module._send_message, recipient, rendered_text),
+            )
+
+        thread_identity = notify_context.source_thread_identity if notify_context else None
+        parsed_thread = _parse_telegram_thread_identity(thread_identity)
+        if parsed_thread is not None:
+            chat_id, reply_message_id = parsed_thread
+            return _RoutedDeliveryCommand(
+                channel=channel,
+                approval_target=chat_id,
+                tool_name="telegram_reply_to_message",
+                tool_args={
+                    "chat_id": chat_id,
+                    "message_id": reply_message_id,
+                    "text": rendered_text,
+                },
+                execute=partial(
+                    telegram_module._reply_to_message,
+                    chat_id,
+                    reply_message_id,
+                    rendered_text,
+                ),
+            )
+
+        logger.warning(
+            "notify reply: source_thread_identity %r is not a valid "
+            "Telegram chat_id:message_id — falling back to send.",
+            thread_identity,
+        )
+        fallback_recipient = recipient
+        if not fallback_recipient:
+            fallback_recipient = await daemon._resolve_default_notify_recipient(
+                channel="telegram",
+                intent="send",
+                recipient=None,
+                request_context=(
+                    notify_context.model_dump() if notify_context is not None else None
+                ),
+            )
+        if not fallback_recipient:
+            raise ValueError(
+                "Cannot fall back to send: no recipient available "
+                "and source_thread_identity is not valid Telegram format."
+            )
+        return _RoutedDeliveryCommand(
+            channel=channel,
+            approval_target=fallback_recipient,
+            tool_name="telegram_send_message",
+            tool_args={"chat_id": fallback_recipient, "text": rendered_text},
+            execute=partial(telegram_module._send_message, fallback_recipient, rendered_text),
+        )
+
+    if channel == "whatsapp":
+        whatsapp_module = modules_by_name.get("whatsapp")
+        if whatsapp_module is None:
+            raise RuntimeError("Messenger whatsapp adapter is unavailable.")
+        send_tool = getattr(whatsapp_module, "_send_message_with_policy", None)
+        if send_tool is None or not callable(send_tool):
+            raise RuntimeError("WhatsApp module does not expose policy-aware send method.")
+        if intent == "send":
+            target = recipient
+            if not target:
+                raise ValueError("notify_request.delivery.recipient is required for send intent.")
+        else:
+            target = notify_context.source_thread_identity if notify_context else None
+            if not target:
+                raise ValueError(
+                    "notify_request.request_context.source_thread_identity is required "
+                    "for whatsapp reply intent."
+                )
+        return _RoutedDeliveryCommand(
+            channel=channel,
+            approval_target=target,
+            tool_name="whatsapp_send_message",
+            tool_args={"recipient": target, "text": rendered_text},
+            execute=partial(send_tool, recipient=target, text=rendered_text),
+        )
+
+    raise ValueError(f"Unsupported notify channel: {channel}")
 
 
 def _format_validation_error(prefix: str, exc: ValidationError) -> str:
@@ -826,6 +1014,18 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         "approval_request recipient does not resolve to a verified owner channel."
                     )
 
+            delivery_command = await _build_routed_delivery_command(
+                daemon=daemon,
+                modules_by_name=modules_by_name,
+                channel=channel,
+                intent=intent,
+                message_text=message_text,
+                origin=origin,
+                recipient=notify_request.delivery.recipient,
+                subject=notify_request.delivery.subject,
+                notify_context=notify_context,
+            )
+
             # Channel-general role-based approval gating for NON-email channels
             # (telegram, whatsapp, and any future channel).  route.execute calls
             # module delivery methods directly (not MCP tools), so the MCP-level
@@ -837,39 +1037,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             # parked (fail-closed).  Email is gated separately in its own block
             # below via check_email_recipient, which additionally enforces the
             # email-only channel-primacy / context-conflict incident behaviour.
-            if channel != "email" and intent in {"send", "reply"}:
-                # Resolve the gate target to the SAME endpoint the delivery block
-                # below will actually use, so the gate can never validate a
-                # different recipient than the one that receives the message.
-                gate_intent = intent
-                if intent == "send":
-                    gate_target = notify_request.delivery.recipient
-                elif channel == "telegram" and (
-                    _parse_telegram_thread_identity(
-                        notify_context.source_thread_identity if notify_context else None
-                    )
-                    is None
-                ):
-                    # Telegram reply with a missing/invalid thread identity falls
-                    # back to a plain send to delivery.recipient (or the resolved
-                    # default) — see the telegram reply block below.  Gate THAT
-                    # recipient as a send; otherwise the fallback send would reach
-                    # an ungated non-owner target even when the source sender is
-                    # the owner (auto-approve) or unset (gate skipped).
-                    gate_intent = "send"
-                    gate_target = notify_request.delivery.recipient
-                    if not gate_target:
-                        gate_target = await daemon._resolve_default_notify_recipient(
-                            channel="telegram",
-                            intent="send",
-                            recipient=None,
-                            request_context=(
-                                notify_context.model_dump() if notify_context is not None else None
-                            ),
-                        )
-                else:  # reply delivered into the source thread — gate the sender
-                    gate_target = notify_context.source_sender_identity if notify_context else None
-
+            if delivery_command is not None and channel != "email":
+                gate_target = delivery_command.approval_target
                 if gate_target:
                     approval_pool = daemon.db.pool if daemon.db is not None else None
                     if approval_pool is not None:
@@ -879,18 +1048,13 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             approval_pool,
                             channel=channel,
                             target=gate_target,
-                            rule_tool_name="route.execute",
-                            rule_match_args={"to": gate_target, "channel": channel},
-                            park_tool_name="route.execute",
-                            park_tool_args={
-                                "to": gate_target,
-                                "channel": channel,
-                                "intent": gate_intent,
-                                "message": message_text,
-                                "origin_butler": origin,
-                            },
+                            rule_tool_name=delivery_command.tool_name,
+                            rule_match_args=delivery_command.tool_args,
+                            park_tool_name=delivery_command.tool_name,
+                            park_tool_args=delivery_command.tool_args,
                             park_summary=(
-                                f"route.execute blocked: {channel} to {gate_target!r}. "
+                                f"{delivery_command.tool_name} blocked: "
+                                f"{channel} to {gate_target!r}. "
                                 f"Message: {message_text!r}"
                             ),
                             session_id=get_current_runtime_session_id(),
@@ -924,54 +1088,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     if message_text.lstrip().startswith(notify_prefix)
                     else f"{notify_prefix} {message_text}"
                 )
-                if intent == "send":
-                    recipient = notify_request.delivery.recipient
-                    if not recipient:
-                        raise ValueError(
-                            "notify_request.delivery.recipient is required for send intent."
-                        )
-                    adapter_result = await telegram_module._send_message(
-                        recipient,
-                        rendered_text,
-                    )
-                elif intent == "reply":
-                    thread_identity = (
-                        notify_context.source_thread_identity if notify_context else None
-                    )
-                    parsed_thread = _parse_telegram_thread_identity(thread_identity)
-
-                    if parsed_thread is not None:
-                        chat_id, reply_message_id = parsed_thread
-                        adapter_result = await telegram_module._reply_to_message(
-                            chat_id, reply_message_id, rendered_text
-                        )
-                    else:
-                        logger.warning(
-                            "notify reply: source_thread_identity %r is not a valid "
-                            "Telegram chat_id:message_id — falling back to send.",
-                            thread_identity,
-                        )
-                        fallback_recipient = notify_request.delivery.recipient
-                        if not fallback_recipient:
-                            fallback_recipient = await daemon._resolve_default_notify_recipient(
-                                channel="telegram",
-                                intent="send",
-                                recipient=None,
-                                request_context=(
-                                    notify_context.model_dump()
-                                    if notify_context is not None
-                                    else None
-                                ),
-                            )
-                        if not fallback_recipient:
-                            raise ValueError(
-                                "Cannot fall back to send: no recipient available "
-                                "and source_thread_identity is not valid Telegram format."
-                            )
-                        adapter_result = await telegram_module._send_message(
-                            fallback_recipient,
-                            rendered_text,
-                        )
+                if intent in {"send", "reply"}:
+                    if delivery_command is None:
+                        raise RuntimeError("Telegram delivery command was not materialized.")
+                    adapter_result = await delivery_command.execute()
                 elif intent == "approval_request":
                     if approval_recipient is None:
                         raise ValueError("approval_request owner recipient was not resolved.")
@@ -1015,56 +1135,22 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 # route.execute calls module methods directly (not MCP tools),
                 # so MCP-level approval wrappers are not in the path.
                 # Enforce role-based email delivery gating here.
-                raw_subject = notify_request.delivery.subject or (
-                    "Approval requested" if intent == "approval_request" else "Notification"
-                )
-                normalized_subject = (
-                    raw_subject
-                    if notify_prefix.lower() in raw_subject.lower()
-                    else f"{notify_prefix} {raw_subject}"
-                )
-                email_target: str | None = None
-                if intent in {"send", "approval_request"}:
-                    email_target = notify_request.delivery.recipient
-                elif notify_context is not None:
-                    email_target = notify_context.source_sender_identity
-
-                if email_target and intent != "approval_request":
+                if delivery_command is not None:
+                    email_target = delivery_command.approval_target
                     approval_pool = daemon.db.pool if daemon.db is not None else None
                     if approval_pool is not None:
                         from butlers.core.approvals_hooks import check_email_recipient
 
-                        gate_tool_name = (
-                            "email_send_message" if intent == "send" else "email_reply_to_thread"
-                        )
-                        if intent == "send":
-                            park_tool_args = {
-                                "to": email_target,
-                                "subject": normalized_subject,
-                                "body": message_text,
-                            }
-                        else:
-                            thread_id = (
-                                notify_context.source_thread_identity
-                                if notify_context is not None
-                                and notify_context.source_thread_identity
-                                else notify_request_id
-                            )
-                            park_tool_args = {
-                                "to": email_target,
-                                "thread_id": thread_id,
-                                "body": message_text,
-                                "subject": normalized_subject,
-                            }
                         decision = await check_email_recipient(
                             approval_pool,
                             email_target=email_target,
-                            rule_tool_name=gate_tool_name,
-                            rule_match_args={"to": email_target},
-                            park_tool_name=gate_tool_name,
-                            park_tool_args=park_tool_args,
+                            rule_tool_name=delivery_command.tool_name,
+                            rule_match_args=delivery_command.tool_args,
+                            park_tool_name=delivery_command.tool_name,
+                            park_tool_args=delivery_command.tool_args,
                             park_summary=(
-                                f"route.execute blocked: email to {email_target!r}. "
+                                f"{delivery_command.tool_name} blocked: "
+                                f"email to {email_target!r}. "
                                 f"Message: {message_text!r}"
                             ),
                             session_id=get_current_runtime_session_id(),
@@ -1088,32 +1174,27 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"(action_id={decision.action_id})."
                             )
 
-                if intent in {"send", "approval_request"}:
-                    recipient = (
-                        approval_recipient
-                        if intent == "approval_request"
-                        else notify_request.delivery.recipient
-                    )
-                    if not recipient:
+                raw_subject = notify_request.delivery.subject or (
+                    "Approval requested" if intent == "approval_request" else "Notification"
+                )
+                normalized_subject = (
+                    raw_subject
+                    if notify_prefix.lower() in raw_subject.lower()
+                    else f"{notify_prefix} {raw_subject}"
+                )
+                if intent in {"send", "reply"}:
+                    if delivery_command is None:
+                        raise RuntimeError("Email delivery command was not materialized.")
+                    adapter_result = await delivery_command.execute()
+                elif intent == "approval_request":
+                    if not approval_recipient:
                         raise ValueError(
                             "notify_request.delivery.recipient is required for owner delivery."
                         )
                     adapter_result = await email_module._send_email(
-                        recipient,
+                        approval_recipient,
                         normalized_subject,
                         message_text,
-                    )
-                elif intent == "reply":
-                    if notify_context is None:
-                        raise ValueError(
-                            "notify_request.request_context is required for reply intent."
-                        )
-                    thread_id = notify_context.source_thread_identity or notify_request_id
-                    adapter_result = await email_module._reply_to_thread(
-                        notify_context.source_sender_identity,
-                        thread_id,
-                        message_text,
-                        normalized_subject,
                     )
                 else:
                     raise ValueError(f"Unsupported email intent: {intent}")
@@ -1127,13 +1208,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     if message_text.lstrip().startswith(notify_prefix)
                     else f"{notify_prefix} {message_text}"
                 )
-                if intent in {"send", "approval_request"}:
-                    recipient = (
-                        approval_recipient
-                        if intent == "approval_request"
-                        else notify_request.delivery.recipient
-                    )
-                    if not recipient:
+                if intent in {"send", "reply"}:
+                    if delivery_command is None:
+                        raise RuntimeError("WhatsApp delivery command was not materialized.")
+                    adapter_result = await delivery_command.execute()
+                elif intent == "approval_request":
+                    if not approval_recipient:
                         raise ValueError(
                             "notify_request.delivery.recipient is required for "
                             "whatsapp owner delivery."
@@ -1141,20 +1221,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     send_tool = getattr(whatsapp_module, "_send_message", None)
                     if send_tool is None or not callable(send_tool):
                         raise RuntimeError("WhatsApp module does not expose _send_message method.")
-                    adapter_result = await send_tool(recipient=recipient, text=rendered_text)
-                elif intent == "reply":
-                    thread_identity = (
-                        notify_context.source_thread_identity if notify_context else None
+                    adapter_result = await send_tool(
+                        recipient=approval_recipient,
+                        text=rendered_text,
                     )
-                    if not thread_identity:
-                        raise ValueError(
-                            "notify_request.request_context.source_thread_identity is required "
-                            "for whatsapp reply intent."
-                        )
-                    send_tool = getattr(whatsapp_module, "_send_message", None)
-                    if send_tool is None or not callable(send_tool):
-                        raise RuntimeError("WhatsApp module does not expose _send_message method.")
-                    adapter_result = await send_tool(thread_identity, rendered_text)
                 else:
                     raise ValueError(f"Unsupported whatsapp intent: {intent}")
 

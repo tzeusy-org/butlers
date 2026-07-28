@@ -13,7 +13,9 @@ from butlers.config import load_config
 from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.module import ApprovalsConfig, ApprovalsModule
 from butlers.modules.base import ToolMeta
+from butlers.modules.email import EmailConfig, EmailModule
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
+from butlers.modules.whatsapp import WhatsAppConfig, WhatsAppModule
 from tests.modules.test_module_approvals import MockDB
 
 pytestmark = pytest.mark.unit
@@ -182,3 +184,133 @@ async def test_relationship_registration_dispatches_legacy_merge_via_memory_call
     assert db.pending_actions[action_id]["status"] == "executed"
     event_types = [call["args"][0] for call in db.approval_events]
     assert "action_execution_succeeded" in event_types
+
+
+async def test_messenger_registered_email_reply_replays_approved_parked_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A canonical parked reply executes once through Messenger's native handler."""
+    config = load_config(_REPO_ROOT / "roster" / "messenger")
+    db = MockDB()
+    db.schema = "messenger"
+    email = EmailModule()
+    approvals = ApprovalsModule()
+
+    daemon = ButlerDaemon(_REPO_ROOT / "roster" / "messenger", db=db)
+    daemon.config = config
+    daemon.mcp = RuntimeFastMCP("messenger")
+    daemon._modules = [email, approvals]
+    daemon._module_configs = {
+        "email": EmailConfig(**config.modules["email"]),
+        "approvals": ApprovalsConfig(**config.modules["approvals"]),
+    }
+
+    await daemon._register_module_tools()
+    reply = AsyncMock(return_value={"status": "sent", "thread_id": "gmail-thread-7"})
+    monkeypatch.setattr(email, "_reply_to_thread", reply)
+    await daemon._apply_approval_gates()
+
+    action_id = db._insert_action(
+        tool_name="email_reply_to_thread",
+        tool_args={
+            "to": "chatterbox97@gmail.com",
+            "thread_id": "gmail-thread-7",
+            "body": "Thanks for the update.",
+            "subject": "[relationship] Re: Update",
+        },
+        status="pending",
+    )
+    approved = await approvals._approve_action(
+        str(action_id),
+        actor={
+            "type": "human",
+            "id": "owner",
+            "name": "Owner",
+            "authenticated": True,
+            "roles": ["owner"],
+        },
+    )
+    assert approved["status"] == "executed"
+
+    dispatch_tool = await daemon.mcp.get_tool("dispatch_approved_action")
+    result = await dispatch_tool.fn(action_id=str(action_id))
+
+    assert result["status"] == "executed"
+    reply.assert_awaited_once_with(
+        "chatterbox97@gmail.com",
+        "gmail-thread-7",
+        "Thanks for the update.",
+        "[relationship] Re: Update",
+    )
+    assert db.pending_actions[action_id]["status"] == "executed"
+    event_types = [call["args"][0] for call in db.approval_events]
+    assert event_types == [
+        "action_approved",
+        "action_execution_succeeded",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("send_enabled", "expected_status", "expected_execution_event"),
+    (
+        (False, "approved", "action_execution_failed"),
+        (True, "executed", "action_execution_succeeded"),
+    ),
+)
+async def test_messenger_whatsapp_replay_respects_runtime_send_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    send_enabled: bool,
+    expected_status: str,
+    expected_execution_event: str,
+) -> None:
+    config = load_config(_REPO_ROOT / "roster" / "messenger")
+    db = MockDB()
+    db.schema = "messenger"
+    whatsapp = WhatsAppModule()
+    approvals = ApprovalsModule()
+
+    daemon = ButlerDaemon(_REPO_ROOT / "roster" / "messenger", db=db)
+    daemon.config = config
+    daemon.mcp = RuntimeFastMCP("messenger")
+    daemon._modules = [whatsapp, approvals]
+    daemon._module_configs = {
+        "whatsapp": WhatsAppConfig(send_tools=True, send_enabled=send_enabled),
+        "approvals": ApprovalsConfig(**config.modules["approvals"]),
+    }
+
+    await daemon._register_module_tools()
+    send = AsyncMock(return_value={"status": "sent", "message_id": "wa-7"})
+    monkeypatch.setattr(whatsapp, "_send_message", send)
+    await daemon._apply_approval_gates()
+
+    action_id = db._insert_action(
+        tool_name="whatsapp_send_message",
+        tool_args={
+            "recipient": "15551234567@s.whatsapp.net",
+            "text": "[relationship] Policy check",
+        },
+        status="pending",
+    )
+    result = await approvals._approve_action(
+        str(action_id),
+        actor={
+            "type": "human",
+            "id": "owner",
+            "name": "Owner",
+            "authenticated": True,
+            "roles": ["owner"],
+        },
+    )
+
+    assert result["status"] == expected_status
+    if send_enabled:
+        assert db.pending_actions[action_id]["execution_result"] is not None
+        send.assert_awaited_once_with(
+            recipient="15551234567@s.whatsapp.net",
+            text="[relationship] Policy check",
+        )
+    else:
+        assert db.pending_actions[action_id]["execution_result"] is None
+        send.assert_not_awaited()
+    event_types = [call["args"][0] for call in db.approval_events]
+    assert expected_execution_event in event_types
