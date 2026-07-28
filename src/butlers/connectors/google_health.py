@@ -1083,6 +1083,16 @@ class GoogleHealthConnector:
                 last_token_refresh_at=None,
             )
 
+        # A mid-run scope revocation can remove the final per-account
+        # heartbeat while leaving this process alive in its degraded recheck
+        # loop.  Keep reporting liveness through the aggregate/degraded
+        # heartbeat so the registry does not misclassify the live connector as
+        # offline.  Initial startup is handled by _post_identity_init() after
+        # Switchboard readiness, and test/helper calls made before start() must
+        # not spawn background tasks.
+        if not initial:
+            await self._ensure_degraded_heartbeat_running()
+
     async def _teardown_account(self, ctx: OwnerContext) -> None:
         """Close the heartbeat row for a removed account.
 
@@ -1170,6 +1180,39 @@ class GoogleHealthConnector:
     # ------------------------------------------------------------------
     # Post-identity initialization
     # ------------------------------------------------------------------
+
+    async def _ensure_degraded_heartbeat_running(self) -> None:
+        """Start a degraded heartbeat after the last eligible account disappears."""
+        if self._accounts:
+            if self._degraded_heartbeat is not None:
+                await self._degraded_heartbeat.stop()
+                self._degraded_heartbeat = None
+            return
+
+        if self._degraded_heartbeat is not None or not self._running:
+            return
+
+        identity_label = self._endpoint_identity or "google_health:degraded"
+        metrics = ConnectorMetrics(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=identity_label,
+        )
+        self._degraded_heartbeat = ConnectorHeartbeat(
+            config=HeartbeatConfig.from_env(
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity=identity_label,
+            ),
+            mcp_client=self._mcp_client,
+            metrics=metrics,
+            get_health_state=self._get_health_state,
+        )
+        self._degraded_heartbeat.start()
+        # Do not wait for the normal heartbeat interval: replacing the final
+        # per-account heartbeat immediately prevents a false offline window.
+        try:
+            await self._degraded_heartbeat._send_heartbeat()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("GoogleHealthConnector: initial degraded heartbeat failed: %s", exc)
 
     def _post_identity_init(self) -> None:
         """Initialise metrics/policy/filter-buffer and spawn per-account heartbeats.
