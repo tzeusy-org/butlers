@@ -104,6 +104,18 @@ The scanner SHALL filter log entries by severity level, extracting entries at ER
 - **AND** the matching spawner wrapper log is present
 - **THEN** the log scanner includes the spawner wrapper log to preserve degraded-mode coverage
 
+#### Scenario: OpenCode non-zero-exit attempt duplicates excluded
+- **WHEN** the log scanner sees `butlers.core.runtimes.opencode` emit `OpenCode CLI exited with code ...`
+- **THEN** the scanner excludes the adapter-level raw log entry from the finding set
+- **AND** recovered same-tier failover attempts do not create autonomous QA cases from adapter attempt logs
+- **WHEN** the matching spawner wrapper log is `Runtime invocation failed: RuntimeError: OpenCode CLI exited with code ...`
+- **AND** the scanner is registered with `session_records` available in the same patrol configuration
+- **THEN** the scanner excludes the spawner wrapper log from the finding set
+- **AND** the terminal failure remains discoverable through `session_records`
+- **WHEN** `session_records` is unavailable or disabled
+- **AND** the matching spawner wrapper log is present
+- **THEN** the log scanner includes the spawner wrapper log to preserve degraded-mode coverage
+
 #### Scenario: Expected Switchboard classification timeout excluded
 - **WHEN** a log entry is a `butlers.core.spawner` Switchboard runtime timeout
 - **AND** `trigger_source` is `"classification"` (or the historical `"tick"`, renamed in bu-qvnce.12 — both values are treated as the same call site so pre-rename log lines still match)
