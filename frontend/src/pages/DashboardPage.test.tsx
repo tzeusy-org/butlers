@@ -654,6 +654,33 @@ describe("DashboardPage -- RuntimeSummaryKpi", () => {
     expect(html).toContain("Sessions");
   });
 
+  it("honors a degraded Sessions board source without disabling the other KPI doors", () => {
+    vi.mocked(useButlersBoard).mockReturnValue({
+      data: {
+        data: {
+          rows: defaultBoardRows(),
+          aggregates: { sessions_source_error: true },
+          generated_at: "2026-05-14T12:00:00.000Z",
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    const html = renderPage();
+    const stripStart = html.indexOf('<section aria-label="System runtime summary">');
+    const stripEnd = html.indexOf("</section>", stripStart);
+    const kpiStrip = html.slice(stripStart, stripEnd);
+
+    expect(kpiStrip).toContain('class="sr-only"> unavailable</span>');
+    expect(kpiStrip).toContain('href="/butlers"');
+    expect(kpiStrip).toContain('href="/approvals"');
+    expect(kpiStrip).not.toContain('href="/sessions');
+  });
+
   it("renders Pending approvals KPI cell", () => {
     const html = renderPage();
     expect(html).toContain("Pending approvals");

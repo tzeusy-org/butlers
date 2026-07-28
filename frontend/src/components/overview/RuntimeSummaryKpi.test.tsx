@@ -63,6 +63,16 @@ describe("RuntimeSummaryKpi", () => {
     expect(html.match(/—/g)?.length).toBe(1);
   });
 
+  it("degrades only Sessions when its board source is unavailable", () => {
+    const html = renderComponent({ sessionsAvailable: false });
+
+    expect(html).toContain(">4<");
+    expect(html).toContain(">3<");
+    expect(html).toContain(">2<");
+    expect(html.match(/—/g)?.length).toBe(1);
+    expect(html).toContain('class="sr-only"> unavailable</span>');
+  });
+
   it("renders loading placeholders for all cells while the butler source is loading", () => {
     const html = renderComponent({ isLoading: true });
 
@@ -118,6 +128,14 @@ describe("RuntimeSummaryKpi: KPI doors", () => {
   it("Sessions falls back to the plain /sessions door when no window was captured", () => {
     const html = renderComponent();
     expect(html).toContain('href="/sessions"');
+  });
+
+  it("Sessions source degradation removes only the Sessions door", () => {
+    const html = renderComponent({ sessionsAvailable: false });
+
+    expect(html).toContain('href="/butlers"');
+    expect(html).toContain('href="/approvals"');
+    expect(html).not.toContain('href="/sessions');
   });
 
   it("Pending approvals routes to /approvals, including when the count is a genuine zero", () => {

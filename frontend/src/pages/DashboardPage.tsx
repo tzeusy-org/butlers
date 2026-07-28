@@ -502,6 +502,7 @@ export default function DashboardPage() {
             pendingApprovalsAvailable={
               !approvalMetricsQuery.isError && approvalMetricsQuery.data != null
             }
+            sessionsAvailable={boardData?.aggregates?.sessions_source_error !== true}
             sessionsSince={sessionsSince}
             sessionsUntil={sessionsUntil}
           />
