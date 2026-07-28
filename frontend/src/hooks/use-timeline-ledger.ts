@@ -54,6 +54,10 @@ export interface UseTimelineLedgerResult {
   /** True when there is an older page beyond what's currently loaded. */
   hasMore: boolean;
   loadMore: () => void;
+  /** A failed older-page request; retained rows/cursor remain retryable. */
+  loadMoreError: boolean;
+  /** Reissues the exact retained older-page cursor after a failed request. */
+  retryLoadMore: () => void;
   isLoadingMore: boolean;
   /** True while following the live head (no older pages loaded). */
   pinned: boolean;
@@ -62,10 +66,16 @@ export interface UseTimelineLedgerResult {
   /** Jump back to the live head, discarding accumulated older pages. */
   showNewEvents: () => void;
   degradedSources: string[];
+  /** Named session pools unavailable within the currently rendered snapshot. */
+  degradedButlers: string[];
   heartbeatRollup: TimelineHeartbeatRollup;
 }
 
 const EMPTY_ROLLUP: TimelineHeartbeatRollup = { ticks: 0, butlers: 0, failed: 0 };
+
+function mergeDistinct(left: string[], right: string[] | undefined): string[] {
+  return [...new Set([...left, ...(right ?? [])])];
+}
 
 export function useTimelineLedger(filters: TimelineLedgerFilters): UseTimelineLedgerResult {
   const qc = useQueryClient();
@@ -76,16 +86,25 @@ export function useTimelineLedger(filters: TimelineLedgerFilters): UseTimelineLe
   const [pinned, setPinned] = useState(true);
   const [committed, setCommitted] = useState<TimelineEvent[] | null>(null);
   const [committedCursor, setCommittedCursor] = useState<string | undefined>(undefined);
+  const [committedDegradedSources, setCommittedDegradedSources] = useState<string[] | null>(null);
+  const [committedDegradedButlers, setCommittedDegradedButlers] = useState<string[] | null>(null);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState(false);
+  const paginationRequestRef = useRef(0);
 
   // A filter change invalidates any accumulated history — start over, live.
   const prevFiltersKeyRef = useRef(filtersKey);
   useEffect(() => {
     if (prevFiltersKeyRef.current === filtersKey) return;
     prevFiltersKeyRef.current = filtersKey;
+    paginationRequestRef.current += 1;
     setPinned(true);
     setCommitted(null);
     setCommittedCursor(undefined);
+    setCommittedDegradedSources(null);
+    setCommittedDegradedButlers(null);
+    setLoadMoreError(false);
+    setIsLoadingMore(false);
   }, [filtersKey]);
 
   const headData = head.data?.data;
@@ -107,11 +126,28 @@ export function useTimelineLedger(filters: TimelineLedgerFilters): UseTimelineLe
   const hasMore = pinned ? (head.data?.meta.has_more ?? false) : committedCursor !== undefined;
 
   const loadMore = useCallback(() => {
+    if (isLoadingMore) return;
     const baseline = committed ?? headEvents;
     const baselineCursor = committed !== null ? committedCursor : head.data?.meta.cursor;
     if (!baselineCursor) return;
+    const baselineDegradedSources =
+      committed !== null
+        ? (committedDegradedSources ?? [])
+        : (head.data?.meta.degraded_sources ?? []);
+    const baselineDegradedButlers =
+      committed !== null
+        ? (committedDegradedButlers ?? [])
+        : (head.data?.meta.degraded_butlers ?? []);
+    const requestId = ++paginationRequestRef.current;
 
     setPinned(false);
+    // Commit before fetching so a failed older-page request neither lets a
+    // live-head refresh rewrite history nor drops the exact cursor to retry.
+    setCommitted(baseline);
+    setCommittedCursor(baselineCursor);
+    setCommittedDegradedSources(baselineDegradedSources);
+    setCommittedDegradedButlers(baselineDegradedButlers);
+    setLoadMoreError(false);
     setIsLoadingMore(true);
     const params = { ...filters, limit: PAGE_SIZE, before: baselineCursor };
     qc.fetchQuery({
@@ -119,22 +155,55 @@ export function useTimelineLedger(filters: TimelineLedgerFilters): UseTimelineLe
       queryFn: () => getTimeline(params),
     })
       .then((page) => {
+        if (paginationRequestRef.current !== requestId) return;
         setCommitted([...baseline, ...page.data]);
         setCommittedCursor(page.meta.has_more ? (page.meta.cursor ?? undefined) : undefined);
+        setCommittedDegradedSources(
+          mergeDistinct(baselineDegradedSources, page.meta.degraded_sources),
+        );
+        setCommittedDegradedButlers(
+          mergeDistinct(baselineDegradedButlers, page.meta.degraded_butlers),
+        );
       })
       .catch((err) => {
+        if (paginationRequestRef.current !== requestId) return;
         console.error("Failed to load older timeline events:", err);
+        setLoadMoreError(true);
       })
-      .finally(() => setIsLoadingMore(false));
+      .finally(() => {
+        if (paginationRequestRef.current === requestId) setIsLoadingMore(false);
+      });
     // filters is a fresh object each render; filtersKey is the stable dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [committed, committedCursor, headEvents, head.data, qc, filtersKey]);
+  }, [
+    committed,
+    committedCursor,
+    committedDegradedButlers,
+    committedDegradedSources,
+    headEvents,
+    head.data,
+    isLoadingMore,
+    qc,
+    filtersKey,
+  ]);
 
   const showNewEvents = useCallback(() => {
+    paginationRequestRef.current += 1;
     setPinned(true);
     setCommitted(null);
     setCommittedCursor(undefined);
+    setCommittedDegradedSources(null);
+    setCommittedDegradedButlers(null);
+    setLoadMoreError(false);
+    setIsLoadingMore(false);
   }, []);
+
+  const degradedSources = pinned
+    ? (head.data?.meta.degraded_sources ?? [])
+    : (committedDegradedSources ?? head.data?.meta.degraded_sources ?? []);
+  const degradedButlers = pinned
+    ? (head.data?.meta.degraded_butlers ?? [])
+    : (committedDegradedButlers ?? head.data?.meta.degraded_butlers ?? []);
 
   return {
     events,
@@ -145,11 +214,14 @@ export function useTimelineLedger(filters: TimelineLedgerFilters): UseTimelineLe
     refetch: () => void head.refetch(),
     hasMore,
     loadMore,
+    loadMoreError,
+    retryLoadMore: loadMore,
     isLoadingMore,
     pinned,
     newCount,
     showNewEvents,
-    degradedSources: head.data?.meta.degraded_sources ?? [],
+    degradedSources,
+    degradedButlers,
     heartbeatRollup: head.data?.meta.heartbeat_rollup ?? EMPTY_ROLLUP,
   };
 }

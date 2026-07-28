@@ -16,6 +16,11 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 
 import type { SessionSummary } from "@/api/types";
 
+type ExcerptState =
+  | { kind: "loading" }
+  | { kind: "error"; retry: () => void }
+  | { kind: "loaded"; error: string | null };
+
 const mockUseSessionErrorExcerpts = vi.fn();
 const mockUseTickingNow = vi.fn();
 
@@ -57,8 +62,8 @@ afterEach(() => {
 
 function setup({
   now = NOW,
-  errors = new Map<string, string | null>(),
-}: { now?: number; errors?: Map<string, string | null> } = {}) {
+  errors = new Map<string, ExcerptState>(),
+}: { now?: number; errors?: Map<string, ExcerptState> } = {}) {
   mockUseTickingNow.mockReturnValue(now);
   mockUseSessionErrorExcerpts.mockReturnValue(errors);
 }
@@ -116,9 +121,49 @@ describe("SessionsPinnedStrip — running sessions", () => {
 });
 
 describe("SessionsPinnedStrip — recent failures", () => {
+  it("renders a loading state instead of falsely claiming a missing error detail", () => {
+    const failed = makeSession({ id: "fail-1", success: false });
+    // An absent entry represents the detail query still being pending.
+    setup({ errors: new Map() });
+
+    const { getByTestId } = render(
+      <SessionsPinnedStrip runningSessions={[]} recentFailures={[failed]} />,
+    );
+
+    expect(getByTestId("pinned-failure-excerpt").textContent).toBe("Loading error detail…");
+  });
+
+  it("announces a detail failure when it replaces the loading state", () => {
+    const failed = makeSession({ id: "fail-1", success: false });
+    const retry = vi.fn();
+    setup({ errors: new Map() });
+
+    const view = render(
+      <SessionsPinnedStrip runningSessions={[]} recentFailures={[failed]} onSessionClick={vi.fn()} />,
+    );
+
+    expect(view.getByTestId("pinned-failure-excerpt").getAttribute("role")).toBe("status");
+    expect(view.queryByRole("alert")).toBeNull();
+
+    setup({ errors: new Map([["fail-1", { kind: "error", retry }]]) });
+    view.rerender(
+      <SessionsPinnedStrip runningSessions={[]} recentFailures={[failed]} onSessionClick={vi.fn()} />,
+    );
+
+    const alert = view.getByRole("alert");
+    expect(alert.textContent).toContain("Error detail temporarily unavailable.");
+    expect(alert.closest('[role="button"]')).toBeNull();
+    expect(view.getByRole("button", { name: "Retry error detail for health" })).toBeTruthy();
+  });
+
   it("pins a recent failure with its Failed badge and an inline error excerpt", () => {
     const failed = makeSession({ id: "fail-1", success: false });
-    setup({ errors: new Map([["fail-1", "TimeoutError: upstream did not respond in 30s"]]) });
+    setup({
+      errors: new Map([[
+        "fail-1",
+        { kind: "loaded", error: "TimeoutError: upstream did not respond in 30s" },
+      ]]),
+    });
 
     const { getByTestId } = render(
       <SessionsPinnedStrip runningSessions={[]} recentFailures={[failed]} />,
@@ -136,7 +181,7 @@ describe("SessionsPinnedStrip — recent failures", () => {
       success: false,
       cancelled_by_owner: true,
     });
-    setup({ errors: new Map([["cancelled-1", "Cancelled by owner"]]) });
+    setup({ errors: new Map([["cancelled-1", { kind: "loaded", error: "Cancelled by owner" }]]) });
 
     const { getByTestId, getByText } = render(
       <SessionsPinnedStrip runningSessions={[]} recentFailures={[cancelled]} />,
@@ -149,7 +194,7 @@ describe("SessionsPinnedStrip — recent failures", () => {
   it("truncates a long error excerpt", () => {
     const longError = "E".repeat(200);
     const failed = makeSession({ id: "fail-1", success: false });
-    setup({ errors: new Map([["fail-1", longError]]) });
+    setup({ errors: new Map([["fail-1", { kind: "loaded", error: longError }]]) });
 
     const { getByTestId } = render(
       <SessionsPinnedStrip runningSessions={[]} recentFailures={[failed]} />,
@@ -161,12 +206,30 @@ describe("SessionsPinnedStrip — recent failures", () => {
 
   it("falls back to a plain label when no error detail is available yet", () => {
     const failed = makeSession({ id: "fail-1", success: false });
-    setup({ errors: new Map([["fail-1", null]]) });
+    setup({ errors: new Map([["fail-1", { kind: "loaded", error: null }]]) });
 
     const { getByTestId } = render(
       <SessionsPinnedStrip runningSessions={[]} recentFailures={[failed]} />,
     );
     expect(getByTestId("pinned-failure-excerpt").textContent).toBe("no error detail");
+  });
+
+  it("names an unavailable error detail and retries only that detail query", () => {
+    const retry = vi.fn();
+    const failed = makeSession({ id: "fail-1", success: false });
+    setup({ errors: new Map([["fail-1", { kind: "error", retry }]]) });
+
+    const { getByRole, getByTestId } = render(
+      <SessionsPinnedStrip runningSessions={[]} recentFailures={[failed]} onSessionClick={vi.fn()} />,
+    );
+
+    expect(getByTestId("pinned-failure-excerpt").textContent).toBe(
+      "Error detail temporarily unavailable.",
+    );
+    const retryButton = getByRole("button", { name: "Retry error detail for health" });
+    expect(retryButton.closest('[role="button"]')).toBeNull();
+    fireEvent.click(retryButton);
+    expect(retry).toHaveBeenCalledOnce();
   });
 });
 

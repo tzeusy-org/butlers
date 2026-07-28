@@ -111,6 +111,56 @@ describe("useTimelineLedger", () => {
     expect(result.current.hasMore).toBe(false);
   });
 
+  it("retains the committed snapshot and retries the same cursor after Load older fails", async () => {
+    const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
+    const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { has_more: false });
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+    mockGetTimeline.mockRejectedValueOnce(new Error("older page unavailable"));
+    mockGetTimeline.mockResolvedValueOnce(olderPage);
+
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useTimelineLedger({}), { wrapper: Wrapper });
+
+    await waitFor(() => expect(result.current.events.map((event) => event.id)).toEqual(["e2"]));
+
+    act(() => {
+      result.current.loadMore();
+    });
+
+    await waitFor(() => expect(result.current.loadMoreError).toBe(true));
+    expect(result.current.events.map((event) => event.id)).toEqual(["e2"]);
+    expect(result.current.hasMore).toBe(true);
+    expect(mockGetTimeline).toHaveBeenLastCalledWith({ limit: 50, before: "cur-1" });
+
+    act(() => {
+      result.current.retryLoadMore();
+    });
+
+    await waitFor(() => expect(result.current.events.map((event) => event.id)).toEqual(["e2", "e1"]));
+    expect(mockGetTimeline).toHaveBeenLastCalledWith({ limit: 50, before: "cur-1" });
+  });
+
+  it("retains named partial-source metadata from a successfully loaded older page", async () => {
+    const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
+    const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], {
+      has_more: false,
+      degraded_sources: ["sessions"],
+      degraded_butlers: ["home"],
+    } as unknown as Partial<TimelineResponse["meta"]>);
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+    mockGetTimeline.mockResolvedValueOnce(olderPage);
+
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useTimelineLedger({}), { wrapper: Wrapper });
+
+    await waitFor(() => expect(result.current.events).toHaveLength(1));
+    act(() => result.current.loadMore());
+
+    await waitFor(() => expect(result.current.events.map((event) => event.id)).toEqual(["e2", "e1"]));
+    expect(result.current.degradedSources).toEqual(["sessions"]);
+    expect(result.current.degradedButlers).toEqual(["home"]);
+  });
+
   it("counts newly-arrived head events while unpinned instead of merging them silently", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
     mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));

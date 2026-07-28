@@ -1354,7 +1354,7 @@ export function searchAll(query: string, limit?: number): Promise<ApiResponse<Se
 // ---------------------------------------------------------------------------
 
 /** Fetch the unified timeline with cursor-based pagination. */
-export function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
+export async function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.before) sp.set("before", params.before);
@@ -1362,7 +1362,17 @@ export function getTimeline(params?: TimelineParams): Promise<TimelineResponse> 
   params?.butler?.forEach((b) => sp.append("butler", b));
   params?.event_type?.forEach((t) => sp.append("event_type", t));
   const qs = sp.toString();
-  return apiFetch<TimelineResponse>(qs ? `/timeline?${qs}` : "/timeline");
+  const response = await apiFetch<TimelineResponse>(qs ? `/timeline?${qs}` : "/timeline");
+  // The backend field is additive. Normalize an older rolling-deploy response
+  // so Timeline consumers can distinguish an intentionally empty name list
+  // from an omitted field without weakening generic degraded_sources handling.
+  return {
+    ...response,
+    meta: {
+      ...response.meta,
+      degraded_butlers: response.meta.degraded_butlers ?? [],
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

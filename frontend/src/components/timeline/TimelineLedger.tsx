@@ -49,8 +49,14 @@ export interface TimelineLedgerProps {
   includeInternal?: boolean;
   isError?: boolean;
   onRetry?: () => void;
+  /** The current snapshot excludes one or more unavailable Timeline sources. */
+  hasPartialData?: boolean;
   hasMore?: boolean;
   onLoadMore?: () => void;
+  /** An older-page request failed after the ledger had already rendered rows. */
+  loadMoreError?: boolean;
+  /** Retries the retained older-page cursor after a pagination failure. */
+  onRetryLoadMore?: () => void;
   isLoadingMore?: boolean;
 }
 
@@ -499,6 +505,24 @@ function EmptyState() {
   );
 }
 
+function PartialEmptyState({
+  title = "Timeline data is partially unavailable.",
+  description = "No events were returned by reachable sources, so this is not a complete empty result.",
+}: {
+  title?: string;
+  description?: string;
+}) {
+  return (
+    <div role="status" aria-live="polite" data-testid="timeline-partial-empty">
+      <EmptyStateUI
+        variant="page"
+        title={title}
+        description={description}
+      />
+    </div>
+  );
+}
+
 function InternalMaintenanceEmptyState() {
   return (
     <EmptyStateUI
@@ -568,8 +592,11 @@ export function TimelineLedger({
   includeInternal = false,
   isError,
   onRetry,
+  hasPartialData = false,
   hasMore,
   onLoadMore,
+  loadMoreError = false,
+  onRetryLoadMore,
   isLoadingMore,
 }: TimelineLedgerProps) {
   const { eventId: drawerEventId, openDrawer, closeDrawer } = useEventDrawerState();
@@ -593,7 +620,7 @@ export function TimelineLedger({
         {drawerEventMissing && drawerEventId && (
           <EventNotFoundNotice eventId={drawerEventId} onClose={closeDrawer} />
         )}
-        <EmptyState />
+        {hasPartialData ? <PartialEmptyState /> : <EmptyState />}
       </>
     );
   }
@@ -606,7 +633,14 @@ export function TimelineLedger({
         <EventNotFoundNotice eventId={drawerEventId} onClose={closeDrawer} />
       )}
       {hourGroups.length === 0 ? (
-        <InternalMaintenanceEmptyState />
+        hasPartialData ? (
+          <PartialEmptyState
+            title="Owner activity is partially unavailable."
+            description="Only scheduled maintenance runs were returned by reachable sources. One or more Timeline sources are unavailable, so this is not a complete owner-activity result. Enable Internal activity to inspect the maintenance runs."
+          />
+        ) : (
+          <InternalMaintenanceEmptyState />
+        )
       ) : (
         hourGroups.map((group) => (
           <HourGroupSection
@@ -618,12 +652,29 @@ export function TimelineLedger({
           />
         ))
       )}
-      {onLoadMore && (hasMore || isLoadingMore) && (
-        <div className="flex justify-center pt-4">
-          <Button variant="outline" size="sm" onClick={onLoadMore} disabled={isLoadingMore}>
-            {isLoadingMore ? "Loading…" : "Load older"}
-          </Button>
+      {loadMoreError ? (
+        <div
+          className="mt-4 flex flex-wrap items-center justify-center gap-2 rounded border border-[var(--amber)]/30 bg-[var(--amber)]/5 px-3 py-2 font-mono text-[11px] text-[var(--amber-text)]"
+          data-testid="timeline-load-more-error"
+        >
+          <span role="status" aria-live="polite">
+            Older timeline events are temporarily unavailable.
+          </span>
+          {onRetryLoadMore && (
+            <Button type="button" variant="outline" size="xs" onClick={onRetryLoadMore}>
+              Retry older events
+            </Button>
+          )}
         </div>
+      ) : (
+        onLoadMore &&
+        (hasMore || isLoadingMore) && (
+          <div className="flex justify-center pt-4">
+            <Button variant="outline" size="sm" onClick={onLoadMore} disabled={isLoadingMore}>
+              {isLoadingMore ? "Loading…" : "Load older"}
+            </Button>
+          </div>
+        )
       )}
     </div>
   );

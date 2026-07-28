@@ -609,6 +609,12 @@ export interface TimelineMeta {
    * degraded-mode convention — see CLAUDE.md — applied per-source).
    */
   degraded_sources: string[];
+  /**
+   * Additive names of session fan-out pools that failed for this request.
+   * Kept optional for rolling deploys against an older Timeline API; readers
+   * must preserve the generic degraded_sources state either way.
+   */
+  degraded_butlers?: string[];
 }
 
 /** Response shape from GET /api/timeline. */

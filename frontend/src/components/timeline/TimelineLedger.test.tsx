@@ -94,6 +94,13 @@ describe("TimelineLedger — states", () => {
     renderLedger({ isLoading: false, isError: false, events: [] });
     expect(container.textContent).toContain("No events found.");
   });
+
+  it("renders a partial-empty state instead of a genuine empty result when the page reports degraded evidence", () => {
+    renderLedger({ hasPartialData: true } as unknown as Partial<React.ComponentProps<typeof TimelineLedger>>);
+
+    expect(container.textContent).toContain("Timeline data is partially unavailable.");
+    expect(container.textContent).not.toContain("No events found.");
+  });
 });
 
 describe("TimelineLedger — hour grouping", () => {
@@ -271,6 +278,16 @@ describe("TimelineLedger — Internal maintenance lens", () => {
     expect(container.textContent).toContain("No owner activity in this window.");
     expect(container.textContent).toContain("Load older");
   });
+
+  it("renders a partial-unavailable state when degraded evidence contains only hidden maintenance", () => {
+    const maintenance = makeMaintenanceEvent("maintenance-partial", "2026-07-04T15:03:00Z");
+
+    renderLedger({ events: [maintenance], hasPartialData: true });
+
+    expect(container.querySelector('[data-testid="timeline-partial-empty"]')).not.toBeNull();
+    expect(container.textContent).toContain("Owner activity is partially unavailable.");
+    expect(container.textContent).not.toContain("No owner activity in this window.");
+  });
 });
 
 describe("TimelineLedger — failed delivery honesty", () => {
@@ -434,5 +451,26 @@ describe("TimelineLedger — pagination", () => {
       button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("names an unavailable older page and exposes its retry without hiding the retained rows", () => {
+    const retryLoadMore = vi.fn();
+    renderLedger({
+      events: [makeEvent("e1", "2026-07-04T15:10:00Z")],
+      hasMore: true,
+      loadMoreError: true,
+      onRetryLoadMore: retryLoadMore,
+    } as unknown as Partial<React.ComponentProps<typeof TimelineLedger>>);
+
+    expect(container.textContent).toContain("Older timeline events are temporarily unavailable.");
+    expect(container.querySelector('[data-testid="timeline-row"]')).not.toBeNull();
+    const retry = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Retry older events"),
+    );
+    expect(retry).toBeTruthy();
+    act(() => {
+      retry?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(retryLoadMore).toHaveBeenCalledOnce();
   });
 });

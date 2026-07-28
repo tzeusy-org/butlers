@@ -759,6 +759,29 @@ async def test_timeline_endpoint_reports_degraded_sessions_source(app):
     assert resp.json()["meta"]["degraded_sources"] == ["sessions"]
 
 
+async def test_timeline_endpoint_names_degraded_session_butlers_without_replacing_source_metadata(
+    app,
+):
+    """A partial session fan-out preserves both generic and named availability evidence."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "home"]
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": [], "home": []}, ["home"]))
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/timeline")
+
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]
+    assert meta["degraded_sources"] == ["sessions"]
+    assert meta["degraded_butlers"] == ["home"]
+
+
 async def test_timeline_endpoint_reports_degraded_notifications_source(app):
     """A failed notification sub-query surfaces as meta.degraded_sources, not silence (fix 5)."""
     mock_db = MagicMock(spec=DatabaseManager)

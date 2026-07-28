@@ -32,6 +32,14 @@ function mockTimelineResponse() {
 import { getTimeline } from "./client.ts";
 
 describe("getTimeline", () => {
+  it("defaults additive degraded-butler metadata for an older server response", async () => {
+    mockTimelineResponse();
+
+    const response = await getTimeline();
+
+    expect(response.meta.degraded_butlers).toEqual([]);
+  });
+
   it("forwards a trace scope", async () => {
     mockTimelineResponse();
     const params: TimelineParams & { trace: string } = { trace: "trace-001" };
