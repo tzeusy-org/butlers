@@ -82,8 +82,11 @@ institution, currency, or transaction text.
 ### Requirement: Complete validated response precedes idempotent settled recording
 
 The sync SHALL validate the complete v2 response before recording any Finance
-transaction.  A non-empty or malformed `errlist`, malformed account response,
-or invalid settled transaction SHALL fail the run before ledger writes.  It
+transaction. This includes every required Connection field (`conn_id`, `name`,
+`org_id`, and an HTTPS `sfin_url`) and every required Account field (`id`,
+`name`, `conn_id`, `currency`, finite numeric-string `balance`, and valid Unix
+`balance-date`). A non-empty or malformed `errlist`, malformed account response,
+or invalid settled transaction SHALL fail the run before ledger writes. It
 SHALL skip pending or unposted entries, and each accepted entry SHALL be
 recorded through the normal internal Finance recording seam with the provider
 transaction ID as `external_id`, `source="aggregator"`, and metadata limited to
@@ -95,6 +98,13 @@ non-secret provider provenance.
 - **THEN** the sync SHALL return a sanitized incomplete-or-invalid response
   result before calling the transaction recording seam
 - **AND** no transaction is written and `accounts.last_synced_at` is unchanged
+
+#### Scenario: Missing or malformed required v2 fields prevent partial writes
+- **WHEN** a Connection omits or malforms `org_id` or `sfin_url`, or the Account
+  omits or malforms `balance` or `balance-date`
+- **THEN** the sync SHALL return a sanitized invalid-response result
+- **AND** no account or transaction is written and
+  `accounts.last_synced_at` is unchanged
 
 #### Scenario: Settled transactions preserve normal Finance semantics
 - **WHEN** a complete response contains valid posted, non-pending transactions

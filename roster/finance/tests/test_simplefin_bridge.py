@@ -26,6 +26,7 @@ _ACCESS_URL_PASSWORD = "fixture-password"
 _ACCESS_URL = f"https://{_ACCESS_URL_USER}:{_ACCESS_URL_PASSWORD}@simplefin.invalid/simplefin"
 _CONN_ID = "conn-fixture"
 _REMOTE_ACCOUNT_ID = "account-fixture"
+_MISSING = object()
 
 
 class _CredentialStore:
@@ -116,7 +117,14 @@ def _account_set(
 ) -> dict[str, Any]:
     return {
         "errlist": [] if errlist is None else errlist,
-        "connections": [{"conn_id": conn_id, "name": "Fixture Bank"}],
+        "connections": [
+            {
+                "conn_id": conn_id,
+                "name": "Fixture Bank",
+                "org_id": "org-fixture",
+                "sfin_url": "https://simplefin.fixture",
+            }
+        ],
         "accounts": [
             {
                 "id": account_id,
@@ -319,6 +327,76 @@ async def test_first_response_is_fully_validated_before_account_creation(
     assert result == {"status": "degraded", "reason": "invalid_response"}
     assert await pool.fetchval("SELECT COUNT(*) FROM accounts") == 0
     assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "invalid_value"),
+    [
+        ("connection", "org_id", _MISSING),
+        ("connection", "org_id", ""),
+        ("connection", "sfin_url", _MISSING),
+        ("connection", "sfin_url", "not-a-simplefin-root-url"),
+        ("account", "balance", _MISSING),
+        ("account", "balance", "not-a-decimal"),
+        ("account", "balance-date", _MISSING),
+        ("account", "balance-date", "not-a-timestamp"),
+    ],
+    ids=[
+        "missing-connection-org-id",
+        "malformed-connection-org-id",
+        "missing-connection-sfin-url",
+        "malformed-connection-sfin-url",
+        "missing-account-balance",
+        "malformed-account-balance",
+        "missing-account-balance-date",
+        "malformed-account-balance-date",
+    ],
+)
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+async def test_missing_or_malformed_required_v2_fields_prevent_all_writes_and_freshness(
+    pool: asyncpg.Pool,
+    section: str,
+    field: str,
+    invalid_value: object,
+) -> None:
+    """Every required v2 connection/account field is validated before writes."""
+    from roster.finance.jobs.finance_jobs import run_simplefin_sync
+
+    account = await _insert_bound_account(pool)
+    response = _account_set(
+        transactions=[
+            {
+                "id": "must-not-write",
+                "posted": int(_NOW.timestamp()),
+                "amount": "-9.99",
+                "description": "Invalid response fixture",
+            }
+        ]
+    )
+    target = response["connections"][0] if section == "connection" else response["accounts"][0]
+    if invalid_value is _MISSING:
+        target.pop(field)
+    else:
+        target[field] = invalid_value
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response)
+
+    async with _http_client(handler) as client:
+        result = await run_simplefin_sync(
+            pool,
+            credential_store=_CredentialStore(_ACCESS_URL),
+            http_client=client,
+            now=_NOW,
+        )
+
+    assert result == {"status": "degraded", "reason": "invalid_response"}
+    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert (
+        await pool.fetchval("SELECT last_synced_at FROM accounts WHERE id = $1", account["id"])
+        is None
+    )
 
 
 @pytest.mark.asyncio(loop_scope="session")

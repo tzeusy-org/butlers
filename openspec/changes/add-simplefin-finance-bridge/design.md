@@ -80,14 +80,16 @@ allowed to fetch is the first-run provisioning path.
 
 ### Complete response validation before normal Finance recording
 
-The job parses `errlist`, the one account, the ISO currency, and every
-candidate settled transaction into validated values before it calls the normal
-Finance recording seam.  Non-empty/malformed error lists, malformed response
-objects, and invalid settled rows fail the whole run before any ledger write.
-Pending or unposted rows are deliberately ignored, not promoted to a lifecycle
-state.  The internal transaction helper gains a private `source` argument;
-the public `record_transaction` signature remains unchanged and continues to
-call it with its existing behavior.
+The job parses `errlist`, all required v2 Connection fields (`conn_id`, `name`,
+`org_id`, and an HTTPS `sfin_url`), all required fields on the one Account
+(including finite numeric `balance` and valid Unix `balance-date`), the ISO
+currency, and every candidate settled transaction into validated values before
+it calls the normal Finance recording seam. Non-empty/malformed error lists,
+malformed response objects, and invalid settled rows fail the whole run before
+any ledger write. Pending or unposted rows are deliberately ignored, not
+promoted to a lifecycle state. The internal transaction helper gains a private
+`source` argument; the public `record_transaction` signature remains unchanged
+and continues to call it with its existing behavior.
 
 ### Window, provenance, and freshness semantics
 
