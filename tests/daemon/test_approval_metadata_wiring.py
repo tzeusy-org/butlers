@@ -11,6 +11,7 @@ from fastmcp import FastMCP as RuntimeFastMCP
 
 from butlers.config import load_config
 from butlers.daemon import ButlerDaemon
+from butlers.modules.approvals.command_contracts import ApprovalCommandContractError
 from butlers.modules.approvals.module import ApprovalsConfig, ApprovalsModule
 from butlers.modules.base import ToolMeta
 from butlers.modules.email import EmailConfig, EmailModule
@@ -57,23 +58,39 @@ class _UnexpectedMetadataModule:
         raise AssertionError("ToolMeta must not be collected without an approvals module")
 
 
-@pytest.mark.parametrize("roster_name", ("relationship", "home"))
-async def test_disabled_rosters_inject_metadata_for_manual_approvals(
-    roster_name: str, monkeypatch: pytest.MonkeyPatch
+def _approval_wiring_daemon(
+    roster_name: str,
+    modules: list[object],
+    *,
+    mcp: object | None = None,
+) -> ButlerDaemon:
+    """Build the real daemon boundary used by startup-wiring tests."""
+    db = MockDB()
+    daemon = ButlerDaemon(_REPO_ROOT / "roster" / roster_name, db=db)
+    daemon.config = load_config(_REPO_ROOT / "roster" / roster_name)
+    daemon.mcp = mcp if mcp is not None else RuntimeFastMCP(f"test-{roster_name}")
+    daemon._modules = modules
+    return daemon
+
+
+async def test_disabled_roster_injects_metadata_for_manual_approvals(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Configured ApprovalsModule receives ToolMeta even when it has no gates."""
+    roster_name = "home"
     config = load_config(_REPO_ROOT / "roster" / roster_name)
     approvals = _ApprovalsModuleProbe()
     apply_gates = AsyncMock()
     monkeypatch.setattr("butlers.daemon.apply_approval_gates", apply_gates)
 
-    daemon = SimpleNamespace(
-        config=config,
-        _active_modules=[_MetadataModule(), approvals],
-        mcp=RuntimeFastMCP(f"test-{roster_name}"),
+    daemon = _approval_wiring_daemon(
+        roster_name,
+        [_MetadataModule(), approvals],
+        mcp=RuntimeFastMCP("test-home"),
     )
+    daemon.config = config
 
-    result = await ButlerDaemon._apply_approval_gates(daemon)
+    result = await daemon._apply_approval_gates()
 
     assert result == {}
     assert approvals.received_tool_metadata == {
@@ -85,12 +102,10 @@ async def test_disabled_rosters_inject_metadata_for_manual_approvals(
 
 async def test_unconfigured_approvals_module_keeps_gate_setup_inactive() -> None:
     """No configured approvals module means no gate or metadata setup work."""
-    daemon = SimpleNamespace(
-        config=SimpleNamespace(name="review", modules={}),
-        _active_modules=[_UnexpectedMetadataModule()],
-    )
+    daemon = _approval_wiring_daemon("home", [_UnexpectedMetadataModule()])
+    daemon.config = SimpleNamespace(name="review", modules={})
 
-    result = await ButlerDaemon._apply_approval_gates(daemon)
+    result = await daemon._apply_approval_gates()
 
     assert result == {}
 
@@ -106,16 +121,20 @@ async def test_enabled_gates_receive_the_deterministic_approval_push_runtime(
     monkeypatch.setattr("butlers.daemon.apply_approval_gates", apply_gates)
 
     warn_if_secret_missing = AsyncMock()
-    daemon = SimpleNamespace(
-        config=config,
-        _active_modules=[_MetadataModule(), approvals],
-        mcp=object(),
-        db=SimpleNamespace(pool=object()),
-        _build_approval_push_runtime=lambda: push_runtime,
-        _warn_if_approval_callback_secret_missing=warn_if_secret_missing,
+    daemon = _approval_wiring_daemon(
+        "messenger",
+        [_MetadataModule(), approvals],
+        mcp=RuntimeFastMCP("test-messenger"),
+    )
+    daemon.config = config
+    monkeypatch.setattr(daemon, "_build_approval_push_runtime", lambda: push_runtime)
+    monkeypatch.setattr(
+        daemon,
+        "_warn_if_approval_callback_secret_missing",
+        warn_if_secret_missing,
     )
 
-    result = await ButlerDaemon._apply_approval_gates(daemon)
+    result = await daemon._apply_approval_gates()
 
     assert result == {}
     assert apply_gates.await_args.kwargs["approval_push_runtime"] is push_runtime
@@ -123,17 +142,31 @@ async def test_enabled_gates_receive_the_deterministic_approval_push_runtime(
     warn_if_secret_missing.assert_awaited_once()
 
 
+async def test_direct_owner_registry_validation_cannot_be_skipped_by_lightweight_probe() -> None:
+    """A non-daemon probe cannot turn owner-command validation into a no-op."""
+    approvals = _ApprovalsModuleProbe()
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="switchboard", modules={"approvals": {}}),
+        _active_modules=[approvals],
+        mcp=RuntimeFastMCP("switchboard-missing-owner-command"),
+    )
+
+    with pytest.raises(ApprovalCommandContractError, match="connector_disconnect"):
+        await ButlerDaemon._apply_approval_gates(daemon)
+
+
 async def test_relationship_registration_dispatches_legacy_merge_via_memory_callable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The real Relationship module registration owns legacy merge recovery.
 
-    Relationship enables the approvals action surface but has no gated tools.
-    Its registered executor must therefore resolve the canonical memory MCP
-    callable directly, rather than re-enter a gate or depend on another
-    butler. The legacy action name is deliberately mapped only at this runtime
-    boundary; the row itself remains untouched until the successful execution
-    transition persists its result and audit event.
+    Relationship enables the approvals action surface and gates only the new
+    curation replay command. Its registered executor must still resolve the
+    canonical legacy merge memory callable directly, rather than re-enter a
+    gate or depend on another butler. The legacy action name is deliberately
+    mapped only at this runtime boundary; the row itself remains untouched
+    until the successful execution transition persists its result and audit
+    event.
     """
     config = load_config(_REPO_ROOT / "roster" / "relationship")
     db = MockDB()
@@ -165,7 +198,7 @@ async def test_relationship_registration_dispatches_legacy_merge_via_memory_call
 
     originals = await daemon._apply_approval_gates()
 
-    assert originals == {}
+    assert set(originals) == {"memory_reclassify"}
     assert approvals._tool_executor is not None
 
     action_id = db._insert_action(

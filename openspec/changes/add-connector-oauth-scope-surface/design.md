@@ -530,9 +530,9 @@ prompted to approve reauth they did not initiate.
 on the dashboard), not automatic. The connector daemon NEVER calls reauth on
 its own behalf. If the auth_status flips automatically (drift detected on
 introspection), the dashboard surfaces `ReauthCallout` but the Approval is
-only created when the operator clicks "Re-authorize". This is the same
-pattern as `connector-lifecycle-ceremony` `rotate-token` — automatic
-detection, manual initiation.
+only created when the operator clicks "Re-authorize". Unlike reauth,
+`connector-lifecycle-ceremony` rejects `rotate-token` before parking until a
+safe credential-reference replay command exists.
 
 ### Risk 4 — Non-OAuth connector authors forget to update the applicability matrix
 

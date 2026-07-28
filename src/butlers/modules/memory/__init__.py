@@ -16,7 +16,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
-from butlers.modules.base import Module, ToolGroupMixin, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 
 
 def _coerce_json_list(v: Any) -> Any:
@@ -308,6 +308,18 @@ class MemoryModule(Module):
     @property
     def dependencies(self) -> list[str]:
         return []
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        """Declare the full reclassification command as safety-critical."""
+        return {
+            "memory_reclassify": ToolMeta(
+                arg_sensitivities={
+                    "memory_type": True,
+                    "memory_id": True,
+                    "permanence_target": True,
+                }
+            )
+        }
 
     def migration_revisions(self) -> str | None:
         return "memory"
@@ -1267,6 +1279,27 @@ class MemoryModule(Module):
                 memory_type,
                 memory_id,
             )
+
+        # Relationship's deterministic episodic-fact curator parks this
+        # command directly.  Keep the registered handler available on its
+        # owning daemon even if a future memory tool-group prune removes the
+        # broader admin surface; the approval executor validates this exact
+        # native signature at startup and invokes it only after the gate.
+        if butler_name == "relationship":
+
+            @mcp.tool()
+            async def memory_reclassify(
+                memory_type: str,
+                memory_id: str,
+                permanence_target: str,
+            ) -> dict[str, Any]:
+                """Reclassify an approved active fact's permanence."""
+                return await _management.memory_reclassify(
+                    module._get_pool(),
+                    memory_type,
+                    memory_id,
+                    permanence_target,
+                )
 
         @_tool("admin")
         async def memory_stats(

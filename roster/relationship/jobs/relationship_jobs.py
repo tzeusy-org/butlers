@@ -23,6 +23,7 @@ from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
 )
+from butlers.modules.approvals.command_contracts import MEMORY_RECLASSIFY_COMMAND
 
 logger = logging.getLogger(__name__)
 
@@ -2660,7 +2661,6 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         f"content_preview={content[:120]}",
                     )
                 ]
-
                 # park_pending_action is the single choke point for PENDING
                 # inserts: it writes the row AND attempts the owner-facing
                 # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
@@ -3985,6 +3985,13 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
                         f"content_preview={content[:120]}",
                     )
                 ]
+                command_args = MEMORY_RECLASSIFY_COMMAND.materialize(
+                    {
+                        "memory_type": "fact",
+                        "memory_id": str(fact_id),
+                        "permanence_target": "volatile",
+                    }
+                )
 
                 # park_pending_action is the single choke point for PENDING
                 # inserts: it writes the row AND attempts the owner-facing
@@ -3995,12 +4002,8 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
                 await park_pending_action(
                     db_pool,
                     action_id=action_id,
-                    tool_name="memory_reclassify",
-                    tool_args={
-                        "memory_type": "fact",
-                        "memory_id": str(fact_id),
-                        "permanence_target": "volatile",
-                    },
+                    tool_name=MEMORY_RECLASSIFY_COMMAND.name,
+                    tool_args=command_args,
                     agent_summary=(
                         f"Reclassify fact {fact_id} "
                         f"(episodic-in-durable): {predicate!r} at "

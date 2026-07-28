@@ -14,7 +14,8 @@ touch:
 - ``modules/approvals/email_guard.py``'s three park-path INSERTs
   (``check_email_recipient``'s context-mismatch and no-rule paths, and
   ``check_recipient``'s no-rule path)
-- ``api/routers/ingestion_connectors.py``'s disconnect/rotate-token endpoints
+- ``api/routers/ingestion_connectors.py``'s disconnect endpoint and audited
+  rotate-token refusal
 - ``api/routers/approvals.py``'s edits-UPDATE path (approve endpoint)
 - ``core_tools/_notifications.py``'s notify() no-entity-facts park path
 
@@ -24,9 +25,10 @@ never round-trip a value through asyncpg's real JSONB codec. These tests
 exercise the real production code paths (daemon method, email_guard
 functions, ingestion_connectors endpoints, notify() tool) against a real
 Postgres instance (testcontainers), with only unrelated external
-dependencies (identity/relationship-schema resolution, connector audit
-logging) stubbed or left absent (both fail gracefully to None/no-op by
-design). The approvals.py edits-UPDATE path is the one exception: its
+dependencies (identity/relationship-schema resolution) stubbed or left absent
+(both fail gracefully to None/no-op by design). Connector token rotation now
+requires a durable audit refusal before it returns its normal 409, so this
+fixture provisions that canonical table. The approvals.py edits-UPDATE path is the one exception: its
 enclosing endpoint additionally requires full DatabaseManager/MCPClientManager
 plumbing unrelated to this bug, so — matching the precedent set by PR #2925
 for the same bug class — that site is covered by reproducing the exact
@@ -147,6 +149,24 @@ async def pending_actions_pool(provisioned_postgres_pool):
                 endpoint_identity TEXT NOT NULL,
                 deleted_at TIMESTAMPTZ,
                 PRIMARY KEY (connector_type, endpoint_identity)
+            )
+        """)
+        # Token rotation is rejected before a pending action can be created.
+        # Its refusal is an audit event, so provision the canonical table the
+        # route writes in the normal (non-migration-error) path.
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS public.audit_log (
+                id BIGSERIAL PRIMARY KEY,
+                ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT,
+                note TEXT,
+                ip INET,
+                request_id UUID,
+                metadata JSONB,
+                result TEXT,
+                error TEXT
             )
         """)
         yield pool
@@ -351,7 +371,9 @@ class TestIngestionConnectorsWriters:
         )
         assert stored == {"connector_type": "gmail", "endpoint_identity": "user@example.com"}
 
-    async def test_rotate_connector_token_roundtrips_tool_args(self, pending_actions_pool) -> None:
+    async def test_rotate_connector_token_rejects_without_replayable_command(
+        self, pending_actions_pool
+    ) -> None:
         pool = pending_actions_pool
         await pool.execute(
             "INSERT INTO connector_registry (connector_type, endpoint_identity) VALUES ($1, $2)",
@@ -361,18 +383,26 @@ class TestIngestionConnectorsWriters:
         db = _FakeDbManager(pool)
         request = SimpleNamespace(client=None)
 
-        response = await rotate_connector_token("gmail", "user2@example.com", request, db=db)
-        assert response.data["success"] is True
+        from fastapi import HTTPException
 
-        stored = await _fetch_latest_tool_args(pool, "connector_rotate_token")
-        assert isinstance(stored, dict), (
-            f"tool_args arrived as {type(stored).__name__!r}, not a dict — "
-            "the jsonb column was double-encoded into a string."
+        with pytest.raises(HTTPException, match="replayable") as exc_info:
+            await rotate_connector_token("gmail", "user2@example.com", request, db=db)
+
+        assert exc_info.value.status_code == 409
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM pending_actions WHERE tool_name = $1",
+                "connector_rotate_token",
+            )
+            == 0
         )
-        assert stored == {
-            "connector_type": "gmail",
-            "endpoint_identity": "user2@example.com",
-            "is_sensitive": True,
+        audit = await pool.fetchrow(
+            "SELECT action, result, error FROM public.audit_log ORDER BY id DESC LIMIT 1"
+        )
+        assert dict(audit) == {
+            "action": "connector.rotate_token.unreplayable",
+            "result": "error",
+            "error": "safe replayable command unavailable",
         }
 
 

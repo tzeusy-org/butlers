@@ -41,7 +41,16 @@ groups = ["core", "entity"]
 enable_ingress_dedupe = true
 
 [modules.switchboard]
-groups = ["routing"]
+groups = ["routing", "lifecycle"]
+
+[modules.approvals]
+groups = ["actions"]
+enabled = true
+default_expiry_hours = 72
+default_risk_tier = "medium"
+
+[modules.approvals.gated_tools.connector_disconnect]
+risk_tier = "high"
 
 [modules.insight_broker]
 

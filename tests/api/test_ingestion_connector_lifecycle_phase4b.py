@@ -10,10 +10,9 @@ Covers §4.4 (disconnect), §4.5 (rotate-token), §4.6 (reauth).
   - Returns 503 if registry or approvals subsystem unavailable
 
 §4.5 ROTATE-TOKEN — POST /api/ingestion/connectors/{type}/{identity}/rotate-token
-  - Approvals-gated: returns 202 with {success: true, rotated_at: <iso8601>} ONLY
-  - Response MUST NOT contain credential/token values
-  - is_sensitive=True masking: credential never appears in response, request log, or audit log
-  - Credential-masking test: greps full response body, mock audit call args, pending_action args
+  - Rejects with HTTP 409 before queue insertion until it has a durable credential reference
+  - Emits an error audit signal, with no credential/token value in response or audit log
+  - Credential-masking test greps full response body and mock audit call args
   - Returns 404 if connector not found
 
 §4.6 REAUTH — POST /api/ingestion/connectors/{type}/{identity}/reauth
@@ -233,8 +232,8 @@ async def test_disconnect_503_approvals_insert_error(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_rotate_token_202_success_body(app):
-    """POST rotate-token returns 202 with ONLY {success: true, rotated_at}."""
+async def test_rotate_token_409_when_no_safe_replay_command_exists(app):
+    """Rotation cannot enter approvals without a durable credential reference."""
     pool = _make_pool(fetchrow_result=_make_existing_row())
     _wire_db(app, pool)
 
@@ -250,23 +249,21 @@ async def test_rotate_token_202_success_body(app):
                 json={"new_token": _FAKE_TOKEN},
             )
 
-    assert resp.status_code == 202
-    data = resp.json()["data"]
-    # Response MUST contain ONLY success and rotated_at
-    assert data["success"] is True
-    assert "rotated_at" in data
-    # No other fields — action_id, token, credential must not appear
-    assert "action_id" not in data
-    assert "token" not in data
-    assert "credential" not in data
+    assert resp.status_code == 409
+    body = resp.json()
+    assert "replayable" in body["detail"].lower()
+    assert "action_id" not in str(body)
+    assert "credential" not in str(body).lower()
+    assert _FAKE_TOKEN not in str(body)
+    pool.execute.assert_not_awaited()
 
 
-async def test_rotate_token_credential_masking(app):
-    """CREDENTIAL MASKING TEST: token value MUST NOT appear in response, pending_action, or audit.
+async def test_rotate_token_rejection_masks_credential_and_does_not_park(app):
+    """CREDENTIAL MASKING TEST: rejection must not expose or persist a token.
 
     This is the core masking assertion required by §4.5. It verifies:
     1. Response body contains no token pattern matching the fake credential
-    2. pending_actions INSERT args contain no token value
+    2. no pending_actions INSERT occurs
     3. audit.append() call args contain no token value
     """
     pool = _make_pool(fetchrow_result=_make_existing_row())
@@ -285,7 +282,7 @@ async def test_rotate_token_credential_masking(app):
                 json={"new_token": _FAKE_TOKEN, "credential": _FAKE_TOKEN},
             )
 
-    assert resp.status_code == 202
+    assert resp.status_code == 409
 
     # 1. Grep the FULL response body text for the fake token
     response_text = resp.text
@@ -293,24 +290,8 @@ async def test_rotate_token_credential_masking(app):
         f"CREDENTIAL LEAK: fake token '{_FAKE_TOKEN}' found in response body: {response_text!r}"
     )
 
-    # 2. Grep the pending_actions INSERT args for the fake token
-    execute_call_args = pool.execute.call_args
-    all_execute_args = str(execute_call_args)
-    assert _FAKE_TOKEN not in all_execute_args, (
-        f"CREDENTIAL LEAK: fake token '{_FAKE_TOKEN}' found in pending_actions INSERT args: "
-        f"{all_execute_args!r}"
-    )
-
-    # Also verify the tool_args dict stored in pending_actions has no credential field.
-    # bu-bstqu: tool_args is now bound as a native dict (no json.dumps pre-serialization,
-    # which used to double-encode the jsonb column — see bu-cymc4/PR #2924), so it is
-    # found directly among the execute() positional args rather than parsed from a string.
-    if execute_call_args and execute_call_args.args:
-        for arg in execute_call_args.args:
-            if isinstance(arg, dict):
-                assert _FAKE_TOKEN not in str(arg), (
-                    f"CREDENTIAL LEAK: fake token found in pending_action tool_args: {arg!r}"
-                )
+    # 2. No durable action is created without a replayable command.
+    pool.execute.assert_not_awaited()
 
     # 3. Grep the audit.append() call args for the fake token
     if mock_audit.called:
@@ -340,7 +321,8 @@ async def test_rotate_token_emits_audit_without_credential(app):
 
     mock_audit.assert_awaited_once()
     _, audit_kwargs = mock_audit.call_args
-    assert audit_kwargs["action"] == "connector.rotate_token"
+    assert audit_kwargs["action"] == "connector.rotate_token.unreplayable"
+    assert audit_kwargs["result"] == "error"
     # Credential must not appear in audit note
     assert _FAKE_TOKEN not in str(audit_kwargs.get("note", ""))
 
@@ -360,8 +342,8 @@ async def test_rotate_token_404_not_found(app):
     assert resp.status_code == 404
 
 
-async def test_rotate_token_creates_pending_action_with_is_sensitive(app):
-    """rotate-token pending_action must include is_sensitive=True in tool_args."""
+async def test_rotate_token_rejects_before_pending_action_insert(app):
+    """No unreplayable rotation row can be approved and later strand."""
     pool = _make_pool(fetchrow_result=_make_existing_row())
     _wire_db(app, pool)
 
@@ -376,19 +358,7 @@ async def test_rotate_token_creates_pending_action_with_is_sensitive(app):
                 f"/api/ingestion/connectors/{_CONNECTOR_TYPE}/{_ENDPOINT_IDENTITY}/rotate-token",
             )
 
-    pool.execute.assert_awaited_once()
-    call_args = pool.execute.call_args
-    # bu-bstqu: tool_args is now bound as a native dict (no json.dumps
-    # pre-serialization — see bu-cymc4/PR #2924 for why that double-encoded
-    # the jsonb column), so no json.loads() round-trip is needed here.
-    tool_args = call_args.args[3]  # INSERT VALUES: $1=id, $2=tool_name, $3=tool_args, ...
-    assert isinstance(tool_args, dict), (
-        f"tool_args arrived as {type(tool_args).__name__!r}, not a dict — "
-        "the jsonb column was double-encoded into a string."
-    )
-    assert tool_args.get("is_sensitive") is True, (
-        f"rotate-token pending_action tool_args must have is_sensitive=True; got: {tool_args!r}"
-    )
+    pool.execute.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -758,6 +758,9 @@ make test-qg
 ### Approvals executor fallback contract
 - `ButlerDaemon._apply_approval_gates()` should wire approvals execution with a fallback to registered MCP tool handlers when a `tool_name` is not present in gated originals, so module-queued pending actions for non-gated tools can execute after approval.
 
+### Direct approval producer replay contract
+- A producer that calls `park_pending_action()` outside the normal MCP approval gate must persist a declared owner, registered tool name, and exact keyword args, then have the owning daemon validate that handler signature at startup. If no safe command can be replayed (especially for secret-bearing requests), reject before parking with a redacted audit signal; never repair historic rows by guessing a replacement command or arguments.
+
 ### Beads coordinator handoff guardrail
 - Some worker runs can finish with branch pushed but bead still `in_progress` (no PR/bead transition). Coordinator should detect `agent/<id>` ahead of `main` with no PR and normalize by creating a PR and marking the bead `blocked` with `pr-review` + `external_ref`.
 

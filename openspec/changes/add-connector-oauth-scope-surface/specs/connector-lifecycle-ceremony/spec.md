@@ -26,10 +26,10 @@ The system SHALL enforce the following gate matrix for connector lifecycle actio
 | `pause` | audit-log-only |
 | `run-now` | audit-log-only (defined as "resume from pause") |
 | `disconnect` | Approvals-gated |
-| `rotate-token` | Approvals-gated; `is_sensitive=True` masking mandatory |
+| `rotate-token` | reject before parking until a safe replay command exists |
 | `reauth` | Approvals-gated; delegates to `connector-oauth-scope-surface/spec` for behavior contract |
 
-Audit-log-only actions SHALL still emit an `audit.append()` entry. Approvals-gated actions SHALL pass through the Approvals module at the MCP server level (not bypassable from the dashboard API).
+Audit-log-only actions SHALL still emit an `audit.append()` entry. Approvals-gated actions SHALL pass through the Approvals module at the MCP server level (not bypassable from the dashboard API). An action rejected as unreplayable SHALL append a redacted error audit entry and SHALL NOT create a pending action.
 
 #### Scenario: Pause is audit-only
 
@@ -44,10 +44,12 @@ Audit-log-only actions SHALL still emit an `audit.append()` entry. Approvals-gat
 - **THEN** the handler routes the request through the Approvals module before executing
 - **AND** until approval resolves, the connector remains in its prior state
 
-#### Scenario: Rotate-token requires approval
+#### Scenario: Rotate-token has no durable replay reference
 
-- **WHEN** an operator invokes the `rotate-token` action
-- **THEN** the handler routes the request through the Approvals module before executing
+- **WHEN** an operator invokes `rotate-token` without an authorized credential reference and deterministic provider operation
+- **THEN** the endpoint returns HTTP 409 before calling the approvals park path
+- **AND** it appends a redacted error audit entry identifying the unreplayable rotation
+- **AND** no `connector_rotate_token` action reaches owner approval
 
 #### Scenario: Reauth delegates to scope surface
 
@@ -55,7 +57,7 @@ Audit-log-only actions SHALL still emit an `audit.append()` entry. Approvals-gat
 - **THEN** the handler SHALL route the request through the Approvals module before executing
 - **AND** on approval, the handler SHALL invoke the OAuth reauth flow per `connector-oauth-scope-surface/spec`'s `§Reauth endpoint contract for OAuth connectors` requirement (returns `{auth_url, state, expires_in}` for OAuth connectors; returns `{error: "unsupported", ...}` for non-OAuth connectors per the same spec's non-OAuth requirement)
 - **AND** the handler SHALL NOT return HTTP 503 (the blocking-pending-spec condition is no longer met once `connector-oauth-scope-surface` is ratified)
-- **AND** audit emissions SHALL follow `connector-oauth-scope-surface/spec`'s `§Audit trail` requirement (which is consistent with the audit-pair pattern preserved below for `disconnect` and `rotate-token`)
+- **AND** audit emissions SHALL follow `connector-oauth-scope-surface/spec`'s `§Audit trail` requirement for reauth
 
 ## Source References
 

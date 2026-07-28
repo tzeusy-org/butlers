@@ -63,7 +63,11 @@ Behavior guidance learned from repeated outcomes. Rules track maturity (`candida
 
 ## Tools Provided
 
-The module registers 23 MCP tools:
+The module registers 23 shared MCP tools. Relationship additionally registers
+the approval-gated `memory_reclassify` command used by its episodic-predicate
+curation job. That conditional command only changes an active fact to
+`volatile`; its memory type, fact ID, and target permanence are all
+safety-critical approval-rule arguments.
 
 | Tool | Category | Description |
 |------|----------|-------------|
@@ -78,6 +82,7 @@ The module registers 23 MCP tools:
 | `memory_mark_helpful` | Feedback | Mark a rule application as helpful |
 | `memory_mark_harmful` | Feedback | Mark a rule application as harmful |
 | `memory_forget` | Management | Retract a memory artifact |
+| `memory_reclassify` | Management (Relationship only) | Reclassify an approved active fact to volatile permanence |
 | `memory_stats` | Management | Get memory statistics |
 | `memory_predicate_list` | Predicates | List registered predicates |
 | `memory_predicate_search` | Predicates | Hybrid search for predicates (trigram + full-text + semantic) |
