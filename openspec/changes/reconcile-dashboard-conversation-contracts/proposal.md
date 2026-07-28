@@ -14,6 +14,10 @@ record says it landed.
   identity, scoped to direct dashboard conversations rather than connectors.
 - Make the dashboard-conversation envelope requirement cite that canonical
   vocabulary, so the RFC and the executable contract agree.
+- Correct the ingestion-event registry's connector-only purpose wording: it is
+  a unified canonical record for connector-originated and direct internal
+  dashboard ingress, while retaining connector-specific status semantics where
+  those actually apply.
 - Correct the active anchor/resume change's status narrative and retain only its
   genuinely unfinished work: first-token streaming and a unified conversation
   read/action-receipt surface.
@@ -32,11 +36,14 @@ None.
 
 - `dashboard-conversations`: make the `dashboard` / `internal` envelope origin
   explicitly canonical and traceable to RFC 0003.
+- `ingestion-event-registry`: correct the registry's connector-only purpose and
+  table wording without changing connector-specific filtered-event behavior.
 
 ## Impact
 
 - `about/legends-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md`
 - `openspec/specs/dashboard-conversations/spec.md`
+- `openspec/specs/ingestion-event-registry/spec.md`
 - `openspec/changes/conversation-anchor-provider-resume-ledger/`
 - `bu-27dxl.9`, after owner approval and only as a content-only edit.
 

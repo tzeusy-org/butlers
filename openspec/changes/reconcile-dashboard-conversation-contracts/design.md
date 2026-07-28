@@ -17,6 +17,8 @@ duplicate already-landed work.
 
 - Establish one traceable, non-contradictory authority for dashboard conversation
   source vocabulary and the current anchor/resume boundary.
+- Correct connector-only registry prose without weakening connector-specific
+  filtered-event and status behavior.
 - Preserve the existing specialist-routing policy and make its remaining work
   discoverable as distinct future slices.
 - Replace stale roadmap references only after their successors are approved.
@@ -44,6 +46,26 @@ that RFC entry.
 correct but the canonical routing contract false.  Widening `internal` into a
 catch-all would weaken source provenance, so the exception remains explicit and
 scoped.
+
+### 1a. Describe the ingestion registry as a unified ingress record
+
+The registry's purpose and table wording will say that `public.ingestion_events`
+records both connector-originated events and direct internal dashboard ingress.
+Connector-specific filtered-event joins and status behavior remain scoped to
+connector rows; this is a provenance correction, not a broadening of the
+connector lifecycle contract.
+
+### 1b. Serialize RFC 0003 amendments
+
+This reconciliation change owns the vocabulary/provenance amendment and lands
+before the recovery changeset modifies RFC 0003's recovery guidance. Recovery
+work rebases on that authority head; if implementation deliberately combines
+both documentation edits into one pull request, it applies the vocabulary
+correction first and keeps the amendments separately reviewable.
+
+**Why this over parallel RFC edits:** both changes touch the same canonical
+contract. An explicit order prevents a rebase from silently restoring
+connector-only assumptions or overwriting the dashboard recovery exception.
 
 ### 2. Preserve history while correcting active change status
 

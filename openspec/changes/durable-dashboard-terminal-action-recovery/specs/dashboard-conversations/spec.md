@@ -11,12 +11,17 @@ every immutable dashboard user message with a durable control record.
 When present, it SHALL contain `id` (owner-inspectable UUID), `kind`
 (`bug_report` or `dead_letter`), `state`
 (`pending_reconciliation`, `completed`, `failed`, `cancelled`, or `ambiguous`),
-nullable safe `reference`, `updated_at`, and `ambiguity_reason_code` plus
-`resolution_url` only when ambiguous. Its `effects` SHALL be an ordered list of
-safe summaries, each containing `kind` (`qa_report`, `dead_letter_capture`, or
-`conversation_reply`), owner-facing `state` (`pending_reconciliation`,
-`completed`, `failed`, `cancelled`, or `ambiguous`), nullable safe `reference`,
-and `updated_at`. It SHALL never contain raw relay, database, credential, or
+nullable safe `reference`, `updated_at`, nullable sanitized `reason_code`,
+nullable `ambiguity_reason_code`, `resolution_url` only when ambiguous, and
+nullable `owner_resolution`. `owner_resolution`, when present, SHALL be the
+owner-only immutable overlay `{id, assessment: "completed"|"failed", note,
+recorded_at}`; it SHALL coexist with `state: "ambiguous"` and SHALL not be
+represented as a receiver receipt or ordinary completed/failed action. Its
+`effects` SHALL be an ordered list of safe summaries, each containing `kind`
+(`qa_report`, `dead_letter_capture`, or `conversation_reply`), owner-facing
+`state` (`pending_reconciliation`, `completed`, `failed`, `cancelled`, or
+`ambiguous`), nullable safe `reference`, nullable sanitized `reason_code`, and
+`updated_at`. It SHALL never contain raw relay, database, credential, or
 exception text. When present, `dashboard_turn` SHALL contain raw
 `ingress_state` (`pending`, `submitting`, `accepted`, `retryable_error`, or
 `rejected`), nullable `target_kind` (`route`, `bug_report`, or `dead_letter`),
@@ -43,7 +48,7 @@ after the durable ingress claim for `submitting`, immediately eligible for
 pending-cancellation turn.
 
 ID: REQ-dashboard-conversations-002
-Source: dashboard-conversations § Conversation Pydantic Response Models; heart-and-soul/vision.md § Non-Negotiable Rule 1; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-005; design.md Decision 6
+Source: dashboard-conversations § Conversation Pydantic Response Models; heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-005; design.md Decision 6
 Scope: v1-mandatory
 
 #### Scenario: ConversationSummary model
@@ -121,6 +126,15 @@ Scope: v1-mandatory
 - **AND** a reload or reconnect SHALL return the same durable action identity
   and state independently of the original SSE request
 
+#### Scenario: Ambiguous action carries a readable owner resolution overlay
+
+- **WHEN** an owner has recorded a manual resolution for an ambiguous terminal
+  action
+- **THEN** the read model SHALL return `terminal_action.state: "ambiguous"` and
+  the immutable safe `owner_resolution` object beside it
+- **AND** it SHALL not serialize that assessment as a completed/failed receipt
+  or offer automatic delivery recovery
+
 #### Scenario: Route-only turn has an unknown outcome
 
 - **WHEN** a dashboard route could not prove whether target dispatch occurred
@@ -135,6 +149,8 @@ Scope: v1-mandatory
 - **WHEN** a search result is serialized
 - **THEN** each entry SHALL include the ConversationSummary fields plus
   `snippet`, the matching message-content excerpt
+
+## ADDED Requirements
 
 ### Requirement: Exact Message Ingress Recovery API
 
@@ -207,7 +223,7 @@ with both compatibility booleans false, and no automatic redelivery or
 `retry-ingress` recovery SHALL be permitted after ambiguity.
 
 ID: REQ-dashboard-conversations-007
-Source: dashboard-turn cancellation migration core_193; heart-and-soul/vision.md § Non-Negotiable Rule 1; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-003; design.md Decisions 3 and 6
+Source: dashboard-turn cancellation migration core_193; heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-003; design.md Decisions 3 and 6
 Scope: v1-mandatory
 
 #### Scenario: Stop races outbound ingress and the process dies
@@ -229,6 +245,8 @@ Scope: v1-mandatory
 - **AND** reload, reconnect, a repeat Stop, and ingress recovery SHALL not
   present or cause a new delivery
 
+## MODIFIED Requirements
+
 ### Requirement: Conversation Reply Channel
 
 A routed butler session SHALL confirm its interpretation of a dashboard
@@ -245,24 +263,37 @@ Scope: v1-mandatory
 
 #### Scenario: Conversation reply persists a normal confirm-loop message
 
-- **WHEN** a routed session calls `conversation_reply` for an existing
-  conversation without a terminal-action child-effect key
-- **THEN** the system SHALL insert an assistant-role message, increment message
-  count, refresh the conversation timestamp, and return the new message and
-  conversation identities
+- **WHEN** a routed session calls `conversation_reply(conversation_id, message)`
+  for an existing conversation without a terminal-action child-effect key
+- **THEN** the system SHALL insert an assistant-role `public.dashboard_messages`
+  row with `content = message`, increment the conversation `message_count`, and
+  refresh `updated_at`
+- **AND** the tool SHALL return `{"status": "ok", "message_id": "...",
+  "conversation_id": "..."}`
 
 #### Scenario: Terminal action reply is retried
 
-- **WHEN** a terminal-lane worker calls `conversation_reply` with the same
-  conversation and child-effect idempotency key after a crash or retry
-- **THEN** the system SHALL return the existing assistant message without
-  inserting a second reply or incrementing the message count again
+- **WHEN** a terminal-lane worker calls
+  `conversation_reply(conversation_id, message, child_effect_idempotency_key)`
+  with the same conversation, message, and child-effect idempotency key after a
+  crash or retry
+- **THEN** the system SHALL return the existing assistant message as
+  `{"status": "ok", "message_id": "...", "conversation_id": "..."}`
+  without inserting a second reply or incrementing the message count again
+
+#### Scenario: Terminal action reply rejects a changed payload for the same key
+
+- **WHEN** a terminal-lane worker calls `conversation_reply` with an existing
+  child-effect idempotency key but a different conversation or message payload
+- **THEN** the system SHALL insert no message and return a structured conflict
+- **AND** it SHALL preserve the original reply text and receipt rather than
+  silently changing owner-visible content
 
 #### Scenario: Conversation reply rejects an unknown conversation
 
 - **WHEN** `conversation_reply` references an unknown conversation ID
-- **THEN** it SHALL insert no message and return a structured error without
-  raising to the caller
+- **THEN** it SHALL insert no message and return `{"status": "error",
+  "error": "..."}` without raising so the caller can correct its mistake
 
 #### Scenario: Conversation reply is available to every butler
 
@@ -311,6 +342,16 @@ Scope: v1-mandatory
 - **AND** it SHALL set both compatibility booleans to `false` and SHALL NOT
   claim cancellation
 
+#### Scenario: Stop wins after a primary effect but before its acknowledgement
+
+- **WHEN** a primary terminal child has a durable completed receipt and Stop
+  wins the conditional fence against a still-planned required acknowledgement
+- **THEN** the API SHALL return `outcome: "pending_reconciliation"` with both
+  compatibility booleans false until the action's failed
+  `stopped_after_partial_effect` projection is durable
+- **AND** it SHALL never return `outcome: "cancelled"` for that partial effect
+  outcome
+
 #### Scenario: Stop races targetless ingress
 
 - **WHEN** Stop persists against a targetless `submitting` ingress whose outbound
@@ -348,7 +389,7 @@ be owner-visible, but it SHALL not expose a manual relay retry or claim that a
 domain butler received the statement.
 
 ID: REQ-dashboard-conversations-005
-Source: butler-switchboard § Dashboard Chat-Widget Classification Lanes; heart-and-soul/vision.md § Non-Negotiable Rule 1; design.md Decision 1
+Source: butler-switchboard § Dashboard Chat-Widget Classification Lanes; heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); design.md Decision 1
 Scope: v1-mandatory
 
 #### Scenario: Route outcome changes after the initial request

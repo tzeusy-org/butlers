@@ -16,8 +16,9 @@ Scope: v1-mandatory
 - **WHEN** `POST /api/butlers/{name}/conversations` is called
 - **THEN** the frontend SHALL read the SSE stream using Fetch `ReadableStream`
 - **AND** `conversation_created` creates local conversation state, `token`
-  appends content, `message_complete` finalizes metadata, `error` displays in
-  the thread, and `done` closes the stream and re-enables input
+  appends content, `message_complete` finalizes model, token, duration, and
+  tool-call metadata, `error` displays in the thread, and `done` closes the
+  stream and re-enables input
 
 #### Scenario: SSE connection for follow-up
 
@@ -31,10 +32,11 @@ Scope: v1-mandatory
 - **THEN** the frontend SHALL call `POST
   /api/butlers/{name}/conversation-turns/{message_id}/cancel` with a pending
   (`Stopping…`) state on the Stop button, disabling it against a second click
-- **AND** the backend SHALL resolve that exact immutable turn to its in-flight
-  runtime or terminal action and either kill the routed butler's runtime
-  subprocess through `cancel_session` or persist terminal-action Stop intent;
-  it SHALL not merely detach a watcher
+- **AND** when the exact immutable turn owns an in-flight routed runtime, the
+  backend SHALL resolve it and kill the routed butler subprocess through
+  `cancel_session`; it SHALL not merely detach a watcher or persist intent alone
+- **AND** when the turn instead owns a terminal action, the backend SHALL persist
+  and linearize terminal-action Stop intent against that action
 - **AND** only after the API returns `outcome: "cancelled"` may the frontend
   abort its own SSE watch (`AbortController`) and render the partial assistant
   message with `Cancelled by owner`, distinct from the generic `Interrupted`
@@ -70,7 +72,8 @@ Scope: v1-mandatory
 - **WHEN** the cancel request itself fails without a durable action outcome
 - **THEN** the frontend SHALL surface the failure inline and re-enable the
   Stop control
-- **AND** it SHALL not render a terminal cancellation indicator
+- **AND** it SHALL not render `Cancelled by owner`, `Interrupted`, or any other
+  terminal-state indicator implying that the runtime or action actually stopped
 
 ### Requirement: Conversation React Query Hooks
 
@@ -92,8 +95,8 @@ Scope: v1-mandatory
 
 - **WHEN** `useConversationMessages(butlerName, conversationId)` is called
 - **THEN** it SHALL return the message list using key
-  `["conversation-messages", butlerName, conversationId]` and refetch on
-  conversation switch
+  `["conversation-messages", butlerName, conversationId]` with `staleTime: 0`
+  so it always refetches on conversation switch
 
 #### Scenario: Pending dashboard outcome is refreshed
 
@@ -118,8 +121,12 @@ Scope: v1-mandatory
 
 - **WHEN** a message is sent, a conversation is created, or a terminal-action
   reconciliation changes its durable state
-- **THEN** the frontend SHALL invalidate the relevant conversation-list and
-  message queries
+- **THEN** a sent message or created conversation SHALL invalidate
+  `["conversations", butlerName]` to refresh the list
+- **AND** `message_complete` SHALL invalidate
+  `["conversation-messages", butlerName, conversationId]`
+- **AND** a terminal-action reconciliation SHALL invalidate the relevant
+  conversation-list and exact message queries
 
 #### Scenario: Exact-message recovery hands control back to the durable query
 
@@ -144,7 +151,7 @@ expose its sanitized reason and owner-only resolution link, but SHALL not offer
 an automatic duplicate retry.
 
 ID: REQ-dashboard-chat-ui-003
-Source: heart-and-soul/vision.md § Non-Negotiable Rule 1; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-005; design.md Decisions 5-6
+Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-005; design.md Decisions 5-6
 Scope: v1-mandatory
 
 #### Scenario: Action has a durable outcome
@@ -170,11 +177,30 @@ Scope: v1-mandatory
   and the safe capture reference
 - **AND** it SHALL not imply that the capture was lost
 
+#### Scenario: Stop suppresses an unstarted acknowledgement after a primary effect
+
+- **WHEN** a primary terminal effect is completed and its required
+  `conversation_reply` effect is `cancelled` with
+  `reason_code: "suppressed_by_stop"`
+- **THEN** the UI SHALL render the completed primary safe reference and a
+  truthful `Stopped after partial effect; acknowledgement was suppressed` state
+- **AND** it SHALL not render `Cancelled`, `Report failed`, or an unqualified
+  filed/saved success while the parent is pending reconciliation or after it
+  becomes failed with `reason_code: "stopped_after_partial_effect"`
+
 #### Scenario: Action is ambiguous
 
 - **WHEN** a terminal action is ambiguous
 - **THEN** the UI SHALL show the sanitized ambiguity reason and resolution link
 - **AND** it SHALL not offer an automatic effect retry
+
+#### Scenario: Owner assessment remains an ambiguity overlay
+
+- **WHEN** an ambiguous terminal action has an `owner_resolution` overlay
+- **THEN** the UI SHALL show the owner assessment, bounded sanitized note, and
+  recorded time beside the still-ambiguous action
+- **AND** it SHALL not relabel the action as a receipt-backed completion/failure
+  or offer another resolution submission after the immutable overlay exists
 
 #### Scenario: Route-only outcome is ambiguous
 

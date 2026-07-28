@@ -45,13 +45,13 @@
   "active_work": {
     "pr_3624": {
       "title": "Durable dashboard Stop and route handoff",
-      "head_at_audit": "acc8ef6cab43a12e3df55b28ce4255f801c2700e",
-      "state": "open",
-      "required_next_gate": "Fresh hosted checks must be green on this exact head before merge."
+      "head_at_audit": "d5827d42fe23cfda07508896db433695b1a0a53c",
+      "state": "open_green_exact_head",
+      "required_next_gate": "Independently review the green exact head and merge only with owner authorization."
     },
     "pr_3618": {
       "title": "Truthful dashboard dispatch receipt",
-      "head_at_audit": "d58ce54db375f53b0acb61e33bb2d608f27b36e7",
+      "head_at_audit": "e40dc2505ac0a26a4d9628f5e04718eca7a2f305",
       "state": "open_draft_on_stale_base",
       "required_next_gate": "After #3624, rebase and independently validate or close as superseded."
     },
@@ -72,13 +72,16 @@
     "one dashboard lane reservation per immutable message, with route_pending to dead_letter only on definite no-side-effect evidence",
     "unknown route/effect outcomes become durable ambiguity rather than automatic duplicate delivery",
     "bug report, dead-letter capture, and acknowledgement reply each carry their own durable receipt/idempotency boundary",
+    "dashboard QA receipt is a durable inbox with fenced claim/acknowledgement before any patrol-owned finding ID is shown",
+    "manual ambiguity assessment remains an immutable overlay, never a fabricated receiver receipt",
     "reconciliation defaults to owner-controlled observe mode and needs a canary before active retries"
   ],
   "reconciliation_passes": 4,
+  "reconciliation_pass_basis": "one live workflow/implementation inventory plus three independent artifact reconciliations",
   "gates": {
     "openspec_strict": "pass for both authored changes",
-    "traceability": "no new errors against the existing 2579-error repository baseline",
+    "traceability": "whole-tree authoring trace remains blocked by 2579 repository-wide errors; targeted strict validation is the authored-packet gate",
     "implementation_tests": "not yet applicable; requirements are planned and have expected pre-implementation citation warnings"
   },
-  "unresolved_owner_decision": "Whether ambiguous owner questions remain truthful dead-letter/rephrase cases, gain a bounded clarification lane, or receive constrained General authority."
+  "unresolved_owner_decision": "Approve a narrow dashboard operator-ingress exception, choose whether current maturity stops at route acknowledgement versus includes durable downstream session/reply outcome, and choose generic-question behavior: truthful dead-letter/rephrase, bounded clarification, or constrained General authority."
 }

@@ -10,7 +10,7 @@ visible effect is invoked. The action kind and canonical payload SHALL NOT
 change after intent is recorded.
 
 ID: REQ-dashboard-terminal-action-recovery-001
-Source: heart-and-soul/vision.md § Non-Negotiable Rule 1; RFC 0005 § Workflow and Recovery Telemetry; design.md Decision 2
+Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); heart-and-soul/v1.md § Anti-Patterns; RFC 0005 § Workflow and Recovery Telemetry; design.md Decision 2
 Scope: v1-mandatory
 
 #### Scenario: Terminal lane first wins
@@ -38,9 +38,11 @@ its own stable idempotency key, state, attempt history, receipt/reference, and
 reconciliation lease evidence. Internal child states SHALL be exactly `planned`,
 `attempt_started`, `completed`, `failed`, `cancelled`, or `ambiguous`; the
 owner-facing conversation projection SHALL map `planned` and `attempt_started`
-to `pending_reconciliation`. The parent SHALL become completed only after every
-planned child has a durable completed receipt; it SHALL preserve each child state
-when it becomes failed or ambiguous.
+to `pending_reconciliation`. A `cancelled` child SHALL carry a bounded sanitized
+reason code, including `suppressed_by_stop` when Stop won before it started. The
+parent SHALL become completed only after every planned child has a durable
+completed receipt; it SHALL preserve each child state and safe reason when it
+becomes failed, cancelled, or ambiguous.
 
 ID: REQ-dashboard-terminal-action-recovery-002
 Source: butler-switchboard § Dashboard Chat-Widget Classification Lanes; dashboard-conversations § Conversation Reply Channel; design.md Decisions 2 and 4
@@ -73,7 +75,7 @@ either limit without proof, the unresolved effect and action SHALL become
 `ambiguous`.
 
 ID: REQ-dashboard-terminal-action-recovery-003
-Source: heart-and-soul/vision.md § Non-Negotiable Rule 1; RFC 0005 § Workflow and Recovery Telemetry; design.md Decision 3
+Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); heart-and-soul/v1.md § Anti-Patterns; RFC 0005 § Workflow and Recovery Telemetry; design.md Decision 3
 Scope: v1-mandatory
 
 #### Scenario: Reconciler restarts after an effect call
@@ -101,10 +103,15 @@ Scope: v1-mandatory
 ### Requirement: Terminal-Action Stop Linearization
 
 The system SHALL persist action-level Stop intent even when a terminal action
-has already been claimed. Before every child effect invocation, the reconciler
-SHALL fence and record `attempt_started` under its lease after checking that
-Stop intent. A confirmed cancellation SHALL mean that no child effect was
-invoked.
+has already been claimed. Stop and the worker SHALL use reciprocal atomic
+conditional fences: Stop SHALL persist its intent and conditionally transition
+each still-`planned` child to `cancelled` with
+`reason_code: "suppressed_by_stop"`, while the worker may conditionally
+transition a child from `planned` to `attempt_started` only under the current
+lease and while no Stop intent exists. Exactly one transition may win for a
+given child, and the worker SHALL invoke a child effect only after its
+`attempt_started` transition commits. A confirmed cancellation SHALL mean that
+no child effect was invoked.
 
 ID: REQ-dashboard-terminal-action-recovery-004
 Source: dashboard-chat-ui § Stream cancellation is a real server-side stop; dashboard-conversations REQ-dashboard-conversations-004; design.md Decision 6
@@ -114,8 +121,10 @@ Scope: v1-mandatory
 
 - **WHEN** the owner requests Stop after action intent but before a child effect
   records `attempt_started`
-- **THEN** the action and dashboard turn SHALL become cancelled and the child
-  effect SHALL NOT be invoked
+- **THEN** the Stop fence SHALL record that child as `cancelled` with
+  `reason_code: "suppressed_by_stop"` and the child effect SHALL NOT be invoked
+- **AND** the action and dashboard turn SHALL become `cancelled` only when no
+  child has recorded `attempt_started` or `completed`
 
 #### Scenario: Stop arrives after a child starts
 
@@ -135,24 +144,31 @@ preserved child-effect state. The following mapping SHALL be exhaustive:
 | --- | --- | --- |
 | `completed` / `bug_report` | every planned effect completed | `completed` |
 | `completed` / `dead_letter` | every planned effect completed | `failed` |
-| `failed` | a required effect reached a proven terminal failure, or the owner manually resolved an ambiguity as failed | `failed` |
+| `failed` | a required effect reached a proven terminal failure, or Stop suppressed a required unstarted acknowledgement after a prior child completed | `failed` |
 | `cancelled` | Stop won before any child recorded `attempt_started` | `cancelled` |
 | `ambiguous` | an attempted effect has no safe receipt/idempotency proof before the recovery bound | explicit `ambiguous` |
 `ambiguous` is closed to automatic delivery but is not silently final: an
-owner-only manual-resolution operation MAY append immutable `completed` or
-`failed` resolution evidence with a required sanitized note, and only that
-operation may resolve an ambiguous parent. A manual `completed` resolution of a
-bug report maps to `completed`; a manual `completed` resolution of a dead letter
-maps to `failed`; a manual `failed` resolution maps to `failed` for either kind.
-Manual resolution SHALL retain, rather than overwrite, every child-effect state
-and SHALL never invoke a relay or child effect. Completed, failed, and cancelled
-outcomes SHALL otherwise be monotonic. The system SHALL provide `GET
+owner-only manual-resolution operation MAY append immutable owner assessment
+evidence (`completed` or `failed`) with a required sanitized note. That evidence
+SHALL be an overlay (`owner_resolution`) and SHALL NOT change an ambiguous child
+or parent into ordinary `completed` or `failed`, because it is not a receiver
+receipt. Manual resolution SHALL retain every child-effect state and SHALL never
+invoke a relay or child effect. Completed, failed, and cancelled outcomes SHALL
+otherwise be monotonic. The system SHALL provide `GET
 /api/dashboard/terminal-actions/{id}` for owner-only inspection and `POST
 /api/dashboard/terminal-actions/{id}/resolve` for manual resolution; the resolve
-request SHALL accept only `completed` or `failed` plus a required sanitized note.
+request SHALL accept only `completed` or `failed` plus a required bounded
+sanitized note. The owner-only read model SHALL represent the overlay as either
+`owner_resolution: null` or `{id, assessment, note, recorded_at}`. It SHALL
+remain visible beside `state: "ambiguous"`, preserve the action and turn's
+ambiguous state, and contain no receiver receipt or retry affordance. An action
+may have exactly one owner-resolution record: a repeat request with the same
+normalized assessment and note SHALL return that immutable record, while a
+different repeat SHALL fail with a conflict and SHALL not overwrite, append, or
+resume recovery.
 
 ID: REQ-dashboard-terminal-action-recovery-005
-Source: heart-and-soul/vision.md § Non-Negotiable Rule 1; dashboard-conversations § Conversation Messages List; design.md Decision 5
+Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-conversations § Conversation Messages List; design.md Decision 5
 Scope: v1-mandatory
 
 #### Scenario: All planned child effects complete
@@ -177,13 +193,34 @@ Scope: v1-mandatory
 - **THEN** the parent action and dashboard turn SHALL become `failed` according
   to the mapping table
 
-#### Scenario: Owner resolves an ambiguity
+#### Scenario: Owner records an ambiguity assessment
 
 - **WHEN** the owner submits a manual completed or failed resolution with a
   required sanitized note for an ambiguous action
 - **THEN** `POST /api/dashboard/terminal-actions/{id}/resolve` SHALL append
-  immutable resolution evidence and expose the resolved outcome without
-  invoking any relay or child effect
+  immutable `owner_resolution` evidence and expose that assessment beside the
+  still-ambiguous action without invoking any relay or child effect
+
+#### Scenario: Owner repeats a manual ambiguity assessment
+
+- **WHEN** an owner resubmits the same normalized assessment and note for an
+  action that already has an owner-resolution record
+- **THEN** the endpoint SHALL return the existing immutable overlay without
+  creating another record
+- **AND** a changed assessment or note SHALL return a conflict while the action,
+  turn, child states, and automatic-recovery closure remain unchanged
+
+#### Scenario: Stop falls between planned child effects
+
+- **WHEN** a primary child effect has a durable completed receipt and Stop wins
+  before a required `conversation_reply` child records `attempt_started`
+- **THEN** the remaining child SHALL be recorded as `cancelled` with
+  `reason_code: "suppressed_by_stop"` without invocation
+- **AND** the initial Stop response SHALL be `pending_reconciliation`, never
+  `cancelled`, until the failed parent projection is durable
+- **AND** the parent SHALL become `failed` with a sanitized
+  `stopped_after_partial_effect` reason, and the UI SHALL distinguish the
+  completed primary effect from the cancelled acknowledgement
 
 ### Requirement: Reconciliation Observability and Safe Evidence
 
@@ -194,7 +231,7 @@ sanitized reason codes and safe references; raw relay, database, credential, or
 unbounded exception text SHALL NOT be exposed.
 
 ID: REQ-dashboard-terminal-action-recovery-006
-Source: heart-and-soul/vision.md § Non-Negotiable Rule 1; RFC 0005 § Workflow and Recovery Telemetry; design.md Decisions 5-6
+Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); RFC 0005 § Workflow and Recovery Telemetry; design.md Decisions 5-6
 Scope: v1-mandatory
 
 #### Scenario: Action requires owner inspection
@@ -221,7 +258,7 @@ automatic child-effect invocation, and retain action/effect rows, leases, and
 pending/ambiguous state as inspectable evidence.
 
 ID: REQ-dashboard-terminal-action-recovery-007
-Source: heart-and-soul/vision.md § Non-Negotiable Rule 1; dashboard-terminal-action-recovery design.md Decision 7
+Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); heart-and-soul/v1.md § Anti-Patterns; dashboard-terminal-action-recovery design.md Decision 7
 Scope: v1-mandatory
 
 #### Scenario: Fresh deployment begins in observe mode

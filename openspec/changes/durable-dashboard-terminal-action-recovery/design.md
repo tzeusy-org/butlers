@@ -21,7 +21,8 @@ pretends an effect was filed or cancelled when the system cannot establish that.
 - Prevent duplicate externally visible effects whenever the receiving contract
   supports idempotency or receipt lookup.
 - Reach `completed`, `failed`, `cancelled`, or an explicit `ambiguous` result for
-  every turn; never leave an action indefinitely in progress.
+  every terminal action and targetless pending-Stop/route-uncertainty state this
+  change owns; never leave one of those actions indefinitely in progress.
 - Surface that durable result in the conversation API and chat UI, including the
   correct Stop semantics while recovery is running.
 - Prove crash-boundary behavior for both terminal action kinds.
@@ -30,9 +31,16 @@ pretends an effect was filed or cancelled when the system cannot establish that.
 
 - Rework route-inbox leases, runtime cancellation, or the #3624 migration's
   route/session authority.
+- Establish a durable answer/session-outcome contract after a domain route has
+  been definitively acknowledged; that remains a separately approved scope.
 - Guess that an unknown external relay succeeded, retry a potentially duplicate
   effect, or silently collapse ambiguity into failure/success.
 - Add a generic question lane, first-token streaming, or a cross-channel reader.
+
+**Pre-signoff HOLD:** PR #3618's active dashboard Stop/SSE delta must be rebased
+and reconciled with this change, or closed as superseded, before this changeset
+can be approved. The two changes cannot define competing requirements for the
+same owner-visible cancellation path.
 
 ## Decisions
 
@@ -41,7 +49,7 @@ pretends an effect was filed or cancelled when the system cannot establish that.
 The first dashboard classification action SHALL atomically reserve
 `route_pending`, `bug_report`, or `dead_letter` for the immutable user message
 before it dispatches a domain butler, relays QA, or captures a dead letter. A
-definitive `accepted` or `ok` route acknowledgement promotes `route_pending` to
+definitive `accepted` route acknowledgement promotes `route_pending` to
 immutable `route`. The
 first reservation wins: a later conflicting tool call is refused with
 `dashboard_lane_conflict`, keeps the first route/action authoritative, and
@@ -84,11 +92,15 @@ the terminal-action claim. The Switchboard daemon owns a supervised reconciler:
 it runs at startup and then on a persisted cadence no greater than 60 seconds,
 claims a 60-second fenced lease, and heartbeats at least every 20 seconds. Before
 each irreversible call, it writes a fenced `attempt_started` record and rechecks
-the action-level Stop intent. The receiver must enforce the stable effect
-idempotency key or support receipt lookup; lease expiry alone never authorizes a
-second call. On restart or lease expiry, the worker first queries/derives a
-receipt; it retries only when the receiver proves the earlier attempt had no
-effect. Otherwise it marks that child ambiguous.
+the action-level Stop intent. Stop and `attempt_started` use reciprocal
+conditional fences: Stop changes each still-`planned` child to `cancelled` with
+`suppressed_by_stop`, while the worker can enter `attempt_started` only if Stop
+is absent under the same current action/lease generation. The call may happen
+only after that attempt transition commits. The receiver must enforce the stable
+effect idempotency key or support receipt lookup; lease expiry alone never
+authorizes a second call. On restart or lease expiry, the worker first
+queries/derives a receipt; it retries only when the receiver proves the earlier
+attempt had no effect. Otherwise it marks that child ambiguous.
 
 Every action receives a persisted retry budget of five attempts and a
 `reconcile_deadline_at` no later than 15 minutes after intent. Reaching either
@@ -102,13 +114,20 @@ owner's HTTP/SSE lifetime and makes retry policy inspectable.
 ### 4. Give QA, dead-letter capture, and replies distinct proof contracts
 
 For a dashboard QA report, `report_finding` receives the stable parent/effect
-identity, durably persists a QA receipt keyed by that identity before reporting
-the finding as accepted, and exposes an internal receipt lookup through the QA
-tool surface. A
-normal non-dashboard `report_finding` call retains its existing volatile-buffer
-behavior. Dead-letter capture receives a durable unique action reference, and
-`conversation_reply` receives a child-effect idempotency key plus a database
-uniqueness boundary so recovery can create only a missing reply.
+identity and durably persists a QA inbox receipt keyed by that identity before
+reporting the effect as accepted. The receipt starts `pending`; the existing
+`butler_reports` source fences a `pending -> claimed -> acknowledged` lifecycle
+and creates/links exactly one patrol-owned canonical finding. The durable
+acceptance response contains no `finding_id` until acknowledgement. Receipt
+lookup distinguishes durable `found` from proven `not_found` (the only state
+that permits same-key redelivery) and lookup `unavailable` (bounded ambiguity,
+never a redelivery). Dashboard delivery is rejected before an inbox write when
+the source is disabled; an already accepted inbox remains inspectable and waits
+for a future enabled, fenced claim. A normal non-dashboard `report_finding` call
+retains its existing volatile-buffer behavior. Dead-letter capture receives a
+durable unique action reference, and `conversation_reply` receives a
+child-effect idempotency key plus a database uniqueness boundary so recovery can
+create only a missing reply.
 
 **Why this over trusting the current QA acknowledgement:** the current
 `report_finding` acknowledgement only enqueues an in-memory source buffer. It is
@@ -120,9 +139,13 @@ If the QA relay or dead-letter capture cannot supply an idempotency key or recei
 query that distinguishes "not sent" from "possibly sent", reconciliation records
 `ambiguous` with sanitized evidence and a durable action ID. It does not make a
 second visible submission. The dashboard exposes an owner-only action-inspection
-resource and an explicit manual resolution operation (`completed` or `failed`
-with a required note); the operation cannot invoke a relay. The turn and chat UI
-show ambiguity as unresolved work, not as a filed report, failed report, or
+resource and an explicit one-time manual assessment operation (`completed` or
+`failed` with a required bounded sanitized note). The action read model carries
+the immutable overlay `{id, assessment, note, recorded_at}` while the parent and
+turn stay `ambiguous`; a normalized repeat returns the same event, and a changed
+repeat conflicts. The operation cannot invoke a relay, resume recovery, or
+convert unproven child state into a receipt-backed completion. The turn and chat
+UI show ambiguity as unresolved work, not as a filed report, failed report, or
 confirmed cancellation.
 
 **Why this over at-least-once delivery:** duplicate QA cases and duplicate
@@ -148,8 +171,10 @@ startup/60-second reconciler inspects durable ingress/request/session evidence
 without reissuing ingress; it persists a concrete proven outcome or
 `ambiguous`/`ingress_stop_outcome_unknown` by that deadline. It gains an optional terminal-
 action object only once a `bug_report` or `dead_letter` lane is claimed:
-`{id, kind, state, effects[], reference, updated_at, ambiguity_reason_code,
-resolution_url}`. Terminal-action `state` is exactly `pending_reconciliation`,
+`{id, kind, state, effects[], reference, reason_code, updated_at,
+ambiguity_reason_code, resolution_url, owner_resolution}`. Every effect has a
+safe state/reference/reason summary; `owner_resolution` is nullable and never a
+receipt. Terminal-action `state` is exactly `pending_reconciliation`,
 `completed`, `failed`, `cancelled`, or `ambiguous`; raw exception/database details
 never enter either object. `ingress_recovery_at` is 60 seconds after turn opening
 for targetless `pending`, immediately eligible for `retryable_error`, and 60
@@ -170,9 +195,13 @@ that model.
 The cancel endpoint returns a durable outcome of `cancelled`, `already_finished`,
 `pending_reconciliation`, or `ambiguous`. It persists action-level Stop intent
 even after terminal-action intent exists. A Stop that wins before a child writes
-`attempt_started` atomically cancels the action and turn; a Stop after an effect
-begins remains pending or ambiguous until the journal proves the parent result.
-It must not claim that it stopped an action whose result is unknown.
+`attempt_started` atomically cancels the action and turn only if no other child
+has started or completed. If a primary effect is complete and Stop suppresses an
+unstarted acknowledgement, the Stop response remains `pending_reconciliation`
+until the parent durably becomes failed with `stopped_after_partial_effect`; it
+must never claim `cancelled`. A Stop after an effect begins remains pending or
+ambiguous until the journal proves the parent result. It must not claim that it
+stopped an action whose result is unknown.
 
 **Why this over a separate turn-status endpoint or transient SSE-only status:** the
 effect is caused by one persisted user message and must survive reload, handoff,

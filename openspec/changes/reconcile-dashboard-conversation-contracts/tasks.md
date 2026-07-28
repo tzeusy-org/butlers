@@ -8,6 +8,15 @@
   `dashboard` / `internal` and `dashboard:web:{conversation_id}` ingress.
 - [ ] 1.3 Update the dashboard-conversations source-envelope requirement to
   cross-reference the corrected RFC vocabulary.
+- [ ] 1.4 Update both the canonical `## Purpose` prose and `Ingestion Event
+  Table` requirement in `openspec/specs/ingestion-event-registry/spec.md` to
+  cover direct internal dashboard ingress while preserving connector-specific
+  filtered-event/status behavior; the requirement delta alone is not sufficient
+  to correct the source-of-truth Purpose text.
+- [ ] 1.5 Land this RFC 0003 vocabulary/provenance correction before the
+  recovery changeset's RFC 0003 recovery amendment. The later changeset SHALL
+  rebase on this authority head (or a single explicit documentation PR SHALL
+  apply both ordered amendments); do not create competing edits to the same RFC.
 
 ## 2. Reconcile active planning records
 

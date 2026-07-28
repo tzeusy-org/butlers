@@ -4,14 +4,30 @@
   authority head before adding terminal-action recovery work.
 - [ ] 1.2 After #3624 lands, decide PR #3618 explicitly: rebase it onto the
   landing and independently revalidate its truthful dispatch receipt/UI scope,
-  or close it as superseded. Do not implement overlapping UI/API behavior until
-  that disposition is recorded.
-- [ ] 1.3 Add dashboard-action/effect identities to QA `report_finding`, a
-  durable QA receipt store, and an authenticated receipt lookup; keep ordinary
-  non-dashboard reports on their existing volatile-buffer path.
-- [ ] 1.4 Add durable uniqueness/receipt boundaries for dead-letter capture and
+  or close it as superseded. This is a pre-signoff HOLD gate for this changeset,
+  not merely an implementation sequencing note: do not approve competing
+  dashboard Stop/SSE requirements until that disposition is recorded.
+- [ ] 1.3 After `reconcile-dashboard-conversation-contracts` lands its RFC 0003
+  vocabulary/provenance authority, rebase on that exact head and amend only the
+  recovery guidance: a dashboard route-inbox row recovered from `processing`
+  with its immutable dashboard message identity and no durable route proof
+  becomes owner-visible route ambiguity. Preserve safe replay for dashboard
+  `accepted` pre-dispatch rows and all non-dashboard rows. Add regression
+  coverage for both no-replay-after-unproven-processing and
+  safe-replay-before-dispatch.
+- [ ] 1.4 Add dashboard-action/effect identities to QA `report_finding`, a
+  durable dashboard-report inbox/receipt store, and an authenticated receipt
+  lookup. Extend the existing `butler_reports` source with a fenced durable
+  `pending -> claimed -> acknowledged` claim/ack lifecycle that emits and links
+  one patrol-owned finding after restart; enforce one inbox-to-finding mapping,
+  canonical payload/idempotency validation, `not_found`-only same-key redelivery,
+  and bounded `unavailable` ambiguity. Reject new dashboard delivery while the
+  source is disabled, but retain accepted inbox evidence for a later enabled
+  claim; keep ordinary non-dashboard reports on their existing volatile-buffer
+  path.
+- [ ] 1.5 Add durable uniqueness/receipt boundaries for dead-letter capture and
   `conversation_reply` child effects.
-- [ ] 1.5 Document and test that an effect without receiver-enforced idempotency
+- [ ] 1.6 Document and test that an effect without receiver-enforced idempotency
   or a durable receipt becomes ambiguous after an indeterminate attempt rather
   than being retried unsafely.
 
@@ -19,12 +35,14 @@
 
 - [ ] 2.1 Add a core migration for one singular action per dashboard message,
   immutable kind/canonical payload hash, per-effect receipts, action Stop intent,
-  `ambiguous` state vocabulary, lease fencing, deadline/attempt bounds, and
-  indexes.
+  `ambiguous` state vocabulary, `cancelled` child reason codes,
+  one-time immutable owner-resolution overlays, lease fencing, deadline/attempt
+  bounds, and indexes.
 - [ ] 2.2 Add database helpers that create intent with the dashboard-turn claim,
-  atomically persist `attempt_started`, record action-level Stop intent, claim
-  reconciliation leases, persist effect receipts, and map parent/turn outcomes
-  monotonically.
+  atomically and reciprocally fence `planned -> attempt_started` against
+  Stop-driven `planned -> cancelled(suppressed_by_stop)`, record action-level
+  Stop intent, claim reconciliation leases, persist effect receipts, and map
+  parent/turn outcomes monotonically.
 - [ ] 2.3 Backfill every pre-existing `external_action_in_progress` turn to an
   explicit ambiguous action by default; never auto-replay legacy work without a
   newly available exact receipt lookup.
@@ -38,7 +56,7 @@
 
 - [ ] 3.1 Reserve `route_pending`, `bug_report`, or `dead_letter` atomically
   before the first irreversible dashboard dispatch. Promote a route to immutable
-  `route` only on a definitive `accepted` or `ok` acknowledgement; allow a
+  `route` only on a definitive `accepted` acknowledgement; allow a
   fenced `route_pending → dead_letter` transition only on definitive
   pre-dispatch/no-side-effect failure.
   Refuse a later conflicting tool call with `dashboard_lane_conflict`; a timeout
@@ -52,7 +70,10 @@
   15-minute bounds, receipt-before-retry, and ambiguity on unprovable effects.
 - [ ] 3.5 Integrate Stop at the action linearization point so a pre-attempt Stop
   cancels without an effect and post-attempt Stop is pending/ambiguous until
-  evidence proves the outcome.
+  evidence proves the outcome. If a primary child completed first, suppress an
+  unstarted acknowledgement as `cancelled/suppressed_by_stop`, return
+  `pending_reconciliation` until the failed partial-effect projection is durable,
+  and never call that outcome `cancelled`.
 - [ ] 3.6 Add targetless-ingress Stop reconciliation: at startup and <=60-second
   cadence inspect durable ingress/request/session evidence without redelivery;
   resolve a proven outcome or persist `ingress_stop_outcome_unknown` ambiguity by
@@ -62,7 +83,8 @@
 
 - [ ] 4.1 Extend conversation message API models and read queries with the exact
   terminal-action object, child-effect summaries, sanitized reason code, safe
-  resolution URL, and a durable dashboard-turn projection including the exact
+  resolution URL, immutable owner-resolution overlay/read shape and repeat
+  semantics, and a durable dashboard-turn projection including the exact
   ingress state, nullable target kind, cancellation precedence/timestamp,
   safe ingress-recovery boundary, and targetless pending/retryable/rejected
   outcomes as well as route-only pending or ambiguous outcomes.
@@ -73,7 +95,9 @@
   exact message/conversation identities, semantic recovery outcome, and current
   safe turn projection as JSON, then refetch through the durable query.
 - [ ] 4.3 Add owner-only action inspection and manual-resolution endpoints that
-  append immutable completed/failed evidence without invoking a relay.
+  append exactly one immutable completed/failed assessment with a bounded
+  sanitized note, return an identical repeat idempotently, conflict a changed
+  repeat, and never invoke a relay or alter the ambiguous parent/turn state.
 - [ ] 4.4 Update the dashboard chat surfaces to render pending ingress, pending
   reconciliation, retryable/rejected ingress failure, confirmed outcome, failure,
   cancellation, pending cancellation, stale-ingress exact-message recovery, and
@@ -90,8 +114,9 @@
   before `attempt_started`, after attempt before receipt, after receipt, stale
   lease, and restart catch-up.
 - [ ] 5.2 Add coverage for both action kinds, duplicate delivery, QA receipt
-  lookup, dead-letter/reply idempotency, Stop at each linearization point,
-  legacy ambiguity, manual resolution, and first-lane-wins races including
+  lookup and inbox lifecycle/reclaim/source-disabled behavior, dead-letter/reply
+  idempotency, Stop at each linearization point, legacy ambiguity, manual
+  resolution read/repeat/conflict semantics, and first-lane-wins races including
   route-then-bug and bug-then-route; also cover definitive route failure to
   dead-letter, unknown route outcome, late route success, and
   route-failure-then-bug, plus freshly opened targetless ingress,
@@ -99,6 +124,11 @@
   an ingress error, crash-after-outbound-ingress-plus-Stop/reload, stale ingress
   after a crash/reclaim boundary, exact recovery JSON/client handoff, route
   ambiguity on reload/reconnect, and UI render.
+- [ ] 5.2a Add coverage for Stop between child effects: preserve the completed
+  primary receipt, use reciprocal atomic fencing to cancel the unstarted
+  acknowledgement with `suppressed_by_stop` without invocation, return pending
+  reconciliation until the parent failure is durable, and project
+  `stopped_after_partial_effect` truthfully in API and UI.
 - [ ] 5.3 Run a compose-backed kill/restart canary proving no duplicate effect,
   retained conversation lineage, exact action/turn mappings, and truthful
   owner-visible status before an owner promotes the reconciler from `observe` to

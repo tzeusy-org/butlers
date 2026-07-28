@@ -26,7 +26,7 @@ remain in flight.
 | --- | --- | --- |
 | Availability | functional | Local API health is `ok`, the frontend returns HTTP 200, and `/api/butlers` reported 12/12 `ok` on 2026-07-28. |
 | Specialist routing | functional | Dashboard ingress uses `dashboard` / `internal`, data/correction and bug/system lanes, and refuses a silent General fallback. |
-| Truthful dispatch / Stop | in flight | PR #3624 has durable message-scoped Stop and route handoff work, but it is open and its fresh hosted checks are still running. |
+| Truthful dispatch / Stop | in flight | PR #3624 has durable message-scoped Stop and route handoff work. Its exact current head is green, but it remains open pending independent review and merge. |
 | Terminal bug/dead-letter effects | weak | A crash after reservation can leave `external_action_in_progress` with no durable per-effect proof or recovery owner; existing P1 `bu-s3qvp` names this gap. |
 | Owner-visible recovery | weak | No durable read/UI contract yet exposes a route-only ambiguous outcome or a partially completed terminal action. |
 | Generic questions | intentionally absent | The current lane taxonomy has no approved question lane. That is a product decision, not a defect to paper over with General. |
@@ -64,27 +64,28 @@ Two intentionally narrow OpenSpec changes carry the proposed work:
    exact-message ingress recovery, durable route ambiguity, partial-effect
    language, and an observe-first rollout.
 
-Both strict OpenSpec validations pass. The repository-wide traceability checker
-has its existing 2,579 baseline errors; these two authored changes add no new
-traceability errors. Missing test citations are expected implementation warnings,
-not evidence that the planned behavior has shipped.
+Both strict OpenSpec validations pass. The whole-tree authoring trace check still
+fails on 2,579 repository-wide errors, so it is recorded as a legacy evidence
+limitation rather than a pass gate for this packet. Planned-work test-citation
+warnings are expected; they are not evidence that the proposed behavior has
+shipped.
 
 ## Reconciliation record
 
-Four independent passes converged the plan before this report:
+The live inventory plus three independent artifact reconciliations converged the
+plan before this report:
 
 1. Workflow/implementation inventory established the actual two-lane product,
    the stale #3618/#3624 ordering, and the absence of a generic question lane.
-2. Recovery review required a singular parent action with individual QA,
-   dead-letter, and reply receipts; bounded receiver-proof recovery; and Stop
-   linearization before an irreversible call.
-3. API/UI review required the canonical message endpoint, additive outcome
-   compatibility mapping, durable effect-level language, and a concrete QA MCP
-   wire contract.
-4. Direction review required first-lane fencing, safe `route_pending →
-   dead_letter` transition rules, a durable route-ambiguity read path,
-   `accepted|ok` acknowledgement vocabulary, a normative observe/active mode,
-   and exact Bead-safety wording.
+2. First independent recovery review required a singular parent action with
+   individual QA, dead-letter, and reply receipts; bounded receiver-proof
+   recovery; and Stop linearization before an irreversible call.
+3. Second independent contract review required a durable QA inbox → fenced
+   claim → acknowledged-finding lifecycle, a representable immutable
+   `owner_resolution` overlay, and reciprocal Stop/effect fences.
+4. Final independent replacement review restored every modified canonical
+   requirement's baseline guarantees, serialized the two RFC 0003 amendments,
+   and confirmed strict validation and diff hygiene.
 
 The resulting plan refuses both duplicated delivery and fabricated calm:
 unknown route or effect state becomes visible ambiguity, never an automatic
@@ -92,7 +93,7 @@ second send or a success-shaped toast.
 
 ## Ordered work, once approved
 
-1. Land PR #3624 only after an independently reviewed, green exact head.
+1. Independently review and merge PR #3624 only at its green exact head.
 2. On that merged base, explicitly rebase-and-review PR #3618 or close it as
    superseded.
 3. Apply the documentation-only reconciliation change.
@@ -113,7 +114,7 @@ the leaves, ownership, dependencies, and the #3624/#3618 ordering gate.
 The proposed graph is deliberately only a preview:
 
 ```text
-[HOLD: owner approves changesets and question-lane stance]
+[HOLD: owner decides product boundary and approves changesets]
   ├─ exact-head #3624 gate
   ├─ #3618 rebase-or-close decision gate
   ├─ reconciliation documentation change
@@ -124,14 +125,17 @@ The proposed graph is deliberately only a preview:
        └─ crash/restart + UI canary
 ```
 
-## Owner decision still required
+## Owner decisions still required
 
-The reliability direction above does not require a new generic question lane.
-Before any such work is created, choose one explicit stance for an ambiguous
-owner question: keep truthful dead-letter/rephrase behavior (recommended), add a
-bounded domain-clarification lane, or give General a deliberately constrained
-residual question authority. The current system must not choose that policy by
-accident.
+No implementation Beads may be created until these are decided and the two
+changesets are approved.
+
+| Decision | Choices | Recommendation |
+| --- | --- | --- |
+| Dashboard product boundary | Document a narrow owner-only operator-ingress exception; rework the surface back to read-only; or treat it as a general chat surface | Document the narrow exception: direct `dashboard` / `internal` ingress through the standard Switchboard spine, not a public/general chat system. |
+| What “mature” includes now | Stop at truthful ingress/route acknowledgement plus terminal bug/dead-letter effects; or add durable downstream routed-session/reply outcome now | Stop at the current reliability slice. A downstream session/reply durability contract is valuable but must be a separately approved change. |
+| Ambiguous generic questions | Truthful dead-letter/rephrase; bounded domain clarification; or deliberately constrained General authority | Keep truthful dead-letter/rephrase behavior. The current system must not invent General residual authority. |
+| Direction-packet approval | Approve both narrow changesets after the above choices and, after #3624 lands, disposition #3618 by rebase-and-reconcile or close-as-superseded; or revise their scope | Approve only after the product boundary and maturity definition are explicit and the #3618 HOLD is resolved. |
 
 ## Conclusion
 

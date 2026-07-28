@@ -39,6 +39,8 @@ ambiguity as well.
   operator can inspect a stuck or ambiguous action without direct database access.
 - Add crash-boundary and Stop-during-recovery coverage for both terminal-action
   kinds.
+- Amend RFC 0003's recovery guidance so an unproven dashboard route is a
+  dashboard-specific ambiguity, not a generic automatic replay candidate.
 - Roll out reconciliation through an owner-controlled observe-safe mode before
   any worker may retry a missing effect.
 
@@ -71,16 +73,21 @@ ambiguity as well.
 - dashboard conversation API models/routes and chat components
 - owner-only terminal-action inspection and manual-resolution API endpoints
 - QA `report_finding` receipt/lookup and dead-letter capture contracts
+- RFC 0003's dashboard-specific recovery exception
 - new migration, reconciliation worker ownership, and fault-injection tests
 
 This is the implementation contract for existing P1 Bead `bu-s3qvp` ("Reconcile
 ambiguous dashboard terminal external actions"). It is currently an open live
 Bead; this planning run neither claims nor mutates it. Before implementation is
 dispatched, the owner must approve this changeset and create an explicit HOLD-
-gated execution graph rather than treating this text as a release gate. This
-change depends on the durable route/runtime authority in PR #3624 landing first.
-After that exact-head gate, PR #3618 must be explicitly rebased and independently
-revalidated against the landing, or closed as superseded; no recovery
-implementation may silently duplicate its dashboard receipt/UI changes. It
+gated execution graph rather than treating this text as a release gate. PR #3618
+must be explicitly rebased and independently reconciled against this delta, or
+closed as superseded, before this changeset may be approved: both touch the
+dashboard Stop/SSE contract and cannot remain competing active requirements.
+This change depends on the durable route/runtime authority in PR #3624 landing
+first and on `reconcile-dashboard-conversation-contracts` landing its RFC 0003
+vocabulary/provenance amendment before this change applies its separate RFC
+recovery amendment. No recovery implementation may silently duplicate #3618's
+dashboard receipt/UI changes. It
 deliberately does not add a question lane, silently retry an unknown external
 action, or duplicate route-inbox cancellation work.
