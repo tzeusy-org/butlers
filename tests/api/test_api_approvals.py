@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
@@ -260,6 +260,135 @@ async def test_no_approvals_tables_returns_empty(app):
         r_suggestions = await client.get("/api/approvals/suggestions")
     assert r_actions.json()["data"] == []
     assert r_suggestions.json()["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /api/approvals/metrics -- per-family degraded source contract
+# ---------------------------------------------------------------------------
+
+
+def _app_with_partial_metrics_source(app, *, failed_family: str):
+    """Build two configured approvals sources with one family-specific failure.
+
+    Both pools genuinely expose both tables. ``general`` always answers; ``home``
+    fails only the selected metrics family after successful catalog discovery.
+    That distinguishes a failed configured source from a legitimately absent
+    table and proves the other family remains usable.
+    """
+
+    def _conn_for(name: str):
+        conn = AsyncMock()
+
+        async def _fetchval(sql, *args):
+            if "to_regclass" in sql:
+                return True
+            if name == "home" and failed_family == "pending_actions" and "pending_actions" in sql:
+                raise RuntimeError("home pending_actions unavailable")
+            if name == "home" and failed_family == "approval_rules" and "approval_rules" in sql:
+                raise RuntimeError("home approval_rules unavailable")
+            if "approval_rules" in sql:
+                return 3 if name == "general" else 4
+            if "status = 'pending'" in sql:
+                return 2 if name == "general" else 5
+            return 0
+
+        conn.fetchval = AsyncMock(side_effect=_fetchval)
+        conn.fetchrow = AsyncMock(return_value={"avg_latency": None, "cnt": 0})
+        return conn
+
+    class _Acquire:
+        def __init__(self, conn):
+            self._conn = conn
+
+        async def __aenter__(self):
+            return self._conn
+
+        async def __aexit__(self, *args):
+            return False
+
+    pools = {}
+    for name in ("general", "home"):
+        pool = AsyncMock()
+        pool.acquire = MagicMock(return_value=_Acquire(_conn_for(name)))
+        pools[name] = pool
+
+    db_mgr = MagicMock(spec=DatabaseManager)
+    db_mgr.butler_names = ["general", "home"]
+    db_mgr.pool = MagicMock(side_effect=lambda name: pools[name])
+    app.dependency_overrides[_get_db_manager] = lambda: db_mgr
+    return app
+
+
+async def test_metrics_names_partial_pending_action_sources_without_zeroing_healthy_data(app):
+    app = _app_with_partial_metrics_source(app, failed_family="pending_actions")
+
+    with patch(
+        "butlers.api.routers.approvals._callback_secret_configured",
+        new=AsyncMock(return_value=None),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/approvals/metrics")
+
+    assert response.status_code == 200
+    body = response.json()
+    # The healthy pending-actions pool remains diagnostically useful, but its
+    # value is not a complete fleet count once home has dropped out.
+    assert body["data"]["total_pending"] == 2
+    assert body["data"]["active_rules_count"] == 7
+    assert body["meta"]["pending_actions_sources_degraded"] == ["home"]
+    assert body["meta"]["sources_degraded"] == ["home"]
+    assert "approval_rules_sources_degraded" not in body["meta"]
+
+
+async def test_metrics_keeps_pending_counts_usable_when_only_rule_sources_fail(app):
+    app = _app_with_partial_metrics_source(app, failed_family="approval_rules")
+
+    with patch(
+        "butlers.api.routers.approvals._callback_secret_configured",
+        new=AsyncMock(return_value=None),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/approvals/metrics")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["total_pending"] == 7
+    # The healthy rule-pool contribution remains present, but cannot be read
+    # as an exhaustive active-rule total.
+    assert body["data"]["active_rules_count"] == 3
+    assert body["meta"]["approval_rules_sources_degraded"] == ["home"]
+    assert body["meta"]["sources_degraded"] == ["home"]
+    assert "pending_actions_sources_degraded" not in body["meta"]
+
+
+async def test_metrics_keeps_a_configured_but_empty_source_as_a_truthful_zero(app):
+    """A healthy empty table is distinct from a dropped configured source."""
+    app, _ = _app_with_mock_db(
+        app,
+        fetchval_return=0,
+        fetchrow_return={"avg_latency": None, "cnt": 0},
+    )
+
+    with patch(
+        "butlers.api.routers.approvals._callback_secret_configured",
+        new=AsyncMock(return_value=None),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/approvals/metrics")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["total_pending"] == 0
+    assert body["data"]["active_rules_count"] == 0
+    assert "pending_actions_sources_degraded" not in body["meta"]
+    assert "approval_rules_sources_degraded" not in body["meta"]
+    assert "sources_degraded" not in body["meta"]
 
 
 # ---------------------------------------------------------------------------

@@ -169,6 +169,19 @@ async function installCommonMocks(page: Page) {
     });
   });
 
+  // The globally rendered Sidebar reads this availability-bearing metric.
+  // Keep its healthy empty state distinct from the generic list catch-all.
+  await page.route("**/api/approvals/metrics", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { total_pending: 0 },
+        meta: {},
+      }),
+    });
+  });
+
   // 2. Connector summaries
   await page.route("**/api/ingestion/connectors/summaries*", (route) => {
     route.fulfill({

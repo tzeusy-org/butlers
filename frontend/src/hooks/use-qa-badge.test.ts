@@ -7,9 +7,10 @@
 //     - success with count > 0: returns active_breakdown.escalated_open_cases
 //     - success with count == 0: returns 0
 //   useApprovalsPendingBadge:
-//     - loading state (data undefined): returns 0
+//     - loading state (data undefined): returns a quiet zero count state
 //     - success with count > 0: returns total_pending
-//     - success with count == 0: returns 0
+//     - success with count == 0: returns a truthful zero count state
+//     - query or pending-actions aggregate failure: returns unavailable
 //   useDecisionsOpenBadge:
 //     - loading state (data undefined): returns a quiet zero count state
 //     - success with count > 0: returns a numeric count state
@@ -33,6 +34,9 @@ vi.mock("./use-butlers", () => ({
 
 vi.mock("./use-approvals", () => ({
   useApprovalMetrics: vi.fn(() => ({ data: undefined })),
+  pendingApprovalMetricSourcesDegraded: (
+    response: { meta?: { pending_actions_sources_degraded?: string[] } } | undefined,
+  ) => response?.meta?.pending_actions_sources_degraded ?? [],
 }))
 
 vi.mock("./use-decisions", () => ({
@@ -68,11 +72,15 @@ function mockQaSummary(escalatedOpenCases: number | undefined) {
   vi.mocked(useQaSummary).mockReturnValue(result)
 }
 
-function mockApprovalMetrics(totalPending: number | undefined) {
+function mockApprovalMetrics(
+  totalPending: number | undefined,
+  pendingActionsSourcesDegraded: string[] = [],
+  isError = false,
+) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result: any =
     totalPending === undefined
-      ? { data: undefined }
+      ? { data: undefined, isError }
       : {
           data: {
             data: {
@@ -87,8 +95,9 @@ function mockApprovalMetrics(totalPending: number | undefined) {
               failure_count_today: 0,
               active_rules_count: 0,
             },
-            meta: {},
+            meta: { pending_actions_sources_degraded: pendingActionsSourcesDegraded },
           },
+          isError,
         }
   vi.mocked(useApprovalMetrics).mockReturnValue(result)
 }
@@ -119,19 +128,29 @@ describe("useApprovalsPendingBadge", () => {
     vi.clearAllMocks()
   })
 
-  it("returns 0 when data is still loading (undefined)", () => {
+  it("returns a quiet zero count state when data is still loading (undefined)", () => {
     mockApprovalMetrics(undefined)
-    expect(useApprovalsPendingBadge()).toBe(0)
+    expect(useApprovalsPendingBadge()).toEqual({ kind: "count", count: 0 })
   })
 
   it("returns the pending count when count is greater than 0", () => {
     mockApprovalMetrics(5)
-    expect(useApprovalsPendingBadge()).toBe(5)
+    expect(useApprovalsPendingBadge()).toEqual({ kind: "count", count: 5 })
   })
 
-  it("returns 0 when count is 0", () => {
+  it("returns a truthful zero count state when count is 0", () => {
     mockApprovalMetrics(0)
-    expect(useApprovalsPendingBadge()).toBe(0)
+    expect(useApprovalsPendingBadge()).toEqual({ kind: "count", count: 0 })
+  })
+
+  it("returns unavailable when pending-actions metrics are partial", () => {
+    mockApprovalMetrics(0, ["home"])
+    expect(useApprovalsPendingBadge()).toEqual({ kind: "unavailable" })
+  })
+
+  it("returns unavailable when the metrics query errors directly", () => {
+    mockApprovalMetrics(undefined, [], true)
+    expect(useApprovalsPendingBadge()).toEqual({ kind: "unavailable" })
   })
 })
 
@@ -203,7 +222,7 @@ describe("useBadgeCounts", () => {
     mockDecisions(undefined)
     const counts = useBadgeCounts()
     expect("approvals-pending" in counts).toBe(true)
-    expect(counts["approvals-pending"]).toBe(3)
+    expect(counts["approvals-pending"]).toEqual({ kind: "count", count: 3 })
   })
 
   it("includes qa-escalations key alongside approvals-pending", () => {
@@ -224,9 +243,9 @@ describe("useBadgeCounts", () => {
     expect(counts["decisions-open"]).toEqual({ kind: "count", count: 1 })
   })
 
-  it("approvals-pending is 0 when data is loading", () => {
+  it("approvals-pending keeps a quiet zero count state while loading", () => {
     mockApprovalMetrics(undefined)
     mockDecisions(undefined)
-    expect(useBadgeCounts()["approvals-pending"]).toBe(0)
+    expect(useBadgeCounts()["approvals-pending"]).toEqual({ kind: "count", count: 0 })
   })
 })

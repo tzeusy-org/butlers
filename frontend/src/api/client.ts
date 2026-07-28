@@ -13,7 +13,7 @@ import type {
   ApprovalDenyRequest,
   ApprovalDetail,
   ApprovalGatedTool,
-  ApprovalMetrics,
+  ApprovalMetricsResponse,
   ApprovalRule,
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
@@ -190,8 +190,8 @@ import type {
   IngestionWindowRollup,
   IngestionWindowRollupParams,
   IngestionRule,
-  RulePromotionSurface,
-  RulePromotionStats,
+  RulePromotionSurfaceResponse,
+  RulePromotionStatsResponse,
   RulePromotionDismissRequest,
   IngestionRuleCreate,
   IngestionRuleUpdate,
@@ -3412,8 +3412,8 @@ export function revokeApprovalRule(ruleId: string): Promise<ApiResponse<Approval
   );
 }
 
-export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
-  return apiFetch<ApiResponse<ApprovalMetrics>>("/approvals/metrics");
+export function getApprovalMetrics(): Promise<ApprovalMetricsResponse> {
+  return apiFetch<ApprovalMetricsResponse>("/approvals/metrics");
 }
 
 // ---------------------------------------------------------------------------
@@ -3573,13 +3573,13 @@ export function dismissAutonomySuggestion(
 // Rule-promotion approvals surface (bu-o62bc, bead 4)
 // ---------------------------------------------------------------------------
 
-export function getRulePromotionSuggestions(): Promise<ApiResponse<RulePromotionSurface>> {
-  return apiFetch<ApiResponse<RulePromotionSurface>>("/switchboard/rule-promotion-suggestions");
+export function getRulePromotionSuggestions(): Promise<RulePromotionSurfaceResponse> {
+  return apiFetch<RulePromotionSurfaceResponse>("/switchboard/rule-promotion-suggestions");
 }
 
 /** Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6). */
-export function getRulePromotionStats(): Promise<ApiResponse<RulePromotionStats>> {
-  return apiFetch<ApiResponse<RulePromotionStats>>("/switchboard/rule-promotion-stats");
+export function getRulePromotionStats(): Promise<RulePromotionStatsResponse> {
+  return apiFetch<RulePromotionStatsResponse>("/switchboard/rule-promotion-stats");
 }
 
 export function confirmRulePromotionSuggestion(

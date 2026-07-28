@@ -275,7 +275,13 @@ class RuleConstraintSuggestion(BaseModel):
 
 
 class ApprovalMetrics(BaseModel):
-    """Aggregate metrics for the approvals dashboard."""
+    """Aggregate metrics for the approvals dashboard.
+
+    ``ApiResponse.meta`` carries availability per independently aggregated
+    family: ``pending_actions_sources_degraded`` and
+    ``approval_rules_sources_degraded``. A zero in either metric is truthful
+    only when its matching metadata key is absent.
+    """
 
     total_pending: int = 0
     total_approved_today: int = 0

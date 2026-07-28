@@ -5,6 +5,7 @@ import {
   cleanup,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -51,12 +52,25 @@ function defaultApiFetchImpl(path: string) {
     return Promise.resolve({ data: DEFAULT_FORECAST });
   }
   if (path === "/approvals/metrics") {
-    return Promise.resolve({ data: { total_pending: 0 } });
+    return Promise.resolve({ data: { total_pending: 0 }, meta: {} });
   }
   return Promise.resolve({ data: {} });
 }
 
 const apiFetchMock = vi.fn(defaultApiFetchImpl);
+
+const malformedApprovalMetricsResponses: Array<[string, unknown]> = [
+  ["missing meta", { data: { total_pending: 0 } }],
+  ["a non-object meta", { data: { total_pending: 0 }, meta: "home" }],
+  ["missing data", { meta: {} }],
+  ["a non-object data", { data: [], meta: {} }],
+  ["missing total_pending", { data: {}, meta: {} }],
+  ["a non-numeric total_pending", { data: { total_pending: "0" }, meta: {} }],
+  [
+    "a non-array pending source list",
+    { data: { total_pending: 0 }, meta: { pending_actions_sources_degraded: "home" } },
+  ],
+];
 
 vi.mock("@/api/client", () => ({
   apiFetch: (path: string) => apiFetchMock(path),
@@ -77,7 +91,7 @@ function renderPage() {
 
 function renderPageAsync() {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    defaultOptions: { queries: { retry: false, retryDelay: 0 } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -141,6 +155,84 @@ describe("SettingsConsolePage", () => {
     const panel = await screen.findByLabelText("Go to Spend");
     expect(await within(panel).findByText(/ledger unavailable/i)).toBeTruthy();
     expect(within(panel).queryByText("$0.00")).toBeNull();
+  });
+
+  it("Approvals panel names a partial pending source instead of rendering a fabricated zero", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/approvals/metrics") {
+        return Promise.resolve({
+          data: { total_pending: 0 },
+          meta: { pending_actions_sources_degraded: ["home"] },
+        });
+      }
+      return defaultApiFetchImpl(path);
+    });
+
+    renderPageAsync();
+
+    const panel = await screen.findByLabelText("Go to Approvals");
+    const note = await within(panel).findByTestId("settings-console-approvals-degraded");
+    expect(note.textContent).toContain("Pending approvals: home unavailable");
+    expect(within(panel).queryByText("0")).toBeNull();
+    expect(within(panel).getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+
+  it("Approvals panel renders a complete pending metric", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/approvals/metrics") {
+        return Promise.resolve({ data: { total_pending: 2 }, meta: {} });
+      }
+      return defaultApiFetchImpl(path);
+    });
+
+    renderPageAsync();
+
+    const panel = await screen.findByLabelText("Go to Approvals");
+    expect(await within(panel).findByText("2")).toBeTruthy();
+    expect(within(panel).getByText("approvals pending")).toBeTruthy();
+    expect(within(panel).queryByText("Failed to load.")).toBeNull();
+  });
+
+  it.each(malformedApprovalMetricsResponses)(
+    "Approvals panel renders %s metrics as a retryable query error instead of an all-clear",
+    async (_caseName, response) => {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === "/approvals/metrics") return Promise.resolve(response as never);
+        return defaultApiFetchImpl(path);
+      });
+
+      renderPageAsync();
+
+      const panel = await screen.findByLabelText("Go to Approvals");
+      expect(await within(panel).findByText("Failed to load.")).toBeTruthy();
+      expect(within(panel).getByRole("button", { name: /^Retry/ })).toBeTruthy();
+      expect(within(panel).queryByText("0")).toBeNull();
+      expect(within(panel).queryByText("approvals pending")).toBeNull();
+      expect(
+        within(panel).queryByTestId("settings-console-approvals-degraded"),
+      ).toBeNull();
+    },
+  );
+
+  it("retries malformed approval metrics from the query-error state", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/approvals/metrics") {
+        return Promise.resolve({ data: { total_pending: 0 } });
+      }
+      return defaultApiFetchImpl(path);
+    });
+
+    renderPageAsync();
+
+    const panel = await screen.findByLabelText("Go to Approvals");
+    const retry = await within(panel).findByRole("button", { name: /^Retry/ });
+    const approvalMetricsCalls = () =>
+      apiFetchMock.mock.calls.filter(([path]) => path === "/approvals/metrics").length;
+    const callsBeforeRetry = approvalMetricsCalls();
+
+    await userEvent.setup().click(retry);
+
+    await waitFor(() => expect(approvalMetricsCalls()).toBeGreaterThan(callsBeforeRetry));
   });
 
   it("expands and collapses real omitted attention items inline without an audit-log door", async () => {

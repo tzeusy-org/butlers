@@ -72,6 +72,7 @@ export function RuntimeSummaryKpi({
     {
       eyebrow: "Pending approvals",
       value: approvalsUnavailable ? "—" : kpis.pendingApprovals,
+      unavailable: approvalsUnavailable,
       href: approvalsUnavailable ? undefined : "/approvals",
     },
   ];

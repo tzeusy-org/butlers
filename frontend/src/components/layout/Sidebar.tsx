@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
 import { useSpendSummary } from '@/hooks/use-spend'
-import { type DecisionsBadgeState, useBadgeCounts } from '@/hooks/use-qa-badge'
+import { type AvailabilityBadgeState, useBadgeCounts } from '@/hooks/use-qa-badge'
 import { usePrefetchOnIntent } from '@/hooks/use-prefetch-on-intent'
 import { useRouteChunkPrefetchOnIntent } from '@/hooks/use-route-chunk-prefetch-on-intent'
 import { ButlerMark } from '@/components/ui/ButlerMark'
@@ -44,7 +44,7 @@ interface ButlerStatusMap {
   [name: string]: string
 }
 
-type SidebarBadgeValue = number | DecisionsBadgeState
+type SidebarBadgeValue = number | AvailabilityBadgeState
 type SidebarBadgeCounts = Record<string, SidebarBadgeValue>
 
 function useFilteredNavSections(sections: NavSection[]): {
@@ -111,23 +111,36 @@ function StatusDot({ status }: { status: string | undefined }) {
 function resolveSidebarBadge(
   item: NavFlatItem,
   badgeCounts?: SidebarBadgeCounts,
-): { count: number; decisionsUnavailable: boolean } {
+): { count: number; unavailableLabel?: string } {
   const value = item.badgeKey && badgeCounts ? (badgeCounts[item.badgeKey] ?? 0) : 0
-  if (typeof value === 'number') return { count: value, decisionsUnavailable: false }
+  if (typeof value === 'number') return { count: value }
 
   return {
     count: value.kind === 'count' ? value.count : 0,
-    decisionsUnavailable: item.badgeKey === 'decisions-open' && value.kind === 'unavailable',
+    unavailableLabel:
+      value.kind === 'unavailable'
+        ? item.badgeKey === 'decisions-open'
+          ? 'Decisions digest unavailable'
+          : item.badgeKey === 'approvals-pending'
+            ? 'Pending approvals unavailable'
+            : 'Badge unavailable'
+        : undefined,
   }
 }
 
-function DecisionsUnavailableMarker({ className }: { className?: string }) {
+function UnavailableBadgeMarker({
+  label,
+  className,
+}: {
+  label: string
+  className?: string
+}) {
   return (
     <StateDot
       state="degraded"
       size={6}
       className={className}
-      aria-label="Decisions digest unavailable"
+      aria-label={label}
     />
   )
 }
@@ -178,7 +191,7 @@ function ItemGlyph({
   butlerStatus?: string
   badgeCounts?: SidebarBadgeCounts
 }) {
-  const { count, decisionsUnavailable } = resolveSidebarBadge(item, badgeCounts)
+  const { count, unavailableLabel } = resolveSidebarBadge(item, badgeCounts)
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
 
   return (
@@ -193,8 +206,11 @@ function ItemGlyph({
         </span>
       )}
       {/* Badge takes precedence over status dot when both would render */}
-      {decisionsUnavailable ? (
-        <DecisionsUnavailableMarker className="absolute right-1 top-1 ring-2 ring-background" />
+      {unavailableLabel ? (
+        <UnavailableBadgeMarker
+          label={unavailableLabel}
+          className="absolute right-1 top-1 ring-2 ring-background"
+        />
       ) : count > 0 ? (
         <BadgeIndicator
           count={count}
@@ -740,7 +756,7 @@ function MobileFlatLink({
   butlerStatusMap?: ButlerStatusMap
   badgeCounts?: SidebarBadgeCounts
 }) {
-  const { count, decisionsUnavailable } = resolveSidebarBadge(item, badgeCounts)
+  const { count, unavailableLabel } = resolveSidebarBadge(item, badgeCounts)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
   const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
@@ -778,8 +794,8 @@ function MobileFlatLink({
         <StatusDot status={butlerStatus} />
       </span>
       <span className="flex-1">{item.label}</span>
-      {decisionsUnavailable ? (
-        <DecisionsUnavailableMarker className="ml-auto" />
+      {unavailableLabel ? (
+        <UnavailableBadgeMarker label={unavailableLabel} className="ml-auto" />
       ) : count > 0 ? (
         <span
           className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${

@@ -3324,6 +3324,21 @@ export interface ApprovalMetrics {
   callback_secret_configured?: boolean | null;
 }
 
+/** Availability metadata for the independently aggregated approvals metric families. */
+export interface ApprovalMetricsMeta extends ApiMeta {
+  /** Configured sources whose pending-actions aggregate could not be read. */
+  pending_actions_sources_degraded?: string[];
+  /** Configured sources whose active-rules aggregate could not be read. */
+  approval_rules_sources_degraded?: string[];
+  /** De-duplicated union of every degraded approvals-metrics source. */
+  sources_degraded?: string[];
+}
+
+/** GET /api/approvals/metrics response with per-family availability. */
+export interface ApprovalMetricsResponse extends ApiResponse<ApprovalMetrics> {
+  meta: ApprovalMetricsMeta;
+}
+
 export interface ApprovalActionParams {
   tool_name?: string;
   status?: string;
@@ -9149,6 +9164,15 @@ export interface RulePromotionSurface {
   auto_applied: RulePromotionAutoApplied[];
 }
 
+/** Fan-out availability metadata for the rule-promotion suggestion surface. */
+export interface RulePromotionSurfaceMeta extends ApiMeta {
+  sources_degraded?: string[];
+}
+
+export interface RulePromotionSurfaceResponse extends ApiResponse<RulePromotionSurface> {
+  meta: RulePromotionSurfaceMeta;
+}
+
 /** Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6). */
 export interface RulePromotionStats {
   suggestions_pending: number;
@@ -9160,6 +9184,15 @@ export interface RulePromotionStats {
   llm_sessions_avoided_estimate: number;
   demotion_pending: number;
   promoted_rule_spot_checks: number;
+}
+
+/** Fan-out availability metadata for rule-promotion aggregate metrics. */
+export interface RulePromotionStatsMeta extends ApiMeta {
+  sources_degraded?: string[];
+}
+
+export interface RulePromotionStatsResponse extends ApiResponse<RulePromotionStats> {
+  meta: RulePromotionStatsMeta;
 }
 
 /** Body for dismissing a pending rule-promotion suggestion. */

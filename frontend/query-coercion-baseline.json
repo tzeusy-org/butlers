@@ -76,7 +76,7 @@
   "src/pages/NotificationsPage.tsx": 2,
   "src/pages/QaOverviewPage.tsx": 10,
   "src/pages/SessionsPage.tsx": 7,
-  "src/pages/SettingsConsolePage.tsx": 2,
+  "src/pages/SettingsConsolePage.tsx": 1,
   "src/pages/SettingsModelsPage.tsx": 1,
   "src/pages/SettingsPermissionsPage.tsx": 1,
   "src/pages/SpendPage.tsx": 15,

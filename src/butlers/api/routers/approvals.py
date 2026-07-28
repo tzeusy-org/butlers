@@ -1750,12 +1750,25 @@ async def get_rule_suggestions(
 async def get_metrics(
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalMetrics]:
-    """Get aggregate metrics for the approvals dashboard."""
-    action_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
-    rule_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
+    """Get aggregate metrics for the approvals dashboard.
 
-    if not action_pools:
-        return ApiResponse(data=ApprovalMetrics())
+    Pending-action and active-rule figures come from independent table
+    families. Preserve every healthy contribution, but name a configured
+    source that fails either family so clients never read a partial zero as a
+    truthful all-clear.
+    """
+    action_sources = DegradedSources(logger)
+    rule_sources = DegradedSources(logger)
+    action_pools = await _find_named_approvals_pools(
+        db_mgr,
+        "pending_actions",
+        tracker=action_sources,
+    )
+    rule_pools = await _find_named_approvals_pools(
+        db_mgr,
+        "approval_rules",
+        tracker=rule_sources,
+    )
 
     today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -1769,7 +1782,7 @@ async def get_metrics(
     latency_sum = 0.0
     latency_count = 0
 
-    for pool in action_pools:
+    for butler_name, pool in action_pools:
         try:
             async with pool.acquire() as conn:
                 total_pending += (
@@ -1846,7 +1859,10 @@ async def get_metrics(
                     or 0
                 )
         except Exception:
-            logger.warning("Failed to collect metrics from a pool", exc_info=True)
+            action_sources.mark(
+                butler_name,
+                msg="Failed to collect pending-actions metrics",
+            )
 
     avg_decision_latency_seconds = (latency_sum / latency_count) if latency_count > 0 else None
 
@@ -1859,7 +1875,7 @@ async def get_metrics(
     )
 
     active_rules_count = 0
-    for pool in rule_pools:
+    for butler_name, pool in rule_pools:
         try:
             async with pool.acquire() as conn:
                 active_rules_count += (
@@ -1867,7 +1883,10 @@ async def get_metrics(
                     or 0
                 )
         except Exception:
-            logger.warning("Failed to count active rules from a pool", exc_info=True)
+            rule_sources.mark(
+                butler_name,
+                msg="Failed to count active approval rules",
+            )
 
     metrics = ApprovalMetrics(
         total_pending=total_pending,
@@ -1880,10 +1899,24 @@ async def get_metrics(
         rejection_rate=rejection_rate,
         failure_count_today=failure_count_today,
         active_rules_count=active_rules_count,
-        callback_secret_configured=await _callback_secret_configured(db_mgr),
+        # Preserve the prior no-pending-actions-table posture: no action pool
+        # means this capability is not applicable, not a claim about whether
+        # the shared secret exists.
+        callback_secret_configured=(
+            await _callback_secret_configured(db_mgr) if action_pools else None
+        ),
     )
 
-    return ApiResponse(data=metrics)
+    sources_degraded = sorted(set(action_sources.names) | set(rule_sources.names))
+    meta_values: dict[str, list[str]] = {}
+    if action_sources.failed:
+        meta_values["pending_actions_sources_degraded"] = action_sources.names
+    if rule_sources.failed:
+        meta_values["approval_rules_sources_degraded"] = rule_sources.names
+    if sources_degraded:
+        meta_values["sources_degraded"] = sources_degraded
+
+    return ApiResponse(data=metrics, meta=ApiMeta(**meta_values))
 
 
 async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:

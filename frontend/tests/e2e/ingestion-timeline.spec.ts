@@ -52,6 +52,20 @@ async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...ar
     });
   });
 
+  // GET /api/approvals/metrics → healthy, complete sidebar badge metric.
+  // The Sidebar mounts on this route too, and metric availability lives in
+  // `meta`; the generic catch-all deliberately cannot stand in for it.
+  await page.route("**/api/approvals/metrics", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { total_pending: 0 },
+        meta: {},
+      }),
+    });
+  });
+
   // GET /api/ingestion/connectors/summaries → empty list
   await page.route("**/api/ingestion/connectors/summaries*", (route) => {
     route.fulfill({
