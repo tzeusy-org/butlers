@@ -27,7 +27,7 @@ export function ConversationReadError({
           aria-label={`${message} Try again.`}
           title={`${message} Try again.`}
         >
-          <RefreshCwIcon className="size-4" />
+          <RefreshCwIcon className="size-4" strokeWidth={1.5} />
         </Button>
       </div>
     );
@@ -41,7 +41,7 @@ export function ConversationReadError({
     >
       <span className="text-destructive">{message}</span>
       <Button size="xs" variant="outline" onClick={onRetry}>
-        <RefreshCwIcon className="size-4" />
+        <RefreshCwIcon className="size-4" strokeWidth={1.5} />
         Try again
       </Button>
     </div>
