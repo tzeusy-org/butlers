@@ -23,7 +23,7 @@ durable and inspectable.
 
 1. The first dashboard classification action reserves exactly one lane:
    `route_pending`, `bug_report`, or `dead_letter`.
-2. A route becomes immutable only after an `accepted` or `ok` acknowledgement.
+2. A route becomes immutable only after an `accepted` acknowledgement.
    It may become a dead letter only with fenced proof that no route dispatch had
    a side effect. Unknown route outcomes become owner-visible ambiguity.
 3. A terminal action has one immutable parent plus independently recoverable
@@ -42,7 +42,14 @@ durable and inspectable.
    second external effect. Promotion to `active` follows a kill/restart canary
    and metric review.
 
-## Deliberately deferred product choice
+## Deliberately deferred product choices
+
+The owner must approve a narrow operator-ingress exception for this dashboard
+surface: it is a direct owner-only `dashboard` / `internal` ingress through the
+standard Switchboard spine, not generic chat. The current reliability slice also
+ends at truthful ingress/route acknowledgement and terminal bug/dead-letter
+effects; durable downstream routed-session/reply outcome is a separate approved
+change.
 
 The current contract has no generic question lane. The owner must decide whether
 an otherwise ambiguous question should:
@@ -57,7 +64,9 @@ classification prompts or fallback code.
 ## Delivery gate
 
 No new Bead graph is created by this design. Existing `bu-s3qvp` is live and
-must not be treated as HOLD-gated merely because this document exists. After the
-owner approves the OpenSpec changesets, create a new HOLD-first graph that
-serializes #3624, the #3618 rebase-or-close decision, the documentation
-reconciliation, and bounded recovery implementation leaves.
+must not be treated as HOLD-gated merely because this document exists. Before
+the owner may approve the product choices and OpenSpec changesets, #3624 must
+land and its exact head must be independently verified; then #3618 must be
+rebased and independently reconciled or closed as superseded. Only then create
+a new HOLD-first graph for the documentation reconciliation and bounded
+recovery implementation leaves.
