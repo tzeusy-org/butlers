@@ -1,9 +1,9 @@
 """Tests for feed-vs-email transaction reconciliation + account freshness (bu-8bnn9).
 
 Follow-up from PR #3589 (bu-ep4ks.16 slice 1). Covers the honest
-not-configured state (no aggregator connector wired up -- SimpleFIN Bridge is
-a deferred follow-up), the merchant-fuzzy/amount/date matcher, and per-account
-freshness classification (never_synced / stale / healthy).
+not-configured state before any optional SimpleFIN account sync, the
+merchant-fuzzy/amount/date matcher, and per-account freshness classification
+(never_synced / stale / healthy).
 """
 
 from __future__ import annotations

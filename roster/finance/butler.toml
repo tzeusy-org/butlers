@@ -80,6 +80,12 @@ dispatch_mode = "job"
 job_name = "monthly_finance_digest"
 
 [[butler.schedule]]
+name = "simplefin-sync"
+cron = "17 4 * * *"
+dispatch_mode = "job"
+job_name = "simplefin_sync"
+
+[[butler.schedule]]
 name = "daily_briefing_contribution"
 cron = "55 6 * * *"
 dispatch_mode = "job"
