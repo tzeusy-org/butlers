@@ -174,6 +174,26 @@ def _fits_finance_transaction_amount(amount: Decimal) -> bool:
     return -_SIMPLEFIN_FINANCE_AMOUNT_MAX <= stored_amount <= _SIMPLEFIN_FINANCE_AMOUNT_MAX
 
 
+def _is_valid_simplefin_server_url(value: object) -> bool:
+    """Return whether a protocol-advertised SimpleFIN root is a safe HTTPS URL."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme.lower() == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and (port is None or 0 < port <= 65535)
+    )
+
+
 def _parse_simplefin_account_set(
     payload: Any,
     binding: dict[str, Any] | None,
@@ -191,6 +211,17 @@ def _parse_simplefin_account_set(
     connections = payload.get("connections")
     if not isinstance(connections, list) or any(not isinstance(item, dict) for item in connections):
         return None, None, 0, "invalid_response"
+    for connection in connections:
+        if (
+            not isinstance(connection.get("conn_id"), str)
+            or not connection["conn_id"]
+            or not isinstance(connection.get("name"), str)
+            or not connection["name"].strip()
+            or not isinstance(connection.get("org_id"), str)
+            or not connection["org_id"]
+            or not _is_valid_simplefin_server_url(connection.get("sfin_url"))
+        ):
+            return None, None, 0, "invalid_response"
 
     accounts = payload.get("accounts")
     if not isinstance(accounts, list) or len(accounts) != 1 or not isinstance(accounts[0], dict):
@@ -223,6 +254,22 @@ def _parse_simplefin_account_set(
 
     currency = remote_account.get("currency")
     if not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency):
+        return None, None, 0, "invalid_response"
+    raw_balance = remote_account.get("balance")
+    balance_date = remote_account.get("balance-date")
+    if (
+        not isinstance(raw_balance, str)
+        or not raw_balance
+        or isinstance(balance_date, bool)
+        or not isinstance(balance_date, (int, float))
+    ):
+        return None, None, 0, "invalid_response"
+    try:
+        balance = Decimal(raw_balance)
+        datetime.fromtimestamp(float(balance_date), tz=UTC)
+    except (InvalidOperation, OverflowError, OSError, ValueError):
+        return None, None, 0, "invalid_response"
+    if not balance.is_finite():
         return None, None, 0, "invalid_response"
 
     raw_transactions = remote_account.get("transactions", [])
