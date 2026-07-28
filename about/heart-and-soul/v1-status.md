@@ -1,7 +1,7 @@
 # v1 Status Matrix
 
-**Last updated:** 2026-07-11
-**Branch:** current `main` (as of commit `1b199ea81`)
+**Last updated:** 2026-07-28
+**Branch:** current `main` (as of commit `a03fdf22c`)
 
 Maps every success criterion from [`v1.md`](v1.md) to its current status and
 concrete evidence. Honest by design: partial and unproven are not failure states
@@ -179,6 +179,7 @@ ingestion monitoring, settings console, audit log, webhooks, data ops.
 | Spend dashboard | `frontend/src/pages/SettingsSpendPage.tsx` |
 | Permissions / data-ops | `frontend/src/pages/SettingsPermissionsPage.tsx` |
 | Audit log | `frontend/src/pages/AuditLogPage.tsx`; `src/butlers/api/routers/audit.py` |
+| Source-honest operator views | `frontend/src/pages/AuditLogPage.tsx`, `SettingsPermissionsPage.tsx`, `ApprovalsPage.tsx`, and `SystemPage.tsx`; `frontend/src/components/approvals/approvals-verdict-opener.tsx` and `frontend/src/components/system/SystemVerdictBanner.tsx`: direct producer audit outcomes, inherited permission defaults, whole-population stalled approvals, and settled System verdict sources. |
 | Webhooks | `src/butlers/api/routers/webhooks.py` — HMAC-SHA256, test-fire endpoint |
 | Data ops | `src/butlers/api/routers/data_ops.py` — 60-min signed URL export + phrase-gated wipe |
 | Insight delivery tile | `frontend/src/components/system/InsightDeliveryTile.tsx` |
@@ -334,6 +335,7 @@ A condensed view of the broader feature set listed in v1.md, for orientation.
 | Component | Status | Evidence |
 |-----------|--------|----------|
 | OpenTelemetry instrumentation | **implemented** | `src/butlers/core/telemetry.py` — `init_telemetry()`, OTLP exporter |
+| Operator source-truth coverage | **implemented** | `tests/api/test_audit_log.py`, `tests/migrations/test_retire_legacy_permission_seeds_migration.py`, `src/butlers/api/routers/approvals.py`, `frontend/src/components/approvals/approvals-verdict-opener.tsx`, and `frontend/src/components/system/SystemVerdictBanner.tsx`: audit outcomes, inherited permission state, stalled-approval population coverage, and System verdict source settlement. |
 | Telemetry collection & routing | **partial** | `docker-compose.observability.yml` uses `otel/opentelemetry-collector-contrib:0.105.0`; v1.md names "Grafana Alloy" but the deployed stack uses OTel Collector. Functionally equivalent for trace/metric routing; name discrepancy only. |
 | Tempo | **implemented** | `docker-compose.observability.yml` — `grafana/tempo:2.5.0`, config at `observability/tempo/config.yaml` |
 | Prometheus | **implemented** | `observability/prometheus/prometheus.yml`; `src/butlers/modules/metrics/prometheus.py` |
