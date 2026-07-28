@@ -219,8 +219,8 @@ concrete terminal outcome, it SHALL persist and project that outcome. If the
 outcome remains unprovable at `stop_reconcile_deadline_at`, it SHALL persist
 `ambiguous` with the sanitized reason code `ingress_stop_outcome_unknown`. A
 repeat canonical Stop request for that turn SHALL return `outcome: "ambiguous"`
-with both compatibility booleans false, and no automatic redelivery or
-`retry-ingress` recovery SHALL be permitted after ambiguity.
+with no automatic redelivery, and no `retry-ingress` recovery SHALL be permitted
+after ambiguity.
 
 ID: REQ-dashboard-conversations-007
 Source: dashboard-turn cancellation migration core_193; heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-003; design.md Decisions 3 and 6
@@ -312,15 +312,22 @@ watch, the server SHALL persist and linearize the Stop against the exact durable
 turn and, when present, its terminal action. A semantic cancellation response
 SHALL include `message_id`, nullable `conversation_id` and `session_id`, and a
 required `outcome` of `cancelled`, `already_finished`,
-`pending_reconciliation`, or `ambiguous`. The existing `cancelled` and
-`already_finished` booleans SHALL remain additive compatibility fields: outcomes
-map to `(true, false)`, `(false, true)`, `(false, false)`, and `(false, false)`
-respectively. A control-plane failure that cannot establish a durable semantic
-outcome SHALL be surfaced as a request failure, not fabricated as one of those
-four outcomes. The legacy conversation-scoped cancel endpoint MAY remain only as
-a compatibility adapter: it SHALL forward to the canonical endpoint when it can
-resolve the exact active `message_id`, and it SHALL never guess a different turn.
-New dashboard clients SHALL call the canonical message-scoped endpoint.
+`pending_reconciliation`, or `ambiguous`. It SHALL NOT carry the legacy
+`cancelled` or `already_finished` booleans. A control-plane failure that cannot
+establish a durable semantic outcome SHALL be surfaced as a request failure, not
+fabricated as one of those four outcomes.
+
+The repository-owned conversation-scoped cancel endpoint and boolean response
+are a bounded migration source, not a compatibility contract. The implementation
+change SHALL introduce this canonical endpoint; migrate
+`frontend/src/api/client.ts`, `FloatingChatWidget`, `ChatPanel`, their types,
+tests, and dashboard API inventory to the exact `message_id` plus `outcome`
+contract; prove no repository-owned caller remains; and delete the old endpoint,
+response model/type, client alias, and boolean assertions before the change is
+archived. No external consumer is currently verified. Any exception SHALL
+require an owner-approved amendment that names the verified consumer,
+accountable owner, and dated sunset; without it, deletion in the same change is
+mandatory.
 
 ID: REQ-dashboard-conversations-004
 Source: dashboard-chat-ui § SSE Client Integration; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-004; design.md Decision 6
@@ -331,7 +338,6 @@ Scope: v1-mandatory
 - **WHEN** the canonical message-scoped API returns `outcome: "cancelled"`
 - **THEN** it SHALL prove that the exact turn/action cannot start a runtime or
   child effect after its Stop linearization point
-- **AND** it SHALL set `cancelled: true` and `already_finished: false`
 
 #### Scenario: Stop races with a terminal effect
 
@@ -339,16 +345,14 @@ Scope: v1-mandatory
   `attempt_started` but before the effect outcome is proven
 - **THEN** the API SHALL persist the action-level Stop intent and return
   `outcome: "pending_reconciliation"` or `outcome: "ambiguous"`
-- **AND** it SHALL set both compatibility booleans to `false` and SHALL NOT
-  claim cancellation
+- **AND** it SHALL NOT claim cancellation
 
 #### Scenario: Stop wins after a primary effect but before its acknowledgement
 
 - **WHEN** a primary terminal child has a durable completed receipt and Stop
   wins the conditional fence against a still-planned required acknowledgement
-- **THEN** the API SHALL return `outcome: "pending_reconciliation"` with both
-  compatibility booleans false until the action's failed
-  `stopped_after_partial_effect` projection is durable
+- **THEN** the API SHALL return `outcome: "pending_reconciliation"` until the
+  action's failed `stopped_after_partial_effect` projection is durable
 - **AND** it SHALL never return `outcome: "cancelled"` for that partial effect
   outcome
 
@@ -356,8 +360,8 @@ Scope: v1-mandatory
 
 - **WHEN** Stop persists against a targetless `submitting` ingress whose outbound
   result cannot yet be proven
-- **THEN** the API SHALL return `outcome: "pending_reconciliation"` with both
-  compatibility booleans false and the message read model SHALL project
+- **THEN** the API SHALL return `outcome: "pending_reconciliation"` with the
+  exact message identity and the message read model SHALL project
   `pending_cancellation`
 - **AND** after bounded targetless-ingress reconciliation proves no outcome, a
   repeat Stop SHALL return `outcome: "ambiguous"` rather than a cancellation
@@ -367,17 +371,16 @@ Scope: v1-mandatory
 
 - **WHEN** the exact immutable turn has already reached its durable terminal
   runtime/action outcome before Stop is linearized
-- **THEN** the API SHALL return `outcome: "already_finished"`,
-  `cancelled: false`, and `already_finished: true`
+- **THEN** the API SHALL return `outcome: "already_finished"`
 
-#### Scenario: Legacy caller provides an exact message identity
+#### Scenario: Repository-owned compatibility surface is retired
 
-- **WHEN** a legacy conversation-scoped caller supplies or the adapter resolves
-  the active immutable `message_id`
-- **THEN** the adapter SHALL preserve the canonical outcome and compatibility
-  boolean mapping for that exact message
-- **AND** it SHALL not use a process-local conversation record to cancel a
-  different dashboard turn
+- **WHEN** the implementation has migrated the dashboard API client, both chat
+  surfaces, their types/tests, and the API inventory to the canonical endpoint
+- **THEN** the same change SHALL delete the conversation-scoped endpoint,
+  boolean response model/type, client alias, and compatibility assertions
+- **AND** repository search and focused tests SHALL prove that no in-repo caller
+  or process-local conversation cancellation path remains
 
 ### Requirement: Dashboard Turn Outcome Projection
 

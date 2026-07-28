@@ -28,7 +28,10 @@ durable and inspectable.
    a side effect. Unknown route outcomes become owner-visible ambiguity.
 3. A terminal action has one immutable parent plus independently recoverable
    child effects. QA report, dead-letter capture, and owner acknowledgement are
-   not collapsed into one success flag.
+   not collapsed into one success flag. Dashboard QA mode is authorized from a
+   validated Switchboard-router MCP service principal, never a caller-supplied
+   source, and its receipt-backed discovery inbox survives QA restart into the
+   ordinary patrol/triage path.
 4. Stop is message-scoped and server-linearized. The UI may say `Cancelled by
    owner` only after a durable cancelled outcome; pending or ambiguous Stop
    results refetch the same message read model. A pending Stop survives reload
@@ -41,6 +44,11 @@ durable and inspectable.
    inspect receipts and expose bounded ambiguity but cannot issue an automatic
    second external effect. Promotion to `active` follows a kill/restart canary
    and metric review.
+7. The outcome-only message-scoped Stop contract replaces the repository-owned
+   conversation-scoped endpoint and boolean response in one implementation
+   change. The dashboard client, both chat surfaces, tests, and API inventory
+   migrate before the aliases are deleted; no indefinite compatibility surface
+   remains without a verified consumer, accountable owner, and dated sunset.
 
 ## Deliberately deferred product choices
 

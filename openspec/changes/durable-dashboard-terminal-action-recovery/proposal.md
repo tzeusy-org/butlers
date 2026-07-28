@@ -19,12 +19,13 @@ ambiguity as well.
   effect receipts for dashboard terminal actions (`bug_report` and
   `dead_letter`), including intent, relay identity, owner reply, receipt or
   ambiguity evidence, and reconciliation ownership.
-- Give each individual effect an explicit idempotency/receipt strategy.  The QA
-  staffer will persist dashboard-action-keyed report receipts and provide a
-  lookup contract; dead-letter capture and in-thread replies will have their
-  own durable idempotency boundaries.  Where proof remains unavailable, surface
-  an actionable `ambiguous` terminal state instead of retrying blindly or
-  claiming success.
+- Give each individual effect an explicit idempotency/receipt strategy. The QA
+  staffer will authenticate a dedicated Switchboard-router MCP service
+  principal, persist dashboard-action-keyed report receipts, and provide a
+  principal-gated lookup contract; dead-letter capture and in-thread replies
+  will have their own durable idempotency boundaries. Where proof remains
+  unavailable, surface an actionable `ambiguous` terminal state instead of
+  retrying blindly or claiming success.
 - Add a bounded reconciler that completes, fails, or marks a claimed action
   ambiguous after a crash; a turn must not remain
   `external_action_in_progress` indefinitely.
@@ -39,8 +40,15 @@ ambiguity as well.
   operator can inspect a stuck or ambiguous action without direct database access.
 - Add crash-boundary and Stop-during-recovery coverage for both terminal-action
   kinds.
+- Replace the repository-owned conversation-scoped cancel endpoint and boolean
+  response with the canonical outcome-only message-scoped contract. Migrate the
+  dashboard API client, both chat surfaces, tests, and inventory in the same
+  implementation change, then delete the aliases before that change archives.
 - Amend RFC 0003's recovery guidance so an unproven dashboard route is a
   dashboard-specific ambiguity, not a generic automatic replay candidate.
+- Amend RFC 0015 and the QA and Switchboard manifestos in the implementation
+  change to record the authenticated durable-inbox exception, permissions,
+  recovery ownership, operational modes, and service-level expectations.
 - Roll out reconciliation through an owner-controlled observe-safe mode before
   any worker may retry a missing effect.
 
@@ -61,8 +69,9 @@ ambiguity as well.
 - `dashboard-chat-ui`: the owner sees pending reconciliation, confirmed outcomes,
   and actionable ambiguity without a false filed/cancelled claim or a second
   automatic ingress delivery.
-- `staffer-qa`: dashboard-originated `report_finding` calls produce durable,
-  idempotent receipts that a reconciler can query after a crash.
+- `staffer-qa`: authenticated Switchboard-originated `report_finding` calls
+  produce durable, idempotent receipts and restart-safe discovery work that a
+  reconciler and ordinary QA patrol can recover after a crash.
 
 ## Impact
 
@@ -72,8 +81,13 @@ ambiguity as well.
 - `src/butlers/modules/pipeline.py`
 - dashboard conversation API models/routes and chat components
 - owner-only terminal-action inspection and manual-resolution API endpoints
-- QA `report_finding` receipt/lookup and dead-letter capture contracts
+- authenticated Switchboard-to-QA MCP service-principal wiring, QA
+  `report_finding` receipt/discovery/lookup, and dead-letter capture contracts
+- removal of the repository-owned conversation-scoped cancel API, boolean
+  response model/type, client alias, and their tests after same-change migration
 - RFC 0003's dashboard-specific recovery exception
+- RFC 0015 plus `roster/qa/MANIFESTO.md` and
+  `roster/switchboard/MANIFESTO.md`
 - new migration, reconciliation worker ownership, and fault-injection tests
 
 This is the implementation contract for existing P1 Bead `bu-s3qvp` ("Reconcile

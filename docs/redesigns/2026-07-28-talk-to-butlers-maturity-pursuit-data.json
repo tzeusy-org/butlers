@@ -73,13 +73,15 @@
     "durable-dashboard-terminal-action-recovery"
   ],
   "contract_highlights": [
-    "message-scoped cancellation response gains an additive durable outcome discriminator with legacy boolean mapping",
+    "message-scoped cancellation becomes the outcome-only contract; repository-owned conversation-scoped and boolean compatibility surfaces are deleted after same-change caller migration",
     "targetless ingress exposes pending, retryable, rejected, and pending-Stop truth without inventing a lane",
     "a stalled ingress reaches a durable 60-second boundary and can be recovered only by an owner action on the same immutable message",
     "one dashboard lane reservation per immutable message, with route_pending to dead_letter only on definite no-side-effect evidence",
     "unknown route/effect outcomes become durable ambiguity rather than automatic duplicate delivery",
     "bug report, dead-letter capture, and acknowledgement reply each carry their own durable receipt/idempotency boundary",
     "dashboard QA receipt is a durable inbox with fenced claim/acknowledgement before any patrol-owned finding ID is shown",
+    "dashboard QA mode requires a receiver-validated Switchboard-router MCP principal; source arguments cannot authorize writes or receipt lookup",
+    "the implementation change amends RFC 0015 plus the QA and Switchboard manifestos with authorization, ownership, recovery, permissions, and service-level contracts",
     "manual ambiguity assessment remains an immutable overlay, never a fabricated receiver receipt",
     "reconciliation defaults to owner-controlled observe mode and needs a canary before active retries"
   ],

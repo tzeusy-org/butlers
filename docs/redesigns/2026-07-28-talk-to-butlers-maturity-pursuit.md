@@ -49,14 +49,17 @@ the intended path before this surface is called externally verified.
 ## What is true today
 
 - `POST /api/butlers/{name}/conversation-turns/{message_id}/cancel` is the
-  canonical message-scoped Stop endpoint on PR #3624; the legacy
-  conversation-scoped endpoint remains a compatibility path.
+  intended canonical message-scoped Stop endpoint on PR #3624. The current
+  repository-owned frontend still calls the conversation-scoped endpoint; the
+  recovery implementation must migrate those callers and delete that endpoint
+  in the same change rather than retain an indefinite compatibility path.
 - The running stack mounts the root checkout's frontend, API source, and roster;
   frontend history calls target the configured sibling path through Tailscale,
   while local Vite's `/api` proxy remains a separate development convenience.
 - The current response remains boolean-shaped. The proposed recovery contract
-  adds a durable, additive outcome discriminator rather than forcing the UI to
-  infer recovery state from `cancelled` / `already_finished`.
+  replaces it with one required semantic `outcome`; the implementation migrates
+  the dashboard client and chat surfaces before deleting the boolean model,
+  type, tests, and adapter in the same change.
 - PR #3618 (`make-dashboard-chat-truthful`) is an open draft based on an older
   base. Its dispatch-receipt/UI work must be rebased and revalidated after
   #3624, or its truthful routed-versus-targetless receipt, routed-butler
@@ -110,9 +113,11 @@ Two intentionally narrow OpenSpec changes carry the proposed work:
    It changes no runtime behavior.
 2. [`durable-dashboard-terminal-action-recovery`](../../openspec/changes/durable-dashboard-terminal-action-recovery/)
    defines one lane reservation, parent/child effect receipts, receipt-before-
-   retry reconciliation, truthful Stop outcomes that survive reload, bounded
-   exact-message ingress recovery, durable route ambiguity, partial-effect
-   language, and an observe-first rollout.
+   retry reconciliation, an authenticated Switchboard-to-QA service principal,
+   a restart-safe QA discovery inbox, truthful outcome-only Stop semantics with
+   bounded legacy deletion, exact-message ingress recovery, durable route
+   ambiguity, partial-effect language, same-change RFC/manifesto amendments,
+   and an observe-first rollout.
 
 Both strict OpenSpec validations pass. The whole-tree authoring trace check still
 fails on 2,589 repository-wide errors, so it is recorded as a legacy evidence
@@ -132,10 +137,12 @@ plan before this report:
    recovery; and Stop linearization before an irreversible call.
 3. Second independent contract review required a durable QA inbox → fenced
    claim → acknowledged-finding lifecycle, a representable immutable
-   `owner_resolution` overlay, and reciprocal Stop/effect fences.
+   `owner_resolution` overlay, reciprocal Stop/effect fences, and a
+   receiver-validated service identity rather than caller-asserted authority.
 4. Final independent replacement review restored every modified canonical
    requirement's baseline guarantees, serialized the two RFC 0003 amendments,
-   and confirmed strict validation and diff hygiene.
+   required same-change removal of repository-owned cancellation aliases plus
+   RFC/manifesto amendments, and confirmed strict validation and diff hygiene.
 
 The resulting plan refuses both duplicated delivery and fabricated calm:
 unknown route or effect state becomes visible ambiguity, never an automatic

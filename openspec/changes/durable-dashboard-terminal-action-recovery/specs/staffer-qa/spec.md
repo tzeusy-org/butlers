@@ -5,8 +5,13 @@
 The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error
 detection across multiple channels. Each source produces `QaFinding` objects
 with computed fingerprints. Sources are registered at startup and polled during
-each patrol cycle. The ordinary `report_finding` relay remains volatile; only an
-authenticated internal Switchboard call with the complete dashboard identity
+each patrol cycle. The ordinary `report_finding` relay remains volatile. The
+Switchboard router SHALL load a dedicated bearer service credential through the
+existing credential store; a QA FastMCP auth provider SHALL validate it and
+expose request/access-token context whose subject/client identifies that router
+and whose audience identifies the QA staffer. QA SHALL derive authorization from
+that context, never from caller-supplied `source_butler` or dashboard identity
+arguments. Only that validated principal with the complete dashboard identity
 uses the durable dashboard inbox defined by this change.
 
 ID: REQ-staffer-qa-001
@@ -179,8 +184,9 @@ Scope: v1-mandatory
 
 ### Requirement: Dashboard Report Durable Inbox Lifecycle
 
-QA SHALL permit an authenticated internal Switchboard relay to call
-`report_finding` in dashboard mode only when it supplies all of
+QA SHALL permit the validated Switchboard-router service principal defined in
+REQ-staffer-qa-001 to call `report_finding` in dashboard mode only when it
+supplies all of
 `terminal_action_id` (UUID),
 `terminal_effect_id` (UUID), and `terminal_effect_idempotency_key` (opaque
 stable string) in addition to ordinary canonical finding arguments. QA SHALL
@@ -244,10 +250,11 @@ Scope: v1-mandatory
 - **AND** QA SHALL not create a volatile substitute, a second receipt, or a
   canonical finding until the source is enabled and a fenced patrol claim runs
 
-#### Scenario: Caller supplies an invalid dashboard identity
+#### Scenario: Caller supplies invalid identity or authority
 
 - **WHEN** a caller supplies only part of the dashboard identity, a mismatched
-  duplicate idempotency key or canonical payload hash, lacks the internal
+  duplicate idempotency key or canonical payload hash, is anonymous, presents
+  the wrong subject or audience, spoofs `source_butler` without the validated
   Switchboard principal, or calls while `butler_reports` is disabled
 - **THEN** QA SHALL reject the request without creating a receipt, finding, or
   buffered report
@@ -255,8 +262,10 @@ Scope: v1-mandatory
 ### Requirement: Dashboard Report Receipt Lookup
 
 The QA staffer SHALL register an authenticated internal MCP tool named
-`get_dashboard_report_receipt`. Only the internal Switchboard relay may invoke
-it with `{terminal_action_id: UUID, terminal_effect_id: UUID}`. It SHALL return
+`get_dashboard_report_receipt`. Only the validated Switchboard-router service
+principal may invoke it with
+`{terminal_action_id: UUID, terminal_effect_id: UUID}`. Direct callers SHALL NOT
+enumerate receipts by supplying tool arguments alone. It SHALL return
 exactly either `{"status": "found", "receipt": {"terminal_action_id": "...",
 "terminal_effect_id": "...", "inbox_state":
 "pending|claimed|acknowledged", "created_at": "...", "finding_id": "..."}}`,
@@ -292,3 +301,9 @@ Scope: v1-mandatory
   and its safe `finding_id`
 - **AND** a pending or claimed record SHALL return `found` without a
   `finding_id`, never a fabricated acknowledgement
+
+#### Scenario: Direct caller probes a receipt identity
+
+- **WHEN** an anonymous caller, wrong-subject or wrong-audience service, or
+  source-spoofing caller invokes `get_dashboard_report_receipt`
+- **THEN** QA SHALL reject the request before querying or disclosing receipt data

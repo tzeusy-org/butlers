@@ -35,9 +35,15 @@
   `accepted` pre-dispatch rows and all non-dashboard rows. Add regression
   coverage for both no-replay-after-unproven-processing and
   safe-replay-before-dispatch.
-- [ ] 1.4 Add dashboard-action/effect identities to QA `report_finding`, a
-  durable dashboard-report inbox/receipt store, and an authenticated receipt
-  lookup. Extend the existing `butler_reports` source with a fenced durable
+- [ ] 1.4 Add a dedicated Switchboard-router bearer credential in the existing
+  credential store, have its cached QA MCP client present it, and configure a QA
+  FastMCP auth provider to validate its subject/client and QA audience from
+  request/access-token context before dashboard-mode writes or lookups. Never
+  authorize from caller-supplied `source_butler`; cover anonymous,
+  wrong-subject, wrong-audience, spoofed-source, and partial-identity rejection.
+- [ ] 1.5 Add dashboard-action/effect identities to QA `report_finding` and a
+  durable dashboard-report inbox/receipt store. Extend the existing
+  `butler_reports` source with a fenced durable
   `pending -> claimed -> acknowledged` claim/ack lifecycle that emits and links
   one patrol-owned finding after restart; enforce one inbox-to-finding mapping,
   canonical payload/idempotency validation, `not_found`-only same-key redelivery,
@@ -45,9 +51,16 @@
   source is disabled, but retain accepted inbox evidence for a later enabled
   claim; keep ordinary non-dashboard reports on their existing volatile-buffer
   path.
-- [ ] 1.5 Add durable uniqueness/receipt boundaries for dead-letter capture and
+- [ ] 1.6 Add the authenticated receipt lookup on the same QA principal
+  boundary; prove direct callers cannot enumerate receipts and mismatched
+  duplicate idempotency keys cannot overwrite the canonical record.
+- [ ] 1.7 Amend RFC 0015 and `roster/qa/MANIFESTO.md` in this implementation
+  change to replace the dashboard-report volatility deferral with the
+  authenticated durable-inbox exception and document ingestion, triage
+  ownership, permissions, recovery, and service-level expectations.
+- [ ] 1.8 Add durable uniqueness/receipt boundaries for dead-letter capture and
   `conversation_reply` child effects.
-- [ ] 1.6 Document and test that an effect without receiver-enforced idempotency
+- [ ] 1.9 Document and test that an effect without receiver-enforced idempotency
   or a durable receipt becomes ambiguous after an indeterminate attempt rather
   than being retried unsafely.
 
@@ -98,6 +111,10 @@
   cadence inspect durable ingress/request/session evidence without redelivery;
   resolve a proven outcome or persist `ingress_stop_outcome_unknown` ambiguity by
   a deadline no later than 15 minutes after Stop intent.
+- [ ] 3.7 Amend `roster/switchboard/MANIFESTO.md` in this implementation change
+  to name the authenticated QA relay, Switchboard's terminal-action reconciler
+  ownership, credential/receipt permissions, observe/active control, recovery
+  bounds, and owner-visible service-level expectations.
 
 ## 4. Surface durable truth to the owner
 
@@ -121,7 +138,14 @@
 - [ ] 4.4 Update the dashboard chat surfaces to render pending ingress, pending
   reconciliation, retryable/rejected ingress failure, confirmed outcome, failure,
   cancellation, pending cancellation, stale-ingress exact-message recovery, and
-  actionable ambiguity without false filed/cancelled copy.
+  actionable ambiguity without false filed/cancelled copy. Introduce the
+  outcome-only message-scoped cancel endpoint, migrate `api/client.ts`,
+  `FloatingChatWidget`, `ChatPanel`, their types/tests and the dashboard API
+  inventory, prove no repository-owned caller remains, then delete the
+  conversation-scoped endpoint, boolean response model/type, client alias, and
+  compatibility assertions in this same implementation change. Any exception
+  requires an owner-approved amendment naming a verified consumer, accountable
+  owner, and dated sunset.
 - [ ] 4.5 Ensure reload, reconnect, and bounded pending-state polling refresh the
   same durable status rather than relying on the original SSE stream; stop passive
   pending-ingress polling at the 60-second recovery boundary and require an owner
@@ -133,9 +157,10 @@
 - [ ] 5.1 Add unit and real-Postgres tests for every child-effect crash boundary:
   before `attempt_started`, after attempt before receipt, after receipt, stale
   lease, and restart catch-up.
-- [ ] 5.2 Add coverage for both action kinds, duplicate delivery, QA receipt
-  lookup and inbox lifecycle/reclaim/source-disabled behavior, dead-letter/reply
-  idempotency, Stop at each linearization point, legacy ambiguity, manual
+- [ ] 5.2 Add coverage for both action kinds, duplicate delivery, authenticated
+  QA receipt lookup and direct/spoofed-call rejection, inbox
+  lifecycle/reclaim/source-disabled behavior, dead-letter/reply idempotency,
+  Stop at each linearization point, legacy ambiguity, manual
   resolution read/repeat/conflict semantics, and first-lane-wins races including
   route-then-bug and bug-then-route; also cover definitive route failure to
   dead-letter, unknown route outcome, late route success, and

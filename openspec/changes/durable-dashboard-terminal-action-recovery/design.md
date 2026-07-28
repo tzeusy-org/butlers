@@ -124,9 +124,18 @@ owner's HTTP/SSE lifetime and makes retry policy inspectable.
 
 ### 4. Give QA, dead-letter capture, and replies distinct proof contracts
 
-For a dashboard QA report, `report_finding` receives the stable parent/effect
-identity and durably persists a QA inbox receipt keyed by that identity before
-reporting the effect as accepted. The receipt starts `pending`; the existing
+For a dashboard QA report, Switchboard uses a dedicated authenticated MCP service
+principal. Its cached QA client loads a bearer credential through the existing
+credential store. A QA FastMCP auth provider validates the credential and
+exposes an access-token principal whose subject/client is the Switchboard router
+and whose audience is the QA staffer. QA derives that identity from request
+context; it never treats caller-supplied `source_butler` or dashboard identity
+arguments as authorization. Anonymous callers, a wrong subject or audience, and
+a spoofed source are rejected before any write or receipt lookup.
+
+After authorization, `report_finding` receives the stable parent/effect identity
+and durably persists a QA inbox receipt keyed by that identity before reporting
+the effect as accepted. The receipt starts `pending`; the existing
 `butler_reports` source fences a `pending -> claimed -> acknowledged` lifecycle
 and creates/links exactly one patrol-owned canonical finding. The durable
 acceptance response contains no `finding_id` until acknowledgement. Receipt
@@ -214,6 +223,17 @@ must never claim `cancelled`. A Stop after an effect begins remains pending or
 ambiguous until the journal proves the parent result. It must not claim that it
 stopped an action whose result is unknown.
 
+The canonical response is outcome-only. The current repository-owned frontend
+still calls the conversation-scoped endpoint and reads `cancelled` /
+`already_finished`; those are migration inputs, not a compatibility commitment.
+The implementation change introduces the message-scoped endpoint, migrates
+`frontend/src/api/client.ts`, `FloatingChatWidget`, `ChatPanel`, their types and
+tests, verifies the API inventory and repository have no remaining callers, and
+then deletes the old endpoint, response model/type, and client alias before the
+change archives. No external consumer is currently verified. Any future
+exception requires an owner-approved amendment naming the consumer, accountable
+owner, and dated sunset; without that evidence, deletion is mandatory.
+
 **Why this over a separate turn-status endpoint or transient SSE-only status:** the
 effect is caused by one persisted user message and must survive reload, handoff,
 and a late reply.  Extending the already-authoritative message history gives the
@@ -246,8 +266,15 @@ pending actions the system must make truthful.
 ## Risks / Trade-offs
 
 - **QA relay lacks a durable receipt today** → add the dashboard-specific QA
-  receipt/lookup contract before allowing a filed outcome; use `ambiguous`, not
-  automatic retry, until it exists.
+  authenticated receipt/inbox/lookup contract before allowing a filed outcome;
+  use `ambiguous`, not automatic retry, until it exists.
+- **Dashboard mode could be spoofed through tool arguments** → authorize the
+  validated Switchboard service principal at the QA MCP boundary and reject
+  anonymous, wrong-audience, wrong-subject, or source-spoofed calls before data
+  access.
+- **Compatibility aliases can become permanent cruft** → migrate every
+  repository-owned caller and delete the conversation endpoint, booleans,
+  response model/type, and client alias in the same implementation change.
 - **Dead-letter capture is local but unkeyed** → add a durable uniqueness boundary
   tied to the dashboard action/request before enabling replay.
 - **Worker duplication after a crash** → use lease generation/fencing on every
@@ -267,11 +294,13 @@ pending actions the system must make truthful.
    canonical cancel endpoint with the normative RFC/API inventory, add the
    post-acceptance-retry and cross-client Stop regressions, then obtain
    current-base exact-head or validated merge-result evidence.
-2. Add parent/effect journal tables, state/lease constraints, indexes, QA receipt
-   storage, and unique action boundaries in migrations; deploy these before any
-   worker begins claiming.
-3. Deploy QA receipt/lookup, lane writers, and the supervised reconciler with
-   `terminal_action_reconciler.mode=observe` (the default). In observe mode it
+2. Add parent/effect journal tables, state/lease constraints, indexes, QA
+   receipt/discovery-inbox storage, and unique action boundaries in migrations;
+   deploy these before any worker begins claiming.
+3. Deploy authenticated Switchboard-to-QA service-principal wiring, the
+   restart-safe QA discovery source and receipt lookup, lane writers, and the
+   supervised reconciler with `terminal_action_reconciler.mode=observe` (the
+   default). In observe mode it
    records/queries evidence and marks bounded unknown work ambiguous but performs
    no automatic child-effect retry; promote only through the owner setting after
    the canary and metrics gate.
@@ -282,6 +311,12 @@ pending actions the system must make truthful.
 5. Add API/UI read and manual-resolution support, run a compose-backed
    kill/restart canary, and alert on stale/ambiguous action counts before declaring
    the maturity gate passed.
+6. In the same implementation change, migrate the repository-owned dashboard
+   callers to the canonical message-scoped outcome response, prove no remaining
+   callers through tests, inventory, and repository search, then delete all
+   conversation-scoped and boolean compatibility surfaces before archive.
+7. Amend RFC 0015 and the QA and Switchboard manifestos with the authenticated
+   durable-inbox exception, ownership, permissions, recovery, modes, and SLAs.
 
 Rollback changes the reconciler to `observe` while retaining the journal for
 forensic truth. It must not delete journal rows, reset leases/effects, or return
@@ -290,5 +325,7 @@ ambiguous actions to an untracked in-progress state.
 ## Open Questions
 
 The implementation must select existing or new migration-level storage names for
-the QA receipt and dead-letter uniqueness boundary, but the behavioral contracts
-above are fixed: no durable receipt means ambiguity, never a claimed filing.
+the QA receipt/discovery inbox and dead-letter uniqueness boundary, but the
+behavioral contracts above are fixed: no validated Switchboard service principal
+means no dashboard-mode access; no restart-safe QA handoff means no accepted
+dashboard report; and no durable receipt means ambiguity, never a claimed filing.
