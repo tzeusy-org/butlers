@@ -97,6 +97,7 @@ if _spec is not None and _spec.loader is not None:
     ProjectionHealthRow = _models.ProjectionHealthRow
     ChroniclesAttentionItem = _models.ChroniclesAttentionItem
     ChroniclesBriefing = _models.ChroniclesBriefing
+    ChroniclesBriefingSubqueryAvailability = _models.ChroniclesBriefingSubqueryAvailability
     ChroniclesKpi = _models.ChroniclesKpi
     ChroniclesLaneHours = _models.ChroniclesLaneHours
     ChroniclesRecentDay = _models.ChroniclesRecentDay
@@ -3003,6 +3004,15 @@ def _recent_days_to_pydantic(rows: list[Any]) -> list[ChroniclesRecentDay]:
     ]
 
 
+def _subquery_availability_to_pydantic(
+    rows: list[Any],
+) -> list[ChroniclesBriefingSubqueryAvailability]:
+    return [
+        ChroniclesBriefingSubqueryAvailability(subquery=row.subquery, state=row.state)
+        for row in rows
+    ]
+
+
 async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | None, str]:
     """Return (paragraph, source) read from the day-close Tier-2 cache.
 
@@ -3104,6 +3114,7 @@ async def get_briefing(
         kpi=_kpi_to_pydantic(payload.kpi),
         attention_items=_attention_to_pydantic(payload.attention_items),
         recent_days=_recent_days_to_pydantic(payload.recent_days),
+        subquery_availability=_subquery_availability_to_pydantic(payload.subquery_availability),
         earliest_date=payload.earliest_date,
     )
 

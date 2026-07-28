@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -358,6 +358,13 @@ class ChroniclesRecentDay(BaseModel):
     episode_count: int
 
 
+class ChroniclesBriefingSubqueryAvailability(BaseModel):
+    """Availability of one owned editorial briefing subquery."""
+
+    subquery: str
+    state: Literal["available", "unavailable", "not_requested"]
+
+
 class ChroniclesBriefing(BaseModel):
     """Editorial briefing object for /api/chronicler/briefing."""
 
@@ -380,6 +387,12 @@ class ChroniclesBriefing(BaseModel):
     kpi: ChroniclesKpi = Field(default_factory=ChroniclesKpi)
     attention_items: list[ChroniclesAttentionItem] = Field(default_factory=list)
     recent_days: list[ChroniclesRecentDay] = Field(default_factory=list)
+    subquery_availability: list[ChroniclesBriefingSubqueryAvailability] = Field(
+        default_factory=list
+    )
+    """Stable per-subquery availability ledger. ``unavailable`` names a
+    failed owned query; ``not_requested`` means an intentional skip or an
+    expected optional cold-boot relation."""
     earliest_date: str | None = None
     """Earliest chronicled calendar day (owner tz, YYYY-MM-DD), or null when
     no episodes exist. Bounds backward archive navigation."""
@@ -827,6 +840,7 @@ __all__ = [
     "ChroniclerPointEvent",
     "ChroniclesAttentionItem",
     "ChroniclesBriefing",
+    "ChroniclesBriefingSubqueryAvailability",
     "ChroniclesKpi",
     "ChroniclesLaneHours",
     "ChroniclesRecentDay",

@@ -71,7 +71,8 @@ function mockRows(rows: ChroniclerSourceStateRow[]) {
     data: { data: rows, meta: {} },
     isLoading: false,
     isError: false,
-  } as ReturnType<typeof useChroniclesSourceState>)
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useChroniclesSourceState>)
 }
 
 function render(): string {
@@ -158,9 +159,40 @@ describe("SourceStateBadgeStrip — empty data", () => {
       data: undefined,
       isLoading: true,
       isError: false,
-    } as ReturnType<typeof useChroniclesSourceState>)
+    } as unknown as ReturnType<typeof useChroniclesSourceState>)
     const html = render()
     expect(html).toBe("")
+  })
+
+  it("names an unavailable source-state query and exposes a retry", () => {
+    vi.mocked(useChroniclesSourceState).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useChroniclesSourceState>)
+
+    const html = render()
+
+    expect(html).toContain('role="alert"')
+    expect(html).toContain("Source state: unavailable")
+    expect(html).toContain("Retry")
+    expect(html).not.toContain("source-state-badge-strip")
+  })
+
+  it("labels retained badges as last loaded when the current source-state query fails", () => {
+    vi.mocked(useChroniclesSourceState).mockReturnValue({
+      data: { data: [makeRow({ source_name: "work", active: true })], meta: {} },
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useChroniclesSourceState>)
+
+    const html = render()
+
+    expect(html).toContain("Source state: unavailable; showing last loaded state")
+    expect(html).toContain("Work")
+    expect(html).toContain("Retry")
   })
 
   it("renders nothing when data.data is empty array", () => {

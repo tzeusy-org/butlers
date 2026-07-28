@@ -22,6 +22,7 @@ from butlers.chronicler.editorial import (
     LaneHours,
     RecentDay,
     Streaks,
+    SubqueryAvailability,
 )
 
 pytestmark = pytest.mark.unit
@@ -175,7 +176,41 @@ async def test_briefing_returns_cached_voice_without_llm_call(monkeypatch: pytes
     assert body["voice_source"] == "llm·cached"
     assert body["kpi"]["sleep_minutes"] == 432
     assert body["attention_items"][0]["title"] == "Short sleep"
+    assert body["subquery_availability"] == []
     templated.assert_not_called()
+
+
+async def test_briefing_exposes_named_subquery_availability(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The public briefing exposes the machine-readable availability ledger."""
+
+    async def _fake_compose_with_availability(
+        _pool: Any, _target: Any, _tz: str
+    ) -> BriefingPayload:
+        payload = _payload()
+        payload.subquery_availability = [
+            SubqueryAvailability(subquery="episodes", state="unavailable"),
+            SubqueryAvailability(subquery="source_health", state="not_requested"),
+        ]
+        return payload
+
+    monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose_with_availability)
+    app = _make_app(_Conn())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/chronicler/briefing",
+            params={"date": "2026-05-08", "tz": "Asia/Singapore"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["subquery_availability"] == [
+        {"subquery": "episodes", "state": "unavailable"},
+        {"subquery": "source_health", "state": "not_requested"},
+    ]
 
 
 async def test_briefing_uses_templated_fallback_when_cache_missing(
@@ -302,6 +337,78 @@ async def test_briefing_bypasses_cache_entirely_for_non_content_state(
     assert body["state_class"] == "no_data"
     assert body["voice_source"] == "templated"
     assert body["voice_paragraph"] != "Would render if reached."
+    assert conn.fetchrow_calls == []
+
+
+async def test_briefing_bypasses_cache_for_named_source_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A degraded source is not eligible for fresh or stale day-close prose."""
+
+    async def _fake_compose_degraded(_pool: Any, _target: Any, _tz: str) -> BriefingPayload:
+        return BriefingPayload(
+            state_class="degraded",
+            headline="Coverage for this day is degraded.",
+            kpi=KpiSnapshot(
+                hours_by_top_lanes=[],
+                longest_episode_minutes=0,
+                longest_episode_title=None,
+                longest_gap_minutes=0,
+                sleep_minutes=0,
+                streaks=Streaks(),
+            ),
+            attention_items=[
+                AttentionItem(
+                    kind="source_error",
+                    severity="high",
+                    title="Episodes unavailable",
+                    detail="Chronicler could not read episodes.",
+                )
+            ],
+            recent_days=[],
+            earliest_date="2026-05-01",
+            covered_and_available=False,
+            subquery_availability=[SubqueryAvailability(subquery="episodes", state="unavailable")],
+        )
+
+    monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose_degraded)
+    conn = _Conn(
+        fetchrow_returns=[
+            _Row(
+                {
+                    "prose": "Would render if cache admission were reached.",
+                    "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
+                    "start_at": datetime(2026, 5, 7, 16, 0, tzinfo=UTC),
+                    "end_at": datetime(2026, 5, 8, 16, 0, tzinfo=UTC),
+                    "invalid_reason": None,
+                }
+            )
+        ]
+    )
+    app = _make_app(conn)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/chronicler/briefing",
+            params={"date": "2026-05-08", "tz": "Asia/Singapore"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state_class"] == "degraded"
+    assert body["attention_items"] == [
+        {
+            "kind": "source_error",
+            "severity": "high",
+            "title": "Episodes unavailable",
+            "detail": "Chronicler could not read episodes.",
+            "action_href": None,
+        }
+    ]
+    assert body["subquery_availability"] == [{"subquery": "episodes", "state": "unavailable"}]
+    assert body["voice_paragraph"] != "Would render if cache admission were reached."
     assert conn.fetchrow_calls == []
 
 

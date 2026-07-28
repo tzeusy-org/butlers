@@ -20,6 +20,7 @@ import { useState } from "react"
 import type { ChroniclerSourceStateRow } from "@/api/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import {
   Tooltip,
   TooltipContent,
@@ -170,7 +171,7 @@ function DeferredBadge({ row }: SourceBadgeProps) {
 // ---------------------------------------------------------------------------
 
 export function SourceStateBadgeStrip() {
-  const { data } = useChroniclesSourceState()
+  const { data, isError, refetch } = useChroniclesSourceState()
 
   const [showDeferred, setShowDeferred] = useState<boolean>(() =>
     readBooleanSetting(SHOW_DEFERRED_KEY, false),
@@ -206,7 +207,19 @@ export function SourceStateBadgeStrip() {
     plannedBadges.length > 0 ||
     hasDeferredLanes
 
-  if (!hasAnyBadge) return null
+  if (!hasAnyBadge) {
+    if (isError) {
+      return (
+        <SourceDegradedNote
+          label="Source state"
+          detail="unavailable"
+          onRetry={() => void refetch()}
+          testId="source-state-unavailable"
+        />
+      )
+    }
+    return null
+  }
 
   return (
     <TooltipProvider>
@@ -215,6 +228,14 @@ export function SourceStateBadgeStrip() {
         aria-label="Source adapter state"
         data-testid="source-state-badge-strip"
       >
+        {isError ? (
+          <SourceDegradedNote
+            label="Source state"
+            detail="unavailable; showing last loaded state"
+            onRetry={() => void refetch()}
+            testId="source-state-stale"
+          />
+        ) : null}
         {activeBadges.map((row) => (
           <ActiveBadge key={row.source_name} row={row} />
         ))}

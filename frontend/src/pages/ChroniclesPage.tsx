@@ -129,13 +129,18 @@ function buildKpiCells(kpi: ChroniclesKpi): React.ComponentProps<typeof KpiStrip
  * Adapt ``ChroniclesAttentionItem[]`` to the row shape the shared
  * ``AttentionList`` primitive consumes.
  */
-function adaptAttention(items: ChroniclesAttentionItem[]): AttentionListItem[] {
+function adaptAttention(
+  items: ChroniclesAttentionItem[],
+  onRetry: () => void,
+): AttentionListItem[] {
   return items.map((it) => ({
     id: `chronicles:${it.kind}:${it.title}`,
     severity: it.severity,
     title: it.title,
     detail: it.detail,
     href: it.action_href,
+    isSourceError: it.kind === "source_error",
+    onRetry: it.kind === "source_error" ? onRetry : undefined,
   }));
 }
 
@@ -199,7 +204,11 @@ export default function ChroniclesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate, requestedDate]);
 
-  const atEarliest = isAtEarliest(selectedDate, earliest);
+  // A missing archive floor is not proof that earlier days can be read. Keep
+  // the backward control disabled until the response establishes a truthful
+  // boundary instead of allowing unbounded requests behind an unavailable
+  // coverage query.
+  const atEarliest = earliest === null || isAtEarliest(selectedDate, earliest);
   const atLatest = isAtLatest(selectedDate, latest);
 
   // -------------------------------------------------------------------
@@ -288,6 +297,8 @@ export default function ChroniclesPage() {
   );
   const isStale = data?.voice_source === "stale";
   const isNonContentState = data != null && NON_CONTENT_STATES.has(data.state_class);
+  const attentionItems = adaptAttention(data?.attention_items ?? [], () => void refetch());
+  const sourceErrorItems = attentionItems.filter((item) => item.isSourceError);
 
   return (
     <Page
@@ -308,7 +319,10 @@ export default function ChroniclesPage() {
               size="icon-xs"
               onClick={() => selectDate(prevIsoDay(selectedDate))}
               disabled={atEarliest}
-              aria-label="Previous day"
+              aria-label={
+                earliest === null ? "Previous day: archive boundary unavailable" : "Previous day"
+              }
+              title={earliest === null ? "Archive boundary unavailable" : undefined}
             >
               <ChevronLeft aria-hidden />
             </Button>
@@ -377,24 +391,33 @@ export default function ChroniclesPage() {
             the same fabricated-calm failure this state exists to prevent. */}
         <FetchingDim isFetching={isFetching} className="space-y-8">
           {isNonContentState ? (
-            <Section eyebrow="Coverage">
-              <p className="text-sm text-muted-foreground" role="status">
-                {data!.voice_paragraph}
-              </p>
-            </Section>
+            <>
+              <Section eyebrow="Coverage">
+                <p className="text-sm text-muted-foreground" role="status">
+                  {data!.voice_paragraph}
+                </p>
+              </Section>
+              {sourceErrorItems.length > 0 ? (
+                <Section eyebrow="Attention">
+                  <AttentionList items={sourceErrorItems} />
+                </Section>
+              ) : null}
+            </>
           ) : (
             <>
               <Section eyebrow="Attention">
-                <AttentionList items={adaptAttention(data?.attention_items ?? [])} />
+                <AttentionList items={attentionItems} />
               </Section>
               {data?.kpi ? <KpiStrip cells={buildKpiCells(data.kpi)} /> : null}
             </>
           )}
-          <RecentDaysIndex
-            days={data?.recent_days ?? []}
-            selectedDate={selectedDate}
-            onSelect={selectDate}
-          />
+          {!isNonContentState ? (
+            <RecentDaysIndex
+              days={data?.recent_days ?? []}
+              selectedDate={selectedDate}
+              onSelect={selectDate}
+            />
+          ) : null}
         </FetchingDim>
       </div>
 

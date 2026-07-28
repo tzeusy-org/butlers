@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import zoneinfo
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Iterable, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 import asyncpg
@@ -88,6 +88,20 @@ class RecentDay:
     episode_count: int
 
 
+@dataclass(frozen=True)
+class SubqueryAvailability:
+    """Public availability of one owned briefing read.
+
+    ``available`` means the query completed, not that it produced rows.
+    ``not_requested`` is reserved for an intentionally skipped query or a
+    documented optional relation missing during cold boot. ``unavailable``
+    means an owned query failed and must never be rendered as an empty source.
+    """
+
+    subquery: str
+    state: str
+
+
 @dataclass
 class BriefingPayload:
     """Everything a briefing endpoint composes minus the voice paragraph."""
@@ -99,6 +113,7 @@ class BriefingPayload:
     recent_days: list[RecentDay]
     earliest_date: str | None = None
     covered_and_available: bool = True
+    subquery_availability: list[SubqueryAvailability] = field(default_factory=list)
     """False for no_data/unavailable/degraded: the caller MUST bypass any
     day-close cache lookup (fresh or stale) and use deterministic copy
     (clarify-chronicles-narrative-truth decision 3)."""
@@ -122,6 +137,122 @@ STATE_UNAVAILABLE = "unavailable"
 STATE_DEGRADED = "degraded"
 
 NON_CONTENT_STATES = frozenset({STATE_NO_DATA, STATE_UNAVAILABLE, STATE_DEGRADED})
+
+AVAILABILITY_AVAILABLE = "available"
+AVAILABILITY_UNAVAILABLE = "unavailable"
+AVAILABILITY_NOT_REQUESTED = "not_requested"
+
+_BRIEFING_SUBQUERIES = (
+    "coverage_floor",
+    "coverage_witness",
+    "episodes",
+    "sleep",
+    "health_history",
+    "open_corrections",
+    "recent_days",
+    "source_health",
+)
+
+_SUBQUERY_COPY = {
+    "coverage_floor": ("Archive coverage", "Chronicler could not read archive coverage."),
+    "coverage_witness": ("Day coverage", "Chronicler could not read day coverage."),
+    "episodes": ("Episodes", "Chronicler could not read episodes."),
+    "sleep": ("Sleep data", "Chronicler could not read sleep data."),
+    "health_history": ("Health history", "Chronicler could not read health history."),
+    "open_corrections": ("Corrections", "Chronicler could not read corrections."),
+    "recent_days": ("Recent days", "Chronicler could not read recent days."),
+    "source_health": ("Source state", "Chronicler could not read source state."),
+}
+
+
+@dataclass
+class _SubqueryRead:
+    availability: SubqueryAvailability
+    value: object
+    attention_item: AttentionItem | None = None
+
+
+def _source_error_attention(subquery: str) -> AttentionItem:
+    label, detail = _SUBQUERY_COPY[subquery]
+    return AttentionItem(
+        kind="source_error",
+        severity="high",
+        title=f"{label} unavailable",
+        detail=detail,
+    )
+
+
+def _not_requested_read(subquery: str, value: object) -> _SubqueryRead:
+    return _SubqueryRead(
+        availability=SubqueryAvailability(subquery, AVAILABILITY_NOT_REQUESTED),
+        value=value,
+    )
+
+
+async def _skipped_subquery(subquery: str, value: object) -> _SubqueryRead:
+    return _not_requested_read(subquery, value)
+
+
+async def _capture_subquery(
+    subquery: str,
+    operation: Awaitable[object],
+    *,
+    fallback: object,
+    optional_if_undefined: bool = False,
+) -> _SubqueryRead:
+    """Run one owned read without conflating failures with empty results.
+
+    Only intentionally optional relations may treat ``UndefinedTableError``
+    as not requested. Every other database or network failure is recorded as
+    a named unavailable source with safe, static operator-facing copy.
+    """
+
+    try:
+        value = await operation
+    except asyncpg.UndefinedTableError:
+        if optional_if_undefined:
+            return _not_requested_read(subquery, fallback)
+    except (asyncpg.PostgresError, OSError):
+        pass
+    else:
+        return _SubqueryRead(
+            availability=SubqueryAvailability(subquery, AVAILABILITY_AVAILABLE),
+            value=value,
+        )
+
+    return _SubqueryRead(
+        availability=SubqueryAvailability(subquery, AVAILABILITY_UNAVAILABLE),
+        value=fallback,
+        attention_item=_source_error_attention(subquery),
+    )
+
+
+def _availability_snapshot(reads: Iterable[_SubqueryRead]) -> list[SubqueryAvailability]:
+    """Return all briefing concerns in stable order, including skipped reads."""
+
+    states = {subquery: AVAILABILITY_NOT_REQUESTED for subquery in _BRIEFING_SUBQUERIES}
+    for read in reads:
+        states[read.availability.subquery] = read.availability.state
+    return [SubqueryAvailability(subquery, states[subquery]) for subquery in _BRIEFING_SUBQUERIES]
+
+
+def _with_read_availability(
+    payload: BriefingPayload, reads: Iterable[_SubqueryRead]
+) -> BriefingPayload:
+    """Overlay reads performed by an outer composition stage onto a payload."""
+
+    snapshots = [
+        *payload.subquery_availability,
+        *(read.availability for read in reads),
+    ]
+    payload.subquery_availability = _availability_snapshot(
+        [_SubqueryRead(availability=availability, value=None) for availability in snapshots]
+    )
+    return payload
+
+
+def _source_error_items(reads: Iterable[_SubqueryRead]) -> list[AttentionItem]:
+    return [read.attention_item for read in reads if read.attention_item is not None]
 
 
 def classify_state(items: Sequence[AttentionItem]) -> str:
@@ -516,11 +647,8 @@ async def _fetch_source_health_items(
         LIMIT 1
     ) cp ON TRUE
     """
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(sql)
-    except (asyncpg.UndefinedTableError, asyncpg.PostgresError):
-        return items
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql)
     for r in rows:
         last_error = r["last_error"]
         last_run_at = r["last_run_at"]
@@ -575,22 +703,16 @@ async def _fetch_earliest_covered_date(pool: asyncpg.Pool, tz_name: str) -> date
     floor is established.
     """
     sql = "SELECT MIN(local_date) AS d FROM covered_local_days WHERE timezone = $1"
-    try:
-        async with pool.acquire() as conn:
-            result = await conn.fetchval(sql, tz_name)
-    except (asyncpg.UndefinedTableError, asyncpg.PostgresError):
-        return None
+    async with pool.acquire() as conn:
+        result = await conn.fetchval(sql, tz_name)
     return result
 
 
 async def _is_local_day_covered(pool: asyncpg.Pool, local_date: date, tz_name: str) -> bool:
     """True when ``local_date`` has an authoritative covered-local-day witness."""
     sql = "SELECT 1 FROM covered_local_days WHERE local_date = $1 AND timezone = $2"
-    try:
-        async with pool.acquire() as conn:
-            row = await conn.fetchval(sql, local_date, tz_name)
-    except (asyncpg.UndefinedTableError, asyncpg.PostgresError):
-        return False
+    async with pool.acquire() as conn:
+        row = await conn.fetchval(sql, local_date, tz_name)
     return bool(row)
 
 
@@ -788,22 +910,45 @@ def _empty_kpi() -> KpiSnapshot:
     )
 
 
-def _non_content_payload(state_class: str, earliest_date: date | None) -> BriefingPayload:
+def _non_content_payload(
+    state_class: str,
+    earliest_date: date | None,
+    *,
+    subquery_availability: list[SubqueryAvailability] | None = None,
+    attention_items: list[AttentionItem] | None = None,
+) -> BriefingPayload:
     """Build a deterministic no_data/unavailable/degraded payload.
 
     Bypasses cache lookup entirely (``covered_and_available=False``) and
-    carries no KPI/attention/recent-days content — those all derive from
+    carries no KPI/recent-days content — those all derive from
     reads that either failed or were never attempted for a day whose
-    coverage/availability could not be affirmed (design decision 3).
+    coverage/availability could not be affirmed (design decision 3). Named
+    source failures are the exception: their high-attention rows survive so
+    the dashboard can explain what is unavailable and offer a safe retry.
     """
     return BriefingPayload(
         state_class=state_class,
         headline=headline_for(state_class, 0),
         kpi=_empty_kpi(),
-        attention_items=[],
+        attention_items=attention_items or [],
         recent_days=[],
         earliest_date=earliest_date.isoformat() if earliest_date else None,
         covered_and_available=False,
+        subquery_availability=subquery_availability or [],
+    )
+
+
+def _non_content_from_reads(
+    state_class: str,
+    earliest_date: date | None,
+    reads: Iterable[_SubqueryRead],
+) -> BriefingPayload:
+    reads_list = list(reads)
+    return _non_content_payload(
+        state_class,
+        earliest_date,
+        subquery_availability=_availability_snapshot(reads_list),
+        attention_items=_source_error_items(reads_list),
     )
 
 
@@ -832,25 +977,62 @@ async def _compose_content_payload(
     # day, so skip the query entirely on older archive dates.
     target_is_recent = _target_is_recent(target, tz_name, now)
     source_health_coro = (
-        _fetch_source_health_items(pool, now=now) if target_is_recent else _no_attention_items()
+        _capture_subquery(
+            "source_health",
+            _fetch_source_health_items(pool, now=now),
+            fallback=[],
+            optional_if_undefined=True,
+        )
+        if target_is_recent
+        else _skipped_subquery("source_health", [])
     )
     (
-        episodes,
-        sleep_minutes,
-        health_seconds_by_day,
-        open_corrections,
-        recent_days,
-        source_health_items,
+        episodes_read,
+        sleep_read,
+        health_history_read,
+        corrections_read,
+        recent_days_read,
+        source_health_read,
     ) = await asyncio.gather(
-        _fetch_window_episodes(pool, start_utc, end_utc),
-        _fetch_sleep_minutes_for_day(pool, start_utc, end_utc),
-        _fetch_health_episode_day_seconds(
-            pool, end_utc, STREAK_LOOKBACK_DAYS, tz_name, ("sleep_episode", "workout_episode")
+        _capture_subquery(
+            "episodes", _fetch_window_episodes(pool, start_utc, end_utc), fallback=[]
         ),
-        _fetch_open_corrections(pool, start_utc, end_utc),
-        _fetch_recent_days(pool, end_utc, days=7, tz_name=tz_name),
+        _capture_subquery(
+            "sleep", _fetch_sleep_minutes_for_day(pool, start_utc, end_utc), fallback=0
+        ),
+        _capture_subquery(
+            "health_history",
+            _fetch_health_episode_day_seconds(
+                pool, end_utc, STREAK_LOOKBACK_DAYS, tz_name, ("sleep_episode", "workout_episode")
+            ),
+            fallback={},
+        ),
+        _capture_subquery(
+            "open_corrections", _fetch_open_corrections(pool, start_utc, end_utc), fallback=0
+        ),
+        _capture_subquery(
+            "recent_days", _fetch_recent_days(pool, end_utc, days=7, tz_name=tz_name), fallback=[]
+        ),
         source_health_coro,
     )
+
+    reads = [
+        episodes_read,
+        sleep_read,
+        health_history_read,
+        corrections_read,
+        recent_days_read,
+        source_health_read,
+    ]
+    if any(read.availability.state == AVAILABILITY_UNAVAILABLE for read in reads):
+        return _non_content_from_reads(STATE_DEGRADED, earliest_date, reads)
+
+    episodes = list(episodes_read.value)
+    sleep_minutes = int(sleep_read.value)
+    health_seconds_by_day = dict(health_history_read.value)
+    open_corrections = int(corrections_read.value)
+    recent_days = list(recent_days_read.value)
+    source_health_items = list(source_health_read.value)
 
     streaks = _streaks_from_day_seconds(health_seconds_by_day, end_utc, tz_name)
     sleep_median = _sleep_median_from_day_seconds(health_seconds_by_day, end_utc, tz_name)
@@ -911,6 +1093,7 @@ async def _compose_content_payload(
         recent_days=recent_days,
         earliest_date=earliest_date.isoformat() if earliest_date else None,
         covered_and_available=True,
+        subquery_availability=_availability_snapshot(reads),
     )
 
 
@@ -933,10 +1116,9 @@ async def compose_briefing_payload(
     any future date are not yet "closed" and keep the prior unconditional
     urgent/busy/mild/quiet classification:
 
-    1. An owned coverage-floor query failure, or an ``availability`` input of
-       ``unavailable``/``degraded`` (supplied by the availability-owning lane,
-       ``bu-imsks`` — this function never invents that signal itself), returns
-       the corresponding non-content state. Never ``no_data`` or ``quiet``.
+    1. An owned query failure, or an ``availability`` input of
+       ``unavailable``/``degraded``, returns a non-content state with a
+       per-subquery availability ledger. Never ``no_data`` or ``quiet``.
     2. A positive coverage-floor verdict placing ``target`` before the floor
        returns ``no_data``.
     3. A ``target`` on/after the floor but without its own exact-date witness
@@ -949,48 +1131,67 @@ async def compose_briefing_payload(
     today_local = _utc_to_local_date(now, tz_name)
     settled = target < today_local
 
+    coverage_floor_read = await _capture_subquery(
+        "coverage_floor",
+        _fetch_earliest_covered_date(pool, tz_name),
+        fallback=None,
+        optional_if_undefined=True,
+    )
+    earliest_date = (
+        coverage_floor_read.value if isinstance(coverage_floor_read.value, date) else None
+    )
+
+    if coverage_floor_read.availability.state == AVAILABILITY_UNAVAILABLE:
+        # A live day does not require a coverage witness, but a failed owned
+        # archive-boundary query is still unavailable. Do not let cached prose
+        # imply that the response was fully composed.
+        return _non_content_from_reads(STATE_UNAVAILABLE, None, [coverage_floor_read])
+
     if not settled:
         # Today/future: coverage witnesses are recorded for closed days only,
         # so gating "today" against them would always read as ungated. Keep
         # the live, uncoverage-gated behavior this endpoint always had.
-        earliest_date = await _fetch_earliest_covered_date(pool, tz_name)
-        try:
-            return await _compose_content_payload(
+        if availability == STATE_UNAVAILABLE:
+            return _non_content_from_reads(STATE_UNAVAILABLE, earliest_date, [coverage_floor_read])
+        if availability == STATE_DEGRADED:
+            return _non_content_from_reads(STATE_DEGRADED, earliest_date, [coverage_floor_read])
+        return _with_read_availability(
+            await _compose_content_payload(
                 pool, target, tz_name, now=now, earliest_date=earliest_date
-            )
-        except (asyncpg.PostgresError, OSError):
-            return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
-
-    try:
-        earliest_date = await _fetch_earliest_covered_date(pool, tz_name)
-    except (asyncpg.PostgresError, OSError):
-        return _non_content_payload(STATE_UNAVAILABLE, None)
+            ),
+            [coverage_floor_read],
+        )
 
     if availability == STATE_UNAVAILABLE:
-        return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
+        return _non_content_from_reads(STATE_UNAVAILABLE, earliest_date, [coverage_floor_read])
     if availability == STATE_DEGRADED:
-        return _non_content_payload(STATE_DEGRADED, earliest_date)
+        return _non_content_from_reads(STATE_DEGRADED, earliest_date, [coverage_floor_read])
 
     if earliest_date is not None and target < earliest_date:
-        return _non_content_payload(STATE_NO_DATA, earliest_date)
+        return _non_content_from_reads(STATE_NO_DATA, earliest_date, [coverage_floor_read])
 
-    try:
-        covered = await _is_local_day_covered(pool, target, tz_name)
-    except (asyncpg.PostgresError, OSError):
-        return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
+    coverage_witness_read = await _capture_subquery(
+        "coverage_witness",
+        _is_local_day_covered(pool, target, tz_name),
+        fallback=False,
+        optional_if_undefined=True,
+    )
+    coverage_reads = [coverage_floor_read, coverage_witness_read]
+    if coverage_witness_read.availability.state == AVAILABILITY_UNAVAILABLE:
+        return _non_content_from_reads(STATE_UNAVAILABLE, earliest_date, coverage_reads)
+
+    covered = bool(coverage_witness_read.value)
 
     if not covered:
         # Either no floor exists yet, or target sits in a coverage-evidence
         # gap on/after the floor. Neither is proof of absence or of a quiet
         # day, so this stays unavailable rather than no_data or quiet.
-        return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
+        return _non_content_from_reads(STATE_UNAVAILABLE, earliest_date, coverage_reads)
 
-    try:
-        return await _compose_content_payload(
-            pool, target, tz_name, now=now, earliest_date=earliest_date
-        )
-    except (asyncpg.PostgresError, OSError):
-        return _non_content_payload(STATE_UNAVAILABLE, earliest_date)
+    return _with_read_availability(
+        await _compose_content_payload(pool, target, tz_name, now=now, earliest_date=earliest_date),
+        coverage_reads,
+    )
 
 
 __all__ = [
@@ -1011,6 +1212,7 @@ __all__ = [
     "SLEEP_ANOMALY_FRACTION",
     "SOURCE_LAST_ERROR_WINDOW_HOURS",
     "Streaks",
+    "SubqueryAvailability",
     "WAKING_GAP_ANOMALY_MINUTES",
     "WAKING_HOUR_END",
     "WAKING_HOUR_START",

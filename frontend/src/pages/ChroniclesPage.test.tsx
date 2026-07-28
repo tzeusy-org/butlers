@@ -39,6 +39,7 @@ let _briefing: ChroniclesBriefing | undefined;
 let _briefingArgs: { date?: string; tz?: string } | undefined;
 let _isFetching = false;
 let _isError = false;
+let _refetch = vi.fn();
 
 vi.mock("@/hooks/use-chronicles-briefing", () => ({
   useChroniclesBriefing: (args: { date?: string; tz?: string } = {}) => {
@@ -47,7 +48,7 @@ vi.mock("@/hooks/use-chronicles-briefing", () => ({
       data: _briefing,
       isFetching: _isFetching,
       isError: _isError,
-      refetch: vi.fn(),
+      refetch: _refetch,
     };
   },
 }));
@@ -123,6 +124,7 @@ function buildBriefing(overrides: Partial<ChroniclesBriefing> = {}): ChroniclesB
       { date: "2026-05-07", total_minutes: 642, top_lane: "butler_ops", episode_count: 23 },
     ],
     earliest_date: "2026-01-01",
+    subquery_availability: [],
     ...overrides,
   };
 }
@@ -137,6 +139,7 @@ describe("ChroniclesPage editorial archetype", () => {
     _briefingArgs = undefined;
     _isFetching = false;
     _isError = false;
+    _refetch = vi.fn();
   });
 
   afterEach(() => {
@@ -154,6 +157,17 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).toContain("butler_ops");
     expect(html).toContain("Sleep");
     expect(html).toContain("Recent days");
+  });
+
+  it("renders a legacy briefing response without the availability ledger", () => {
+    const legacyBriefing = buildBriefing();
+    delete legacyBriefing.subquery_availability;
+    _briefing = legacyBriefing;
+
+    const html = renderPage();
+
+    expect(html).toContain("Quiet day.");
+    expect(html).toContain("The day was led by butler_ops");
   });
 
   it("renders the date stepper controls", () => {
@@ -299,15 +313,21 @@ describe("ChroniclesPage editorial archetype", () => {
     unmount();
   });
 
-  it("leaves backward navigation open when earliest_date is null", () => {
+  it("disables backward navigation while the archive boundary is unavailable", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
     _briefing = buildBriefing({ date: "2026-03-01", earliest_date: null });
 
     const { container, unmount } = mountPage("/chronicles?date=2026-03-01");
-    const prev = container.querySelector('button[aria-label="Previous day"]') as HTMLButtonElement;
-    expect(prev.disabled).toBe(false);
-    unmount();
+    try {
+      const prev = container.querySelector(
+        'button[aria-label="Previous day: archive boundary unavailable"]',
+      ) as HTMLButtonElement;
+      expect(prev.disabled).toBe(true);
+      expect(prev.title).toBe("Archive boundary unavailable");
+    } finally {
+      unmount();
+    }
   });
 
   it("renders KPI and greeting edge branches", () => {
@@ -425,6 +445,44 @@ describe("ChroniclesPage editorial archetype", () => {
       expect(html).toContain("Deterministic state-specific copy.");
       expect(html).toContain(stateClass.replace("_", " "));
     });
+  });
+
+  it("names a degraded briefing source and retries the briefing on demand", () => {
+    _briefing = buildBriefing({
+      state_class: "degraded",
+      headline: "Coverage for this day is degraded.",
+      voice_paragraph: "Chronicler's coverage for this day is degraded and may be incomplete.",
+      attention_items: [
+        {
+          kind: "source_error",
+          severity: "high",
+          title: "Episodes unavailable",
+          detail: "Chronicler could not read episodes.",
+          action_href: null,
+        },
+      ],
+      recent_days: [],
+      subquery_availability: [{ subquery: "episodes", state: "unavailable" }],
+    });
+
+    const { container, unmount } = mountPage();
+    try {
+      expect(container.textContent).toContain("Episodes unavailable");
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain("Episodes unavailable");
+      const retry = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Retry",
+      ) as HTMLButtonElement;
+      expect(retry).toBeTruthy();
+
+      act(() => {
+        retry.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(_refetch).toHaveBeenCalledOnce();
+    } finally {
+      unmount();
+    }
   });
 
   it("renders the quiet day normally when the state truly is quiet", () => {

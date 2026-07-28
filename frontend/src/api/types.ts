@@ -7141,6 +7141,16 @@ export interface ChroniclesRecentDay {
   episode_count: number;
 }
 
+export type ChroniclesSubqueryAvailabilityState = "available" | "unavailable" | "not_requested";
+
+/** Availability of an owned Chronicles briefing read.
+ * `unavailable` is a failed source; `not_requested` is intentionally skipped
+ * or optional during cold boot, never a calm empty result. */
+export interface ChroniclesSubqueryAvailability {
+  subquery: string;
+  state: ChroniclesSubqueryAvailabilityState;
+}
+
 export interface ChroniclesBriefing {
   date: string;
   /** `no_data`/`unavailable`/`degraded` are non-content states: this day's
@@ -7153,6 +7163,12 @@ export interface ChroniclesBriefing {
   kpi: ChroniclesKpi;
   attention_items: ChroniclesAttentionItem[];
   recent_days: ChroniclesRecentDay[];
+  /**
+   * Stable per-subquery availability ledger for honest degraded rendering.
+   * Optional for rolling deploys against a backend that predates this
+   * additive response field; consumers should treat absence as an empty list.
+   */
+  subquery_availability?: ChroniclesSubqueryAvailability[];
   /** Earliest chronicled day (owner tz, YYYY-MM-DD), or null when no data.
    * Bounds backward archive navigation. */
   earliest_date?: string | null;
