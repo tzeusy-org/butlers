@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class TargetContact(BaseModel):
@@ -142,6 +142,20 @@ class ApprovalDetail(BaseModel):
             "fact references (e.g. subject/object of relationship_assert_fact)."
         ),
     )
+
+
+class ApprovalAbandonRequest(BaseModel):
+    """Explicit accountable reason for dashboard-only stalled-action abandonment."""
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def require_non_blank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value.strip()
+
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
         Field(
             default=None,

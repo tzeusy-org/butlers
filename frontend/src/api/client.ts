@@ -12,6 +12,7 @@ import type {
   ApprovalDeferRequest,
   ApprovalDenyRequest,
   ApprovalDetail,
+  ApprovalAbandonRequest,
   ApprovalGatedTool,
   ApprovalMetricsResponse,
   ApprovalRule,
@@ -3465,6 +3466,20 @@ export function retryApproval(
   return apiFetch<ApiResponse<ApprovalAction>>(
     `/approvals/${encodeURIComponent(actionId)}/retry`,
     { method: "POST" },
+  );
+}
+
+export function abandonApproval(
+  actionId: string,
+  request: ApprovalAbandonRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/${encodeURIComponent(actionId)}/abandon`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
   );
 }
 

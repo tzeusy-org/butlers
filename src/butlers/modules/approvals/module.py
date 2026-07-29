@@ -77,10 +77,11 @@ _HIGH_RISK_TIERS: frozenset[ApprovalRiskTier] = frozenset(
 # Valid status transitions: source -> set of valid targets
 _VALID_TRANSITIONS: dict[ActionStatus, set[ActionStatus]] = {
     ActionStatus.PENDING: {ActionStatus.APPROVED, ActionStatus.REJECTED, ActionStatus.EXPIRED},
-    ActionStatus.APPROVED: {ActionStatus.EXECUTED},
+    ActionStatus.APPROVED: {ActionStatus.EXECUTED, ActionStatus.ABANDONED},
     ActionStatus.REJECTED: set(),
     ActionStatus.EXPIRED: set(),
     ActionStatus.EXECUTED: set(),
+    ActionStatus.ABANDONED: set(),
 }
 
 

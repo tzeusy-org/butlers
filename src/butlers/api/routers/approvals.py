@@ -37,6 +37,7 @@ from butlers.api.models import (
     PaginationMeta,
 )
 from butlers.api.models.approval import (
+    ApprovalAbandonRequest,
     ApprovalAction,
     ApprovalActionApproveRequest,
     ApprovalActionRejectRequest,
@@ -2979,3 +2980,55 @@ async def retry_approval(
         status=action_resp.status,
     )
     return ApiResponse(data=action_resp)
+
+
+@router.post("/{action_id}/abandon")
+async def abandon_approval(
+    action_id: str,
+    request: ApprovalAbandonRequest,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ApprovalAction]:
+    """Durably abandon one approved, unexecuted action from the dashboard only."""
+    try:
+        parsed_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+    action_butler, target_pool = found
+
+    async with target_pool.acquire() as conn, conn.transaction():
+        result = await approvals_ops.abandon_approved_action(
+            conn, action_id=action_id, reason=request.reason, actor_id="dashboard:rest-api"
+        )
+        if "error" not in result:
+            await audit_router.append(
+                conn,
+                _ACTOR_DASHBOARD,
+                "approval.abandon",
+                target=action_id,
+                note=request.reason.strip(),
+                result="success",
+            )
+
+    if "error" in result:
+        detail = str(result["error"])
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        if "blank" in detail.lower():
+            raise HTTPException(status_code=422, detail=detail)
+        raise HTTPException(status_code=409, detail=detail)
+
+    result.setdefault("butler", action_butler)
+    action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    emit_approvals_event(
+        "abandoned",
+        action_id,
+        butler=action_butler,
+        tool_name=action.tool_name,
+        status=action.status,
+        reason=request.reason.strip(),
+    )
+    return ApiResponse(data=action)

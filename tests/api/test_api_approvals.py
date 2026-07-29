@@ -85,6 +85,7 @@ def _app_with_mock_db(
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
 
     if has_approvals_tables:
 
@@ -2432,6 +2433,30 @@ def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
         block.text = text
         result.content = [block]
     return result
+
+
+async def test_abandon_requires_reason_and_returns_terminal_action(app):
+    action = _make_action(status="approved")
+    _app_with_mock_db(app, fetchrow_return=action)
+
+    with patch(
+        "butlers.api.routers.approvals.approvals_ops.abandon_approved_action",
+        new=AsyncMock(return_value={**action, "id": str(action["id"]), "status": "abandoned"}),
+    ) as abandon:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            blank = await client.post(
+                f"/api/approvals/{action['id']}/abandon", json={"reason": " "}
+            )
+            response = await client.post(
+                f"/api/approvals/{action['id']}/abandon", json={"reason": "No longer needed"}
+            )
+
+    assert blank.status_code == 422
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["status"] == "abandoned"
+    assert abandon.await_args.kwargs["reason"] == "No longer needed"
 
 
 @pytest.mark.parametrize(

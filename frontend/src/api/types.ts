@@ -3255,6 +3255,10 @@ export interface ApprovalDetail {
   push_failed?: boolean;
 }
 
+export interface ApprovalAbandonRequest {
+  reason: string;
+}
+
 /** Quiet-hours policy singleton. */
 export interface ApprovalsPolicy {
   quiet_start_hour?: number | null;

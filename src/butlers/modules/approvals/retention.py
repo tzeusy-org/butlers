@@ -37,6 +37,7 @@ TERMINAL_ACTION_STATUSES = [
     ActionStatus.REJECTED.value,
     ActionStatus.EXPIRED.value,
     ActionStatus.EXECUTED.value,
+    ActionStatus.ABANDONED.value,
 ]
 
 
@@ -65,7 +66,7 @@ async def cleanup_old_actions(
 ) -> dict[str, int]:
     """Delete or archive pending actions older than the retention window.
 
-    Only terminal statuses (rejected, expired, executed) are eligible for
+    Only terminal statuses (rejected, expired, executed, abandoned) are eligible for
     cleanup. Pending and approved actions remain until explicitly resolved;
     approved actions are retryable until execution succeeds.
 
