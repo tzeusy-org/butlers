@@ -113,10 +113,17 @@ describe("RuleDetailPage", () => {
   });
 
   it("renders provenance derived-from-episode when source_episode_id set", () => {
-    setRule(BASE_RULE);
+    setRule({ ...BASE_RULE, source_episode_status: "available" });
     const out = html();
     expect(out).toContain("PROVENANCE");
     expect(out).toContain("derived from episode");
+  });
+
+  it("renders an expired source without a dangling episode link", () => {
+    setRule({ ...BASE_RULE, source_episode_status: "expired" } as MemoryRule);
+    const out = html();
+    expect(out).toContain("Source expired");
+    expect(out).not.toContain('href="/memory/episodes/ep-7abcdef0"');
   });
 
   it("omits the PROVENANCE section when no source episode", () => {

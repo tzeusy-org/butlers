@@ -26,6 +26,14 @@ class ConsolidationStatus(StrEnum):
     DEAD_LETTER = "dead_letter"
 
 
+class EpisodeSourceStatus(StrEnum):
+    """Availability of a durable reference to an episode source."""
+
+    AVAILABLE = "available"
+    EXPIRED = "expired"
+    UNRESOLVED = "unresolved"
+
+
 class Episode(BaseModel):
     """An episode from the Eden memory tier."""
 
@@ -60,6 +68,7 @@ class Fact(BaseModel):
     permanence: str = "standard"
     source_butler: str | None = None
     source_episode_id: str | None = None
+    source_episode_status: EpisodeSourceStatus | None = None
     session_id: str | None = None
     supersedes_id: str | None = None
     superseded_by: str | None = None
@@ -99,6 +108,7 @@ class Rule(BaseModel):
     success_count: int = 0
     harmful_count: int = 0
     source_episode_id: str | None = None
+    source_episode_status: EpisodeSourceStatus | None = None
     source_butler: str | None = None
     tenant_id: str = "owner"
     request_id: str | None = None

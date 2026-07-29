@@ -2729,6 +2729,8 @@ export interface Fact {
   permanence: string;
   source_butler: string | null;
   source_episode_id: string | null;
+  /** Whether a source episode is still available, expired, or cannot be resolved. */
+  source_episode_status?: "available" | "expired" | "unresolved" | null;
   session_id: string | null;
   supersedes_id: string | null;
   /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
@@ -2761,6 +2763,8 @@ export interface MemoryRule {
   success_count: number;
   harmful_count: number;
   source_episode_id: string | null;
+  /** Whether a source episode is still available, expired, or cannot be resolved. */
+  source_episode_status?: "available" | "expired" | "unresolved" | null;
   source_butler: string | null;
   created_at: string;
   last_applied_at: string | null;

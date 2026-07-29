@@ -44,8 +44,15 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
-_MEMORY_TABLES = {"episodes", "facts", "rules", "memory_links", "memory_events"}
-_MEMORY_ONLY_TABLES = {"facts", "rules", "memory_links", "memory_events"}
+_MEMORY_TABLES = {
+    "episodes",
+    "episode_tombstones",
+    "facts",
+    "rules",
+    "memory_links",
+    "memory_events",
+}
+_MEMORY_ONLY_TABLES = {"episode_tombstones", "facts", "rules", "memory_links", "memory_events"}
 
 
 @pytest.fixture(scope="module")

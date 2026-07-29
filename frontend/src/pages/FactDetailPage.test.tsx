@@ -203,6 +203,7 @@ describe("FactDetailPage", () => {
     setFact(
       makeFact({
         source_episode_id: "ep-12345678",
+        source_episode_status: "available",
         supersedes_id: "old-87654321",
       }),
     );
@@ -211,6 +212,22 @@ describe("FactDetailPage", () => {
     expect(text).toContain("PROVENANCE");
     expect(text).toContain("derived from episode");
     expect(text).toContain("supersedes");
+  });
+
+  it("renders an expired source without a dangling episode link", () => {
+    setFact(
+      {
+        ...makeFact({ source_episode_id: "ep-expired" }),
+        source_episode_status: "expired",
+      } as Fact,
+    );
+    mounted = render();
+    expect(mounted.container.textContent).toContain("Source expired");
+    expect(
+      Array.from(mounted.container.querySelectorAll("a")).some(
+        (link) => link.getAttribute("href") === "/memory/episodes/ep-expired",
+      ),
+    ).toBe(false);
   });
 
   it("renders the reverse 'superseded by' link when the payload carries superseded_by", () => {

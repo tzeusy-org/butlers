@@ -2215,8 +2215,28 @@ async def get_links(
 
     if direction in ("outgoing", "both"):
         rows = await pool.fetch(
-            "SELECT source_type, source_id, target_type, target_id, relation, created_at "
-            "FROM memory_links WHERE source_type = $1 AND source_id = $2",
+            "SELECT ml.source_type, ml.source_id, ml.target_type, ml.target_id, ml.relation, "
+            "ml.created_at, "
+            "CASE WHEN ml.source_type = 'episode' THEN "
+            "  CASE WHEN source_episode.id IS NOT NULL THEN 'available' "
+            "       WHEN source_tombstone.episode_id IS NOT NULL THEN 'expired' "
+            "       ELSE 'unresolved' END "
+            "END AS source_episode_status, "
+            "CASE WHEN ml.target_type = 'episode' THEN "
+            "  CASE WHEN target_episode.id IS NOT NULL THEN 'available' "
+            "       WHEN target_tombstone.episode_id IS NOT NULL THEN 'expired' "
+            "       ELSE 'unresolved' END "
+            "END AS target_episode_status "
+            "FROM memory_links ml "
+            "LEFT JOIN episodes source_episode "
+            "  ON ml.source_type = 'episode' AND source_episode.id = ml.source_id "
+            "LEFT JOIN episode_tombstones source_tombstone "
+            "  ON ml.source_type = 'episode' AND source_tombstone.episode_id = ml.source_id "
+            "LEFT JOIN episodes target_episode "
+            "  ON ml.target_type = 'episode' AND target_episode.id = ml.target_id "
+            "LEFT JOIN episode_tombstones target_tombstone "
+            "  ON ml.target_type = 'episode' AND target_tombstone.episode_id = ml.target_id "
+            "WHERE ml.source_type = $1 AND ml.source_id = $2",
             memory_type,
             memory_id,
         )
@@ -2224,8 +2244,28 @@ async def get_links(
 
     if direction in ("incoming", "both"):
         rows = await pool.fetch(
-            "SELECT source_type, source_id, target_type, target_id, relation, created_at "
-            "FROM memory_links WHERE target_type = $1 AND target_id = $2",
+            "SELECT ml.source_type, ml.source_id, ml.target_type, ml.target_id, ml.relation, "
+            "ml.created_at, "
+            "CASE WHEN ml.source_type = 'episode' THEN "
+            "  CASE WHEN source_episode.id IS NOT NULL THEN 'available' "
+            "       WHEN source_tombstone.episode_id IS NOT NULL THEN 'expired' "
+            "       ELSE 'unresolved' END "
+            "END AS source_episode_status, "
+            "CASE WHEN ml.target_type = 'episode' THEN "
+            "  CASE WHEN target_episode.id IS NOT NULL THEN 'available' "
+            "       WHEN target_tombstone.episode_id IS NOT NULL THEN 'expired' "
+            "       ELSE 'unresolved' END "
+            "END AS target_episode_status "
+            "FROM memory_links ml "
+            "LEFT JOIN episodes source_episode "
+            "  ON ml.source_type = 'episode' AND source_episode.id = ml.source_id "
+            "LEFT JOIN episode_tombstones source_tombstone "
+            "  ON ml.source_type = 'episode' AND source_tombstone.episode_id = ml.source_id "
+            "LEFT JOIN episodes target_episode "
+            "  ON ml.target_type = 'episode' AND target_episode.id = ml.target_id "
+            "LEFT JOIN episode_tombstones target_tombstone "
+            "  ON ml.target_type = 'episode' AND target_tombstone.episode_id = ml.target_id "
+            "WHERE ml.target_type = $1 AND ml.target_id = $2",
             memory_type,
             memory_id,
         )

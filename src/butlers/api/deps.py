@@ -42,7 +42,12 @@ _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
 # uninstalled module. Memory relations may be privately owned in a schema
 # distinct from a butler's domain tables, so snapshot them separately.
 _OPTIONAL_DOMAIN_RELATIONS_TO_SNAPSHOT = ("butler_secrets",)
-_OPTIONAL_MEMORY_RELATIONS_TO_SNAPSHOT = ("episodes", "facts", "rules")
+_OPTIONAL_MEMORY_RELATIONS_TO_SNAPSHOT = (
+    "episodes",
+    "facts",
+    "rules",
+    "episode_tombstones",
+)
 
 
 @dataclass(frozen=True)

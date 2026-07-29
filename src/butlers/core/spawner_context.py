@@ -33,7 +33,14 @@ logger = logging.getLogger(__name__)
 # Module-private constants
 # ---------------------------------------------------------------------------
 
-_MEMORY_TABLE_NAMES = ("episodes", "facts", "rules", "memory_links", "memory_events")
+_MEMORY_TABLE_NAMES = (
+    "episodes",
+    "facts",
+    "rules",
+    "memory_links",
+    "memory_events",
+    "episode_tombstones",
+)
 _missing_memory_table_warnings: set[tuple[str, str]] = set()
 _missing_context_table_logged: set[str] = set()
 

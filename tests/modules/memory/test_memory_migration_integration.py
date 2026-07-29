@@ -58,6 +58,7 @@ pytestmark = [
 
 _EXPECTED_MEMORY_TABLES = {
     "episodes",
+    "episode_tombstones",
     "facts",
     "rules",
     "memory_links",

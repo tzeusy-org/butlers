@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
-_MEMORY_SCHEMA_RELATIONS = ("episodes", "facts", "rules")
+_MEMORY_SCHEMA_RELATIONS = ("episodes", "facts", "rules", "episode_tombstones")
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -141,6 +141,38 @@ def _memory_relation(db: DatabaseManager, butler_name: str, relation: str) -> st
     if not _SQL_IDENTIFIER_PATTERN.fullmatch(relation):
         raise ValueError(f"Unsafe relation identifier: {relation!r}")
     return f'"{schema}"."{relation}"'
+
+
+def _source_episode_status_expression(
+    *, record_alias: str, episode_alias: str, tombstone_alias: str
+) -> str:
+    """Return the bounded provenance state for one fact or rule record."""
+    return (
+        f"CASE WHEN {record_alias}.source_episode_id IS NULL THEN NULL "
+        f"WHEN {episode_alias}.id IS NOT NULL THEN 'available' "
+        f"WHEN {tombstone_alias}.episode_id IS NOT NULL THEN 'expired' "
+        "ELSE 'unresolved' END AS source_episode_status"
+    )
+
+
+def _with_source_episode_status(
+    record_query: str,
+    *,
+    episodes_relation: str,
+    tombstones_relation: str,
+) -> str:
+    """Add an explicit source state without changing the caller's filters."""
+    return (
+        "SELECT record.*, "
+        + _source_episode_status_expression(
+            record_alias="record", episode_alias="source_episode", tombstone_alias="tombstone"
+        )
+        + f" FROM ({record_query}) record"
+        + f" LEFT JOIN {episodes_relation} source_episode"
+        " ON source_episode.id = record.source_episode_id"
+        + f" LEFT JOIN {tombstones_relation} tombstone"
+        " ON tombstone.episode_id = record.source_episode_id"
+    )
 
 
 def _is_missing_memory_schema_error(
@@ -774,8 +806,10 @@ async def list_facts(
 
     async def _query_pool(butler_name: str, pool: object) -> tuple[int, list[object]]:
         relation = _memory_relation(db, butler_name, "facts")
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
+        tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         total = await pool.fetchval(f"SELECT count(*) FROM {relation}{where}", *args) or 0
-        rows = await pool.fetch(
+        record_query = (
             f"SELECT id, subject, predicate, content, importance, confidence,"
             f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
             f" entity_id, object_entity_id, validity, scope, reference_count,"
@@ -783,7 +817,14 @@ async def list_facts(
             f" last_confirmed_at, tags, metadata"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
-            f" OFFSET ${idx} LIMIT ${idx + 1}",
+            f" OFFSET ${idx} LIMIT ${idx + 1}"
+        )
+        rows = await pool.fetch(
+            _with_source_episode_status(
+                record_query,
+                episodes_relation=episodes_relation,
+                tombstones_relation=tombstones_relation,
+            ),
             *args,
             0,
             row_limit,
@@ -827,13 +868,19 @@ async def get_fact(
 
     async def _query_pool(butler_name: str, pool: object):
         relation = _memory_relation(db, butler_name, "facts")
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
+        tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         row = await pool.fetchrow(
-            "SELECT id, subject, predicate, content, importance, confidence,"
-            " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            " entity_id, object_entity_id, validity, scope, reference_count,"
-            " created_at, last_referenced_at,"
-            " last_confirmed_at, tags, metadata"
-            f" FROM {relation} WHERE id = $1",
+            _with_source_episode_status(
+                "SELECT id, subject, predicate, content, importance, confidence,"
+                " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
+                " entity_id, object_entity_id, validity, scope, reference_count,"
+                " created_at, last_referenced_at,"
+                " last_confirmed_at, tags, metadata"
+                f" FROM {relation} WHERE id = $1",
+                episodes_relation=episodes_relation,
+                tombstones_relation=tombstones_relation,
+            ),
             fact_id,
         )
         if row is None:
@@ -877,9 +924,13 @@ _FACT_SELECT_COLUMNS = (
 )
 
 
-def _fact_select_query(relation: str) -> str:
+def _fact_select_query(relation: str, *, episodes_relation: str, tombstones_relation: str) -> str:
     """Return the fact detail query pinned to its local memory relation."""
-    return f"{_FACT_SELECT_COLUMNS} FROM {relation} WHERE id = $1"
+    return _with_source_episode_status(
+        f"{_FACT_SELECT_COLUMNS} FROM {relation} WHERE id = $1",
+        episodes_relation=episodes_relation,
+        tombstones_relation=tombstones_relation,
+    )
 
 
 @router.post("/facts/{fact_id}/confirm", response_model=ApiResponse[Fact])
@@ -919,6 +970,8 @@ async def confirm_fact(
         try:
             memory_schema = _memory_source_schema(db, name)
             relation = _memory_relation(db, name, "facts")
+            episodes_relation = _memory_relation(db, name, "episodes")
+            tombstones_relation = _memory_relation(db, name, "episode_tombstones")
             confirmed = await _storage.confirm_memory(
                 pool,
                 "fact",
@@ -927,7 +980,14 @@ async def confirm_fact(
             )
             if not confirmed:
                 continue
-            row = await pool.fetchrow(_fact_select_query(relation), fact_uuid)
+            row = await pool.fetchrow(
+                _fact_select_query(
+                    relation,
+                    episodes_relation=episodes_relation,
+                    tombstones_relation=tombstones_relation,
+                ),
+                fact_uuid,
+            )
         except Exception as exc:
             if not _is_missing_memory_schema_error(
                 exc,
@@ -991,6 +1051,8 @@ async def retract_fact(
         try:
             memory_schema = _memory_source_schema(db, name)
             relation = _memory_relation(db, name, "facts")
+            episodes_relation = _memory_relation(db, name, "episodes")
+            tombstones_relation = _memory_relation(db, name, "episode_tombstones")
             retracted = await _storage.forget_memory(
                 pool,
                 "fact",
@@ -999,7 +1061,14 @@ async def retract_fact(
             )
             if not retracted:
                 continue
-            row = await pool.fetchrow(_fact_select_query(relation), fact_uuid)
+            row = await pool.fetchrow(
+                _fact_select_query(
+                    relation,
+                    episodes_relation=episodes_relation,
+                    tombstones_relation=tombstones_relation,
+                ),
+                fact_uuid,
+            )
         except Exception as exc:
             if not _is_missing_memory_schema_error(
                 exc,
@@ -1083,15 +1152,24 @@ async def list_rules(
 
     async def _query_pool(butler_name: str, pool: object) -> tuple[int, list[object]]:
         relation = _memory_relation(db, butler_name, "rules")
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
+        tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         total = await pool.fetchval(f"SELECT count(*) FROM {relation}{where}", *args) or 0
-        rows = await pool.fetch(
+        record_query = (
             f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
             f" effectiveness_score, applied_count, success_count, harmful_count,"
             f" source_episode_id, source_butler, created_at, last_applied_at,"
             f" last_evaluated_at, tags, metadata"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
-            f" OFFSET ${idx} LIMIT ${idx + 1}",
+            f" OFFSET ${idx} LIMIT ${idx + 1}"
+        )
+        rows = await pool.fetch(
+            _with_source_episode_status(
+                record_query,
+                episodes_relation=episodes_relation,
+                tombstones_relation=tombstones_relation,
+            ),
             *args,
             0,
             row_limit,
@@ -1134,12 +1212,18 @@ async def get_rule(
 
     async def _query_pool(butler_name: str, pool: object):
         relation = _memory_relation(db, butler_name, "rules")
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
+        tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         return await pool.fetchrow(
-            "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
-            " effectiveness_score, applied_count, success_count, harmful_count,"
-            " source_episode_id, source_butler, created_at, last_applied_at,"
-            " last_evaluated_at, tags, metadata"
-            f" FROM {relation} WHERE id = $1",
+            _with_source_episode_status(
+                "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
+                " effectiveness_score, applied_count, success_count, harmful_count,"
+                " source_episode_id, source_butler, created_at, last_applied_at,"
+                " last_evaluated_at, tags, metadata"
+                f" FROM {relation} WHERE id = $1",
+                episodes_relation=episodes_relation,
+                tombstones_relation=tombstones_relation,
+            ),
             rule_id,
         )
 
@@ -1624,6 +1708,7 @@ async def get_entity(
     async def _query_entity_facts(butler_name: str, fpool: object) -> tuple[int, list[object]]:
         facts_relation = _memory_relation(db, butler_name, "facts")
         episodes_relation = _memory_relation(db, butler_name, "episodes")
+        tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         count = (
             await fpool.fetchval(
                 f"SELECT count(*) FROM {facts_relation}"
@@ -1640,8 +1725,14 @@ async def get_entity(
             " f.entity_id, f.object_entity_id, f.validity, f.scope, f.reference_count,"
             " f.created_at, f.last_referenced_at,"
             " f.last_confirmed_at, f.tags, f.metadata"
+            ", CASE WHEN f.source_episode_id IS NULL THEN NULL"
+            " WHEN ep.id IS NOT NULL THEN 'available'"
+            " WHEN tombstone.episode_id IS NOT NULL THEN 'expired'"
+            " ELSE 'unresolved' END AS source_episode_status"
             f" FROM {facts_relation} f"
             f" LEFT JOIN {episodes_relation} ep ON ep.id = f.source_episode_id"
+            f" LEFT JOIN {tombstones_relation} tombstone"
+            " ON tombstone.episode_id = f.source_episode_id"
             " WHERE (f.entity_id = $1 OR f.object_entity_id = $1)"
             " AND f.validity IN ('active', 'fading')"
             " ORDER BY f.created_at DESC"
@@ -2199,6 +2290,7 @@ def _row_to_episode(r) -> Episode:
 
 def _row_to_fact(r) -> Fact:
     """Convert an asyncpg Record to a Fact model."""
+    source_episode_id = str(r["source_episode_id"]) if r["source_episode_id"] else None
     return Fact(
         id=str(r["id"]),
         subject=r["subject"],
@@ -2209,7 +2301,12 @@ def _row_to_fact(r) -> Fact:
         decay_rate=float(r["decay_rate"]),
         permanence=r["permanence"],
         source_butler=r["source_butler"],
-        source_episode_id=str(r["source_episode_id"]) if r["source_episode_id"] else None,
+        source_episode_id=source_episode_id,
+        source_episode_status=(
+            str(r["source_episode_status"])
+            if r.get("source_episode_status")
+            else ("unresolved" if source_episode_id else None)
+        ),
         session_id=str(r["session_id"]) if r.get("session_id") else None,
         supersedes_id=str(r["supersedes_id"]) if r["supersedes_id"] else None,
         entity_id=str(r["entity_id"]) if r.get("entity_id") else None,
@@ -2227,6 +2324,7 @@ def _row_to_fact(r) -> Fact:
 
 def _row_to_rule(r) -> Rule:
     """Convert an asyncpg Record to a Rule model."""
+    source_episode_id = str(r["source_episode_id"]) if r["source_episode_id"] else None
     return Rule(
         id=str(r["id"]),
         content=r["content"],
@@ -2239,7 +2337,12 @@ def _row_to_rule(r) -> Rule:
         applied_count=r["applied_count"],
         success_count=r["success_count"],
         harmful_count=r["harmful_count"],
-        source_episode_id=str(r["source_episode_id"]) if r["source_episode_id"] else None,
+        source_episode_id=source_episode_id,
+        source_episode_status=(
+            str(r["source_episode_status"])
+            if r.get("source_episode_status")
+            else ("unresolved" if source_episode_id else None)
+        ),
         source_butler=r["source_butler"],
         created_at=str(r["created_at"]),
         last_applied_at=str(r["last_applied_at"]) if r["last_applied_at"] else None,
@@ -2544,6 +2647,7 @@ async def inspect_memory(
     async def _query_pool(butler_name: str, pool: object) -> list[dict]:
         results: list[dict] = []
         episodes_relation = _memory_relation(db, butler_name, "episodes")
+        tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         facts_relation = _memory_relation(db, butler_name, "facts")
         rules_relation = _memory_relation(db, butler_name, "rules")
 
@@ -2588,14 +2692,18 @@ async def inspect_memory(
                 fact_args.append(q)
                 idx += 1
             fact_rows = await pool.fetch(
-                f"SELECT id, subject, predicate, content, importance, confidence,"
-                f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-                f" entity_id, object_entity_id, validity, scope, reference_count,"
-                f" created_at, last_referenced_at,"
-                f" last_confirmed_at, tags, metadata"
-                f" FROM {facts_relation}{fact_cond}"
-                f" ORDER BY created_at DESC"
-                f" LIMIT ${idx}",
+                _with_source_episode_status(
+                    f"SELECT id, subject, predicate, content, importance, confidence,"
+                    f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
+                    f" entity_id, object_entity_id, validity, scope, reference_count,"
+                    f" created_at, last_referenced_at,"
+                    f" last_confirmed_at, tags, metadata"
+                    f" FROM {facts_relation}{fact_cond}"
+                    f" ORDER BY created_at DESC"
+                    f" LIMIT ${idx}",
+                    episodes_relation=episodes_relation,
+                    tombstones_relation=tombstones_relation,
+                ),
                 *fact_args,
                 row_limit,
             )
@@ -2631,13 +2739,17 @@ async def inspect_memory(
             else:
                 rule_cond = f" WHERE {forgotten_clause}"
             rule_rows = await pool.fetch(
-                f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
-                f" effectiveness_score, applied_count, success_count, harmful_count,"
-                f" source_episode_id, source_butler, created_at, last_applied_at,"
-                f" last_evaluated_at, tags, metadata"
-                f" FROM {rules_relation}{rule_cond}"
-                f" ORDER BY created_at DESC"
-                f" LIMIT ${idx}",
+                _with_source_episode_status(
+                    f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
+                    f" effectiveness_score, applied_count, success_count, harmful_count,"
+                    f" source_episode_id, source_butler, created_at, last_applied_at,"
+                    f" last_evaluated_at, tags, metadata"
+                    f" FROM {rules_relation}{rule_cond}"
+                    f" ORDER BY created_at DESC"
+                    f" LIMIT ${idx}",
+                    episodes_relation=episodes_relation,
+                    tombstones_relation=tombstones_relation,
+                ),
                 *rule_args,
                 row_limit,
             )
