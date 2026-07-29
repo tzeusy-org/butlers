@@ -29,6 +29,11 @@ from butlers.core.tool_call_capture import (
 
 logger = logging.getLogger(__name__)
 
+
+class StaleSupersessionTargetError(ValueError):
+    """Raised when an optimistic supersession target is no longer current."""
+
+
 # ---------------------------------------------------------------------------
 # Load sibling modules from disk (roster/ is not a Python package).
 # ---------------------------------------------------------------------------
@@ -1379,7 +1384,8 @@ async def store_fact(
             property-fact update.  When set, the current fact matching the
             supersession identity key must have this exact ID.  The check and
             supersession happen in the same transaction; otherwise a
-            ``ValueError`` is raised and no fact is written.
+            ``StaleSupersessionTargetError`` (a ``ValueError`` subclass) is
+            raised and no fact is written.
         retention_class: Retention policy class for the fact (default
             'operational').  Controls lifecycle management behaviour.
         sensitivity: Data sensitivity classification (default 'normal').
@@ -1700,7 +1706,7 @@ async def store_fact(
 
                 current_id = existing["id"] if existing else None
                 if expected_supersedes_id is not None and current_id != expected_supersedes_id:
-                    raise ValueError(
+                    raise StaleSupersessionTargetError(
                         f"expected supersession target {expected_supersedes_id!r} "
                         "is no longer current"
                     )

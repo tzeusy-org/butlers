@@ -454,7 +454,7 @@ def test_runtime_fact_provenance_guard_and_recent_episode_filter(memory_migrated
 
 
 async def _assert_expected_supersession_target_guard(db_url: str) -> None:
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import StaleSupersessionTargetError, store_fact
 
     pool = await asyncpg.create_pool(
         db_url,
@@ -487,7 +487,7 @@ async def _assert_expected_supersession_target_guard(db_url: str) -> None:
         )
         assert replacement["supersedes_id"] == original["id"]
 
-        with pytest.raises(ValueError, match="no longer current"):
+        with pytest.raises(StaleSupersessionTargetError, match="no longer current"):
             await store_fact(
                 pool,
                 subject=unique_subject,
@@ -519,7 +519,7 @@ def test_expected_supersession_target_is_checked_atomically(memory_migrated_db: 
 
 
 async def _assert_concurrent_expected_supersession_target_guard(db_url: str) -> None:
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import StaleSupersessionTargetError, store_fact
 
     pool = await asyncpg.create_pool(
         db_url,
@@ -561,7 +561,7 @@ async def _assert_concurrent_expected_supersession_target_guard(db_url: str) -> 
         failures = [result for result in outcomes if isinstance(result, Exception)]
         assert len(successes) == 1
         assert len(failures) == 1
-        assert isinstance(failures[0], ValueError)
+        assert isinstance(failures[0], StaleSupersessionTargetError)
         assert "no longer current" in str(failures[0])
 
         current = await pool.fetchrow(
