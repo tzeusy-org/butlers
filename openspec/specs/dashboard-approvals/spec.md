@@ -13,7 +13,7 @@ The dashboard API SHALL expose `GET /api/approvals/actions` which returns a pagi
 The endpoint SHALL accept the following query parameters:
 - `offset` (integer, optional, default 0) -- pagination offset
 - `limit` (integer, optional, default 50) -- maximum number of actions to return
-- `status` (string, optional) -- filter by action status: `pending`, `approved`, `rejected`, `expired`, or `executed`
+- `status` (string, optional) -- filter by action status: `pending`, `approved`, `rejected`, `expired`, `executed`, or `abandoned`
 - `tool_name` (string, optional) -- filter by the tool that requested the action
 - `since` (ISO 8601 timestamp, optional) -- include only actions created on or after this timestamp
 - `until` (ISO 8601 timestamp, optional) -- include only actions created on or before this timestamp
@@ -22,7 +22,7 @@ The response MUST be a `PaginatedResponse<ApprovalAction>` where each `ApprovalA
 - `id` -- string UUID identifying the action
 - `tool_name` -- string name of the tool requesting approval
 - `butler` -- string name of the butler that owns the action
-- `status` -- one of `"pending"`, `"approved"`, `"rejected"`, `"expired"`, `"executed"`
+- `status` -- one of `"pending"`, `"approved"`, `"rejected"`, `"expired"`, `"executed"`, `"abandoned"`
 - `description` -- string human-readable description of the action
 - `why` -- string | null serif paragraph explaining why human input is needed
 - `evidence` -- string[] | null array of mono evidence lines
@@ -255,7 +255,7 @@ The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all|stalled
 - **WHEN** `GET /api/approvals?state=waiting` is called
 - **THEN** the response is `ApiResponse[ApprovalSummary[]]` containing only actions in `pending` state, ordered `created_at DESC`.
 - **WHEN** `GET /api/approvals?state=decided` is called
-- **THEN** the response contains actions in `approved | rejected | expired | executed` states.
+- **THEN** the response contains actions in `approved | rejected | expired | executed | abandoned` states.
 - **WHEN** `GET /api/approvals?state=all` is called or `state` is omitted
 - **THEN** all states are included.
 
@@ -273,6 +273,18 @@ actions across the endpoint's eligible approval-source population. The list
 filter and the aggregate SHALL use the same per-pool eligibility and exact
 stalled predicate.
 
+#### Scenario: Dashboard abandons an eligible stalled action
+
+- **WHEN** `POST /api/approvals/{id}/abandon` receives a non-blank reason from
+  the dashboard for an action whose status is `approved` and whose execution
+  result is null
+- **THEN** the response reports terminal `abandoned` status
+- **AND** the action immediately leaves stalled results and has no Retry
+  affordance.
+- **WHEN** a callback, MCP, automatic, bulk, or scheduled path attempts the
+  same operation
+- **THEN** that path does not expose or invoke abandonment.
+
 #### Scenario: Stalled filter selects only approved actions without execution
 
 - **WHEN** `GET /api/approvals?state=stalled` reads a population containing
@@ -280,7 +292,7 @@ stalled predicate.
 - **THEN** it returns only actions whose status is `approved` and whose
   `execution_result` is null
 - **AND** it does not return an `executed`, `pending`, `rejected`, `expired`,
-  or approved action with a non-null execution result
+  `abandoned`, or approved action with a non-null execution result
 
 #### Scenario: Stalled metadata is independent of the page window
 

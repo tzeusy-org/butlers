@@ -149,6 +149,8 @@ function statusColor(status: string): string {
       return "";
     case "rejected":
       return "text-[var(--red-text)]";
+    case "abandoned":
+      return "text-muted-foreground";
     case "expired":
       return "text-muted-foreground";
     default:
@@ -1373,8 +1375,8 @@ function HistorySection() {
             >
               {item.tool_name.replace(/_/g, " ")}
             </Link>
-            {/* "approved" in History = approved-but-un-run (dispatch silently
-                failed). Offer a retry; "executed" rows ran successfully. */}
+            {/* Only the exact approved/null-result state is retryable. An
+                abandoned row is terminal and intentionally read-only. */}
             {item.status === "approved" && (
               <RetryDispatchButton actionId={item.id} />
             )}

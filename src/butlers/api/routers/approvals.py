@@ -1958,7 +1958,7 @@ async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:
 # New Dispatch-language endpoints (§8.1-§8.7)
 # ---------------------------------------------------------------------------
 
-_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed"}
+_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed", "abandoned"}
 _WAITING_STATUSES = {"pending"}
 _STALLED_STATUS = "approved"
 
@@ -2090,7 +2090,7 @@ async def list_approvals_history(
 ) -> ApiResponse[list[ApprovalSummary]]:
     """Decided approvals history — GET /api/approvals/history?since=.
 
-    Returns up to ``limit`` decided (approved|rejected|expired|executed) approvals
+    Returns up to ``limit`` decided (approved|rejected|expired|executed|abandoned) approvals
     ordered ``decided_at DESC``.
     """
     tracker = DegradedSources(logger)

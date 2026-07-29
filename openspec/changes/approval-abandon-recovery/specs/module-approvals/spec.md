@@ -63,8 +63,8 @@ The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
 
 - **WHEN** retry dispatch and abandonment concurrently target the same approved
   action with a null execution result
-- **THEN** exactly one compare-and-set claim succeeds before any handler is
-  invoked
+- **THEN** the executor acquires a database row lock before any handler is
+  invoked, and abandonment's compare-and-set waits for that lock
 - **AND** only the winning terminal outcome is durably recorded
 - **AND** the loser returns the current durable state without appending another
   terminal event.

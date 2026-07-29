@@ -115,6 +115,7 @@ async def test_old_approved_unexecuted_action_is_excluded_from_retention_dry_run
     approved_id = await _insert_old_action(approvals_pool, status="approved")
     await _insert_old_action(approvals_pool, status="rejected")
     await _insert_old_action(approvals_pool, status="expired")
+    await _insert_old_action(approvals_pool, status="abandoned")
     await _insert_old_action(
         approvals_pool,
         status="executed",
@@ -127,7 +128,7 @@ async def test_old_approved_unexecuted_action_is_excluded_from_retention_dry_run
         dry_run=True,
     )
 
-    assert counts == {"executed": 1, "expired": 1, "rejected": 1}
+    assert counts == {"abandoned": 1, "executed": 1, "expired": 1, "rejected": 1}
     approved = await approvals_pool.fetchrow(
         "SELECT status, execution_result FROM pending_actions WHERE id = $1",
         approved_id,
@@ -144,6 +145,7 @@ async def test_old_approved_unexecuted_action_survives_retention_delete(
     approved_id = await _insert_old_action(approvals_pool, status="approved")
     rejected_id = await _insert_old_action(approvals_pool, status="rejected")
     expired_id = await _insert_old_action(approvals_pool, status="expired")
+    abandoned_id = await _insert_old_action(approvals_pool, status="abandoned")
     executed_id = await _insert_old_action(
         approvals_pool,
         status="executed",
@@ -155,7 +157,7 @@ async def test_old_approved_unexecuted_action_survives_retention_delete(
         RetentionPolicy(pending_actions_retention_days=90),
     )
 
-    assert counts == {"executed": 1, "expired": 1, "rejected": 1}
+    assert counts == {"abandoned": 1, "executed": 1, "expired": 1, "rejected": 1}
     approved = await approvals_pool.fetchrow(
         "SELECT status, execution_result FROM pending_actions WHERE id = $1",
         approved_id,
@@ -163,6 +165,10 @@ async def test_old_approved_unexecuted_action_survives_retention_delete(
     assert approved is not None
     assert approved["status"] == "approved"
     assert approved["execution_result"] is None
+    assert (
+        await approvals_pool.fetchval("SELECT id FROM pending_actions WHERE id = $1", abandoned_id)
+        is None
+    )
     for terminal_id in (rejected_id, expired_id, executed_id):
         assert (
             await approvals_pool.fetchrow(

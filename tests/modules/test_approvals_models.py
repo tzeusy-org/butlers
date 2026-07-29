@@ -92,6 +92,7 @@ class TestPendingActionModel:
             ActionStatus.REJECTED,
             ActionStatus.EXPIRED,
             ActionStatus.EXECUTED,
+            ActionStatus.ABANDONED,
         }
         assert ActionStatus.PENDING.value == "pending"
 
@@ -279,7 +280,7 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with engine.connect() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
-        assert "approvals_011" in versions
+        assert "approvals_012" in versions
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
@@ -302,6 +303,32 @@ class TestApprovalsMigration:
                     " VALUES (:a, :e, :ac, :re)"
                 ),
                 {"a": str(action_id), "e": "action_queued", "ac": "system:test", "re": "queued"},
+            )
+            abandoned_action_id = uuid.uuid4()
+            conn.execute(
+                text(
+                    "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
+                    " VALUES (:id, :tn, :ta, :s, :r)"
+                ),
+                {
+                    "id": str(abandoned_action_id),
+                    "tn": "email_send",
+                    "ta": "{}",
+                    "s": "abandoned",
+                    "r": datetime.now(UTC),
+                },
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO approval_events (action_id, event_type, actor, reason)"
+                    " VALUES (:a, :e, :ac, :re)"
+                ),
+                {
+                    "a": str(abandoned_action_id),
+                    "e": "action_abandoned",
+                    "ac": "user:dashboard:rest-api",
+                    "re": "No longer needed",
+                },
             )
             conn.commit()
 
@@ -384,7 +411,7 @@ class TestApprovalsMigration:
 
         assert row["why"] is None
         assert row["evidence"] == "[]"
-        assert "approvals_011" in versions
+        assert "approvals_012" in versions
 
     def test_decision_dossier_migration_converts_legacy_evidence_and_enforces_enums(
         self, postgres_container
@@ -464,7 +491,7 @@ class TestApprovalsMigration:
         ]
         assert row["blast_radius"] is None
         assert row["reversibility"] is None
-        assert "approvals_011" in versions
+        assert "approvals_012" in versions
 
         with pytest.raises(exc.IntegrityError):
             with engine.begin() as conn:

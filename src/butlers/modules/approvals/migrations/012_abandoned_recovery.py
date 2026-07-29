@@ -93,22 +93,34 @@ def downgrade() -> None:
     )
     op.execute(
         """
-        ALTER TABLE pending_actions DROP CONSTRAINT IF EXISTS pending_actions_status_check;
-        ALTER TABLE pending_actions ADD CONSTRAINT pending_actions_status_check
-        CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed'));
+        DO $$
+        BEGIN
+            IF to_regclass('pending_actions') IS NOT NULL THEN
+                ALTER TABLE pending_actions
+                    DROP CONSTRAINT IF EXISTS pending_actions_status_check;
+                ALTER TABLE pending_actions ADD CONSTRAINT pending_actions_status_check
+                    CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed'));
+            END IF;
+        END $$;
         """
     )
     op.execute(
         """
-        ALTER TABLE approval_events DROP CONSTRAINT IF EXISTS approval_events_type_check;
-        ALTER TABLE approval_events ADD CONSTRAINT approval_events_type_check
-        CHECK (event_type IN (
-            'action_queued', 'action_auto_approved', 'action_approved',
-            'action_rejected', 'action_expired', 'action_execution_succeeded',
-            'action_execution_failed', 'rule_created', 'rule_revoked',
-            'promotion_suggested', 'promotion_confirmed', 'promotion_dismissed',
-            'promotion_superseded', 'demotion_suggested', 'demotion_confirmed',
-            'demotion_dismissed'
-        ));
+        DO $$
+        BEGIN
+            IF to_regclass('approval_events') IS NOT NULL THEN
+                ALTER TABLE approval_events
+                    DROP CONSTRAINT IF EXISTS approval_events_type_check;
+                ALTER TABLE approval_events ADD CONSTRAINT approval_events_type_check
+                    CHECK (event_type IN (
+                        'action_queued', 'action_auto_approved', 'action_approved',
+                        'action_rejected', 'action_expired', 'action_execution_succeeded',
+                        'action_execution_failed', 'rule_created', 'rule_revoked',
+                        'promotion_suggested', 'promotion_confirmed', 'promotion_dismissed',
+                        'promotion_superseded', 'demotion_suggested', 'demotion_confirmed',
+                        'demotion_dismissed'
+                    ));
+            END IF;
+        END $$;
         """
     )

@@ -35,16 +35,16 @@ misstates the original owner decision. A status rather than an execution-result
 flag keeps the stalled predicate, history filtering, retention, and retry
 eligibility explicit and queryable.
 
-### D2 — Use one compare-and-set ownership claim for recovery races
+### D2 — Hold durable row ownership through retry execution
 
-Both retry dispatch and abandonment must first atomically claim an eligible row
-by changing it out of `approved` only if `execution_result IS NULL`. Abandon
-claims it directly as `abandoned`; Retry claims a short-lived internal
-execution state before invoking the handler and resolves to `executed` on
-success or restores the original recoverable state on handler failure. This
-prevents a handler from beginning after Abandon has won, or Abandon succeeding
-after Retry has begun. The losing operation reads the durable current state and
-returns a transition conflict without appending a second terminal event.
+Retry locks the eligible row with `SELECT ... FOR UPDATE` before invoking its
+handler and keeps that transaction open through the successful `executed` state
+and audit append. Abandon uses its exact approved/null compare-and-set update,
+which waits for that row lock. Thus Abandon either wins before a handler is
+allowed to start, or loses after Retry atomically records execution; there is
+no transient status and no window for an unowned side effect. A failed handler
+releases the lock while leaving the row approved/null, then records its
+non-terminal failure audit; a later explicit Abandon remains valid.
 
 ### D3 — The dashboard is the sole invocation boundary
 
@@ -64,11 +64,12 @@ leaves both without secondary counters or flags.
 
 ## Risks / Trade-offs
 
-- **[Retry can have external side effects]** → The durable retry claim occurs
-  before handler invocation; once it wins, Abandon cannot report success.
-- **[A handler fails after retry wins]** → The operation restores the eligible
-  approved/null state only when its execution claim still owns the row, making a
-  later explicit recovery choice possible.
+- **[Retry can have external side effects]** → The executor holds a database
+  row lock before handler invocation; once it owns the row, Abandon cannot
+  report success.
+- **[A handler fails after Retry begins]** → The executor commits no terminal
+  state, leaving the approved/null predicate intact for a later explicit owner
+  recovery choice.
 - **[Historic schemas reject the new enum value]** → The migration rewrites
   the existing status check constraint atomically before code can write
   `abandoned`; migration tests cover upgraded and fresh schemas.

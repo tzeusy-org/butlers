@@ -381,6 +381,7 @@ Response model shapes:
 - `GET /api/approvals/actions/{actionId}` -> `ApiResponse<ApprovalAction>`
 - `POST /api/approvals/actions/{actionId}/approve` -> `ApiResponse<ApprovalAction>`
 - `POST /api/approvals/actions/{actionId}/reject` -> `ApiResponse<ApprovalAction>`
+- `POST /api/approvals/{actionId}/abandon` -> `ApiResponse<ApprovalAction>`; dashboard-only, body `{ reason: string }`, valid only for `approved` actions with `execution_result = null`
 - `POST /api/approvals/actions/expire-stale` -> `ApiResponse<{ expired_count: number, expired_ids: string[] }>`
 - `GET /api/approvals/actions/executed` -> `PaginatedResponse<ApprovalAction>`
 
@@ -398,7 +399,7 @@ Required query support:
 - `/api/approvals/actions`:
   - `offset`
   - `limit`
-  - `status` (`pending|approved|rejected|expired|executed`)
+  - `status` (`pending|approved|rejected|expired|executed|abandoned`)
   - `tool_name`
   - `since`
   - `until`
