@@ -31,9 +31,28 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(autouse=True)
 def _mock_route_inbox(monkeypatch):
     """Patch route_inbox functions for all tests."""
+
+    class _NoopLeaseHeartbeat:
+        async def __aenter__(self) -> asyncio.Event:
+            return asyncio.Event()
+
+        async def __aexit__(self, *_args: object) -> bool:
+            return False
+
     mock_insert = AsyncMock(return_value=uuid.uuid4())
     monkeypatch.setattr("butlers.core_tools._routing.route_inbox_insert", mock_insert)
-    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_processing", AsyncMock())
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.route_inbox_claim_processing",
+        AsyncMock(return_value=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
+        MagicMock(return_value=_NoopLeaseHeartbeat()),
+    )
+    monkeypatch.setattr(
+        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+        AsyncMock(return_value=True),
+    )
     monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_processed", AsyncMock())
     monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_errored", AsyncMock())
     return mock_insert

@@ -49,6 +49,14 @@ from butlers.api.conversations import (
 )
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
+from butlers.core.dashboard_turns import (
+    acknowledge_cancel,
+    claim_invoke,
+    complete_session,
+    mark_terminal,
+    register_session_and_check_cancel,
+    release_invoke,
+)
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.fleet_halt_attention import maybe_push_fleet_halt_attention
 from butlers.core.logging import resolve_log_root
@@ -74,6 +82,7 @@ from butlers.core.model_routing import (
     resolve_model_with_effective_tier,
 )
 from butlers.core.permissions import SPAWN_PERMISSION, check_permission
+from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
@@ -176,6 +185,11 @@ _RUNTIME_TIMEOUT_CLEANUP_GRACE_FRACTION = 0.05
 # (dashboard API, frontend) match against to render a "Cancelled" terminal
 # state distinct from a generic failure.
 SESSION_CANCELLED_ERROR = "Cancelled by owner"
+
+
+class DashboardTurnControlError(RuntimeError):
+    """A durable dashboard-turn gate could not safely authorize invocation."""
+
 
 # ---------------------------------------------------------------------------
 # Guardrail budget defaults
@@ -484,6 +498,15 @@ class Spawner:
         # once the invoke_task is registered (see _run) or, defensively, in
         # _run's own finally block on any exit path.
         self._pending_invoke_sessions: set[str] = set()
+        # Dashboard-turn invocations additionally expose a completion event so
+        # the cancel_session MCP tool can wait for the runtime coroutine and
+        # its durable ``invoke_active`` release before claiming Stop succeeded.
+        self._dashboard_invoke_released_events: dict[str, asyncio.Event] = {}
+        self._dashboard_cancel_acknowledged_events: dict[str, asyncio.Event] = {}
+        # Created before the durable session-registration call, so an owner
+        # Stop that races the tiny claim-invoke → invoke-task window can wait
+        # for this exact runtime to write its durable cancellation outcome.
+        self._dashboard_cancel_settled_events: dict[str, asyncio.Event] = {}
         self._metrics = ButlerMetrics(butler_name=config.name)
         self._metrics.ensure_registered()
         self._mcp_warmup_lock = asyncio.Lock()
@@ -592,6 +615,8 @@ class Spawner:
         timeout_override: int | None = None,
         ingestion_event_id: str | None = None,
         conversation_id: uuid.UUID | None = None,
+        dashboard_turn_id: uuid.UUID | None = None,
+        route_lease_lost: asyncio.Event | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -665,6 +690,15 @@ class Spawner:
             back onto the conversation for the next turn. ``None`` (the
             default) for every non-route trigger source and for route
             dispatches with no thread-anchored conversation.
+        dashboard_turn_id:
+            Immutable dashboard user-message id for the durable Stop protocol.
+            When present, registration and an atomic pre-invocation claim must
+            both succeed before this Spawner may call ``runtime.invoke``.
+        route_lease_lost:
+            Optional route-inbox ownership signal.  A loss cancels this local
+            invocation, but for a dashboard turn it deliberately leaves the
+            durable session unresolved so recovery can surface ambiguity rather
+            than inventing a failed terminal outcome.
 
         Returns
         -------
@@ -676,7 +710,16 @@ class Spawner:
         RuntimeError
             If the spawner has been stopped and is no longer accepting triggers.
         """
+        if route_lease_lost is not None and route_lease_lost.is_set():
+            raise RouteInboxLeaseLost("route inbox processing lease was already lost")
+
         if not self._accepting:
+            if dashboard_turn_id is not None:
+                return await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error="Spawner is shutting down; not accepting new triggers",
+                    model=_FALLBACK_MODEL_ID,
+                )
             raise RuntimeError("Spawner is shutting down; not accepting new triggers")
 
         # Prevent self-trigger deadlocks: an in-flight trigger-sourced session can
@@ -698,8 +741,8 @@ class Spawner:
                 "another session is in flight"
             )
             logger.warning(error_msg)
-            return SpawnerResult(
-                success=False,
+            return await self._dashboard_preflight_failure(
+                dashboard_turn_id=dashboard_turn_id,
                 error=error_msg,
                 model=_FALLBACK_MODEL_ID,
             )
@@ -717,8 +760,8 @@ class Spawner:
                 f"(max_queued_sessions={self._max_queued_sessions})"
             )
             logger.warning(error_msg)
-            return SpawnerResult(
-                success=False,
+            return await self._dashboard_preflight_failure(
+                dashboard_turn_id=dashboard_turn_id,
                 error=error_msg,
                 model=_FALLBACK_MODEL_ID,
             )
@@ -769,6 +812,8 @@ class Spawner:
                         timeout_override=timeout_override,
                         ingestion_event_id=ingestion_event_id,
                         conversation_id=conversation_id,
+                        dashboard_turn_id=dashboard_turn_id,
+                        route_lease_lost=route_lease_lost,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -798,6 +843,8 @@ class Spawner:
                             timeout_override=timeout_override,
                             ingestion_event_id=ingestion_event_id,
                             conversation_id=conversation_id,
+                            dashboard_turn_id=dashboard_turn_id,
+                            route_lease_lost=route_lease_lost,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -911,6 +958,111 @@ class Spawner:
             self._owner_cancelled_sessions.add(session_key)
             return True
         return False
+
+    async def cancel_session_and_wait(self, session_id: str, *, timeout_s: float = 25.0) -> bool:
+        """Cancel a runtime and wait for its durable owner-cancel acknowledgement.
+
+        ``cancel_session`` is intentionally synchronous for in-process callers,
+        but an MCP caller must not report ``cancelled=True`` merely because a
+        task received ``.cancel()``.  This method waits for the runtime coroutine
+        to finish. A dashboard-controlled session also must record an exact
+        cancellation acknowledgement; releasing ``invoke_active`` alone only
+        proves that an attempt stopped being live, not why it stopped.
+        """
+        session_key = str(session_id)
+        task = self._invoke_tasks_by_session.get(session_key)
+        acknowledged_event = self._dashboard_cancel_acknowledged_events.get(session_key)
+        settled_event = self._dashboard_cancel_settled_events.get(session_key)
+        if task is None or task.done():
+            if session_key in self._pending_invoke_sessions:
+                self._owner_cancelled_sessions.add(session_key)
+                if settled_event is not None:
+                    try:
+                        await asyncio.wait_for(settled_event.wait(), timeout=timeout_s)
+                    except TimeoutError:
+                        logger.warning(
+                            "Timed out waiting for pending dashboard Stop to settle "
+                            "(session_id=%s)",
+                            session_id,
+                        )
+                        return False
+                return True
+            return False
+
+        self._owner_cancelled_sessions.add(session_key)
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
+        except asyncio.CancelledError:
+            # The invoke task's expected cancellation reaches awaiters as a
+            # CancelledError.  A cancellation of *this* MCP handler must still
+            # propagate so FastMCP can stop the request normally.
+            if not task.done():
+                raise
+            if not task.cancelled():
+                return False
+        except TimeoutError:
+            logger.warning("Timed out waiting for runtime Stop (session_id=%s)", session_id)
+            return False
+        except Exception:
+            # A non-cancellation failure proves only that the runtime ended.
+            # It cannot be reported as an owner-confirmed Stop.
+            return False
+        else:
+            # The adapter returned normally despite .cancel(); that is not an
+            # acknowledgement that it stopped for this owner request.
+            return False
+
+        if settled_event is not None:
+            try:
+                await asyncio.wait_for(settled_event.wait(), timeout=timeout_s)
+            except TimeoutError:
+                logger.warning(
+                    "Timed out waiting for dashboard Stop to settle (session_id=%s)",
+                    session_id,
+                )
+                return False
+        elif acknowledged_event is not None:
+            try:
+                await asyncio.wait_for(acknowledged_event.wait(), timeout=timeout_s)
+            except TimeoutError:
+                logger.warning(
+                    "Timed out waiting for dashboard cancel acknowledgement (session_id=%s)",
+                    session_id,
+                )
+                return False
+        return True
+
+    async def _dashboard_preflight_failure(
+        self,
+        *,
+        dashboard_turn_id: uuid.UUID | None,
+        error: str,
+        model: str | None,
+    ) -> SpawnerResult:
+        """Record a pre-invocation dashboard failure before returning it."""
+        if dashboard_turn_id is not None and self._pool is not None:
+            try:
+                terminal = await mark_terminal(
+                    self._pool,
+                    message_id=dashboard_turn_id,
+                    state="failed",
+                )
+            except Exception:
+                logger.exception(
+                    "Could not record dashboard pre-invocation failure (message=%s, butler=%s)",
+                    dashboard_turn_id,
+                    self._config.name,
+                )
+            else:
+                if terminal.outcome not in {"finished", "cancelled"}:
+                    logger.warning(
+                        "Dashboard pre-invocation failure did not become terminal "
+                        "(message=%s, outcome=%s)",
+                        dashboard_turn_id,
+                        terminal.outcome,
+                    )
+        return SpawnerResult(success=False, error=error, model=model)
 
     @staticmethod
     def _normalize_mcp_warmup_url(url: str) -> str | None:
@@ -1052,12 +1204,26 @@ class Spawner:
         timeout_override: int | None = None,
         ingestion_event_id: str | None = None,
         conversation_id: uuid.UUID | None = None,
+        dashboard_turn_id: uuid.UUID | None = None,
+        route_lease_lost: asyncio.Event | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
         runtime_session_id: str | None = None
         spawner_result: SpawnerResult | None = None
         runtime_invoked = False
+        dashboard_turn_session_registered = False
+        # Direct cancellation of trigger() normally means daemon drain and
+        # must propagate.  A route-inbox worker instead gives us this explicit
+        # event so the same cancellation can preserve an unprovable dashboard
+        # predecessor for recovery instead of finalizing it as failed.
+        dashboard_route_lease_lost = False
+        dashboard_cancel_settled_event: asyncio.Event | None = None
+        dashboard_owner_cancel_acknowledged = False
+        # The durable registration gate can raise CancelledError before the
+        # failover loop initializes its per-attempt variables.  Keep this
+        # outer state defined for the cancellation handler in that early path.
+        dashboard_invoke_claimed = False
         # When the MCPToolDiscoveryError handler consumes the runtime-session
         # tool-call buffer, it stores the result here so the failure-path
         # exception handler does not re-consume an empty buffer.
@@ -1080,6 +1246,16 @@ class Spawner:
         final_prompt = prompt
         if context:
             final_prompt = f"{context}\n\n{prompt}"
+
+        if route_lease_lost is not None and route_lease_lost.is_set():
+            raise RouteInboxLeaseLost("route inbox processing lease was already lost")
+
+        if dashboard_turn_id is not None and self._pool is None:
+            return await self._dashboard_preflight_failure(
+                dashboard_turn_id=dashboard_turn_id,
+                error="Dashboard turn control requires a database pool before invocation.",
+                model=None,
+            )
 
         # Resolve model from the catalog; fall back to the hard-coded default
         # constants only when no catalog entry exists or catalog resolution fails.
@@ -1343,7 +1519,11 @@ class Spawner:
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
                 )
-                return SpawnerResult(success=False, error=perm_msg, model=model)
+                return await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error=perm_msg,
+                    model=model,
+                )
 
         # Quota-gate fold fast path (bu-ep4ks.13 follow-up / bu-k9te9): skip this
         # sequential loop entirely when the resolve-CTE fold already proved the
@@ -1394,7 +1574,11 @@ class Spawner:
 
                 if _failover_effective_tier is None:
                     # No tier pinned (shouldn't happen in this branch, but be safe)
-                    return SpawnerResult(success=False, error=quota_msg, model=model)
+                    return await self._dashboard_preflight_failure(
+                        dashboard_turn_id=dashboard_turn_id,
+                        error=quota_msg,
+                        model=model,
+                    )
 
                 next_candidate = await next_same_tier_candidate(
                     self._pool,
@@ -1413,7 +1597,11 @@ class Spawner:
                     )
                     # The last skipped entry is also the exhausted entry; no extra
                     # row needed — the quota_skip row already captures it.
-                    return SpawnerResult(success=False, error=quota_msg, model=model)
+                    return await self._dashboard_preflight_failure(
+                        dashboard_turn_id=dashboard_turn_id,
+                        error=quota_msg,
+                        model=model,
+                    )
 
                 # Advance to the next candidate.
                 next_rt, next_model, next_extra_args, next_entry_id, next_timeout_s = next_candidate
@@ -1490,7 +1678,11 @@ class Spawner:
                         "fleet_halt_attention: push hook raised; deny path continues",
                         exc_info=True,
                     )
-                return SpawnerResult(success=False, error=ceiling_msg, model=model)
+                return await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error=ceiling_msg,
+                    model=model,
+                )
 
         # ---------------------------------------------------------------------------
         # Per-call cost cap enforcement (spend rule action.max_cost_per_call)
@@ -1546,31 +1738,44 @@ class Spawner:
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
                 )
-                return SpawnerResult(success=False, error=cap_msg, model=model)
+                return await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error=cap_msg,
+                    model=model,
+                )
 
         # Resolve provider config (e.g. Ollama base URL) for the model
-        provider_config = await self._resolve_provider_config(model)
-
-        # Select adapter for the resolved runtime type (lazy instantiation on demand).
-        # Fall back to the default adapter if the catalog resolved an unregistered runtime type.
         try:
-            runtime = self._get_or_create_adapter(
-                resolved_runtime_type, provider_config
-            ).create_worker()
-        except ValueError:
-            logger.warning(
-                "Catalog resolved unregistered runtime_type=%s for butler=%s; "
-                "falling back to default runtime_type=%s",
-                resolved_runtime_type,
-                self._config.name,
-                fallback_runtime_type,
-            )
-            resolved_runtime_type = fallback_runtime_type
-            model = fallback_model
-            catalog_extra_args = []
-            catalog_timeout_s = None
-            resolution_source = "static_fallback"
-            runtime = self._get_or_create_adapter(fallback_runtime_type).create_worker()
+            provider_config = await self._resolve_provider_config(model)
+
+            # Select adapter for the resolved runtime type (lazy instantiation on demand).
+            # Fall back to the default adapter if the catalog resolved an unregistered runtime type.
+            try:
+                runtime = self._get_or_create_adapter(
+                    resolved_runtime_type, provider_config
+                ).create_worker()
+            except ValueError:
+                logger.warning(
+                    "Catalog resolved unregistered runtime_type=%s for butler=%s; "
+                    "falling back to default runtime_type=%s",
+                    resolved_runtime_type,
+                    self._config.name,
+                    fallback_runtime_type,
+                )
+                resolved_runtime_type = fallback_runtime_type
+                model = fallback_model
+                catalog_extra_args = []
+                catalog_timeout_s = None
+                resolution_source = "static_fallback"
+                runtime = self._get_or_create_adapter(fallback_runtime_type).create_worker()
+        except Exception as exc:
+            if dashboard_turn_id is not None:
+                return await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error=f"Could not prepare the dashboard runtime: {type(exc).__name__}: {exc}",
+                    model=model,
+                )
+            raise
 
         # Use the catalog-supplied extra args. There is no butler-level args
         # fallback: the model catalog is the sole source of per-session CLI args.
@@ -1631,6 +1836,48 @@ class Spawner:
                 # finished". Discarded once the invoke_task is registered
                 # (or, defensively, in this method's finally block).
                 self._pending_invoke_sessions.add(runtime_session_id)
+
+                if dashboard_turn_id is not None:
+                    dashboard_cancel_settled_event = asyncio.Event()
+                    self._dashboard_cancel_settled_events[runtime_session_id] = (
+                        dashboard_cancel_settled_event
+                    )
+                    try:
+                        dashboard_request_id = uuid.UUID(str(effective_request_id))
+                    except (TypeError, ValueError) as exc:
+                        raise DashboardTurnControlError(
+                            "Dashboard turn has no valid request id for runtime registration."
+                        ) from exc
+
+                    dashboard_phase = (
+                        "classification" if self._config.name == "switchboard" else "route"
+                    )
+                    try:
+                        dashboard_gate = await register_session_and_check_cancel(
+                            self._pool,
+                            message_id=dashboard_turn_id,
+                            session_id=session_id,
+                            request_id=dashboard_request_id,
+                            butler_name=self._config.name,
+                            phase=dashboard_phase,
+                        )
+                    except Exception as exc:
+                        raise DashboardTurnControlError(
+                            "Could not register this dashboard runtime with its Stop control."
+                        ) from exc
+
+                    if dashboard_gate.outcome not in {"active", "cancelled"}:
+                        raise DashboardTurnControlError(
+                            "Dashboard runtime registration was not authorized: "
+                            f"{dashboard_gate.outcome}"
+                        )
+                    dashboard_turn_session_registered = True
+                    if dashboard_gate.outcome == "cancelled":
+                        # The durable Stop bit won before this process reached
+                        # runtime.invoke. Reuse the owner-cancel path so the
+                        # local session row remains honest and no adapter starts.
+                        self._owner_cancelled_sessions.add(runtime_session_id)
+                        raise asyncio.CancelledError()
 
             # Read system prompt. The live override (HEAD of
             # public.system_prompt_history, set via the dashboard prompt editor)
@@ -1790,7 +2037,6 @@ class Spawner:
                 _attempt_t0 = time.monotonic()
 
                 # Build per-attempt invoke kwargs using current (possibly updated) model.
-                runtime_invoked = True
                 invoke_kwargs: dict[str, Any] = {
                     "prompt": final_prompt,
                     "system_prompt": system_prompt,
@@ -1820,8 +2066,47 @@ class Spawner:
 
                 _attempt_exc: BaseException | None = None
                 _attempt_tool_calls: list[dict[str, Any]] = []
+                dashboard_invoke_claimed = False
+                dashboard_release_event: asyncio.Event | None = None
+                dashboard_cancel_acknowledged_event: asyncio.Event | None = None
 
                 try:
+                    if dashboard_turn_id is not None:
+                        if session_id is None or not dashboard_turn_session_registered:
+                            raise DashboardTurnControlError(
+                                "Dashboard runtime reached invoke without a registered "
+                                "control session."
+                            )
+                        try:
+                            invoke_gate = await claim_invoke(
+                                self._pool,
+                                message_id=dashboard_turn_id,
+                                session_id=session_id,
+                            )
+                        except Exception as exc:
+                            raise DashboardTurnControlError(
+                                "Could not claim the dashboard pre-invocation boundary."
+                            ) from exc
+                        if invoke_gate.outcome == "cancelled":
+                            if runtime_session_id is not None:
+                                self._owner_cancelled_sessions.add(runtime_session_id)
+                                self._pending_invoke_sessions.discard(runtime_session_id)
+                            raise asyncio.CancelledError()
+                        if invoke_gate.outcome != "active":
+                            raise DashboardTurnControlError(
+                                f"Dashboard invocation was not authorized: {invoke_gate.outcome}"
+                            )
+                        dashboard_invoke_claimed = True
+                        if runtime_session_id is not None:
+                            dashboard_release_event = asyncio.Event()
+                            self._dashboard_invoke_released_events[runtime_session_id] = (
+                                dashboard_release_event
+                            )
+                            dashboard_cancel_acknowledged_event = asyncio.Event()
+                            self._dashboard_cancel_acknowledged_events[runtime_session_id] = (
+                                dashboard_cancel_acknowledged_event
+                            )
+
                     if runtime_session_id and runtime_session_id in self._owner_cancelled_sessions:
                         # Owner clicked Stop while this session was still
                         # pending invocation (cancel_session() found no live
@@ -1834,6 +2119,7 @@ class Spawner:
                         # instead of a runtime invocation nobody asked for.
                         self._pending_invoke_sessions.discard(runtime_session_id)
                         raise asyncio.CancelledError()
+                    runtime_invoked = True
                     invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
                     if runtime_session_id:
                         self._invoke_tasks_by_session[runtime_session_id] = invoke_task
@@ -1878,6 +2164,25 @@ class Spawner:
                             and self._invoke_tasks_by_session.get(runtime_session_id) is invoke_task
                         ):
                             del self._invoke_tasks_by_session[runtime_session_id]
+                        if (
+                            dashboard_invoke_claimed
+                            and dashboard_turn_id is not None
+                            and session_id is not None
+                        ):
+                            try:
+                                await release_invoke(
+                                    self._pool,
+                                    message_id=dashboard_turn_id,
+                                    session_id=session_id,
+                                )
+                            except Exception as exc:
+                                raise DashboardTurnControlError(
+                                    "Could not durably release the dashboard runtime invocation."
+                                ) from exc
+                            if dashboard_release_event is not None:
+                                dashboard_release_event.set()
+                except DashboardTurnControlError:
+                    raise
                 except MCPToolDiscoveryError as exc:
                     executed_tool_calls = (
                         consume_runtime_session_tool_calls(runtime_session_id)
@@ -2497,8 +2802,50 @@ class Spawner:
             is_owner_cancel = bool(runtime_session_id) and (
                 runtime_session_id in self._owner_cancelled_sessions
             )
+            if route_lease_lost is not None and route_lease_lost.is_set():
+                if dashboard_turn_id is not None:
+                    dashboard_route_lease_lost = True
+                logger.warning(
+                    "Route-inbox lease lost while local runtime was live; "
+                    "preserving dashboard turn for recovery (message=%s, session=%s)",
+                    dashboard_turn_id,
+                    session_id,
+                )
+                raise
             if outer_task_cancelled_directly or not is_owner_cancel:
                 raise
+            if (
+                dashboard_invoke_claimed
+                and dashboard_turn_id is not None
+                and self._pool is not None
+                and session_id is not None
+            ):
+                try:
+                    acknowledgement = await acknowledge_cancel(
+                        self._pool,
+                        message_id=dashboard_turn_id,
+                        session_id=session_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not durably acknowledge dashboard owner cancellation "
+                        "(message=%s, session=%s)",
+                        dashboard_turn_id,
+                        session_id,
+                    )
+                else:
+                    if acknowledgement.outcome in {"cancelling", "cancelled"}:
+                        dashboard_owner_cancel_acknowledged = True
+                        if dashboard_cancel_acknowledged_event is not None:
+                            dashboard_cancel_acknowledged_event.set()
+                    else:
+                        logger.warning(
+                            "Dashboard owner cancellation was not acknowledged "
+                            "(message=%s, session=%s, outcome=%s)",
+                            dashboard_turn_id,
+                            session_id,
+                            acknowledgement.outcome,
+                        )
             self._owner_cancelled_sessions.discard(runtime_session_id)
             duration_ms = int((time.monotonic() - t0) * 1000)
             captured_on_cancel: list[dict[str, Any]] = []
@@ -2528,6 +2875,36 @@ class Spawner:
                     duration_ms=duration_ms,
                     success=False,
                     error=SESSION_CANCELLED_ERROR,
+                    butler_name=self._config.name,
+                )
+            return spawner_result
+
+        except DashboardTurnControlError as exc:
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            error_msg = str(exc)
+            logger.error(
+                "Dashboard control blocked runtime invocation for butler=%s session=%s: %s",
+                self._config.name,
+                session_id,
+                error_msg,
+            )
+            span.set_status(trace.StatusCode.ERROR, error_msg)
+            spawner_result = SpawnerResult(
+                error=error_msg,
+                success=False,
+                duration_ms=duration_ms,
+                model=model,
+                session_id=session_id,
+            )
+            if self._pool is not None and session_id is not None:
+                await session_complete(
+                    self._pool,
+                    session_id,
+                    output=None,
+                    tool_calls=[],
+                    duration_ms=duration_ms,
+                    success=False,
+                    error=error_msg,
                     butler_name=self._config.name,
                 )
             return spawner_result
@@ -2789,6 +3166,12 @@ class Spawner:
             return spawner_result
 
         finally:
+            # A normal runtime return can race the heartbeat task by one event
+            # loop turn. If the lease became unprovable before this durable
+            # finalizer runs, prefer the conservative recovery disposition over
+            # a concrete route terminal write from a displaced worker.
+            if route_lease_lost is not None and route_lease_lost.is_set():
+                dashboard_route_lease_lost = dashboard_turn_id is not None
             if runtime_session_id:
                 clear_runtime_session_routing_context(runtime_session_id)
                 # Defensive: normally discarded once the invoke_task is
@@ -2797,6 +3180,58 @@ class Spawner:
                 # the pre-invocation context-fetch window) must not leak this
                 # entry for the lifetime of the daemon process.
                 self._pending_invoke_sessions.discard(runtime_session_id)
+                self._dashboard_invoke_released_events.pop(runtime_session_id, None)
+                self._dashboard_cancel_acknowledged_events.pop(runtime_session_id, None)
+            if (
+                dashboard_turn_session_registered
+                and dashboard_turn_id is not None
+                and self._pool is not None
+                and session_id is not None
+            ):
+                if dashboard_route_lease_lost:
+                    logger.warning(
+                        "Skipped dashboard terminal completion after route-inbox lease loss "
+                        "(message=%s, session=%s)",
+                        dashboard_turn_id,
+                        session_id,
+                    )
+                else:
+                    try:
+                        completion = await complete_session(
+                            self._pool,
+                            message_id=dashboard_turn_id,
+                            session_id=session_id,
+                            success=bool(spawner_result and spawner_result.success),
+                        )
+                        if completion.outcome == "cancelled" or (
+                            dashboard_owner_cancel_acknowledged
+                            and completion.outcome not in {"missing", "conflict"}
+                        ):
+                            if dashboard_cancel_settled_event is not None:
+                                dashboard_cancel_settled_event.set()
+                    except Exception:
+                        logger.exception(
+                            "Could not complete durable dashboard turn session "
+                            "(message=%s, session=%s)",
+                            dashboard_turn_id,
+                            session_id,
+                        )
+            elif (
+                dashboard_turn_id is not None
+                and self._pool is not None
+                and spawner_result is not None
+                and not spawner_result.success
+            ):
+                # session_create()/registration can fail before the control
+                # session exists. Persist that failed dispatch before a later
+                # Stop has any chance to label it a successful cancellation.
+                await self._dashboard_preflight_failure(
+                    dashboard_turn_id=dashboard_turn_id,
+                    error=spawner_result.error or "Dashboard runtime failed before registration.",
+                    model=spawner_result.model,
+                )
+            if runtime_session_id:
+                self._dashboard_cancel_settled_events.pop(runtime_session_id, None)
             # Record session duration metric using wall-clock time from t0
             self._metrics.record_session_duration(int((time.monotonic() - t0) * 1000))
             # Record token usage when available (success path only; model always set)

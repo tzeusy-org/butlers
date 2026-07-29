@@ -20,6 +20,10 @@ export interface MessageInputProps {
    * disables the button and shows a spinner so a second click can't race the
    * first cancel attempt. */
   stopPending?: boolean;
+  /** False until the create/send response establishes an addressable durable turn. */
+  stopAvailable?: boolean;
+  /** Polite, non-visual progress/result announcement for the Stop control. */
+  stopStatus?: string | null;
   placeholder?: string;
 }
 
@@ -31,6 +35,8 @@ export function MessageInput({
   disabled,
   isStreaming,
   stopPending = false,
+  stopAvailable = true,
+  stopStatus,
   placeholder = "Type a message...",
 }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -53,9 +59,15 @@ export function MessageInput({
   }
 
   const canSend = !disabled && !isStreaming && value.trim().length > 0;
+  const canStop = stopAvailable && !stopPending;
 
   return (
     <div className={cn("border-t bg-background p-3", "flex items-end gap-2")}>
+      {stopStatus && (
+        <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {stopStatus}
+        </div>
+      )}
       <Textarea
         ref={textareaRef}
         value={value}
@@ -75,10 +87,15 @@ export function MessageInput({
           type="button"
           variant="outline"
           size="icon"
-          className="shrink-0 size-9"
+          className="shrink-0 size-11"
           onClick={onStop}
-          disabled={stopPending}
-          title={stopPending ? "Stopping…" : "Stop generation"}
+          disabled={!canStop}
+          title={
+            stopPending ? "Stopping…" : stopAvailable ? "Stop generation" : "Preparing stop control…"
+          }
+          aria-label={
+            stopPending ? "Stopping this turn" : stopAvailable ? "Stop this turn" : "Preparing stop control"
+          }
           data-testid="chat-stop-button"
         >
           {stopPending ? (
@@ -92,10 +109,11 @@ export function MessageInput({
           type="button"
           variant="default"
           size="icon"
-          className="shrink-0 size-9"
+          className="shrink-0 size-11"
           disabled={!canSend}
           onClick={onSend}
           title="Send message"
+          aria-label="Send message"
         >
           <ArrowUpIcon className="size-4" />
         </Button>

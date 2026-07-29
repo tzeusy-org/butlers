@@ -5142,17 +5142,18 @@ export function sendMessage(
 }
 
 /**
- * POST /api/butlers/{name}/conversations/{id}/cancel — the chat "Stop"
- * button (bu-ep4ks.2). Always resolves to a 200 with a structured
- * cancelled/already_finished/message body — never throws for a benign
- * "nothing to cancel" outcome, only for a genuine transport failure.
+ * POST /api/butlers/{name}/conversation-turns/{messageId}/cancel — cancel
+ * one immutable dashboard user turn across classifier and routed runtimes.
+ * Unlike the legacy conversation-scoped endpoint, this remains precise while
+ * a Switchboard handoff is still in flight and even before SSE has delivered
+ * a newly-created conversation id.
  */
-export function cancelConversationTurn(
+export function cancelConversationMessageTurn(
   butlerName: string,
-  conversationId: string,
+  messageId: string,
 ): Promise<ConversationCancelResponse> {
   return apiFetch<ConversationCancelResponse>(
-    `/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/cancel`,
+    `/butlers/${encodeURIComponent(butlerName)}/conversation-turns/${encodeURIComponent(messageId)}/cancel`,
     { method: "POST" },
   );
 }

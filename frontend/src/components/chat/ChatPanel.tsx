@@ -26,7 +26,11 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 
-import { cancelConversationTurn, createConversation, sendMessage } from "@/api/index.ts";
+import {
+  cancelConversationMessageTurn,
+  createConversation,
+  sendMessage,
+} from "@/api/index.ts";
 import type { Message, ConversationSummary } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
@@ -35,7 +39,11 @@ import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
 import { SendErrorBanner } from "./send-error.tsx";
-import { classifySendError, type SendError } from "./send-error-utils.ts";
+import {
+  classifySendError,
+  isConfirmedConversationCancellation,
+  type SendError,
+} from "./send-error-utils.ts";
 import { createClientMessageId } from "./message-id.ts";
 import {
   optimisticUserMessageId,
@@ -78,6 +86,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   // AbortController for the current SSE stream
   const abortRef = useRef<AbortController | null>(null);
+  const interruptedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeMessageIdRef = useRef<string | null>(null);
+  const confirmedStopMessageIdRef = useRef<string | null>(null);
 
   // Abort any in-flight SSE stream when this component unmounts
   useEffect(() => {
@@ -86,6 +97,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         abortRef.current.abort();
         abortRef.current = null;
       }
+      activeMessageIdRef.current = null;
+      if (interruptedTimeoutRef.current !== null) {
+        clearTimeout(interruptedTimeoutRef.current);
+        interruptedTimeoutRef.current = null;
+      }
+      confirmedStopMessageIdRef.current = null;
     };
   }, []);
 
@@ -127,6 +144,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // no-editable-field-guard behavior.
   function switchConversation(direction: 1 | -1) {
     if (conversations.length === 0) return;
+    abandonCurrentStream();
     const idx = conversations.findIndex((c) => c.id === activeConversationId);
     if (direction === -1) {
       const prev = idx <= 0 ? conversations.length - 1 : idx - 1;
@@ -196,6 +214,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     previousButlerNameRef.current = butlerName;
     abortRef.current?.abort();
     abortRef.current = null;
+    if (interruptedTimeoutRef.current !== null) {
+      clearTimeout(interruptedTimeoutRef.current);
+      interruptedTimeoutRef.current = null;
+    }
+    activeMessageIdRef.current = null;
+    confirmedStopMessageIdRef.current = null;
     hasResumedRef.current = false;
     setActiveConversationId(null);
     setLocalMessages([]);
@@ -205,6 +229,58 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
   const isStreaming = streaming !== null;
+  const hasActiveRuntime = isStreaming && !streaming?.cancelled;
+
+  const confirmStoppedTurn = useCallback(
+    (messageId: string, conversationId?: string | null) => {
+      if (activeMessageIdRef.current !== messageId) return;
+      confirmedStopMessageIdRef.current = messageId;
+      // A Stop can win before the first conversation_created SSE event. Keep
+      // the persisted thread addressable instead of letting its optimistic
+      // bubble disappear with a pending local conversation id.
+      void queryClient.invalidateQueries({ queryKey: conversationKeys.all(butlerName) });
+      if (conversationId) {
+        setActiveConversationId(conversationId);
+        setLocalMessages((prev) =>
+          prev.map((message) =>
+            message.id === optimisticUserMessageId(messageId)
+              ? { ...message, conversation_id: conversationId }
+              : message,
+          ),
+        );
+        void queryClient.invalidateQueries({
+          queryKey: conversationKeys.messages(butlerName, conversationId),
+        });
+      }
+      abortRef.current?.abort();
+      setStreaming((prev) =>
+        prev?.messageId === messageId
+          ? {
+              ...prev,
+              conversationId: conversationId ?? prev.conversationId,
+              cancelling: false,
+              cancelled: true,
+              pending: false,
+              cancelError: null,
+            }
+          : prev,
+      );
+      if (interruptedTimeoutRef.current !== null) {
+        clearTimeout(interruptedTimeoutRef.current);
+      }
+      const timeout = setTimeout(() => {
+        if (interruptedTimeoutRef.current !== timeout) return;
+        if (activeMessageIdRef.current === messageId) {
+          activeMessageIdRef.current = null;
+          abortRef.current = null;
+          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
+        }
+        interruptedTimeoutRef.current = null;
+      }, 1500);
+      interruptedTimeoutRef.current = timeout;
+    },
+    [butlerName, queryClient],
+  );
 
   // ---------------------------------------------------------------------------
   // SSE stream handler
@@ -218,8 +294,17 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       setSendError(null);
       const isNew = activeConversationId == null;
       const messageId = retryMessageId ?? createClientMessageId();
+      if (activeMessageIdRef.current !== null && activeMessageIdRef.current !== messageId) {
+        abortRef.current?.abort();
+      }
+      if (interruptedTimeoutRef.current !== null) {
+        clearTimeout(interruptedTimeoutRef.current);
+        interruptedTimeoutRef.current = null;
+      }
       const controller = new AbortController();
       abortRef.current = controller;
+      activeMessageIdRef.current = messageId;
+      confirmedStopMessageIdRef.current = null;
 
       // Optimistic user message
       const userMessage: Message = {
@@ -247,9 +332,11 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
       setStreaming({
         conversationId: currentConversationId ?? "pending",
+        messageId,
         content: "",
         pending: true,
         interrupted: false,
+        stopReady: false,
       });
 
       try {
@@ -270,7 +357,20 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           throw new Error(`HTTP ${response.status}`);
         }
 
+        // The API creates the durable user-message/turn record before it
+        // returns its SSE response. Stop may become actionable now, even
+        // though the first conversation_created event can still be pending.
+        setStreaming((prev) =>
+          prev?.messageId === messageId ? { ...prev, stopReady: true } : prev,
+        );
+
         await consumeSseStream(response, (event) => {
+          if (
+            activeMessageIdRef.current !== messageId ||
+            confirmedStopMessageIdRef.current === messageId
+          ) {
+            return;
+          }
           switch (event.event) {
             case "conversation_created": {
               // Backend emits `conversation_id` (see routers/conversations.py
@@ -279,7 +379,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
               currentConversationId = data.conversation_id;
               setActiveConversationId(data.conversation_id);
               setStreaming((prev) =>
-                prev ? { ...prev, conversationId: data.conversation_id } : null,
+                prev?.messageId === messageId
+                  ? { ...prev, conversationId: data.conversation_id }
+                  : prev,
               );
               // Update optimistic user message with real conversation_id
               setLocalMessages((prev) =>
@@ -295,7 +397,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
                   ? event.data
                   : (event.data as { content?: string })?.content ?? "";
               setStreaming((prev) =>
-                prev ? { ...prev, content: prev.content + token, pending: false } : null,
+                prev?.messageId === messageId
+                  ? { ...prev, content: prev.content + token, pending: false }
+                  : prev,
               );
               break;
             }
@@ -310,30 +414,61 @@ export function ChatContent({ butlerName }: ChatContentProps) {
                   queryKey: conversationKeys.messages(butlerName, cid),
                 });
               }
-              setStreaming(null);
+              activeMessageIdRef.current = null;
+              abortRef.current = null;
+              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
               break;
             }
             case "error": {
+              if (isConfirmedConversationCancellation(event.data)) {
+                confirmStoppedTurn(messageId, currentConversationId);
+                break;
+              }
               setSendError(classifySendError(event.data, trimmed, messageId));
-              setStreaming(null);
+              activeMessageIdRef.current = null;
+              abortRef.current = null;
+              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
               break;
             }
             case "done":
-              setStreaming(null);
+              activeMessageIdRef.current = null;
+              abortRef.current = null;
+              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
               break;
           }
         });
       } catch (err) {
+        if (activeMessageIdRef.current !== messageId) return;
         if (err instanceof Error && err.name === "AbortError") {
+          if (confirmedStopMessageIdRef.current === messageId) {
+            // handleStop already rendered the durable confirmation and owns
+            // the short visual handoff; do not overwrite it with a generic
+            // client-side "interrupted" state.
+            return;
+          }
           // User cancelled — mark as interrupted
           setStreaming((prev) =>
-            prev ? { ...prev, interrupted: true, pending: false } : null,
+            prev?.messageId === messageId ? { ...prev, interrupted: true, pending: false } : prev,
           );
-          setTimeout(() => setStreaming(null), 1500);
+          if (interruptedTimeoutRef.current !== null) {
+            clearTimeout(interruptedTimeoutRef.current);
+          }
+          const timeout = setTimeout(() => {
+            if (interruptedTimeoutRef.current !== timeout) return;
+            if (activeMessageIdRef.current === messageId) {
+              activeMessageIdRef.current = null;
+              abortRef.current = null;
+              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
+            }
+            interruptedTimeoutRef.current = null;
+          }, 1500);
+          interruptedTimeoutRef.current = timeout;
         } else {
           // Non-abort error before or during streaming: clear streaming state
           // and surface the same classified banner FloatingChatWidget shows.
-          setStreaming(null);
+          activeMessageIdRef.current = null;
+          abortRef.current = null;
+          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
           setSendError({
             kind: "generic",
             message: "Failed to send message.",
@@ -343,7 +478,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         }
       }
     },
-    [activeConversationId, butlerName, queryClient],
+    [activeConversationId, butlerName, confirmStoppedTurn, queryClient],
   );
 
   function handleSend() {
@@ -354,51 +489,92 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   }
 
   async function handleStop() {
-    if (!streaming || streaming.cancelling) return;
-    const conversationId = streaming.conversationId;
-    if (!conversationId || conversationId === "pending") {
-      // No conversation exists server-side yet — nothing to cancel remotely.
-      abortRef.current?.abort();
-      return;
-    }
+    if (!streaming || !streaming.stopReady || streaming.cancelling) return;
+    const messageId = streaming.messageId;
+    if (activeMessageIdRef.current !== messageId) return;
 
-    setStreaming((prev) => (prev ? { ...prev, cancelling: true, cancelError: null } : prev));
+    setStreaming((prev) =>
+      prev?.messageId === messageId ? { ...prev, cancelling: true, cancelError: null } : prev,
+    );
     try {
-      const result = await cancelConversationTurn(butlerName, conversationId);
+      const result = await cancelConversationMessageTurn(butlerName, messageId);
+      if (activeMessageIdRef.current !== messageId) return;
       if (!result.cancelled) {
         if (result.already_finished) {
+          if (confirmedStopMessageIdRef.current === messageId) {
+            // The stream already delivered authoritative cancellation for this
+            // exact message while the Stop POST was in flight. Keep that
+            // confirmation visible through its deliberate handoff window.
+            return;
+          }
           // The turn already finished on its own — quietly stop watching.
-          // Never claim we stopped something that had already ended.
+          // Never claim we stopped something that had already ended. Refresh
+          // before aborting the SSE: completion can commit just before this
+          // status read, while its message_complete event is still buffered.
+          const conversationId =
+            result.conversation_id ??
+            (streaming.conversationId === "pending" ? activeConversationId : streaming.conversationId);
+          void queryClient.invalidateQueries({
+            queryKey: conversationKeys.all(butlerName),
+          });
+          if (conversationId) {
+            setActiveConversationId(conversationId);
+            setLocalMessages((prev) =>
+              prev.map((message) =>
+                message.id === optimisticUserMessageId(messageId)
+                  ? { ...message, conversation_id: conversationId }
+                  : message,
+              ),
+            );
+            void queryClient.invalidateQueries({
+              queryKey: conversationKeys.messages(butlerName, conversationId),
+            });
+          }
           abortRef.current?.abort();
-          setStreaming(null);
+          abortRef.current = null;
+          activeMessageIdRef.current = null;
+          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
           return;
         }
         setStreaming((prev) =>
-          prev
+          prev?.messageId === messageId
             ? {
                 ...prev,
                 cancelling: false,
+                pending: false,
                 cancelError: result.message ?? "Could not stop. Try again.",
               }
             : prev,
         );
         return;
       }
-      abortRef.current?.abort();
-      setStreaming((prev) => (prev ? { ...prev, cancelling: false, cancelled: true } : prev));
+      confirmStoppedTurn(messageId, result.conversation_id);
     } catch {
+      if (activeMessageIdRef.current !== messageId) return;
       setStreaming((prev) =>
-        prev
-          ? { ...prev, cancelling: false, cancelError: "Could not stop. Try again." }
+        prev?.messageId === messageId
+          ? { ...prev, cancelling: false, pending: false, cancelError: "Could not stop. Try again." }
           : prev,
       );
     }
   }
 
+  function abandonCurrentStream() {
+    activeMessageIdRef.current = null;
+    confirmedStopMessageIdRef.current = null;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (interruptedTimeoutRef.current !== null) {
+      clearTimeout(interruptedTimeoutRef.current);
+      interruptedTimeoutRef.current = null;
+    }
+    setStreaming(null);
+  }
+
   function handleNewConversation() {
+    abandonCurrentStream();
     setActiveConversationId(null);
     setLocalMessages([]);
-    setStreaming(null);
     setSendError(null);
   }
 
@@ -418,8 +594,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         butlerName={butlerName}
         activeConversationId={activeConversationId}
         onSelectConversation={(id) => {
+          abandonCurrentStream();
           setActiveConversationId(id);
-          setStreaming(null);
           setSendError(null);
         }}
         onNewConversation={handleNewConversation}
@@ -460,8 +636,18 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           onSend={handleSend}
           onStop={handleStop}
           stopPending={streaming?.cancelling ?? false}
+          stopAvailable={streaming?.stopReady ?? true}
+          stopStatus={
+            streaming?.cancelling
+              ? "Stopping this turn."
+              : streaming?.cancelled
+                ? "This turn was stopped."
+                : streaming?.cancelError
+                  ? `Could not stop this turn: ${streaming.cancelError}`
+                  : null
+          }
           disabled={isLoadingConversations}
-          isStreaming={isStreaming}
+          isStreaming={hasActiveRuntime}
         />
       </div>
     </div>

@@ -84,6 +84,11 @@ Explicit exceptions (frontend contract):
 - Timeline uses `TimelineResponse` (unwrapped).
 - Relationship domain endpoints use unwrapped typed payloads.
 - Trigger endpoint returns `TriggerResponse` (unwrapped).
+- Dashboard conversation create/follow-up endpoints return `text/event-stream`.
+- The canonical dashboard-turn Stop endpoint (`POST
+  /api/butlers/{name}/conversation-turns/{message_id}/cancel`) and its legacy
+  conversation-scoped compatibility route return raw typed
+  `ConversationCancelResponse`.
 
 Admission-control decisions that did not launch a runtime session (for example cooldown or circuit-breaker rejects) MUST be exposed as their own records via `GET /api/healing/dispatch-events`. The dashboard MUST NOT present them as failed investigation executions. `GET /api/healing/attempts` returns only rows where a workflow runtime session was actually launched; dispatch-event records are never mixed into that list.
 
@@ -99,6 +104,24 @@ Admission-control decisions that did not launch a runtime session (for example c
 | `POST /api/butlers/{name}/trigger` | `TriggerResponse` | Spawn LLM session |
 | `GET /api/butlers/{name}/mcp/tools` | `ApiResponse<MCPToolInfo[]>` | List MCP tools |
 | `POST /api/butlers/{name}/mcp/call` | `ApiResponse<MCPToolCallResponse>` | Call MCP tool |
+
+### Dashboard Conversation Endpoints
+
+| Endpoint | Response | Description |
+|----------|----------|-------------|
+| `POST /api/butlers/{name}/conversations` | `text/event-stream` | Create a conversation and submit an immutable dashboard user turn |
+| `POST /api/butlers/{name}/conversations/{conversation_id}/messages` | `text/event-stream` | Submit a follow-up immutable user turn |
+| `POST /api/butlers/{name}/conversation-turns/{message_id}/cancel` | `ConversationCancelResponse` | Canonical durable Stop for one message turn |
+| `POST /api/butlers/{name}/conversations/{conversation_id}/cancel` | `ConversationCancelResponse` | Compatibility-only legacy Stop route |
+
+The `{name}` segment preserves the established butler-route namespace; the
+immutable `message_id` identifies the exact durable Stop object. A 200 Stop
+response represents exactly one truthful domain outcome: `cancelled`,
+`already_finished`, or unconfirmed cancellation. Non-2xx failures retain
+`ErrorResponse`. Dashboard SSE represents an in-progress duplicate or
+cancellation settlement as `INGEST_IN_PROGRESS` (observe/check again, never
+Retry), confirmed Stop as `SESSION_CANCELLED`, and an unprovable recovered
+predecessor as `TURN_OUTCOME_UNKNOWN` (no automatic replay).
 
 ### Session Endpoints
 

@@ -1184,7 +1184,7 @@ class MessagePipeline:
         self,
         message_inbox_id: Any | None,
     ) -> dict[str, Any] | None:
-        """Load ``conversation_id``/``page_context`` for a dashboard-channel message.
+        """Load dashboard conversation and immutable turn context.
 
         Reads ``payload.raw`` from the ``message_inbox`` row created by
         :func:`butlers.api.conversation_envelope.build_dashboard_envelope`,
@@ -1194,10 +1194,12 @@ class MessagePipeline:
         Returns
         -------
         dict | None
-            ``{"conversation_id": str, "page_context": dict | None}``, or
-            ``None`` if no ``message_inbox_id`` was given, the row could not
-            be loaded, or it carries no ``conversation_id`` (a malformed or
-            non-dashboard envelope).
+            ``{"conversation_id": str, "message_id": str,
+            "page_context": dict | None}``, or ``None`` if no
+            ``message_inbox_id`` was given, the row could not be loaded, or it
+            carries no ``conversation_id`` (a malformed or non-dashboard
+            envelope). ``message_id`` is the immutable dashboard user-message
+            identity used by the cross-process Stop protocol.
         """
         if message_inbox_id is None:
             return None
@@ -1232,8 +1234,10 @@ class MessagePipeline:
             return None
 
         page_context = raw_inner.get("page_context")
+        message_id = raw_inner.get("message_id") if isinstance(raw_inner, dict) else None
         return {
             "conversation_id": str(conversation_id),
+            "message_id": str(message_id) if message_id else None,
             "page_context": page_context if isinstance(page_context, dict) else None,
         }
 
@@ -1272,9 +1276,65 @@ class MessagePipeline:
         be one of the values allowed by the ``valid_failure_category`` check
         constraint on ``dead_letter_queue``.
         """
+        from butlers.core.dashboard_turns import claim_dead_letter, mark_terminal
         from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
 
         request_uuid = UUID(request_id)
+        dashboard_message_id: UUID | None = None
+        if dashboard_context is not None:
+            raw_message_id = dashboard_context.get("message_id")
+            if raw_message_id not in (None, ""):
+                try:
+                    dashboard_message_id = UUID(str(raw_message_id))
+                except (TypeError, ValueError):
+                    logger.error(
+                        "Dashboard dead-letter has an invalid immutable message id: %r",
+                        raw_message_id,
+                    )
+                    return RoutingResult(
+                        target_butler="dashboard_control_error",
+                        classification_error="Dashboard turn control message id is invalid.",
+                    )
+
+        # A dead-letter capture and its in-thread reply are terminal side
+        # effects.  Claim them before writing either, so a Stop that wins this
+        # race prevents a later failure path from creating new visible work.
+        if dashboard_message_id is not None:
+            try:
+                control = await claim_dead_letter(
+                    self._pool,
+                    message_id=dashboard_message_id,
+                    request_id=request_uuid,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not claim dashboard dead-letter action for message %s",
+                    dashboard_message_id,
+                )
+                return RoutingResult(
+                    target_butler="dashboard_control_error",
+                    classification_error="Dashboard turn control is unavailable.",
+                )
+            if control.outcome == "cancelled":
+                return RoutingResult(
+                    target_butler="cancelled",
+                    route_result={"cancelled": True},
+                )
+            if control.outcome == "external_action_in_progress":
+                return RoutingResult(
+                    target_butler="dashboard_control_error",
+                    classification_error=(
+                        "A prior dashboard dead-letter action is still being reconciled; "
+                        "it cannot be reported as filed yet."
+                    ),
+                )
+            if control.outcome != "claimed":
+                return RoutingResult(
+                    target_butler="dashboard_control_error",
+                    classification_error=(
+                        f"Dashboard dead-letter action was not authorized: {control.outcome}."
+                    ),
+                )
 
         dead_letter_id: str | None = None
         try:
@@ -1326,6 +1386,22 @@ class MessagePipeline:
                 request_id,
             )
 
+        if dashboard_message_id is not None:
+            try:
+                await mark_terminal(
+                    self._pool,
+                    message_id=dashboard_message_id,
+                    state="failed",
+                )
+            except Exception:
+                # The action has already been claimed and performed; preserve
+                # that truth and let operational reconciliation repair only the
+                # terminal marker rather than attempting the side effect again.
+                logger.exception(
+                    "Could not mark dashboard dead-letter terminal for message %s",
+                    dashboard_message_id,
+                )
+
         return RoutingResult(
             target_butler="dead_letter",
             route_result={"dead_letter_id": dead_letter_id},
@@ -1348,6 +1424,8 @@ class MessagePipeline:
         }
         if args.get("source_id") not in (None, ""):
             metadata["source_id"] = str(args["source_id"])
+        if args.get("dashboard_message_id") not in (None, ""):
+            metadata["dashboard_message_id"] = str(args["dashboard_message_id"])
         return metadata
 
     @staticmethod
@@ -1738,6 +1816,42 @@ class MessagePipeline:
 
         source_metadata = self._build_source_metadata(args, tool_name=tool_name)
         source = source_metadata["channel"]
+        # The normal scanner preserves this immutable message id in
+        # ``tool_args``.  Direct pipeline callers can instead supply just the
+        # persisted inbox id, so recover the same source-of-truth value before
+        # deciding whether a dashboard turn is safe to dispatch.  Without the
+        # fallback, a real dashboard request could be rejected solely because
+        # a caller omitted a redundant transport field even though Stop can be
+        # joined to the turn from the accepted envelope.
+        dashboard_context: dict[str, Any] | None = None
+        if source == "dashboard" and "dashboard_message_id" not in source_metadata:
+            dashboard_context = await self._load_dashboard_context(message_inbox_id)
+            raw_dashboard_message_id = (
+                dashboard_context.get("message_id") if dashboard_context is not None else None
+            )
+            if raw_dashboard_message_id not in (None, ""):
+                args["dashboard_message_id"] = str(raw_dashboard_message_id)
+                source_metadata = self._build_source_metadata(args, tool_name=tool_name)
+        dashboard_turn_id: UUID | None = None
+        if source == "dashboard":
+            raw_dashboard_message_id = source_metadata.get("dashboard_message_id")
+            try:
+                dashboard_turn_id = UUID(str(raw_dashboard_message_id))
+            except (TypeError, ValueError):
+                # Dashboard classification must use the same immutable turn
+                # identity as the API Stop endpoint.  Running a classifier
+                # without it would create a cross-process runtime that Stop
+                # cannot durably gate, so fail closed before any dispatch.
+                logger.error(
+                    "Refusing dashboard classification without a valid message id "
+                    "(request_id=%s, value=%r)",
+                    request_id,
+                    raw_dashboard_message_id,
+                )
+                return RoutingResult(
+                    target_butler="dashboard_control_error",
+                    classification_error="Dashboard turn control message id is invalid or missing.",
+                )
         source_id = source_metadata.get("source_id")
         raw_chat_id = args.get("chat_id")
         chat_id = str(raw_chat_id) if raw_chat_id not in (None, "") else None
@@ -2278,10 +2392,6 @@ class MessagePipeline:
                 # Build routing prompt and spawn CC
                 start = time.perf_counter()
                 spawn_start = time.perf_counter()
-                # Bound before the try so the classifier spawn-exception handler
-                # (which may fire before the dashboard_context load below runs)
-                # can always safely reference it without an UnboundLocalError.
-                dashboard_context: dict[str, Any] | None = None
                 try:
                     # Load conversation history — use structured batch data
                     # from the decomposition branch if available, otherwise
@@ -2394,7 +2504,12 @@ class MessagePipeline:
                     # file_bug_report can deterministically inject them downstream.
                     # (already bound to None above the try/except)
                     if source == "dashboard" and _payload_type != "conversation_history":
-                        dashboard_context = await self._load_dashboard_context(message_inbox_id)
+                        if dashboard_context is None:
+                            dashboard_context = await self._load_dashboard_context(message_inbox_id)
+                        if dashboard_context is None:
+                            dashboard_context = {"message_id": str(dashboard_turn_id)}
+                        else:
+                            dashboard_context.setdefault("message_id", str(dashboard_turn_id))
 
                     with tracer.start_as_current_span("butlers.switchboard.routing.build_prompt"):
                         butlers = await _load_available_butlers(self._pool)
@@ -2453,6 +2568,8 @@ class MessagePipeline:
                         "request_id": request_id,
                         "complexity": Complexity.CHEAP,
                     }
+                    if dashboard_turn_id is not None:
+                        dispatch_kwargs["dashboard_turn_id"] = dashboard_turn_id
                     if self._classification_timeout_s is not None:
                         dispatch_kwargs["timeout_override"] = self._classification_timeout_s
 
@@ -2463,11 +2580,15 @@ class MessagePipeline:
                         # wired and this isn't the decomposition/signal-
                         # extraction lane (that lane parses a JSON signal
                         # array, not route_to_butler/file_bug_report calls,
-                        # and is out of scope here). try_structured_classification
-                        # returns None (no attempt made or attempt exhausted)
-                        # whenever the fast lane cannot safely produce a
-                        # decision, in which case the existing CLI/free-text
-                        # dispatch_fn call below runs completely unchanged.
+                        # and is out of scope here). Dashboard turns
+                        # deliberately bypass this direct-adapter path: only
+                        # Spawner registers a runtime before invocation and
+                        # can therefore uphold the durable Stop guarantee.
+                        # try_structured_classification returns None (no
+                        # attempt made or attempt exhausted) whenever the
+                        # fast lane cannot safely produce a decision, in
+                        # which case the existing CLI/free-text dispatch_fn
+                        # call below runs completely unchanged.
                         _local_tool_server = (
                             self._local_tool_server_provider()
                             if self._local_tool_server_provider is not None
@@ -2476,6 +2597,7 @@ class MessagePipeline:
                         if (
                             _local_tool_server is not None
                             and _payload_type != "conversation_history"
+                            and source != "dashboard"
                         ):
                             from butlers.tools.switchboard.routing.structured_classify import (
                                 try_structured_classification,
@@ -2516,6 +2638,38 @@ class MessagePipeline:
                     if spawn_result is not None:
                         cc_output = str(getattr(spawn_result, "output", "") or "")
                         tool_calls = getattr(spawn_result, "tool_calls", []) or []
+
+                    # A dashboard Spawner can return an ordinary failed result
+                    # after an owner Stop (rather than raising into this
+                    # pipeline).  Do not mistake that controlled exit for an
+                    # unclassified message and dead-letter it.  The durable
+                    # state is the authority when an API/worker race exists.
+                    if (
+                        dashboard_turn_id is not None
+                        and spawn_result is not None
+                        and not bool(getattr(spawn_result, "success", False))
+                    ):
+                        from butlers.core.dashboard_turns import dispatch_status
+
+                        try:
+                            dashboard_status = await dispatch_status(
+                                self._pool,
+                                message_id=dashboard_turn_id,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Could not inspect failed dashboard classification turn %s",
+                                dashboard_turn_id,
+                            )
+                            dashboard_status = None
+                        if dashboard_status is not None and dashboard_status.outcome in {
+                            "cancelled",
+                            "cancelling",
+                        }:
+                            return RoutingResult(
+                                target_butler="cancelled",
+                                route_result={"cancelled": True},
+                            )
 
                     # --- Decomposition signal extraction branch ---
                     # When the payload is conversation_history the LLM may return

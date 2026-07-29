@@ -51,6 +51,8 @@ All API responses SHALL use consistent wrapper types. Backend Pydantic models an
   - Timeline: `GET /api/timeline` returns `TimelineResponse` (unwrapped)
   - Relationship domain: `GET /api/relationship/contacts/{contactId}` returns `ContactDetail` (unwrapped), and other relationship sub-resource endpoints return unwrapped arrays
   - Trigger: `POST /api/butlers/{name}/trigger` returns `TriggerResponse` (unwrapped)
+  - Conversation create and follow-up: `POST /api/butlers/{name}/conversations` and `POST /api/butlers/{name}/conversations/{conversation_id}/messages` return `text/event-stream`
+  - Conversation Stop: canonical `POST /api/butlers/{name}/conversation-turns/{message_id}/cancel` (and the legacy conversation-scoped compatibility route) returns raw `ConversationCancelResponse`
 - **AND** the frontend type layer accounts for these exceptions with dedicated response interfaces
 
 #### Scenario: TypeScript mirror types
@@ -362,6 +364,26 @@ The API SHALL expose the following complete endpoint inventory, grouped by domai
 | GET | `/api/butlers/{name}/modules` | Module health status |
 | GET | `/api/butlers/{name}/module-states` | Module runtime states |
 | PUT | `/api/butlers/{name}/module-states/{module}/enabled` | Toggle module enabled state |
+
+#### Dashboard Conversations
+| Method | Path | Response | Purpose |
+|--------|------|----------|---------|
+| GET | `/api/butlers/{name}/conversations` | `PaginatedResponse<ConversationSummary>` | List conversations |
+| GET | `/api/butlers/{name}/conversations/search` | `PaginatedResponse<ConversationSearchResult>` | Search conversation history |
+| GET | `/api/butlers/{name}/conversations/summary` | `ConversationStats` | Conversation statistics |
+| POST | `/api/butlers/{name}/conversations` | `text/event-stream` | Create and submit an immutable dashboard user turn |
+| GET | `/api/butlers/{name}/conversations/{conversation_id}/messages` | `PaginatedResponse<ConversationMessage>` | List messages |
+| POST | `/api/butlers/{name}/conversations/{conversation_id}/messages` | `text/event-stream` | Submit a follow-up user turn |
+| PATCH | `/api/butlers/{name}/conversations/{conversation_id}` | `ConversationSummary` | Rename, archive, or unarchive a conversation |
+| POST | `/api/butlers/{name}/conversation-turns/{message_id}/cancel` | `ConversationCancelResponse` | Canonical durable Stop for one immutable user turn |
+| POST | `/api/butlers/{name}/conversations/{conversation_id}/cancel` | `ConversationCancelResponse` | Legacy compatibility Stop route; dashboard clients use the message-scoped route |
+
+#### Scenario: Dashboard conversation stream and Stop semantics
+- **WHEN** the dashboard submits a user turn
+- **THEN** the API opens durable control keyed by the immutable `message_id` before external ingress, and only the caller with the `dispatch` claim may invoke `ingest.v1`
+- **AND** a caller observing `accepted` observes the original request, while `pending` or `cancelling` yields `INGEST_IN_PROGRESS` plus `done` and never creates a replay
+- **AND** confirmed cancellation yields `SESSION_CANCELLED`; an unprovable recovered predecessor yields `TURN_OUTCOME_UNKNOWN`; both suppress automatic replay
+- **AND** the raw `ConversationCancelResponse` documents exactly one truthful Stop result (`cancelled`, `already_finished`, or unconfirmed), while non-2xx failures retain `ErrorResponse`
 
 #### Sessions
 | Method | Path | Purpose |

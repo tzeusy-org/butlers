@@ -812,7 +812,7 @@ export {
   searchConversations,
   createConversation,
   sendMessage,
-  cancelConversationTurn,
+  cancelConversationMessageTurn,
 } from "./client.ts";
 
 export type {

@@ -44,7 +44,7 @@ def register_session_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         caller never renders a false "stopped" confirmation for something
         that simply finished on its own.
         """
-        cancelled = spawner.cancel_session(session_id)
+        cancelled = await spawner.cancel_session_and_wait(session_id)
         return {"cancelled": cancelled, "session_id": session_id}
 
     if butler_type != ButlerType.STAFFER:

@@ -73,7 +73,19 @@ accepted --> processing --> processed (session_id recorded)
                        \--> errored   (error message stored)
 ```
 
-On startup, the daemon scans for rows in `accepted` or `processing` state older than a configurable grace period (default 10 seconds) and re-dispatches them. Both states are scanned because a crash can leave rows in either state with no completing task.
+On startup, the daemon scans for rows in `accepted` or `processing` state older than a configurable grace period (default 10 seconds) and claims them for recovery. Ordinary work is re-dispatched through its fenced claim; dashboard `processing` recovery follows the no-replay exception below. Both states are scanned because a crash can leave rows in either state with no completing task.
+
+A `processing` row has an opaque ownership lease. Its worker MUST synchronously
+verify/renew that lease before protected work and again immediately before it
+constructs the runtime invocation; it heartbeats while live and uses the same
+claim for terminal writes. A displaced worker MUST relinquish/cancel its local
+work and MUST NOT settle the row terminally.
+
+For a dashboard-sourced row linked to a durable message turn, reclaiming a
+stale `processing` lease only proves that the predecessor is unprovable, not
+dead. Recovery MUST mark that dashboard turn ambiguous and suppress automatic
+replay, while ordinary non-dashboard recovery remains unchanged. A Stop may
+still address exact durably registered predecessor sessions.
 
 ### Concurrency Control
 

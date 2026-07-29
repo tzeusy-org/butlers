@@ -474,7 +474,13 @@ class RouteTargetV1(BaseModel):
 
 
 class RouteSourceMetadataV1(BaseModel):
-    """Optional source metadata propagated during dispatch."""
+    """Optional source metadata propagated during dispatch.
+
+    ``dashboard_message_id`` is the immutable user-message identity for the
+    dashboard Stop control protocol.  It is deliberately distinct from
+    ``source_id``, which remains sender/transport identity for dedupe and
+    relationship resolution.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -482,6 +488,7 @@ class RouteSourceMetadataV1(BaseModel):
     identity: NonEmptyStr
     tool_name: NonEmptyStr
     source_id: NonEmptyStr | None = None
+    dashboard_message_id: UUID | None = None
 
 
 class RouteEnvelopeV1(BaseModel):

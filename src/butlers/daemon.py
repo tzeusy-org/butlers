@@ -559,11 +559,12 @@ class ButlerDaemon:
         wire_pipelines(self, pool)
 
     async def _recover_route_inbox(self, pool: asyncpg.Pool) -> None:
-        """Re-dispatch route_inbox rows that were accepted but never processed.
+        """Recover eligible route-inbox rows under a fenced processing lease.
 
-        Called on startup to recover from crashes or restarts.  Rows in
-        'accepted' state older than the grace period are re-dispatched
-        as background tasks through the same path as the hot path.
+        Called on startup to recover from crashes or restarts. Accepted rows
+        and stale processing leases are eligible for recovery; reclaimed
+        dashboard processing rows reconcile their durable predecessor and
+        suppress automatic replay when it is unprovable.
 
         The implementation lives in :mod:`butlers.switchboard_wiring` to keep
         this file focused on class structure.

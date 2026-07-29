@@ -80,9 +80,9 @@ class TestMigrationFileAndChain:
         assert mod.branch_labels is None
         assert mod.depends_on is None
 
-    def test_chain_head_resolves_to_core_192(self) -> None:
+    def test_chain_head_resolves_to_core_193(self) -> None:
         """The real migration-chain scan (used by the migration-drift sentinel
-        and CI's migration-integrity gate) must see core_192 as the current
+        and CI's migration-integrity gate) must see core_193 as the current
         head -- proves core_183 chained onto the true head rather than a
         stale/guessed revision number, and that core_184 (bu-ep4ks.6,
         owner_conditions), core_185 (bu-ep4ks.8, conversation anchor +
@@ -93,12 +93,12 @@ class TestMigrationFileAndChain:
         core_190 (bu-1yw6d, domain-event delivery retry bookkeeping --
         ``attempt_count`` + the terminal ``failed_permanent`` status), and
         core_191 (bu-8bnn9, flight-status feed status), and core_192
-        (ActivityWatch browser-domain evidence) have since chained cleanly on
-        top of it with no gap. Update this literal again the next time a core
-        migration lands."""
+        (ActivityWatch browser-domain evidence) and core_193 (durable dashboard
+        turn cancellation) have since chained cleanly on top of it with no gap.
+        Update this literal again the next time a core migration lands."""
         from butlers.migrations import get_chain_head
 
-        assert get_chain_head("core") == "core_192"
+        assert get_chain_head("core") == "core_193"
 
 
 class TestUpgradeSQLShape:

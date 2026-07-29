@@ -23,15 +23,20 @@ from opentelemetry.context import Context as OtelContext
 from opentelemetry.trace import Link as OtelLink
 from pydantic import ValidationError
 
+from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.route_inbox import (
+    RouteInboxLeaseLost,
+    route_inbox_claim_processing,
     route_inbox_insert,
+    route_inbox_insert_on_connection,
     route_inbox_mark_errored,
     route_inbox_mark_processed,
-    route_inbox_mark_processing,
+    route_inbox_processing_lease_heartbeat,
+    route_inbox_wait_while_claimed,
 )
 from butlers.core.routing_context import _routing_ctx_var
-from butlers.core.spawner import Spawner
+from butlers.core.spawner import SESSION_CANCELLED_ERROR, Spawner
 from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
@@ -679,48 +684,170 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     message="route.execute: database pool is not available",
                 )
 
-            # --- Dedup guard: reject if a session already succeeded for this request_id ---
-            existing_session = await pool.fetchval(
-                """
-                SELECT id FROM sessions
-                WHERE request_id = $1
-                  AND trigger_source = 'route'
-                  AND success = true
-                  AND started_at > now() - interval '24 hours'
-                LIMIT 1
-                """,
-                route_request_id,
-            )
-            if existing_session is not None:
-                logger.info(
-                    "route.execute: dedup — skipping request_id=%s, "
-                    "already has successful session %s",
-                    route_request_id,
-                    existing_session,
-                )
-                return {
-                    "schema_version": "route_response.v1",
-                    "status": "accepted",
-                    "request_context": route_context,
-                    "timing": {"duration_ms": 0},
-                    "dedup": True,
-                    "existing_session_id": str(existing_session),
-                }
-
             accept_started_at = time.monotonic()
-            try:
-                inbox_id = await route_inbox_insert(pool, route_envelope=route_payload)
-            except Exception as exc:
-                logger.warning(
-                    "route.execute: route_inbox_insert failed: %s: %s",
-                    type(exc).__name__,
-                    exc,
-                    exc_info=True,
+            dashboard_message_id = (
+                parsed_route.source_metadata.dashboard_message_id
+                if (
+                    parsed_route.request_context.source_channel == "dashboard"
+                    and parsed_route.source_metadata is not None
                 )
+                else None
+            )
+            inbox_id: uuid.UUID | None = None
+
+            if dashboard_message_id is not None:
+                # Stop and target acceptance serialize on the dashboard turn
+                # row.  The inbox insert and its durable control marker share
+                # this one transaction; scheduling happens only after commit.
+                try:
+                    async with pool.acquire() as conn:
+                        async with conn.transaction():
+                            control = await claim_target(
+                                conn,
+                                message_id=dashboard_message_id,
+                                request_id=parsed_route.request_context.request_id,
+                                target_butler=daemon.config.name,
+                            )
+                            if control.outcome == "active":
+                                existing_session = await conn.fetchval(
+                                    """
+                                    SELECT id FROM sessions
+                                    WHERE request_id = $1
+                                      AND trigger_source = 'route'
+                                      AND success = true
+                                      AND started_at > now() - interval '24 hours'
+                                    LIMIT 1
+                                    """,
+                                    route_request_id,
+                                )
+                                if existing_session is not None:
+                                    terminal = await mark_terminal(
+                                        conn,
+                                        message_id=dashboard_message_id,
+                                        state="completed",
+                                    )
+                                    if terminal.outcome not in {"finished", "cancelled", "pending"}:
+                                        raise RuntimeError(
+                                            "dashboard turn dedup could not become terminal: "
+                                            f"{terminal.outcome}"
+                                        )
+                                    control_outcome = "dedup"
+                                else:
+                                    inbox_id = await route_inbox_insert_on_connection(
+                                        conn,
+                                        route_envelope=route_payload,
+                                    )
+                                    enqueued = await mark_route_enqueued(
+                                        conn,
+                                        message_id=dashboard_message_id,
+                                        route_inbox_id=inbox_id,
+                                    )
+                                    if enqueued.outcome != "active":
+                                        raise RuntimeError(
+                                            "dashboard route inbox marker rejected: "
+                                            f"{enqueued.outcome}"
+                                        )
+                                    control_outcome = "new_enqueued"
+                            else:
+                                control_outcome = control.outcome
+                                if control.outcome == "enqueued":
+                                    inbox_id = control.route_inbox_id
+                except Exception as exc:
+                    logger.warning(
+                        "route.execute: durable dashboard acceptance failed: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
+                    )
+                    return _route_error_response(
+                        context_payload=route_context,
+                        error_class="internal_error",
+                        message=f"route.execute: failed durable dashboard acceptance: {exc}",
+                    )
+
+                if control_outcome == "cancelled":
+                    return {
+                        "schema_version": "route_response.v1",
+                        "status": "accepted",
+                        "request_context": route_context,
+                        "cancelled": True,
+                        "timing": {"duration_ms": _elapsed_ms()},
+                    }
+                if control_outcome in {"finished", "dedup"}:
+                    return {
+                        "schema_version": "route_response.v1",
+                        "status": "accepted",
+                        "request_context": route_context,
+                        "dedup": True,
+                        "timing": {"duration_ms": _elapsed_ms()},
+                    }
+                if control_outcome == "enqueued":
+                    return {
+                        "schema_version": "route_response.v1",
+                        "status": "accepted",
+                        "request_context": route_context,
+                        "inbox_id": str(inbox_id) if inbox_id is not None else None,
+                        "dedup": True,
+                        "timing": {"duration_ms": _elapsed_ms()},
+                    }
+                if control_outcome != "new_enqueued":
+                    return _route_error_response(
+                        context_payload=route_context,
+                        error_class="internal_error",
+                        message=(
+                            "route.execute: dashboard target claim returned "
+                            f"unexpected outcome {control_outcome!r}"
+                        ),
+                    )
+            else:
+                # --- Dedup guard: reject if a session already succeeded for this request_id ---
+                existing_session = await pool.fetchval(
+                    """
+                    SELECT id FROM sessions
+                    WHERE request_id = $1
+                      AND trigger_source = 'route'
+                      AND success = true
+                      AND started_at > now() - interval '24 hours'
+                    LIMIT 1
+                    """,
+                    route_request_id,
+                )
+                if existing_session is not None:
+                    logger.info(
+                        "route.execute: dedup — skipping request_id=%s, "
+                        "already has successful session %s",
+                        route_request_id,
+                        existing_session,
+                    )
+                    return {
+                        "schema_version": "route_response.v1",
+                        "status": "accepted",
+                        "request_context": route_context,
+                        "timing": {"duration_ms": 0},
+                        "dedup": True,
+                        "existing_session_id": str(existing_session),
+                    }
+
+                try:
+                    inbox_id = await route_inbox_insert(pool, route_envelope=route_payload)
+                except Exception as exc:
+                    logger.warning(
+                        "route.execute: route_inbox_insert failed: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
+                    )
+                    return _route_error_response(
+                        context_payload=route_context,
+                        error_class="internal_error",
+                        message=f"route.execute: failed to persist to route_inbox: {exc}",
+                    )
+
+            if inbox_id is None:
                 return _route_error_response(
                     context_payload=route_context,
                     error_class="internal_error",
-                    message=f"route.execute: failed to persist to route_inbox: {exc}",
+                    message="route.execute: no route inbox row was accepted",
                 )
             inbox_accepted_at = __import__("datetime").datetime.now(
                 __import__("datetime").timezone.utc
@@ -773,6 +900,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 _accept_span_ctx: trace.SpanContext | None,
                 _sender_entity_id: str | None,
                 _complexity: Complexity,
+                _dashboard_turn_id: uuid.UUID | None,
             ) -> None:
                 """Background task: call spawner.trigger() and update route_inbox."""
                 from datetime import UTC as _UTC
@@ -797,68 +925,141 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 ) as _process_span:
                     tag_butler_span(_process_span, butler_name)
                     _process_span.set_attribute("request_id", _request_id)
+                    processing_claim_id: uuid.UUID | None = None
                     try:
-                        await route_inbox_mark_processing(_pool, _inbox_id)
+                        processing_claim_id = await route_inbox_claim_processing(_pool, _inbox_id)
                         route_metrics.route_queue_depth_dec()
+                        if processing_claim_id is None:
+                            logger.info(
+                                "route_inbox: processing lease already owned id=%s request_id=%s",
+                                _inbox_id,
+                                _request_id,
+                            )
+                            return
                         if _sender_entity_id is not None:
                             _routing_ctx_var.set({"source_entity_id": _sender_entity_id})
 
-                        # Channel-agnostic conversation anchor (bu-ep4ks.8
-                        # follow-up, bu-bkthr): give every inbound thread that
-                        # already normalizes a source_thread_identity at ingest
-                        # (Telegram, email, ...) a durable dashboard_conversations
-                        # row on the TARGET butler, so the spawner below can
-                        # attach a provider resume handle to it. Idempotent
-                        # upsert (core_185's partial unique index) -- safe to
-                        # call on every accepted route.execute for this thread.
-                        # Best-effort: a lookup/create failure must never block
-                        # routing, it just means this turn has no resume lineage.
-                        _conversation_id: uuid.UUID | None = None
-                        if source_thread_identity:
-                            try:
-                                from butlers.api.conversations import (
-                                    conversation_get_or_create_by_thread,
-                                )
+                        async with route_inbox_processing_lease_heartbeat(
+                            _pool,
+                            _inbox_id,
+                            processing_claim_id,
+                        ) as lease_lost:
+                            # Channel-agnostic conversation anchor (bu-ep4ks.8
+                            # follow-up, bu-bkthr): give every inbound thread that
+                            # already normalizes a source_thread_identity at ingest
+                            # (Telegram, email, ...) a durable dashboard_conversations
+                            # row on the TARGET butler, so the spawner below can
+                            # attach a provider resume handle to it. Idempotent
+                            # upsert (core_185's partial unique index) -- safe to
+                            # call on every accepted route.execute for this thread.
+                            # Best-effort: a lookup/create failure must never block
+                            # routing, it just means this turn has no resume lineage.
+                            # It nevertheless stays inside the lease heartbeat: a
+                            # slow anchor must not make a healthy worker appear dead
+                            # to recovery before it reaches the Spawner boundary.
+                            _conversation_id: uuid.UUID | None = None
+                            if source_thread_identity:
+                                try:
+                                    from butlers.api.conversations import (
+                                        conversation_get_or_create_by_thread,
+                                    )
 
-                                _conversation, _ = await conversation_get_or_create_by_thread(
+                                    _conversation, _ = await conversation_get_or_create_by_thread(
+                                        _pool,
+                                        butler_name=butler_name,
+                                        source_channel=source_channel,
+                                        source_thread_identity=source_thread_identity,
+                                        # The raw, un-fenced prompt -- _prompt is the
+                                        # <routed_message>-wrapped text (_wrap_routed_
+                                        # message), which would otherwise pollute the
+                                        # conversation's auto-generated title.
+                                        first_message=parsed_route.input.prompt,
+                                    )
+                                    _conversation_id = _conversation["id"]
+                                except Exception:
+                                    logger.debug(
+                                        "conversation anchor lookup/create failed for "
+                                        "butler=%s source_channel=%s "
+                                        "source_thread_identity=%s",
+                                        butler_name,
+                                        source_channel,
+                                        source_thread_identity,
+                                        exc_info=True,
+                                    )
+
+                            result = await route_inbox_wait_while_claimed(
+                                _pool,
+                                _inbox_id,
+                                processing_claim_id,
+                                lease_lost,
+                                lambda: _spawner.trigger(
+                                    prompt=_prompt,
+                                    context=_context,
+                                    trigger_source="route",
+                                    request_id=_request_id,
+                                    complexity=_complexity,
+                                    # The ingestion request_id is the same UUID7 as
+                                    # public.ingestion_events.id (inserted in the same
+                                    # transaction by switchboard.ingest). Persist it as
+                                    # the session's ingestion_event_id FK so chronicler
+                                    # contact resolution can join sessions back to the
+                                    # originating channel/contact.
+                                    ingestion_event_id=_request_id,
+                                    conversation_id=_conversation_id,
+                                    dashboard_turn_id=_dashboard_turn_id,
+                                    # The Spawner distinguishes this local queue-lease
+                                    # cancellation from an owner Stop or daemon drain,
+                                    # so its finalizer leaves a dashboard predecessor
+                                    # unresolved for recovery rather than recording a
+                                    # false terminal failure.
+                                    route_lease_lost=lease_lost,
+                                ),
+                            )
+                            if lease_lost.is_set():
+                                raise RouteInboxLeaseLost(
+                                    "route inbox processing lease was lost after runtime completion"
+                                )
+                            result_error = getattr(result, "error", None)
+                            if not bool(getattr(result, "success", False)) and (
+                                result_error != SESSION_CANCELLED_ERROR
+                            ):
+                                error_msg = (
+                                    "Spawner returned unsuccessful result: "
+                                    f"{result_error or 'unknown error'}"
+                                )
+                                logger.warning(
+                                    "route_inbox: runtime failed for id=%s request_id=%s: %s",
+                                    _inbox_id,
+                                    _request_id,
+                                    error_msg,
+                                )
+                                _process_span.set_status(trace.StatusCode.ERROR, error_msg)
+                                await route_inbox_mark_errored(
                                     _pool,
-                                    butler_name=butler_name,
-                                    source_channel=source_channel,
-                                    source_thread_identity=source_thread_identity,
-                                    # The raw, un-fenced prompt -- _prompt is the
-                                    # <routed_message>-wrapped text (_wrap_routed_
-                                    # message), which would otherwise pollute the
-                                    # conversation's auto-generated title.
-                                    first_message=parsed_route.input.prompt,
+                                    _inbox_id,
+                                    error_msg,
+                                    processing_claim_id=processing_claim_id,
                                 )
-                                _conversation_id = _conversation["id"]
-                            except Exception:
-                                logger.debug(
-                                    "conversation anchor lookup/create failed for "
-                                    "butler=%s source_channel=%s "
-                                    "source_thread_identity=%s",
-                                    butler_name,
-                                    source_channel,
-                                    source_thread_identity,
-                                    exc_info=True,
+                                return
+                            if not await route_inbox_mark_processed(
+                                _pool,
+                                _inbox_id,
+                                result.session_id,
+                                processing_claim_id=processing_claim_id,
+                            ):
+                                raise RouteInboxLeaseLost(
+                                    "route inbox processing lease was lost while marking the result"
                                 )
-
-                        result = await _spawner.trigger(
-                            prompt=_prompt,
-                            context=_context,
-                            trigger_source="route",
-                            request_id=_request_id,
-                            complexity=_complexity,
-                            # The ingestion request_id is the same UUID7 as
-                            # public.ingestion_events.id (inserted in the same
-                            # transaction by switchboard.ingest). Persist it as
-                            # the session's ingestion_event_id FK so chronicler
-                            # contact resolution can join sessions back to the
-                            # originating channel/contact.
-                            ingestion_event_id=_request_id,
-                            conversation_id=_conversation_id,
+                    except RouteInboxLeaseLost:
+                        # The heartbeat could no longer prove this worker owns the
+                        # row.  Do not race a recovery owner with another terminal
+                        # write; the fenced claim will be reconciled by recovery.
+                        logger.warning(
+                            "route_inbox: relinquished processing lease id=%s request_id=%s",
+                            _inbox_id,
+                            _request_id,
                         )
-                        await route_inbox_mark_processed(_pool, _inbox_id, result.session_id)
+                        return
                     except Exception as exc:
                         error_msg = f"{type(exc).__name__}: {exc}"
                         logger.exception(
@@ -867,7 +1068,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             _request_id,
                         )
                         _process_span.set_status(trace.StatusCode.ERROR, error_msg)
-                        await route_inbox_mark_errored(_pool, _inbox_id, error_msg)
+                        await route_inbox_mark_errored(
+                            _pool,
+                            _inbox_id,
+                            error_msg,
+                            processing_claim_id=processing_claim_id,
+                        )
 
             # Record accept-phase metrics
             route_metrics.record_route_accept_latency((time.monotonic() - accept_started_at) * 1000)
@@ -886,6 +1092,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     accept_span_ctx,
                     _route_sender_entity_id,
                     _route_complexity,
+                    dashboard_message_id,
                 ),
                 name=f"route-inbox-{inbox_id}",
             )

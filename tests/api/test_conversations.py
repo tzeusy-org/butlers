@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -627,12 +627,46 @@ def _make_reply_row(**kw):
 
 def _app_with_mock_db_and_mcp(app: FastAPI, *, mcp_manager, reply_row=None, conversation_row=None):
     shared_pool = AsyncMock()
-    if conversation_row is not None:
-        # conversation_get() consumes the first fetchrow; the poller's
-        # message_find_reply_since() consumes the second.
-        shared_pool.fetchrow = AsyncMock(side_effect=[conversation_row, reply_row])
-    else:
-        shared_pool.fetchrow = AsyncMock(return_value=reply_row)
+
+    def _turn_row(
+        outcome: str,
+        *,
+        message_id: UUID,
+        conversation_id: UUID | None = None,
+        request_id: UUID | None = None,
+    ) -> dict[str, object]:
+        """Return the SQL control-plane shape used by the dashboard stream."""
+        return {
+            "outcome": outcome,
+            "message_id": message_id,
+            "conversation_id": conversation_id,
+            "request_id": request_id,
+            "target_butler": None,
+            "target_kind": None,
+            "route_inbox_id": None,
+            "cancel_requested_at": None,
+            "cancel_confirmed_at": None,
+            "terminal_state": None,
+            "terminal_at": None,
+        }
+
+    async def fetchrow(sql: str, *args: object):
+        # The stream opens a durable row before returning SSE, then claims
+        # ingress immediately before it calls Switchboard. Keep this helper's
+        # ordinary reply tests independent from the control-plane internals.
+        if "dashboard_turn_open" in sql:
+            return _turn_row("ready", message_id=args[0], conversation_id=args[1])
+        if "dashboard_turn_claim_ingress" in sql:
+            return _turn_row("dispatch", message_id=args[0])
+        if "dashboard_turn_bind_ingress" in sql:
+            return _turn_row("accepted", message_id=args[0], request_id=args[1])
+        if "dashboard_turn_record_ingress_failure" in sql:
+            return _turn_row("active", message_id=args[0])
+        if conversation_row is not None and "FROM public.dashboard_conversations" in sql:
+            return conversation_row
+        return reply_row
+
+    shared_pool.fetchrow = AsyncMock(side_effect=fetchrow)
     shared_pool.execute = AsyncMock(return_value=None)
 
     mock_db = MagicMock(spec=DatabaseManager)
@@ -716,7 +750,28 @@ async def test_create_conversation_retry_reuses_original_conversation_for_messag
         reply_row=None,
     )
 
+    def _turn(outcome: str, *, bound_request_id: UUID | None = None):
+        return {
+            "outcome": outcome,
+            "message_id": message_id,
+            "conversation_id": original_conversation_id,
+            "request_id": bound_request_id,
+            "target_butler": None,
+            "target_kind": None,
+            "route_inbox_id": None,
+            "cancel_requested_at": None,
+            "cancel_confirmed_at": None,
+            "terminal_state": None,
+            "terminal_at": None,
+        }
+
     async def fetchrow(sql, *_args):
+        if "dashboard_turn_open" in sql:
+            return _turn("ready")
+        if "dashboard_turn_claim_ingress" in sql:
+            return _turn("dispatch")
+        if "dashboard_turn_bind_ingress" in sql:
+            return _turn("accepted", bound_request_id=UUID(request_id))
         if "FROM public.dashboard_messages" in sql and "WHERE id = $1" in sql:
             return existing_user_message
         if "FROM public.dashboard_conversations" in sql:
@@ -1120,6 +1175,51 @@ async def test_stream_conversation_response_registers_and_clears_active_turn():
     assert _CONV_ID not in conversations_router._ACTIVE_TURNS
 
 
+async def test_stream_conversation_response_registers_switchboard_for_pass_through_turn():
+    """A normal unpinned turn starts cancellable at the classifier boundary."""
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "triage_decision": "pass_through",
+                "triage_target": None,
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
+    )
+    gen = _stream_conversation_response(
+        request=_FakeRequest(),
+        butler_name=_SWITCHBOARD_BUTLER,
+        conversation_id=_CONV_ID,
+        message_created_at=_NOW - timedelta(seconds=1),
+        envelope=envelope,
+        db=mock_db,
+        mcp_mgr=mgr,
+    )
+
+    await anext(gen)
+
+    assert conversations_router._ACTIVE_TURNS[_CONV_ID] == {
+        "routed_butler": _SWITCHBOARD_BUTLER,
+        "request_id": request_id,
+    }
+
+    async for _ in gen:
+        pass
+
+
 async def test_cancel_with_no_active_turn_is_benign_noop(app):
     """Stop after the turn already finished must never claim it stopped anything."""
     app.dependency_overrides[_get_db_manager] = lambda: MagicMock(spec=DatabaseManager)
@@ -1134,9 +1234,394 @@ async def test_cancel_with_no_active_turn_is_benign_noop(app):
     assert resp.json() == {
         "cancelled": False,
         "already_finished": True,
+        "conversation_id": None,
         "session_id": None,
         "message": None,
     }
+
+
+async def test_cancel_uses_switchboard_before_classifier_handoff(app):
+    """Stop still cancels the live classifier when no domain target exists yet."""
+    conversation_id = uuid4()
+    request_id = str(uuid4())
+    switchboard_session_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": _SWITCHBOARD_BUTLER,
+        "request_id": request_id,
+    }
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(
+        return_value=_make_conversation_row(
+            id=conversation_id,
+            butler_name=_SWITCHBOARD_BUTLER,
+            routed_butler=None,
+        )
+    )
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchval = AsyncMock(return_value=switchboard_session_id)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+    mock_db.pool.return_value = switchboard_pool
+
+    switchboard_client = MagicMock()
+    switchboard_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": True, "session_id": str(switchboard_session_id)})
+    )
+    mgr = _make_mcp_manager(switchboard_client)
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/butlers/{_SWITCHBOARD_BUTLER}/conversations/{conversation_id}/cancel"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cancelled": True,
+        "already_finished": False,
+        "conversation_id": None,
+        "session_id": str(switchboard_session_id),
+        "message": None,
+    }
+    mock_db.pool.assert_called_once_with(_SWITCHBOARD_BUTLER)
+    switchboard_client.call_tool.assert_awaited_once_with(
+        "cancel_session", {"session_id": str(switchboard_session_id)}
+    )
+
+
+async def test_cancel_prefers_post_classification_target_over_switchboard(app):
+    """Stop must kill the domain session after an LLM classifier handoff."""
+    conversation_id = uuid4()
+    request_id = str(uuid4())
+    switchboard_session_id = uuid4()
+    finance_session_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": _SWITCHBOARD_BUTLER,
+        "request_id": request_id,
+    }
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(
+        return_value=_make_conversation_row(
+            id=conversation_id,
+            butler_name=_SWITCHBOARD_BUTLER,
+            routed_butler="finance",
+        )
+    )
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchval = AsyncMock(return_value=switchboard_session_id)
+    finance_pool = AsyncMock()
+    finance_pool.fetchval = AsyncMock(return_value=finance_session_id)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+    mock_db.pool.side_effect = {
+        _SWITCHBOARD_BUTLER: switchboard_pool,
+        "finance": finance_pool,
+    }.__getitem__
+
+    switchboard_client = MagicMock()
+    switchboard_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": True, "session_id": str(switchboard_session_id)})
+    )
+    finance_client = MagicMock()
+    finance_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": True, "session_id": str(finance_session_id)})
+    )
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock(
+        side_effect={
+            _SWITCHBOARD_BUTLER: switchboard_client,
+            "finance": finance_client,
+        }.__getitem__
+    )
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/butlers/{_SWITCHBOARD_BUTLER}/conversations/{conversation_id}/cancel"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cancelled": True,
+        "already_finished": False,
+        "conversation_id": None,
+        "session_id": str(finance_session_id),
+        "message": None,
+    }
+    mock_db.pool.assert_called_once_with("finance")
+    mgr.get_client.assert_awaited_once_with("finance")
+    finance_client.call_tool.assert_awaited_once_with(
+        "cancel_session", {"session_id": str(finance_session_id)}
+    )
+    switchboard_client.call_tool.assert_not_awaited()
+
+
+async def test_cancel_with_post_classification_target_pending_session_stays_retryable(app):
+    """A known target without a session is still active routing, not a completed turn."""
+    conversation_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": _SWITCHBOARD_BUTLER,
+        "request_id": str(uuid4()),
+    }
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(
+        return_value=_make_conversation_row(
+            id=conversation_id,
+            butler_name=_SWITCHBOARD_BUTLER,
+            routed_butler="finance",
+        )
+    )
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchval = AsyncMock(return_value=None)
+    finance_pool = AsyncMock()
+    finance_pool.fetchval = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+    mock_db.pool.side_effect = {
+        _SWITCHBOARD_BUTLER: switchboard_pool,
+        "finance": finance_pool,
+    }.__getitem__
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock()
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/butlers/{_SWITCHBOARD_BUTLER}/conversations/{conversation_id}/cancel"
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancelled"] is False
+    assert body["already_finished"] is False
+    assert body["session_id"] is None
+    assert body["message"]
+    mock_db.pool.assert_called_once_with("finance")
+    mgr.get_client.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("pool_side_effect", "fetchval_side_effect", "expected_message"),
+    [
+        (KeyError("missing pool"), None, "Could not locate finance"),
+        (None, RuntimeError("database unavailable"), "Could not inspect finance"),
+    ],
+)
+async def test_cancel_surfaces_target_session_lookup_failures(
+    app,
+    pool_side_effect,
+    fetchval_side_effect,
+    expected_message,
+):
+    """Lookup infrastructure failures are not mislabeled as routing progress."""
+    conversation_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": "finance",
+        "request_id": str(uuid4()),
+    }
+
+    finance_pool = AsyncMock()
+    finance_pool.fetchval = AsyncMock(side_effect=fetchval_side_effect)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = finance_pool
+    if pool_side_effect is not None:
+        mock_db.pool.side_effect = pool_side_effect
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock()
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/butlers/{_BUTLER}/conversations/{conversation_id}/cancel"
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancelled"] is False
+    assert body["already_finished"] is False
+    assert body["session_id"] is None
+    assert expected_message in body["message"]
+    mgr.get_client.assert_not_awaited()
+
+
+async def test_cancel_rechecks_handoff_after_switchboard_has_finished(app):
+    """Stop must not miss a target stamped while the classifier session finished."""
+    conversation_id = uuid4()
+    request_id = str(uuid4())
+    switchboard_session_id = uuid4()
+    finance_session_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": _SWITCHBOARD_BUTLER,
+        "request_id": request_id,
+    }
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(
+        side_effect=[
+            _make_conversation_row(
+                id=conversation_id,
+                butler_name=_SWITCHBOARD_BUTLER,
+                routed_butler=None,
+            ),
+            _make_conversation_row(
+                id=conversation_id,
+                butler_name=_SWITCHBOARD_BUTLER,
+                routed_butler="finance",
+            ),
+        ]
+    )
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchval = AsyncMock(return_value=switchboard_session_id)
+    finance_pool = AsyncMock()
+    finance_pool.fetchval = AsyncMock(return_value=finance_session_id)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+    mock_db.pool.side_effect = {
+        _SWITCHBOARD_BUTLER: switchboard_pool,
+        "finance": finance_pool,
+    }.__getitem__
+
+    switchboard_client = MagicMock()
+    switchboard_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": False, "session_id": str(switchboard_session_id)})
+    )
+    finance_client = MagicMock()
+    finance_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": True, "session_id": str(finance_session_id)})
+    )
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock(
+        side_effect={
+            _SWITCHBOARD_BUTLER: switchboard_client,
+            "finance": finance_client,
+        }.__getitem__
+    )
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/butlers/{_SWITCHBOARD_BUTLER}/conversations/{conversation_id}/cancel"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cancelled": True,
+        "already_finished": False,
+        "conversation_id": None,
+        "session_id": str(finance_session_id),
+        "message": None,
+    }
+    mgr.get_client.assert_has_awaits(
+        [
+            ((_SWITCHBOARD_BUTLER,), {}),
+            (("finance",), {}),
+        ]
+    )
+    finance_client.call_tool.assert_awaited_once_with(
+        "cancel_session", {"session_id": str(finance_session_id)}
+    )
+
+
+async def test_cancel_rechecks_handoff_after_switchboard_cancel_succeeds(app):
+    """Stop must not report success before checking a target stamped during cancellation."""
+    conversation_id = uuid4()
+    request_id = str(uuid4())
+    switchboard_session_id = uuid4()
+    finance_session_id = uuid4()
+    conversations_router._ACTIVE_TURNS[conversation_id] = {
+        "routed_butler": _SWITCHBOARD_BUTLER,
+        "request_id": request_id,
+    }
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(
+        side_effect=[
+            _make_conversation_row(
+                id=conversation_id,
+                butler_name=_SWITCHBOARD_BUTLER,
+                routed_butler=None,
+            ),
+            _make_conversation_row(
+                id=conversation_id,
+                butler_name=_SWITCHBOARD_BUTLER,
+                routed_butler="finance",
+            ),
+        ]
+    )
+    switchboard_pool = AsyncMock()
+    switchboard_pool.fetchval = AsyncMock(return_value=switchboard_session_id)
+    finance_pool = AsyncMock()
+    finance_pool.fetchval = AsyncMock(return_value=finance_session_id)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+    mock_db.pool.side_effect = {
+        _SWITCHBOARD_BUTLER: switchboard_pool,
+        "finance": finance_pool,
+    }.__getitem__
+
+    switchboard_client = MagicMock()
+    switchboard_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": True, "session_id": str(switchboard_session_id)})
+    )
+    finance_client = MagicMock()
+    finance_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"cancelled": True, "session_id": str(finance_session_id)})
+    )
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock(
+        side_effect={
+            _SWITCHBOARD_BUTLER: switchboard_client,
+            "finance": finance_client,
+        }.__getitem__
+    )
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mgr
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/butlers/{_SWITCHBOARD_BUTLER}/conversations/{conversation_id}/cancel"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "cancelled": True,
+        "already_finished": False,
+        "conversation_id": None,
+        "session_id": str(finance_session_id),
+        "message": None,
+    }
+    switchboard_client.call_tool.assert_awaited_once_with(
+        "cancel_session", {"session_id": str(switchboard_session_id)}
+    )
+    finance_client.call_tool.assert_awaited_once_with(
+        "cancel_session", {"session_id": str(finance_session_id)}
+    )
 
 
 async def test_cancel_confirmed_by_routed_butler_kills_the_session(app):

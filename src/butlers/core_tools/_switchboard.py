@@ -43,6 +43,29 @@ _DASHBOARD_LANE_CLAIM_KEY = "_dashboard_lane_claimed"
 _DASHBOARD_LANE_TARGET_KEY = "_dashboard_lane_claim_target"
 
 
+def _dashboard_turn_id_from_context(
+    source_metadata: dict[str, Any],
+    dashboard_context: dict[str, Any] | None,
+) -> UUID | None:
+    """Resolve the immutable message id carried by a dashboard turn.
+
+    ``source_metadata.dashboard_message_id`` is authoritative on the route
+    envelope. ``dashboard_context.message_id`` is retained as a compatibility
+    fallback for runtime-context propagation while older in-flight sessions
+    drain. Neither is a conversation id: the Stop control protocol must bind
+    exactly one persisted user message.
+    """
+    raw_message_id = source_metadata.get("dashboard_message_id")
+    if raw_message_id in (None, "") and isinstance(dashboard_context, dict):
+        raw_message_id = dashboard_context.get("message_id")
+    if raw_message_id in (None, ""):
+        return None
+    try:
+        return UUID(str(raw_message_id))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("dashboard_message_id must be a UUID") from exc
+
+
 def _build_dashboard_confirm_block(
     *,
     conversation_id: str,
@@ -259,6 +282,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "request_id": request_id,
             "request_context": request_context,
         }
+        if channel == "dashboard":
+            # ``event.external_event_id`` is the persisted user-message UUID
+            # for dashboard envelopes. Keep it separate from source_id, which
+            # is sender identity, so the pipeline can register every runtime
+            # against the exact turn Stop controls.
+            _tool_args["dashboard_message_id"] = event.get("external_event_id", "")
         if _source_id is not None:
             _tool_args["source_id"] = _source_id
         if _sender_name is not None:
@@ -525,6 +554,20 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         }
         if source_metadata.get("source_id") not in (None, ""):
             normalized_source_metadata["source_id"] = str(source_metadata["source_id"])
+        try:
+            dashboard_turn_id = _dashboard_turn_id_from_context(
+                source_metadata,
+                _dashboard_context if isinstance(_dashboard_context, dict) else None,
+            )
+        except ValueError as exc:
+            logger.warning("route_to_butler refused invalid dashboard turn id: %s", exc)
+            return {
+                "status": "error",
+                "butler": butler,
+                "error": "Dashboard turn control identity is invalid.",
+            }
+        if dashboard_turn_id is not None:
+            normalized_source_metadata["dashboard_message_id"] = str(dashboard_turn_id)
         request_context = _routing_ctx.get("request_context")
         if not isinstance(request_context, dict):
             request_context = None
@@ -549,6 +592,41 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             if isinstance(request_context, dict)
             else None
         )
+
+        if dashboard_turn_id is not None:
+            # This read is only a fast rejection. The target's route.execute
+            # performs the authoritative claim in the same transaction as its
+            # route-inbox insert, closing the race with Stop.
+            from butlers.core.dashboard_turns import dispatch_status
+
+            try:
+                dashboard_status = await dispatch_status(pool, message_id=dashboard_turn_id)
+            except Exception:
+                logger.exception(
+                    "route_to_butler could not inspect dashboard Stop state for message %s",
+                    dashboard_turn_id,
+                )
+                return {
+                    "status": "error",
+                    "butler": butler,
+                    "error": "Dashboard turn control is unavailable.",
+                }
+            if dashboard_status.outcome in {"cancelled", "cancelling"}:
+                return {
+                    "status": "cancelled",
+                    "butler": butler,
+                    "cancelled": True,
+                }
+            if dashboard_status.outcome in {"finished", "external_action_in_progress"}:
+                return {
+                    "status": "refused",
+                    "butler": butler,
+                    "error": (
+                        "This dashboard turn is already terminal or has an external "
+                        "action still being reconciled."
+                    ),
+                    "reason": "dashboard_turn_terminal",
+                }
 
         # Prepend identity preamble to prompt if present in routing context.
         identity_preamble = _routing_ctx.get("identity_preamble")
@@ -650,6 +728,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             inner = result.get("result") if isinstance(result, dict) else None
             if isinstance(inner, dict):
                 if inner.get("status") == "accepted":
+                    if inner.get("cancelled"):
+                        return {
+                            "status": "cancelled",
+                            "butler": butler,
+                            "cancelled": True,
+                        }
                     if isinstance(_dashboard_context, dict) and _dashboard_context.get(
                         "conversation_id"
                     ):
@@ -745,6 +829,21 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             _page_context = _dashboard_context.get("page_context")
             if isinstance(_page_context, dict):
                 page_route = _page_context.get("route")
+        _source_metadata = _routing_ctx.get("source_metadata")
+        if not isinstance(_source_metadata, dict):
+            _source_metadata = {}
+        try:
+            dashboard_turn_id = _dashboard_turn_id_from_context(
+                _source_metadata,
+                _dashboard_context if isinstance(_dashboard_context, dict) else None,
+            )
+        except ValueError as exc:
+            logger.warning("file_bug_report refused invalid dashboard turn id: %s", exc)
+            return {
+                "status": "error",
+                "filed": False,
+                "error": "Dashboard turn control identity is invalid.",
+            }
 
         # Dashboard lane exclusivity (bu-j5jqv): bug reports are terminal and
         # always file — never suppressed — but if route_to_butler already
@@ -803,6 +902,57 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
 
         filed = False
         file_error: str | None = None
+        dashboard_action_claimed = False
+        if dashboard_turn_id is not None:
+            from butlers.core.dashboard_turns import claim_bug_report
+
+            raw_request_id = _routing_ctx.get("request_id")
+            if raw_request_id in (None, "") and isinstance(
+                _routing_ctx.get("request_context"), dict
+            ):
+                raw_request_id = _routing_ctx["request_context"].get("request_id")
+            dashboard_request_id = UUID(_coerce_request_id(raw_request_id))
+            try:
+                dashboard_control = await claim_bug_report(
+                    pool,
+                    message_id=dashboard_turn_id,
+                    request_id=dashboard_request_id,
+                )
+            except Exception:
+                logger.exception(
+                    "file_bug_report could not claim dashboard action for message %s",
+                    dashboard_turn_id,
+                )
+                return {
+                    "status": "error",
+                    "filed": False,
+                    "error": "Dashboard turn control is unavailable.",
+                }
+            if dashboard_control.outcome == "cancelled":
+                return {
+                    "status": "cancelled",
+                    "filed": False,
+                    "cancelled": True,
+                }
+            if dashboard_control.outcome == "external_action_in_progress":
+                return {
+                    "status": "error",
+                    "filed": False,
+                    "error": (
+                        "A prior dashboard bug-report action is still being reconciled; "
+                        "it cannot be reported as filed yet."
+                    ),
+                }
+            if dashboard_control.outcome != "claimed":
+                return {
+                    "status": "error",
+                    "filed": False,
+                    "error": (
+                        "Dashboard bug-report action was not authorized: "
+                        f"{dashboard_control.outcome}."
+                    ),
+                }
+            dashboard_action_claimed = True
         try:
             route_result = await _switchboard_route(
                 pool,
@@ -828,6 +978,23 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         except Exception as exc:
             logger.warning("file_bug_report: relay to QA staffer failed: %s", exc)
             file_error = f"{type(exc).__name__}: {exc}"
+
+        if dashboard_action_claimed and dashboard_turn_id is not None:
+            from butlers.core.dashboard_turns import mark_terminal
+
+            try:
+                await mark_terminal(
+                    pool,
+                    message_id=dashboard_turn_id,
+                    state="completed" if filed else "failed",
+                )
+            except Exception:
+                # The external action was claimed before the relay. Never retry
+                # it implicitly after a terminal-marker write failure.
+                logger.exception(
+                    "file_bug_report could not mark dashboard terminal for message %s",
+                    dashboard_turn_id,
+                )
 
         if conversation_id:
             reply_message = (

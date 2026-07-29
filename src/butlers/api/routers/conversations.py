@@ -29,12 +29,16 @@ POST /api/butlers/{name}/conversations/{conversation_id}/messages
     Response: SSE stream with ``token``, ``message_complete``, and
     ``done`` events.
 
+POST /api/butlers/{name}/conversation-turns/{message_id}/cancel
+    Canonical chat Stop endpoint. Cancels one immutable dashboard user turn
+    through the durable control plane, including before SSE has delivered a
+    newly-created conversation id. Always returns the raw typed
+    ``ConversationCancelResponse``.
+
 POST /api/butlers/{name}/conversations/{conversation_id}/cancel
-    Cancel the in-flight session behind the conversation's current turn
-    (the chat "Stop" button) -- a real terminate of the routed butler's
-    runtime subprocess, not a client-side stream detach. Always 200; see
-    ``ConversationCancelResponse`` for the cancelled/already_finished/failed
-    outcomes.
+    Legacy compatibility Stop endpoint. Dashboard clients MUST use the
+    message-scoped endpoint above; this route only forwards a supplied or
+    process-locally known message id when possible.
 
 PATCH /api/butlers/{name}/conversations/{conversation_id}
     Update conversation title or status (archive/unarchive).
@@ -54,7 +58,13 @@ SSE event types
 ``error``
     Session failure. Data: ``{code, message}`` (``SESSION_TIMEOUT`` also
     carries ``session_id``, non-null when the routed session could be
-    identified). ``code`` is one of ``SWITCHBOARD_UNAVAILABLE`` (MCP
+    identified). ``code`` is one of ``SESSION_CANCELLED`` (the durable Stop
+    protocol confirmed cancellation while the SSE request was settling),
+    ``TURN_OUTCOME_UNKNOWN`` (a recovered dashboard predecessor cannot be
+    proved stopped, so automatic replay is suppressed),
+    ``INGEST_IN_PROGRESS`` (another caller owns or is settling the same
+    durable ingress; observe or check again, never replay),
+    ``SWITCHBOARD_UNAVAILABLE`` (MCP
     unreachable — message already persisted; a retry re-submits the same
     content and is deduplicated idempotently at the Switchboard ingest
     boundary), ``INGEST_REJECTED`` (deterministic envelope rejection, e.g.
@@ -122,6 +132,17 @@ from butlers.api.models.conversation import (
     ConversationUpdateRequest,
     MessageCreateRequest,
 )
+from butlers.core.dashboard_turns import (
+    DashboardTurnResult,
+    bind_ingress,
+    claim_ingress,
+    confirm_cancel,
+    dispatch_status,
+    live_sessions,
+    open_turn,
+    record_ingress_failure,
+    request_cancel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +150,9 @@ router = APIRouter(prefix="/api/butlers", tags=["conversations"])
 
 # SSE keepalive interval in seconds
 _KEEPALIVE_INTERVAL_S: float = 15.0
+_TURN_OUTCOME_UNKNOWN_MESSAGE = (
+    "We could not determine whether this request completed. It will not be automatically repeated."
+)
 
 # Polling interval for session completion (seconds)
 _POLL_INTERVAL_S: float = 0.5
@@ -144,12 +168,10 @@ _MCP_DISPATCH_TIMEOUT_S: float = 30.0
 # classify -> route pipeline can pick the target butler.
 _SWITCHBOARD_BUTLER: str = "switchboard"
 
-# conversation_id -> {"routed_butler": str, "request_id": str} for the turn
-# currently streaming a reply. Process-local (the dashboard API runs as a
-# single uvicorn worker, no `workers=` override in cli.py) -- POST
-# .../cancel resolves through this to find the live session to kill without
-# a DB round trip or plumbing request_id through the SSE payload. Populated
-# in _stream_conversation_response, cleared at every exit from that turn.
+# Conversation-local SSE metadata. Cancellation itself does not trust this
+# process-local map: its durable message-scoped control row survives classifier
+# handoff, target route recovery, and API process restarts. The map remains for
+# legacy callers that omit a message id and for session-timeout links.
 _ACTIVE_TURNS: dict[UUID, dict[str, str]] = {}
 
 
@@ -266,6 +288,76 @@ async def _submit_to_switchboard(
     return result
 
 
+async def _claim_dashboard_turn_ingress(
+    *,
+    pool: Any,
+    message_id: UUID,
+    conversation_id: UUID,
+) -> DashboardTurnResult:
+    """Create or load durable control state for a persisted user message.
+
+    This deliberately happens before the SSE response is returned so an
+    immediately-clicked Stop has a durable row to address. The generator takes
+    the one external ingress claim immediately before it calls Switchboard.
+    """
+    try:
+        result = await open_turn(
+            pool,
+            message_id=message_id,
+            conversation_id=conversation_id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Unable to claim durable dashboard turn ingress for message %s",
+            message_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "DASHBOARD_TURN_CONTROL_UNAVAILABLE",
+                "message": "Chat control plane is unavailable; message was not dispatched.",
+            },
+        ) from exc
+
+    if result.outcome == "missing":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DASHBOARD_TURN_MESSAGE_MISSING",
+                "message": "Message persistence could not be confirmed for dispatch.",
+            },
+        )
+    if result.outcome == "conflict":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DASHBOARD_TURN_CONFLICT",
+                "message": "This message id belongs to a different conversation.",
+            },
+        )
+    return result
+
+
+async def _record_dashboard_ingress_failure(
+    *,
+    pool: Any,
+    message_id: UUID,
+    state: Literal["retryable_error", "rejected"],
+    detail: str,
+) -> DashboardTurnResult | None:
+    """Record an ingress result and return its authoritative state when available."""
+    try:
+        return await record_ingress_failure(
+            pool,
+            message_id=message_id,
+            state=state,
+            detail=detail,
+        )
+    except Exception:
+        logger.exception("Failed to record dashboard ingress failure for message %s", message_id)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # SSE generator
 # ---------------------------------------------------------------------------
@@ -282,6 +374,7 @@ async def _stream_conversation_response(
     mcp_mgr: MCPClientManager,
     is_new_conversation: bool = False,
     conversation_title: str = "",
+    message_id: UUID | None = None,
 ) -> AsyncGenerator[str, None]:
     """Generate SSE events for a conversation message submission.
 
@@ -303,45 +396,167 @@ async def _stream_conversation_response(
             {"conversation_id": str(conversation_id), "title": conversation_title},
         )
 
-    # Step 2: Submit to Switchboard
-    try:
-        accepted = await _submit_to_switchboard(butler_name, envelope, mcp_mgr=mcp_mgr)
-    except ValueError as exc:
-        # Deterministic envelope rejection (e.g. invalid pinned_target) — a
-        # retry with the same envelope would fail the same way, so this is
-        # surfaced distinctly from a transient connectivity failure.
-        logger.warning(
-            "Switchboard rejected dashboard envelope for conversation %s: %s",
-            conversation_id,
-            exc,
-        )
-        yield _sse_error("INGEST_REJECTED", str(exc))
-        yield _sse_done()
-        return
-    except Exception as exc:
-        logger.exception(
-            "Switchboard submission failed for conversation %s: %s",
-            conversation_id,
-            exc,
-        )
-        yield _sse_error("SWITCHBOARD_ERROR", str(exc))
-        yield _sse_done()
-        return
-
-    if accepted is None:
-        # The user message is already persisted (step 0, before this
-        # generator started) — a client retry re-submits its stable message
-        # identity, so Switchboard deduplicates by external event ID even if
-        # the retry crosses an hourly content-hash bucket or context changes.
-        yield _sse_error("SWITCHBOARD_UNAVAILABLE", "Switchboard offline — retry")
-        yield _sse_done()
-        return
-
-    request_id_str = accepted.get("request_id")
-    triage_decision = accepted.get("triage_decision")
-    triage_target = accepted.get("triage_target")
-    routed_this_turn = triage_decision == "route_to" and bool(triage_target)
+    # Step 2: Claim the outbound Switchboard submission immediately before
+    # making it. Opening the turn earlier makes Stop addressable before SSE,
+    # but only this final claim is the external side-effect boundary.
+    accepted: dict[str, Any] | None = None
+    request_id_str: str | None = None
+    triage_decision: str | None = None
+    triage_target: str | None = None
     shared_pool = db.credential_shared_pool()
+    should_submit = True
+    if message_id is not None:
+        try:
+            ingress_claim = await claim_ingress(shared_pool, message_id=message_id)
+        except Exception:
+            logger.exception("Could not claim dashboard ingress for message %s", message_id)
+            yield _sse_error("SWITCHBOARD_ERROR", "Could not claim the chat ingress boundary.")
+            yield _sse_done()
+            return
+        if ingress_claim.outcome == "cancelled":
+            yield _sse_error("SESSION_CANCELLED", "This turn was stopped before dispatch.")
+            yield _sse_done()
+            return
+        if ingress_claim.outcome == "ambiguous":
+            yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
+            yield _sse_done()
+            return
+        if ingress_claim.outcome == "cancelling":
+            yield _sse_error(
+                "INGEST_IN_PROGRESS",
+                "Cancellation is still settling; this turn has not been confirmed stopped.",
+            )
+            yield _sse_done()
+            return
+        if ingress_claim.outcome == "pending":
+            yield _sse_error("INGEST_IN_PROGRESS", "This message is already being submitted.")
+            yield _sse_done()
+            return
+        if ingress_claim.outcome == "accepted":
+            request_id_str = str(ingress_claim.request_id) if ingress_claim.request_id else None
+            if request_id_str is None:
+                yield _sse_error("SWITCHBOARD_ERROR", "Accepted ingress has no request reference.")
+                yield _sse_done()
+                return
+            triage_target = ingress_claim.target_butler
+            should_submit = False
+        elif ingress_claim.outcome != "dispatch":
+            yield _sse_error(
+                "SWITCHBOARD_ERROR",
+                f"Dashboard ingress was not authorized: {ingress_claim.outcome}.",
+            )
+            yield _sse_done()
+            return
+
+    if should_submit:
+        try:
+            accepted = await _submit_to_switchboard(butler_name, envelope, mcp_mgr=mcp_mgr)
+        except ValueError as exc:
+            failure_turn: DashboardTurnResult | None = None
+            if message_id is not None:
+                failure_turn = await _record_dashboard_ingress_failure(
+                    pool=shared_pool,
+                    message_id=message_id,
+                    state="rejected",
+                    detail=str(exc),
+                )
+            if failure_turn is not None and failure_turn.outcome == "cancelled":
+                yield _sse_error("SESSION_CANCELLED", "This turn was stopped before routing.")
+                yield _sse_done()
+                return
+            if failure_turn is not None and failure_turn.outcome == "ambiguous":
+                yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
+                yield _sse_done()
+                return
+            logger.warning(
+                "Switchboard rejected dashboard envelope for conversation %s: %s",
+                conversation_id,
+                exc,
+            )
+            yield _sse_error("INGEST_REJECTED", str(exc))
+            yield _sse_done()
+            return
+        except Exception as exc:
+            failure_turn = None
+            if message_id is not None:
+                failure_turn = await _record_dashboard_ingress_failure(
+                    pool=shared_pool,
+                    message_id=message_id,
+                    state="retryable_error",
+                    detail=str(exc),
+                )
+            if failure_turn is not None and failure_turn.outcome == "cancelled":
+                yield _sse_error("SESSION_CANCELLED", "This turn was stopped before routing.")
+                yield _sse_done()
+                return
+            if failure_turn is not None and failure_turn.outcome == "ambiguous":
+                yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
+                yield _sse_done()
+                return
+            logger.exception(
+                "Switchboard submission failed for conversation %s: %s",
+                conversation_id,
+                exc,
+            )
+            yield _sse_error("SWITCHBOARD_ERROR", str(exc))
+            yield _sse_done()
+            return
+
+        if accepted is None:
+            failure_turn = None
+            if message_id is not None:
+                failure_turn = await _record_dashboard_ingress_failure(
+                    pool=shared_pool,
+                    message_id=message_id,
+                    state="retryable_error",
+                    detail="Switchboard unavailable",
+                )
+            if failure_turn is not None and failure_turn.outcome == "cancelled":
+                yield _sse_error("SESSION_CANCELLED", "This turn was stopped before routing.")
+                yield _sse_done()
+                return
+            if failure_turn is not None and failure_turn.outcome == "ambiguous":
+                yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
+                yield _sse_done()
+                return
+            yield _sse_error("SWITCHBOARD_UNAVAILABLE", "Switchboard offline — retry")
+            yield _sse_done()
+            return
+
+        request_id_str = str(accepted.get("request_id") or "") or None
+        triage_decision = accepted.get("triage_decision")
+        triage_target = accepted.get("triage_target")
+        if message_id is not None and request_id_str is not None:
+            try:
+                bound_turn = await bind_ingress(
+                    shared_pool,
+                    message_id=message_id,
+                    request_id=UUID(request_id_str),
+                )
+            except Exception:
+                logger.exception("Failed to bind dashboard ingress for message %s", message_id)
+                yield _sse_error("SWITCHBOARD_ERROR", "Could not persist ingress control state.")
+                yield _sse_done()
+                return
+            if bound_turn.outcome == "cancelled":
+                yield _sse_error("SESSION_CANCELLED", "This turn was stopped before routing.")
+                yield _sse_done()
+                return
+            if bound_turn.outcome == "ambiguous":
+                yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
+                yield _sse_done()
+                return
+            if bound_turn.outcome == "conflict":
+                yield _sse_error("SWITCHBOARD_ERROR", "Ingress control state conflicted.")
+                yield _sse_done()
+                return
+
+    if request_id_str is None:
+        yield _sse_error("SWITCHBOARD_ERROR", "Switchboard returned no request reference.")
+        yield _sse_done()
+        return
+
+    routed_this_turn = triage_decision == "route_to" and bool(triage_target)
 
     # Sticky routing (bu-p6ey8.1): a classification-routed (Switchboard
     # widget) conversation stamps its first successful route target so
@@ -378,10 +593,13 @@ async def _stream_conversation_response(
     # message_find_reply_since during polling, or the generator being closed
     # early by the ASGI server.
     if request_id_str:
-        _ACTIVE_TURNS[conversation_id] = {
+        active_turn = {
             "routed_butler": routed_butler,
             "request_id": request_id_str,
         }
+        if message_id is not None:
+            active_turn["message_id"] = str(message_id)
+        _ACTIVE_TURNS[conversation_id] = active_turn
 
     try:
         # Step 3: Poll for the conversation_reply message, with keepalive.
@@ -394,6 +612,29 @@ async def _stream_conversation_response(
             if await request.is_disconnected():
                 logger.info("Client disconnected during conversation stream %s", conversation_id)
                 return
+
+            # The Stop endpoint may be invoked by another tab or may settle
+            # after its first HTTP response races a pending runtime handoff.
+            # The original SSE must observe that durable terminal fact rather
+            # than waiting until its generic timeout and claiming a timeout.
+            if message_id is not None:
+                try:
+                    turn_status = await dispatch_status(shared_pool, message_id=message_id)
+                except Exception:
+                    logger.debug(
+                        "Could not poll dashboard Stop state for conversation %s",
+                        conversation_id,
+                        exc_info=True,
+                    )
+                else:
+                    if turn_status.outcome == "cancelled":
+                        yield _sse_error("SESSION_CANCELLED", "This turn was stopped by its owner.")
+                        yield _sse_done()
+                        return
+                    if turn_status.outcome == "ambiguous":
+                        yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
+                        yield _sse_done()
+                        return
 
             # Keepalive check
             now = time.monotonic()
@@ -499,8 +740,23 @@ async def _resolve_session_id(
     ``POST .../cancel`` (bu-ep4ks.2) -- both need the same request_id ->
     session_id resolution, just for different follow-up actions.
     """
+    session_id, _ = await _resolve_session_id_with_error(
+        db=db,
+        routed_butler=routed_butler,
+        request_id=request_id,
+    )
+    return session_id
+
+
+async def _resolve_session_id_with_error(
+    *,
+    db: DatabaseManager,
+    routed_butler: str,
+    request_id: str | None,
+) -> tuple[UUID | None, str | None]:
+    """Resolve a session id and preserve lookup failures for cancellation UX."""
     if not request_id:
-        return None
+        return None, "Cancellation reference is unavailable. Try Stop again."
 
     try:
         pool = db.pool(routed_butler)
@@ -509,10 +765,10 @@ async def _resolve_session_id(
             "No DB pool registered for butler '%s'; cannot resolve session id",
             routed_butler,
         )
-        return None
+        return None, f"Could not locate {routed_butler} to confirm cancellation."
 
     try:
-        return await pool.fetchval(
+        session_id = await pool.fetchval(
             "SELECT id FROM sessions WHERE request_id = $1 ORDER BY started_at DESC LIMIT 1",
             request_id,
         )
@@ -523,7 +779,366 @@ async def _resolve_session_id(
             request_id,
             exc_info=True,
         )
-        return None
+        return None, f"Could not inspect {routed_butler} to confirm cancellation."
+    return session_id, None
+
+
+async def _refresh_active_turn_routed_butler(
+    *,
+    db: DatabaseManager,
+    conversation_id: UUID,
+    turn: dict[str, str],
+) -> str:
+    """Resolve a classifier handoff that occurred after the API accepted a turn.
+
+    Unpinned widget turns initially register Switchboard in ``_ACTIVE_TURNS``.
+    A later LLM classification persists the actual domain target on the
+    conversation row.  That durable target is authoritative for cancellation
+    because both the Switchboard classifier and routed runtime share the same
+    request id but live in different butler schemas.
+    """
+    routed_butler = turn["routed_butler"]
+    if routed_butler != _SWITCHBOARD_BUTLER:
+        return routed_butler
+
+    try:
+        conversation = await conversation_get(
+            db.credential_shared_pool(),
+            conversation_id,
+            butler_name=_SWITCHBOARD_BUTLER,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to refresh routed target for cancellation (conversation=%s, request_id=%s)",
+            conversation_id,
+            turn["request_id"],
+            exc_info=True,
+        )
+        return routed_butler
+
+    handoff_target = conversation.get("routed_butler") if conversation else None
+    if isinstance(handoff_target, str) and handoff_target:
+        turn["routed_butler"] = handoff_target
+        return handoff_target
+    return routed_butler
+
+
+async def _cancel_routed_session(
+    *,
+    db: DatabaseManager,
+    mcp_mgr: MCPClientManager,
+    conversation_id: UUID,
+    routed_butler: str,
+    request_id: str,
+) -> ConversationCancelResponse:
+    """Attempt cancellation on one resolved butler target."""
+    session_id, lookup_error = await _resolve_session_id_with_error(
+        db=db, routed_butler=routed_butler, request_id=request_id
+    )
+    if session_id is None:
+        if lookup_error is not None:
+            return ConversationCancelResponse(
+                cancelled=False,
+                already_finished=False,
+                message=lookup_error,
+            )
+        logger.info(
+            "Cancellation target has no session yet (conversation=%s, butler=%s, request_id=%s)",
+            conversation_id,
+            routed_butler,
+            request_id,
+        )
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            message="Still routing — try Stop again.",
+        )
+
+    try:
+        client = await asyncio.wait_for(
+            mcp_mgr.get_client(routed_butler), timeout=_MCP_DISPATCH_TIMEOUT_S
+        )
+        mcp_result = await asyncio.wait_for(
+            client.call_tool("cancel_session", {"session_id": str(session_id)}),
+            timeout=_MCP_DISPATCH_TIMEOUT_S,
+        )
+    except (ButlerUnreachableError, ToolError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "cancel_session MCP call failed for conversation %s (butler=%s, session=%s): %s",
+            conversation_id,
+            routed_butler,
+            session_id,
+            exc,
+        )
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            session_id=session_id,
+            message=f"Could not reach {routed_butler} to confirm cancellation.",
+        )
+
+    result = _first_json_block(mcp_result)
+    if mcp_result.is_error or not isinstance(result, dict):
+        logger.warning(
+            "cancel_session tool returned an unexpected result for conversation %s "
+            "(butler=%s, session=%s): %r",
+            conversation_id,
+            routed_butler,
+            session_id,
+            result,
+        )
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            session_id=session_id,
+            message="Cancellation request failed.",
+        )
+
+    cancelled = bool(result.get("cancelled"))
+    return ConversationCancelResponse(
+        cancelled=cancelled,
+        already_finished=not cancelled,
+        session_id=session_id,
+        message=None if cancelled else "Session already finished.",
+    )
+
+
+async def _dashboard_stop_status_response(
+    *,
+    pool: Any,
+    message_id: UUID,
+    session_id: UUID | None,
+    fallback_message: str,
+) -> ConversationCancelResponse:
+    """Return an honest response after an asynchronous Stop race.
+
+    A concurrent Stop request can finish the durable protocol while this API
+    call is waiting on MCP.  Re-reading the control plane lets us report that
+    confirmed outcome, but an unavailable or still-active record must remain a
+    visible failure rather than fabricated calm.
+    """
+    try:
+        status = await dispatch_status(pool, message_id=message_id)
+    except Exception:
+        logger.exception("Could not re-check dashboard Stop state for message %s", message_id)
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            session_id=session_id,
+            message=fallback_message,
+        )
+
+    if status.outcome == "cancelled":
+        return ConversationCancelResponse(
+            cancelled=True,
+            already_finished=False,
+            conversation_id=status.conversation_id,
+            session_id=session_id,
+        )
+    if status.outcome == "finished":
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=True,
+            conversation_id=status.conversation_id,
+            session_id=session_id,
+        )
+    if status.outcome == "ambiguous":
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            conversation_id=status.conversation_id,
+            session_id=session_id,
+            message=(
+                "This turn's outcome is unknown; it cannot be confirmed stopped or repeated "
+                "automatically."
+            ),
+        )
+    if status.outcome == "external_action_in_progress":
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            conversation_id=status.conversation_id,
+            session_id=session_id,
+            message=(
+                "This turn has an external action whose outcome is still being "
+                "reconciled; it cannot be confirmed stopped."
+            ),
+        )
+    return ConversationCancelResponse(
+        cancelled=False,
+        already_finished=False,
+        conversation_id=status.conversation_id,
+        session_id=session_id,
+        message=fallback_message,
+    )
+
+
+async def _cancel_dashboard_message_turn(
+    *,
+    db: DatabaseManager,
+    mcp_mgr: MCPClientManager,
+    message_id: UUID,
+) -> ConversationCancelResponse:
+    """Cancel one immutable dashboard message across every runtime handoff.
+
+    ``request_cancel`` is the linearisation point.  If no session has crossed
+    the pre-invoke boundary, it terminally prevents all future invocation and
+    we can immediately report success.  Once any session has claimed invoke,
+    every exact registered runtime must independently acknowledge
+    ``cancel_session`` before ``confirm_cancel`` records a truthful terminal
+    cancellation.
+    """
+    try:
+        pool = db.credential_shared_pool()
+        turn = await request_cancel(pool, message_id=message_id)
+    except Exception:
+        logger.exception("Could not request durable dashboard Stop for message %s", message_id)
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            message="Could not reach the chat control plane to confirm cancellation.",
+        )
+
+    if turn.outcome == "cancelled":
+        return ConversationCancelResponse(
+            cancelled=True,
+            already_finished=False,
+            conversation_id=turn.conversation_id,
+        )
+    if turn.outcome == "finished":
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=True,
+            conversation_id=turn.conversation_id,
+        )
+    if turn.outcome == "ambiguous":
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            conversation_id=turn.conversation_id,
+            message=(
+                "This turn's outcome is unknown; it cannot be confirmed stopped or repeated "
+                "automatically."
+            ),
+        )
+    if turn.outcome == "external_action_in_progress":
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            conversation_id=turn.conversation_id,
+            message=(
+                "This turn has an external action whose outcome is still being "
+                "reconciled; it cannot be confirmed stopped."
+            ),
+        )
+    if turn.outcome == "settling":
+        return await _dashboard_stop_status_response(
+            pool=pool,
+            message_id=message_id,
+            session_id=None,
+            fallback_message=(
+                "The runtime already ended; waiting for its actual outcome instead of "
+                "claiming it was stopped."
+            ),
+        )
+    if turn.outcome == "missing":
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            conversation_id=turn.conversation_id,
+            message="This message has no durable cancellation record.",
+        )
+    if turn.outcome != "cancelling":
+        return ConversationCancelResponse(
+            cancelled=False,
+            already_finished=False,
+            conversation_id=turn.conversation_id,
+            message="The chat control plane could not confirm cancellation.",
+        )
+
+    try:
+        sessions = await live_sessions(pool, message_id=message_id)
+    except Exception:
+        logger.exception("Could not list active dashboard runtimes for message %s", message_id)
+        return await _dashboard_stop_status_response(
+            pool=pool,
+            message_id=message_id,
+            session_id=None,
+            fallback_message="Could not inspect active runtimes to confirm cancellation.",
+        )
+
+    invoking_sessions = [session for session in sessions if session.invoke_active]
+    first_session_id = invoking_sessions[0].session_id if invoking_sessions else None
+    cancel_failures: list[str] = []
+
+    for session in invoking_sessions:
+        try:
+            client = await asyncio.wait_for(
+                mcp_mgr.get_client(session.butler_name), timeout=_MCP_DISPATCH_TIMEOUT_S
+            )
+            mcp_result = await asyncio.wait_for(
+                client.call_tool("cancel_session", {"session_id": str(session.session_id)}),
+                timeout=_MCP_DISPATCH_TIMEOUT_S,
+            )
+        except (ButlerUnreachableError, ToolError, TimeoutError, OSError) as exc:
+            logger.warning(
+                "Could not cancel active dashboard runtime (message=%s, butler=%s, session=%s): %s",
+                message_id,
+                session.butler_name,
+                session.session_id,
+                exc,
+            )
+            cancel_failures.append(
+                f"Could not reach {session.butler_name} to confirm cancellation."
+            )
+            continue
+
+        result = _first_json_block(mcp_result)
+        if (
+            getattr(mcp_result, "is_error", False)
+            or not isinstance(result, dict)
+            or not bool(result.get("cancelled"))
+        ):
+            logger.warning(
+                "Dashboard runtime did not confirm cancellation "
+                "(message=%s, butler=%s, session=%s): %r",
+                message_id,
+                session.butler_name,
+                session.session_id,
+                result,
+            )
+            cancel_failures.append(
+                f"{session.butler_name} did not confirm cancellation; work may still be running."
+            )
+
+    try:
+        confirmed = await confirm_cancel(pool, message_id=message_id)
+    except Exception:
+        logger.exception("Could not persist confirmed dashboard Stop for message %s", message_id)
+        return await _dashboard_stop_status_response(
+            pool=pool,
+            message_id=message_id,
+            session_id=first_session_id,
+            fallback_message="Runtime cancellation was not durably confirmed.",
+        )
+
+    if confirmed.outcome == "cancelled":
+        return ConversationCancelResponse(
+            cancelled=True,
+            already_finished=False,
+            conversation_id=confirmed.conversation_id,
+            session_id=first_session_id,
+        )
+    return await _dashboard_stop_status_response(
+        pool=pool,
+        message_id=message_id,
+        session_id=first_session_id,
+        fallback_message=(
+            "; ".join(cancel_failures)
+            if cancel_failures
+            else "Runtime cancellation was not durably confirmed."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +1319,12 @@ async def create_conversation(
     if user_message_is_new:
         await conversation_message_count_increment(pool, conversation_id, butler_name=name)
 
+    await _claim_dashboard_turn_ingress(
+        pool=pool,
+        message_id=user_msg["id"],
+        conversation_id=conversation_id,
+    )
+
     # Build ingest envelope
     envelope = build_dashboard_envelope(
         conversation_id=conversation_id,
@@ -725,6 +1346,7 @@ async def create_conversation(
             mcp_mgr=mcp_mgr,
             is_new_conversation=True,
             conversation_title=conv["title"],
+            message_id=user_msg["id"],
         ):
             yield chunk
 
@@ -841,6 +1463,12 @@ async def send_message(
     if user_message_is_new:
         await conversation_message_count_increment(pool, conversation_id, butler_name=name)
 
+    await _claim_dashboard_turn_ingress(
+        pool=pool,
+        message_id=user_msg["id"],
+        conversation_id=conversation_id,
+    )
+
     # Sticky routing: a Switchboard-addressed conversation that has already
     # routed once pins follow-ups directly to that butler; otherwise (not yet
     # routed, or a bug-lane conversation with no domain-butler target) it
@@ -870,6 +1498,7 @@ async def send_message(
             db=db,
             mcp_mgr=mcp_mgr,
             is_new_conversation=False,
+            message_id=user_msg["id"],
         ):
             yield chunk
 
@@ -885,6 +1514,34 @@ async def send_message(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/butlers/{name}/conversation-turns/{message_id}/cancel
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{name}/conversation-turns/{message_id}/cancel",
+    response_model=ConversationCancelResponse,
+)
+async def cancel_dashboard_message_turn(
+    name: str,
+    message_id: UUID,
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConversationCancelResponse:
+    """Stop the one immutable dashboard turn identified by ``message_id``.
+
+    This is the canonical widget endpoint.  It survives API restarts and the
+    Switchboard-to-target handoff because the durable control record, rather
+    than a conversation-local process map, owns the cancellation state. The
+    ``name`` path segment is retained for the established butler-route
+    namespace; the immutable ``message_id`` is the exact durable control key.
+    It is not a second conversation or target selector.
+    """
+    del name  # The immutable message id is the capability being cancelled.
+    return await _cancel_dashboard_message_turn(db=db, mcp_mgr=mcp_mgr, message_id=message_id)
+
+
+# ---------------------------------------------------------------------------
 # POST /api/butlers/{name}/conversations/{conversation_id}/cancel
 # ---------------------------------------------------------------------------
 
@@ -896,10 +1553,18 @@ async def send_message(
 async def cancel_conversation_turn(
     name: str,
     conversation_id: UUID,
+    message_id: UUID | None = Query(
+        None,
+        description="Exact persisted user-message id for durable cancellation.",
+    ),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ConversationCancelResponse:
-    """Cancel the in-flight session behind this conversation's current turn.
+    """Compatibility cancel for an in-flight conversation turn.
+
+    New dashboard callers MUST use ``conversation-turns/{message_id}/cancel``.
+    This older conversation-scoped route remains only for callers that cannot
+    yet address the immutable user-message turn directly.
 
     Implements the chat "Stop" button (bu-ep4ks.2) as a real terminate, not a
     client-side stream detach: resolves ``conversation_id`` -> the active
@@ -916,69 +1581,66 @@ async def cancel_conversation_turn(
     (runtime.invoke(...))`` yet), confirmed the invocation will be skipped
     entirely rather than falsely reporting ``already_finished``.
     """
+    if message_id is not None:
+        return await _cancel_dashboard_message_turn(
+            db=db,
+            mcp_mgr=mcp_mgr,
+            message_id=message_id,
+        )
+
     turn = _ACTIVE_TURNS.get(conversation_id)
     if turn is None:
         # Nothing registered for this conversation right now -- the turn
         # already finished (or was never dispatched). Benign no-op.
         return ConversationCancelResponse(cancelled=False, already_finished=True)
 
-    routed_butler = turn["routed_butler"]
+    raw_message_id = turn.get("message_id")
+    if raw_message_id is not None:
+        try:
+            return await _cancel_dashboard_message_turn(
+                db=db,
+                mcp_mgr=mcp_mgr,
+                message_id=UUID(raw_message_id),
+            )
+        except ValueError:
+            logger.warning(
+                "Ignoring malformed active dashboard message id for conversation %s: %r",
+                conversation_id,
+                raw_message_id,
+            )
+
     request_id = turn["request_id"]
-
-    session_id = await _resolve_session_id(
-        db=db, routed_butler=routed_butler, request_id=request_id
+    routed_butler = await _refresh_active_turn_routed_butler(
+        db=db,
+        conversation_id=conversation_id,
+        turn=turn,
     )
-    if session_id is None:
-        # The session row hasn't landed yet (very early race) or the pool
-        # lookup failed -- nothing concrete to cancel against.
-        return ConversationCancelResponse(cancelled=False, already_finished=True)
+    result = await _cancel_routed_session(
+        db=db,
+        mcp_mgr=mcp_mgr,
+        conversation_id=conversation_id,
+        routed_butler=routed_butler,
+        request_id=request_id,
+    )
+    if routed_butler != _SWITCHBOARD_BUTLER:
+        return result
 
-    try:
-        client = await asyncio.wait_for(
-            mcp_mgr.get_client(routed_butler), timeout=_MCP_DISPATCH_TIMEOUT_S
-        )
-        mcp_result = await asyncio.wait_for(
-            client.call_tool("cancel_session", {"session_id": str(session_id)}),
-            timeout=_MCP_DISPATCH_TIMEOUT_S,
-        )
-    except (ButlerUnreachableError, ToolError, TimeoutError, OSError) as exc:
-        logger.warning(
-            "cancel_session MCP call failed for conversation %s (butler=%s, session=%s): %s",
-            conversation_id,
-            routed_butler,
-            session_id,
-            exc,
-        )
-        return ConversationCancelResponse(
-            cancelled=False,
-            already_finished=False,
-            session_id=session_id,
-            message=f"Could not reach {routed_butler} to confirm cancellation.",
-        )
-
-    result = _first_json_block(mcp_result)
-    if mcp_result.is_error or not isinstance(result, dict):
-        logger.warning(
-            "cancel_session tool returned an unexpected result for conversation %s "
-            "(butler=%s, session=%s): %r",
-            conversation_id,
-            routed_butler,
-            session_id,
-            result,
-        )
-        return ConversationCancelResponse(
-            cancelled=False,
-            already_finished=False,
-            session_id=session_id,
-            message="Cancellation request failed.",
-        )
-
-    cancelled = bool(result.get("cancelled"))
-    return ConversationCancelResponse(
-        cancelled=cancelled,
-        already_finished=not cancelled,
-        session_id=session_id,
-        message=None if cancelled else "Session already finished.",
+    # The classifier may have handed off while this request was resolving or
+    # while its own cancellation was responding. Re-read the durable target
+    # once before reporting any classifier-only result.
+    handoff_target = await _refresh_active_turn_routed_butler(
+        db=db,
+        conversation_id=conversation_id,
+        turn=turn,
+    )
+    if handoff_target == _SWITCHBOARD_BUTLER:
+        return result
+    return await _cancel_routed_session(
+        db=db,
+        mcp_mgr=mcp_mgr,
+        conversation_id=conversation_id,
+        routed_butler=handoff_target,
+        request_id=request_id,
     )
 
 
