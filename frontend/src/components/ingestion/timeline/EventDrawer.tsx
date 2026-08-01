@@ -663,9 +663,10 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
     : 'Event detail open'
 
   return (
+    // Keep the focused sr-only heading inside the app shell, not the document.
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="complementary" is a landmark, not a widget, but Escape-to-close on the panel root is the standard dialog/disclosure keyboard pattern (matches Radix Dialog's own internal behavior) — not a click/hover "interaction" the rule is guarding against.
     <div
-      className="border-t border-border bg-background"
+      className="relative border-t border-border bg-background"
       data-testid="event-drawer"
       id={`event-drawer-${event.id}`}
       role="complementary"
@@ -834,4 +835,3 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
     </div>
   )
 }
-
