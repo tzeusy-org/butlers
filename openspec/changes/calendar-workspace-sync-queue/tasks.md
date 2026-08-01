@@ -22,4 +22,4 @@
 
 - [x] 4.1 Update the frontend backend-API contract for canonical ownership, HTTP 202 acknowledgement, and action/freshness completion telemetry.
 - [x] 4.2 Run focused migration/schema, module, API/read-model, frontend, lint, and OpenSpec validation checks.
-- [ ] 4.3 Review the scoped diff, commit it on the isolated branch, push it, and open a protected pull request without changing `main`.
+- [x] 4.3 Review the scoped diff, commit it on the isolated branch, push it, and open a protected pull request without changing `main`.
