@@ -195,18 +195,24 @@ export default function ChroniclesPage() {
   // historic pre-floor date deliberately remains requested: the backend must
   // distinguish its truthful no_data response from an unavailable gap.
   const fetchDate = clampIsoDay(requestedDate, undefined, latest);
+  const selectedDate = fetchDate;
 
   const { data, isFetching, isError, refetch } = useChroniclesBriefing({
     date: fetchDate,
     tz: ownerTz,
   });
 
+  // TanStack Query retains placeholder data across the date-key change. That
+  // response belongs to the previous day, so it cannot establish an archive
+  // boundary or render any editorial surface for the newly selected URL date.
+  // Treat a mismatched response as pending until the requested day arrives.
+  const briefing = data?.date === selectedDate ? data : undefined;
+
   // earliest_date arrives with every briefing (it is a global minimum,
   // independent of the requested day). It gates only *additional* backward
   // travel: a valid pre-floor deep link remains selected and can recover
   // forward instead of being silently rewritten to the floor.
-  const earliest = data?.earliest_date ?? null;
-  const selectedDate = fetchDate;
+  const earliest = briefing?.earliest_date ?? null;
 
   function selectDate(date: string) {
     setSearchParams(
@@ -314,26 +320,26 @@ export default function ChroniclesPage() {
   }, [atEarliest, atLatest, atLatestDay, selectedDate, latest]);
   useRegisterShortcut(chroniclesShortcuts);
 
-  const receivedStateClass = data?.state_class;
+  const receivedStateClass = briefing?.state_class;
   const hasKnownState = isChroniclesStateClass(receivedStateClass);
   const stateClass: ChroniclesStateClass = hasKnownState ? receivedStateClass : "unavailable";
   const isKnownContentState = hasKnownState && CONTENT_STATES.has(stateClass);
   const isKnownNonContentState = hasKnownState && NON_CONTENT_STATES.has(stateClass);
   // A response object without a recognized state is malformed rather than
   // quiet. It must not leak a cached headline, prose, KPI, or recent index.
-  const isUnknownState = data != null && !hasKnownState;
-  const isNonContentState = data != null && !isKnownContentState;
+  const isUnknownState = briefing != null && !hasKnownState;
+  const isNonContentState = briefing != null && !isKnownContentState;
   const subject = greetSubject(selectedDate, latest);
   const headline = isUnknownState
     ? UNAVAILABLE_FALLBACK.headline
-    : (data?.headline ?? UNAVAILABLE_FALLBACK.headline);
+    : (briefing?.headline ?? UNAVAILABLE_FALLBACK.headline);
   const voiceParagraph = isUnknownState
     ? UNAVAILABLE_FALLBACK.voiceParagraph
-    : (data?.voice_paragraph ?? UNAVAILABLE_FALLBACK.voiceParagraph);
+    : (briefing?.voice_paragraph ?? UNAVAILABLE_FALLBACK.voiceParagraph);
   const headlineLines = deriveHeadlineLines(stateClass, headline, subject);
-  const isStale = isKnownContentState && data?.voice_source === "stale";
+  const isStale = isKnownContentState && briefing?.voice_source === "stale";
   const attentionItems = adaptAttention(
-    isUnknownState ? [] : (data?.attention_items ?? []),
+    isUnknownState ? [] : (briefing?.attention_items ?? []),
     () => void refetch(),
   );
   const sourceErrorItems = isKnownNonContentState
@@ -345,7 +351,7 @@ export default function ChroniclesPage() {
       archetype="editorial"
       title="Chronicles"
       description="Retrospective view of lived past time reconstructed from butler evidence."
-      loading={!data && !isError}
+      loading={!briefing && !isError}
       error={isError ? new Error("Failed to load chronicles briefing.") : null}
       onRetry={() => void refetch()}
     >
@@ -409,11 +415,11 @@ export default function ChroniclesPage() {
             ) : null}
           </div>
 
-          {/* Never-blank floor (bu-nhcp5): with placeholderData, `data` keeps
-              showing the previous day's briefing the instant the day-step
-              stepper fires; this wrapper dims it instead of the page falling
-              back to the full skeleton. Elaboration's own isFetching dim is
-              disabled here (false) so the two treatments don't compound. */}
+          {/* A matching response can be refreshed in place with a light dim.
+              Cross-date placeholder data is rejected above and uses the page
+              loading state instead, so it cannot narrate the newly selected
+              day. Elaboration's own dim is disabled here (false) so the two
+              treatments do not compound. */}
           <FetchingDim isFetching={isFetching} className="space-y-6">
             <Headline greet={headlineLines.greet} body={headlineLines.body} />
 
@@ -448,12 +454,12 @@ export default function ChroniclesPage() {
               <Section eyebrow="Attention">
                 <AttentionList items={attentionItems} />
               </Section>
-              {data?.kpi ? <KpiStrip cells={buildKpiCells(data.kpi)} /> : null}
+              {briefing?.kpi ? <KpiStrip cells={buildKpiCells(briefing.kpi)} /> : null}
             </>
           )}
           {!isNonContentState ? (
             <RecentDaysIndex
-              days={data?.recent_days ?? []}
+              days={briefing?.recent_days ?? []}
               selectedDate={selectedDate}
               onSelect={selectDate}
             />

@@ -147,6 +147,10 @@ Coverage and cache precedence are fixed:
    local day. Only an authoritative witness (`day_close_success`, an admitted
    day-close cache, active `activity`/`evidence` episode proof) counts;
    calendar intent, tombstones, and retained `legacy_unverified` rows do not.
+   A cache witness additionally requires an active, admitted row whose
+   `day_close:{date}` key and `date_label` agree with the witness and whose
+   `[start_at, end_at)` exactly equals that date's owner-timezone local-day UTC
+   window; a UTC-midnight window is not proof for a non-UTC owner.
 2. A settled day before the authoritative floor returns `no_data`; a gap at or
    after the floor, or no floor, returns `unavailable`. A failed owned read
    returns `unavailable` or `degraded` as applicable.
@@ -165,6 +169,11 @@ dates are clamped to the most-recent settled day.
 `recent_days` contains only exact authoritative witness dates in the recent
 window. It is archive navigation evidence, not an episode-derived rolling list;
 the client must not synthesize omitted dates.
+
+The client must render briefing editorial content only when response `date`
+equals the selected URL date. A date-keyed query may retain prior placeholder
+data during navigation; that transition must use a safe loading presentation,
+not prior prose, KPI, recent-day rows, cache state, or drilldown content.
 
 ## Notifications Contract
 

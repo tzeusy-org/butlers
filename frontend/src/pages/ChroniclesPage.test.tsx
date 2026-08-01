@@ -15,9 +15,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useNavigate } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ChroniclesPage from "@/pages/ChroniclesPage";
@@ -41,6 +41,7 @@ let _isFetching = false;
 let _isError = false;
 let _refetch = vi.fn();
 let _drilldownArgs: { date: string; tz: string } | undefined;
+let _navigate: ((to: string) => void) | undefined;
 
 vi.mock("@/hooks/use-chronicles-briefing", () => ({
   useChroniclesBriefing: (args: { date?: string; tz?: string } = {}) => {
@@ -64,6 +65,17 @@ vi.mock("@/components/chronicles/ChroniclesDrilldownPanel", () => ({
   },
 }));
 
+function NavigationHarness() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    _navigate = navigate;
+    return () => {
+      _navigate = undefined;
+    };
+  }, [navigate]);
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -81,7 +93,11 @@ function renderPage(entry = "/chronicles"): string {
   );
 }
 
-function mountPage(entry = "/chronicles"): { container: HTMLElement; unmount: () => void } {
+function mountPage(entry = "/chronicles"): {
+  container: HTMLElement;
+  navigate: (to: string) => void;
+  unmount: () => void;
+} {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -92,6 +108,7 @@ function mountPage(entry = "/chronicles"): { container: HTMLElement; unmount: ()
     root.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[entry]}>
+          <NavigationHarness />
           <ChroniclesPage />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -99,6 +116,14 @@ function mountPage(entry = "/chronicles"): { container: HTMLElement; unmount: ()
   });
   return {
     container,
+    navigate: (to) => {
+      act(() => {
+        if (_navigate === undefined) {
+          throw new Error("Navigation harness was not mounted");
+        }
+        _navigate(to);
+      });
+    },
     unmount: () => act(() => root.unmount()),
   };
 }
@@ -137,12 +162,17 @@ function buildBriefing(overrides: Partial<ChroniclesBriefing> = {}): ChroniclesB
 
 describe("ChroniclesPage editorial archetype", () => {
   beforeEach(() => {
+    // Default rendering targets yesterday in SGT, which makes the default
+    // fixture's date (2026-05-08) an exact response-date match.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-08T16:30:00.000Z"));
     _briefing = undefined;
     _briefingArgs = undefined;
     _isFetching = false;
     _isError = false;
     _refetch = vi.fn();
     _drilldownArgs = undefined;
+    _navigate = undefined;
   });
 
   afterEach(() => {
@@ -288,6 +318,7 @@ describe("ChroniclesPage editorial archetype", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
     _briefing = buildBriefing({
+      date: "2026-05-09",
       recent_days: [
         { date: "2026-05-05", total_minutes: 120, top_lane: "butler_ops", episode_count: 4 },
       ],
@@ -348,6 +379,37 @@ describe("ChroniclesPage editorial archetype", () => {
     }
   });
 
+  it("does not render a covered day's placeholder briefing after navigating to a pre-floor URL", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-08T16:30:00.000Z"));
+    _briefing = buildBriefing({
+      date: "2026-05-08",
+      headline: "Covered day headline that must not leak.",
+      voice_paragraph: "Covered day prose that must not leak.",
+      voice_source: "stale",
+    });
+
+    const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+    try {
+      expect(container.textContent).toContain("Covered day headline that must not leak.");
+      _isFetching = true;
+
+      navigate("/chronicles?date=2025-12-31");
+
+      expect(_briefingArgs?.date).toBe("2025-12-31");
+      expect(container.querySelector('[data-testid="workspace-skeleton"]')).toBeTruthy();
+      expect(container.textContent).not.toContain("Covered day headline that must not leak.");
+      expect(container.textContent).not.toContain("Covered day prose that must not leak.");
+      expect(container.textContent).not.toContain("2.4h");
+      expect(
+        container.querySelector('[aria-label="Day-close summary may be out of date"]'),
+      ).toBeNull();
+      expect(container.textContent).not.toContain("Chronicles drilldown stub");
+    } finally {
+      unmount();
+    }
+  });
+
   it("disables backward navigation while the archive boundary is unavailable", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
@@ -386,23 +448,23 @@ describe("ChroniclesPage editorial archetype", () => {
   });
 
   // ---------------------------------------------------------------------
-  // Never-blank floor (bu-nhcp5): day-step navigation must keep the
-  // outgoing day's content on screen (dimmed), never fall back to the full
-  // WorkspaceSkeleton, and never let a dimmed stale render mask a real error.
+  // A same-date refresh keeps its matching content on screen (dimmed), while
+  // a cross-date placeholder takes the safe loading path tested above. An
+  // in-place dim also must never mask a real error.
   // ---------------------------------------------------------------------
 
-  it("keeps the previous day's content visible (not the full skeleton) while the next day is fetching", () => {
+  it("keeps matching content visible (not the full skeleton) while it is fetching", () => {
     _briefing = buildBriefing({ headline: "Quiet day." });
     _isFetching = true;
     const html = renderPage();
-    // placeholderData means `data` is still populated during the day-step
-    // refetch, so the page must not fall back to the editorial WorkspaceSkeleton
-    // (ui/page.tsx's WorkspaceSkeleton, marked with data-testid="workspace-skeleton").
+    // Matching data may be refreshed in place rather than showing the editorial
+    // WorkspaceSkeleton (ui/page.tsx's WorkspaceSkeleton is marked with
+    // data-testid="workspace-skeleton").
     expect(html).not.toContain("workspace-skeleton");
     expect(html).toContain("Quiet day.");
   });
 
-  it("dims the stale content with FetchingDim while a day-step refetch is in flight", () => {
+  it("dims matching content with FetchingDim while a refetch is in flight", () => {
     _briefing = buildBriefing();
     _isFetching = true;
     const html = renderPage();

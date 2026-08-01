@@ -62,12 +62,15 @@ def upgrade() -> None:
     )
 
     # Reclassify the broad chronicler_023 backfill from durable, local proof
-    # only. A valid cache must be active and pass its stored date-binding
-    # admission. For episodes, intent is intentionally absent: a planned
-    # calendar block is not evidence that the day was lived. The timezone
-    # expression is per-row because each witness is owner-local. Historic
-    # ``timezone`` text was not constrained, so CASE keeps a malformed legacy
-    # value safely unverified instead of aborting the entire migration.
+    # only. A valid cache must be active, pass its stored date-binding
+    # admission, and prove its [start_at, end_at) equals the exact owner-local
+    # day window. A matching cache key/date label alone can still name a UTC
+    # day for a non-UTC owner, which is not evidence for the claimed local day.
+    # For episodes, intent is intentionally absent: a planned calendar block is
+    # not evidence that the day was lived. The timezone expression is per-row
+    # because each witness is owner-local. Historic ``timezone`` text was not
+    # constrained, so CASE keeps a malformed legacy value safely unverified
+    # instead of aborting the entire migration.
     op.execute(
         f"""
         UPDATE covered_local_days AS coverage
@@ -79,6 +82,18 @@ def upgrade() -> None:
                   AND cache.superseded_at IS NULL
                   AND cache.invalid_reason IS NULL
                   AND cache.date_label = coverage.local_date::text
+                  AND CASE WHEN EXISTS (
+                      SELECT 1
+                      FROM pg_timezone_names AS timezone_name
+                      WHERE timezone_name.name = coverage.timezone
+                  ) THEN (
+                      cache.start_at = (
+                          coverage.local_date::timestamp AT TIME ZONE coverage.timezone
+                      )
+                      AND cache.end_at = (
+                          (coverage.local_date + 1)::timestamp AT TIME ZONE coverage.timezone
+                      )
+                  ) ELSE FALSE END
             ) THEN '{_ORIGIN_DAY_CLOSE_CACHE}'
             WHEN EXISTS (
                 SELECT 1

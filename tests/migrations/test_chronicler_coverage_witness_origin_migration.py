@@ -63,6 +63,11 @@ async def test_upgrade_classifies_historic_coverage_by_local_proof(
                 (date(2026, 5, 9), "Not/ARealTimezone"),  # bad historic timezone text
                 (date(2026, 5, 5), "Asia/Singapore"),  # wrong local date in owner tz
                 (date(2026, 5, 6), "Asia/Singapore"),  # activity at 00:30 SGT
+                # Matching key/date-label alone is not proof: this cache uses
+                # UTC midnights rather than the Singapore-local day window.
+                (date(2026, 5, 10), "Asia/Singapore"),
+                # A cache with the exact Singapore-local UTC window is proof.
+                (date(2026, 5, 11), "Asia/Singapore"),
             ],
         )
         await pre_origin_pool.execute(
@@ -98,6 +103,30 @@ async def test_upgrade_classifies_historic_coverage_by_local_proof(
             """,
             datetime(2026, 5, 8, 0, 0, tzinfo=UTC),
             datetime(2026, 5, 9, 0, 0, tzinfo=UTC),
+        )
+        await pre_origin_pool.executemany(
+            """
+            INSERT INTO tier2_cache (
+                cache_key, start_at, end_at, prose, date_label, invalid_reason
+            )
+            VALUES ($1, $2, $3, $4, $5, NULL)
+            """,
+            [
+                (
+                    "day_close:2026-05-10",
+                    datetime(2026, 5, 10, 0, 0, tzinfo=UTC),
+                    datetime(2026, 5, 11, 0, 0, tzinfo=UTC),
+                    "A date-labelled cache with the wrong UTC day window.",
+                    "2026-05-10",
+                ),
+                (
+                    "day_close:2026-05-11",
+                    datetime(2026, 5, 10, 16, 0, tzinfo=UTC),
+                    datetime(2026, 5, 11, 16, 0, tzinfo=UTC),
+                    "A date-labelled cache with the exact Singapore day window.",
+                    "2026-05-11",
+                ),
+            ],
         )
         await pre_origin_pool.executemany(
             """
@@ -179,4 +208,6 @@ async def test_upgrade_classifies_historic_coverage_by_local_proof(
         ("Not/ARealTimezone", date(2026, 5, 9)): "legacy_unverified",
         ("Asia/Singapore", date(2026, 5, 5)): "legacy_unverified",
         ("Asia/Singapore", date(2026, 5, 6)): "episode_activity",
+        ("Asia/Singapore", date(2026, 5, 10)): "legacy_unverified",
+        ("Asia/Singapore", date(2026, 5, 11)): "day_close_cache",
     }

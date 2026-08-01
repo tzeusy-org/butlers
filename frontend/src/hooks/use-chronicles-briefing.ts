@@ -40,12 +40,11 @@ export function useChroniclesBriefing(args: UseChroniclesBriefingArgs = {}) {
     staleTime: THIRTY_SECONDS_MS,
     refetchInterval: false,
     refetchOnWindowFocus: false,
-    // Never-blank floor (bu-nhcp5): the query key is keyed by `date`, so every
-    // day-step is a brand-new cache entry. Without this, `data` reverts to
-    // undefined on each step and the whole page falls back to the full
-    // WorkspaceSkeleton. Keeping the previous day's data visible while the
-    // new day fetches lets the page pair with <FetchingDim isFetching> (see
-    // ChroniclesPage) instead of blanking.
+    // The query key is keyed by `date`, so every day-step is a new cache entry.
+    // Retaining previous data avoids a query-level gap, while ChroniclesPage
+    // verifies its response date before rendering it. A cross-date placeholder
+    // therefore becomes that page's safe loading state, never prose for the
+    // newly selected day.
     placeholderData: (previousData) => previousData,
   });
 }
