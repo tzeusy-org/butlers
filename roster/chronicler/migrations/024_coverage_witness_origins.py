@@ -67,10 +67,14 @@ def upgrade() -> None:
     # day window. A matching cache key/date label alone can still name a UTC
     # day for a non-UTC owner, which is not evidence for the claimed local day.
     # For episodes, intent is intentionally absent: a planned calendar block is
-    # not evidence that the day was lived. The timezone expression is per-row
-    # because each witness is owner-local. Historic ``timezone`` text was not
-    # constrained, so CASE keeps a malformed legacy value safely unverified
-    # instead of aborting the entire migration.
+    # not evidence that the day was lived. Read the corrected view, not the
+    # canonical table: a latest override can move or tombstone a row, and only
+    # its effective start/tombstone values may establish coverage. The
+    # schema-scoped Chronicler migration runner makes the unqualified view
+    # resolve to this chain's ``v_episodes_corrected`` (introduced before 024).
+    # The timezone expression is per-row because each witness is owner-local.
+    # Historic ``timezone`` text was not constrained, so CASE keeps a malformed
+    # legacy value safely unverified instead of aborting the entire migration.
     op.execute(
         f"""
         UPDATE covered_local_days AS coverage
@@ -97,7 +101,7 @@ def upgrade() -> None:
             ) THEN '{_ORIGIN_DAY_CLOSE_CACHE}'
             WHEN EXISTS (
                 SELECT 1
-                FROM episodes AS episode
+                FROM v_episodes_corrected AS episode
                 WHERE episode.tombstone_at IS NULL
                   AND episode.layer = 'activity'
                   AND (
@@ -112,7 +116,7 @@ def upgrade() -> None:
             ) THEN '{_ORIGIN_EPISODE_ACTIVITY}'
             WHEN EXISTS (
                 SELECT 1
-                FROM episodes AS episode
+                FROM v_episodes_corrected AS episode
                 WHERE episode.tombstone_at IS NULL
                   AND episode.layer = 'evidence'
                   AND (
@@ -126,6 +130,52 @@ def upgrade() -> None:
                   ) = coverage.local_date
             ) THEN '{_ORIGIN_EPISODE_EVIDENCE}'
             ELSE '{_ORIGIN_LEGACY_UNVERIFIED}'
+        END
+        """
+    )
+
+    # ``chronicler_023`` seeded a canonical local date before origins existed.
+    # When an override moves an activity/evidence episode, transfer that
+    # historical witness to the corrected local date instead of leaving the
+    # old canonical date covered. Restrict the transfer to a pre-existing,
+    # valid owner timezone so an absent coverage floor stays absent. The
+    # activity-first ordering matches the CASE above when both layers land on
+    # the same local day. Non-legacy origins (notably an admissible cache) keep
+    # their more specific provenance on conflict.
+    op.execute(
+        f"""
+        WITH corrected_episode_witnesses AS (
+            SELECT DISTINCT ON (
+                timezone_name.name,
+                (episode.start_at AT TIME ZONE timezone_name.name)::date
+            )
+                (episode.start_at AT TIME ZONE timezone_name.name)::date AS local_date,
+                timezone_name.name AS timezone,
+                CASE episode.layer
+                    WHEN 'activity' THEN '{_ORIGIN_EPISODE_ACTIVITY}'
+                    ELSE '{_ORIGIN_EPISODE_EVIDENCE}'
+                END AS origin
+            FROM covered_local_days AS coverage
+            JOIN pg_timezone_names AS timezone_name
+                ON timezone_name.name = coverage.timezone
+            JOIN v_episodes_corrected AS episode
+                ON (episode.canonical_start_at AT TIME ZONE timezone_name.name)::date
+                   = coverage.local_date
+            WHERE episode.tombstone_at IS NULL
+              AND episode.layer IN ('activity', 'evidence')
+            ORDER BY
+                timezone_name.name,
+                (episode.start_at AT TIME ZONE timezone_name.name)::date,
+                CASE episode.layer WHEN 'activity' THEN 0 ELSE 1 END
+        )
+        INSERT INTO covered_local_days (local_date, timezone, origin)
+        SELECT local_date, timezone, origin
+        FROM corrected_episode_witnesses
+        ON CONFLICT (local_date, timezone) DO UPDATE
+        SET origin = CASE
+            WHEN covered_local_days.origin = '{_ORIGIN_LEGACY_UNVERIFIED}'
+                THEN EXCLUDED.origin
+            ELSE covered_local_days.origin
         END
         """
     )

@@ -63,6 +63,10 @@ async def test_upgrade_classifies_historic_coverage_by_local_proof(
                 (date(2026, 5, 9), "Not/ARealTimezone"),  # bad historic timezone text
                 (date(2026, 5, 5), "Asia/Singapore"),  # wrong local date in owner tz
                 (date(2026, 5, 6), "Asia/Singapore"),  # activity at 00:30 SGT
+                (date(2026, 5, 12), "UTC"),  # activity later tombstoned by an override
+                (date(2026, 5, 13), "UTC"),  # evidence later moved by an override
+                (date(2026, 5, 15), "UTC"),  # activity later moved by an override
+                (date(2026, 5, 17), "UTC"),  # evidence later tombstoned by an override
                 # Matching key/date-label alone is not proof: this cache uses
                 # UTC midnights rather than the Singapore-local day window.
                 (date(2026, 5, 10), "Asia/Singapore"),
@@ -176,6 +180,94 @@ async def test_upgrade_classifies_historic_coverage_by_local_proof(
                     "activity",
                     None,
                 ),
+                (
+                    "migration.coverage-origin",
+                    "override-tombstoned-activity",
+                    datetime(2026, 5, 12, 12, 0, tzinfo=UTC),
+                    datetime(2026, 5, 12, 13, 0, tzinfo=UTC),
+                    "activity",
+                    None,
+                ),
+                (
+                    "migration.coverage-origin",
+                    "override-moved-evidence",
+                    datetime(2026, 5, 13, 12, 0, tzinfo=UTC),
+                    datetime(2026, 5, 13, 13, 0, tzinfo=UTC),
+                    "evidence",
+                    None,
+                ),
+                (
+                    "migration.coverage-origin",
+                    "override-moved-activity",
+                    datetime(2026, 5, 15, 12, 0, tzinfo=UTC),
+                    datetime(2026, 5, 15, 13, 0, tzinfo=UTC),
+                    "activity",
+                    None,
+                ),
+                (
+                    "migration.coverage-origin",
+                    "override-tombstoned-evidence",
+                    datetime(2026, 5, 17, 12, 0, tzinfo=UTC),
+                    datetime(2026, 5, 17, 13, 0, tzinfo=UTC),
+                    "evidence",
+                    None,
+                ),
+            ],
+        )
+        override_targets = {
+            row["source_ref"]: row["id"]
+            for row in await pre_origin_pool.fetch(
+                """
+                SELECT id, source_ref
+                FROM episodes
+                WHERE source_name = 'migration.coverage-origin'
+                  AND source_ref = ANY($1::text[])
+                """,
+                [
+                    "override-tombstoned-activity",
+                    "override-moved-evidence",
+                    "override-moved-activity",
+                    "override-tombstoned-evidence",
+                ],
+            )
+        }
+        await pre_origin_pool.executemany(
+            """
+            INSERT INTO overrides (
+                target_kind, target_id, corrected_start_at, corrected_end_at,
+                corrected_tombstone_at, note
+            )
+            VALUES ('episode', $1, $2, $3, $4, $5)
+            """,
+            [
+                (
+                    override_targets["override-tombstoned-activity"],
+                    None,
+                    None,
+                    datetime(2026, 5, 12, 20, 0, tzinfo=UTC),
+                    "The historical activity was retracted.",
+                ),
+                (
+                    override_targets["override-moved-evidence"],
+                    datetime(2026, 5, 14, 12, 0, tzinfo=UTC),
+                    datetime(2026, 5, 14, 13, 0, tzinfo=UTC),
+                    None,
+                    "The evidence belonged to the following day.",
+                ),
+                (
+                    override_targets["override-moved-activity"],
+                    datetime(2026, 5, 16, 12, 0, tzinfo=UTC),
+                    datetime(2026, 5, 16, 13, 0, tzinfo=UTC),
+                    None,
+                    "The activity belonged to the following day.",
+                ),
+                (
+                    override_targets["override-tombstoned-evidence"],
+                    None,
+                    None,
+                    datetime(2026, 5, 17, 20, 0, tzinfo=UTC),
+                    "The historical evidence was retracted.",
+                ),
             ],
         )
     finally:
@@ -210,4 +302,10 @@ async def test_upgrade_classifies_historic_coverage_by_local_proof(
         ("Asia/Singapore", date(2026, 5, 6)): "episode_activity",
         ("Asia/Singapore", date(2026, 5, 10)): "legacy_unverified",
         ("Asia/Singapore", date(2026, 5, 11)): "day_close_cache",
+        ("UTC", date(2026, 5, 12)): "legacy_unverified",
+        ("UTC", date(2026, 5, 13)): "legacy_unverified",
+        ("UTC", date(2026, 5, 14)): "episode_evidence",
+        ("UTC", date(2026, 5, 15)): "legacy_unverified",
+        ("UTC", date(2026, 5, 16)): "episode_activity",
+        ("UTC", date(2026, 5, 17)): "legacy_unverified",
     }
