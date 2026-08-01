@@ -155,6 +155,7 @@ async def test_briefing_returns_cached_voice_without_llm_call(monkeypatch: pytes
                     "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
                     "start_at": datetime(2026, 5, 7, 16, 0, tzinfo=UTC),
                     "end_at": datetime(2026, 5, 8, 16, 0, tzinfo=UTC),
+                    "date_label": "2026-05-08",
                 }
             )
         ]
@@ -278,6 +279,69 @@ async def test_briefing_uses_templated_fallback_when_cache_invalid(
     assert body["voice_paragraph"] == "The day was led by butler_ops."
     templated.assert_called_once()
     # The staleness fetchval must not even be reached: admission is checked first.
+    assert conn.fetchval_calls == []
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        '```json\n{"tool": "x"}\n```',
+        'Tool result: {"date": "2026-05-08", "citations": []}',
+        "{'tool': 'chronicler_day_close_bundle', 'result': {'date': '2026-05-08'}}",
+        "tool_calls = [{'name': 'chronicler_day_close_bundle', 'result': {'date': '2026-05-08'}}]",
+        "('tool', {'result': 'raw tool payload'})",
+        "set()",
+        "set( )",
+        "set(\n)",
+    ],
+    ids=[
+        "code-fence",
+        "tool-result-header",
+        "python-literal-object",
+        "assignment-tool-calls",
+        "python-literal-tuple",
+        "empty-set",
+        "empty-set-space",
+        "empty-set-newline",
+    ],
+)
+async def test_briefing_contains_legacy_malformed_cache_with_templated_copy(
+    monkeypatch: pytest.MonkeyPatch, prose: str
+):
+    """An unmarked legacy trace cannot surface through the editorial briefing."""
+    monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose)
+    templated = MagicMock(return_value="The day was led by butler_ops.")
+    monkeypatch.setattr(editorial, "templated_voice_paragraph", templated)
+
+    conn = _Conn(
+        fetchrow_returns=[
+            _Row(
+                {
+                    "prose": prose,
+                    "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
+                    "start_at": datetime(2026, 5, 7, 16, 0, tzinfo=UTC),
+                    "end_at": datetime(2026, 5, 8, 16, 0, tzinfo=UTC),
+                    "date_label": "2026-05-08",
+                    "invalid_reason": None,
+                }
+            )
+        ]
+    )
+    app = _make_app(conn)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/chronicler/briefing",
+            params={"date": "2026-05-08", "tz": "Asia/Singapore"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["voice_source"] == "templated"
+    assert body["voice_paragraph"] == "The day was led by butler_ops."
+    templated.assert_called_once()
     assert conn.fetchval_calls == []
 
 

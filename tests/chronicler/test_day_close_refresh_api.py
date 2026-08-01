@@ -76,10 +76,21 @@ class _AcquireCM:
         return None
 
 
+class _TransactionCM:
+    """Minimal async context manager mimicking ``asyncpg.Connection.transaction``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 def _mock_pool(
     *,
     fetchrow_side_effect: list | None = None,
     fetchrow_returns: Any = None,
+    conn_fetchrow_side_effect: list | None = None,
     execute_returns: str = "OK",
 ) -> AsyncMock:
     pool = AsyncMock()
@@ -91,6 +102,11 @@ def _mock_pool(
     pool.fetchval = AsyncMock(return_value=0)
     pool.execute = AsyncMock(return_value=execute_returns)
     conn = AsyncMock()
+    conn.transaction = MagicMock(side_effect=_TransactionCM)
+    if conn_fetchrow_side_effect is not None:
+        conn.fetchrow = AsyncMock(side_effect=conn_fetchrow_side_effect)
+    else:
+        conn.fetchrow = AsyncMock(return_value=None)
     pool.acquire = MagicMock(side_effect=lambda: _AcquireCM(conn))
     return pool
 
@@ -111,7 +127,14 @@ def _make_spawner_result(
     r.success = success
     r.output = output
     r.tool_calls = (
-        [{"tool": "chronicler_day_close_bundle", "result": {"date": date_label, "citations": []}}]
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": date_label, "timezone": "UTC"},
+                "outcome": "success",
+                "result": {"date": date_label, "citations": []},
+            }
+        ]
         if date_label
         else []
     )
@@ -318,9 +341,17 @@ class TestDayCloseRefreshSuccess:
             fetchrow_side_effect=[
                 _row({"cache_built_at": _T_OUTSIDE_24H}),
                 _row({"prompt": "Day close prompt."}),
-                _row({"invalid_reason": None}),
                 _row({"cache_built_at": preserved_built_at}),
-            ]
+            ],
+            conn_fetchrow_side_effect=[
+                _row(
+                    {
+                        "prose": "A valid earlier retrospective.",
+                        "date_label": "2026-04-24",
+                        "invalid_reason": None,
+                    }
+                )
+            ],
         )
         dispatch_fn = AsyncMock(
             return_value=_make_spawner_result(
@@ -351,9 +382,9 @@ class TestDayCloseRefreshSuccess:
             fetchrow_side_effect=[
                 None,
                 _row({"prompt": "Day close prompt."}),
-                None,
                 _row({"cache_built_at": invalid_built_at}),
-            ]
+            ],
+            conn_fetchrow_side_effect=[None],
         )
         dispatch_fn = AsyncMock(
             return_value=_make_spawner_result(

@@ -1179,6 +1179,8 @@ async def test_day_close_span_cache_states(otel_exporter):
                 "cache_built_at": _T_CACHE_BUILT,
                 "prose": "Yesterday you worked for 8 hours.",
                 "provenance_refs": json.dumps(["core.sessions:ref1"]),
+                "date_label": "2026-04-01",
+                "invalid_reason": None,
             }
         )
 
