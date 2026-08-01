@@ -428,6 +428,64 @@ def test_postmerge_base_ref_lookup_failure_blocks_source_bead_closure(
     assert result.next_action == "leave-source-bead-open-and-run-postmerge-race-audit"
 
 
+def test_postmerge_unexpected_parent_shape_requires_race_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-squash parent shape remains already merged but cannot close its Bead."""
+    parent_shas = [REVIEWED_BASE_SHA, ADVANCED_BASE_SHA]
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+    monkeypatch.setattr(
+        merge_guard,
+        "request_squash_merge",
+        lambda *_: {"merged": True, "sha": MERGE_SHA},
+    )
+    monkeypatch.setattr(merge_guard, "fetch_commit_parent_shas", lambda *_: parent_shas)
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_pull_request_base_ref_name",
+        lambda *_: "main",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_commit_tree_sha",
+        lambda *_: EXPECTED_PATCH_TREE_SHA,
+        raising=False,
+    )
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert result.outcome is merge_guard.MergeOutcome.POSTMERGE_UNEXPECTED_PARENT_SHAPE
+    assert result.exit_code == 4
+    assert result.source_bead_closure_allowed is False
+    assert result.parent_shas == parent_shas
+    assert result.next_action == "leave-source-bead-open-and-run-postmerge-race-audit"
+
+
+def test_fetch_commit_tree_sha_reads_nested_rest_commit_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The REST commits endpoint nests tree metadata under ``commit``."""
+    captured: list[list[str]] = []
+
+    def run_gh_json(args: list[str]) -> dict[str, object]:
+        captured.append(args)
+        return {"commit": {"tree": {"sha": EXPECTED_PATCH_TREE_SHA}}}
+
+    monkeypatch.setattr(merge_guard, "run_gh_json", run_gh_json)
+
+    result = merge_guard.fetch_commit_tree_sha(REPO, HEAD_SHA)
+
+    assert result == EXPECTED_PATCH_TREE_SHA
+    assert captured == [["api", f"repos/{REPO}/commits/{HEAD_SHA}"]]
+
+
 def test_rest_request_keeps_sha_pinning_and_squash_method(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[list[str]] = []
 

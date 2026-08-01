@@ -120,11 +120,13 @@ atomically require the reviewed target ref or base SHA. This helper therefore:
 4. verifies that the resulting squash commit has exactly the reviewed base as
    its sole parent and the same immutable result tree as the reviewed head.
 
-It is a final merge guard, not a substitute for terminal hosted CI, independent
-review, or resolved review threads. Capture `headRefOid`, `baseRefName`, and
-the *live target branch tip* from the same final revalidation. Do not use a
-PR's `baseRefOid` as the expected base: it can remain stale while the target
-branch has advanced.
+It is the sole final merge route, not a substitute for terminal hosted CI,
+independent review, or resolved review threads. Every hosted check must be
+terminal green before invoking it; branch-protection required-check settings do
+not relax that gate. Do not use bare REST merge requests, `gh pr merge`, or
+automatic merge. Capture `headRefOid`, `baseRefName`, and the *live target
+branch tip* from the same final revalidation. Do not use a PR's `baseRefOid` as
+the expected base: it can remain stale while the target branch has advanced.
 
 ```bash
 HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
@@ -161,6 +163,10 @@ net patch, including binary, rename, and empty changes. The JSON audit records
 `expected_patch_tree_sha`, `landed_patch_tree_sha`, and
 `patch_identity_matches`; no nonmatching or unavailable evidence permits
 source-Bead closure.
+`postmerge-unexpected-squash-parent-shape` is also exit `4`: GitHub has already
+merged the PR, but the result did not have exactly one parent. Its audit retains
+the parent evidence; leave the source Bead open and run the documented
+post-merge audit/investigation rather than treating it as exact-base evidence.
 
 ## fix_beads_dependency_timestamps.py
 

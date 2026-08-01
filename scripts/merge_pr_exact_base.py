@@ -93,6 +93,7 @@ class MergeAudit:
             MergeOutcome.POSTMERGE_BASE_REF_DRIFT,
             MergeOutcome.POSTMERGE_BASE_DRIFT,
             MergeOutcome.POSTMERGE_PATCH_DRIFT,
+            MergeOutcome.POSTMERGE_UNEXPECTED_PARENT_SHAPE,
         }:
             return "leave-source-bead-open-and-run-postmerge-race-audit"
         return "leave-source-bead-open-and-investigate"
@@ -268,7 +269,8 @@ def fetch_commit_parent_shas(repo: str, commit_sha: str) -> list[str]:
 def fetch_commit_tree_sha(repo: str, commit_sha: str) -> str:
     """Return an immutable commit tree SHA for authoritative patch comparison."""
     payload = run_gh_json(["api", f"repos/{normalize_repo(repo)}/commits/{commit_sha}"])
-    tree = payload.get("tree") if isinstance(payload, dict) else None
+    commit = payload.get("commit") if isinstance(payload, dict) else None
+    tree = commit.get("tree") if isinstance(commit, dict) else None
     tree_sha = tree.get("sha") if isinstance(tree, dict) else None
     if not isinstance(tree_sha, str) or not tree_sha:
         raise RuntimeError(f"Commit {commit_sha} did not return a tree SHA")
