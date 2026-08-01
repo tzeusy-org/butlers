@@ -295,63 +295,36 @@ class TestPricingDependency:
         )
 
     @pytest.mark.parametrize(
-        ("model_ids", "short_rates", "long_rates", "short_cost", "long_cost"),
+        ("model_ids", "expected_rates", "expected_cost"),
         [
-            (
-                ("gpt-5.6-sol",),
-                (0.000005, 0.0000005, 0.00000625, 0.00003),
-                (0.00001, 0.000001, 0.0000125, 0.000045),
-                41.75,
-                68.50,
-            ),
-            (
-                ("gpt-5.6-terra",),
-                (0.000002, 0.0000002, 0.0000025, 0.000012),
-                (0.000004, 0.0000004, 0.000005, 0.000018),
-                16.70,
-                27.40,
-            ),
+            (("gpt-5.6-sol",), (0.000005, 0.0000005, 0.00000625, 0.00003), 41.75),
+            (("gpt-5.6-terra",), (0.000002, 0.0000002, 0.0000025, 0.000012), 16.70),
             (
                 ("gpt-5.6-luna", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh"),
                 (0.0000002, 0.00000002, 0.00000025, 0.0000012),
-                (0.0000004, 0.00000004, 0.0000005, 0.0000018),
                 1.67,
-                2.74,
             ),
         ],
     )
-    def test_repo_default_gpt_5_6_models_use_standard_api_pricing(
-        self, model_ids, short_rates, long_rates, short_cost, long_cost
+    def test_repo_default_gpt_5_6_models_assume_short_context_api_pricing(
+        self, model_ids, expected_rates, expected_cost
     ):
-        # These rates are intentionally API-equivalent rather than the active
-        # subscription's $0 marginal cost: the dashboard estimates general
-        # token-price usage. Luna reasoning aliases need their own exact keys.
+        # The dashboard intentionally estimates general usage at the Standard
+        # API's <=272K rate, regardless of the active subscription or a
+        # context_tokens value. Luna reasoning aliases need exact keys.
         cfg = load_pricing()
-        expected_tiers = ((0, short_rates), (272_001, long_rates))
 
         for model_id in model_ids:
             entry = cfg.get_model_pricing(model_id)
-            assert isinstance(entry, TieredModelPricing)
+            assert isinstance(entry, ModelPricing)
             assert cfg.billing_class_for(model_id) == "metered"
-            assert [tier.context_threshold for tier in entry.tiers] == [0, 272_001]
+            assert (
+                entry.input_price_per_token,
+                entry.cached_input_price_per_token,
+                entry.cache_creation_price_per_token,
+                entry.output_price_per_token,
+            ) == pytest.approx(expected_rates)
 
-            for tier, (threshold, expected_rates) in zip(entry.tiers, expected_tiers, strict=True):
-                assert tier.context_threshold == threshold
-                assert (
-                    tier.input_price_per_token,
-                    tier.cached_input_price_per_token,
-                    tier.cache_creation_price_per_token,
-                    tier.output_price_per_token,
-                ) == pytest.approx(expected_rates)
-
-            assert cfg.estimate_cost(
-                model_id,
-                1_000_000,
-                1_000_000,
-                cached_input_tokens=1_000_000,
-                cache_creation_tokens=1_000_000,
-                context_tokens=272_000,
-            ) == pytest.approx(short_cost)
             assert cfg.estimate_cost(
                 model_id,
                 1_000_000,
@@ -359,4 +332,4 @@ class TestPricingDependency:
                 cached_input_tokens=1_000_000,
                 cache_creation_tokens=1_000_000,
                 context_tokens=272_001,
-            ) == pytest.approx(long_cost)
+            ) == pytest.approx(expected_cost)
