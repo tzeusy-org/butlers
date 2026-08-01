@@ -377,6 +377,13 @@ Response model shapes:
 - `GET /api/memory/facts/{factId}` -> `ApiResponse<Fact>`
 - `GET /api/memory/rules` -> `PaginatedResponse<MemoryRule>`
 - `GET /api/memory/rules/{ruleId}` -> `ApiResponse<MemoryRule>`
+- Facts and rules with a source episode carry
+  `source_episode_status: available | expired | unresolved | null`; only
+  `available` permits a live episode navigation affordance.
+- `GET /api/memory/links/{memoryType}/{memoryId}?direction=incoming|outgoing|both`
+  -> `ApiResponse<MemoryLink[]>`; each episode endpoint carries its matching
+  `source_episode_status` or `target_episode_status` in the same vocabulary,
+  while non-episode endpoints are `null`.
 - `GET /api/memory/activity` -> `ApiResponse<MemoryActivity[]>`
 
 ## Approvals Domain Contract

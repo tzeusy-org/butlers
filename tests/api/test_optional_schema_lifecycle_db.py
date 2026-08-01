@@ -61,8 +61,15 @@ pytestmark = [
 ]
 
 _LOGGER = logging.getLogger("test_optional_schema_lifecycle_db")
-_TRACKED_RELATIONS = ("butler_secrets", "episodes", "facts", "rules")
-_MEMORY_RELATIONS = ("episodes", "facts", "rules")
+_TRACKED_RELATIONS = (
+    "butler_secrets",
+    "episodes",
+    "facts",
+    "rules",
+    "memory_links",
+    "episode_tombstones",
+)
+_MEMORY_RELATIONS = ("episodes", "facts", "rules", "memory_links", "episode_tombstones")
 
 
 @pytest.fixture

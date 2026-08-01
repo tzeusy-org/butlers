@@ -175,13 +175,22 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
   const provenanceLinks: ReactElement[] = [];
   if (fact) {
     if (fact.source_episode_id != null) {
-      provenanceLinks.push(
-        <ProvenanceLink
-          key="episode"
-          to={`/memory/episodes/${fact.source_episode_id}`}
-          label={`derived from episode ${shortFragment(fact.source_episode_id)}`}
-        />,
-      );
+      if (fact.source_episode_status === "available") {
+        provenanceLinks.push(
+          <ProvenanceLink
+            key="episode"
+            to={`/memory/episodes/${fact.source_episode_id}`}
+            label={`derived from episode ${shortFragment(fact.source_episode_id)}`}
+          />,
+        );
+      } else {
+        const sourceState = fact.source_episode_status ?? "unresolved";
+        provenanceLinks.push(
+          <span key="episode-source-status" className="font-mono text-[11px] text-[var(--mfg)]">
+            Source {sourceState}
+          </span>,
+        );
+      }
     }
     if (fact.supersedes_id != null) {
       provenanceLinks.push(

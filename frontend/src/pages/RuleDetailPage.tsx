@@ -65,10 +65,16 @@ export default function RuleDetailPage() {
 
   const provenance =
     rule?.source_episode_id != null ? (
-      <ProvenanceLink
-        to={`/memory/episodes/${rule.source_episode_id}`}
-        label={`derived from episode ${shortFragment(rule.source_episode_id)}`}
-      />
+      rule.source_episode_status === "available" ? (
+        <ProvenanceLink
+          to={`/memory/episodes/${rule.source_episode_id}`}
+          label={`derived from episode ${shortFragment(rule.source_episode_id)}`}
+        />
+      ) : (
+        <span className="font-mono text-[11px] text-[var(--mfg)]">
+          Source {rule.source_episode_status ?? "unresolved"}
+        </span>
+      )
     ) : null;
 
   return (

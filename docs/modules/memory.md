@@ -163,7 +163,7 @@ validity.
 
 Anti-pattern detection: rules with repeated harmful, low-effectiveness outcomes transition to `anti_pattern` status and are surfaced as warnings rather than guidance.
 
-Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows.
+Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows. Before an episode is deleted, a database trigger records a content-free `episode_tombstones` row. Durable facts and rules retain their source UUID, and a generic `memory_links` endpoint names the deleted episode as `expired`; neither path retains raw episode content or authorizes a historical cleanup drain.
 
 ### HNSW recall and churn observability
 
@@ -236,6 +236,7 @@ Entities are never hard-deleted. Merging sets `metadata.merged_into`; the source
 The module owns tables in the hosting butler's schema (Alembic branch: `memory`):
 
 - `episodes` -- session observations with TTL
+- `episode_tombstones` -- content-free deletion evidence for durable episode provenance
 - `facts` -- durable SPO knowledge with entity anchoring
 - `rules` -- procedural memory with maturity tracking
 - `memory_links` -- provenance edges between memory artifacts

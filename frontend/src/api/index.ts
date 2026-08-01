@@ -353,6 +353,7 @@ export type {
   PromoteRelationshipEntityRequest,
   CreateRelationshipEntityRequest,
   Episode,
+  EpisodeSourceStatus,
   EpisodeParams,
   ErrorDetail,
   ErrorResponse,

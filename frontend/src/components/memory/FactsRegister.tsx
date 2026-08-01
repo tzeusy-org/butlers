@@ -86,6 +86,9 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
   const confidence = formatConfidence(fact, now);
   const tag = permanenceTag(fact.permanence);
   const hasProvenance = fact.source_episode_id != null;
+  const sourceEpisodeStatus = hasProvenance
+    ? (fact.source_episode_status ?? "unresolved")
+    : null;
 
   // The whole row is the hit target → /memory/facts/:id. It carries a nested
   // entity <Link>, so it CANNOT be a real <a> (no nested anchors) — RowLink's
@@ -143,14 +146,17 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
         <span className="text-[var(--mfg)]">{tag}</span>
         {hasProvenance && (
           <span
-            // Provenance glyph: muted, hover reveals the source episode. Not a
-            // separate link in the register — provenance navigation lives on
-            // the detail page (§3a).
-            aria-hidden
-            title={`from episode ${(fact.source_episode_id ?? "").slice(0, 8)}`}
+            // Provenance is not a separate link in the register — episode
+            // navigation lives on the detail page. An unavailable source must
+            // remain visible rather than looking like a live episode.
+            title={
+              sourceEpisodeStatus === "available"
+                ? `from episode ${(fact.source_episode_id ?? "").slice(0, 8)}`
+                : `Source ${sourceEpisodeStatus}`
+            }
             className="text-[var(--mfg)]"
           >
-            ↳
+            {sourceEpisodeStatus === "available" ? "↳" : `Source ${sourceEpisodeStatus}`}
           </span>
         )}
       </span>

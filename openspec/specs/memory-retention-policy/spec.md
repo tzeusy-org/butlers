@@ -236,6 +236,10 @@ The `memory_episode_cleanup` sweep deletes expired episodes, but it MUST NOT
 delete an expired episode that is still awaiting consolidation until a grace
 window has elapsed, and it MUST bound every delete so a large accumulated
 backlog drains incrementally rather than in one table-wide-locking statement.
+Before deleting a reapable episode, the sweep MUST rely on the memory module's
+content-free source-tombstone invariant: it MUST NOT null a durable fact or
+rule source identifier, retain raw episode content, or perform a historical
+catch-up drain solely to establish provenance.
 The set of episodes the sweep is permitted to delete for expiry — expired AND
 (`consolidation_status <> 'pending'` OR expired beyond the grace window) — is
 the single source of truth for what counts as un-reaped cleanup lag; the
@@ -280,6 +284,15 @@ is not exempt from module-default recovery.
   exactly as any other maintenance schedule would be
 - **AND** an operator's explicit DB-level disable (`source='db'`) MUST still be
   left untouched
+
+#### Scenario: Normal bounded cleanup preserves expired-source evidence
+
+- **WHEN** the cleanup sweep deletes one reapable episode in its normal bounded
+  batch
+- **THEN** durable facts, rules, and generic links associated with that episode
+  MUST remain attributable through content-free `expired` source evidence
+- **AND** the sweep MUST NOT retain the deleted episode's raw content or select,
+  delete, or mutate historical episodes beyond its normal bounded cleanup
 
 ### Requirement: Live-safe local HNSW observability
 

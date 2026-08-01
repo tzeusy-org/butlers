@@ -872,8 +872,11 @@ single line, truncated; the whole row is the hit target opening
 `/memory/facts/:id`), and a right-aligned mono `belief` column (effective
 confidence to two decimal places followed by a two-letter permanence tag —
 `pm` permanent · `st` stable · `sd` standard · `vo` volatile · `ep` ephemeral).
-A `derived_from` glyph (`↳`, mono, muted) MUST appear at row end when the fact
-has a `source_episode_id`. Fading rows MUST dim their entire foreground
+A `derived_from` glyph (`↳`, mono, muted) MUST appear at row end only when the
+fact has a `source_episode_id` with `source_episode_status = 'available'`. If
+the source identifier is `expired` or `unresolved`, the row MUST instead show
+the matching visible `Source expired` or `Source unresolved` state without a
+live-episode navigation affordance. Fading rows MUST dim their entire foreground
 (including content) to `--dim`; the default ledger view MUST NOT render
 `superseded`, `expired`, or `retracted` facts unless an explicit validity
 filter selects them.
@@ -938,12 +941,17 @@ affordance.
 - **AND** it MUST NOT render a word badge such as "Consolidated" or a colored
   chip
 
-#### Scenario: Derived-from glyph links provenance
+#### Scenario: Derived-from provenance distinguishes source availability
 
-- **WHEN** a fact has a non-null `source_episode_id`
+- **WHEN** a fact has a non-null `source_episode_id` and
+  `source_episode_status = 'available'`
 - **THEN** the ledger row MUST render a muted mono `↳` glyph at row end
 - **AND** clicking the row MUST open `/memory/facts/{id}` (the detail page
   carries the episode link)
+- **WHEN** a fact has a non-null `source_episode_id` with status `expired` or
+  `unresolved`
+- **THEN** the ledger row MUST render the matching visible source state
+- **AND** it MUST NOT offer a link to `/memory/episodes/{source_episode_id}`
 
 ---
 
@@ -1131,7 +1139,9 @@ The page MUST display:
   (never bars); a fading fact's state line dims to `--dim`. There MUST be no
   confidence progress bar and no colored permanence/validity/scope word badges.
 - **Provenance:** Source butler (when present), Source episode (a link to
-  `/memory/episodes/{source_episode_id}` when present), Supersedes (a link to
+  `/memory/episodes/{source_episode_id}` only when
+  `source_episode_status = 'available'`; otherwise visible `Source expired` or
+  `Source unresolved` text with no episode link), Supersedes (a link to
   `/memory/facts/{supersedes_id}` when present), and Superseded-by (a link to
   `/memory/facts/{superseded_by}` when the reverse lookup returns one). When the
   fact has no provenance at all, the provenance section AND its eyebrow MUST be
@@ -1154,11 +1164,19 @@ The page MUST delegate loading and error states to the detail-page shell.
   last confirmed 12d ago · effective 0.92" in a mono line
 - **AND** it MUST NOT render a confidence progress bar
 
-#### Scenario: Fact with source episode link
+#### Scenario: Fact with an available source episode link
 
-- **WHEN** a fact has `source_episode_id` set
+- **WHEN** a fact has `source_episode_id` set and
+  `source_episode_status = 'available'`
 - **THEN** the provenance section MUST render a clickable link to
   `/memory/episodes/{source_episode_id}`
+
+#### Scenario: Fact with an unavailable source episode
+
+- **WHEN** a fact has `source_episode_id` set and its status is `expired` or
+  `unresolved`
+- **THEN** the provenance section MUST render the matching visible source state
+- **AND** it MUST NOT render a link to `/memory/episodes/{source_episode_id}`
 
 #### Scenario: Fact superseded-by reverse link
 
@@ -1247,8 +1265,10 @@ The page MUST display:
   effectiveness as a mono numeral (never a progress bar), and the confidence /
   decay arithmetic line as on the fact page.
 - **Provenance:** Source butler and Source episode (link to
-  `/memory/episodes/{id}`) when present; the section and its eyebrow MUST be
-  omitted when no provenance exists.
+  `/memory/episodes/{id}` only when `source_episode_status = 'available'`; a
+  visible matching `Source expired` or `Source unresolved` state otherwise)
+  when present; the section and its eyebrow MUST be omitted when no provenance
+  exists.
 - **KV band:** tags, metadata (mono code block when non-empty), and timestamps
   (Created at, Last applied at, Last evaluated at).
 
@@ -1265,6 +1285,13 @@ The page MUST delegate loading and error states to the detail-page shell.
 - **WHEN** a rule has an effectiveness score
 - **THEN** the outcome record MUST render it as a mono numeral
 - **AND** it MUST NOT render an effectiveness progress bar
+
+#### Scenario: Rule source availability has no dangling door
+
+- **WHEN** a rule has `source_episode_id` set and its status is `expired` or
+  `unresolved`
+- **THEN** its provenance MUST render the matching visible source state
+- **AND** it MUST NOT render a link to `/memory/episodes/{source_episode_id}`
 
 ---
 

@@ -50,9 +50,13 @@ pytestmark = [
 # stats assertion, mirroring test_memory_stats_consolidation_e2e.py).
 _RULES_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS episodes (
-    id                   BIGSERIAL PRIMARY KEY,
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     consolidated         BOOLEAN NOT NULL DEFAULT false,
     consolidation_status TEXT    NOT NULL DEFAULT 'pending'
+);
+CREATE TABLE IF NOT EXISTS episode_tombstones (
+    episode_id UUID PRIMARY KEY,
+    deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS facts (
     id       BIGSERIAL PRIMARY KEY,

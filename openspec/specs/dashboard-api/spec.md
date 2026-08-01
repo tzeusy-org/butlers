@@ -1077,6 +1077,19 @@ data source; no affordance on the redesigned page may ship without its wire here
   filter (facts with importance ≥ the threshold). The response `meta.total`
   reflects the filtered count (the attention rail reads it for the
   "important facts fading" row).
+- A fact or rule with a non-null `source_episode_id` SHALL expose a typed
+  `source_episode_status` of `available`, `expired`, or `unresolved`: only a
+  live readable episode is `available`; a content-free tombstone is `expired`;
+  and an identifier with neither relation is `unresolved`. The field SHALL be
+  `null` when there is no source episode. A source status MUST NOT disclose raw
+  episode content or internal tombstone details.
+- `GET /api/memory/links/{memory_type}/{memory_id}` SHALL return the durable
+  incoming, outgoing, or combined `memory_links` relations in an
+  `ApiResponse`. Each endpoint whose type is `episode` SHALL carry the matching
+  `source_episode_status` or `target_episode_status` using the same typed
+  vocabulary; non-episode endpoints SHALL be `null`. The reader is read-only
+  and MUST retain an expired or unresolved relation rather than representing it
+  as a live episode or silently omitting it.
 - `GET /api/memory/facts/{id}` SHALL additionally return `superseded_by:
   str | null`, computed by the reverse query `WHERE supersedes_id = $1`
   (the forward `supersedes_id` field already exists).
@@ -1149,6 +1162,27 @@ pools without memory tables are silently skipped.
 - **WHEN** `GET /api/memory/facts?importance_min=8&validity=fading` is called
 - **THEN** `meta.total` reflects the count of high-importance fading facts
   (backing the rail's "important facts fading" row)
+
+#### Scenario: Fact and rule sources expose typed availability
+
+- **WHEN** a fact or rule has a `source_episode_id` whose live episode exists
+- **THEN** its response MUST return `source_episode_status = 'available'`
+- **WHEN** that source episode has only a content-free tombstone
+- **THEN** the response MUST retain the identifier and return
+  `source_episode_status = 'expired'`
+- **WHEN** neither a live episode nor a tombstone establishes the identifier
+- **THEN** the response MUST return `source_episode_status = 'unresolved'`
+- **AND** neither unavailable state may expose raw episode content or deletion
+  metadata
+
+#### Scenario: Generic memory links expose typed episode endpoints
+
+- **WHEN** `GET /api/memory/links/{memory_type}/{memory_id}` returns a link
+  whose source or target endpoint is an episode
+- **THEN** that endpoint MUST carry `available`, `expired`, or `unresolved`
+  status in its corresponding source/target status field
+- **AND** an expired or unresolved endpoint MUST remain in the returned durable
+  relation without a live episode claim
 
 #### Scenario: Fact detail carries superseded-by
 - **WHEN** `GET /api/memory/facts/{id}` is called and another fact has
