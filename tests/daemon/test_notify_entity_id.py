@@ -563,8 +563,7 @@ class TestNotifyMissingIdentifierAndOwner:
         daemon.switchboard_client = _make_mock_client()
 
         # Keep the daemon in the same optional-approvals state as Finance rather
-        # than inheriting a legacy test hook or another butler's scoped runtime.
-        monkeypatch.setattr(approval_hooks, "_park_pending_action_hook", None)
+        # than inheriting another butler's scoped runtime.
         monkeypatch.setattr(approval_hooks, "_approval_hooks_by_pool", {})
         entity_id = uuid.UUID("00000000-0000-0000-0000-000000000031")
 
@@ -697,42 +696,39 @@ class TestNotifyMissingIdentifierAndOwner:
         assert delivery["recipient"] == "contact-resolved@example.com"
 
 
-@pytest.fixture(autouse=False)
-def register_email_guard_hook():
-    """Register the real approvals email guard so notify() enforces recipient validation.
-
-    The butler.toml fixture used by these tests does not enable the approvals module,
-    so ``on_startup`` never calls ``register_email_guard``.  This fixture registers the
-    real implementation directly against the hook slot, mirroring what the approvals
-    module's ``on_startup`` would do in production.  This preserves the fail-open
-    semantics for butlers that genuinely have no approvals module while keeping these
-    safety-contract tests hermetic.
-    """
+@pytest.fixture
+def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
+    """Register all real approvals hooks for each daemon pool started by a test."""
     import butlers.core.approvals_hooks as _hooks
     from butlers.modules.approvals.email_guard import (
-        check_email_recipient as _real_check,
+        check_email_recipient,
+        check_recipient,
     )
+    from butlers.modules.approvals.park import park_pending_action
 
-    orig = _hooks._email_guard_hook
-    _hooks._email_guard_hook = _real_check
+    original_start = _start_daemon_with_notify
+    registrations = []
+
+    async def _start_with_approval_hooks(*args, **kwargs):
+        daemon, notify_fn = await original_start(*args, **kwargs)
+        pool = daemon.db.pool
+        runtime = _hooks.register_approval_hooks(
+            pool,
+            email_guard=check_email_recipient,
+            recipient_guard=check_recipient,
+            park_pending_action=park_pending_action,
+        )
+        registrations.append((pool, runtime))
+        return daemon, notify_fn
+
+    monkeypatch.setitem(globals(), "_start_daemon_with_notify", _start_with_approval_hooks)
     yield
-    _hooks._email_guard_hook = orig
-
-
-@pytest.fixture(autouse=False)
-def register_recipient_guard_hook():
-    """Register the channel-general approval guard for notify-boundary tests."""
-    import butlers.core.approvals_hooks as _hooks
-    from butlers.modules.approvals.email_guard import check_recipient as _real_check
-
-    orig = _hooks._recipient_guard_hook
-    _hooks._recipient_guard_hook = _real_check
-    yield
-    _hooks._recipient_guard_hook = orig
+    for pool, runtime in reversed(registrations):
+        _hooks.unregister_approval_hooks(pool, runtime)
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("register_email_guard_hook")
+@pytest.mark.usefixtures("registered_approval_hooks")
 class TestNotifyEmailRecipientValidation:
     """Email recipients must be known contacts; entity_id path also validated."""
 
@@ -783,7 +779,7 @@ class TestNotifyEmailRecipientValidation:
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("register_recipient_guard_hook")
+@pytest.mark.usefixtures("registered_approval_hooks")
 class TestNotifyDecisionDossierBoundary:
     """notify() must apply the dossier contract before non-owner park/rule paths."""
 
@@ -823,40 +819,27 @@ class TestNotifyDecisionDossierBoundary:
         assert notify_fn is not None
         daemon.switchboard_client = _make_mock_client()
 
-        # This butler.toml fixture does not enable the approvals module, so
-        # on_startup() never calls register_park_pending_action; register the
-        # real implementation directly so notify()'s missing-identifier park
-        # (routed through the core.approvals_hooks choke point, bu-mda0r)
-        # actually issues its INSERT against this test's mock pool.
-        import butlers.core.approvals_hooks as _approvals_hooks
-        from butlers.modules.approvals.park import park_pending_action as _real_park
-
-        original_park_hook = _approvals_hooks._park_pending_action_hook
-        _approvals_hooks.register_park_pending_action(_real_park)
-        try:
-            with (
-                patch.object(
-                    daemon,
-                    "_resolve_entity_channel_identifier",
-                    new=AsyncMock(return_value=None),
-                ),
-                patch.object(
-                    daemon,
-                    "_resolve_default_notify_recipient",
-                    new=AsyncMock(return_value=None),
-                ),
-                patch(
-                    "butlers.core.owner.fetch_owner_entity_id",
-                    new=AsyncMock(return_value=entity_id),
-                ),
-            ):
-                result = await notify_fn(
-                    channel="telegram",
-                    message="Owner delivery awaiting channel configuration",
-                    entity_id=entity_id,
-                )
-        finally:
-            _approvals_hooks._park_pending_action_hook = original_park_hook
+        with (
+            patch.object(
+                daemon,
+                "_resolve_entity_channel_identifier",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                daemon,
+                "_resolve_default_notify_recipient",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.core.owner.fetch_owner_entity_id",
+                new=AsyncMock(return_value=entity_id),
+            ),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Owner delivery awaiting channel configuration",
+                entity_id=entity_id,
+            )
 
         assert result["status"] == "pending_missing_identifier"
         pending_insert = next(

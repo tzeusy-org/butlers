@@ -14,18 +14,26 @@ from butlers.core import approvals_hooks
 pytestmark = pytest.mark.unit
 
 
+def test_process_global_hook_surface_is_not_available() -> None:
+    """A foreign pool must never gain approvals through a global fallback."""
+    legacy_names = (
+        "_email_guard_hook",
+        "_recipient_guard_hook",
+        "_park_pending_action_hook",
+        "register_email_guard",
+        "register_recipient_guard",
+        "register_park_pending_action",
+    )
+
+    assert not [name for name in legacy_names if hasattr(approvals_hooks, name)]
+
+
 @pytest.fixture(autouse=True)
 def _restore_approval_hooks():
-    """Keep compatibility and pool-scoped hooks hermetic between tests."""
-    original_email = approvals_hooks._email_guard_hook
-    original_recipient = approvals_hooks._recipient_guard_hook
-    original_park = approvals_hooks._park_pending_action_hook
+    """Keep pool-scoped hooks hermetic between tests."""
     original_pool_hooks = dict(approvals_hooks._approval_hooks_by_pool)
     approvals_hooks._approval_hooks_by_pool.clear()
     yield
-    approvals_hooks._email_guard_hook = original_email
-    approvals_hooks._recipient_guard_hook = original_recipient
-    approvals_hooks._park_pending_action_hook = original_park
     approvals_hooks._approval_hooks_by_pool.clear()
     approvals_hooks._approval_hooks_by_pool.update(original_pool_hooks)
 
@@ -150,9 +158,6 @@ async def test_older_module_shutdown_preserves_replacement_pool_hooks(
         )
     )
     replacement_park = AsyncMock(return_value="replacement_park")
-    monkeypatch.setattr(approvals_hooks, "_email_guard_hook", None)
-    monkeypatch.setattr(approvals_hooks, "_recipient_guard_hook", None)
-    monkeypatch.setattr(approvals_hooks, "_park_pending_action_hook", None)
     monkeypatch.setattr(email_guard, "check_email_recipient", old_email)
     monkeypatch.setattr(email_guard, "check_recipient", old_recipient)
     monkeypatch.setattr(park, "park_pending_action", old_park)

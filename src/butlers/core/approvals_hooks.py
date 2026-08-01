@@ -286,21 +286,8 @@ class EmailGuardDecision:
 
 
 # ---------------------------------------------------------------------------
-# Hook slots
+# Hook runtimes
 # ---------------------------------------------------------------------------
-
-#: Registered by modules.approvals during on_startup.
-#: Signature: ``async (pool, *, email_target, ...) -> EmailGuardDecision``
-_email_guard_hook: Callable[..., Coroutine[Any, Any, EmailGuardDecision]] | None = None
-
-#: Registered by modules.approvals during on_startup.
-#: Channel-general outbound recipient guard (telegram and any non-email channel).
-#: Signature: ``async (pool, *, channel, target, ...) -> EmailGuardDecision``
-_recipient_guard_hook: Callable[..., Coroutine[Any, Any, EmailGuardDecision]] | None = None
-
-#: Registered by tests and explicit non-daemon integrations.
-#: Signature: modules.approvals.park.park_pending_action (same keyword args).
-_park_pending_action_hook: Callable[..., Coroutine[Any, Any, Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,9 +310,7 @@ class ApprovalHooksRuntime:
 # registrations keyed by pool identity so enabling approvals on (for example)
 # Messenger cannot make Finance query approvals tables that do not exist in the
 # Finance schema.  One runtime owns all three hooks so a replacement is atomic
-# and a stale module shutdown cannot erase the replacement.  The singular slots
-# above remain compatibility injection points for focused tests and non-daemon
-# callers that explicitly opt into a process-wide implementation.
+# and a stale module shutdown cannot erase the replacement.
 _approval_hooks_by_pool: dict[int, tuple[Any, ApprovalHooksRuntime]] = {}
 
 
@@ -346,47 +331,12 @@ def is_approval_parking_available(pool: Any) -> bool:
     ``None`` after a successful INSERT when no approval-push runtime is wired,
     while an unregistered pool also returns ``None`` after doing nothing.
     """
-    return _resolve_pool_runtime(pool) is not None or _park_pending_action_hook is not None
+    return _resolve_pool_runtime(pool) is not None
 
 
 # ---------------------------------------------------------------------------
 # Registration API (called by modules.approvals)
 # ---------------------------------------------------------------------------
-
-
-def register_email_guard(
-    fn: Callable[..., Coroutine[Any, Any, Any]],
-) -> None:
-    """Register a legacy process-wide email-guard implementation.
-
-    The registered callable must have the same keyword-argument signature as
-    ``modules.approvals.email_guard.check_email_recipient``.  The return value
-    must be compatible with ``EmailGuardDecision`` (allowed, reason, action_id,
-    rule_id, contact_desc, dossier_error attributes).
-
-    Args:
-        fn: Async callable installing the legacy explicit process-wide
-            test/integration hook.
-    """
-    global _email_guard_hook
-    _email_guard_hook = fn
-
-
-def register_recipient_guard(
-    fn: Callable[..., Coroutine[Any, Any, Any]],
-) -> None:
-    """Register a legacy process-wide recipient-guard implementation.
-
-    The registered callable must have the same keyword-argument signature as
-    ``modules.approvals.email_guard.check_recipient``.  The return value must be
-    compatible with ``EmailGuardDecision``.
-
-    Args:
-        fn: Async callable installing the legacy explicit process-wide
-            test/integration hook.
-    """
-    global _recipient_guard_hook
-    _recipient_guard_hook = fn
 
 
 def register_approval_hooks(
@@ -456,12 +406,11 @@ async def check_email_recipient(
     is actually notified (bu-mda0r).
     """
     runtime = _resolve_pool_runtime(pool)
-    hook = runtime.email_guard if runtime is not None else _email_guard_hook
-    if hook is None:
+    if runtime is None:
         # Approvals module not loaded — fail open.
         return EmailGuardDecision(allowed=True, reason="no_approvals_module")
 
-    result = await hook(
+    result = await runtime.email_guard(
         pool,
         email_target=email_target,
         rule_tool_name=rule_tool_name,
@@ -528,12 +477,11 @@ async def check_recipient(
     the owner (bu-mda0r).
     """
     runtime = _resolve_pool_runtime(pool)
-    hook = runtime.recipient_guard if runtime is not None else _recipient_guard_hook
-    if hook is None:
+    if runtime is None:
         # Approvals module not loaded — fail open.
         return EmailGuardDecision(allowed=True, reason="no_approvals_module")
 
-    result = await hook(
+    result = await runtime.recipient_guard(
         pool,
         channel=channel,
         target=target,
@@ -561,26 +509,6 @@ async def check_recipient(
         contact_desc=result.contact_desc,
         dossier_error=getattr(result, "dossier_error", None),
     )
-
-
-def register_park_pending_action(
-    fn: Callable[..., Coroutine[Any, Any, Any]],
-) -> None:
-    """Register a legacy process-wide park-and-push implementation.
-
-    The registered callable must have the same keyword-argument signature as
-    ``modules.approvals.park.park_pending_action`` -- it IS that function; this
-    only exists so core_tools reaches it through this hook instead of an
-    import, keeping ``butlers.core_tools.*`` free of ``butlers.modules.*``
-    imports (bu-mda0r; enforced by
-    ``tests/contracts/test_dependency_direction.py``).
-
-    Args:
-        fn: Async callable installing the legacy explicit process-wide
-            test/integration hook.
-    """
-    global _park_pending_action_hook
-    _park_pending_action_hook = fn
 
 
 async def park_pending_action(
@@ -615,8 +543,7 @@ async def park_pending_action(
     fabricating a park that never happened.
     """
     runtime = _resolve_pool_runtime(pool)
-    hook = runtime.park_pending_action if runtime is not None else _park_pending_action_hook
-    if hook is None:
+    if runtime is None:
         logger.warning(
             "park_pending_action called but no approvals module is registered on "
             "this butler; action %s (tool=%r) was NOT parked",
@@ -642,4 +569,4 @@ async def park_pending_action(
     }
     if deduplication_key is not None:
         kwargs["deduplication_key"] = deduplication_key
-    return await hook(pool, **kwargs)
+    return await runtime.park_pending_action(pool, **kwargs)

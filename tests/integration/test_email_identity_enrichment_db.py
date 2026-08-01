@@ -183,25 +183,23 @@ async def _insert_event(
 
 
 @pytest.fixture(autouse=True)
-def _register_real_park_pending_action_hook():
-    """Register the real park_pending_action hook against the real test DB pool.
-
-    run_email_identity_enrichment now routes its PENDING insert through
-    butlers.core.approvals_hooks.park_pending_action (bu-g27ib), which no-ops
-    with a warning unless the approvals module's on_startup registered a real
-    implementation. These tests call the job function directly (no daemon
-    startup), so register the real implementation here -- mirroring
-    modules.approvals.module.on_startup -- and restore whatever was
-    registered before so this doesn't leak to other tests in the same xdist
-    worker process.
-    """
+def _register_real_approval_hooks(identity_pool):
+    """Register real pool-scoped hooks against the integration database pool."""
     import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.email_guard import (
+        check_email_recipient,
+        check_recipient,
+    )
     from butlers.modules.approvals.park import park_pending_action as _real_park
 
-    orig = _hooks._park_pending_action_hook
-    _hooks._park_pending_action_hook = _real_park
+    runtime = _hooks.register_approval_hooks(
+        identity_pool,
+        email_guard=check_email_recipient,
+        recipient_guard=check_recipient,
+        park_pending_action=_real_park,
+    )
     yield
-    _hooks._park_pending_action_hook = orig
+    _hooks.unregister_approval_hooks(identity_pool, runtime)
 
 
 @pytest.fixture(autouse=True)

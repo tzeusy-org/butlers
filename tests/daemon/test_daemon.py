@@ -1773,8 +1773,13 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
     non_owner = MagicMock(roles=["contact"])
     standing_rule = MagicMock(id="rule-123")
     match_rules = AsyncMock(return_value=standing_rule)
-    original_hook = approval_hooks._recipient_guard_hook
-    approval_hooks._recipient_guard_hook = check_recipient
+    hook_pool = patches["mock_pool"]
+    hook_runtime = approval_hooks.register_approval_hooks(
+        hook_pool,
+        email_guard=AsyncMock(),
+        recipient_guard=check_recipient,
+        park_pending_action=AsyncMock(),
+    )
     try:
         with (
             patch(
@@ -1815,7 +1820,7 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
                 },
             )
     finally:
-        approval_hooks._recipient_guard_hook = original_hook
+        approval_hooks.unregister_approval_hooks(hook_pool, hook_runtime)
 
     assert result["status"] == "ok"
     match_rules.assert_awaited_once()
@@ -1837,8 +1842,13 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
     telegram_module._send_message = AsyncMock()
     non_owner = MagicMock(roles=["contact"])
     match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
-    original_hook = approval_hooks._recipient_guard_hook
-    approval_hooks._recipient_guard_hook = check_recipient
+    hook_pool = patches["mock_pool"]
+    hook_runtime = approval_hooks.register_approval_hooks(
+        hook_pool,
+        email_guard=AsyncMock(),
+        recipient_guard=check_recipient,
+        park_pending_action=AsyncMock(),
+    )
     try:
         with (
             patch(
@@ -1867,7 +1877,7 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
                 },
             )
     finally:
-        approval_hooks._recipient_guard_hook = original_hook
+        approval_hooks.unregister_approval_hooks(hook_pool, hook_runtime)
 
     assert result["status"] == "error"
     assert result["error"]["class"] == "validation_error"
