@@ -401,17 +401,31 @@ The `notify` tool accepts `entity_id` (UUID) and `recipient` (string) as optiona
 - **AND** `entity_id`-based resolution MUST NOT be attempted
 
 ### Requirement: Missing Channel Identifier Fallback
-When `entity_id` is provided but the entity has no `relationship.entity_facts` triple for the requested channel, the `notify` tool MUST NOT silently fail. Instead, it MUST park the notification as a `pending_action` in the approval system and notify the owner to provide the missing channel identifier.
+When `entity_id` is provided but the entity has no `relationship.entity_facts` triple for the requested channel, the `notify` tool MUST NOT silently fail.
+If approval parking is available for the calling butler's own database pool, it
+MUST park the notification as a `pending_action` in that approval system and
+notify the owner to provide the missing channel identifier. If parking is
+unavailable, the tool MUST fail closed as described below rather than fabricate
+a pending action or owner notification.
 
 #### Scenario: Entity missing Telegram identifier
 - **WHEN** a runtime instance calls `notify(channel='telegram', message='Reminder', entity_id='abc-123')`
 - **AND** entity `abc-123` has no `relationship.entity_facts` triple for the telegram channel
+- **AND** approval parking is available for the calling butler's own database pool
 - **THEN** the notify tool MUST create a `pending_action` with `tool_name='notify'`, `status='pending'`, and `agent_summary` explaining that the entity has no Telegram identifier on file
 - **AND** the tool MUST return `{"status": "pending_missing_identifier", "action_id": "...", "message": "Cannot deliver telegram notification -- no telegram identifier on file."}`
 
 #### Scenario: Owner notified of missing identifier
 - **WHEN** a notification is parked due to a missing channel identifier
 - **THEN** the owner MUST be notified via their preferred channel with the missing identifier details and a link to the contact's page
+
+#### Scenario: Entity missing identifier when approval parking is unavailable
+- **WHEN** a runtime instance calls `notify()` with an `entity_id` that has no `relationship.entity_facts` triple for the requested channel
+- **AND** approval parking is unavailable for the calling butler's own database pool
+- **THEN** the tool MUST return `status="error"` with `retryable=false`
+- **AND** it MUST NOT create a `pending_actions` row, report a pending action as created, or attempt an owner-facing approval push
+- **AND** it MUST best-effort record an attention-ledger event with `outcome="failed"` and `reason="approval_parking_unavailable"`
+- **AND** that ledger event's metadata MUST NOT contain the notification message content
 
 ### Requirement: Role-Based Approval Gating for Notify
 The `notify` tool SHALL apply approval gating based on whether the target is the owner. Notifications to the owner MUST bypass the approval gate. Notifications to a non-owner entity MUST be subject to the approval gate (checking standing rules, else pending).
