@@ -543,6 +543,66 @@ def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:
 class TestNotifyMissingIdentifierAndOwner:
     """Tasks 7.3+7.4 — missing identifier parks; no entity_id uses owner resolution."""
 
+    async def test_missing_identifier_fails_closed_without_approval_parking(
+        self, butler_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Finance-like no-approvals daemon must not fabricate a parked action.
+
+        Finance exposes ``notify`` but deliberately has no ``[modules.approvals]``
+        section.  Once approval hooks are scoped to their owning pools, a missing
+        entity channel identifier therefore cannot be persisted in
+        ``pending_actions``.  The caller must receive an honest failure instead
+        of a generated action id for a row and owner push that do not exist.
+        """
+        import butlers.core.approvals_hooks as approval_hooks
+
+        patches, mock_pool, _ = _make_missing_id_patches(butler_dir)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+
+        # Keep the daemon in the same optional-approvals state as Finance rather
+        # than inheriting a legacy test hook or another butler's scoped runtime.
+        monkeypatch.setattr(approval_hooks, "_park_pending_action_hook", None)
+        monkeypatch.setattr(approval_hooks, "_approval_hooks_by_pool", {})
+        entity_id = uuid.UUID("00000000-0000-0000-0000-000000000031")
+
+        with (
+            patch.object(
+                daemon, "_resolve_entity_channel_identifier", new=AsyncMock(return_value=None)
+            ),
+            patch(
+                "butlers.core.owner.fetch_owner_entity_id",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await notify_fn(
+                channel="email",
+                message="Hello contact",
+                entity_id=entity_id,
+                _why="The contact needs this delivery after their channel is configured.",
+                _evidence=[],
+            )
+
+        assert result["status"] == "error"
+        assert result["retryable"] is False
+        assert "not enabled" in result["error"]
+        assert "pending_action_id" not in result
+        assert not any(
+            "INSERT INTO pending_actions" in call.args[0]
+            for call in mock_pool.execute.await_args_list
+        )
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+
+        failed_ledger_rows = [
+            call.args
+            for call in mock_pool.fetchval.await_args_list
+            if "INSERT INTO public.attention_ledger" in call.args[0]
+        ]
+        assert len(failed_ledger_rows) == 1
+        assert failed_ledger_rows[0][8] == "failed"
+        assert failed_ledger_rows[0][9] == "approval_parking_unavailable"
+
     async def test_missing_identifier_parks_and_owner_fallback(self, butler_dir: Path) -> None:
         """Missing identifier -> pending_missing_identifier, parked through the shared
         park_pending_action choke point (bu-mda0r) so the owner push is attempted
@@ -573,6 +633,10 @@ class TestNotifyMissingIdentifierAndOwner:
                 "butlers.core.approvals_hooks.park_pending_action",
                 new=AsyncMock(return_value=None),
             ) as mock_park,
+            patch(
+                "butlers.core.approvals_hooks.is_approval_parking_available",
+                return_value=True,
+            ),
         ):
             result = await notify_fn(
                 channel="email",

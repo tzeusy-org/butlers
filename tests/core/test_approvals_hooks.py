@@ -34,7 +34,9 @@ async def test_pool_scoped_park_hook_does_not_leak_to_butler_without_approvals()
     """A module-enabled butler must not expose pending_actions to a foreign pool."""
     approvals_pool = object()
     finance_pool = object()
-    park_hook = AsyncMock(return_value="parked")
+    # The real park hook can return None after a durable INSERT when no push
+    # runtime is wired, so availability must not be inferred from this value.
+    park_hook = AsyncMock(return_value=None)
     runtime = approvals_hooks.register_approval_hooks(
         approvals_pool,
         email_guard=AsyncMock(),
@@ -52,12 +54,14 @@ async def test_pool_scoped_park_hook_does_not_leak_to_butler_without_approvals()
             "expires_at": None,
         }
 
+        assert not approvals_hooks.is_approval_parking_available(finance_pool)
         foreign_result = await approvals_hooks.park_pending_action(finance_pool, **kwargs)
         assert foreign_result is None
         park_hook.assert_not_awaited()
 
+        assert approvals_hooks.is_approval_parking_available(approvals_pool)
         owner_result = await approvals_hooks.park_pending_action(approvals_pool, **kwargs)
-        assert owner_result == "parked"
+        assert owner_result is None
         park_hook.assert_awaited_once()
     finally:
         approvals_hooks.unregister_approval_hooks(approvals_pool, runtime)

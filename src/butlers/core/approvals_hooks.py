@@ -337,6 +337,18 @@ def _resolve_pool_runtime(pool: Any) -> ApprovalHooksRuntime | None:
     return None
 
 
+def is_approval_parking_available(pool: Any) -> bool:
+    """Return whether *pool* has a registered pending-action park implementation.
+
+    Callers that need durable parking must check this before reporting a
+    pending action as created.  They cannot infer it from
+    :func:`park_pending_action`'s return value: a real implementation returns
+    ``None`` after a successful INSERT when no approval-push runtime is wired,
+    while an unregistered pool also returns ``None`` after doing nothing.
+    """
+    return _resolve_pool_runtime(pool) is not None or _park_pending_action_hook is not None
+
+
 # ---------------------------------------------------------------------------
 # Registration API (called by modules.approvals)
 # ---------------------------------------------------------------------------
