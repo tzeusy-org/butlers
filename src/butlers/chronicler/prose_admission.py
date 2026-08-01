@@ -24,7 +24,9 @@ _CODE_FENCE_RE = re.compile(r"```")
 
 # Machine role / protocol framing a day-close narration should never start
 # with (a leaked transcript line, not owner-facing prose).
-_PROTOCOL_MARKER_RE = re.compile(r"^\s*(system|assistant|user|tool|function)\s*:", re.IGNORECASE)
+_PROTOCOL_MARKER_RE = re.compile(
+    r"^\s*(system|assistant|user|tool(?:[_ -]*calls?)?|function)\s*:", re.IGNORECASE
+)
 
 # Tool-call / agent-protocol payload markers.
 _TOOL_CALL_MARKER_RE = re.compile(
@@ -38,6 +40,12 @@ _PLANNING_PREAMBLE_RE = re.compile(
     r"^\s*(I(?:'|’)ll|I will|I(?:'|’)m going to|Let me|First,? I|"
     r"I need to|Now I(?:'|’)ll|Okay,? I(?:'|’)ll|Sure,? I(?:'|’)ll)\b",
     re.IGNORECASE,
+)
+
+# A heading that frames the answer as an execution plan is control-plane
+# scaffolding, not the completed-day narration the cache may retain.
+_EXECUTION_SCAFFOLD_RE = re.compile(
+    r"^\s*(?:execution\s+)?(?:plan|steps?|next\s+steps?)\s*:", re.IGNORECASE
 )
 
 INADMISSIBLE_PROSE = "inadmissible_prose"
@@ -67,6 +75,8 @@ def classify_prose_shape(text: str | None) -> str | None:
     if _PROTOCOL_MARKER_RE.match(stripped):
         return INADMISSIBLE_PROSE
     if _PLANNING_PREAMBLE_RE.match(stripped):
+        return INADMISSIBLE_PROSE
+    if _EXECUTION_SCAFFOLD_RE.match(stripped):
         return INADMISSIBLE_PROSE
     if stripped[0] in "{[":
         try:

@@ -111,7 +111,14 @@ def _make_spawner_result(
     r.success = success
     r.output = output
     r.tool_calls = (
-        [{"tool": "chronicler_day_close_bundle", "result": {"date": date_label, "citations": []}}]
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": date_label, "timezone": "UTC"},
+                "outcome": "success",
+                "result": {"date": date_label, "citations": []},
+            }
+        ]
         if date_label
         else []
     )
@@ -318,7 +325,13 @@ class TestDayCloseRefreshSuccess:
             fetchrow_side_effect=[
                 _row({"cache_built_at": _T_OUTSIDE_24H}),
                 _row({"prompt": "Day close prompt."}),
-                _row({"invalid_reason": None}),
+                _row(
+                    {
+                        "prose": "A valid earlier retrospective.",
+                        "date_label": "2026-04-24",
+                        "invalid_reason": None,
+                    }
+                ),
                 _row({"cache_built_at": preserved_built_at}),
             ]
         )

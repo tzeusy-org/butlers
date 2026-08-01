@@ -28,6 +28,11 @@ def test_admissible_plain_prose() -> None:
     assert classify_prose_shape("The day was led by work, at 4.2 hours.") is None
 
 
+def test_admissible_concise_bullets() -> None:
+    text = "- Morning work block\n- Evening walk\n- Quiet wind-down"
+    assert classify_prose_shape(text) is None
+
+
 @pytest.mark.parametrize("empty", [None, "", "   ", "\n\n"])
 def test_rejects_empty(empty: str | None) -> None:
     assert classify_prose_shape(empty) == INADMISSIBLE_PROSE
@@ -48,6 +53,18 @@ def test_rejects_protocol_marker(prefix: str) -> None:
 
 def test_rejects_tool_call_marker() -> None:
     text = '<function_calls>\n<invoke name="foo">\n</invoke>\n</function_calls>'
+    assert classify_prose_shape(text) == INADMISSIBLE_PROSE
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tool calls:\n- chronicler_day_close_bundle(date_label='2026-04-24')",
+        "Execution plan:\n1. Call chronicler_day_close_bundle.",
+    ],
+)
+def test_rejects_tool_trace_and_execution_scaffolds(text: str) -> None:
+    """Control-plane scaffolding is never owner-facing day-close prose."""
     assert classify_prose_shape(text) == INADMISSIBLE_PROSE
 
 

@@ -23,6 +23,7 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -328,6 +329,22 @@ def _bundle_call(date_label: str) -> dict:
     return {"tool": "chronicler_day_close_bundle", "result": {"date": date_label, "citations": []}}
 
 
+def _canonical_bundle_call(
+    date_label: str,
+    *,
+    outcome: str = "success",
+    result_date: str | None = None,
+    citations: list[str] | None = None,
+) -> dict:
+    """An executed runtime capture for ``chronicler_day_close_bundle``."""
+    return {
+        "name": "chronicler_day_close_bundle",
+        "input": {"date_label": date_label, "timezone": "UTC"},
+        "outcome": outcome,
+        "result": {"date": result_date or date_label, "citations": citations or []},
+    }
+
+
 def _make_result(
     *,
     success: bool = True,
@@ -360,6 +377,81 @@ async def test_write_day_close_cache_writes_row(fake_pool, mock_upsert) -> None:
     assert kwargs["start_at"] == datetime(2026, 4, 24, 0, 0, 0, tzinfo=UTC)
     assert kwargs["end_at"] == datetime(2026, 4, 25, 0, 0, 0, tzinfo=UTC)
     assert kwargs["provenance_refs"] == []
+
+
+async def test_write_day_close_cache_admits_one_successful_canonical_bundle_capture(
+    fake_pool, mock_upsert
+) -> None:
+    """A real executed bundle capture admits its matching closed-day prose."""
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = MagicMock()
+    result.success = True
+    result.output = "A concise retrospective of the closed day."
+    result.tool_calls = [_canonical_bundle_call("2026-04-24")]
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.call_args.kwargs["invalid_reason"] is None
+    assert mock_upsert.call_args.kwargs["date_label"] == "2026-04-24"
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        [_canonical_bundle_call("2026-04-24", outcome="error")],
+        [_canonical_bundle_call("2026-04-24"), _canonical_bundle_call("2026-04-24")],
+        [_canonical_bundle_call("2026-04-24", result_date="2026-04-23")],
+    ],
+    ids=["failed", "ambiguous", "result-date-mismatch"],
+)
+async def test_write_day_close_cache_contains_invalid_canonical_bundle_capture(
+    fake_pool, mock_upsert, tool_calls: list[dict]
+) -> None:
+    """Only one successful capture with matching input/result can admit prose."""
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = MagicMock()
+    result.success = True
+    result.output = "A concise retrospective of the closed day."
+    result.tool_calls = tool_calls
+
+    outcome = await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    assert outcome is not None
+    assert outcome.invalid_reason == "date_mismatch"
+    assert mock_upsert.call_args.kwargs["invalid_reason"] == "date_mismatch"
+
+
+async def test_write_day_close_cache_keeps_citations_from_canonical_bundle_capture(
+    fake_pool, mock_upsert
+) -> None:
+    """Canonical bundle provenance remains available to the staleness path."""
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = MagicMock()
+    result.success = True
+    result.output = "A concise retrospective of the closed day."
+    result.tool_calls = [
+        _canonical_bundle_call("2026-04-24", citations=["core.sessions:day-close-1"])
+    ]
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    assert mock_upsert.call_args.kwargs["provenance_refs"] == ["core.sessions:day-close-1"]
 
 
 async def test_write_day_close_cache_extracts_provenance(fake_pool, mock_upsert) -> None:
@@ -483,7 +575,13 @@ async def test_write_day_close_cache_invalid_candidate_does_not_clobber_valid_ro
     fake_pool, mock_upsert
 ) -> None:
     """An invalid candidate SHALL NOT replace an existing admissible cache row."""
-    fake_pool.fetchrow = AsyncMock(return_value={"invalid_reason": None})
+    fake_pool.fetchrow = AsyncMock(
+        return_value={
+            "prose": "A valid earlier retrospective.",
+            "date_label": "2026-04-24",
+            "invalid_reason": None,
+        }
+    )
     run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
     result = _make_result(date_label="2026-04-23")  # mismatched -> invalid
 
@@ -494,6 +592,60 @@ async def test_write_day_close_cache_invalid_candidate_does_not_clobber_valid_ro
         run_at=run_at,
     )
 
+    mock_upsert.assert_not_awaited()
+
+
+async def test_write_day_close_cache_does_not_preserve_legacy_malformed_row_as_valid(
+    fake_pool, mock_upsert
+) -> None:
+    """An unmarked legacy trace cannot block containment of a new invalid candidate."""
+    fake_pool.fetchrow = AsyncMock(
+        return_value={
+            "prose": "tool: chronicler_list_episodes returned []",
+            "date_label": "2026-04-24",
+            "invalid_reason": None,
+        }
+    )
+    run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
+    result = _make_result(date_label="2026-04-23")
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.call_args.kwargs["invalid_reason"] == "date_mismatch"
+
+
+async def test_write_day_close_cache_never_logs_rejected_raw_prose(
+    fake_pool, mock_upsert, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Containment logs only a safe reason, never candidate content."""
+    raw_prose = "UNSAFE-RAW-CANDIDATE-DO-NOT-LOG"
+    fake_pool.fetchrow = AsyncMock(
+        return_value={
+            "prose": "A valid earlier retrospective.",
+            "date_label": "2026-04-24",
+            "invalid_reason": None,
+        }
+    )
+    result = MagicMock()
+    result.success = True
+    result.output = raw_prose
+    result.tool_calls = [_canonical_bundle_call("2026-04-24", outcome="error")]
+    caplog.set_level(logging.WARNING, logger="butlers.chronicler.day_close_writer")
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
+    )
+
+    assert raw_prose not in caplog.text
     mock_upsert.assert_not_awaited()
 
 

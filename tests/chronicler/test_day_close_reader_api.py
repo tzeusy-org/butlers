@@ -76,6 +76,7 @@ def _cache_row(
     prose: str = "Yesterday was a productive day.",
     provenance_refs: list[str] | None = None,
     cache_built_at: datetime = _T_CACHE_BUILT,
+    date_label: str | None = "2026-04-23",
 ) -> _Row:
     refs = provenance_refs if provenance_refs is not None else ["core.sessions:abc123"]
     return _row(
@@ -86,6 +87,7 @@ def _cache_row(
             "cache_built_at": cache_built_at,
             "prose": prose,
             "provenance_refs": refs,
+            "date_label": date_label,
         }
     )
 
@@ -218,6 +220,38 @@ class TestDayCloseReaderInvalid:
         assert body["invalid_reason"] == "date_mismatch"
         assert "stale" not in body
 
+    @pytest.mark.parametrize(
+        ("prose", "date_label", "expected_reason"),
+        [
+            ('```json\n{"tool": "x"}\n```', "2026-04-23", "inadmissible_prose"),
+            ("A concise retrospective.", "2026-04-22", "date_mismatch"),
+        ],
+    )
+    async def test_legacy_unmarked_invalid_row_never_leaks_prose(
+        self, prose: str, date_label: str, expected_reason: str
+    ):
+        """Read-time admission contains legacy invalid cache rows without mutating them."""
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                _cache_row(prose=prose, date_label=date_label),
+                _row({"last_invalidating_event_at": None}),
+            ]
+        )
+        app = _make_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["invalid"] is True
+        assert body["invalid_reason"] == expected_reason
+        assert "prose" not in body
+        assert "provenance_refs" not in body
+        assert pool.fetchrow.await_count == 1
+
 
 class TestDayCloseReaderValidation:
     """400 error envelopes for missing / malformed parameters."""
@@ -309,6 +343,7 @@ class TestDayCloseReaderFreshCache:
                 "cache_built_at": _T_CACHE_BUILT,
                 "prose": "Music day.",
                 "provenance_refs": refs_json,
+                "date_label": "2026-04-23",
             }
         )
         stale_row = _row({"last_invalidating_event_at": None})
