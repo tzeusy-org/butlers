@@ -23,6 +23,7 @@ class ActionStatus(enum.StrEnum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     EXECUTED = "executed"
+    ABANDONED = "abandoned"
 
 
 EvidenceReference = dict[str, str]

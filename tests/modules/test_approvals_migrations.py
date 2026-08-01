@@ -153,3 +153,18 @@ def test_rule_event_provenance_outlives_rule_retention() -> None:
     assert "validate_approval_event_rule_reference" in normalized
     assert "for key share" in normalized
     assert "create trigger trg_approval_events_rule_reference" in normalized
+
+
+def test_abandoned_recovery_migration_extends_only_approval_vocabularies() -> None:
+    """The durable recovery state and event are additive, with safe rollback guards."""
+    mod = _load_migration("012_abandoned_recovery.py")
+    upgrade = " ".join("\n".join(_collect_sqls(mod)).lower().split())
+    downgrade = " ".join("\n".join(_collect_sqls(mod, "downgrade")).lower().split())
+
+    assert mod.revision == "approvals_012"
+    assert mod.down_revision == "approvals_011"
+    assert "'abandoned'" in upgrade
+    assert "'action_abandoned'" in upgrade
+    assert "to_regclass('pending_actions')" in upgrade
+    assert "cannot downgrade approvals_012 while abandoned actions exist" in downgrade
+    assert "to_regclass('approval_events')" in downgrade

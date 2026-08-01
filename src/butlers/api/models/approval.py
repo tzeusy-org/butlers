@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class TargetContact(BaseModel):
@@ -160,8 +160,21 @@ class ApprovalDetail(BaseModel):
     )
 
 
+class ApprovalAbandonRequest(BaseModel):
+    """Explicit accountable reason for dashboard-only stalled-action abandonment."""
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def require_non_blank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value.strip()
+
+
 class ApprovalSummary(BaseModel):
-    """Compact approval item for the flat-list GET /api/approvals endpoint."""
+    """Compact approval item for the flat-list and history endpoints."""
 
     id: str
     butler: str
@@ -170,6 +183,7 @@ class ApprovalSummary(BaseModel):
     created_at: datetime
     expires_at: datetime | None = None
     why: str | None = None
+    execution_result: dict[str, Any] | None = None
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (

@@ -61,7 +61,9 @@ The `pending_actions` table MUST provide a durable queue and audit log for appro
 
 ### Requirement: Status Transition Contract
 
-The approval lifecycle MUST allow `pending -> approved|rejected|expired` and `approved -> executed`; `rejected|expired|executed` are terminal. Invalid transitions raise `InvalidTransitionError`.
+The approval lifecycle MUST allow `pending -> approved|rejected|expired` and
+`approved -> executed|abandoned`; `rejected|expired|executed|abandoned` are
+terminal. Invalid transitions raise `InvalidTransitionError`.
 
 #### Scenario: Approve a pending action
 
@@ -76,6 +78,17 @@ The approval lifecycle MUST allow `pending -> approved|rejected|expired` and `ap
 - **WHEN** two concurrent approve calls target the same pending action
 - **THEN** the compare-and-set ensures only one succeeds (WHERE status = 'pending')
 - **AND** the losing call receives a transition error with the current status
+
+#### Scenario: Dashboard abandons a stalled approved action
+
+- **WHEN** a dashboard actor supplies a non-blank reason for an action whose
+  status is `approved` and whose `execution_result` is null
+- **THEN** a compare-and-set update transitions that action to `abandoned`
+- **AND** an immutable `action_abandoned` event stores the actor and reason in
+  the same transaction
+- **AND** no MCP, Telegram callback, automatic, bulk, or scheduled path can
+  invoke abandonment
+- **AND** an action outside that exact predicate remains unchanged.
 
 #### Scenario: Reject a pending action
 
@@ -180,7 +193,8 @@ All actual execution — auto-approved actions and manually approved actions dis
 - **WHEN** the tool function raises an exception
 - **THEN** the error is returned to the caller and an `action_execution_failed` audit event is recorded
 - **AND** status remains `approved` with `execution_result = null`
-- **AND** no automatic replay occurs; an operator may retry the approved action or reject it explicitly
+- **AND** no automatic replay occurs; an operator may retry the approved action,
+  reject it explicitly, or dashboard-abandon the eligible stalled action
 
 #### Scenario: Manual approval without executor wired
 
@@ -199,6 +213,9 @@ All actual execution — auto-approved actions and manually approved actions dis
 
 - **WHEN** concurrent execution attempts target the same action
 - **THEN** a per-action asyncio lock (WeakValueDictionary-based) serializes attempts within one daemon process
+- **AND** the executor holds a database `FOR UPDATE` row lock from its
+  approved/null eligibility check through handler invocation and the successful
+  terminal write, so dashboard abandonment cannot win after a side effect begins
 - **AND** a persisted `executed` result is replayed without invoking the tool again
 
 ### Requirement: Immutable Audit Events
@@ -207,14 +224,14 @@ The `approval_events` table MUST be an append-only audit log. Events include `ev
 
 #### Scenario: Audit event creation for all state transitions
 
-- **WHEN** any approval state transition occurs (queued, auto-approved, approved, rejected, expired, execution succeeded, execution failed, rule created, rule revoked)
+- **WHEN** any approval state transition occurs (queued, auto-approved, approved, rejected, expired, abandoned, execution succeeded, execution failed, rule created, rule revoked)
 - **THEN** an immutable event row is inserted with the corresponding `ApprovalEventType` value
 - **AND** actor, action_id/rule_id, reason, and metadata are captured
 
 #### Scenario: Audit event types
 
 - **WHEN** events are recorded
-- **THEN** the following canonical event types are used: `action_queued`, `action_auto_approved`, `action_approved`, `action_rejected`, `action_expired`, `action_execution_succeeded`, `action_execution_failed`, `rule_created`, `rule_revoked`
+- **THEN** the following canonical event types are used: `action_queued`, `action_auto_approved`, `action_approved`, `action_rejected`, `action_expired`, `action_abandoned`, `action_execution_succeeded`, `action_execution_failed`, `rule_created`, `rule_revoked`
 
 #### Scenario: Audit event immutability
 
@@ -257,7 +274,7 @@ The module MUST support configurable retention windows for approvals data: `pend
 #### Scenario: Cleanup old actions
 
 - **WHEN** `cleanup_old_actions` runs
-- **THEN** only terminal-status actions (`rejected`, `expired`, `executed`) older than the retention window are deleted
+- **THEN** only terminal-status actions (`rejected`, `expired`, `executed`, `abandoned`) older than the retention window are deleted
 - **AND** `approved` actions remain retained and retryable, including old rows with a null `execution_result`
 - **AND** related immutable action events remain unchanged with their historical `action_id` until their own event-retention window
 - **AND** standing rules created from those terminal actions remain unchanged with their historical `created_from` until their separate rule-retention policy applies

@@ -44,6 +44,7 @@ Live-data audit (read-only, butlers-dev, 2026-07-05):
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -95,7 +96,9 @@ async def approvals_full_pool(provisioned_postgres_pool):
                 evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
                 approval_rule_id UUID,
                 CONSTRAINT pending_actions_status_check
-                    CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed'))
+                    CHECK (status IN (
+                        'pending', 'approved', 'rejected', 'expired', 'executed', 'abandoned'
+                    ))
             )
         """)
         await pool.execute("""
@@ -129,6 +132,7 @@ async def approvals_full_pool(provisioned_postgres_pool):
                         'action_approved',
                         'action_rejected',
                         'action_expired',
+                        'action_abandoned',
                         'action_execution_succeeded',
                         'action_execution_failed',
                         'rule_created',
@@ -513,6 +517,63 @@ class TestExecutionResultRoundtrip:
         assert row is not None
         assert row["status"] == "approved"
         assert row["execution_result"] is None
+
+    async def test_abandon_waits_for_locked_execution_and_loses_after_success(
+        self, approvals_full_pool
+    ) -> None:
+        """Abandon never wins after a handler has acquired execution ownership."""
+        action_id = await _insert_pending_action(
+            approvals_full_pool,
+            tool_name="notify",
+            tool_args={"message": "hello"},
+            status="approved",
+        )
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def _tool_fn(**kwargs):
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return {"delivered": True}
+
+        execution_task = asyncio.create_task(
+            executor_mod.execute_approved_action(
+                approvals_full_pool,
+                action_id,
+                "notify",
+                {"message": "hello"},
+                _tool_fn,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=2)
+
+        abandon_task = asyncio.create_task(
+            operations_mod.abandon_approved_action(
+                approvals_full_pool,
+                str(action_id),
+                reason="Owner no longer wants this recovery",
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not abandon_task.done(), "Abandon must wait for the execution row lock"
+
+        release.set()
+        execution = await asyncio.wait_for(execution_task, timeout=2)
+        abandoned = await asyncio.wait_for(abandon_task, timeout=2)
+
+        assert execution.success is True
+        assert calls == 1
+        assert "error" in abandoned
+        assert "execution result" in abandoned["error"]
+        row = await approvals_full_pool.fetchrow(
+            "SELECT status, execution_result FROM pending_actions WHERE id = $1", action_id
+        )
+        assert row is not None
+        assert row["status"] == "executed"
+        assert row["execution_result"]["success"] is True
 
     async def test_operations_mark_executed_roundtrips_as_dict(self, approvals_full_pool) -> None:
         action_id = await _insert_pending_action(

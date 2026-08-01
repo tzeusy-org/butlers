@@ -42,6 +42,7 @@ import {
   getApprovalsFlat,
   getApprovalsHistory,
   getApprovalsPolicy,
+  abandonApproval,
   retryApproval,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
@@ -148,6 +149,8 @@ function statusColor(status: string): string {
       return "";
     case "rejected":
       return "text-[var(--red-text)]";
+    case "abandoned":
+      return "text-muted-foreground";
     case "expired":
       return "text-muted-foreground";
     default:
@@ -807,6 +810,7 @@ function Dossier({
                   <dd className="mt-1 flex flex-wrap items-center gap-3 text-sm text-foreground">
                     <span>Approved, awaiting dispatch.</span>
                     <RetryDispatchButton actionId={detail.id} />
+                    <AbandonAction actionId={detail.id} />
                   </dd>
                 </div>
               )}
@@ -1266,6 +1270,57 @@ function RetryDispatchButton({ actionId }: { actionId: string }) {
   );
 }
 
+function AbandonAction({ actionId }: { actionId: string }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const abandonMut = useMutation({
+    mutationFn: () => abandonApproval(actionId, { reason }),
+    onSuccess: () => {
+      toast.success("Abandoned");
+      setOpen(false);
+      setReason("");
+      qc.invalidateQueries({ queryKey: Q.history() });
+      qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+      qc.invalidateQueries({ queryKey: Q.detail(actionId) });
+    },
+    onError: (e: Error) => toast.error(`Abandon failed: ${e.message}`),
+  });
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="shrink-0 py-0.5 px-2 rounded text-[10px] font-mono uppercase tracking-wide border border-[var(--red)]/50 text-[var(--red-text)] hover:border-[var(--red)] transition-colors"
+      >
+        Abandon
+      </button>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-2">
+      <input
+        aria-label="Abandon reason"
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder="Reason required"
+        className="w-48 rounded border border-border bg-background px-2 py-1 text-xs"
+      />
+      <button
+        disabled={!reason.trim() || abandonMut.isPending}
+        onClick={() => abandonMut.mutate()}
+        className="py-0.5 px-2 rounded text-[10px] font-mono uppercase tracking-wide border border-[var(--red)]/50 text-[var(--red-text)] disabled:opacity-50"
+      >
+        {abandonMut.isPending ? "abandoning…" : "Confirm"}
+      </button>
+      <button onClick={() => setOpen(false)} className="text-xs text-muted-foreground hover:underline">
+        Cancel
+      </button>
+    </span>
+  );
+}
+
 function HistorySection() {
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: Q.history(),
@@ -1320,9 +1375,9 @@ function HistorySection() {
             >
               {item.tool_name.replace(/_/g, " ")}
             </Link>
-            {/* "approved" in History = approved-but-un-run (dispatch silently
-                failed). Offer a retry; "executed" rows ran successfully. */}
-            {item.status === "approved" && (
+            {/* Only the exact approved/null-result state is retryable. An
+                abandoned row is terminal and intentionally read-only. */}
+            {item.status === "approved" && item.execution_result == null && (
               <RetryDispatchButton actionId={item.id} />
             )}
             <span className="font-mono text-xs text-muted-foreground shrink-0">

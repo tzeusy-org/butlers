@@ -98,11 +98,17 @@ Valid status transitions:
 
 ```
 pending -> approved | rejected | expired
-approved -> executed
-rejected, expired, executed -> (terminal)
+approved -> executed | abandoned
+rejected, expired, executed, abandoned -> (terminal)
 ```
 
-All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry or reject it; an already-executed replay returns the stored result without re-running the tool.
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it; an already-executed replay returns the stored result without re-running the tool.
+
+`abandoned` is a terminal, dashboard-only recovery outcome for an action that was
+previously approved but intentionally left unexecuted. It requires a non-blank
+reason and appends an immutable `action_abandoned` event in the same transaction.
+There is no MCP, Telegram callback, automatic, bulk, or scheduled abandonment
+path.
 
 ## Risk Tiers
 

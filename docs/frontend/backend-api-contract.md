@@ -377,10 +377,12 @@ Response model shapes:
 
 ## Approvals Domain Contract
 
+- `GET /api/approvals` and `GET /api/approvals/history` -> `ApiResponse<ApprovalSummary[]>`; summaries carry a nullable, redacted `execution_result`, and Retry is eligible only for `status = approved` with `execution_result = null`
 - `GET /api/approvals/actions` -> `PaginatedResponse<ApprovalAction>`
 - `GET /api/approvals/actions/{actionId}` -> `ApiResponse<ApprovalAction>`
 - `POST /api/approvals/actions/{actionId}/approve` -> `ApiResponse<ApprovalAction>`
 - `POST /api/approvals/actions/{actionId}/reject` -> `ApiResponse<ApprovalAction>`
+- `POST /api/approvals/{actionId}/abandon` -> `ApiResponse<ApprovalAction>`; dashboard-only, body `{ reason: string }`, valid only for `approved` actions with `execution_result = null`
 - `POST /api/approvals/actions/expire-stale` -> `ApiResponse<{ expired_count: number, expired_ids: string[] }>`
 - `GET /api/approvals/actions/executed` -> `PaginatedResponse<ApprovalAction>`
 
@@ -398,7 +400,7 @@ Required query support:
 - `/api/approvals/actions`:
   - `offset`
   - `limit`
-  - `status` (`pending|approved|rejected|expired|executed`)
+  - `status` (`pending|approved|rejected|expired|executed|abandoned`)
   - `tool_name`
   - `since`
   - `until`

@@ -37,6 +37,7 @@ from butlers.api.models import (
     PaginationMeta,
 )
 from butlers.api.models.approval import (
+    ApprovalAbandonRequest,
     ApprovalAction,
     ApprovalActionApproveRequest,
     ApprovalActionRejectRequest,
@@ -65,6 +66,7 @@ from butlers.modules.approvals.decision_memory import (
     DecisionMemoryWriter,
     memory_pool_for_schema,
 )
+from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import (
     ActionStatus,
     PendingAction,
@@ -98,7 +100,7 @@ def emit_approvals_event(
     """Publish an approvals event onto the unified fleet event bus.
 
     ``kind`` is one of: ``created``, ``approved``, ``rejected``, ``deferred``,
-    ``executed``, ``expired``.
+    ``executed``, ``expired``, ``abandoned``.
     """
     event: dict = {
         "kind": kind,
@@ -484,6 +486,11 @@ def _pending_action_to_summary(action: PendingAction, butler_name: str) -> Appro
         created_at=action.requested_at,
         expires_at=action.expires_at,
         why=action.why,
+        execution_result=(
+            redact_execution_result(action.execution_result)
+            if action.execution_result is not None
+            else None
+        ),
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
         push_outcome=action.push_outcome,
@@ -1077,97 +1084,122 @@ async def _dispatch_approved_action_outcome(
     Returns a classified outcome so Retry can distinguish transport failure
     from a reachable executor rejection.
     """
-    # The two paths below differ in WHERE the action is marked executed: notify
-    # has no owning-butler executor, so it is marked executed here; every other
-    # tool is marked executed remotely by the owning butler's executor.
+    # The two paths below differ in WHERE the original handler is resolved.
+    # Both use the shared executor so its durable eligibility lock owns the row
+    # before an irreversible side effect begins.
 
     # notify: bypass to switchboard deliver — notify()'s own recipient guard
-    # would re-park the already-approved action.
+    # would re-park the already-approved action. The delivery wrapper still
+    # runs through ``execute_approved_action``: its transaction holds the
+    # approved/null row lock from before ``deliver`` through terminal success,
+    # so a concurrent dashboard Abandon cannot win after delivery begins.
     if tool_name == "notify":
-        dispatch_args = dict(tool_args)
-        # deliver expects source_butler; notify's tool_args don't include it.
-        dispatch_args.setdefault("source_butler", "switchboard")
-        try:
-            client = await asyncio.wait_for(
-                mcp_mgr.get_client("switchboard"), timeout=_MCP_DISPATCH_TIMEOUT_S
-            )
-            mcp_result = await asyncio.wait_for(
-                client.call_tool("deliver", dispatch_args), timeout=_MCP_DISPATCH_TIMEOUT_S
-            )
-        except Exception:
-            logger.warning(
-                "Failed to dispatch approved notify action %s via switchboard deliver",
-                action_id,
-                exc_info=True,
-            )
-            return _DispatchOutcome(kind="unreachable")
+        dispatch_failure: _DispatchOutcome | None = None
 
-        if mcp_result.is_error:
-            logger.warning("Approved notify action %s failed in switchboard deliver", action_id)
+        async def _deliver_notify(**kwargs: Any) -> dict[str, Any]:
+            nonlocal dispatch_failure
+
+            dispatch_args = dict(kwargs)
+            # deliver expects source_butler; notify's tool_args don't include it.
+            dispatch_args.setdefault("source_butler", "switchboard")
+            try:
+                client = await asyncio.wait_for(
+                    mcp_mgr.get_client("switchboard"), timeout=_MCP_DISPATCH_TIMEOUT_S
+                )
+                mcp_result = await asyncio.wait_for(
+                    client.call_tool("deliver", dispatch_args), timeout=_MCP_DISPATCH_TIMEOUT_S
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to dispatch approved notify action %s via switchboard deliver",
+                    action_id,
+                    exc_info=True,
+                )
+                dispatch_failure = _DispatchOutcome(kind="unreachable")
+                raise RuntimeError("switchboard deliver is unreachable") from exc
+
+            if mcp_result.is_error:
+                logger.warning("Approved notify action %s failed in switchboard deliver", action_id)
+                dispatch_failure = _DispatchOutcome(
+                    kind="rejected",
+                    detail=_safe_dispatch_detail(_first_json_block(mcp_result)),
+                )
+                raise RuntimeError("switchboard deliver rejected the notification")
+
+            tool_result = _first_json_block(mcp_result)
+
+            # A normal MCP transport response can still carry the delivery tool's
+            # structured failure payload. Treat it exactly like a failed handler
+            # so the action stays eligible for an explicit later retry/abandon.
+            if isinstance(tool_result, dict) and (
+                tool_result.get("error")
+                or tool_result.get("success") is False
+                or tool_result.get("status") == "failed"
+            ):
+                logger.warning(
+                    "Approved notify action %s returned an unsuccessful delivery result: %s",
+                    action_id,
+                    tool_result,
+                )
+                dispatch_failure = _DispatchOutcome(
+                    kind="rejected",
+                    detail=_safe_dispatch_detail(tool_result),
+                )
+                raise RuntimeError("switchboard deliver returned an unsuccessful result")
+
+            # Re-gate guard: deliver should never re-park, but if it ever does,
+            # do not record a phantom pending action as a successful delivery.
+            if isinstance(tool_result, dict) and tool_result.get("status") == "pending_approval":
+                phantom = (
+                    tool_result.get("pending_action_id")
+                    or tool_result.get("action_id")
+                    or "<unknown>"
+                )
+                logger.error(
+                    "Approved notify action %s re-entered the approval gate "
+                    "(phantom pending_action=%s); message not delivered.",
+                    action_id,
+                    phantom,
+                )
+                dispatch_failure = _DispatchOutcome(
+                    kind="rejected",
+                    detail="delivery re-entered the approval gate",
+                )
+                raise RuntimeError("switchboard deliver re-entered the approval gate")
+
+            return tool_result if isinstance(tool_result, dict) else {"value": tool_result}
+
+        decision_memory_writer = (
+            _decision_memory_writer_for(db_mgr, action_butler, pool)
+            if action_butler is not None
+            else None
+        )
+        execution = await execute_approved_action(
+            pool=pool,
+            action_id=UUID(action_id),
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_fn=_deliver_notify,
+            decision_memory_writer=decision_memory_writer,
+        )
+        if not execution.success:
+            if dispatch_failure is not None:
+                return dispatch_failure
             return _DispatchOutcome(
                 kind="rejected",
-                detail=_safe_dispatch_detail(_first_json_block(mcp_result)),
+                detail=_safe_dispatch_detail({"error": execution.error}),
             )
-
-        tool_result = _first_json_block(mcp_result)
-
-        # A normal MCP transport response can still carry the delivery tool's
-        # structured failure payload. Treat it as a failed dispatch rather
-        # than turning an unsuccessful notification into an executed action.
-        if isinstance(tool_result, dict) and (
-            tool_result.get("error")
-            or tool_result.get("success") is False
-            or tool_result.get("status") == "failed"
-        ):
-            logger.warning(
-                "Approved notify action %s returned an unsuccessful delivery result: %s",
-                action_id,
-                tool_result,
-            )
-            return _DispatchOutcome(
-                kind="rejected",
-                detail=_safe_dispatch_detail(tool_result),
-            )
-
-        # Re-gate guard: deliver should never re-park, but if it ever does, do
-        # not record a phantom pending action as a successful delivery.
-        if isinstance(tool_result, dict) and tool_result.get("status") == "pending_approval":
-            phantom = (
-                tool_result.get("pending_action_id") or tool_result.get("action_id") or "<unknown>"
-            )
-            logger.error(
-                "Approved notify action %s re-entered the approval gate "
-                "(phantom pending_action=%s); message not delivered.",
-                action_id,
-                phantom,
-            )
-            return _DispatchOutcome(
-                kind="rejected",
-                detail="delivery re-entered the approval gate",
-            )
-
-        exec_result: dict = {"success": True}
-        if tool_result is not None:
-            exec_result["result"] = tool_result
-
-        mark_kwargs: dict[str, Any] = {
-            "action_id": action_id,
-            "execution_result": exec_result,
-            "success": exec_result["success"],
-        }
-        if action_butler is not None:
-            decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, pool)
-            if decision_memory_writer is not None:
-                mark_kwargs["decision_memory_writer"] = decision_memory_writer
 
         async with pool.acquire() as conn:
-            marked = await approvals_ops.mark_executed(conn, **mark_kwargs)
-        if "error" in marked:
-            return _DispatchOutcome(
-                kind="rejected",
-                detail=_safe_dispatch_detail(marked),
+            executed_row = await conn.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", UUID(action_id)
             )
-        return _DispatchOutcome(kind="executed", action=marked)
+        if executed_row is None:
+            return _DispatchOutcome(kind="rejected", detail="action disappeared after execution")
+        return _DispatchOutcome(
+            kind="executed",
+            action=PendingAction.from_row(executed_row).to_dict(),
+        )
 
     # All other gated tools: run the original (un-gated) tool on the owning
     # butler via its dispatch_approved_action tool. The butler marks the action
@@ -1957,7 +1989,7 @@ async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:
 # New Dispatch-language endpoints (§8.1-§8.7)
 # ---------------------------------------------------------------------------
 
-_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed"}
+_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed", "abandoned"}
 _WAITING_STATUSES = {"pending"}
 _STALLED_STATUS = "approved"
 
@@ -2089,7 +2121,7 @@ async def list_approvals_history(
 ) -> ApiResponse[list[ApprovalSummary]]:
     """Decided approvals history — GET /api/approvals/history?since=.
 
-    Returns up to ``limit`` decided (approved|rejected|expired|executed) approvals
+    Returns up to ``limit`` decided (approved|rejected|expired|executed|abandoned) approvals
     ordered ``decided_at DESC``.
     """
     tracker = DegradedSources(logger)
@@ -2979,3 +3011,55 @@ async def retry_approval(
         status=action_resp.status,
     )
     return ApiResponse(data=action_resp)
+
+
+@router.post("/{action_id}/abandon")
+async def abandon_approval(
+    action_id: str,
+    request: ApprovalAbandonRequest,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ApprovalAction]:
+    """Durably abandon one approved, unexecuted action from the dashboard only."""
+    try:
+        parsed_id = UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+    action_butler, target_pool = found
+
+    async with target_pool.acquire() as conn, conn.transaction():
+        result = await approvals_ops.abandon_approved_action(
+            conn, action_id=action_id, reason=request.reason, actor_id="dashboard:rest-api"
+        )
+        if "error" not in result:
+            await audit_router.append(
+                conn,
+                _ACTOR_DASHBOARD,
+                "approval.abandon",
+                target=action_id,
+                note=request.reason.strip(),
+                result="success",
+            )
+
+    if "error" in result:
+        detail = str(result["error"])
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail)
+        if "blank" in detail.lower():
+            raise HTTPException(status_code=422, detail=detail)
+        raise HTTPException(status_code=409, detail=detail)
+
+    result.setdefault("butler", action_butler)
+    action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    emit_approvals_event(
+        "abandoned",
+        action_id,
+        butler=action_butler,
+        tool_name=action.tool_name,
+        status=action.status,
+        reason=request.reason.strip(),
+    )
+    return ApiResponse(data=action)

@@ -98,8 +98,8 @@ describe("ApprovalsVerdictOpener -- clauses", () => {
         historyError={false}
       />,
     );
-    // The bounded history is not an input to this component: summaries omit
-    // execution_result, so only the server-derived stalled radar is evidence.
+    // The bounded history is not an input to this component: only the
+    // server-derived stalled radar covers the full eligible population.
     expect(html).not.toContain("stalled");
     expect(html).toContain("No approvals waiting.");
   });

@@ -81,6 +81,7 @@ vi.mock("@/api/index.ts", () => ({
   denyApproval: vi.fn(),
   deferApproval: vi.fn(),
   retryApproval: vi.fn(),
+  abandonApproval: vi.fn(),
   updateApprovalsPolicy: vi.fn(),
   // Autonomy suggestions banner data + verbs (wired into ApprovalsPage via
   // the use-approvals hooks).
@@ -109,6 +110,7 @@ vi.mock("@/api/index.ts", () => ({
 
 import {
   approveApproval,
+  abandonApproval,
   confirmAutonomySuggestion,
   deferApproval,
   denyApproval,
@@ -816,7 +818,12 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
 // Honest dispatch status + retry affordance (bu-j1xkd)
 // ---------------------------------------------------------------------------
 
-function makeHistoryItem(id: string, status: string, toolName = "send_email") {
+function makeHistoryItem(
+  id: string,
+  status: string,
+  toolName = "send_email",
+  executionResult: Record<string, unknown> | null = null,
+) {
   return {
     id,
     butler: "general",
@@ -825,6 +832,7 @@ function makeHistoryItem(id: string, status: string, toolName = "send_email") {
     why: null,
     created_at: "2026-05-17T10:00:00Z",
     expires_at: null,
+    execution_result: executionResult,
   };
 }
 
@@ -1241,6 +1249,63 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     renderPage();
     await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
     expect(findButton(container, "Retry dispatch")).toBeDefined();
+    expect(findButton(container, "Abandon")).toBeDefined();
+  });
+
+  it("requires a reason before dashboard abandonment and sends it on confirm", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("abandon-eligible")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        id: "abandon-eligible",
+        title: "Send Email (general)",
+        butler: "general",
+        created_at: "2026-05-17T10:00:00Z",
+        expires_at: null,
+        why: "The owner approved this.",
+        evidence: [],
+        proposed_action: { tool_name: "send_email", tool_args: {}, agent_summary: null },
+        status: "approved",
+        decided_by: "human:owner",
+        decided_at: "2026-05-17T10:05:00Z",
+        denial_reason: null,
+        execution_result: null,
+        target_contact: null,
+      }) as AnyMock,
+    );
+    vi.mocked(abandonApproval).mockReturnValue(
+      makeApiResponse({ id: "abandon-eligible", status: "abandoned" }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Abandon") !== undefined);
+    await act(async () => {
+      findButton(container, "Abandon")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const reason = container.querySelector<HTMLInputElement>('input[aria-label="Abandon reason"]');
+    const confirm = findButton(container, "Confirm");
+    expect(reason).not.toBeNull();
+    expect(confirm?.disabled).toBe(true);
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(reason, "No longer needed");
+      reason?.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    await act(async () => {
+      findButton(container, "Confirm")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(abandonApproval).toHaveBeenCalledWith("abandon-eligible", {
+      reason: "No longer needed",
+    });
   });
 
   it("does not render dossier Retry after an approved action records execution", async () => {
@@ -1275,6 +1340,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
       () => container.querySelector('[data-testid="approval-decision-outcome"]') !== null,
     );
     expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Abandon")).toBeUndefined();
   });
 
   it("denies in a single click — no 'Confirm Deny' step (optimistic)", async () => {
@@ -1375,6 +1441,21 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
       container.querySelectorAll("button"),
     ).filter((b) => b.textContent?.trim() === "Retry dispatch");
     expect(retryButtons.length).toBe(1);
+  });
+
+  it("does not render Retry dispatch for an approved history row with a persisted result", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([
+        makeHistoryItem("h-completed", "approved", "send_email", { success: false }),
+      ]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="history-row-link"]') !== null,
+    );
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
   });
 
   it("calls retryApproval and toasts success when retry dispatches", async () => {
@@ -1812,7 +1893,7 @@ describe("ApprovalsPage — stalled (approved-but-undispatched) state (bu-86c4c.
 
   it("feeds the verdict the flat response's whole-population stalled radar", async () => {
     // History is deliberately empty: the count must not depend on the
-    // bounded history query, which lacks execution_result in its summaries.
+    // bounded history query, which cannot represent every stalled row.
     vi.mocked(getApprovalsFlat).mockReturnValue(
       Promise.resolve({ data: [], meta: { stalled_count: 2 } }) as AnyMock,
     );

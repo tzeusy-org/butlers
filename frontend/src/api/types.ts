@@ -3158,6 +3158,8 @@ export interface ApprovalSummary {
   created_at: string;
   expires_at?: string | null;
   why?: string | null;
+  /** Durable execution evidence used to distinguish eligible stalled rows. */
+  execution_result?: Record<string, unknown> | null;
   blast_radius?: ApprovalBlastRadius | null;
   reversibility?: ApprovalReversibility | null;
   /**
@@ -3253,6 +3255,10 @@ export interface ApprovalDetail {
    * notified. Never fabricate calm (bu-mda0r, bu-p5sg6).
    */
   push_failed?: boolean;
+}
+
+export interface ApprovalAbandonRequest {
+  reason: string;
 }
 
 /** Quiet-hours policy singleton. */

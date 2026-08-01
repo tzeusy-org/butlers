@@ -85,6 +85,7 @@ def _app_with_mock_db(
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
 
     if has_approvals_tables:
 
@@ -498,6 +499,26 @@ async def test_list_approvals_history_reports_sources_degraded_on_pool_failure(a
     body = resp.json()
     assert len(body["data"]) == 1
     assert body["meta"]["sources_degraded"] == ["home"]
+
+
+async def test_history_summary_exposes_a_redacted_execution_result_for_retry_eligibility(app):
+    """History needs the durable null/non-null discriminator used by its Retry control."""
+    row = {
+        **_make_action(tool_name="notify", status="approved"),
+        "execution_result": {"success": False, "error": "private handler diagnostic"},
+    }
+    app = _app_with_one_healthy_one_raising_butler(app, healthy_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/history")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"][0]["execution_result"] == {
+        "success": False,
+        "error": "***REDACTED***",
+    }
 
 
 async def test_list_approvals_flat_no_sources_degraded_when_all_pools_healthy(app):
@@ -1836,6 +1857,22 @@ async def test_detail_returns_typed_decision_dossier_fields(app):
     assert detail["evidence"] == row["evidence"]
 
 
+async def test_detail_preserves_failed_push_delivery_state(app):
+    """The dossier keeps failed-push truth instead of silently dropping it."""
+    row = {**_make_pending_row(), "push_outcome": "failed"}
+    app, _ = _app_with_mock_db(app, fetchrow_return=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{row['id']}")
+
+    assert resp.status_code == 200
+    detail = resp.json()["data"]
+    assert detail["push_outcome"] == "failed"
+    assert detail["push_failed"] is True
+
+
 async def test_detail_includes_originating_session_id(app):
     """GET /api/approvals/{id} surfaces session_id so the dossier can link to
     the originating session/trace that proposed the action."""
@@ -2288,10 +2325,12 @@ def _build_dispatch_mocks(
     mock_mcp.butler_names = ["messenger"]
     mock_mcp.get_client = AsyncMock(return_value=mock_client)
 
-    # DB pool — mark_executed is patched at the module level in callers
+    # DB pool — notify now uses the shared executor, so the fixture must model
+    # its pre-delivery row lock and transaction rather than only mark_executed.
     mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchrow = AsyncMock(return_value={"status": "approved", "execution_result": None})
     mock_conn.execute = AsyncMock()
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
 
     class _MockAcquire:
         async def __aenter__(self):
@@ -2300,8 +2339,13 @@ def _build_dispatch_mocks(
         async def __aexit__(self, *a):
             pass
 
-    mock_pool = AsyncMock()
-    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    class _MockPool:
+        """Executor-compatible pool double without AsyncMock child attributes."""
+
+        def acquire(self):
+            return _MockAcquire()
+
+    mock_pool = _MockPool()
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["messenger"]
@@ -2432,6 +2476,30 @@ def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
         block.text = text
         result.content = [block]
     return result
+
+
+async def test_abandon_requires_reason_and_returns_terminal_action(app):
+    action = _make_action(status="approved")
+    _app_with_mock_db(app, fetchrow_return=action)
+
+    with patch(
+        "butlers.api.routers.approvals.approvals_ops.abandon_approved_action",
+        new=AsyncMock(return_value={**action, "id": str(action["id"]), "status": "abandoned"}),
+    ) as abandon:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            blank = await client.post(
+                f"/api/approvals/{action['id']}/abandon", json={"reason": " "}
+            )
+            response = await client.post(
+                f"/api/approvals/{action['id']}/abandon", json={"reason": "No longer needed"}
+            )
+
+    assert blank.status_code == 422
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["status"] == "abandoned"
+    assert abandon.await_args.kwargs["reason"] == "No longer needed"
 
 
 @pytest.mark.parametrize(
