@@ -2776,18 +2776,6 @@ export interface MemoryRule {
   metadata: Record<string, unknown>;
 }
 
-/** A durable relation between memory records with episode availability evidence. */
-export interface MemoryLink {
-  source_type: "episode" | "fact" | "rule";
-  source_id: string;
-  target_type: "episode" | "fact" | "rule";
-  target_id: string;
-  relation: string;
-  created_at: string;
-  source_episode_status: EpisodeSourceStatus | null;
-  target_episode_status: EpisodeSourceStatus | null;
-}
-
 /** Aggregated statistics across all memory tiers. */
 export interface MemoryStats {
   total_episodes: number;

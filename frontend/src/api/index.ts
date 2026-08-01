@@ -383,7 +383,6 @@ export type {
   MemoryInspectResult,
   MemoryRetentionPolicy,
   MemoryRule,
-  MemoryLink,
   MemoryStats,
   ReembedPendingCounts,
   ReembedRunRequest,
