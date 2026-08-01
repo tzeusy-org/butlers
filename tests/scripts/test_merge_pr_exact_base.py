@@ -141,16 +141,26 @@ def test_exact_base_squash_merge_allows_source_bead_closure(
 ) -> None:
     monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
     merge_calls: list[tuple[object, ...]] = []
+    postmerge_base_ref_name_calls: list[tuple[object, ...]] = []
 
     def request_squash_merge(*args: object) -> dict[str, object]:
         merge_calls.append(args)
         return {"merged": True, "sha": MERGE_SHA, "message": "Pull Request successfully merged"}
+
+    def fetch_pull_request_base_ref_name(*args: object) -> str:
+        postmerge_base_ref_name_calls.append(args)
+        return "main"
 
     monkeypatch.setattr(merge_guard, "request_squash_merge", request_squash_merge)
     monkeypatch.setattr(
         merge_guard,
         "fetch_commit_parent_shas",
         lambda *_: [REVIEWED_BASE_SHA],
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_pull_request_base_ref_name",
+        fetch_pull_request_base_ref_name,
     )
 
     result = merge_guard.merge_after_exact_base_revalidation(
@@ -162,9 +172,11 @@ def test_exact_base_squash_merge_allows_source_bead_closure(
     )
 
     assert merge_calls == [(REPO, PR_NUMBER, HEAD_SHA)]
+    assert postmerge_base_ref_name_calls == [(REPO, PR_NUMBER)]
     assert result.outcome is merge_guard.MergeOutcome.MERGED_EXACT_BASE
     assert result.merge_sha == MERGE_SHA
     assert result.parent_shas == [REVIEWED_BASE_SHA]
+    assert result.postmerge_base_ref_name == "main"
     assert result.source_bead_closure_allowed is True
     assert result.rebase_and_repeat_required is False
 
@@ -173,6 +185,12 @@ def test_postmerge_base_drift_is_classified_and_blocks_source_bead_closure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+    postmerge_base_ref_name_calls: list[tuple[object, ...]] = []
+
+    def fetch_pull_request_base_ref_name(*args: object) -> str:
+        postmerge_base_ref_name_calls.append(args)
+        return "main"
+
     monkeypatch.setattr(
         merge_guard,
         "request_squash_merge",
@@ -187,6 +205,11 @@ def test_postmerge_base_drift_is_classified_and_blocks_source_bead_closure(
         "fetch_commit_parent_shas",
         lambda *_: [ADVANCED_BASE_SHA],
     )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_pull_request_base_ref_name",
+        fetch_pull_request_base_ref_name,
+    )
 
     result = merge_guard.merge_after_exact_base_revalidation(
         REPO,
@@ -198,6 +221,8 @@ def test_postmerge_base_drift_is_classified_and_blocks_source_bead_closure(
 
     assert result.outcome is merge_guard.MergeOutcome.POSTMERGE_BASE_DRIFT
     assert result.parent_shas == [ADVANCED_BASE_SHA]
+    assert postmerge_base_ref_name_calls == [(REPO, PR_NUMBER)]
+    assert result.postmerge_base_ref_name == "main"
     assert result.source_bead_closure_allowed is False
     assert result.rebase_and_repeat_required is False
 
