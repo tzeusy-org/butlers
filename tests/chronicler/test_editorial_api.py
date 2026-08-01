@@ -282,8 +282,17 @@ async def test_briefing_uses_templated_fallback_when_cache_invalid(
     assert conn.fetchval_calls == []
 
 
+@pytest.mark.parametrize(
+    "prose",
+    [
+        '```json\n{"tool": "x"}\n```',
+        'Tool result: {"date": "2026-05-08", "citations": []}',
+        "{'tool': 'chronicler_day_close_bundle', 'result': {'date': '2026-05-08'}}",
+    ],
+    ids=["code-fence", "tool-result-header", "python-literal-object"],
+)
 async def test_briefing_contains_legacy_malformed_cache_with_templated_copy(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, prose: str
 ):
     """An unmarked legacy trace cannot surface through the editorial briefing."""
     monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose)
@@ -294,7 +303,7 @@ async def test_briefing_contains_legacy_malformed_cache_with_templated_copy(
         fetchrow_returns=[
             _Row(
                 {
-                    "prose": '```json\n{"tool": "x"}\n```',
+                    "prose": prose,
                     "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
                     "start_at": datetime(2026, 5, 7, 16, 0, tzinfo=UTC),
                     "end_at": datetime(2026, 5, 8, 16, 0, tzinfo=UTC),

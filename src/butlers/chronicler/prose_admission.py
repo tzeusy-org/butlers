@@ -15,6 +15,7 @@ a single ``invalid_reason`` (``inadmissible_prose`` | ``date_mismatch``).
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 
@@ -25,7 +26,8 @@ _CODE_FENCE_RE = re.compile(r"```")
 # Machine role / protocol framing a day-close narration should never start
 # with (a leaked transcript line, not owner-facing prose).
 _PROTOCOL_MARKER_RE = re.compile(
-    r"^\s*(system|assistant|user|tool(?:[_ -]*calls?)?|function)\s*:", re.IGNORECASE
+    r"^\s*(system|assistant|user|tool(?:[_ -]*(?:calls?|result))?|function)\s*:",
+    re.IGNORECASE,
 )
 
 # Tool-call / agent-protocol payload markers.
@@ -60,8 +62,9 @@ def classify_prose_shape(text: str | None) -> str | None:
 
     Rejects: empty/whitespace-only text, a fenced code block, a leaked
     machine-role/protocol prefix, a tool-call/agent-protocol payload, a
-    planning-verb preamble, or a candidate that is itself a serialized JSON
-    object/array. Fails closed: only affirmatively prose-shaped text passes.
+    planning-verb preamble, or a candidate that is itself a serialized JSON or
+    Python-literal object/array. Fails closed: only affirmatively prose-shaped
+    text passes.
     """
     if text is None:
         return INADMISSIBLE_PROSE
@@ -82,7 +85,13 @@ def classify_prose_shape(text: str | None) -> str | None:
         try:
             json.loads(stripped)
         except (json.JSONDecodeError, ValueError):
-            pass
+            try:
+                parsed = ast.literal_eval(stripped)
+            except (SyntaxError, ValueError):
+                pass
+            else:
+                if isinstance(parsed, (dict, list, set)):
+                    return INADMISSIBLE_PROSE
         else:
             return INADMISSIBLE_PROSE
     return None

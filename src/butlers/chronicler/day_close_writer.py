@@ -315,61 +315,70 @@ async def write_day_close_cache(
     )
 
     try:
-        if invalid_reason is not None:
-            existing = await pool.fetchrow(
-                "SELECT prose, date_label, invalid_reason FROM tier2_cache"
-                " WHERE cache_key = $1 AND superseded_at IS NULL",
-                cache_key,
-            )
-            existing_is_admissible = (
-                existing is not None
-                and existing.get("invalid_reason") is None
-                and classify_day_close_candidate(
-                    existing.get("prose"),
-                    date_label=existing.get("date_label"),
-                    expected_date_iso=day_date.isoformat(),
-                )
-                is None
-            )
-            if existing_is_admissible:
-                # An admissible row already renders for this date; an invalid
-                # candidate SHALL NOT replace it (design.md decision 2).
-                logger.warning(
-                    "day_close_writer: rejected invalid candidate for %s (%s), "
-                    "existing admissible cache row preserved",
-                    cache_key,
-                    invalid_reason,
-                )
-                return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
-            # No existing admissible row: persist the invalid candidate for
-            # audit/recovery. The reader never returns its prose.
-            await upsert_tier2_cache(
-                pool,
-                cache_key=cache_key,
-                start_at=start_at,
-                end_at=end_at,
-                prose=prose,
-                provenance_refs=provenance_refs,
-                date_label=date_label,
-                invalid_reason=invalid_reason,
-            )
-            logger.warning(
-                "day_close_writer: contained invalid candidate for %s (%s)",
-                cache_key,
-                invalid_reason,
-            )
-            return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Serialize the existing-row check and all writes for this
+                # cache key. Otherwise an invalid candidate can inspect an
+                # absent/invalid row, a concurrent valid writer can commit,
+                # and the stale invalid path can overwrite that valid prose.
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cache_key)
 
-        await upsert_tier2_cache(
-            pool,
-            cache_key=cache_key,
-            start_at=start_at,
-            end_at=end_at,
-            prose=prose,
-            provenance_refs=provenance_refs,
-            date_label=date_label,
-            invalid_reason=None,
-        )
+                if invalid_reason is not None:
+                    existing = await conn.fetchrow(
+                        "SELECT prose, date_label, invalid_reason FROM tier2_cache"
+                        " WHERE cache_key = $1 AND superseded_at IS NULL",
+                        cache_key,
+                    )
+                    existing_is_admissible = (
+                        existing is not None
+                        and existing.get("invalid_reason") is None
+                        and classify_day_close_candidate(
+                            existing.get("prose"),
+                            date_label=existing.get("date_label"),
+                            expected_date_iso=day_date.isoformat(),
+                        )
+                        is None
+                    )
+                    if existing_is_admissible:
+                        # An admissible row already renders for this date; an
+                        # invalid candidate SHALL NOT replace it (design.md
+                        # decision 2).
+                        logger.warning(
+                            "day_close_writer: rejected invalid candidate for %s (%s), "
+                            "existing admissible cache row preserved",
+                            cache_key,
+                            invalid_reason,
+                        )
+                        return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+                    # No existing admissible row: persist the invalid candidate
+                    # for audit/recovery. The reader never returns its prose.
+                    await upsert_tier2_cache(
+                        conn,
+                        cache_key=cache_key,
+                        start_at=start_at,
+                        end_at=end_at,
+                        prose=prose,
+                        provenance_refs=provenance_refs,
+                        date_label=date_label,
+                        invalid_reason=invalid_reason,
+                    )
+                    logger.warning(
+                        "day_close_writer: contained invalid candidate for %s (%s)",
+                        cache_key,
+                        invalid_reason,
+                    )
+                    return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+
+                await upsert_tier2_cache(
+                    conn,
+                    cache_key=cache_key,
+                    start_at=start_at,
+                    end_at=end_at,
+                    prose=prose,
+                    provenance_refs=provenance_refs,
+                    date_label=date_label,
+                    invalid_reason=None,
+                )
         logger.info(
             "day_close_writer: wrote tier2_cache[%s] (%d provenance refs)",
             cache_key,

@@ -45,7 +45,12 @@ def test_rejects_code_fence() -> None:
 
 @pytest.mark.parametrize(
     "prefix",
-    ["system: you are a helpful assistant", "assistant: I will now", "tool: result follows"],
+    [
+        "system: you are a helpful assistant",
+        "assistant: I will now",
+        "tool: result follows",
+        'Tool result: {"date": "2026-04-24", "citations": []}',
+    ],
 )
 def test_rejects_protocol_marker(prefix: str) -> None:
     assert classify_prose_shape(prefix) == INADMISSIBLE_PROSE
@@ -87,6 +92,11 @@ def test_rejects_serialized_json_object() -> None:
 
 def test_rejects_serialized_json_array() -> None:
     assert classify_prose_shape('["a", "b", "c"]') == INADMISSIBLE_PROSE
+
+
+def test_rejects_serialized_python_literal_object() -> None:
+    text = "{'tool': 'chronicler_day_close_bundle', 'result': {'date': '2026-04-24'}}"
+    assert classify_prose_shape(text) == INADMISSIBLE_PROSE
 
 
 def test_admits_prose_starting_with_brace_like_char_that_is_not_json() -> None:

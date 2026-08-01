@@ -224,6 +224,16 @@ class TestDayCloseReaderInvalid:
         ("prose", "date_label", "expected_reason"),
         [
             ('```json\n{"tool": "x"}\n```', "2026-04-23", "inadmissible_prose"),
+            (
+                'Tool result: {"date": "2026-04-23", "citations": []}',
+                "2026-04-23",
+                "inadmissible_prose",
+            ),
+            (
+                "{'tool': 'chronicler_day_close_bundle', 'result': {'date': '2026-04-23'}}",
+                "2026-04-23",
+                "inadmissible_prose",
+            ),
             ("A concise retrospective.", "2026-04-22", "date_mismatch"),
         ],
     )

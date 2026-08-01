@@ -302,15 +302,24 @@ class _AcquireCM:
         return None
 
 
+class _TransactionCM:
+    """Minimal async context manager mimicking ``conn.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 @pytest.fixture()
 def fake_pool():
-    """A pool double supporting both the ``.acquire()`` protocol used by
-    ``record_coverage_witness`` and the direct ``.fetchrow()`` used by the
-    invalid-candidate existing-row check. No existing cache row by default."""
+    """A pool double whose acquired connection supports cache transactions."""
     pool = MagicMock()
     conn = AsyncMock()
     pool.acquire = MagicMock(side_effect=lambda: _AcquireCM(conn))
-    pool.fetchrow = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(side_effect=_TransactionCM)
+    conn.fetchrow = AsyncMock(return_value=None)
     pool._conn = conn  # exposed for tests asserting on the acquired connection
     return pool
 
@@ -509,10 +518,13 @@ async def test_write_day_close_cache_records_coverage_witness(fake_pool, mock_up
         tz="UTC",
     )
 
-    fake_pool._conn.execute.assert_awaited_once()
-    args = fake_pool._conn.execute.call_args.args
+    assert fake_pool._conn.execute.await_count == 2
+    args = fake_pool._conn.execute.await_args_list[0].args
     assert args[1] == date(2026, 4, 24)
     assert args[2] == "UTC"
+    lock_sql, lock_key = fake_pool._conn.execute.await_args_list[1].args
+    assert "pg_advisory_xact_lock" in lock_sql
+    assert lock_key == "day_close:2026-04-24"
 
 
 async def test_write_day_close_cache_contains_inadmissible_shape_candidate(
@@ -527,6 +539,31 @@ async def test_write_day_close_cache_contains_inadmissible_shape_candidate(
         task_name=DAY_CLOSE_TASK_NAME,
         result=result,
         run_at=run_at,
+    )
+
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.call_args.kwargs["invalid_reason"] == "inadmissible_prose"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        'Tool result: {"date": "2026-04-24", "citations": []}',
+        "{'tool': 'chronicler_day_close_bundle', 'result': {'date': '2026-04-24'}}",
+    ],
+    ids=["tool-result-header", "python-literal-object"],
+)
+async def test_write_day_close_cache_contains_protocol_or_serialized_object_candidate(
+    fake_pool, mock_upsert, output: str
+) -> None:
+    """Machine-shaped output is retained only as contained audit data."""
+    result = _make_result(output=output)
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
     )
 
     mock_upsert.assert_awaited_once()
@@ -575,7 +612,7 @@ async def test_write_day_close_cache_invalid_candidate_does_not_clobber_valid_ro
     fake_pool, mock_upsert
 ) -> None:
     """An invalid candidate SHALL NOT replace an existing admissible cache row."""
-    fake_pool.fetchrow = AsyncMock(
+    fake_pool._conn.fetchrow = AsyncMock(
         return_value={
             "prose": "A valid earlier retrospective.",
             "date_label": "2026-04-24",
@@ -599,7 +636,7 @@ async def test_write_day_close_cache_does_not_preserve_legacy_malformed_row_as_v
     fake_pool, mock_upsert
 ) -> None:
     """An unmarked legacy trace cannot block containment of a new invalid candidate."""
-    fake_pool.fetchrow = AsyncMock(
+    fake_pool._conn.fetchrow = AsyncMock(
         return_value={
             "prose": "tool: chronicler_list_episodes returned []",
             "date_label": "2026-04-24",
@@ -625,7 +662,7 @@ async def test_write_day_close_cache_never_logs_rejected_raw_prose(
 ) -> None:
     """Containment logs only a safe reason, never candidate content."""
     raw_prose = "UNSAFE-RAW-CANDIDATE-DO-NOT-LOG"
-    fake_pool.fetchrow = AsyncMock(
+    fake_pool._conn.fetchrow = AsyncMock(
         return_value={
             "prose": "A valid earlier retrospective.",
             "date_label": "2026-04-24",
@@ -653,7 +690,7 @@ async def test_write_day_close_cache_invalid_candidate_replaces_prior_invalid_ro
     fake_pool, mock_upsert
 ) -> None:
     """An invalid candidate MAY replace a prior invalid row (still contained, still audited)."""
-    fake_pool.fetchrow = AsyncMock(return_value={"invalid_reason": "date_mismatch"})
+    fake_pool._conn.fetchrow = AsyncMock(return_value={"invalid_reason": "date_mismatch"})
     run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
     result = _make_result(date_label="2026-04-23")
 
