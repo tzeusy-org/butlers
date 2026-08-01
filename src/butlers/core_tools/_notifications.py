@@ -280,8 +280,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "Optional entity UUID (public.entities.id). When provided, the channel"
                         " identifier is resolved "
                         "from relationship.entity_facts (active triple preferred). If no matching "
-                        "entity_facts triple exists, the notification is parked as a "
-                        "pending_action and {status: pending_missing_identifier} is returned."
+                        "entity_facts triple exists and approval parking is available for this "
+                        "butler, the notification is parked as a pending_action and "
+                        "status=pending_missing_identifier is returned. Otherwise notify() "
+                        "fails closed without creating a pending action or owner notification."
                     )
                 ),
             ] = None,
@@ -355,9 +357,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             Optional fields:
             - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
             - `entity_id` (UUID): resolve recipient from relationship.entity_facts (active
-              triple preferred) keyed on this entity. If no matching triple exists the
-              notification is parked as a pending_action and
-              `{"status": "pending_missing_identifier"}` is returned.
+              triple preferred) keyed on this entity. If no matching triple exists and approval
+              parking is available for this butler, the notification is parked as a pending_action
+              and `{"status": "pending_missing_identifier"}` is returned. Otherwise notify()
+              fails closed without creating a pending action or owner notification.
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react` | `insight`
             - `emoji` (string): required when `intent="react"`
@@ -542,7 +545,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     msg_context=msg_context,
                 )
                 if entity_identifier is None:
-                    # No matching entity_facts triple — park as pending_action and notify owner
+                    # No matching entity_facts triple — validate the dossier, then park only when
+                    # this butler has a durable approval-parking implementation.
                     action_id: uuid.UUID | None = None
                     pool = daemon.db.pool if daemon.db is not None else None
                     from butlers.core.approvals_hooks import (
@@ -589,67 +593,100 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         return dossier_or_error
                     dossier = dossier_or_error
 
-                    if pool is not None:
-                        import datetime as _dt
+                    info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
+                    from butlers.core.approvals_hooks import (
+                        is_approval_parking_available,
+                        park_pending_action,
+                    )
 
-                        from butlers.core.approvals_hooks import park_pending_action
-
-                        action_id = uuid.uuid4()
-                        now = _dt.datetime.now(_dt.UTC)
-                        expires_at = now + _dt.timedelta(hours=72)
-                        info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
-                        agent_summary = (
-                            f"notify() could not deliver a {channel!r} notification: "
-                            f"entity {entity_id} has no {info_type!r} identifier in "
-                            f"relationship.entity_facts. The message was: {message!r}. "
-                            f"To resolve, assert a channel triple for this entity in the "
-                            f"entity graph and re-trigger the notification."
-                        )
-                        # Bind the sanitized dict directly (no json.dumps, no
-                        # ::jsonb cast) — asyncpg's registered jsonb codec
-                        # already serializes once; pre-serializing double-
-                        # encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
-                        safe_park_tool_args = json.loads(
-                            json.dumps(
-                                {
-                                    "channel": channel,
-                                    "message": message,
-                                    "entity_id": str(entity_id),
-                                    "intent": intent,
-                                },
-                                default=str,
-                            )
-                        )
-                        # park_pending_action is the single choke point for
-                        # PENDING inserts: it writes the row AND attempts the
-                        # owner-facing push in one call, replacing the ad hoc
-                        # owner-alert deliver() this site used to build by
-                        # hand (which had no reservation, no quiet-hours
-                        # deferral, and no Approve/Reject affordance -- see
-                        # bu-mda0r).
-                        await park_pending_action(
-                            pool,
-                            action_id=action_id,
-                            tool_name="notify",
-                            tool_args=safe_park_tool_args,
-                            agent_summary=agent_summary,
-                            requested_at=now,
-                            expires_at=expires_at,
-                            session_id=get_current_runtime_session_id(),
-                            why=dossier.why,
-                            evidence=dossier.evidence,
-                            blast_radius=dossier.blast_radius,
-                            reversibility=dossier.reversibility,
-                            origin_butler=butler_name,
-                            approval_push_runtime=daemon._approval_push_runtime,
-                        )
-                        logger.warning(
-                            "notify() parked as pending_missing_identifier: "
-                            "entity_id=%s has no %r entity_facts triple (action=%s)",
+                    if pool is None or not is_approval_parking_available(pool):
+                        logger.error(
+                            "notify() could not park missing-identifier notification: "
+                            "entity_id=%s has no %r entity_facts triple; approvals are unavailable",
                             entity_id,
                             info_type,
-                            action_id,
                         )
+                        await record_attention_event(
+                            _notify_pool,
+                            origin_butler=butler_name,
+                            source="notify",
+                            outcome="failed",
+                            channel=channel,
+                            intent=intent,
+                            priority=priority,
+                            reason="approval_parking_unavailable",
+                            metadata={"entity_id": str(entity_id), "retryable": False},
+                        )
+                        return {
+                            "status": "error",
+                            "error": (
+                                "Cannot deliver "
+                                f"{channel!r} notification to entity {entity_id}: "
+                                f"no {info_type!r} identifier is configured. "
+                                "Approval parking is unavailable for this butler. "
+                                "No pending action or owner notification was created. "
+                                "Add the missing identifier or enable/recover approval parking, "
+                                "then retry."
+                            ),
+                            "retryable": False,
+                        }
+
+                    import datetime as _dt
+
+                    action_id = uuid.uuid4()
+                    now = _dt.datetime.now(_dt.UTC)
+                    expires_at = now + _dt.timedelta(hours=72)
+                    agent_summary = (
+                        f"notify() could not deliver a {channel!r} notification: "
+                        f"entity {entity_id} has no {info_type!r} identifier in "
+                        f"relationship.entity_facts. The message was: {message!r}. "
+                        f"To resolve, assert a channel triple for this entity in the "
+                        f"entity graph and re-trigger the notification."
+                    )
+                    # Bind the sanitized dict directly (no json.dumps, no
+                    # ::jsonb cast) — asyncpg's registered jsonb codec
+                    # already serializes once; pre-serializing double-
+                    # encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
+                    safe_park_tool_args = json.loads(
+                        json.dumps(
+                            {
+                                "channel": channel,
+                                "message": message,
+                                "entity_id": str(entity_id),
+                                "intent": intent,
+                            },
+                            default=str,
+                        )
+                    )
+                    # park_pending_action is the single choke point for
+                    # PENDING inserts: it writes the row AND attempts the
+                    # owner-facing push in one call, replacing the ad hoc
+                    # owner-alert deliver() this site used to build by hand
+                    # (which had no reservation, no quiet-hours deferral, and
+                    # no Approve/Reject affordance -- see bu-mda0r).
+                    await park_pending_action(
+                        pool,
+                        action_id=action_id,
+                        tool_name="notify",
+                        tool_args=safe_park_tool_args,
+                        agent_summary=agent_summary,
+                        requested_at=now,
+                        expires_at=expires_at,
+                        session_id=get_current_runtime_session_id(),
+                        why=dossier.why,
+                        evidence=dossier.evidence,
+                        blast_radius=dossier.blast_radius,
+                        reversibility=dossier.reversibility,
+                        origin_butler=butler_name,
+                        approval_push_runtime=daemon._approval_push_runtime,
+                    )
+                    logger.warning(
+                        "notify() parked as pending_missing_identifier: "
+                        "entity_id=%s has no %r entity_facts triple (action=%s)",
+                        entity_id,
+                        info_type,
+                        action_id,
+                    )
                     return {
                         "status": "pending_missing_identifier",
                         "entity_id": str(entity_id),

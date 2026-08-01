@@ -407,30 +407,70 @@ def _mock_switchboard_client() -> Any:
     return client
 
 
-@pytest.fixture(autouse=False)
-def register_email_guard_hook():
-    """Register the real approvals email guard so notify() enforces recipient validation.
+@pytest.fixture
+def registered_email_approval_hooks(monkeypatch: pytest.MonkeyPatch):
+    """Register the real email guard for each daemon pool started by a test."""
+    import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.email_guard import check_email_recipient
+    from butlers.modules.approvals.park import park_pending_action
 
-    The butler.toml fixture used by these tests does not enable the approvals module,
-    so ``on_startup`` never calls ``register_email_guard``.  This fixture registers the
-    real implementation directly against the hook slot, mirroring what the approvals
-    module's ``on_startup`` would do in production.  This preserves the fail-open
-    semantics for butlers that genuinely have no approvals module while keeping these
-    safety-contract tests hermetic.
-    """
+    async def _allow_non_email_recipient(*_args, **_kwargs):
+        return _hooks.EmailGuardDecision(allowed=True, reason="email_guard_only")
+
+    original_boot = _boot_daemon_with_notify
+    registrations = []
+
+    async def _boot_with_approval_hooks(*args, **kwargs):
+        daemon, notify_fn = await original_boot(*args, **kwargs)
+        pool = daemon.db.pool
+        runtime = _hooks.register_approval_hooks(
+            pool,
+            email_guard=check_email_recipient,
+            recipient_guard=_allow_non_email_recipient,
+            park_pending_action=park_pending_action,
+        )
+        registrations.append((pool, runtime))
+        return daemon, notify_fn
+
+    monkeypatch.setitem(globals(), "_boot_daemon_with_notify", _boot_with_approval_hooks)
+    yield
+    for pool, runtime in reversed(registrations):
+        _hooks.unregister_approval_hooks(pool, runtime)
+
+
+@pytest.fixture
+def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
+    """Register all real approvals hooks for each daemon pool started by a test."""
     import butlers.core.approvals_hooks as _hooks
     from butlers.modules.approvals.email_guard import (
-        check_email_recipient as _real_check,
+        check_email_recipient,
+        check_recipient,
     )
+    from butlers.modules.approvals.park import park_pending_action
 
-    orig = _hooks._email_guard_hook
-    _hooks._email_guard_hook = _real_check
+    original_boot = _boot_daemon_with_notify
+    registrations = []
+
+    async def _boot_with_approval_hooks(*args, **kwargs):
+        daemon, notify_fn = await original_boot(*args, **kwargs)
+        pool = daemon.db.pool
+        runtime = _hooks.register_approval_hooks(
+            pool,
+            email_guard=check_email_recipient,
+            recipient_guard=check_recipient,
+            park_pending_action=park_pending_action,
+        )
+        registrations.append((pool, runtime))
+        return daemon, notify_fn
+
+    monkeypatch.setitem(globals(), "_boot_daemon_with_notify", _boot_with_approval_hooks)
     yield
-    _hooks._email_guard_hook = orig
+    for pool, runtime in reversed(registrations):
+        _hooks.unregister_approval_hooks(pool, runtime)
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("register_email_guard_hook")
+@pytest.mark.usefixtures("registered_email_approval_hooks")
 class TestNotifyRecipientValidation:
     """notify(channel='email') MUST validate recipients against public.contact_info."""
 
@@ -674,26 +714,8 @@ class TestNotifyRecipientValidation:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=False)
-def register_recipient_guard_hook():
-    """Register the real channel-general recipient guard for notify() gating.
-
-    Mirrors :func:`register_email_guard_hook` but for the channel-general guard
-    that gates telegram (and any non-email channel).  The butler.toml fixture
-    does not enable the approvals module, so ``on_startup`` never registers it;
-    this fixture wires the real implementation directly against the hook slot.
-    """
-    import butlers.core.approvals_hooks as _hooks
-    from butlers.modules.approvals.email_guard import check_recipient as _real_check
-
-    orig = _hooks._recipient_guard_hook
-    _hooks._recipient_guard_hook = _real_check
-    yield
-    _hooks._recipient_guard_hook = orig
-
-
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("register_email_guard_hook", "register_recipient_guard_hook")
+@pytest.mark.usefixtures("registered_approval_hooks")
 class TestNotifyTelegramRecipientValidation:
     """notify(channel='telegram') MUST apply the same role-based gating as email.
 
@@ -1078,7 +1100,7 @@ class TestMessengerApprovalGate:
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("register_email_guard_hook")
+@pytest.mark.usefixtures("registered_email_approval_hooks")
 class TestIncidentReplay:
     """Replay the exact failure scenarios that occurred on 2026-03-12/14."""
 
@@ -1206,7 +1228,7 @@ def _temp_contact() -> ResolvedContact:
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("register_email_guard_hook")
+@pytest.mark.usefixtures("registered_email_approval_hooks")
 class TestEntityIdBypassFix:
     """Bug fix: notify(entity_id=...) must NOT skip the email validation guard.
 

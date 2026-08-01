@@ -254,6 +254,8 @@ class ApprovalsModule(Module):
         self._approval_policy: ApprovalConfig | None = None
         self._tool_metadata: dict[str, ToolMeta] = {}
         self._decision_memory_writer: DecisionMemoryWriter | None = None
+        self._hook_pool: Any = None
+        self._hook_runtime: Any = None
 
     @property
     def name(self) -> str:
@@ -562,9 +564,8 @@ class ApprovalsModule(Module):
         # park hook is the single choke point every PENDING park path routes
         # through (bu-mda0r).
         from butlers.core.approvals_hooks import (
-            register_email_guard,
-            register_park_pending_action,
-            register_recipient_guard,
+            register_approval_hooks,
+            unregister_approval_hooks,
         )
         from butlers.modules.approvals.email_guard import (
             check_email_recipient,
@@ -572,13 +573,29 @@ class ApprovalsModule(Module):
         )
         from butlers.modules.approvals.park import park_pending_action
 
-        register_email_guard(check_email_recipient)
-        register_recipient_guard(check_recipient)
-        register_park_pending_action(park_pending_action)
+        hook_pool = getattr(db, "pool", None)
+        if hook_pool is None:
+            hook_pool = db
+        if self._hook_pool is not None and self._hook_runtime is not None:
+            unregister_approval_hooks(self._hook_pool, self._hook_runtime)
+        self._hook_pool = hook_pool
+        self._hook_runtime = register_approval_hooks(
+            hook_pool,
+            email_guard=check_email_recipient,
+            recipient_guard=check_recipient,
+            park_pending_action=park_pending_action,
+        )
 
     async def on_shutdown(self) -> None:
-        """No persistent resources to clean up."""
-        pass
+        """Release this butler pool's dependency-inversion hooks."""
+        if self._hook_pool is None or self._hook_runtime is None:
+            return
+
+        from butlers.core.approvals_hooks import unregister_approval_hooks
+
+        unregister_approval_hooks(self._hook_pool, self._hook_runtime)
+        self._hook_pool = None
+        self._hook_runtime = None
 
     # ------------------------------------------------------------------
     # Tool implementations

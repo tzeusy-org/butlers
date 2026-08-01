@@ -456,10 +456,20 @@ class TestNotifyParkPath:
         # in production, and restore whatever was registered beforehand so
         # this doesn't leak into other tests sharing the process.
         import butlers.core.approvals_hooks as _approvals_hooks
+        from butlers.modules.approvals.email_guard import (
+            check_email_recipient as _real_email_guard,
+        )
+        from butlers.modules.approvals.email_guard import (
+            check_recipient as _real_recipient_guard,
+        )
         from butlers.modules.approvals.park import park_pending_action as _real_park
 
-        original_park_hook = _approvals_hooks._park_pending_action_hook
-        _approvals_hooks.register_park_pending_action(_real_park)
+        hook_runtime = _approvals_hooks.register_approval_hooks(
+            pool,
+            email_guard=_real_email_guard,
+            recipient_guard=_real_recipient_guard,
+            park_pending_action=_real_park,
+        )
         try:
             entity_id = uuid.uuid4()
             result = await notify_fn(
@@ -479,7 +489,7 @@ class TestNotifyParkPath:
                 _reversibility="compensable",
             )
         finally:
-            _approvals_hooks._park_pending_action_hook = original_park_hook
+            _approvals_hooks.unregister_approval_hooks(pool, hook_runtime)
         assert result["status"] == "pending_missing_identifier"
 
         stored = await _fetch_latest_tool_args(pool, "notify")

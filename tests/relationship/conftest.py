@@ -6,27 +6,29 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _register_real_park_pending_action_hook():
-    """Register the real ``park_pending_action`` hook for every relationship test.
-
-    ``relationship_assert_fact.py`` routes every PENDING ``pending_actions``
-    insert through ``butlers.core.approvals_hooks.park_pending_action``
-    (bu-g27ib), which delegates to whatever ``modules.approvals.park.
-    park_pending_action`` implementation the approvals module registered
-    during ``on_startup``. These tests call the relationship library
-    functions directly against mocked connections/pools -- no daemon starts,
-    so ``on_startup`` never runs and the hook slot is empty by default (a
-    loud no-op, per the hook's docstring).  Registering the real
-    implementation here mirrors what the approvals module's ``on_startup``
-    does in production, and restoring the prior value afterward keeps this
-    from leaking into other tests sharing the same xdist worker process
-    (mirrors the root ``conftest.py``'s ``_restore_approvals_guard_hooks``
-    pattern for the sibling email/recipient guard hooks).
-    """
+def _register_real_approval_hooks(request: pytest.FixtureRequest):
+    """Register real approvals hooks when a relationship test declares a pool fixture."""
     import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.email_guard import (
+        check_email_recipient,
+        check_recipient,
+    )
     from butlers.modules.approvals.park import park_pending_action as _real_park
 
-    orig = _hooks._park_pending_action_hook
-    _hooks._park_pending_action_hook = _real_park
+    pool_name = next(
+        (name for name in ("pool", "relationship_pool") if name in request.fixturenames),
+        None,
+    )
+    if pool_name is None:
+        yield
+        return
+
+    pool = request.getfixturevalue(pool_name)
+    runtime = _hooks.register_approval_hooks(
+        pool,
+        email_guard=check_email_recipient,
+        recipient_guard=check_recipient,
+        park_pending_action=_real_park,
+    )
     yield
-    _hooks._park_pending_action_hook = orig
+    _hooks.unregister_approval_hooks(pool, runtime)
