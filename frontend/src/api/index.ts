@@ -1013,6 +1013,7 @@ export type {
   ChroniclerCategoryBuckets,
   ChroniclerDayCloseParams,
   ChroniclerDayCloseFreshResponse,
+  ChroniclerDayCloseInvalidResponse,
   ChroniclerDayCloseResponse,
   ChroniclerDayCloseStaleResponse,
   ChroniclerEpisode,
