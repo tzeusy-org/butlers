@@ -55,7 +55,7 @@ from butlers.chronicler.balance import (
     is_lane_anomalous,
 )
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
-from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
+from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START, day_window_utc
 from butlers.chronicler.models import RoutineOrigin
 from butlers.chronicler.prose_admission import classify_day_close_candidate
 from butlers.chronicler.rollups import DEFAULT_TIMEZONE as ROLLUPS_DEFAULT_TIMEZONE
@@ -3018,7 +3018,9 @@ def _subquery_availability_to_pydantic(
     ]
 
 
-async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | None, str]:
+async def _voice_paragraph_from_cache(
+    pool: Any, target: date, tz_name: str
+) -> tuple[str | None, str]:
     """Return (paragraph, source) read from the day-close Tier-2 cache.
 
     source is one of 'llm·cached', 'stale', or 'templated'. When the cache
@@ -3039,6 +3041,9 @@ async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | No
             cache_key,
         )
     if row is None:
+        return None, "templated"
+    expected_start_at, expected_end_at = day_window_utc(target, tz_name)
+    if row.get("start_at") != expected_start_at or row.get("end_at") != expected_end_at:
         return None, "templated"
     if row.get("invalid_reason") or classify_day_close_candidate(
         row.get("prose"),
@@ -3108,7 +3113,7 @@ async def get_briefing(
         voice_paragraph = templated_voice_paragraph_for_state(payload.state_class)
         voice_source = "templated"
     else:
-        cache_paragraph, voice_source = await _voice_paragraph_from_cache(pool, target)
+        cache_paragraph, voice_source = await _voice_paragraph_from_cache(pool, target, tz_name)
         if cache_paragraph is None:
             voice_paragraph = templated_voice_paragraph(payload)
         else:
