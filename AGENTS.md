@@ -294,6 +294,9 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 ### Compose base-image invalidation contract
 - `scripts/compose.sh` rebuilds `butlers-base:latest` when the `butlers.base.dockerfile_sha` image label differs from the current `Dockerfile.base` SHA; pinned runtime CLI bumps must happen in `Dockerfile.base` (not live npm `latest` checks), and app-image rebuilds alone are not enough to pick up base-layer tool additions like `gh`.
 
+### Compose MCP listener port reservation contract
+- Butler MCP ports `41100-41111` are within Linux's default ephemeral range. Both `butlers-up` and `butlers-up-hotreload` must set `net.ipv4.ip_local_reserved_ports=41100-41111`; otherwise an outbound DB connection can claim a listener port before daemon startup and cause a persistent `port still in use` failure.
+
 ### Owner entity bootstrap conflict contract
 - `_ensure_owner_entity` in `src/butlers/daemon.py` must first resolve an existing owner via `WHERE 'owner' = ANY(roles)` before attempting insert, and the insert must use `ON CONFLICT DO NOTHING` (no explicit conflict target) so the partial unique index `shared.ix_entities_owner_singleton` cannot raise `UniqueViolationError` during startup.
 
