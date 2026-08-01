@@ -1599,7 +1599,7 @@ export interface CalendarWorkspaceSyncTarget {
   status: string;
   detail: string | null;
   error: string | null;
-  /** Whether a full re-sync (cursor recovery) has already run for this target. */
+  /** False for a queued acknowledgement; observe action/freshness telemetry for completion. */
   recovery: boolean;
   /** Correlation id of the durable action-log command. */
   request_id: string | null;

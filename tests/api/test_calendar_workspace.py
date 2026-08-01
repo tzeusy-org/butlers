@@ -1301,6 +1301,84 @@ async def test_sync_all_target_toolerror_degrades_to_failed(app):
     assert data["triggered_count"] == 1
 
 
+async def test_sync_acknowledgement_exposes_coalesced_command_correlation(app):
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="primary",
+                writable=True,
+            )
+        ]
+    }
+    general_client = AsyncMock()
+    general_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result(
+            {"status": "queued", "request_id": "existing-command", "coalesced": True}
+        )
+    )
+    app, _, _ = _build_app(
+        app,
+        source_rows=source_rows,
+        mcp_clients={"general": general_client},
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/calendar/workspace/sync", json={"all": True})
+
+    assert response.status_code == 202
+    data = response.json()["data"]
+    assert data["request_id"]
+    target = data["targets"][0]
+    assert target["butler_name"] == "general"
+    assert target["status"] == "queued"
+    assert target["request_id"] == "existing-command"
+    assert target["coalesced"] is True
+    assert target["recovery"] is False
+    assert json.loads(target["detail"]) == {
+        "status": "queued",
+        "request_id": "existing-command",
+        "coalesced": True,
+    }
+
+
+async def test_sync_all_unreachable_target_is_reported_without_losing_acknowledgement(app):
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="primary",
+                writable=True,
+            )
+        ]
+    }
+    app, _, mcp_manager = _build_app(app, source_rows=source_rows)
+    mcp_manager.get_client = AsyncMock(side_effect=ButlerUnreachableError("general offline"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/calendar/workspace/sync", json={"all": True})
+
+    assert response.status_code == 202
+    data = response.json()["data"]
+    assert data["triggered_count"] == 0
+    assert data["targets"][0]["status"] == "failed"
+    assert "general offline" in (data["targets"][0]["error"] or "")
+    assert "unreachable" in (data["targets"][0]["error"] or "")
+    assert data["targets"][0]["request_id"] is None
+
+
 def _duplicate_provider_source_rows() -> tuple[dict[str, list[dict]], dict[str, dict]]:
     """Return one logical provider source copied into stale/non-core and core schemas.
 

@@ -410,8 +410,8 @@ class CalendarWorkspaceSyncTarget(BaseModel):
     status: str
     detail: str | None = None
     error: str | None = None
-    #: Whether a full re-sync (cursor recovery) ran for this target. Mirrors the
-    #: ``recovery`` flag returned by ``calendar_force_sync``.
+    #: Whether the module reports recovery completion. A queued acknowledgement
+    #: leaves this false; completion is observed through action/freshness telemetry.
     recovery: bool = False
     #: Correlation id of the durable action-log command. May differ from the
     #: outer request when an equivalent pending command was coalesced.

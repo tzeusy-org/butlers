@@ -7237,7 +7237,7 @@ class CalendarModule(Module):
 
     @staticmethod
     def _force_sync_calendar_ids(payload: Mapping[str, Any]) -> list[str] | None:
-        """Read queue calendar ids, including the one-id payload used in early tests."""
+        """Normalize legacy single-calendar queue payloads to the current list shape."""
         raw_ids = payload.get("calendar_ids")
         if raw_ids is None:
             legacy_id = payload.get("calendar_id")

@@ -4387,6 +4387,94 @@ class TestQueuedCalendarForceSync:
         )
         assert provider.tokens == []
 
+    async def test_startup_wakes_queue_worker_when_periodic_sync_is_disabled(self):
+        """Dashboard commands drain through the real wait/wake loop without polling."""
+        mod = CalendarModule()
+        db = SimpleNamespace(pool=MagicMock())
+        provider = MagicMock()
+        provider.shutdown = AsyncMock()
+        internal_projection_started = asyncio.Event()
+        first_drain_finished = asyncio.Event()
+        worker_waiting_for_queue_wake = asyncio.Event()
+        queued_work_drained = asyncio.Event()
+        drain_calls = 0
+
+        async def _wait_for_shutdown(started: asyncio.Event) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        async def _drain_force_sync_commands() -> int:
+            nonlocal drain_calls
+            drain_calls += 1
+            if drain_calls == 1:
+                first_drain_finished.set()
+                return 0
+            if drain_calls == 2:
+                queued_work_drained.set()
+                return 1
+            return 0
+
+        original_queue_wake_wait = mod._force_sync_queue_wake.wait
+
+        async def _wait_for_queue_wake() -> bool:
+            worker_waiting_for_queue_wake.set()
+            return await original_queue_wake_wait()
+
+        provider_factory = MagicMock(return_value=provider)
+        with (
+            patch.object(mod, "_resolve_credentials", new=AsyncMock(return_value=MagicMock())),
+            patch.object(
+                mod,
+                "_resolve_startup_calendar_id",
+                new=AsyncMock(return_value="primary"),
+            ),
+            patch.object(
+                mod,
+                "_discover_and_register_all_calendars",
+                new=AsyncMock(return_value=["primary"]),
+            ),
+            patch.object(mod, "_purge_invalid_probe_sources", new=AsyncMock()),
+            patch.object(mod, "_purge_obsolete_internal_sources", new=AsyncMock()),
+            patch.object(mod, "_projection_tables_available", new=AsyncMock(return_value=True)),
+            patch.object(mod, "_recover_force_sync_commands", new=AsyncMock(return_value=0)),
+            patch.object(mod, "_drain_force_sync_commands", new=_drain_force_sync_commands),
+            patch.object(
+                mod._force_sync_queue_wake,
+                "wait",
+                new=_wait_for_queue_wake,
+            ),
+            patch.object(
+                mod,
+                "_run_internal_projection_poller",
+                new=lambda: _wait_for_shutdown(internal_projection_started),
+            ),
+            patch.dict(CalendarModule._PROVIDER_CLASSES, {"google": provider_factory}),
+        ):
+            await mod.on_startup(
+                {"provider": "google", "calendar_id": "primary", "sync": {"enabled": False}},
+                db=db,
+            )
+            try:
+                await asyncio.wait_for(first_drain_finished.wait(), timeout=0.5)
+                await asyncio.wait_for(worker_waiting_for_queue_wake.wait(), timeout=0.5)
+                await asyncio.wait_for(internal_projection_started.wait(), timeout=0.5)
+
+                assert mod._sync_task is None
+                assert mod._force_sync_queue_task is not None
+                assert not mod._force_sync_queue_task.done()
+                assert drain_calls == 1
+
+                # This is the same wake signal set after durable enqueue. The
+                # real worker must leave its idle wait and perform another drain.
+                mod._force_sync_queue_wake.set()
+                await asyncio.wait_for(queued_work_drained.wait(), timeout=0.5)
+                assert drain_calls >= 2
+            finally:
+                await mod.on_shutdown()
+
+        assert mod._force_sync_queue_task is None
+        provider.shutdown.assert_awaited_once()
+
     async def test_queue_persists_pending_action_before_acknowledging(self):
         mod = CalendarModule()
         pool = MagicMock()

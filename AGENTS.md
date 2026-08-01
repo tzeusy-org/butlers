@@ -350,6 +350,7 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 - `CalendarModule._sync_calendar` now materializes unified projection rows: provider deltas upsert into `calendar_events` + `calendar_event_instances`, and internal scheduler/reminder sources refresh into the same tables with deterministic `origin_ref` linkage (`scheduled_tasks.id` / native `calendar_events.id`).
 - Projection checkpoints are persisted in `calendar_sync_cursors` (`provider_sync` for provider pulls, `projection` for internal sources), and each sync refresh records action status in `calendar_action_log`.
 - `calendar_sync_status` and `calendar_force_sync` now include `projection_freshness` (`last_refreshed_at`, `staleness_ms`, per-source `sync_state=fresh|stale|failed`); projection writes hard-gate on strict `to_regclass(...) IS TRUE` checks so pre-migration DBs/tests safely no-op.
+- Dashboard `calendar_force_sync(queue=true)` commands are durable `calendar_action_log` rows: the module worker starts even when normal polling is disabled, leases one `running` command at a time, coalesces a single pending successor, and restart recovery merges/requeues interrupted work without losing full-recovery intent.
 
 ### Calendar-native reminder provider mirror contract
 - Runtime reminder lifecycle and target resolution are native-only (`calendar_events` with `source_kind='internal_reminders'`); the retired physical `reminders` table is migration history, not a runtime fallback or test fixture.
