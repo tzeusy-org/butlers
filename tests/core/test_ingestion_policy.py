@@ -146,6 +146,32 @@ def test_ingestion_envelope_and_policy_decision_contracts() -> None:
     assert PolicyDecision(action="skip").allowed is True
 
 
+def test_ingestion_envelope_positional_constructor_preserves_existing_field_order() -> None:
+    """Adding endpoint identity must not silently rebind public positional callers."""
+    headers = {"X-Test": "yes"}
+    mime_parts = ["text/plain"]
+    labels = ["INBOX"]
+
+    env = IngestionEnvelope(
+        "sender@example.com",
+        "email",
+        headers,
+        mime_parts,
+        "thread-1",
+        "raw-key",
+        labels,
+    )
+
+    assert env.sender_address == "sender@example.com"
+    assert env.source_channel == "email"
+    assert env.headers == headers
+    assert env.mime_parts == mime_parts
+    assert env.thread_id == "thread-1"
+    assert env.raw_key == "raw-key"
+    assert env.labels == labels
+    assert env.source_endpoint_identity == ""
+
+
 # ---------------------------------------------------------------------------
 # All matchers — all 8 rule types in one test
 # ---------------------------------------------------------------------------
@@ -360,6 +386,29 @@ def test_legacy_promoted_opaque_sender_address_matches_only_as_source_endpoint()
         ).action
         == "pass_through"
     )
+
+
+def test_legacy_promoted_endpoint_containing_at_sign_matches_as_an_endpoint() -> None:
+    """A legacy opaque endpoint may contain an email-shaped suffix."""
+    endpoint = "google_calendar:user:owner@example.com"
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    evaluator._last_loaded_at = time.monotonic()
+    evaluator._rules = [
+        _rule(
+            id="legacy-calendar-promotion",
+            rule_type="sender_address",
+            condition={"address": endpoint},
+            action="route_to:lifestyle",
+            created_by="promotion",
+            promoted_from_suggestion_id="suggestion-calendar",
+        )
+    ]
+
+    decision = evaluator.evaluate(
+        IngestionEnvelope(source_channel="calendar", source_endpoint_identity=endpoint)
+    )
+    assert decision.action == "route_to"
+    assert decision.target_butler == "lifestyle"
 
 
 def test_latest_same_priority_legacy_endpoint_promotion_wins() -> None:

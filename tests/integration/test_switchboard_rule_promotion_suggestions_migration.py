@@ -717,3 +717,54 @@ def test_downgrade_drops_table_indexes_and_ingestion_rules_column(
         ).fetchall()
     engine.dispose()
     assert len(rows) == 0
+
+
+def test_source_endpoint_rows_block_data_losing_downgrade_to_sw_028(
+    postgres_container,
+) -> None:
+    """The source-endpoint migration must refuse to erase a live suggestion."""
+    from butlers.migrations import _build_alembic_config
+
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+    )
+    suggestion_id = uuid.uuid4()
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO switchboard.rule_promotion_suggestions
+                        (id, suggestion_kind, sender_key, source_channel,
+                         proposed_rule_type, proposed_condition, proposed_action,
+                         evidence_count, first_evidence_at, last_evidence_at, status)
+                    VALUES
+                        (:id, 'promotion', 'spotify:tzeusii', 'music',
+                         'source_endpoint', '{"endpoint_identity":"spotify:tzeusii"}'::jsonb,
+                         'route_to:lifestyle', 3, now() - interval '2 days', now(),
+                         'pending_review')
+                    """
+                ),
+                {"id": suggestion_id},
+            )
+
+        config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
+        with pytest.raises(Exception):
+            command.downgrade(config, "switchboard@sw_028")
+
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT proposed_rule_type FROM switchboard.rule_promotion_suggestions "
+                    "WHERE id = :id"
+                ),
+                {"id": suggestion_id},
+            ).one()
+    finally:
+        engine.dispose()
+
+    assert row[0] == "source_endpoint"

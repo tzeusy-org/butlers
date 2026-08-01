@@ -31,7 +31,10 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.switchboard.routing.rule_promotion import parse_proposed_action
+from butlers.tools.switchboard.routing.rule_promotion import (
+    acquire_promotion_identity_lock,
+    parse_proposed_action,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +120,25 @@ async def mint_rule_from_suggestion(
     Returns the created ``ingestion_rules`` row (for the API response / audit).
     """
     async with pool.acquire() as conn, conn.transaction():
+        identity = await conn.fetchrow(
+            """
+            SELECT sender_key, source_channel
+            FROM switchboard.rule_promotion_suggestions
+            WHERE id = $1
+            """,
+            suggestion_id,
+        )
+        if identity is None:
+            raise SuggestionNotApplicable("suggestion not found", status_code=404)
+        if identity["sender_key"] is not None and identity["source_channel"] is not None:
+            # The trigger takes this same lock before its final fresh coverage
+            # read and suggestion insert. Acquire it *before* row locking so
+            # neither side can deadlock waiting on the other's lock.
+            await acquire_promotion_identity_lock(
+                conn,
+                sender_key=str(identity["sender_key"]),
+                source_channel=str(identity["source_channel"]),
+            )
         suggestion = await conn.fetchrow(
             """
             SELECT id, suggestion_kind, proposed_rule_type, proposed_condition,

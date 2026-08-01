@@ -92,7 +92,11 @@ The entity-dedup curation job SHALL preserve the approval lifecycle for each
 exact ordered `(source_entity_id, target_entity_id)` pair. It MUST never merge
 or retry a pair itself. Before proposing a new `memory_entity_merge` action,
 it MUST recognize both the canonical and legacy `entity_merge` tool names with
-status `pending`, `approved`, or `rejected` for that same ordered pair.
+status `pending`, `approved`, or `rejected` for that same ordered pair. It MUST
+choose the canonical target deterministically by `(created_at, id) ASC` and
+park every new pair with the stable
+`relationship:entity-dedup:<source>:<target>` `deduplication_key`, so database
+uniqueness protects concurrent curation runs as well as sequential scans.
 
 #### Scenario: Rejected pair is not proposed again
 
@@ -113,6 +117,19 @@ status `pending`, `approved`, or `rejected` for that same ordered pair.
 - **WHEN** a matching ordered pair has only expired entity-merge actions
 - **THEN** the curation job MAY surface a new approval because expiry is not an
   owner decision
+
+#### Scenario: Concurrent scans surface one merge approval
+
+- **WHEN** two curation runs discover the same ordered entity pair at once
+- **THEN** the stable `deduplication_key` MUST permit only one active or
+  owner-decided action and only its successful insert may surface an owner
+  insight or push notification
+
+#### Scenario: Equal creation times choose a stable merge direction
+
+- **WHEN** duplicate entities have the same `created_at` timestamp
+- **THEN** the lower UUID in `(created_at, id) ASC` order MUST remain the
+  target consistently across scans
 
 ### Requirement: Auto-applied changes are reversible
 

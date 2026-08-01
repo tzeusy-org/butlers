@@ -15,6 +15,7 @@ which a mocked-pool unit test cannot catch.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -23,8 +24,10 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec
+from butlers.ingestion_policy import IngestionPolicyEvaluator
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.routing.rule_promotion import run_rule_promotion_trigger
+from butlers.tools.switchboard.routing.rule_promotion_apply import apply_suggestion
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -263,6 +266,115 @@ async def test_opaque_endpoint_pattern_proposes_source_endpoint_rule(pool: async
     assert row["proposed_action"] == "route_to:lifestyle"
 
 
+async def test_endpoint_with_at_sign_proposes_and_is_suppressed_as_a_source_endpoint(
+    pool: asyncpg.Pool,
+) -> None:
+    """Opaque endpoint identities must not be collapsed to email-shaped suffixes."""
+    sender_key = "google_calendar:user:owner@example.com"
+    base = _now() - timedelta(days=3)
+    await _seed_evidence(
+        pool,
+        sender_key=sender_key,
+        source_channel="calendar",
+        timestamps=[base, base + timedelta(days=1), base + timedelta(days=2)],
+        verdict_action="route_to",
+        verdict_target="lifestyle",
+    )
+
+    created = await run_rule_promotion_trigger(pool)
+    assert created["suggestions_created"] == 1
+    suggestion = await pool.fetchrow(
+        "SELECT id, proposed_rule_type, proposed_condition "
+        "FROM rule_promotion_suggestions WHERE sender_key = $1",
+        sender_key,
+    )
+    assert suggestion is not None
+    assert suggestion["proposed_rule_type"] == "source_endpoint"
+    assert suggestion["proposed_condition"] == {"endpoint_identity": sender_key}
+
+    await pool.execute(
+        "UPDATE rule_promotion_suggestions SET status = 'confirmed' WHERE id = $1",
+        suggestion["id"],
+    )
+    rule_id = await _insert_enabled_rule(
+        pool,
+        rule_type="source_endpoint",
+        condition={"endpoint_identity": sender_key},
+        action="route_to:lifestyle",
+        priority=10,
+    )
+
+    suppressed = await run_rule_promotion_trigger(pool)
+    assert suppressed["skipped_existing_rule"] >= 1
+    assert (
+        await pool.fetchval(
+            "SELECT COUNT(*) FROM rule_promotion_suggestions "
+            "WHERE sender_key = $1 AND status = 'pending_review'",
+            sender_key,
+        )
+        == 0
+    )
+
+    await pool.execute("DELETE FROM routing_verdict_log WHERE sender_key = $1", sender_key)
+    await pool.execute("DELETE FROM ingestion_rules WHERE id = $1", rule_id)
+
+
+async def test_confirmation_after_initial_rule_load_does_not_recreate_a_pending_suggestion(
+    pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The final coverage check must not use a trigger-start cache snapshot."""
+    sender_key = "race-confirm@already-covered.com"
+    base = _now() - timedelta(days=3)
+    await pool.execute(
+        "INSERT INTO butler_registry (name, endpoint_url) VALUES ('finance', 'http://localhost:1') "
+        "ON CONFLICT (name) DO NOTHING"
+    )
+    await _seed_evidence(
+        pool,
+        sender_key=sender_key,
+        source_channel="email",
+        timestamps=[base, base + timedelta(days=1), base + timedelta(days=2)],
+    )
+    initial = await run_rule_promotion_trigger(pool)
+    assert initial["suggestions_created"] == 1
+    suggestion_id = await pool.fetchval(
+        "SELECT id FROM rule_promotion_suggestions "
+        "WHERE sender_key = $1 AND status = 'pending_review'",
+        sender_key,
+    )
+    assert suggestion_id is not None
+
+    initial_load_complete = asyncio.Event()
+    continue_trigger = asyncio.Event()
+    original_ensure_loaded = IngestionPolicyEvaluator.ensure_loaded
+
+    async def _pause_after_trigger_start_load(self):
+        await original_ensure_loaded(self)
+        if self._db_pool is pool:
+            initial_load_complete.set()
+            await continue_trigger.wait()
+
+    monkeypatch.setattr(IngestionPolicyEvaluator, "ensure_loaded", _pause_after_trigger_start_load)
+    trigger_task = asyncio.create_task(run_rule_promotion_trigger(pool))
+    await asyncio.wait_for(initial_load_complete.wait(), timeout=5)
+
+    await apply_suggestion(pool, suggestion_id, decided_by="owner")
+    continue_trigger.set()
+    result = await asyncio.wait_for(trigger_task, timeout=10)
+
+    assert result["suggestions_created"] == 0
+    assert result["skipped_existing_rule"] >= 1
+    assert (
+        await pool.fetchval(
+            "SELECT COUNT(*) FROM rule_promotion_suggestions "
+            "WHERE sender_key = $1 AND status = 'pending_review'",
+            sender_key,
+        )
+        == 0
+    )
+
+
 async def test_existing_source_endpoint_rule_suppresses_reproposal(pool: asyncpg.Pool) -> None:
     """Coverage evaluates endpoint rules with the same identity used for promotion."""
     sender_key = "steam:user:76561198037633688"
@@ -285,7 +397,9 @@ async def test_existing_source_endpoint_rule_suppresses_reproposal(pool: asyncpg
 
     result = await run_rule_promotion_trigger(pool)
 
-    assert result["skipped_existing_rule"] == 1
+    # This integration module shares a migrated DB; other independently
+    # covered candidates can be reconciled in the same scan.
+    assert result["skipped_existing_rule"] >= 1
     assert result["suggestions_created"] == 0
     # This module intentionally shares one migrated DB across scenarios. Keep
     # the proof evidence/rule from contributing a new candidate or coverage
@@ -377,7 +491,7 @@ async def test_existing_enabled_rule_suppresses_re_proposal(pool: asyncpg.Pool) 
 
     result = await run_rule_promotion_trigger(pool)
 
-    assert result["skipped_existing_rule"] == 1
+    assert result["skipped_existing_rule"] >= 1
     assert result["suggestions_created"] == 0
     row = await pool.fetchrow(
         "SELECT 1 FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key

@@ -152,11 +152,12 @@ The evaluator SHALL accept an `IngestionEnvelope` dataclass that carries all fie
 
 - `sender_address: str` -- normalized email or empty string
 - `source_channel: str` -- `"email"`, `"telegram"`, `"discord"`
-- `source_endpoint_identity: str` -- normalized stable connector account/device identity, or empty string
 - `headers: dict[str, str]` -- email headers with case-insensitive keys; empty dict for non-email
 - `mime_parts: list[str]` -- MIME type strings; empty list for non-email
 - `thread_id: str | None` -- external thread identity
 - `raw_key: str` -- raw opaque key for substring/chat_id/channel_id matching
+- `labels: list[str]` -- channel-native labels, or an empty list
+- `source_endpoint_identity: str` -- normalized stable connector account/device identity, or empty string; it is appended after the original dataclass fields so positional callers retain their bindings
 
 Connectors populate only the fields relevant to their channel. The evaluator extracts the appropriate key per rule's `rule_type` internally.
 
@@ -174,6 +175,15 @@ Connectors populate only the fields relevant to their channel. The evaluator ext
 - **THEN** `raw_key` contains the envelope's `event.external_event_id` (e.g. `"steam:status:<steam_id>:<poll_ts>"`, `"steam:play:..."`)
 - **AND** because Steam's `external_event_id` is prefixed with a stable per-event-type marker, a `substring` rule can target one gaming event type (e.g. Steam presence `status_change`) without matching the channel's other event types (play_session, achievement_unlock, game_purchase, friend_change)
 - **NOTE**: the `ingest.v1` wire contract's `event` section is `extra="forbid"`, so connectors cannot submit a distinct event-type field directly; `external_event_id` is the only wire-safe per-event-type discriminator available today
+
+#### Scenario: Endpoint with email-shaped suffix is not an email sender
+
+- **WHEN** a non-email envelope has
+  `source_endpoint_identity='google_calendar:user:owner@example.com'`
+- **THEN** an exact `source_endpoint` condition MUST compare the complete
+  endpoint identity
+- **AND** policy/promotion code MUST NOT treat the suffix as a
+  `sender_address`
 
 ### Requirement: PolicyDecision
 

@@ -490,6 +490,48 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["verdict_target"] == "finance"
         assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
 
+    async def test_non_email_route_records_the_wire_endpoint_identity(self):
+        """Opaque endpoints must remain identical to policy-rule keys."""
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                new_callable=AsyncMock,
+                return_value={"status": "ok"},
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+        ):
+            await pipeline.process(
+                "Listening summary",
+                tool_args={
+                    "source_channel": "spotify_user_client",
+                    # The connector's ingest.v1 wire identity, used by
+                    # source_endpoint policy rules.
+                    "source_identity": "spotify:tzeusii",
+                    # Internal request context may namespace it further;
+                    # promotion evidence deliberately keeps the wire key.
+                    "source_endpoint_identity": "spotify_user_client:spotify:tzeusii",
+                    "request_context": {
+                        "triage_decision": "route_to",
+                        "triage_target": "lifestyle",
+                        "triage_rule_type": "source_endpoint",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000010",
+            )
+
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["sender_identity"] == "spotify:tzeusii"
+        assert kwargs["source_channel"] == "spotify_user_client"
+
     async def test_pinned_target_bypass_records_pinned_verdict_with_no_rule_id(self):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
@@ -668,7 +710,11 @@ class TestMessagePipelineRoutingVerdictLog:
         ) as mock_record:
             result = await pipeline.process(
                 "I have a headache",
-                tool_args={"source_identity": "someone@example.com"},
+                tool_args={
+                    "source_channel": "email",
+                    "source_identity": "gmail:tzeusii",
+                    "request_context": {"source_sender_identity": "billing@chase.com"},
+                },
                 message_inbox_id="00000000-0000-0000-0000-000000000007",
             )
 
@@ -676,7 +722,8 @@ class TestMessagePipelineRoutingVerdictLog:
         mock_record.assert_awaited_once()
         kwargs = mock_record.await_args.kwargs
         assert kwargs["ingestion_event_id"] == "00000000-0000-0000-0000-000000000007"
-        assert kwargs["sender_identity"] == "someone@example.com"
+        assert kwargs["sender_identity"] == "billing@chase.com"
+        assert kwargs["source_channel"] == "email"
         assert kwargs["verdict_source"] == "llm"
         assert kwargs["verdict_action"] == "route_to"
         assert kwargs["verdict_target"] == "health"

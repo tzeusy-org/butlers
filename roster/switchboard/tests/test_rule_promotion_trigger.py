@@ -40,15 +40,22 @@ def _ts(*, day: int, hour: int = 12, minute: int = 0) -> datetime:
 
 class TestProposedRuleIdentity:
     def test_email_sender_key_proposes_email_matcher(self) -> None:
-        assert proposed_rule_for_sender_key("billing@example.com") == (
+        assert proposed_rule_for_sender_key("billing@example.com", source_channel="email") == (
             "sender_address",
             {"address": "billing@example.com"},
         )
 
     def test_opaque_connector_identity_proposes_source_endpoint_matcher(self) -> None:
-        assert proposed_rule_for_sender_key("spotify:tzeusii") == (
+        assert proposed_rule_for_sender_key("spotify:tzeusii", source_channel="music") == (
             "source_endpoint",
             {"endpoint_identity": "spotify:tzeusii"},
+        )
+
+    def test_non_email_endpoint_containing_at_sign_proposes_source_endpoint_matcher(self) -> None:
+        endpoint = "google_calendar:user:owner@example.com"
+        assert proposed_rule_for_sender_key(endpoint, source_channel="calendar") == (
+            "source_endpoint",
+            {"endpoint_identity": endpoint},
         )
 
 

@@ -362,7 +362,7 @@ class MimeTypeCondition(BaseModel):
         return v
 
 
-# All 7 rule types supported by the unified ingestion_rules table (design.md D7)
+# Rule types that the dashboard create/update API accepts (design.md D7).
 INGESTION_RULE_TYPES = frozenset(
     {
         "sender_domain",

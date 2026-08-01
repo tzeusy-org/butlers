@@ -18,8 +18,11 @@ This file covers:
 
 from __future__ import annotations
 
+import asyncio
 import shutil
+import sys
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -33,6 +36,8 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     _levenshtein,
     run_entity_dedup_curation,
 )
+
+relationship_jobs = sys.modules["butlers.jobs._roster.relationship_jobs"]
 
 # ---------------------------------------------------------------------------
 # Skip if Docker unavailable
@@ -79,7 +84,8 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     why          TEXT,
     evidence     JSONB       NOT NULL DEFAULT '[]'::jsonb,
     blast_radius TEXT,
-    reversibility TEXT
+    reversibility TEXT,
+    deduplication_key TEXT
 )
 """
 
@@ -97,6 +103,13 @@ async def _setup_schema(pool: asyncpg.Pool) -> None:
     """Create the minimal schema needed by run_entity_dedup_curation tests."""
     await pool.execute(_CREATE_ENTITIES_SQL)
     await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
+    await pool.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS "
+        "ux_pending_actions_active_deduplication_key "
+        "ON pending_actions (deduplication_key) "
+        "WHERE deduplication_key IS NOT NULL "
+        "AND status IN ('pending', 'approved', 'rejected')"
+    )
     await pool.execute(_CREATE_STATE_SQL)
 
 
@@ -415,6 +428,67 @@ async def test_entity_dedup_second_run_skips_existing_pending(
     # Still only one pending_actions row
     count = await _count_pending_for_pair(pool, source, target)
     assert count == 1
+
+
+async def test_entity_dedup_concurrent_runs_create_one_pending_action_and_one_insight(
+    pool: asyncpg.Pool,
+    mock_propose_insight,
+):
+    """Concurrent manual runs must not create duplicate review cards or pushes."""
+    target = await _make_entity(pool, name="Concurrent Chloe")
+    source = await _make_entity(pool, name="Concurrent Chloe")
+    real_park = relationship_jobs.park_pending_action
+    both_runs_reached_park = asyncio.Event()
+    arrivals = 0
+    arrivals_lock = asyncio.Lock()
+
+    async def _synchronized_park(*args, **kwargs):
+        nonlocal arrivals
+        async with arrivals_lock:
+            arrivals += 1
+            if arrivals == 2:
+                both_runs_reached_park.set()
+        await asyncio.wait_for(both_runs_reached_park.wait(), timeout=5)
+        return await real_park(*args, **kwargs)
+
+    with patch.object(relationship_jobs, "park_pending_action", new=_synchronized_park):
+        first, second = await asyncio.gather(
+            run_entity_dedup_curation(pool),
+            run_entity_dedup_curation(pool),
+        )
+
+    assert first["errors"] == 0
+    assert second["errors"] == 0
+    assert first["pairs_surfaced"] + second["pairs_surfaced"] == 1
+    assert first["pairs_skipped_already_pending"] + second["pairs_skipped_already_pending"] == 1
+    assert await _count_pending_for_pair(pool, source, target) == 1
+    assert mock_propose_insight.await_count == 1
+
+
+async def test_entity_dedup_equal_created_at_uses_id_for_stable_merge_direction(
+    pool: asyncpg.Pool,
+    mock_propose_insight,
+):
+    """Equal timestamps must not flip the ordered source/target pair across runs."""
+    target = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source = uuid.UUID("00000000-0000-0000-0000-000000000002")
+    shared_created_at = datetime(2026, 8, 1, tzinfo=UTC)
+
+    # Insert the future source first to prove physical insertion order is not
+    # the merge-direction tie-breaker.
+    for entity_id in (source, target):
+        await pool.execute(
+            "INSERT INTO public.entities "
+            "(id, canonical_name, name, entity_type, roles, metadata, created_at) "
+            "VALUES ($1, 'Same Timestamp', 'Same Timestamp', 'person', '{}', '{}', $2)",
+            entity_id,
+            shared_created_at,
+        )
+
+    result = await run_entity_dedup_curation(pool)
+
+    assert result["pairs_surfaced"] == 1
+    assert await _count_pending_for_pair(pool, source, target) == 1
 
 
 async def test_entity_dedup_legacy_pending_action_suppresses_canonical_duplicate(

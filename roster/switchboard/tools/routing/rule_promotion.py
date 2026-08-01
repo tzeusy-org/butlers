@@ -138,18 +138,48 @@ _NO_RULE_EQUIVALENT_ACTIONS = frozenset({"pass_through", "block"})
 # ---------------------------------------------------------------------------
 
 
-def proposed_rule_for_sender_key(sender_key: str) -> tuple[str, dict[str, str]]:
+def proposed_rule_for_sender_key(
+    sender_key: str,
+    *,
+    source_channel: str,
+) -> tuple[str, dict[str, str]]:
     """Return the exact rule shape that can cover a mined verdict identity.
 
-    ``routing_verdict_log.sender_key`` is multi-channel. Email keys are
-    matched against the envelope sender; opaque connector keys are matched
-    against the stable source endpoint. Keeping this decision here makes the
+    ``routing_verdict_log.sender_key`` is multi-channel. Only the email
+    channel may promote an address-shaped value to ``sender_address``; opaque
+    connector identities can legitimately contain ``@`` and must retain their
+    full stable endpoint identity. Keeping this decision here makes the
     suggested condition and coverage recheck share one contract.
     """
     normalized = sender_key.strip().lower()
-    if is_email_sender_key(normalized):
+    if source_channel.strip().lower() == "email" and is_email_sender_key(normalized):
         return "sender_address", {"address": normalized}
     return "source_endpoint", {"endpoint_identity": normalized}
+
+
+def promotion_identity_lock_key(*, sender_key: str, source_channel: str) -> str:
+    """Return an unambiguous transaction-lock key for one promotion identity."""
+    return json.dumps(
+        [
+            "switchboard:rule-promotion",
+            source_channel.strip().lower(),
+            sender_key.strip().lower(),
+        ],
+        separators=(",", ":"),
+    )
+
+
+async def acquire_promotion_identity_lock(
+    conn: Any,
+    *,
+    sender_key: str,
+    source_channel: str,
+) -> None:
+    """Serialize lifecycle mutations for one sender/channel promotion identity."""
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        promotion_identity_lock_key(sender_key=sender_key, source_channel=source_channel),
+    )
 
 
 def as_utc(ts: datetime) -> datetime:
@@ -606,7 +636,10 @@ async def _evaluate_active_rule_coverage(
     semantics that prevent a new suggestion from being proposed.
     """
     evidence_headers = await _fetch_evidence_headers(pool, evidence_rows)
-    proposed_rule_type, _ = proposed_rule_for_sender_key(sender_key)
+    proposed_rule_type, _ = proposed_rule_for_sender_key(
+        sender_key,
+        source_channel=source_channel,
+    )
     coverage_envelope = IngestionEnvelope(
         sender_address=sender_key if proposed_rule_type == "sender_address" else "",
         source_channel=source_channel,
@@ -740,7 +773,10 @@ async def _process_candidate(
     is_automated = compute_is_clearly_automated(sender_key, evidence_headers)
     utc_timestamps = [as_utc(ts) for ts in timestamps]
 
-    proposed_rule_type, proposed_condition = proposed_rule_for_sender_key(sender_key)
+    proposed_rule_type, proposed_condition = proposed_rule_for_sender_key(
+        sender_key,
+        source_channel=source_channel,
+    )
     created_id = await _insert_suggestion(
         pool,
         sender_key=sender_key,
@@ -756,6 +792,61 @@ async def _process_candidate(
     if created_id is None:
         return "skipped_race_conflict"
     return "suggestions_created"
+
+
+async def _process_candidate_with_current_coverage(
+    pool: asyncpg.Pool,
+    evaluator: _CoverageEvaluator,
+    *,
+    sender_key: str,
+    source_channel: str,
+    threshold: int,
+    min_distinct_days: int,
+    min_elapsed: timedelta,
+) -> str:
+    """Process a production candidate under its lifecycle identity lock.
+
+    A trigger's process-wide evaluator is intentionally cached for ordinary
+    routing, but a promotion proposal is a state mutation: it must re-read
+    rules after taking the same lock used by confirmation. That prevents a
+    confirmation which races a periodic scan from becoming a fresh card.
+
+    Injected fake evaluators retain the lightweight unit-test seam; production
+    always uses :class:`IngestionPolicyEvaluator` and therefore takes this
+    database-backed path.
+    """
+    if not isinstance(evaluator, IngestionPolicyEvaluator):
+        return await _process_candidate(
+            pool,
+            evaluator,
+            sender_key=sender_key,
+            source_channel=source_channel,
+            threshold=threshold,
+            min_distinct_days=min_distinct_days,
+            min_elapsed=min_elapsed,
+        )
+
+    async with pool.acquire() as conn, conn.transaction():
+        await acquire_promotion_identity_lock(
+            conn,
+            sender_key=sender_key,
+            source_channel=source_channel,
+        )
+        current_evaluator = IngestionPolicyEvaluator(
+            scope="global",
+            db_pool=conn,
+            refresh_interval_s=3600,
+        )
+        await current_evaluator.ensure_loaded()
+        return await _process_candidate(
+            conn,
+            current_evaluator,
+            sender_key=sender_key,
+            source_channel=source_channel,
+            threshold=threshold,
+            min_distinct_days=min_distinct_days,
+            min_elapsed=min_elapsed,
+        )
 
 
 async def run_rule_promotion_trigger(
@@ -790,7 +881,7 @@ async def run_rule_promotion_trigger(
         if not sender_key or not source_channel:
             continue
         try:
-            outcome = await _process_candidate(
+            outcome = await _process_candidate_with_current_coverage(
                 pool,
                 evaluator,
                 sender_key=sender_key,
