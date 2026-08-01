@@ -197,16 +197,17 @@ export default function ChroniclesPage() {
   const fetchDate = clampIsoDay(requestedDate, undefined, latest);
   const selectedDate = fetchDate;
 
-  const { data, isFetching, isError, refetch } = useChroniclesBriefing({
+  const { data, isFetching, isError, isPlaceholderData, refetch } = useChroniclesBriefing({
     date: fetchDate,
     tz: ownerTz,
   });
 
-  // TanStack Query retains placeholder data across the date-key change. That
-  // response belongs to the previous day, so it cannot establish an archive
-  // boundary or render any editorial surface for the newly selected URL date.
-  // Treat a mismatched response as pending until the requested day arrives.
-  const briefing = data?.date === selectedDate ? data : undefined;
+  // TanStack Query retains placeholder data across a query-key change. A
+  // same-date placeholder can still come from a different owner timezone, so
+  // its date alone cannot establish the archive boundary or editorial content
+  // for this request. Treat all placeholder data as pending until the requested
+  // key resolves with real data.
+  const briefing = !isPlaceholderData && data?.date === selectedDate ? data : undefined;
 
   // earliest_date arrives with every briefing (it is a global minimum,
   // independent of the requested day). It gates only *additional* backward

@@ -30,7 +30,7 @@ export const chroniclesBriefingKeys = {
 
 export function useChroniclesBriefing(args: UseChroniclesBriefingArgs = {}) {
   const { date, tz } = args;
-  return useQuery<ChroniclesBriefing>({
+  const query = useQuery<ChroniclesBriefing>({
     queryKey: chroniclesBriefingKeys.byDate(date, tz),
     queryFn: () => getChroniclesBriefing({ date, tz }),
     // The archive shows only settled past days, which never change, so the
@@ -40,11 +40,19 @@ export function useChroniclesBriefing(args: UseChroniclesBriefingArgs = {}) {
     staleTime: THIRTY_SECONDS_MS,
     refetchInterval: false,
     refetchOnWindowFocus: false,
-    // The query key is keyed by `date`, so every day-step is a new cache entry.
-    // Retaining previous data avoids a query-level gap, while ChroniclesPage
-    // verifies its response date before rendering it. A cross-date placeholder
-    // therefore becomes that page's safe loading state, never prose for the
-    // newly selected day.
+    // The query key includes `date` and `tz`, so every day-step or timezone
+    // transition is a new cache entry. Retaining previous data avoids a
+    // query-level gap, while ChroniclesPage rejects all placeholder data before
+    // rendering it. A cross-key placeholder therefore becomes that page's safe
+    // loading state, never prose for the newly selected day or timezone.
     placeholderData: (previousData) => previousData,
   });
+
+  return {
+    data: query.data,
+    isError: query.isError,
+    isFetching: query.isFetching,
+    isPlaceholderData: query.isPlaceholderData,
+    refetch: query.refetch,
+  };
 }

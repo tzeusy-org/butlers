@@ -32,16 +32,18 @@ import type { ChroniclesBriefing } from "@/api/types";
 // ---------------------------------------------------------------------------
 
 vi.mock("@/components/ui/timezone-context", () => ({
-  useTimezone: () => "Asia/Singapore",
+  useTimezone: () => _timezone,
 }));
 
 let _briefing: ChroniclesBriefing | undefined;
 let _briefingArgs: { date?: string; tz?: string } | undefined;
 let _isFetching = false;
 let _isError = false;
+let _isPlaceholderData = false;
 let _refetch = vi.fn();
 let _drilldownArgs: { date: string; tz: string } | undefined;
 let _navigate: ((to: string) => void) | undefined;
+let _timezone = "Asia/Singapore";
 
 vi.mock("@/hooks/use-chronicles-briefing", () => ({
   useChroniclesBriefing: (args: { date?: string; tz?: string } = {}) => {
@@ -50,6 +52,7 @@ vi.mock("@/hooks/use-chronicles-briefing", () => ({
       data: _briefing,
       isFetching: _isFetching,
       isError: _isError,
+      isPlaceholderData: _isPlaceholderData,
       refetch: _refetch,
     };
   },
@@ -170,9 +173,11 @@ describe("ChroniclesPage editorial archetype", () => {
     _briefingArgs = undefined;
     _isFetching = false;
     _isError = false;
+    _isPlaceholderData = false;
     _refetch = vi.fn();
     _drilldownArgs = undefined;
     _navigate = undefined;
+    _timezone = "Asia/Singapore";
   });
 
   afterEach(() => {
@@ -404,6 +409,54 @@ describe("ChroniclesPage editorial archetype", () => {
       expect(
         container.querySelector('[aria-label="Day-close summary may be out of date"]'),
       ).toBeNull();
+      expect(container.textContent).not.toContain("Chronicles drilldown stub");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("treats same-date cross-timezone placeholder data as loading", () => {
+    // Both owner timezones resolve this instant to the same settled local day.
+    // The query key still changes because the coverage witness and day-close
+    // prose are timezone-specific.
+    vi.setSystemTime(new Date("2026-05-09T12:00:00.000Z"));
+    _briefing = buildBriefing({
+      date: "2026-05-08",
+      headline: "Singapore headline that must not leak.",
+      voice_paragraph: "Singapore prose that must not leak.",
+      attention_items: [
+        {
+          kind: "source_error",
+          severity: "high",
+          title: "Singapore coverage that must not leak.",
+          detail: "Timezone-specific archive coverage.",
+          action_href: null,
+        },
+      ],
+    });
+
+    const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+    try {
+      expect(container.textContent).toContain("Singapore headline that must not leak.");
+      expect(container.textContent).toContain("Singapore prose that must not leak.");
+      expect(container.textContent).toContain("Singapore coverage that must not leak.");
+      expect(container.textContent).toContain("2.4h");
+      expect(container.querySelector('[aria-label="Previous day"]')).toBeTruthy();
+      expect(container.querySelector('[aria-label="Next day"]')).toBeTruthy();
+
+      _timezone = "America/Los_Angeles";
+      _isFetching = true;
+      _isPlaceholderData = true;
+      navigate("/chronicles?date=2026-05-08&timezone-transition=1");
+
+      expect(_briefingArgs).toEqual({ date: "2026-05-08", tz: "America/Los_Angeles" });
+      expect(container.querySelector('[data-testid="workspace-skeleton"]')).toBeTruthy();
+      expect(container.textContent).not.toContain("Singapore headline that must not leak.");
+      expect(container.textContent).not.toContain("Singapore prose that must not leak.");
+      expect(container.textContent).not.toContain("Singapore coverage that must not leak.");
+      expect(container.textContent).not.toContain("2.4h");
+      expect(container.querySelector('[aria-label="Previous day"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Next day"]')).toBeNull();
       expect(container.textContent).not.toContain("Chronicles drilldown stub");
     } finally {
       unmount();
