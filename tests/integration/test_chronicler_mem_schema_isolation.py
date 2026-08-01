@@ -22,15 +22,19 @@ with the memory chain targeted at ``chronicler_mem`` (exactly what
 from __future__ import annotations
 
 import shutil
+import uuid
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import urlparse
 
 import asyncpg
+import httpx
 import pytest
 from sqlalchemy import create_engine, text
 
+from butlers.api.app import create_app
+from butlers.api.routers.memory import _get_db_manager
 from butlers.background import dispatch_scheduled_task
 from butlers.db import Database, register_jsonb_codec
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
@@ -53,6 +57,24 @@ _MEMORY_TABLES = {
     "memory_events",
 }
 _MEMORY_ONLY_TABLES = {"episode_tombstones", "facts", "rules", "memory_links", "memory_events"}
+
+
+class _SchemaAwareSinglePoolDB:
+    """Dashboard reader double whose domain and memory schemas intentionally differ."""
+
+    butler_names = ["chronicler"]
+
+    def __init__(self, pool: object) -> None:
+        self._pool = pool
+
+    def pool(self, name: str) -> object:
+        if name != "chronicler":
+            raise KeyError(f"No pool for butler: {name}")
+        return self._pool
+
+    def memory_schema_for_butler(self, name: str) -> str:
+        assert name == "chronicler"
+        return "chronicler_mem"
 
 
 @pytest.fixture(scope="module")
@@ -180,6 +202,42 @@ async def test_fact_write_lands_in_chronicler_mem(isolated_db_url: str) -> None:
         # There is no chronicler.facts table for the write to have leaked into.
         chronicler_facts = await pool.fetchval("SELECT to_regclass('chronicler.facts')")
         assert chronicler_facts is None
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_memory_link_api_reads_chronicler_mem_not_domain_schema(isolated_db_url: str) -> None:
+    """The dashboard link reader pins generic provenance to the configured memory schema."""
+    pool = await asyncpg.create_pool(
+        isolated_db_url,
+        min_size=1,
+        max_size=1,
+        server_settings={"search_path": "chronicler,public"},
+        init=register_jsonb_codec,
+    )
+    source_id = uuid.uuid4()
+    episode_id = uuid.uuid4()
+    try:
+        await pool.execute(
+            "INSERT INTO chronicler_mem.memory_links "
+            "(source_type, source_id, target_type, target_id, relation) "
+            "VALUES ('fact', $1, 'episode', $2, 'derived_from')",
+            source_id,
+            episode_id,
+        )
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: _SchemaAwareSinglePoolDB(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/memory/links/fact/{source_id}")
+
+        assert response.status_code == 200
+        link = response.json()["data"][0]
+        assert link["target_id"] == str(episode_id)
+        assert link["target_episode_status"] == "unresolved"
+        assert "content" not in link
     finally:
         await pool.close()
 

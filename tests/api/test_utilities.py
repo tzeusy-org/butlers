@@ -150,7 +150,7 @@ class TestDatabaseAndDeps:
             call("shared-public", ("butler_secrets",), pool=shared_pool),
         ]
         assert manager.snapshot_memory_relation_presence.await_args_list == [
-            call("general", ("episodes", "facts", "rules", "episode_tombstones")),
+            call("general", ("episodes", "facts", "rules", "memory_links", "episode_tombstones")),
         ]
 
     def test_discover_butlers_retains_configured_memory_schema_override(self):

@@ -13,9 +13,11 @@ import shutil
 import uuid
 
 import asyncpg
+import httpx
 import pytest
 
-from butlers.api.routers.memory import list_facts, list_rules
+from butlers.api.app import create_app
+from butlers.api.routers.memory import _get_db_manager, list_facts, list_rules
 from butlers.db import register_jsonb_codec
 from butlers.migrations import run_migrations
 from butlers.modules.memory.storage import get_links
@@ -158,6 +160,16 @@ async def _delete_sourced_episode(db_url: str) -> dict[str, object]:
             episode_id,
         )
         links = await get_links(pool, "fact", fact_id)
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: api_db
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            expired_link_response = await client.get(f"/api/memory/links/fact/{fact_id}")
+            live_link_response = await client.get(f"/api/memory/links/rule/{live_rule_id}")
+            unresolved_link_response = await client.get(
+                f"/api/memory/links/fact/{unresolved_fact_id}"
+            )
         tombstone_columns = {
             row["column_name"]
             for row in await pool.fetch(
@@ -180,6 +192,9 @@ async def _delete_sourced_episode(db_url: str) -> dict[str, object]:
             },
             "live_source_links": live_source_links,
             "unresolved_source_links": unresolved_source_links,
+            "expired_link_response": expired_link_response,
+            "live_link_response": live_link_response,
+            "unresolved_link_response": unresolved_link_response,
         }
     finally:
         await pool.close()
@@ -226,6 +241,28 @@ def test_deleting_episode_preserves_content_free_durable_provenance(
     assert len(unresolved_source_links) == 1
     assert unresolved_source_links[0]["source_episode_status"] == "unresolved"
     assert unresolved_source_links[0]["target_episode_status"] is None
+
+    # The HTTP reader is the production contract: endpoint status remains visible
+    # after raw episode content has been deleted, with no tombstone details exposed.
+    for response, status_field, expected_status in (
+        (result["expired_link_response"], "target_episode_status", "expired"),
+        (result["live_link_response"], "source_episode_status", "available"),
+        (result["unresolved_link_response"], "source_episode_status", "unresolved"),
+    ):
+        assert response.status_code == 200
+        payload = response.json()
+        assert len(payload["data"]) == 1
+        assert payload["data"][0][status_field] == expected_status
+        assert set(payload["data"][0]) == {
+            "source_type",
+            "source_id",
+            "target_type",
+            "target_id",
+            "relation",
+            "created_at",
+            "source_episode_status",
+            "target_episode_status",
+        }
 
 
 def test_episode_delete_fails_without_its_tombstone_write(memory_migrated_db: str) -> None:

@@ -46,6 +46,7 @@ _OPTIONAL_MEMORY_RELATIONS_TO_SNAPSHOT = (
     "episodes",
     "facts",
     "rules",
+    "memory_links",
     "episode_tombstones",
 )
 

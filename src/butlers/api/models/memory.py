@@ -9,6 +9,7 @@ Provides models for the three-tier memory subsystem:
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +33,23 @@ class EpisodeSourceStatus(StrEnum):
     AVAILABLE = "available"
     EXPIRED = "expired"
     UNRESOLVED = "unresolved"
+
+
+class MemoryLink(BaseModel):
+    """A durable relation between two memory records.
+
+    Episode endpoints expose their bounded availability without returning a
+    deleted episode's content or tombstone details.
+    """
+
+    source_type: Literal["episode", "fact", "rule"]
+    source_id: str
+    target_type: Literal["episode", "fact", "rule"]
+    target_id: str
+    relation: str
+    created_at: str
+    source_episode_status: EpisodeSourceStatus | None = None
+    target_episode_status: EpisodeSourceStatus | None = None
 
 
 class Episode(BaseModel):

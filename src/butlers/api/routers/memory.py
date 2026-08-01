@@ -17,6 +17,7 @@ import re
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC
+from typing import Literal
 
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -38,6 +39,7 @@ from butlers.api.models.memory import (
     MemoryActivity,
     MemoryCatalogSearchResult,
     MemoryInspectResult,
+    MemoryLink,
     MemoryRetentionPolicy,
     MemoryStats,
     ReembedPendingCounts,
@@ -49,12 +51,13 @@ from butlers.api.models.memory import (
     UpdateRetentionPoliciesRequest,
 )
 from butlers.api.routers import audit as _audit
+from butlers.modules.memory.storage import get_links
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
-_MEMORY_SCHEMA_RELATIONS = ("episodes", "facts", "rules", "episode_tombstones")
+_MEMORY_SCHEMA_RELATIONS = ("episodes", "facts", "rules", "memory_links", "episode_tombstones")
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -305,6 +308,20 @@ def _parse_tags(value):
 def _sort_rows_by_created_at(rows: list[object]) -> list[object]:
     """Sort rows by created_at DESC."""
     return sorted(rows, key=lambda row: row["created_at"], reverse=True)
+
+
+def _row_to_memory_link(row: dict) -> MemoryLink:
+    """Convert a storage link row to the typed, content-free API projection."""
+    return MemoryLink(
+        source_type=row["source_type"],
+        source_id=str(row["source_id"]),
+        target_type=row["target_type"],
+        target_id=str(row["target_id"]),
+        relation=row["relation"],
+        created_at=str(row["created_at"]),
+        source_episode_status=row["source_episode_status"],
+        target_episode_status=row["target_episode_status"],
+    )
 
 
 async def _resolve_entity_names(db: DatabaseManager, facts: list[Fact]) -> list[Fact]:
@@ -736,6 +753,52 @@ async def get_episode(
         _raise_memory_detail_miss(resource="Episode", tracker=tracker)
 
     return ApiResponse[Episode](data=_row_to_episode(rows[0]))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/links/{memory_type}/{memory_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/links/{memory_type}/{memory_id}", response_model=ApiResponse[list[MemoryLink]])
+async def list_memory_links(
+    memory_type: Literal["episode", "fact", "rule"],
+    memory_id: _uuid.UUID,
+    direction: Literal["incoming", "outgoing", "both"] = Query("both"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[MemoryLink]]:
+    """Return content-free provenance links for one memory record.
+
+    A link endpoint that names an episode carries its typed availability state;
+    only an ``available`` endpoint is a live episode reference.
+    """
+
+    async def _query_pool(butler_name: str, pool: object) -> list[dict]:
+        return await get_links(
+            pool,
+            memory_type,
+            memory_id,
+            direction=direction,
+            memory_schema=_memory_source_schema(db, butler_name),
+        )
+
+    tracker = DegradedSources(logger)
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="memory_links",
+        query_fn=_query_pool,
+        tracker=tracker,
+    )
+    links = [link for pool_links in per_pool for link in pool_links]
+    links.sort(key=lambda link: link["created_at"], reverse=True)
+
+    meta_fields: dict[str, object] = {}
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    return ApiResponse[list[MemoryLink]](
+        data=[_row_to_memory_link(link) for link in links],
+        meta=ApiMeta(**meta_fields),
+    )
 
 
 # ---------------------------------------------------------------------------
