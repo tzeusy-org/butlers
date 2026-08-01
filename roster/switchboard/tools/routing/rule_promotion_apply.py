@@ -43,12 +43,12 @@ AUTO_APPLY_ACTIONS: frozenset[str] = frozenset({"skip", "metadata_only"})
 # owner-clicked confirm from the automated tier in the suggestion's audit trail.
 AUTO_APPLY_ACTOR = "auto:promotion"
 
-# Priority for a promoted rule. Promoted rules match one exact sender address
-# (proposed_condition = {"address": <full address>}), so they are specific and
-# should win over broad catch-all rules; this sits just below the priority-5
-# seed automated-sender rules (migration 003) — high enough precedence to take
-# effect, low enough not to jump ahead of the curated seeds. First-match-wins is
-# priority ASC, so a lower number is higher precedence.
+# Priority for a promoted rule. Promoted rules match one exact email sender or
+# connector endpoint, so they are specific and should win over broad catch-all
+# rules; this sits just below the priority-5 seed automated-sender rules
+# (migration 003) — high enough precedence to take effect, low enough not to
+# jump ahead of the curated seeds. First-match-wins is priority ASC, so a lower
+# number is higher precedence.
 PROMOTED_RULE_PRIORITY = 10
 
 
@@ -185,7 +185,12 @@ async def mint_rule_from_suggestion(
 def _condition_label(condition: Any) -> str:
     """Best-effort human label for a rule name (never raises)."""
     if isinstance(condition, dict):
-        return str(condition.get("address") or condition.get("domain") or condition)
+        return str(
+            condition.get("address")
+            or condition.get("domain")
+            or condition.get("endpoint_identity")
+            or condition
+        )
     return str(condition)
 
 

@@ -89,6 +89,16 @@ VALID_VERDICT_ACTIONS = frozenset({"route_to", "skip", "metadata_only", "pass_th
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[\w]+", re.ASCII)
 
 
+def is_email_sender_key(value: str | None) -> bool:
+    """Return whether a normalized verdict key is one complete email address.
+
+    Promotion runs after :func:`normalize_sender_key`, so it must distinguish
+    a real email key from opaque connector identities such as
+    ``spotify:tzeusii`` without applying email parsing to the latter.
+    """
+    return bool(_EMAIL_RE.fullmatch((value or "").strip()))
+
+
 def normalize_sender_key(raw: str | None) -> str:
     """Return a normalized, lowercase sender key for mining/grouping.
 

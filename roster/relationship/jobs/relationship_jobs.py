@@ -2941,11 +2941,14 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     :func:`~butlers.tools.switchboard.insight.broker.propose_insight_candidate`
     so the owner receives a Telegram notification.
 
-    **Dedup guard:** before inserting, the job checks whether a
-    ``status='pending'`` row already exists for the same ordered pair
-    (source, target). Both the canonical callable name and the historic
-    ``entity_merge`` name count during the bounded compatibility window, so a
-    deploy never creates a duplicate review item for an outstanding proposal.
+    **Dedup guard:** before inserting, the job checks whether a current
+    ``pending``, ``approved``, or ``rejected`` row already exists for the same
+    ordered pair (source, target). Both the canonical callable name and the
+    historic ``entity_merge`` name count during the bounded compatibility
+    window. An approval that awaits execution remains the one retryable
+    record; a rejection is a durable owner decision. The job does not mutate
+    or retry either historic action. Expired actions remain eligible for a
+    fresh review because expiry is not an owner decision.
 
     **Merge direction convention:** within each duplicate group, the entity
     with the highest ``created_at`` (newest) is the source (merged away) and
@@ -2962,6 +2965,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
           - near_identical_pairs_found: number of near-identical pairs detected.
           - pairs_surfaced: number of new pending_actions rows created.
           - pairs_skipped_already_pending: number of pairs skipped (action exists).
+          - pairs_skipped_prior_decision: number skipped by approved/rejected history.
           - errors: number of errors during processing.
     """
     from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -2974,6 +2978,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "near_identical_pairs_found": 0,
         "pairs_surfaced": 0,
         "pairs_skipped_already_pending": 0,
+        "pairs_skipped_prior_decision": 0,
         "errors": 0,
     }
 
@@ -3114,27 +3119,43 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     ) -> str:
         """Create or return existing pending_actions row for this dedup pair.
 
-        Returns 'new', 'existing', or 'error'.
+        Returns 'new', 'existing_pending', 'existing_decision', or 'error'.
         """
         source_id = source["id"]
         target_id = target["id"]
         try:
             async with db_pool.acquire() as conn:
-                # Dedup check: pending row already exists for this ordered pair?
-                existing = await conn.fetchval(
+                # Preserve owner decisions and an approved-but-unexecuted action
+                # for this exact merge direction. Do not turn those audit rows
+                # into fresh review cards or an implicit retry.
+                existing = await conn.fetchrow(
                     """
-                    SELECT id FROM pending_actions
+                    SELECT id, status FROM pending_actions
                      WHERE tool_name IN ('memory_entity_merge', 'entity_merge')
-                       AND status    = 'pending'
+                       AND status IN ('pending', 'approved', 'rejected')
                        AND (tool_args ->> 'source_entity_id') = $1
                        AND (tool_args ->> 'target_entity_id') = $2
+                     ORDER BY requested_at DESC, id DESC
                      LIMIT 1
                     """,
                     source_id,
                     target_id,
                 )
                 if existing is not None:
-                    return "existing"
+                    logger.info(
+                        "entity_dedup_curation: retaining existing action for pair %s → %s",
+                        source_id,
+                        target_id,
+                        extra={
+                            "existing_action_id": str(existing["id"]),
+                            "existing_action_status": str(existing["status"]),
+                        },
+                    )
+                    return (
+                        "existing_pending"
+                        if existing["status"] == "pending"
+                        else "existing_decision"
+                    )
 
                 action_id = uuid.uuid4()
                 pending_now = datetime.now(UTC)
@@ -3208,10 +3229,20 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
             stats["errors"] += 1
             continue
 
-        if outcome == "existing":
+        if outcome == "existing_pending":
             stats["pairs_skipped_already_pending"] += 1
             logger.debug(
                 "entity_dedup_curation: skipping pair %s → %s — pending_action already exists",
+                source["id"],
+                target["id"],
+            )
+            continue
+
+        if outcome == "existing_decision":
+            stats["pairs_skipped_prior_decision"] += 1
+            logger.info(
+                "entity_dedup_curation: skipping pair %s → %s — existing approved/rejected "
+                "pending_action preserves the owner decision or retry target",
                 source["id"],
                 target["id"],
             )
@@ -3270,12 +3301,13 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info(
         "entity_dedup_curation complete: "
         "entities_scanned=%d exact_groups=%d near_identical_pairs=%d "
-        "pairs_surfaced=%d skipped_already_pending=%d errors=%d",
+        "pairs_surfaced=%d skipped_already_pending=%d skipped_prior_decision=%d errors=%d",
         stats["entities_scanned"],
         stats["exact_groups_found"],
         stats["near_identical_pairs_found"],
         stats["pairs_surfaced"],
         stats["pairs_skipped_already_pending"],
+        stats["pairs_skipped_prior_decision"],
         stats["errors"],
     )
     return stats

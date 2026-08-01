@@ -236,6 +236,64 @@ async def test_eligible_pattern_creates_pending_suggestion(pool: asyncpg.Pool) -
     assert row["evidence_count"] == 3
 
 
+async def test_opaque_endpoint_pattern_proposes_source_endpoint_rule(pool: asyncpg.Pool) -> None:
+    """Opaque connector identities must not be stored as email-address rules."""
+    sender_key = "spotify:tzeusii"
+    base = _now() - timedelta(days=3)
+    await _seed_evidence(
+        pool,
+        sender_key=sender_key,
+        source_channel="music",
+        timestamps=[base, base + timedelta(days=1), base + timedelta(days=2)],
+        verdict_action="route_to",
+        verdict_target="lifestyle",
+    )
+
+    result = await run_rule_promotion_trigger(pool)
+
+    assert result["suggestions_created"] == 1
+    row = await pool.fetchrow(
+        "SELECT proposed_rule_type, proposed_condition, proposed_action "
+        "FROM rule_promotion_suggestions WHERE sender_key = $1",
+        sender_key,
+    )
+    assert row is not None
+    assert row["proposed_rule_type"] == "source_endpoint"
+    assert row["proposed_condition"] == {"endpoint_identity": sender_key}
+    assert row["proposed_action"] == "route_to:lifestyle"
+
+
+async def test_existing_source_endpoint_rule_suppresses_reproposal(pool: asyncpg.Pool) -> None:
+    """Coverage evaluates endpoint rules with the same identity used for promotion."""
+    sender_key = "steam:user:76561198037633688"
+    rule_id = await _insert_enabled_rule(
+        pool,
+        rule_type="source_endpoint",
+        condition={"endpoint_identity": sender_key},
+        action="route_to:lifestyle",
+        priority=10,
+    )
+    base = _now() - timedelta(days=3)
+    await _seed_evidence(
+        pool,
+        sender_key=sender_key,
+        source_channel="gaming",
+        timestamps=[base, base + timedelta(days=1), base + timedelta(days=2)],
+        verdict_action="route_to",
+        verdict_target="lifestyle",
+    )
+
+    result = await run_rule_promotion_trigger(pool)
+
+    assert result["skipped_existing_rule"] == 1
+    assert result["suggestions_created"] == 0
+    # This module intentionally shares one migrated DB across scenarios. Keep
+    # the proof evidence/rule from contributing a new candidate or coverage
+    # count to later tests.
+    await pool.execute("DELETE FROM routing_verdict_log WHERE sender_key = $1", sender_key)
+    await pool.execute("DELETE FROM ingestion_rules WHERE id = $1", rule_id)
+
+
 async def test_single_burst_evidence_does_not_create_suggestion(pool: asyncpg.Pool) -> None:
     """Scenario: 'Single-burst evidence does not trigger promotion'."""
     sender_key = "notifications@burst-same-day.com"

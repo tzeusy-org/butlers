@@ -74,6 +74,7 @@ _KNOWN_RULE_TYPES = frozenset(
         "channel_id",
         "mic_id",
         "source_channel",
+        "source_endpoint",
     }
 )
 
@@ -93,6 +94,9 @@ class IngestionEnvelope:
 
     source_channel: str = ""
     """Source channel identifier: 'email', 'telegram', 'discord', etc."""
+
+    source_endpoint_identity: str = ""
+    """Stable connector endpoint identity used by ``source_endpoint`` rules."""
 
     headers: dict[str, str] = field(default_factory=dict)
     """Email headers (case-insensitive keys). Empty for non-email channels."""
@@ -432,6 +436,46 @@ def _match_source_channel(envelope: IngestionEnvelope, condition: dict[str, Any]
     return envelope.source_channel == target
 
 
+def _match_source_endpoint(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
+    """Match an exact, normalized connector endpoint identity.
+
+    Condition schema: ``{"endpoint_identity": "spotify:tzeusii"}``.
+    Endpoint identities are normalized to lowercase at ingestion and rule
+    authoring boundaries; matching defensively normalizes both values so a
+    manually supplied sample envelope has the same behavior. Wildcards are
+    intentionally not supported: a standing endpoint promotion must stay
+    specific to one connector account/device.
+    """
+    target = str(condition.get("endpoint_identity", "")).strip().lower()
+    if not target:
+        return False
+    actual = envelope.source_endpoint_identity.strip().lower()
+    return bool(actual) and actual == target
+
+
+def _legacy_promoted_source_endpoint_key(rule: dict[str, Any]) -> str | None:
+    """Return an opaque legacy promotion endpoint, if this is that narrow shape.
+
+    Old promotion rows persisted opaque connector IDs inside a
+    ``sender_address`` condition. The row must carry both promotion markers so
+    manual email rules cannot acquire endpoint behavior merely by using a
+    non-email string.
+    """
+    if (
+        str(rule.get("rule_type", "")) != "sender_address"
+        or str(rule.get("created_by", "")) != "promotion"
+        or not rule.get("promoted_from_suggestion_id")
+    ):
+        return None
+    condition = rule.get("condition")
+    if not isinstance(condition, dict):
+        return None
+    address = str(condition.get("address", "")).strip()
+    if not address or address == "*" or _extract_emails(address):
+        return None
+    return address.lower()
+
+
 # Map rule_type → matcher function
 _MATCHERS: dict[str, Any] = {
     "sender_domain": _match_sender_domain,
@@ -444,6 +488,7 @@ _MATCHERS: dict[str, Any] = {
     "channel_id": _match_channel_id,
     "mic_id": _match_mic_id,
     "source_channel": _match_source_channel,
+    "source_endpoint": _match_source_endpoint,
 }
 
 
@@ -660,7 +705,18 @@ class IngestionPolicyEvaluator:
         self._maybe_schedule_refresh()
         t0 = time.perf_counter()
 
-        for rule in self._rules:
+        for index, rule in enumerate(self._rules):
+            legacy_endpoint = _legacy_promoted_source_endpoint_key(rule)
+            if legacy_endpoint is not None and any(
+                candidate.get("priority") == rule.get("priority")
+                and _legacy_promoted_source_endpoint_key(candidate) == legacy_endpoint
+                for candidate in self._rules[index + 1 :]
+            ):
+                # Every legacy duplicate is a separate audit record. Only the
+                # newest same-priority confirmation is effective so an older
+                # stale route cannot win merely because the original matcher
+                # never covered it and prompted again.
+                continue
             try:
                 matched = self._evaluate_single_rule(envelope, rule)
             except Exception:
@@ -746,6 +802,17 @@ class IngestionPolicyEvaluator:
         """Return True if the envelope matches this rule's condition."""
         rule_type = str(rule.get("rule_type", ""))
         condition = rule.get("condition") or {}
+
+        # Early promotion rows represented opaque connector identities as
+        # ``sender_address`` conditions. That matcher intentionally accepts
+        # only real email addresses, so those provenance-linked rows never
+        # covered their own evidence and prompted again. Preserve their stored
+        # rule type/condition for audit, but evaluate this narrow legacy shape
+        # as the endpoint rule it was meant to be. Manual sender-address rules
+        # and actual email promotions stay on the regular email-only matcher.
+        legacy_endpoint = _legacy_promoted_source_endpoint_key(rule)
+        if legacy_endpoint is not None:
+            return _match_source_endpoint(envelope, {"endpoint_identity": legacy_endpoint})
 
         matcher = _MATCHERS.get(rule_type)
         if matcher is None:

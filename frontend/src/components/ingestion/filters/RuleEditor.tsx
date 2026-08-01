@@ -44,6 +44,7 @@ export type EditorMode = 'create' | 'edit' | 'dsl'
 const RULE_TYPES: { value: string; label: string }[] = [
   { value: 'sender_domain', label: 'Sender domain' },
   { value: 'sender_address', label: 'Sender address' },
+  { value: 'source_endpoint', label: 'Source endpoint' },
   { value: 'header_condition', label: 'Email header' },
   { value: 'mime_type', label: 'MIME attachment type' },
   { value: 'chat_id', label: 'Chat ID' },
@@ -112,6 +113,8 @@ function defaultConditionForType(ruleType: string): Record<string, unknown> {
       return { domain: '', match: 'exact' }
     case 'sender_address':
       return { address: '' }
+    case 'source_endpoint':
+      return { endpoint_identity: '' }
     case 'header_condition':
       return { header: '', op: 'present', value: null }
     case 'mime_type':
@@ -137,6 +140,8 @@ function validateCondition(
       return need('domain', 'Domain')
     case 'sender_address':
       return need('address', 'Email address')
+    case 'source_endpoint':
+      return need('endpoint_identity', 'Source endpoint')
     case 'header_condition':
       return need('header', 'Header name')
     case 'mime_type':
@@ -239,6 +244,18 @@ function ConditionFields({
           onChange={(v) => onChange({ ...condition, address: v })}
           placeholder="e.g. alerts@example.com"
           testid="rule-editor-condition-address"
+          lowercase
+        />
+      )
+
+    case 'source_endpoint':
+      return (
+        <TextField
+          label="source endpoint"
+          value={String(condition.endpoint_identity ?? '')}
+          onChange={(v) => onChange({ ...condition, endpoint_identity: v })}
+          placeholder="e.g. spotify:tzeusii"
+          testid="rule-editor-condition-source-endpoint"
           lowercase
         />
       )
@@ -363,6 +380,7 @@ function DslTestPanel() {
   const testRule = useTestIngestionRule()
   const [senderAddress, setSenderAddress] = useState('')
   const [sourceChannel, setSourceChannel] = useState('')
+  const [sourceEndpointIdentity, setSourceEndpointIdentity] = useState('')
   // headers: free-form "Key: Value" text — one per line
   const [headersText, setHeadersText] = useState('')
   // mime_parts: comma-separated MIME type list
@@ -378,6 +396,9 @@ function DslTestPanel() {
     const envelope: IngestionRuleTestEnvelope = {}
     if (senderAddress.trim()) envelope.sender_address = senderAddress.trim()
     if (sourceChannel.trim()) envelope.source_channel = sourceChannel.trim()
+    if (sourceEndpointIdentity.trim()) {
+      envelope.source_endpoint_identity = sourceEndpointIdentity.trim()
+    }
     const headers = parseHeadersText(headersText)
     if (Object.keys(headers).length > 0) envelope.headers = headers
     const mimeParts = parseMimeParts(mimePartsText)
@@ -417,6 +438,14 @@ function DslTestPanel() {
           onChange={setSourceChannel}
           placeholder="gmail"
           testid="rule-editor-test-channel"
+          lowercase
+        />
+        <TextField
+          label="source endpoint"
+          value={sourceEndpointIdentity}
+          onChange={setSourceEndpointIdentity}
+          placeholder="spotify:tzeusii"
+          testid="rule-editor-test-source-endpoint"
           lowercase
         />
         <label className="block col-span-2">

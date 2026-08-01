@@ -621,6 +621,38 @@ async def test_ingestion_rules_create_accepts_canonical_action_201(app):
     assert resp.json()["data"]["action"] == "skip"
 
 
+async def test_ingestion_rules_create_accepts_global_source_endpoint_rule(app):
+    """An exact connector endpoint is a first-class global policy condition."""
+    endpoint_rule = dict(_GLOBAL_RULE)
+    endpoint_rule.update(
+        {
+            "rule_type": "source_endpoint",
+            "condition": {"endpoint_identity": "spotify:tzeusii"},
+            "action": "route_to:lifestyle",
+        }
+    )
+    app, mock_pool = _app_with_mock(app)
+    mock_pool.fetchrow = AsyncMock(
+        side_effect=[_make_row({"name": "lifestyle"}), _make_row(endpoint_rule)]
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/switchboard/ingestion-rules",
+            json={
+                "scope": "global",
+                "rule_type": "source_endpoint",
+                "condition": {"endpoint_identity": "spotify:tzeusii"},
+                "action": "route_to:lifestyle",
+                "priority": 10,
+            },
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["data"]["rule_type"] == "source_endpoint"
+
+
 @pytest.mark.parametrize(
     "bad_payload,exp_status",
     [
@@ -630,6 +662,16 @@ async def test_ingestion_rules_create_accepts_canonical_action_201(app):
                 "rule_type": "sender_domain",
                 "condition": {"domain": "x.com", "match": "exact"},
                 "action": "skip",
+                "priority": 10,
+            },
+            422,
+        ),
+        (
+            {
+                "scope": "connector:spotify:spotify:tzeusii",
+                "rule_type": "source_endpoint",
+                "condition": {"endpoint_identity": "spotify:tzeusii"},
+                "action": "block",
                 "priority": 10,
             },
             422,
@@ -651,6 +693,16 @@ async def test_ingestion_rules_create_accepts_canonical_action_201(app):
                 "condition": {},
                 "action": "skip",
                 "priority": -1,
+            },
+            422,
+        ),
+        (
+            {
+                "scope": "connector:gmail:gmail:user:dev",
+                "rule_type": "source_endpoint",
+                "condition": {"endpoint_identity": "spotify:tzeusii"},
+                "action": "block",
+                "priority": 10,
             },
             422,
         ),

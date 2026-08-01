@@ -300,6 +300,20 @@ async def test_proposed_rule_type_check_constraint_rejects_bogus_value(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_proposed_rule_type_check_accepts_source_endpoint(pool: asyncpg.Pool) -> None:
+    """The latest schema can persist an exact opaque connector identity proposal."""
+    await pool.execute(
+        """
+        INSERT INTO rule_promotion_suggestions
+            (suggestion_kind, sender_key, source_channel, proposed_rule_type,
+             proposed_condition, proposed_action)
+        VALUES ('promotion', 'spotify:tzeusii', 'music', 'source_endpoint',
+                '{"endpoint_identity": "spotify:tzeusii"}'::jsonb, 'route_to:lifestyle')
+        """
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_promotion_row_missing_fields(
     pool: asyncpg.Pool,
 ) -> None:

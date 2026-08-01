@@ -86,6 +86,34 @@ confidence. Weaker matches are proposed, never auto-applied.
 - **WHEN** a non-owner fact is contradicted by a newer fact of equal-or-higher confidence on the same `(entity, predicate, scope)`
 - **THEN** the stale fact MAY be auto-retracted and reported in the digest
 
+### Requirement: Entity dedup approval lifecycle
+
+The entity-dedup curation job SHALL preserve the approval lifecycle for each
+exact ordered `(source_entity_id, target_entity_id)` pair. It MUST never merge
+or retry a pair itself. Before proposing a new `memory_entity_merge` action,
+it MUST recognize both the canonical and legacy `entity_merge` tool names with
+status `pending`, `approved`, or `rejected` for that same ordered pair.
+
+#### Scenario: Rejected pair is not proposed again
+
+- **WHEN** a matching ordered pair has a rejected entity-merge approval
+- **THEN** the curation job MUST not create another approval or owner insight
+- **AND** it MUST retain the rejected action as audit evidence
+
+#### Scenario: Approved but unexecuted pair stays one retry target
+
+- **WHEN** a matching ordered pair has an approved entity-merge approval whose
+  execution has not settled
+- **THEN** the curation job MUST not create a duplicate approval
+- **AND** it MUST not execute or retry the existing action; an operator retry
+  remains the only execution path
+
+#### Scenario: Expired pair may be reviewed again
+
+- **WHEN** a matching ordered pair has only expired entity-merge actions
+- **THEN** the curation job MAY surface a new approval because expiry is not an
+  owner decision
+
 ### Requirement: Auto-applied changes are reversible
 
 Auto-applied merges and retractions SHALL be reversible. Retractions MUST set

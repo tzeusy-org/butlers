@@ -443,8 +443,10 @@ async def test_entity_dedup_legacy_pending_action_suppresses_canonical_duplicate
     assert await _count_pending_for_pair(pool, source, target) == 1
 
 
-async def test_entity_dedup_resurfaced_after_decided(pool: asyncpg.Pool, mock_propose_insight):
-    """A pair with a decided (non-pending) pending_action is surfaced again."""
+async def test_entity_dedup_rejected_pair_is_not_resurfaced(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """A rejection is a durable owner decision for this exact ordered pair."""
     target = await _make_entity(pool, name="Chloe Dupont")
     source = await _make_entity(pool, name="Chloe Dupont")
 
@@ -457,10 +459,55 @@ async def test_entity_dedup_resurfaced_after_decided(pool: asyncpg.Pool, mock_pr
         {"source_entity_id": str(source), "target_entity_id": str(target)},
     )
 
-    # Since the existing row has status='rejected' (not 'pending'), should surface again
+    # Curation must preserve the audit row and not recreate an equivalent card.
+    result = await run_entity_dedup_curation(pool)
+    assert result["pairs_surfaced"] == 0
+    assert result["pairs_skipped_already_pending"] == 0
+    assert result["pairs_skipped_prior_decision"] == 1
+
+
+async def test_entity_dedup_approved_unexecuted_pair_is_not_resurfaced(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """An approved action remains the one retryable record until execution settles it."""
+    target = await _make_entity(pool, name="Chloe Dupont")
+    source = await _make_entity(pool, name="Chloe Dupont")
+
+    await pool.execute(
+        "INSERT INTO pending_actions "
+        "(id, tool_name, tool_args, agent_summary, status, requested_at, evidence, execution_result) "
+        "VALUES ($1, 'memory_entity_merge', $2, 'approved but not executed', 'approved', "
+        "now(), '[]', NULL)",
+        uuid.uuid4(),
+        {"source_entity_id": str(source), "target_entity_id": str(target)},
+    )
+
+    result = await run_entity_dedup_curation(pool)
+    assert result["pairs_surfaced"] == 0
+    assert result["pairs_skipped_already_pending"] == 0
+    assert result["pairs_skipped_prior_decision"] == 1
+
+
+async def test_entity_dedup_expired_pair_can_be_resurfaced(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """Expiry is not an owner decision, so it does not permanently suppress review."""
+    target = await _make_entity(pool, name="Chloe Dupont")
+    source = await _make_entity(pool, name="Chloe Dupont")
+
+    await pool.execute(
+        "INSERT INTO pending_actions "
+        "(id, tool_name, tool_args, agent_summary, status, requested_at, expires_at, evidence) "
+        "VALUES ($1, 'memory_entity_merge', $2, 'expired', 'expired', "
+        "now() - interval '4 days', now() - interval '1 day', '[]')",
+        uuid.uuid4(),
+        {"source_entity_id": str(source), "target_entity_id": str(target)},
+    )
+
     result = await run_entity_dedup_curation(pool)
     assert result["pairs_surfaced"] == 1
     assert result["pairs_skipped_already_pending"] == 0
+    assert result["pairs_skipped_prior_decision"] == 0
 
 
 # ---------------------------------------------------------------------------

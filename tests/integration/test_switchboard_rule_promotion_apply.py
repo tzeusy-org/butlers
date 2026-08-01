@@ -16,6 +16,7 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.routing.rule_promotion_apply import (
     AUTO_APPLY_ACTOR,
@@ -69,6 +70,8 @@ async def _insert_suggestion(
     *,
     sender_key: str,
     source_channel: str = "gmail",
+    proposed_rule_type: str = "sender_address",
+    proposed_condition: dict[str, str] | None = None,
     proposed_action: str,
     is_clearly_automated: bool,
 ) -> str:
@@ -79,13 +82,14 @@ async def _insert_suggestion(
             (suggestion_kind, sender_key, source_channel, proposed_rule_type,
              proposed_condition, proposed_action, evidence_count,
              first_evidence_at, last_evidence_at, is_clearly_automated, status)
-        VALUES ('promotion', $1, $2, 'sender_address', $3, $4, 3, $5, $6, $7,
+        VALUES ('promotion', $1, $2, $3, $4, $5, 3, $6, $7, $8,
                 'pending_review')
         RETURNING id
         """,
         sender_key,
         source_channel,
-        {"address": sender_key},
+        proposed_rule_type,
+        proposed_condition or {"address": sender_key},
         proposed_action,
         now - timedelta(days=2),
         now,
@@ -117,6 +121,35 @@ async def test_mint_creates_rule_with_provenance_and_confirms(pool):
     assert str(sug["created_rule_id"]) == str(rule["id"])
     assert sug["decided_by"] == "owner"
     assert sug["decided_at"] is not None
+
+
+async def test_mint_source_endpoint_promotion_is_effective_for_that_endpoint(pool):
+    """Confirmation mints an exact endpoint rule, which the runtime can match."""
+    await pool.execute(
+        "INSERT INTO butler_registry (name, endpoint_url) VALUES ('lifestyle', 'http://localhost:1') "
+        "ON CONFLICT (name) DO NOTHING"
+    )
+    sid = await _insert_suggestion(
+        pool,
+        sender_key="spotify:tzeusii",
+        source_channel="music",
+        proposed_rule_type="source_endpoint",
+        proposed_condition={"endpoint_identity": "spotify:tzeusii"},
+        proposed_action="route_to:lifestyle",
+        is_clearly_automated=False,
+    )
+
+    rule = await apply_suggestion(pool, sid, decided_by="owner")
+
+    assert rule["rule_type"] == "source_endpoint"
+    assert rule["condition"] == {"endpoint_identity": "spotify:tzeusii"}
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=pool)
+    await evaluator.ensure_loaded()
+    decision = evaluator.evaluate(
+        IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:tzeusii")
+    )
+    assert decision.action == "route_to"
+    assert decision.target_butler == "lifestyle"
 
 
 async def test_mint_is_idempotent_against_double_apply(pool):

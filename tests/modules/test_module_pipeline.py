@@ -467,12 +467,13 @@ class TestMessagePipelineRoutingVerdictLog:
                 "some finance email",
                 tool_args={
                     "source_channel": "email",
-                    "source_identity": "billing@chase.com",
+                    "source_identity": "gmail:tzeusii",
                     "request_context": {
                         "triage_decision": "route_to",
                         "triage_target": "finance",
                         "triage_rule_id": "11111111-1111-1111-1111-111111111111",
                         "triage_rule_type": "sender_domain",
+                        "source_sender_identity": "billing@chase.com",
                     },
                 },
                 message_inbox_id="00000000-0000-0000-0000-000000000002",

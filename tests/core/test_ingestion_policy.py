@@ -41,6 +41,7 @@ from butlers.ingestion_policy import (
     _match_sender_address,
     _match_sender_domain,
     _match_source_channel,
+    _match_source_endpoint,
     _match_substring,
 )
 from butlers.ingestion_policy_metrics import (
@@ -133,6 +134,7 @@ def test_ingestion_envelope_and_policy_decision_contracts() -> None:
         env.sender_address = "c@d.com"  # type: ignore[misc]
     env2 = IngestionEnvelope()
     assert env2.sender_address == "" and env2.source_channel == ""
+    assert env2.source_endpoint_identity == ""
     assert env2.headers == {} and env2.mime_parts == [] and env2.raw_key == ""
     assert env2.labels == []
 
@@ -150,8 +152,7 @@ def test_ingestion_envelope_and_policy_decision_contracts() -> None:
 
 
 def test_all_matchers() -> None:
-    """All 8 matcher functions: sender_domain, sender_address, header_condition, mime_type,
-    substring, chat_id, channel_id, mic_id — match, no match, wildcard, edge cases."""
+    """Every matcher supports its documented match, mismatch, and edge cases."""
     # sender_domain: exact, suffix, case-insensitive, rfc2822, wildcard, no-suffix-mismatch
     assert _match_sender_domain(
         _email_envelope(sender="alerts@chase.com"), {"domain": "chase.com", "match": "exact"}
@@ -294,6 +295,12 @@ def test_all_matchers() -> None:
     assert not _match_source_channel(empty_env, {"source_channel": "*"})
     assert not _match_source_channel(owntracks_env, {"source_channel": ""})
 
+    # source_endpoint: exact, case-insensitive, no match, empty target rejection.
+    endpoint_env = IngestionEnvelope(source_endpoint_identity="spotify:TZEUSII")
+    assert _match_source_endpoint(endpoint_env, {"endpoint_identity": "spotify:tzeusii"})
+    assert not _match_source_endpoint(endpoint_env, {"endpoint_identity": "steam:user:123"})
+    assert not _match_source_endpoint(endpoint_env, {"endpoint_identity": ""})
+
     # label_match: in _KNOWN_RULE_TYPES, drives a global metadata_only decision
     assert "label_match" in _KNOWN_RULE_TYPES
     ev_label = IngestionPolicyEvaluator(scope="global", db_pool=None)
@@ -312,6 +319,83 @@ def test_all_matchers() -> None:
         == "metadata_only"
     )
     assert ev_label.evaluate(_email_envelope(labels=["INBOX"])).action == "pass_through"
+
+
+def test_legacy_promoted_opaque_sender_address_matches_only_as_source_endpoint() -> None:
+    """Historic promotion rows keep their audit shape but regain runtime coverage.
+
+    The compatibility behavior is intentionally provenance-gated. A manually
+    authored ``sender_address`` rule containing an opaque connector identity
+    must stay an email-only rule and therefore must not match this envelope.
+    """
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    evaluator._last_loaded_at = time.monotonic()
+    evaluator._rules = [
+        _rule(
+            id="legacy-promotion",
+            rule_type="sender_address",
+            condition={"address": "spotify:tzeusii"},
+            action="route_to:lifestyle",
+            created_by="promotion",
+            promoted_from_suggestion_id="suggestion-1",
+        )
+    ]
+
+    decision = evaluator.evaluate(
+        IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:tzeusii")
+    )
+    assert decision.action == "route_to"
+    assert decision.target_butler == "lifestyle"
+
+    evaluator._rules[0] = _rule(
+        id="manual-rule",
+        rule_type="sender_address",
+        condition={"address": "spotify:tzeusii"},
+        action="route_to:lifestyle",
+        created_by="dashboard",
+    )
+    assert (
+        evaluator.evaluate(
+            IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:tzeusii")
+        ).action
+        == "pass_through"
+    )
+
+
+def test_latest_same_priority_legacy_endpoint_promotion_wins() -> None:
+    """Repeated broken confirmations preserve audit rows but not stale precedence."""
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    evaluator._last_loaded_at = time.monotonic()
+    evaluator._rules = [
+        _rule(
+            id="old-general",
+            rule_type="sender_address",
+            condition={"address": "steam:user:76561198037633688"},
+            action="route_to:general",
+            priority=10,
+            created_at="2026-07-01T00:00:00Z",
+            created_by="promotion",
+            promoted_from_suggestion_id="suggestion-old",
+        ),
+        _rule(
+            id="new-lifestyle",
+            rule_type="sender_address",
+            condition={"address": "steam:user:76561198037633688"},
+            action="route_to:lifestyle",
+            priority=10,
+            created_at="2026-08-01T00:00:00Z",
+            created_by="promotion",
+            promoted_from_suggestion_id="suggestion-new",
+        ),
+    ]
+
+    decision = evaluator.evaluate(
+        IngestionEnvelope(
+            source_channel="gaming",
+            source_endpoint_identity="steam:user:76561198037633688",
+        )
+    )
+    assert decision.target_butler == "lifestyle"
 
 
 # ---------------------------------------------------------------------------

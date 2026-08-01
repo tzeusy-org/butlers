@@ -55,7 +55,11 @@ resolution site after `route_to_butler` tool calls are parsed
 
 The system SHALL periodically scan `routing_verdict_log` grouped by
 `(sender_key, source_channel)` and propose a new ingestion rule when evidence
-of consistent LLM agreement crosses a configurable threshold.
+of consistent LLM agreement crosses a configurable threshold. `sender_key` is
+the stable policy identity: email traffic records the observed sender address,
+while non-email traffic records the source endpoint identity. The suggested
+condition MUST use `sender_address` for a complete email key and
+`source_endpoint` for an opaque connector key so it can cover future intake.
 
 A sender/channel pair becomes promotion-eligible when: no `enabled` (and not
 soft-deleted) `ingestion_rules` row already covers it, no `pending_review`
@@ -91,6 +95,15 @@ qualify.
 - **THEN** a `switchboard.rule_promotion_suggestions` row MUST be created with
   `status='pending_review'`, `proposed_rule_type='sender_address'`,
   `proposed_action='route_to:finance'`, and `evidence_count=3`
+
+#### Scenario: Opaque connector identity promotes to an endpoint rule
+
+- **WHEN** `spotify:tzeusii` has qualifying non-email LLM verdict evidence
+  for `route_to:lifestyle`
+- **THEN** its suggestion MUST have `proposed_rule_type='source_endpoint'`
+  and `proposed_condition={"endpoint_identity":"spotify:tzeusii"}`
+- **AND** after confirmation, the enabled rule MUST cover the same endpoint so
+  later trigger runs do not create another suggestion
 
 #### Scenario: Single-burst evidence does not trigger promotion
 
@@ -131,7 +144,8 @@ The `switchboard.rule_promotion_suggestions` table MUST exist with columns:
 `id` (UUID PK), `suggestion_kind` (TEXT, one of `promotion`, `demotion` —
 discriminates the kind of suggestion independent of its lifecycle `status`),
 `sender_key` (TEXT, nullable), `source_channel` (TEXT, nullable),
-`proposed_rule_type` (TEXT, nullable, `sender_address` or `sender_domain`),
+`proposed_rule_type` (TEXT, nullable, `sender_address`, `sender_domain`, or
+`source_endpoint`),
 `proposed_condition` (JSONB, nullable), `proposed_action` (TEXT, nullable),
 `evidence_count` (INTEGER), `first_evidence_at` / `last_evidence_at`
 (TIMESTAMPTZ), `is_clearly_automated` (BOOLEAN, default FALSE), `status`
@@ -302,6 +316,18 @@ conventional value `'promotion'` for rules minted through this flow.
 - **WHEN** a rule is created via suggestion confirmation
 - **THEN** the created `ingestion_rules` row MUST have `created_by='promotion'`
   and `promoted_from_suggestion_id` set to the originating suggestion's id
+
+#### Scenario: Legacy opaque promotion remains audit-preserving and effective
+
+- **WHEN** a historic promotion-created `sender_address` rule has an opaque,
+  non-email address value and non-null suggestion provenance
+- **THEN** runtime evaluation MUST treat it as an exact source-endpoint match
+  without rewriting the stored rule type, condition, suggestion, or provenance
+- **AND** a manually authored `sender_address` rule with the same opaque value
+  MUST remain email-only and must not receive this compatibility behavior
+- **AND** when multiple same-priority legacy promotion rows target the same
+  endpoint, only the newest confirmation is effective; older rows remain
+  audit evidence and cannot win through their earlier creation time
 
 #### Scenario: Manually-created rules are unaffected
 
