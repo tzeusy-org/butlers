@@ -110,6 +110,7 @@ _ALLOWED_RULE_TYPES = frozenset(
         "substring",
         "chat_id",
         "channel_id",
+        "source_endpoint",
     }
 )
 _ALLOWED_ACTIONS = frozenset(
