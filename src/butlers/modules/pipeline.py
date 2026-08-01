@@ -1498,6 +1498,29 @@ class MessagePipeline:
         return "unknown"
 
     @classmethod
+    def _routing_verdict_identity(
+        cls,
+        args: dict[str, Any],
+        source_metadata: dict[str, str],
+        request_context: dict[str, Any] | None,
+    ) -> str:
+        """Choose the stable identity that a future promotion can cover.
+
+        Email must use the observed sender rather than the receiving connector
+        endpoint. Other channels retain the endpoint identity, which is the
+        same opaque key pre-classification policy evaluation receives.
+        """
+        if source_metadata.get("channel") == "email":
+            if request_context is not None:
+                sender = cls._string_or_none(request_context.get("source_sender_identity"))
+                if sender not in (None, "unknown"):
+                    return sender
+            sender = cls._source_sender_identity(args, source_metadata)
+            if sender != "unknown":
+                return sender
+        return source_metadata.get("identity", "unknown")
+
+    @classmethod
     def _source_thread_identity(cls, args: dict[str, Any]) -> str | None:
         candidates = (
             args.get("external_thread_id"),
@@ -1867,6 +1890,9 @@ class MessagePipeline:
             request_context = dict(request_context)
         else:
             request_context = None
+        routing_verdict_identity = self._routing_verdict_identity(
+            args, source_metadata, request_context
+        )
         request_attrs = {
             "source": source,
             "policy_tier": policy_tier,
@@ -2221,7 +2247,7 @@ class MessagePipeline:
                             await record_routing_verdict(
                                 self._pool,
                                 ingestion_event_id=message_inbox_id,
-                                sender_identity=source_metadata.get("identity"),
+                                sender_identity=routing_verdict_identity,
                                 source_channel=source,
                                 verdict_source=_verdict_source,
                                 verdict_action="route_to",
@@ -2269,7 +2295,7 @@ class MessagePipeline:
                         await record_routing_verdict(
                             self._pool,
                             ingestion_event_id=message_inbox_id,
-                            sender_identity=source_metadata.get("identity"),
+                            sender_identity=routing_verdict_identity,
                             source_channel=source,
                             verdict_source=_verdict_source,
                             verdict_action="skip",
@@ -2311,7 +2337,7 @@ class MessagePipeline:
                         await record_routing_verdict(
                             self._pool,
                             ingestion_event_id=message_inbox_id,
-                            sender_identity=source_metadata.get("identity"),
+                            sender_identity=routing_verdict_identity,
                             source_channel=source,
                             verdict_source=_verdict_source,
                             verdict_action="metadata_only",
@@ -3069,7 +3095,7 @@ class MessagePipeline:
                             await record_routing_verdict(
                                 self._pool,
                                 ingestion_event_id=message_inbox_id,
-                                sender_identity=source_metadata.get("identity"),
+                                sender_identity=routing_verdict_identity,
                                 source_channel=source,
                                 verdict_source=_verdict_source_for_llm,
                                 verdict_action="route_to",
@@ -3115,7 +3141,7 @@ class MessagePipeline:
                         await record_routing_verdict(
                             self._pool,
                             ingestion_event_id=message_inbox_id,
-                            sender_identity=source_metadata.get("identity"),
+                            sender_identity=routing_verdict_identity,
                             source_channel=source,
                             verdict_source="spot_check",
                             verdict_action=_triage_decision,

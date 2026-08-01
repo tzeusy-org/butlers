@@ -11,7 +11,7 @@ Integration-with-DB tests live in test_ingest_tier.py.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -21,6 +21,7 @@ from butlers.ingestion_policy import (
 )
 from butlers.tools.switchboard.ingestion.ingest import (
     IngestAcceptedResponse,
+    _IngestionPolicyTelemetry,
     _make_ingestion_envelope,
     _run_policy_evaluation,
 )
@@ -162,6 +163,40 @@ class TestRunPolicyEvaluation:
                 f"Expected {expected_action!r} for action={action!r}, got {decision.action!r}"
             )
 
+    def test_source_endpoint_rule_preserves_telemetry_label(self) -> None:
+        """Endpoint promotions retain their bounded rule-type metric dimension."""
+        payload = _base_email_payload(mailbox="spotify:acct-1")
+        payload["source"]["channel"] = "gaming"
+        evaluator = _make_evaluator_with_rules(
+            [
+                _valid_rule(
+                    rule_type="source_endpoint",
+                    condition={"endpoint_identity": "spotify:acct-1"},
+                    action="route_to:lifestyle",
+                )
+            ]
+        )
+        matched_counter = Mock()
+        telemetry = object.__new__(_IngestionPolicyTelemetry)
+        telemetry.rule_matched = matched_counter
+        telemetry.evaluation_latency_ms = Mock()
+
+        with patch(
+            "butlers.tools.switchboard.ingestion.ingest._get_policy_telemetry",
+            return_value=telemetry,
+        ):
+            decision = _run_policy_evaluation(payload, evaluator, source_channel="gaming")
+
+        assert decision.matched_rule_type == "source_endpoint"
+        matched_counter.add.assert_called_once_with(
+            1,
+            {
+                "rule_type": "source_endpoint",
+                "action": "route_to",
+                "source_channel": "gaming",
+            },
+        )
+
 
 # ---------------------------------------------------------------------------
 # _make_ingestion_envelope adapter
@@ -183,6 +218,11 @@ class TestMakeIngestionEnvelope:
         payload = _base_email_payload()
         env = _make_ingestion_envelope(payload)
         assert env.source_channel == "email"
+
+    def test_source_endpoint_identity_extracted_and_normalized(self) -> None:
+        payload = _base_email_payload(mailbox="Spotify:acct-1")
+        env = _make_ingestion_envelope(payload)
+        assert env.source_endpoint_identity == "spotify:acct-1"
 
     def test_headers_extracted(self) -> None:
         payload = _base_email_payload()

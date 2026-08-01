@@ -10,7 +10,7 @@ The system SHALL store all ingestion filtering and routing rules in a single `in
 The table schema:
 - `id` UUID PRIMARY KEY (default gen_random_uuid())
 - `scope` TEXT NOT NULL -- `'global'` or `'connector:<connector_type>:<endpoint_identity>'`
-- `rule_type` TEXT NOT NULL -- unconstrained; known types: `sender_domain`, `sender_address`, `header_condition`, `mime_type`, `substring`, `chat_id`, `channel_id`, `source_channel`, `mic_id`. The last two are evaluated by the engine and seeded via migrations (the OwnTracks/Home Assistant global `skip` rules and the live-listener voice gate) but are not accepted by the REST create/update validator.
+- `rule_type` TEXT NOT NULL -- unconstrained; known types: `sender_domain`, `sender_address`, `source_endpoint`, `header_condition`, `mime_type`, `substring`, `chat_id`, `channel_id`, `source_channel`, `mic_id`. `source_endpoint` is a global API-creatable exact-match rule. `source_channel` and `mic_id` are evaluated by the engine and seeded via migrations (the OwnTracks/Home Assistant global `skip` rules and the live-listener voice gate) but are not accepted by the REST create/update validator.
 - `condition` JSONB NOT NULL -- schema determined by `rule_type`
 - `action` TEXT NOT NULL -- `block`, `skip`, `metadata_only`, `low_priority_queue`, `pass_through`, or `route_to:<butler>`
 - `priority` INTEGER NOT NULL (>= 0) -- lower = evaluated first
@@ -64,6 +64,7 @@ Each `rule_type` defines the expected shape of the `condition` JSONB field. The 
 |-----------|------------------|--------------------|
 | `sender_domain` | `{"domain": "<string>", "match": "exact"\|"suffix"}` | Extract domain from sender address; exact or suffix match (case-insensitive) |
 | `sender_address` | `{"address": "<string>"}` | Normalize full email address; exact match (case-insensitive) |
+| `source_endpoint` | `{"endpoint_identity": "<string>"}` | Exact case-insensitive match on the normalized connector endpoint identity; global scope only, no wildcard |
 | `header_condition` | `{"header": "<string>", "op": "present"\|"equals"\|"contains", "value": null\|"<string>"}` | Case-insensitive header lookup; value required for equals/contains |
 | `mime_type` | `{"type": "<string>"}` | Exact match or wildcard `type/*` |
 | `substring` | `{"pattern": "<string>"}` | Case-insensitive substring search in raw key value |
@@ -84,16 +85,34 @@ Each `rule_type` defines the expected shape of the `condition` JSONB field. The 
 - **WHEN** a rule is created with `scope = 'connector:telegram-bot:...'` and `rule_type = 'sender_domain'`
 - **THEN** the API returns 422 because `sender_domain` is not valid for Telegram bot connectors
 
+#### Scenario: Source endpoint is a global routing condition
+- **WHEN** a rule is created with `scope = 'global'`, `rule_type = 'source_endpoint'`, and `condition = {"endpoint_identity": "spotify:acct-1"}`
+- **THEN** the API accepts the exact endpoint rule
+- **AND** the same rule type submitted under any connector scope is rejected with 422
+
 ### Requirement: First-match-wins evaluation
 
-The evaluation engine SHALL process rules in `priority ASC, created_at ASC, id ASC` order. The first rule whose condition matches the input envelope determines the outcome. If no rule matches, the result is `pass_through`.
+The evaluation engine SHALL process rules in `priority ASC, created_at ASC, id ASC` order. The first effective rule whose condition matches the input envelope determines the outcome. If no rule matches, the result is `pass_through`.
 
 This applies uniformly to both connector-scoped and global evaluation -- there is no separate blacklist/whitelist composition model.
+
+The sole compatibility exception is an older, provenance-linked opaque
+`sender_address` promotion row: at the same priority and endpoint identity, a
+later provenance-linked legacy confirmation or a later exact `source_endpoint`
+rule makes that older legacy row ineffective. The historic row remains stored as
+audit evidence; all other rules retain normal first-match ordering.
 
 #### Scenario: First match wins
 - **WHEN** two rules exist at priority 10 (block spammer.com) and priority 20 (block all .com)
 - **AND** a message arrives from `spammer.com`
 - **THEN** the priority-10 rule matches first and its action is applied
+
+#### Scenario: Current endpoint rule supersedes legacy compatibility
+- **WHEN** an older provenance-linked opaque `sender_address` promotion and a
+  later `source_endpoint` rule have the same priority and endpoint identity
+- **THEN** the older compatibility row is ineffective and the later endpoint
+  rule determines the outcome
+- **AND** the historic compatibility row remains stored as audit evidence
 
 #### Scenario: No match defaults to pass_through
 - **WHEN** no active rules match the incoming message
@@ -150,12 +169,14 @@ The evaluator SHALL accept an `IngestionEnvelope` dataclass that carries all fie
 - `mime_parts: list[str]` -- MIME type strings; empty list for non-email
 - `thread_id: str | None` -- external thread identity
 - `raw_key: str` -- raw opaque key for substring/chat_id/channel_id matching
+- `labels: list[str]` -- channel-native labels, or an empty list
+- `source_endpoint_identity: str` -- normalized stable connector account/device identity, or empty string; it is appended after the original dataclass fields so positional callers retain their bindings
 
 Connectors populate only the fields relevant to their channel. The evaluator extracts the appropriate key per rule's `rule_type` internally.
 
 #### Scenario: Gmail connector populates envelope
 - **WHEN** the Gmail connector builds an IngestionEnvelope
-- **THEN** `sender_address` contains the normalized From address, `source_channel = "email"`, `headers` contains email headers, `raw_key` contains the raw From header
+- **THEN** `sender_address` contains the normalized From address, `source_channel = "email"`, `source_endpoint_identity` identifies the receiving Gmail endpoint, `headers` contains email headers, `raw_key` contains the raw From header
 
 #### Scenario: Telegram connector populates envelope
 - **WHEN** the Telegram bot connector builds an IngestionEnvelope
@@ -163,9 +184,19 @@ Connectors populate only the fields relevant to their channel. The evaluator ext
 
 #### Scenario: Gaming (Steam) connector populates envelope
 - **WHEN** an ingest.v1 envelope with `source_channel = "gaming"` is evaluated
+- **THEN** `source_endpoint_identity` contains the stable Steam endpoint identity (for example `steam:user:76561198037633688`)
 - **THEN** `raw_key` contains the envelope's `event.external_event_id` (e.g. `"steam:status:<steam_id>:<poll_ts>"`, `"steam:play:..."`)
 - **AND** because Steam's `external_event_id` is prefixed with a stable per-event-type marker, a `substring` rule can target one gaming event type (e.g. Steam presence `status_change`) without matching the channel's other event types (play_session, achievement_unlock, game_purchase, friend_change)
 - **NOTE**: the `ingest.v1` wire contract's `event` section is `extra="forbid"`, so connectors cannot submit a distinct event-type field directly; `external_event_id` is the only wire-safe per-event-type discriminator available today
+
+#### Scenario: Endpoint with email-shaped suffix is not an email sender
+
+- **WHEN** a non-email envelope has
+  `source_endpoint_identity='google_calendar:user:owner@example.com'`
+- **THEN** an exact `source_endpoint` condition MUST compare the complete
+  endpoint identity
+- **AND** policy/promotion code MUST NOT treat the suffix as a
+  `sender_address`
 
 ### Requirement: PolicyDecision
 
@@ -278,4 +309,3 @@ The system SHALL emit unified OpenTelemetry metrics replacing both triage and so
 #### Scenario: No-match pass_through is recorded
 - **WHEN** no rule matches at global scope
 - **THEN** `rule_pass_through` counter is incremented with `scope_type=global`, `reason=no_match`
-

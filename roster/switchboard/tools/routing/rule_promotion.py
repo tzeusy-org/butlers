@@ -57,13 +57,15 @@ evidence window avoids one automated-looking outlier flipping the flag for
 an otherwise-human sender, which matters because ``is_clearly_automated``
 suggestions get a lower-scrutiny batched confirm path (design.md section 3).
 
-Address-level only (bead 3 scope)
+Identity-level only (bead 3 scope)
 -----------------------------------
 Per design.md's "Proposed implementation beads" / "Expected impact":
 domain-level rollup (``sender_domain``) is explicitly deferred to a future
 bead ("ship address-level mining first ... treat domain-level rollup as the
-very next iteration"). This module only ever proposes
-``proposed_rule_type='sender_address'`` suggestions.
+very next iteration"). This module proposes exact ``sender_address`` rules
+for email identities and exact ``source_endpoint`` rules for opaque connector
+identities, so every proposal uses the same field the policy evaluator sees at
+ingestion time.
 
 Bounded scan windows
 ---------------------
@@ -90,6 +92,7 @@ from typing import Any, Protocol
 import asyncpg
 
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.tools.switchboard.routing.verdict_log import is_email_sender_key
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +136,50 @@ _NO_RULE_EQUIVALENT_ACTIONS = frozenset({"pass_through", "block"})
 # ---------------------------------------------------------------------------
 # Pure helpers — unit-tested directly, no DB required.
 # ---------------------------------------------------------------------------
+
+
+def proposed_rule_for_sender_key(
+    sender_key: str,
+    *,
+    source_channel: str,
+) -> tuple[str, dict[str, str]]:
+    """Return the exact rule shape that can cover a mined verdict identity.
+
+    ``routing_verdict_log.sender_key`` is multi-channel. Only the email
+    channel may promote an address-shaped value to ``sender_address``; opaque
+    connector identities can legitimately contain ``@`` and must retain their
+    full stable endpoint identity. Keeping this decision here makes the
+    suggested condition and coverage recheck share one contract.
+    """
+    normalized = sender_key.strip().lower()
+    if source_channel.strip().lower() == "email" and is_email_sender_key(normalized):
+        return "sender_address", {"address": normalized}
+    return "source_endpoint", {"endpoint_identity": normalized}
+
+
+def promotion_identity_lock_key(*, sender_key: str, source_channel: str) -> str:
+    """Return an unambiguous transaction-lock key for one promotion identity."""
+    return json.dumps(
+        [
+            "switchboard:rule-promotion",
+            source_channel.strip().lower(),
+            sender_key.strip().lower(),
+        ],
+        separators=(",", ":"),
+    )
+
+
+async def acquire_promotion_identity_lock(
+    conn: Any,
+    *,
+    sender_key: str,
+    source_channel: str,
+) -> None:
+    """Serialize lifecycle mutations for one sender/channel promotion identity."""
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        promotion_identity_lock_key(sender_key=sender_key, source_channel=source_channel),
+    )
 
 
 def as_utc(ts: datetime) -> datetime:
@@ -488,6 +535,7 @@ async def _insert_suggestion(
     *,
     sender_key: str,
     source_channel: str,
+    proposed_rule_type: str,
     proposed_condition: dict[str, Any],
     proposed_action: str,
     evidence_count: int,
@@ -517,7 +565,7 @@ async def _insert_suggestion(
              proposed_condition, proposed_action, evidence_count,
              first_evidence_at, last_evidence_at, is_clearly_automated, status)
         VALUES
-            ('promotion', $1, $2, 'sender_address', $3, $4, $5, $6, $7, $8,
+            ('promotion', $1, $2, $3, $4, $5, $6, $7, $8, $9,
              'pending_review')
         ON CONFLICT (sender_key, source_channel)
             WHERE status = 'pending_review' AND suggestion_kind = 'promotion'
@@ -526,6 +574,7 @@ async def _insert_suggestion(
         """,
         sender_key,
         source_channel,
+        proposed_rule_type,
         proposed_condition,
         proposed_action,
         evidence_count,
@@ -587,9 +636,14 @@ async def _evaluate_active_rule_coverage(
     semantics that prevent a new suggestion from being proposed.
     """
     evidence_headers = await _fetch_evidence_headers(pool, evidence_rows)
-    coverage_envelope = IngestionEnvelope(
-        sender_address=sender_key,
+    proposed_rule_type, _ = proposed_rule_for_sender_key(
+        sender_key,
         source_channel=source_channel,
+    )
+    coverage_envelope = IngestionEnvelope(
+        sender_address=sender_key if proposed_rule_type == "sender_address" else "",
+        source_channel=source_channel,
+        source_endpoint_identity=(sender_key if proposed_rule_type == "source_endpoint" else ""),
         headers=evidence_headers[0] if evidence_headers else {},
     )
     decision = evaluator.evaluate(coverage_envelope)
@@ -719,11 +773,16 @@ async def _process_candidate(
     is_automated = compute_is_clearly_automated(sender_key, evidence_headers)
     utc_timestamps = [as_utc(ts) for ts in timestamps]
 
+    proposed_rule_type, proposed_condition = proposed_rule_for_sender_key(
+        sender_key,
+        source_channel=source_channel,
+    )
     created_id = await _insert_suggestion(
         pool,
         sender_key=sender_key,
         source_channel=source_channel,
-        proposed_condition={"address": sender_key},
+        proposed_rule_type=proposed_rule_type,
+        proposed_condition=proposed_condition,
         proposed_action=proposed_action,
         evidence_count=len(evidence_rows),
         first_evidence_at=min(utc_timestamps),
@@ -733,6 +792,61 @@ async def _process_candidate(
     if created_id is None:
         return "skipped_race_conflict"
     return "suggestions_created"
+
+
+async def _process_candidate_with_current_coverage(
+    pool: asyncpg.Pool,
+    evaluator: _CoverageEvaluator,
+    *,
+    sender_key: str,
+    source_channel: str,
+    threshold: int,
+    min_distinct_days: int,
+    min_elapsed: timedelta,
+) -> str:
+    """Process a production candidate under its lifecycle identity lock.
+
+    A trigger's process-wide evaluator is intentionally cached for ordinary
+    routing, but a promotion proposal is a state mutation: it must re-read
+    rules after taking the same lock used by confirmation. That prevents a
+    confirmation which races a periodic scan from becoming a fresh card.
+
+    Injected fake evaluators retain the lightweight unit-test seam; production
+    always uses :class:`IngestionPolicyEvaluator` and therefore takes this
+    database-backed path.
+    """
+    if not isinstance(evaluator, IngestionPolicyEvaluator):
+        return await _process_candidate(
+            pool,
+            evaluator,
+            sender_key=sender_key,
+            source_channel=source_channel,
+            threshold=threshold,
+            min_distinct_days=min_distinct_days,
+            min_elapsed=min_elapsed,
+        )
+
+    async with pool.acquire() as conn, conn.transaction():
+        await acquire_promotion_identity_lock(
+            conn,
+            sender_key=sender_key,
+            source_channel=source_channel,
+        )
+        current_evaluator = IngestionPolicyEvaluator(
+            scope="global",
+            db_pool=conn,
+            refresh_interval_s=3600,
+        )
+        await current_evaluator.ensure_loaded()
+        return await _process_candidate(
+            conn,
+            current_evaluator,
+            sender_key=sender_key,
+            source_channel=source_channel,
+            threshold=threshold,
+            min_distinct_days=min_distinct_days,
+            min_elapsed=min_elapsed,
+        )
 
 
 async def run_rule_promotion_trigger(
@@ -767,7 +881,7 @@ async def run_rule_promotion_trigger(
         if not sender_key or not source_channel:
             continue
         try:
-            outcome = await _process_candidate(
+            outcome = await _process_candidate_with_current_coverage(
                 pool,
                 evaluator,
                 sender_key=sender_key,

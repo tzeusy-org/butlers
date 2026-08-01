@@ -2941,11 +2941,15 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     :func:`~butlers.tools.switchboard.insight.broker.propose_insight_candidate`
     so the owner receives a Telegram notification.
 
-    **Dedup guard:** before inserting, the job checks whether a
-    ``status='pending'`` row already exists for the same ordered pair
-    (source, target). Both the canonical callable name and the historic
-    ``entity_merge`` name count during the bounded compatibility window, so a
-    deploy never creates a duplicate review item for an outstanding proposal.
+    **Dedup guard:** before inserting, the job checks whether a current
+    ``pending``, ``approved``, ``rejected``, or ``abandoned`` row already exists for the same
+    ordered pair (source, target). Both the canonical callable name and the
+    historic ``entity_merge`` name count during the bounded compatibility
+    window. An approval that awaits execution remains the one retryable
+    record; a rejection or abandonment is a durable owner decision retained
+    across approval cleanup. The job does not mutate or retry either historic
+    action. Expired actions remain eligible for a fresh review because expiry
+    is not an owner decision.
 
     **Merge direction convention:** within each duplicate group, the entity
     with the highest ``created_at`` (newest) is the source (merged away) and
@@ -2962,6 +2966,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
           - near_identical_pairs_found: number of near-identical pairs detected.
           - pairs_surfaced: number of new pending_actions rows created.
           - pairs_skipped_already_pending: number of pairs skipped (action exists).
+          - pairs_skipped_prior_decision: number skipped by approved/rejected/abandoned history.
           - errors: number of errors during processing.
     """
     from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -2974,6 +2979,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "near_identical_pairs_found": 0,
         "pairs_surfaced": 0,
         "pairs_skipped_already_pending": 0,
+        "pairs_skipped_prior_decision": 0,
         "errors": 0,
     }
 
@@ -2991,7 +2997,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                   FROM public.entities
                  WHERE (metadata->>'merged_into') IS NULL
                    AND TRIM(canonical_name) != ''
-                 ORDER BY created_at ASC
+                 ORDER BY created_at ASC, id ASC
                 """
             )
     except Exception:
@@ -3023,7 +3029,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # canonical target; all others are sources.  We emit one pair per
     # (source, target) combination — typically one source per group.
     # -----------------------------------------------------------------------
-    # Build ordered name → entity list mapping (ORDER BY created_at ASC preserved).
+    # Build ordered name → entity list mapping (ORDER BY created_at, id ASC preserved).
     name_groups: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         key = row["canonical_name"].strip().lower()
@@ -3114,62 +3120,81 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     ) -> str:
         """Create or return existing pending_actions row for this dedup pair.
 
-        Returns 'new', 'existing', or 'error'.
+        Returns 'new', 'existing_pending', 'existing_decision', or 'error'.
         """
         source_id = source["id"]
         target_id = target["id"]
-        try:
+
+        async def _existing_action() -> asyncpg.Record | None:
+            """Return an active or owner-decided action for this ordered pair."""
             async with db_pool.acquire() as conn:
-                # Dedup check: pending row already exists for this ordered pair?
-                existing = await conn.fetchval(
+                return await conn.fetchrow(
                     """
-                    SELECT id FROM pending_actions
+                    SELECT id, status FROM pending_actions
                      WHERE tool_name IN ('memory_entity_merge', 'entity_merge')
-                       AND status    = 'pending'
+                       AND status IN ('pending', 'approved', 'rejected', 'abandoned')
                        AND (tool_args ->> 'source_entity_id') = $1
                        AND (tool_args ->> 'target_entity_id') = $2
+                     ORDER BY requested_at DESC, id DESC
                      LIMIT 1
                     """,
                     source_id,
                     target_id,
                 )
-                if existing is not None:
-                    return "existing"
 
-                action_id = uuid.uuid4()
-                pending_now = datetime.now(UTC)
-                action_expires_at = pending_now + timedelta(days=_ENTITY_DEDUP_EXPIRES_DAYS)
+        def _existing_outcome(existing: asyncpg.Record) -> str:
+            logger.info(
+                "entity_dedup_curation: retaining existing action for pair %s → %s",
+                source_id,
+                target_id,
+                extra={
+                    "existing_action_id": str(existing["id"]),
+                    "existing_action_status": str(existing["status"]),
+                },
+            )
+            return "existing_pending" if existing["status"] == "pending" else "existing_decision"
 
-                why = (
-                    f"Entity dedup curation detected a potential duplicate entity pair "
-                    f"({match_type} match).\n"
-                    f"Source (newer, to be merged away): {source['canonical_name']!r} "
-                    f"(id={source_id}, type={source['entity_type']})\n"
-                    f"Target (older, to survive): {target['canonical_name']!r} "
-                    f"(id={target_id}, type={target['entity_type']})\n\n"
-                    "Approving will merge the source entity into the target: "
-                    "all facts, aliases, and metadata are re-pointed to the target; "
-                    "the source entity is tombstoned. "
-                    "Rejecting keeps both entities separate."
+        try:
+            # Preserve owner decisions and an approved-but-unexecuted action
+            # for this exact merge direction. Do not turn those audit rows
+            # into fresh review cards or an implicit retry.
+            existing = await _existing_action()
+            if existing is not None:
+                return _existing_outcome(existing)
+
+            action_id = uuid.uuid4()
+            pending_now = datetime.now(UTC)
+            action_expires_at = pending_now + timedelta(days=_ENTITY_DEDUP_EXPIRES_DAYS)
+            deduplication_key = f"relationship:entity-dedup:{source_id}:{target_id}"
+
+            why = (
+                f"Entity dedup curation detected a potential duplicate entity pair "
+                f"({match_type} match).\n"
+                f"Source (newer, to be merged away): {source['canonical_name']!r} "
+                f"(id={source_id}, type={source['entity_type']})\n"
+                f"Target (older, to survive): {target['canonical_name']!r} "
+                f"(id={target_id}, type={target['entity_type']})\n\n"
+                "Approving will merge the source entity into the target: "
+                "all facts, aliases, and metadata are re-pointed to the target; "
+                "the source entity is tombstoned. "
+                "Rejecting keeps both entities separate."
+            )
+            evidence = [
+                {"type": "text", "ref": item, "note": "Entity dedup evidence."}
+                for item in (
+                    "source=entity_dedup_curation",
+                    f"match_type={match_type}",
+                    f"source_entity_id={source_id}",
+                    f"source_canonical_name={source['canonical_name']}",
+                    f"target_entity_id={target_id}",
+                    f"target_canonical_name={target['canonical_name']}",
                 )
-                evidence = [
-                    {"type": "text", "ref": item, "note": "Entity dedup evidence."}
-                    for item in (
-                        "source=entity_dedup_curation",
-                        f"match_type={match_type}",
-                        f"source_entity_id={source_id}",
-                        f"source_canonical_name={source['canonical_name']}",
-                        f"target_entity_id={target_id}",
-                        f"target_canonical_name={target['canonical_name']}",
-                    )
-                ]
+            ]
 
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r/bu-g27ib). Routed through *pool*
-                # (not *conn*) because the push path needs real pool
-                # semantics; the dedup read above has no transactional
-                # dependency on it.
+            # The durable key closes the check-then-insert interval without
+            # holding a connection across the owner-push path. The approvals
+            # writer attempts a push only after a successful INSERT.
+            try:
                 await park_pending_action(
                     db_pool,
                     action_id=action_id,
@@ -3189,8 +3214,17 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     evidence=evidence,
                     origin_butler=_ORIGIN_BUTLER,
                     approval_push_runtime=get_current_approval_push_runtime(),
+                    deduplication_key=deduplication_key,
                 )
-                return "new"
+            except asyncpg.UniqueViolationError:
+                # A concurrent curation run won the unique-key race. Resolve
+                # the durable winner rather than treating its benign conflict
+                # as an operator-visible job error.
+                existing = await _existing_action()
+                if existing is not None:
+                    return _existing_outcome(existing)
+                raise
+            return "new"
         except Exception:
             logger.exception(
                 "entity_dedup_curation: error creating pending_action for pair %s → %s",
@@ -3208,10 +3242,21 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
             stats["errors"] += 1
             continue
 
-        if outcome == "existing":
+        if outcome == "existing_pending":
             stats["pairs_skipped_already_pending"] += 1
             logger.debug(
                 "entity_dedup_curation: skipping pair %s → %s — pending_action already exists",
+                source["id"],
+                target["id"],
+            )
+            continue
+
+        if outcome == "existing_decision":
+            stats["pairs_skipped_prior_decision"] += 1
+            logger.info(
+                "entity_dedup_curation: skipping pair %s → %s — existing "
+                "approved/rejected/abandoned pending_action preserves "
+                "the owner decision or retry target",
                 source["id"],
                 target["id"],
             )
@@ -3270,12 +3315,13 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info(
         "entity_dedup_curation complete: "
         "entities_scanned=%d exact_groups=%d near_identical_pairs=%d "
-        "pairs_surfaced=%d skipped_already_pending=%d errors=%d",
+        "pairs_surfaced=%d skipped_already_pending=%d skipped_prior_decision=%d errors=%d",
         stats["entities_scanned"],
         stats["exact_groups_found"],
         stats["near_identical_pairs_found"],
         stats["pairs_surfaced"],
         stats["pairs_skipped_already_pending"],
+        stats["pairs_skipped_prior_decision"],
         stats["errors"],
     )
     return stats

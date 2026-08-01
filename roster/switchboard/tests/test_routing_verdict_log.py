@@ -55,7 +55,7 @@ class TestNormalizeSenderKey:
             "telegram:bot:@bigbutlerbot",
             "steam:user:76561198037633688",
             "home_assistant:v-on-shenton.parrot-hen.ts.net:443",
-            "spotify:tzeusii",
+            "spotify:acct-1",
             "dashboard:web:019e2246-7f41-754e-a991-63fc7adf334b",
         ],
     )
@@ -65,6 +65,20 @@ class TestNormalizeSenderKey:
     def test_channel_id_case_is_lowercased_but_prefix_preserved(self):
         # A mixed-case channel id lowercases whole; the prefix is NOT stripped.
         assert normalize_sender_key("Home_Assistant:HOST:443") == "home_assistant:host:443"
+
+    def test_non_email_endpoint_containing_at_sign_preserves_full_identity(self):
+        """Only the email channel may parse an embedded email address."""
+        endpoint = "Google_Calendar:user:Owner@Example.COM"
+        assert (
+            normalize_sender_key(endpoint, source_channel="calendar")
+            == "google_calendar:user:owner@example.com"
+        )
+
+    def test_email_channel_still_extracts_display_name_address(self):
+        assert (
+            normalize_sender_key("Billing Team <BILLING@Chase.com>", source_channel="email")
+            == "billing@chase.com"
+        )
 
     def test_email_branch_delegates_to_shared_normalizer(self):
         # bu-jxsew convergence: the email branch reuses the shared canonical
@@ -160,6 +174,24 @@ class TestRecordRoutingVerdict:
         assert params[4] == "route_to"
         assert params[5] == "finance"
         assert params[6] == "11111111-1111-1111-1111-111111111111"
+
+    async def test_non_email_writer_keeps_an_at_sign_endpoint_as_the_sender_key(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="row-id-456")
+
+        await record_routing_verdict(
+            pool,
+            ingestion_event_id="00000000-0000-0000-0000-000000000002",
+            sender_identity="google_calendar:user:Owner@Example.COM",
+            source_channel="calendar",
+            verdict_source="llm",
+            verdict_action="route_to",
+            verdict_target="lifestyle",
+        )
+
+        _, *params = pool.fetchval.await_args.args
+        assert params[1] == "google_calendar:user:owner@example.com"
+        assert params[2] == "calendar"
 
     async def test_db_error_is_swallowed_and_returns_none(self):
         pool = AsyncMock()

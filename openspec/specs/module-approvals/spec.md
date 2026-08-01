@@ -33,7 +33,7 @@ The module MUST wrap configured MCP tools at FastMCP registration time so that g
 
 ### Requirement: Pending Actions Queue
 
-The `pending_actions` table MUST provide a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, and `evidence`.
+The `pending_actions` table MUST provide a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`.
 
 #### Scenario: Pending action rationale fields
 
@@ -41,6 +41,15 @@ The `pending_actions` table MUST provide a durable queue and audit log for appro
 - **THEN** nullable column `why TEXT` is available for human-readable rationale
 - **AND** non-null column `evidence JSONB DEFAULT '[]'::jsonb` is available for cited evidence
 - **AND** legacy rows without rationale data remain readable with `why = NULL` and `evidence = '[]'::jsonb`
+
+#### Scenario: Semantic key serializes active equivalent actions
+
+- **WHEN** concurrent producers park actions with the same non-null
+  `deduplication_key`
+- **THEN** a partial unique constraint MUST allow at most one row with that
+  key in `pending`, `approved`, `rejected`, or `abandoned` status
+- **AND** null historic keys MUST remain allowed, while an `expired` action
+  MUST not block a newly surfaced action with the same key
 
 #### Scenario: List pending actions with status filter
 
@@ -274,7 +283,8 @@ The module MUST support configurable retention windows for approvals data: `pend
 #### Scenario: Cleanup old actions
 
 - **WHEN** `cleanup_old_actions` runs
-- **THEN** only terminal-status actions (`rejected`, `expired`, `executed`, `abandoned`) older than the retention window are deleted
+- **THEN** terminal-status actions (`rejected`, `expired`, `executed`, `abandoned`) older than the retention window are deleted, except an ordered-pair `memory_entity_merge` or legacy `entity_merge` decision in `rejected` or `abandoned` state
+- **AND** that exempt entity-merge decision remains durable so curation cannot re-propose the same ordered pair after the ordinary approval retention window
 - **AND** `approved` actions remain retained and retryable, including old rows with a null `execution_result`
 - **AND** related immutable action events remain unchanged with their historical `action_id` until their own event-retention window
 - **AND** standing rules created from those terminal actions remain unchanged with their historical `created_from` until their separate rule-retention policy applies

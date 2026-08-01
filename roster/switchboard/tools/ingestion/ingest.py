@@ -110,6 +110,7 @@ _ALLOWED_RULE_TYPES = frozenset(
         "substring",
         "chat_id",
         "channel_id",
+        "source_endpoint",
     }
 )
 _ALLOWED_ACTIONS = frozenset(
@@ -429,6 +430,7 @@ def _make_ingestion_envelope(
 
     source = payload.get("source") or {}
     source_channel = str(source.get("channel") or "")
+    source_endpoint_identity = str(source.get("endpoint_identity") or "").strip().lower()
 
     payload_section = payload.get("payload") or {}
     raw = payload_section.get("raw") or {}
@@ -483,6 +485,7 @@ def _make_ingestion_envelope(
     return IngestionEnvelope(
         sender_address=sender_address,
         source_channel=source_channel,
+        source_endpoint_identity=source_endpoint_identity,
         headers=headers,
         mime_parts=mime_parts,
         thread_id=str(thread_id) if thread_id else None,

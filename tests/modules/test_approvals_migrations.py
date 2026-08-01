@@ -168,3 +168,19 @@ def test_abandoned_recovery_migration_extends_only_approval_vocabularies() -> No
     assert "to_regclass('pending_actions')" in upgrade
     assert "cannot downgrade approvals_012 while abandoned actions exist" in downgrade
     assert "to_regclass('approval_events')" in downgrade
+
+
+def test_pending_action_deduplication_migration_follows_abandonment() -> None:
+    """Semantic keys must include every owner-decision state at the chain head."""
+    mod = _load_migration("013_pending_action_deduplication_key.py")
+    upgrade = " ".join("\n".join(_collect_sqls(mod)).lower().split())
+    downgrade = " ".join("\n".join(_collect_sqls(mod, "downgrade")).lower().split())
+
+    assert mod.revision == "approvals_013"
+    assert mod.down_revision == "approvals_012"
+    assert "ux_pending_actions_active_deduplication_key" in upgrade
+    assert "'abandoned'" in upgrade
+    assert "'action_abandoned'" in upgrade
+    assert "drop index if exists ux_pending_actions_active_deduplication_key" in upgrade
+    assert "duplicate owner-decision deduplication keys" in upgrade
+    assert "cannot downgrade approvals_013 while deduplication keys exist" in downgrade

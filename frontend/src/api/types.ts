@@ -4475,6 +4475,7 @@ export interface IngestionRuleUpdate {
 export interface IngestionRuleTestEnvelope {
   sender_address?: string;
   source_channel?: string;
+  source_endpoint_identity?: string;
   headers?: Record<string, string>;
   mime_parts?: string[];
   raw_key?: string;

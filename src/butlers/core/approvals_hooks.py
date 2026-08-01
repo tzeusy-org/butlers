@@ -522,6 +522,7 @@ async def park_pending_action(
     reversibility: str | None = None,
     origin_butler: str | None = None,
     approval_push_runtime: Any = None,
+    deduplication_key: str | None = None,
 ) -> Any | None:
     """Insert one PENDING ``pending_actions`` row and push it to the owner.
 
@@ -545,19 +546,21 @@ async def park_pending_action(
         )
         return None
 
-    return await _park_pending_action_hook(
-        pool,
-        action_id=action_id,
-        tool_name=tool_name,
-        tool_args=tool_args,
-        agent_summary=agent_summary,
-        requested_at=requested_at,
-        expires_at=expires_at,
-        session_id=session_id,
-        why=why,
-        evidence=evidence,
-        blast_radius=blast_radius,
-        reversibility=reversibility,
-        origin_butler=origin_butler,
-        approval_push_runtime=approval_push_runtime,
-    )
+    kwargs: dict[str, Any] = {
+        "action_id": action_id,
+        "tool_name": tool_name,
+        "tool_args": tool_args,
+        "agent_summary": agent_summary,
+        "requested_at": requested_at,
+        "expires_at": expires_at,
+        "session_id": session_id,
+        "why": why,
+        "evidence": evidence,
+        "blast_radius": blast_radius,
+        "reversibility": reversibility,
+        "origin_butler": origin_butler,
+        "approval_push_runtime": approval_push_runtime,
+    }
+    if deduplication_key is not None:
+        kwargs["deduplication_key"] = deduplication_key
+    return await _park_pending_action_hook(pool, **kwargs)
