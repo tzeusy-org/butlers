@@ -77,10 +77,10 @@ def _runtime(dispatch: AsyncMock) -> ApprovalPushRuntime:
     )
 
 
-async def test_park_deduplication_key_blocks_active_duplicates_and_allows_expiry(
+async def test_park_deduplication_key_blocks_owner_decisions_and_allows_expiry(
     approval_push_pool: asyncpg.Pool,
 ) -> None:
-    """A durable key protects concurrent parks without blocking expiry resurfacing."""
+    """A durable key preserves owner decisions without blocking expiry resurfacing."""
     now = datetime.now(UTC)
     deduplication_key = "relationship:entity-dedup:test-source:test-target"
 
@@ -102,7 +102,7 @@ async def test_park_deduplication_key_blocks_active_duplicates_and_allows_expiry
     await _park(first_action_id)
 
     await approval_push_pool.execute(
-        "UPDATE pending_actions SET status = 'approved' WHERE id = $1", first_action_id
+        "UPDATE pending_actions SET status = 'abandoned' WHERE id = $1", first_action_id
     )
     with pytest.raises(asyncpg.UniqueViolationError):
         await _park(uuid.uuid4())

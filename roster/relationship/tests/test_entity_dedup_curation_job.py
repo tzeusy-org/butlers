@@ -22,7 +22,7 @@ import asyncio
 import shutil
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -36,6 +36,7 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     _levenshtein,
     run_entity_dedup_curation,
 )
+from butlers.modules.approvals.retention import RetentionPolicy, cleanup_old_actions
 
 relationship_jobs = sys.modules["butlers.jobs._roster.relationship_jobs"]
 
@@ -108,7 +109,7 @@ async def _setup_schema(pool: asyncpg.Pool) -> None:
         "ux_pending_actions_active_deduplication_key "
         "ON pending_actions (deduplication_key) "
         "WHERE deduplication_key IS NOT NULL "
-        "AND status IN ('pending', 'approved', 'rejected')"
+        "AND status IN ('pending', 'approved', 'rejected', 'abandoned')"
     )
     await pool.execute(_CREATE_STATE_SQL)
 
@@ -559,6 +560,69 @@ async def test_entity_dedup_approved_unexecuted_pair_is_not_resurfaced(
     result = await run_entity_dedup_curation(pool)
     assert result["pairs_surfaced"] == 0
     assert result["pairs_skipped_already_pending"] == 0
+    assert result["pairs_skipped_prior_decision"] == 1
+
+
+async def test_entity_dedup_abandoned_pair_is_not_resurfaced(
+    pool: asyncpg.Pool, mock_propose_insight
+):
+    """Abandoning an approved retry is a durable owner decision for this pair."""
+    target = await _make_entity(pool, name="Chloe Dupont")
+    source = await _make_entity(pool, name="Chloe Dupont")
+
+    await pool.execute(
+        "INSERT INTO pending_actions "
+        "(id, tool_name, tool_args, agent_summary, status, requested_at, evidence) "
+        "VALUES ($1, 'memory_entity_merge', $2, 'owner abandoned retry', 'abandoned', "
+        "now(), '[]')",
+        uuid.uuid4(),
+        {"source_entity_id": str(source), "target_entity_id": str(target)},
+    )
+
+    result = await run_entity_dedup_curation(pool)
+    assert result["pairs_surfaced"] == 0
+    assert result["pairs_skipped_already_pending"] == 0
+    assert result["pairs_skipped_prior_decision"] == 1
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "status"),
+    [("memory_entity_merge", "rejected"), ("entity_merge", "abandoned")],
+)
+async def test_entity_dedup_owner_decision_survives_retention(
+    pool: asyncpg.Pool,
+    mock_propose_insight,
+    tool_name: str,
+    status: str,
+):
+    """Retention must not erase the pair decision that suppresses future cards."""
+    target = await _make_entity(pool, name="Chloe Dupont")
+    source = await _make_entity(pool, name="Chloe Dupont")
+    action_id = uuid.uuid4()
+    decided_at = datetime.now(UTC) - timedelta(days=365)
+
+    await pool.execute(
+        "INSERT INTO pending_actions "
+        "(id, tool_name, tool_args, agent_summary, status, requested_at, decided_at, evidence) "
+        "VALUES ($1, $2, $3, 'old owner decision', $4, $5, $5, '[]')",
+        action_id,
+        tool_name,
+        {"source_entity_id": str(source), "target_entity_id": str(target)},
+        status,
+        decided_at,
+    )
+
+    counts = await cleanup_old_actions(
+        pool,
+        RetentionPolicy(pending_actions_retention_days=90),
+    )
+    assert counts == {}
+    assert (
+        await pool.fetchval("SELECT id FROM pending_actions WHERE id = $1", action_id) == action_id
+    )
+
+    result = await run_entity_dedup_curation(pool)
+    assert result["pairs_surfaced"] == 0
     assert result["pairs_skipped_prior_decision"] == 1
 
 

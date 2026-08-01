@@ -1,8 +1,8 @@
 # Durable Approval Recurrence Repair Plan
 
 **Goal:** Stop opaque connector identities from repeatedly generating unusable
-standing-rule promotion prompts, and stop a rejected or still-unexecuted entity
-merge approval from being re-created by weekly curation.
+standing-rule promotion prompts, and stop a rejected, abandoned, or
+still-unexecuted entity-merge approval from being re-created by weekly curation.
 
 **Architecture:** Model a connector endpoint as a first-class, exact-match
 ingestion rule condition. New promotion suggestions select `sender_address` only
@@ -10,9 +10,10 @@ for real email identities and otherwise propose `source_endpoint`; the ingestion
 envelope carries that endpoint from intake through policy evaluation. A narrow,
 provenance-gated compatibility path makes already-promoted legacy opaque
 `sender_address` rows effective without rewriting their audit history. Entity
-deduplication treats a current pending, approved, or rejected action for the
-same ordered pair as durable curation state; it neither changes that action nor
-re-executes it.
+deduplication treats a current pending, approved, rejected, or abandoned action
+for the same ordered pair as durable curation state; retention preserves
+rejected and abandoned pair decisions so cleanup cannot erase that state. The
+job neither changes that action nor re-executes it.
 
 **Tech stack:** Python 3.12, asyncio, asyncpg, Alembic, FastAPI/Pydantic,
 React/TypeScript, Vitest, pytest, OpenSpec Markdown.
@@ -37,6 +38,7 @@ React/TypeScript, Vitest, pytest, OpenSpec Markdown.
 - Modify: `tests/modules/test_module_pipeline.py`
 - Modify: `tests/api/test_switchboard.py`
 - Modify: `roster/relationship/tests/test_entity_dedup_curation_job.py`
+- Modify: `tests/modules/test_approvals_retention.py`
 - Modify: `frontend/src/components/ingestion/filters/RuleEditor.test.tsx`
 
 1. Add failing tests showing that an opaque source endpoint cannot be covered by
@@ -47,8 +49,9 @@ React/TypeScript, Vitest, pytest, OpenSpec Markdown.
    available; non-email uses the stable source endpoint.
 4. Add API/editor tests for creating and testing a `source_endpoint` rule.
 5. Replace the old "resurface after decided" entity-dedup expectation with
-   rejected and approved-but-unexecuted suppression tests. Retain pending and
-   expired lifecycle coverage.
+   rejected, abandoned, and approved-but-unexecuted suppression tests. Retain
+   pending and expired lifecycle coverage, including a retention-to-curation
+   regression for legacy null-key decisions.
 6. Run focused tests and record the expected failures before implementation.
 
 ## Task 2: Introduce a durable source-endpoint rule type
@@ -84,15 +87,25 @@ React/TypeScript, Vitest, pytest, OpenSpec Markdown.
 
 **Files:**
 - Modify: `roster/relationship/jobs/relationship_jobs.py`
+- Modify: `src/butlers/modules/approvals/retention.py`
+- Add: `src/butlers/modules/approvals/migrations/013_pending_action_deduplication_key.py`
 
 1. Extend the exact ordered-pair lookup from `pending` to `pending`,
-   `approved`, and `rejected` action statuses for both canonical and legacy
-   entity-merge tool names.
+   `approved`, `rejected`, and `abandoned` action statuses for both canonical
+   and legacy entity-merge tool names.
 2. Report prior-decision suppression separately from already-pending work while
    retaining existing job result keys for dashboard compatibility.
 3. Keep `expired` actions eligible for re-evaluation; an expiry is not an owner
-   decision. Do not retry or mutate `approved` actions in this job.
-4. Include the existing action ID/status in structured job logs for operator
+   decision. Do not retry or mutate `approved` actions in this job; successful
+   merges tombstone their source entity.
+4. Preserve rejected and abandoned ordered entity-merge decisions across normal
+   approval retention (including legacy null-key rows), while allowing unrelated
+   terminal actions to clean normally.
+5. Add a nullable semantic key and partial unique index for new pair actions so
+   concurrent curation cannot create duplicate cards; place the migration after
+   the main abandonment migration and converge a former divergent `012` schema
+   without rewriting rows.
+6. Include the existing action ID/status in structured job logs for operator
    diagnosis.
 
 ## Task 4: Make the rule usable from the dashboard
@@ -111,14 +124,16 @@ React/TypeScript, Vitest, pytest, OpenSpec Markdown.
 
 **Files:**
 - Modify: `openspec/specs/ingestion-policy/spec.md`
+- Modify: `openspec/specs/module-approvals/spec.md`
 - Modify: `openspec/specs/switchboard-rule-promotion/spec.md`
 - Modify: `openspec/specs/relationship-curation/spec.md`
 
 1. Document source-endpoint exact matching and email/non-email identity
    selection.
-2. Document that curation respects a rejected or awaiting-execution exact pair
-   without treating that as automatic execution or historical repair.
+2. Document that curation respects a rejected, abandoned, or awaiting-execution
+   exact pair without treating that as automatic execution or historical repair,
+   and that retention cannot erase durable pair decisions.
 3. Run focused Python, integration (where Docker is available), frontend, type,
    formatting/lint, and relevant broader regression suites.
-4. Inspect the final diff, commit the scoped change, push the branch, and open a
-   pull request without merging it.
+4. Inspect the final diff, commit the scoped change, push the branch, pass
+   exact-head review, and merge through the pull request.

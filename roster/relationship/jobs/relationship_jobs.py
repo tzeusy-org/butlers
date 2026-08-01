@@ -2942,13 +2942,14 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     so the owner receives a Telegram notification.
 
     **Dedup guard:** before inserting, the job checks whether a current
-    ``pending``, ``approved``, or ``rejected`` row already exists for the same
+    ``pending``, ``approved``, ``rejected``, or ``abandoned`` row already exists for the same
     ordered pair (source, target). Both the canonical callable name and the
     historic ``entity_merge`` name count during the bounded compatibility
     window. An approval that awaits execution remains the one retryable
-    record; a rejection is a durable owner decision. The job does not mutate
-    or retry either historic action. Expired actions remain eligible for a
-    fresh review because expiry is not an owner decision.
+    record; a rejection or abandonment is a durable owner decision retained
+    across approval cleanup. The job does not mutate or retry either historic
+    action. Expired actions remain eligible for a fresh review because expiry
+    is not an owner decision.
 
     **Merge direction convention:** within each duplicate group, the entity
     with the highest ``created_at`` (newest) is the source (merged away) and
@@ -2965,7 +2966,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
           - near_identical_pairs_found: number of near-identical pairs detected.
           - pairs_surfaced: number of new pending_actions rows created.
           - pairs_skipped_already_pending: number of pairs skipped (action exists).
-          - pairs_skipped_prior_decision: number skipped by approved/rejected history.
+          - pairs_skipped_prior_decision: number skipped by approved/rejected/abandoned history.
           - errors: number of errors during processing.
     """
     from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -3131,7 +3132,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     """
                     SELECT id, status FROM pending_actions
                      WHERE tool_name IN ('memory_entity_merge', 'entity_merge')
-                       AND status IN ('pending', 'approved', 'rejected')
+                       AND status IN ('pending', 'approved', 'rejected', 'abandoned')
                        AND (tool_args ->> 'source_entity_id') = $1
                        AND (tool_args ->> 'target_entity_id') = $2
                      ORDER BY requested_at DESC, id DESC
@@ -3253,8 +3254,9 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if outcome == "existing_decision":
             stats["pairs_skipped_prior_decision"] += 1
             logger.info(
-                "entity_dedup_curation: skipping pair %s → %s — existing approved/rejected "
-                "pending_action preserves the owner decision or retry target",
+                "entity_dedup_curation: skipping pair %s → %s — existing "
+                "approved/rejected/abandoned pending_action preserves "
+                "the owner decision or retry target",
                 source["id"],
                 target["id"],
             )

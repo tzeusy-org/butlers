@@ -92,11 +92,14 @@ The entity-dedup curation job SHALL preserve the approval lifecycle for each
 exact ordered `(source_entity_id, target_entity_id)` pair. It MUST never merge
 or retry a pair itself. Before proposing a new `memory_entity_merge` action,
 it MUST recognize both the canonical and legacy `entity_merge` tool names with
-status `pending`, `approved`, or `rejected` for that same ordered pair. It MUST
+status `pending`, `approved`, `rejected`, or `abandoned` for that same ordered pair. It MUST
 choose the canonical target deterministically by `(created_at, id) ASC` and
 park every new pair with the stable
 `relationship:entity-dedup:<source>:<target>` `deduplication_key`, so database
 uniqueness protects concurrent curation runs as well as sequential scans.
+Approval retention MUST retain rejected and abandoned ordered entity-merge
+decisions, including rollout-era null-key rows, so their decision does not
+expire into a new card.
 
 #### Scenario: Rejected pair is not proposed again
 
@@ -111,6 +114,13 @@ uniqueness protects concurrent curation runs as well as sequential scans.
 - **THEN** the curation job MUST not create a duplicate approval
 - **AND** it MUST not execute or retry the existing action; an operator retry
   remains the only execution path
+
+#### Scenario: Abandoned pair is not proposed again
+
+- **WHEN** a matching ordered pair has an abandoned entity-merge approval
+- **THEN** the curation job MUST not create another approval or owner insight
+- **AND** it MUST retain the abandoned action as the owner's decision not to
+  recover that unexecuted merge
 
 #### Scenario: Expired pair may be reviewed again
 
