@@ -118,7 +118,7 @@ atomically require the reviewed target ref or base SHA. This helper therefore:
 2. keeps the supported head-SHA pin on the REST squash request, and
 3. re-reads the merged PR's retained target branch name through GraphQL, and
 4. verifies that the resulting squash commit has exactly the reviewed base as
-   its sole parent.
+   its sole parent and the same immutable result tree as the reviewed head.
 
 It is a final merge guard, not a substitute for terminal hosted CI, independent
 review, or resolved review threads. Capture `headRefOid`, `baseRefName`, and
@@ -153,6 +153,14 @@ evidence. `postmerge-base-ref-drift` means the post-merge GraphQL lookup either
 could not verify the retained target ref or found a different ref name. It is
 also exit `4` and blocks closure even if the squash commit's sole parent still
 matches the reviewed base SHA.
+`postmerge-patch-drift` is likewise exit `4`: it means the helper could not
+obtain immutable commit-tree evidence for both commits, or their result trees
+differed. With the verified sole parent equal to the reviewed base, matching
+tree IDs are an authoritative proof that the landed squash has the reviewed
+net patch, including binary, rename, and empty changes. The JSON audit records
+`expected_patch_tree_sha`, `landed_patch_tree_sha`, and
+`patch_identity_matches`; no nonmatching or unavailable evidence permits
+source-Bead closure.
 
 ## fix_beads_dependency_timestamps.py
 

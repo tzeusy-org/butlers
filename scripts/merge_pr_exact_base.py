@@ -7,7 +7,7 @@ base branch ref or SHA.  A pull request can therefore be retargeted or its base
 branch can advance after final revalidation and before the REST request is
 processed.  This helper catches a pre-request mismatch and, because that
 remaining race cannot be atomically prevented through the API, audits the
-parent of the resulting squash commit.
+parent and immutable result tree of the resulting squash commit.
 
 This is a merge execution guard, not a replacement for the existing
 independent review and terminal-CI gates.  A source Bead may close only when
@@ -38,6 +38,7 @@ class MergeOutcome(StrEnum):
     MERGED_EXACT_BASE = "merged-exact-base"
     POSTMERGE_BASE_REF_DRIFT = "postmerge-base-ref-drift"
     POSTMERGE_BASE_DRIFT = "postmerge-base-drift"
+    POSTMERGE_PATCH_DRIFT = "postmerge-patch-drift"
     POSTMERGE_UNEXPECTED_PARENT_SHAPE = "postmerge-unexpected-squash-parent-shape"
 
 
@@ -65,6 +66,9 @@ class MergeAudit:
     postmerge_base_ref_name: str | None = None
     merge_sha: str | None = None
     parent_shas: list[str] | None = None
+    expected_patch_tree_sha: str | None = None
+    landed_patch_tree_sha: str | None = None
+    patch_identity_matches: bool | None = None
     message: str | None = None
 
     @property
@@ -88,6 +92,7 @@ class MergeAudit:
         if self.outcome in {
             MergeOutcome.POSTMERGE_BASE_REF_DRIFT,
             MergeOutcome.POSTMERGE_BASE_DRIFT,
+            MergeOutcome.POSTMERGE_PATCH_DRIFT,
         }:
             return "leave-source-bead-open-and-run-postmerge-race-audit"
         return "leave-source-bead-open-and-investigate"
@@ -101,6 +106,7 @@ class MergeAudit:
         if self.outcome in {
             MergeOutcome.POSTMERGE_BASE_REF_DRIFT,
             MergeOutcome.POSTMERGE_BASE_DRIFT,
+            MergeOutcome.POSTMERGE_PATCH_DRIFT,
             MergeOutcome.POSTMERGE_UNEXPECTED_PARENT_SHAPE,
         }:
             return 4
@@ -259,6 +265,16 @@ def fetch_commit_parent_shas(repo: str, commit_sha: str) -> list[str]:
     return parent_shas
 
 
+def fetch_commit_tree_sha(repo: str, commit_sha: str) -> str:
+    """Return an immutable commit tree SHA for authoritative patch comparison."""
+    payload = run_gh_json(["api", f"repos/{normalize_repo(repo)}/commits/{commit_sha}"])
+    tree = payload.get("tree") if isinstance(payload, dict) else None
+    tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+    if not isinstance(tree_sha, str) or not tree_sha:
+        raise RuntimeError(f"Commit {commit_sha} did not return a tree SHA")
+    return tree_sha
+
+
 def _audit(
     outcome: MergeOutcome,
     expected_head_sha: str,
@@ -269,6 +285,9 @@ def _audit(
     merge_sha: str | None = None,
     parent_shas: list[str] | None = None,
     postmerge_base_ref_name: str | None = None,
+    expected_patch_tree_sha: str | None = None,
+    landed_patch_tree_sha: str | None = None,
+    patch_identity_matches: bool | None = None,
     message: str | None = None,
 ) -> MergeAudit:
     return MergeAudit(
@@ -280,6 +299,9 @@ def _audit(
         postmerge_base_ref_name=postmerge_base_ref_name,
         merge_sha=merge_sha,
         parent_shas=parent_shas,
+        expected_patch_tree_sha=expected_patch_tree_sha,
+        landed_patch_tree_sha=landed_patch_tree_sha,
+        patch_identity_matches=patch_identity_matches,
         message=message,
     )
 
@@ -292,12 +314,12 @@ def merge_after_exact_base_revalidation(
     expected_base_ref_name: str,
     expected_base_sha: str,
 ) -> MergeAudit:
-    """Merge only from matching final evidence, then prove the landed parent.
+    """Merge only from matching final evidence, then prove the landed patch.
 
     There is an unavoidable race between this preflight fetch and GitHub
-    processing the merge request. The post-merge parent audit is deliberately
-    mandatory: a non-exact parent returns a nonzero result even though GitHub
-    has already merged the PR.
+    processing the merge request. The post-merge audit is deliberately
+    mandatory: a non-exact parent or nonmatching patch returns a nonzero result
+    even though GitHub has already merged the PR.
     """
     premerge = fetch_pull_request_snapshot(repo, pr_number)
     if premerge.state != "OPEN":
@@ -385,6 +407,43 @@ def merge_after_exact_base_revalidation(
             message="GitHub retargeted the pull request after final revalidation",
         )
 
+    try:
+        expected_patch_tree_sha = fetch_commit_tree_sha(repo, expected_head_sha)
+        landed_patch_tree_sha = fetch_commit_tree_sha(repo, merge_sha)
+    except (RuntimeError, ValueError) as exc:
+        return _audit(
+            MergeOutcome.POSTMERGE_PATCH_DRIFT,
+            expected_head_sha,
+            expected_base_ref_name,
+            expected_base_sha,
+            premerge,
+            merge_sha=merge_sha,
+            parent_shas=parent_shas,
+            postmerge_base_ref_name=postmerge_base_ref_name,
+            message=f"Could not verify the reviewed and landed patch identity: {exc}",
+        )
+
+    # A diff is determined by its base tree and result tree. The sole-parent
+    # check below pins both comparisons to expected_base_sha, so equal immutable
+    # tree IDs prove the squash applied the reviewed net patch, including
+    # binary, rename, and empty changes without relying on a local checkout.
+    patch_identity_matches = expected_patch_tree_sha == landed_patch_tree_sha
+    if not patch_identity_matches:
+        return _audit(
+            MergeOutcome.POSTMERGE_PATCH_DRIFT,
+            expected_head_sha,
+            expected_base_ref_name,
+            expected_base_sha,
+            premerge,
+            merge_sha=merge_sha,
+            parent_shas=parent_shas,
+            postmerge_base_ref_name=postmerge_base_ref_name,
+            expected_patch_tree_sha=expected_patch_tree_sha,
+            landed_patch_tree_sha=landed_patch_tree_sha,
+            patch_identity_matches=False,
+            message="GitHub landed a squash tree that differs from the reviewed head tree",
+        )
+
     if parent_shas == [expected_base_sha]:
         return _audit(
             MergeOutcome.MERGED_EXACT_BASE,
@@ -395,6 +454,9 @@ def merge_after_exact_base_revalidation(
             merge_sha=merge_sha,
             parent_shas=parent_shas,
             postmerge_base_ref_name=postmerge_base_ref_name,
+            expected_patch_tree_sha=expected_patch_tree_sha,
+            landed_patch_tree_sha=landed_patch_tree_sha,
+            patch_identity_matches=True,
             message=str(response.get("message") or "Pull Request successfully merged"),
         )
     if len(parent_shas) != 1:
@@ -407,6 +469,9 @@ def merge_after_exact_base_revalidation(
             merge_sha=merge_sha,
             parent_shas=parent_shas,
             postmerge_base_ref_name=postmerge_base_ref_name,
+            expected_patch_tree_sha=expected_patch_tree_sha,
+            landed_patch_tree_sha=landed_patch_tree_sha,
+            patch_identity_matches=True,
             message="Squash merge must produce exactly one parent before a source Bead can close",
         )
     return _audit(
@@ -418,6 +483,9 @@ def merge_after_exact_base_revalidation(
         merge_sha=merge_sha,
         parent_shas=parent_shas,
         postmerge_base_ref_name=postmerge_base_ref_name,
+        expected_patch_tree_sha=expected_patch_tree_sha,
+        landed_patch_tree_sha=landed_patch_tree_sha,
+        patch_identity_matches=True,
         message="GitHub merged the reviewed head onto a different base after preflight",
     )
 
@@ -425,8 +493,8 @@ def merge_after_exact_base_revalidation(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Perform a SHA-pinned squash merge and verify the resulting commit parent matches "
-            "the final reviewed base SHA."
+            "Perform a SHA-pinned squash merge and verify its parent and patch tree match "
+            "the final reviewed evidence."
         )
     )
     parser.add_argument("--repo", default="Tzeusy/butlers", help="GitHub repository as owner/repo")

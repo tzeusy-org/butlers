@@ -24,6 +24,8 @@ HEAD_SHA = "95feb463f5f563f287f08c3f2130934709e80ae1"
 REVIEWED_BASE_SHA = "257d0942d066e5af6d0981a892fad7e48f7e040d"
 ADVANCED_BASE_SHA = "2963db74bad62f44406c78f76dd5eb0cf7272a9e"
 MERGE_SHA = "85dcdf2ceac01636327cce505725dea514b5d0c4"
+EXPECTED_PATCH_TREE_SHA = "c7c5f28b10a93e0ee65dc66ed7cc631624162446"
+LANDED_PATCH_TREE_SHA = "4f50d91b00e2a56189c1589968ad3e1a61e01725"
 
 
 def _snapshot(
@@ -162,6 +164,18 @@ def test_exact_base_squash_merge_allows_source_bead_closure(
         "fetch_pull_request_base_ref_name",
         fetch_pull_request_base_ref_name,
     )
+    tree_queries: list[tuple[object, ...]] = []
+
+    def fetch_commit_tree_sha(*args: object) -> str:
+        tree_queries.append(args)
+        return EXPECTED_PATCH_TREE_SHA
+
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_commit_tree_sha",
+        fetch_commit_tree_sha,
+        raising=False,
+    )
 
     result = merge_guard.merge_after_exact_base_revalidation(
         REPO,
@@ -177,8 +191,105 @@ def test_exact_base_squash_merge_allows_source_bead_closure(
     assert result.merge_sha == MERGE_SHA
     assert result.parent_shas == [REVIEWED_BASE_SHA]
     assert result.postmerge_base_ref_name == "main"
+    assert tree_queries == [(REPO, HEAD_SHA), (REPO, MERGE_SHA)]
+    assert result.to_dict()["expected_patch_tree_sha"] == EXPECTED_PATCH_TREE_SHA
+    assert result.to_dict()["landed_patch_tree_sha"] == EXPECTED_PATCH_TREE_SHA
+    assert result.to_dict()["patch_identity_matches"] is True
     assert result.source_bead_closure_allowed is True
     assert result.rebase_and_repeat_required is False
+
+
+def test_correct_parent_with_different_landed_patch_blocks_source_bead_closure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exact parent cannot stand in for proof of the reviewed patch."""
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+    monkeypatch.setattr(
+        merge_guard,
+        "request_squash_merge",
+        lambda *_: {"merged": True, "sha": MERGE_SHA},
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_commit_parent_shas",
+        lambda *_: [REVIEWED_BASE_SHA],
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_pull_request_base_ref_name",
+        lambda *_: "main",
+        raising=False,
+    )
+
+    def fetch_commit_tree_sha(_repo: str, commit_sha: str) -> str:
+        return {
+            HEAD_SHA: EXPECTED_PATCH_TREE_SHA,
+            MERGE_SHA: LANDED_PATCH_TREE_SHA,
+        }[commit_sha]
+
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_commit_tree_sha",
+        fetch_commit_tree_sha,
+        raising=False,
+    )
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert result.outcome.value == "postmerge-patch-drift"
+    assert result.to_dict()["expected_patch_tree_sha"] == EXPECTED_PATCH_TREE_SHA
+    assert result.to_dict()["landed_patch_tree_sha"] == LANDED_PATCH_TREE_SHA
+    assert result.to_dict()["patch_identity_matches"] is False
+    assert result.source_bead_closure_allowed is False
+    assert result.exit_code == 4
+
+
+def test_missing_postmerge_patch_evidence_blocks_source_bead_closure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unavailable immutable commit evidence must fail closed after a merge."""
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+    monkeypatch.setattr(
+        merge_guard,
+        "request_squash_merge",
+        lambda *_: {"merged": True, "sha": MERGE_SHA},
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_commit_parent_shas",
+        lambda *_: [REVIEWED_BASE_SHA],
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_pull_request_base_ref_name",
+        lambda *_: "main",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_commit_tree_sha",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("commit evidence unavailable")),
+        raising=False,
+    )
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert result.outcome.value == "postmerge-patch-drift"
+    assert result.to_dict()["patch_identity_matches"] is None
+    assert result.source_bead_closure_allowed is False
+    assert result.exit_code == 4
 
 
 def test_postmerge_base_drift_is_classified_and_blocks_source_bead_closure(
@@ -210,6 +321,11 @@ def test_postmerge_base_drift_is_classified_and_blocks_source_bead_closure(
         "fetch_pull_request_base_ref_name",
         fetch_pull_request_base_ref_name,
     )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_commit_tree_sha",
+        lambda *_: EXPECTED_PATCH_TREE_SHA,
+    )
 
     result = merge_guard.merge_after_exact_base_revalidation(
         REPO,
@@ -223,6 +339,7 @@ def test_postmerge_base_drift_is_classified_and_blocks_source_bead_closure(
     assert result.parent_shas == [ADVANCED_BASE_SHA]
     assert postmerge_base_ref_name_calls == [(REPO, PR_NUMBER)]
     assert result.postmerge_base_ref_name == "main"
+    assert result.patch_identity_matches is True
     assert result.source_bead_closure_allowed is False
     assert result.rebase_and_repeat_required is False
 
