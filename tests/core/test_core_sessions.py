@@ -414,7 +414,7 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
 
 async def test_schedule_costs_date_range_filters_runs(pool):
     """from_date/to_date scope run aggregates; schedules with no runs in-window still appear."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
 
     from butlers.core.scheduler import schedule_create
     from butlers.core.sessions import schedule_costs, session_complete, session_create
@@ -454,7 +454,7 @@ async def test_schedule_costs_date_range_filters_runs(pool):
     await pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
         old,
-        datetime.now(UTC) - timedelta(days=90),
+        datetime(2026, 4, 30, tzinfo=UTC),
     )
     await session_complete(
         pool,
