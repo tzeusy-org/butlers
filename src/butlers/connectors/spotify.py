@@ -2093,7 +2093,7 @@ class SpotifyConnector:
                 or "Spotify credentials require attention",
             )
         if self._source_api_ok is None:
-            return "starting", None
+            return "degraded", "transport=starting"
         if self._source_api_ok:
             return "healthy", None
         return "degraded", self._source_api_error_message or "Spotify API not reachable"

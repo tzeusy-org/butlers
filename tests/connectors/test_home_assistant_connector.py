@@ -25,6 +25,7 @@ import pytest
 
 from butlers.connectors.home_assistant import (
     _DEFAULT_DOMAIN_ALLOWLIST,
+    HAConnector,
     HAConnectorConfig,
     _load_domain_allowlist_from_store,
     persist_ha_history,
@@ -141,6 +142,23 @@ def test_domain_allowlist_env_extends_safety_defaults(monkeypatch: pytest.Monkey
     config = HAConnectorConfig.from_env()
 
     assert config.domain_allowlist == _DEFAULT_DOMAIN_ALLOWLIST | {"media_player"}
+
+
+def test_startup_health_uses_canonical_degraded_state() -> None:
+    connector = HAConnector(HAConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"))
+
+    assert connector._get_health_state() == ("degraded", "transport=starting")
+
+
+def test_failed_initial_websocket_attempt_reports_disconnected_transport() -> None:
+    connector = HAConnector(HAConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"))
+
+    connector.on_ws_disconnected()
+
+    assert connector._get_health_state() == (
+        "degraded",
+        "WebSocket disconnected — transport=disconnected, ws_reconnect_attempts=1",
+    )
 
 
 @pytest.mark.asyncio
