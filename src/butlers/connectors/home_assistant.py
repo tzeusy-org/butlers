@@ -1434,8 +1434,9 @@ class HAConnector:
             self._ha_metrics.set_transport_mode(websocket=True)
 
     def on_ws_disconnected(self) -> None:
-        """Called when WebSocket connection drops or authentication fails."""
+        """Called when a WebSocket connection drops or an initial attempt fails."""
         self._ws_connected = False
+        self._starting = False
         self._ws_reconnect_attempts += 1
         if self._ha_metrics is not None:
             self._ha_metrics.inc_ws_reconnect()

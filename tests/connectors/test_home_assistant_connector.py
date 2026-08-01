@@ -150,6 +150,17 @@ def test_startup_health_uses_canonical_degraded_state() -> None:
     assert connector._get_health_state() == ("degraded", "transport=starting")
 
 
+def test_failed_initial_websocket_attempt_reports_disconnected_transport() -> None:
+    connector = HAConnector(HAConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"))
+
+    connector.on_ws_disconnected()
+
+    assert connector._get_health_state() == (
+        "degraded",
+        "WebSocket disconnected — transport=disconnected, ws_reconnect_attempts=1",
+    )
+
+
 @pytest.mark.asyncio
 async def test_registry_domain_allowlist_overrides_env_extras_but_preserves_defaults(
     monkeypatch: pytest.MonkeyPatch,
