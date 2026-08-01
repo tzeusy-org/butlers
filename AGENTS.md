@@ -327,6 +327,11 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 ### PR merge from worktree contract
 - In this repo's multi-worktree setup, `gh pr merge` from a non-main worktree can fail with `fatal: 'main' is already checked out at '/home/tze/GitHub/butlers'`; reviewer workers should merge via GitHub API (`PUT /repos/{owner}/{repo}/pulls/{number}/merge`) and delete the head ref separately when needed.
 
+### Exact-base REST merge contract
+- GitHub's REST merge endpoint conditionally accepts only the PR head `sha`; it has no atomic expected-base-SHA parameter. A SHA-pinned REST merge can therefore land on a base that advanced after final exact-head revalidation.
+- Capture `headRefOid` and the live target-branch ref SHA (not the PR's potentially stale `baseRefOid`) together during the final terminal-CI / independent-review revalidation and use `python3 scripts/merge_pr_exact_base.py --pr <n> --expected-head <head> --expected-base <base>` rather than a bare REST merge. The helper keeps SHA pinning, rejects pre-request head/base drift without issuing a merge, and audits the resulting squash commit's sole parent.
+- Only `merged-exact-base` (`source_bead_closure_allowed: true`) permits source/review Bead closure. `premerge-head-drift` or `premerge-base-drift` requires a rebase onto current `origin/main` followed by fresh CI and independent exact-head review. `postmerge-base-drift` is a nonzero, already-merged race classification: keep the source Bead open and require a documented post-merge audit; never portray it as exact-current-base evidence.
+
 ### Calendar projection linkage schema contract
 - Core `scheduled_tasks` now includes calendar-linkage columns (`timezone`, `start_at`, `end_at`, `until_at`, `display_title`, `calendar_event_id`) with bounds checks and a partial unique index on `calendar_event_id`.
 
