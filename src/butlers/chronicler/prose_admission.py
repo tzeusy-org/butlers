@@ -82,9 +82,12 @@ def classify_prose_shape(text: str | None) -> str | None:
     if _EXECUTION_SCAFFOLD_RE.match(stripped):
         return INADMISSIBLE_PROSE
     # JSON containers begin with ``{``/``[``; Python literal containers can
-    # also begin with ``(`` (tuple) or be the special empty-set spelling.
-    # A parenthetical narrative that is not a parseable literal stays admissible.
-    if stripped[0] in "{[(" or stripped == "set()":
+    # also begin with ``(`` (tuple) or ``set`` (empty sets accept arbitrary
+    # source whitespace). Let the literal parser normalize candidates instead
+    # of matching one textual empty-set spelling. A parenthetical narrative or
+    # ordinary prose beginning with ``set`` that is not a parseable literal
+    # stays admissible.
+    if stripped[0] in "{[(" or stripped.startswith("set"):
         try:
             json.loads(stripped)
         except (json.JSONDecodeError, ValueError):

@@ -240,6 +240,8 @@ class TestDayCloseReaderInvalid:
                 "inadmissible_prose",
             ),
             ("set()", "2026-04-23", "inadmissible_prose"),
+            ("set( )", "2026-04-23", "inadmissible_prose"),
+            ("set(\n)", "2026-04-23", "inadmissible_prose"),
             ("A concise retrospective.", "2026-04-22", "date_mismatch"),
         ],
     )

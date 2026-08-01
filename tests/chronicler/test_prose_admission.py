@@ -104,8 +104,10 @@ def test_rejects_serialized_python_literal_object() -> None:
     [
         "('tool', {'result': 'raw tool payload'})",
         "set()",
+        "set( )",
+        "set(\n)",
     ],
-    ids=["tuple-tool-payload", "empty-set"],
+    ids=["tuple-tool-payload", "empty-set", "empty-set-space", "empty-set-newline"],
 )
 def test_rejects_serialized_python_literal_containers(text: str) -> None:
     """Container literals are protocol-shaped cache content, never prose."""
@@ -121,6 +123,12 @@ def test_admits_prose_starting_with_brace_like_char_that_is_not_json() -> None:
 def test_admits_parenthetical_narrative_prose() -> None:
     """Parsing a literal container must not reject ordinary parenthetical prose."""
     text = "(After lunch) the day settled into a calm evening walk."
+    assert classify_prose_shape(text) is None
+
+
+def test_admits_narrative_prose_starting_with_set() -> None:
+    """A nonliteral sentence sharing the set prefix remains ordinary prose."""
+    text = "set after set, the workout made the afternoon feel steady."
     assert classify_prose_shape(text) is None
 
 

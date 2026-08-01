@@ -290,6 +290,8 @@ async def test_briefing_uses_templated_fallback_when_cache_invalid(
         "{'tool': 'chronicler_day_close_bundle', 'result': {'date': '2026-05-08'}}",
         "('tool', {'result': 'raw tool payload'})",
         "set()",
+        "set( )",
+        "set(\n)",
     ],
     ids=[
         "code-fence",
@@ -297,6 +299,8 @@ async def test_briefing_uses_templated_fallback_when_cache_invalid(
         "python-literal-object",
         "python-literal-tuple",
         "empty-set",
+        "empty-set-space",
+        "empty-set-newline",
     ],
 )
 async def test_briefing_contains_legacy_malformed_cache_with_templated_copy(

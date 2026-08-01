@@ -552,8 +552,17 @@ async def test_write_day_close_cache_contains_inadmissible_shape_candidate(
         "{'tool': 'chronicler_day_close_bundle', 'result': {'date': '2026-04-24'}}",
         "('tool', {'result': 'raw tool payload'})",
         "set()",
+        "set( )",
+        "set(\n)",
     ],
-    ids=["tool-result-header", "python-literal-object", "python-literal-tuple", "empty-set"],
+    ids=[
+        "tool-result-header",
+        "python-literal-object",
+        "python-literal-tuple",
+        "empty-set",
+        "empty-set-space",
+        "empty-set-newline",
+    ],
 )
 async def test_write_day_close_cache_contains_protocol_or_serialized_object_candidate(
     fake_pool, mock_upsert, output: str
