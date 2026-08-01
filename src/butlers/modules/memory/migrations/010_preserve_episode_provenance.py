@@ -29,12 +29,16 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION record_episode_tombstone()
         RETURNS trigger
         LANGUAGE plpgsql
-        SET search_path FROM CURRENT
+        SET search_path = pg_catalog
         AS $$
         BEGIN
-            INSERT INTO episode_tombstones (episode_id)
-            VALUES (OLD.id)
-            ON CONFLICT (episode_id) DO NOTHING;
+            -- The trigger's relation owns the tombstone.  Do not allow a
+            -- same-named table later in the search path to receive evidence.
+            EXECUTE format(
+                'INSERT INTO %I.episode_tombstones (episode_id) '
+                'VALUES ($1) ON CONFLICT (episode_id) DO NOTHING',
+                TG_TABLE_SCHEMA
+            ) USING OLD.id;
             RETURN OLD;
         END;
         $$

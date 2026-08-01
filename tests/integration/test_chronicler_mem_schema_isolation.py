@@ -277,6 +277,62 @@ async def test_episode_delete_from_domain_pool_writes_private_tombstone(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_episode_delete_refuses_public_tombstone_fallback(
+    isolated_db_url: str,
+) -> None:
+    """A missing private tombstone must abort rather than write to public shadow."""
+    pool = await asyncpg.create_pool(
+        isolated_db_url,
+        min_size=1,
+        max_size=1,
+        server_settings={"search_path": "chronicler,public"},
+        init=register_jsonb_codec,
+    )
+    episode_id = uuid.uuid4()
+    try:
+        async with pool.acquire() as connection:
+            outer_transaction = connection.transaction()
+            await outer_transaction.start()
+            try:
+                await connection.execute(
+                    "INSERT INTO chronicler_mem.episodes (id, butler, content) VALUES ($1, $2, $3)",
+                    episode_id,
+                    "chronicler",
+                    "private episode must not fall back to public provenance",
+                )
+                await connection.execute(
+                    "CREATE TABLE public.episode_tombstones ("
+                    "episode_id UUID PRIMARY KEY, "
+                    "deleted_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                )
+                await connection.execute("DROP TABLE chronicler_mem.episode_tombstones")
+
+                with pytest.raises(asyncpg.UndefinedTableError):
+                    async with connection.transaction():
+                        await connection.execute(
+                            "DELETE FROM chronicler_mem.episodes WHERE id = $1", episode_id
+                        )
+
+                assert (
+                    await connection.fetchval(
+                        "SELECT count(*) FROM chronicler_mem.episodes WHERE id = $1", episode_id
+                    )
+                    == 1
+                )
+                assert (
+                    await connection.fetchval(
+                        "SELECT count(*) FROM public.episode_tombstones WHERE episode_id = $1",
+                        episode_id,
+                    )
+                    == 0
+                )
+            finally:
+                await outer_transaction.rollback()
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
     isolated_db_url: str,
 ) -> None:
