@@ -5614,16 +5614,14 @@ export function getChroniclerCorrectionPrompts(
 }
 
 /**
- * Fetch the day-close cache entry for a window.
- * Returns fresh prose or a stale marker. 404 if no cache entry exists.
+ * Fetch the day-close cache entry for one local date.
+ * Returns fresh prose, a stale marker, or an invalid-without-prose marker.
+ * 404 if no cache entry exists.
  */
 export function getChroniclerDayClose(
   params: ChroniclerDayCloseParams,
 ): Promise<ChroniclerDayCloseResponse> {
-  const sp = new URLSearchParams({
-    window_start: params.window_start,
-    window_end: params.window_end,
-  });
+  const sp = new URLSearchParams({ date: params.date });
   return apiFetch(`/chronicler/aggregate/day-close?${sp.toString()}`);
 }
 

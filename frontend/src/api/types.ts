@@ -6394,10 +6394,9 @@ export interface ChroniclerEpisode {
 
 /**
  * Fresh day-close cache response: prose + provenance refs.
- * Returned when cache_built_at >= all invalidating events in the window.
+ * Returned when cache_built_at >= all invalidating events for the requested date.
  */
 export interface ChroniclerDayCloseFreshResponse {
-  stale: false;
   prose: string;
   provenance_refs: string[];
   cache_built_at: string;
@@ -6405,7 +6404,7 @@ export interface ChroniclerDayCloseFreshResponse {
 
 /**
  * Stale day-close cache response: cache exists but has been invalidated.
- * Returned when any episode/point_event/override in the window changed after cache_built_at.
+ * Returned when any episode/point_event/override for the requested date changed after cache_built_at.
  */
 export interface ChroniclerDayCloseStaleResponse {
   stale: true;
@@ -6413,17 +6412,23 @@ export interface ChroniclerDayCloseStaleResponse {
   last_invalidating_event_at: string;
 }
 
-/** Union of fresh and stale day-close responses. */
+/** Invalid day-close cache response: no renderable prose is returned. */
+export interface ChroniclerDayCloseInvalidResponse {
+  invalid: true;
+  invalid_reason: "inadmissible_prose" | "date_mismatch";
+  cache_built_at: string;
+}
+
+/** Union of fresh, stale, and invalid day-close responses. */
 export type ChroniclerDayCloseResponse =
   | ChroniclerDayCloseFreshResponse
-  | ChroniclerDayCloseStaleResponse;
+  | ChroniclerDayCloseStaleResponse
+  | ChroniclerDayCloseInvalidResponse;
 
 /** Query parameters for GET /api/chronicler/aggregate/day-close. */
 export interface ChroniclerDayCloseParams {
-  /** ISO-8601 date string (YYYY-MM-DD) or datetime for the window start. */
-  window_start: string;
-  /** ISO-8601 date string (YYYY-MM-DD) or datetime for the window end. */
-  window_end: string;
+  /** Local calendar date in YYYY-MM-DD form. */
+  date: string;
 }
 
 /** A single Chronicler point event (corrected view). */

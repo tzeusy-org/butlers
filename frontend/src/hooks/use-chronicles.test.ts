@@ -99,15 +99,15 @@ describe("chroniclesKeys", () => {
   });
 
   it("dayClose includes params", () => {
-    const params: ChroniclerDayCloseParams = { window_start: "2026-01-01", window_end: "2026-01-02" };
+    const params: ChroniclerDayCloseParams = { date: "2026-01-01" };
     const key = chroniclesKeys.dayClose(params);
     expect(key[1]).toBe("day-close");
     expect(key[2]).toEqual(params);
   });
 
-  it("different dayClose windows produce different keys", () => {
-    const k1 = chroniclesKeys.dayClose({ window_start: "2026-01-01", window_end: "2026-01-02" });
-    const k2 = chroniclesKeys.dayClose({ window_start: "2026-01-02", window_end: "2026-01-03" });
+  it("different dayClose dates produce different keys", () => {
+    const k1 = chroniclesKeys.dayClose({ date: "2026-01-01" });
+    const k2 = chroniclesKeys.dayClose({ date: "2026-01-02" });
     expect(k1).not.toEqual(k2);
   });
 
@@ -226,11 +226,10 @@ describe("getChroniclerSourceState client delegate", () => {
 });
 
 describe("getChroniclerDayClose client delegate", () => {
-  const params: ChroniclerDayCloseParams = { window_start: "2026-01-01", window_end: "2026-01-02" };
+  const params: ChroniclerDayCloseParams = { date: "2026-01-01" };
 
   it("returns fresh response when cache is current", async () => {
     const freshResponse = {
-      stale: false as const,
       prose: "Yesterday you worked for 6 hours.",
       provenance_refs: ["ep:abc123"],
       cache_built_at: "2026-01-02T08:00:00Z",
@@ -240,8 +239,7 @@ describe("getChroniclerDayClose client delegate", () => {
     const result = await getChroniclerDayClose(params);
 
     expect(getChroniclerDayClose).toHaveBeenCalledWith(params);
-    expect(result.stale).toBe(false);
-    if (!result.stale) {
+    if (!("stale" in result) && !("invalid" in result)) {
       expect(result.prose).toBe("Yesterday you worked for 6 hours.");
       expect(result.provenance_refs).toContain("ep:abc123");
     }
@@ -257,9 +255,25 @@ describe("getChroniclerDayClose client delegate", () => {
 
     const result = await getChroniclerDayClose(params);
 
-    expect(result.stale).toBe(true);
-    if (result.stale) {
+    expect("stale" in result && result.stale).toBe(true);
+    if ("stale" in result && result.stale) {
       expect(result.last_invalidating_event_at).toBe("2026-01-02T09:30:00Z");
+    }
+  });
+
+  it("represents an invalid cache without prose", async () => {
+    vi.mocked(getChroniclerDayClose).mockResolvedValueOnce({
+      invalid: true as const,
+      invalid_reason: "inadmissible_prose",
+      cache_built_at: "2026-01-02T08:00:00Z",
+    });
+
+    const result = await getChroniclerDayClose(params);
+
+    expect("invalid" in result && result.invalid).toBe(true);
+    if ("invalid" in result && result.invalid) {
+      expect(result.invalid_reason).toBe("inadmissible_prose");
+      expect("prose" in result).toBe(false);
     }
   });
 
@@ -271,18 +285,16 @@ describe("getChroniclerDayClose client delegate", () => {
     await expect(getChroniclerDayClose(params)).rejects.toThrow("No day-close cache entry found");
   });
 
-  it("uses different keys for different windows (cache isolation)", () => {
-    const params2: ChroniclerDayCloseParams = { window_start: "2026-01-02", window_end: "2026-01-03" };
+  it("uses different keys for different dates (cache isolation)", () => {
+    const params2: ChroniclerDayCloseParams = { date: "2026-01-02" };
     expect(chroniclesKeys.dayClose(params)).not.toEqual(chroniclesKeys.dayClose(params2));
   });
 
-  it("passes custom window params through", async () => {
+  it("passes a custom date through", async () => {
     const customParams: ChroniclerDayCloseParams = {
-      window_start: "2026-03-15",
-      window_end: "2026-03-16",
+      date: "2026-03-15",
     };
     vi.mocked(getChroniclerDayClose).mockResolvedValueOnce({
-      stale: false as const,
       prose: "Custom window summary.",
       provenance_refs: [],
       cache_built_at: "2026-03-16T07:00:00Z",
