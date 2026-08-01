@@ -230,6 +230,22 @@ describe("FactDetailPage", () => {
     ).toBe(false);
   });
 
+  it("renders an unresolved source without a dangling episode link", () => {
+    setFact(
+      {
+        ...makeFact({ source_episode_id: "ep-unresolved" }),
+        source_episode_status: "unresolved",
+      } as Fact,
+    );
+    mounted = render();
+    expect(mounted.container.textContent).toContain("Source unresolved");
+    expect(
+      Array.from(mounted.container.querySelectorAll("a")).some(
+        (link) => link.getAttribute("href") === "/memory/episodes/ep-unresolved",
+      ),
+    ).toBe(false);
+  });
+
   it("renders the reverse 'superseded by' link when the payload carries superseded_by", () => {
     setFact(makeFact({ source_episode_id: "ep-1", superseded_by: "new-13572468" }));
     mounted = render();

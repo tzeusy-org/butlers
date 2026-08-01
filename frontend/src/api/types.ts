@@ -2717,6 +2717,9 @@ export interface Episode {
   metadata: Record<string, unknown>;
 }
 
+/** Availability of a durable reference to an episode source. */
+export type EpisodeSourceStatus = "available" | "expired" | "unresolved";
+
 /** A consolidated fact from the mid-term memory tier. */
 export interface Fact {
   id: string;
@@ -2730,7 +2733,7 @@ export interface Fact {
   source_butler: string | null;
   source_episode_id: string | null;
   /** Whether a source episode is still available, expired, or cannot be resolved. */
-  source_episode_status?: "available" | "expired" | "unresolved" | null;
+  source_episode_status?: EpisodeSourceStatus | null;
   session_id: string | null;
   supersedes_id: string | null;
   /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
@@ -2764,13 +2767,25 @@ export interface MemoryRule {
   harmful_count: number;
   source_episode_id: string | null;
   /** Whether a source episode is still available, expired, or cannot be resolved. */
-  source_episode_status?: "available" | "expired" | "unresolved" | null;
+  source_episode_status?: EpisodeSourceStatus | null;
   source_butler: string | null;
   created_at: string;
   last_applied_at: string | null;
   last_evaluated_at: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
+}
+
+/** A durable relation between memory records with episode availability evidence. */
+export interface MemoryLink {
+  source_type: "episode" | "fact" | "rule";
+  source_id: string;
+  target_type: "episode" | "fact" | "rule";
+  target_id: string;
+  relation: string;
+  created_at: string;
+  source_episode_status: EpisodeSourceStatus | null;
+  target_episode_status: EpisodeSourceStatus | null;
 }
 
 /** Aggregated statistics across all memory tiers. */

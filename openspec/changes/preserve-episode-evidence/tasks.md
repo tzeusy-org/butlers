@@ -29,3 +29,6 @@
   regressions and the relevant lint/type gates.
 - [x] 4.2 Review the final diff for raw-content retention, dangling doors, and
   any historical-cleanup behavior; record only verified evidence in handoff.
+- [x] 4.3 Reconcile canonical memory/dashboard specifications and public API
+  documentation with the typed `available` / `expired` / `unresolved` source
+  contract, and add direct unresolved-source UI regressions.

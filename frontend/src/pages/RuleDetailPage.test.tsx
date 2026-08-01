@@ -126,6 +126,13 @@ describe("RuleDetailPage", () => {
     expect(out).not.toContain('href="/memory/episodes/ep-7abcdef0"');
   });
 
+  it("renders an unresolved source without a dangling episode link", () => {
+    setRule({ ...BASE_RULE, source_episode_status: "unresolved" } as MemoryRule);
+    const out = html();
+    expect(out).toContain("Source unresolved");
+    expect(out).not.toContain('href="/memory/episodes/ep-7abcdef0"');
+  });
+
   it("omits the PROVENANCE section when no source episode", () => {
     setRule({ ...BASE_RULE, source_episode_id: null });
     const out = html();

@@ -15,8 +15,8 @@ raw owner-message content beyond the episode's retention period.
 - Preserve the identifier of an expired source episode for durable facts and
   rules, and record a minimal, content-free tombstone when an episode is
   deleted.
-- Make generic `memory_links` to a deleted episode resolve as
-  `source_expired`, rather than as a live or silently missing source.
+- Make generic `memory_links` to a deleted episode resolve as `expired`,
+  rather than as a live or silently missing source.
 - Expose typed episode-source availability through memory API responses and
   render expired sources as truthful non-clickable provenance in detail and
   register surfaces.

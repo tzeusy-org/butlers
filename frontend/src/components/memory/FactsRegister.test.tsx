@@ -286,6 +286,19 @@ describe("FactsRegister — the ledger", () => {
     expect(mounted.container.querySelector('[title^="from episode"]')).toBeNull();
   });
 
+  it("labels an unresolved source without presenting it as a live episode", () => {
+    setFacts([
+      makeFact({
+        source_episode_id: "ep-unresolved",
+        source_episode_status: "unresolved",
+      }),
+    ]);
+    mounted = renderRegister();
+    const glyph = mounted.container.querySelector('[title="Source unresolved"]');
+    expect(glyph).not.toBeNull();
+    expect(mounted.container.querySelector('[title^="from episode"]')).toBeNull();
+  });
+
   it("shows the offset pagination footer as `1–50 of N`", () => {
     setFacts([makeFact()], { total: 3182, offset: 0, has_more: true });
     mounted = renderRegister();
