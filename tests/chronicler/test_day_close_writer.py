@@ -461,6 +461,36 @@ async def test_write_day_close_cache_contains_invalid_canonical_bundle_capture(
     assert mock_upsert.call_args.kwargs["invalid_reason"] == "date_mismatch"
 
 
+async def test_write_day_close_cache_contains_matching_capture_missing_timezone(
+    fake_pool, mock_upsert
+) -> None:
+    """A matching date without its target timezone is not admissible proof."""
+    capture = _canonical_bundle_call("2026-04-24")
+    del capture["input"]["timezone"]
+    result = MagicMock()
+    result.success = True
+    result.output = "A concise retrospective of the closed day."
+    result.tool_calls = [capture]
+
+    outcome = await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
+        tz="UTC",
+    )
+
+    assert outcome is not None
+    assert outcome.invalid_reason == "date_mismatch"
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.call_args.kwargs["invalid_reason"] == "date_mismatch"
+    assert mock_upsert.call_args.kwargs["date_label"] is None
+    fake_pool._conn.execute.assert_awaited_once()
+    lock_sql, lock_key = fake_pool._conn.execute.await_args.args
+    assert "pg_advisory_xact_lock" in lock_sql
+    assert lock_key == "day_close:2026-04-24"
+
+
 async def test_write_day_close_cache_keeps_citations_from_canonical_bundle_capture(
     fake_pool, mock_upsert
 ) -> None:
