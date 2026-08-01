@@ -402,7 +402,7 @@ class CalendarWorkspaceSyncRequest(BaseModel):
 
 
 class CalendarWorkspaceSyncTarget(BaseModel):
-    """One sync trigger attempt target/result."""
+    """One queued sync-command acknowledgement/result."""
 
     butler_name: str
     source_key: str | None = None
@@ -413,6 +413,12 @@ class CalendarWorkspaceSyncTarget(BaseModel):
     #: Whether a full re-sync (cursor recovery) ran for this target. Mirrors the
     #: ``recovery`` flag returned by ``calendar_force_sync``.
     recovery: bool = False
+    #: Correlation id of the durable action-log command. May differ from the
+    #: outer request when an equivalent pending command was coalesced.
+    request_id: str | None = None
+    #: ``True`` when this acknowledgement joined existing queue work instead of
+    #: creating a new pending command.
+    coalesced: bool = False
 
 
 class CalendarWorkspaceSyncResponse(BaseModel):
@@ -421,6 +427,8 @@ class CalendarWorkspaceSyncResponse(BaseModel):
     scope: Literal["all", "source"]
     requested_source_key: str | None = None
     requested_source_id: UUID | None = None
+    #: Correlation id generated for this dashboard/API request.
+    request_id: str
     #: Echoes whether the request asked for a full recovery sync.
     full: bool = False
     targets: list[CalendarWorkspaceSyncTarget] = Field(default_factory=list)

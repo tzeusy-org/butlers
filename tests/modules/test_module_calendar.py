@@ -4343,6 +4343,266 @@ class TestCalendarForceSyncRecovery:
         assert "410" in messages or "expired" in messages
 
 
+class TestQueuedCalendarForceSync:
+    """Dashboard-triggered syncs are durable commands, not long MCP calls."""
+
+    async def _make_sync_module(self, provider) -> tuple[CalendarModule, _StubMCP]:
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        mod._all_provider_calendar_ids = ["primary"]
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+            butler_name="test-butler",
+        )
+        return mod, mcp
+
+    async def test_queue_acknowledges_before_provider_io(self):
+        provider = TestCalendarForceSyncRecovery._recording_provider()
+        mod, mcp = await self._make_sync_module(provider)
+        mod._enqueue_force_sync_command = AsyncMock(
+            return_value={
+                "status": "queued",
+                "request_id": "dashboard-request",
+                "full": True,
+                "coalesced": False,
+            }
+        )
+
+        result = await mcp.tools["calendar_force_sync"](
+            queue=True,
+            full=True,
+            request_id="dashboard-request",
+        )
+
+        assert result["status"] == "queued"
+        assert result["request_id"] == "dashboard-request"
+        mod._enqueue_force_sync_command.assert_awaited_once_with(
+            calendar_id=None,
+            full=True,
+            request_id="dashboard-request",
+        )
+        assert provider.tokens == []
+
+    async def test_queue_persists_pending_action_before_acknowledging(self):
+        mod = CalendarModule()
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                None,
+                None,
+                {
+                    "idempotency_key": "calendar_force_sync:request:dashboard-request",
+                    "request_id": "dashboard-request",
+                    "action_status": "pending",
+                    "action_payload": {"calendar_ids": ["primary"], "full": False},
+                },
+            ]
+        )
+        mod._db = SimpleNamespace(pool=pool)
+        mod._projection_tables_available = AsyncMock(return_value=True)
+
+        result = await mod._enqueue_force_sync_command(
+            calendar_id="primary",
+            full=False,
+            request_id="dashboard-request",
+        )
+
+        assert result == {
+            "status": "queued",
+            "request_id": "dashboard-request",
+            "full": False,
+            "coalesced": False,
+        }
+        insert_sql, _, _, action_type, action_status, payload = pool.fetchrow.await_args.args
+        assert "INSERT INTO calendar_action_log" in insert_sql
+        assert "ON CONFLICT DO NOTHING" in insert_sql
+        assert action_type == "calendar_force_sync"
+        assert action_status == "pending"
+        assert payload == {"calendar_ids": ["primary"], "full": False}
+
+    async def test_queue_drain_finalizes_applied_command(self):
+        mod = CalendarModule()
+        command = {
+            "idempotency_key": "calendar_force_sync:request:dashboard-request",
+            "request_id": "dashboard-request",
+            "action_payload": {"calendar_id": "primary", "full": False},
+        }
+        mod._claim_next_force_sync_command = AsyncMock(side_effect=[command, None])
+        mod._run_force_sync = AsyncMock(return_value={"status": "sync_completed", "errors": None})
+        mod._finalize_force_sync_command = AsyncMock()
+
+        processed = await mod._drain_force_sync_commands()
+
+        assert processed == 1
+        mod._run_force_sync.assert_awaited_once_with(calendar_id="primary", full=False)
+        mod._finalize_force_sync_command.assert_awaited_once_with(
+            command=command,
+            action_status="applied",
+            action_result={"status": "sync_completed", "errors": None},
+            error=None,
+        )
+
+    async def test_queue_drain_records_provider_errors_as_failed(self):
+        mod = CalendarModule()
+        command = {
+            "idempotency_key": "calendar_force_sync:request:dashboard-request",
+            "request_id": "dashboard-request",
+            "action_payload": {"calendar_id": "primary", "full": False},
+        }
+        mod._claim_next_force_sync_command = AsyncMock(side_effect=[command, None])
+        mod._run_force_sync = AsyncMock(
+            return_value={"status": "sync_completed", "errors": ["push: rate limited"]}
+        )
+        mod._finalize_force_sync_command = AsyncMock()
+
+        processed = await mod._drain_force_sync_commands()
+
+        assert processed == 1
+        mod._finalize_force_sync_command.assert_awaited_once_with(
+            command=command,
+            action_status="failed",
+            action_result={"status": "sync_completed", "errors": ["push: rate limited"]},
+            error="push: rate limited",
+        )
+
+    async def test_full_request_upgrades_pending_incremental_command(self):
+        mod = CalendarModule()
+        mod._projection_tables_available = AsyncMock(return_value=True)
+        mod._db = SimpleNamespace(pool=object())
+        pending = {
+            "idempotency_key": "calendar_force_sync:request:existing",
+            "request_id": "existing",
+            "action_status": "pending",
+            "action_payload": {"calendar_ids": ["primary"], "full": False},
+        }
+        merged = {
+            **pending,
+            "action_payload": {"calendar_ids": ["primary"], "full": True},
+        }
+        mod._load_force_sync_command = AsyncMock(return_value=None)
+        mod._load_active_force_sync_command = AsyncMock(return_value=pending)
+        mod._merge_pending_force_sync_command = AsyncMock(return_value=merged)
+
+        result = await mod._enqueue_force_sync_command(
+            calendar_id="primary",
+            full=True,
+            request_id="new-recovery-request",
+        )
+
+        assert result == {
+            "status": "queued",
+            "request_id": "existing",
+            "full": True,
+            "coalesced": True,
+        }
+        mod._merge_pending_force_sync_command.assert_awaited_once()
+        assert mod._merge_pending_force_sync_command.await_args.kwargs["action_payload"] == {
+            "calendar_ids": ["primary"],
+            "full": True,
+        }
+
+    async def test_full_request_queues_successor_behind_running_incremental_command(self):
+        mod = CalendarModule()
+        mod._projection_tables_available = AsyncMock(return_value=True)
+        mod._db = SimpleNamespace(pool=object())
+        running = {
+            "idempotency_key": "calendar_force_sync:request:running",
+            "request_id": "running",
+            "action_status": "running",
+            "action_payload": {"calendar_ids": ["primary"], "full": False},
+        }
+        inserted = {
+            "idempotency_key": "calendar_force_sync:request:new-recovery-request",
+            "request_id": "new-recovery-request",
+            "action_status": "pending",
+            "action_payload": {"calendar_ids": ["primary"], "full": True},
+        }
+        mod._load_force_sync_command = AsyncMock(return_value=None)
+        mod._load_active_force_sync_command = AsyncMock(return_value=running)
+        mod._insert_pending_force_sync_command = AsyncMock(return_value=inserted)
+
+        result = await mod._enqueue_force_sync_command(
+            calendar_id="primary",
+            full=True,
+            request_id="new-recovery-request",
+        )
+
+        assert result == {
+            "status": "queued",
+            "request_id": "new-recovery-request",
+            "full": True,
+            "coalesced": False,
+        }
+        mod._insert_pending_force_sync_command.assert_awaited_once()
+
+    async def test_recovery_returns_interrupted_running_commands_to_pending(self):
+        mod = CalendarModule()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "idempotency_key": "calendar_force_sync:request:interrupted",
+                    "request_id": "interrupted",
+                    "action_status": "running",
+                    "action_payload": {"calendar_ids": ["primary"], "full": False},
+                }
+            ]
+        )
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        mod._db = SimpleNamespace(pool=pool)
+        mod._projection_tables_available = AsyncMock(return_value=True)
+
+        assert await mod._recover_force_sync_commands() == 1
+        sql, action_id, pending, payload, action_type, running = pool.execute.await_args.args
+        assert "UPDATE calendar_action_log" in sql
+        assert action_id == "calendar_force_sync:request:interrupted"
+        assert action_type == "calendar_force_sync"
+        assert pending == "pending"
+        assert running == "running"
+        assert payload == {"calendar_ids": ["primary"], "full": False}
+
+    async def test_recovery_coalesces_pending_successor_before_requeueing_running_command(self):
+        mod = CalendarModule()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "idempotency_key": "calendar_force_sync:request:running",
+                    "request_id": "running",
+                    "action_status": "running",
+                    "action_payload": {"calendar_ids": ["primary"], "full": False},
+                },
+                {
+                    "idempotency_key": "calendar_force_sync:request:recovery",
+                    "request_id": "recovery",
+                    "action_status": "pending",
+                    "action_payload": {"calendar_ids": ["work"], "full": True},
+                },
+            ]
+        )
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        mod._db = SimpleNamespace(pool=pool)
+        mod._projection_tables_available = AsyncMock(return_value=True)
+
+        assert await mod._recover_force_sync_commands() == 1
+        assert pool.execute.await_count == 2
+        noop_args = pool.execute.await_args_list[0].args
+        assert noop_args[1] == "calendar_force_sync:request:recovery"
+        assert noop_args[2] == "noop"
+        assert noop_args[3] == {
+            "status": "coalesced_after_restart",
+            "coalesced_into": "calendar_force_sync:request:running",
+        }
+        requeue_args = pool.execute.await_args_list[1].args
+        assert requeue_args[1] == "calendar_force_sync:request:running"
+        assert requeue_args[2] == "pending"
+        assert requeue_args[3] == {"calendar_ids": ["primary", "work"], "full": True}
+
+
 class TestProjectionFreshnessErrorKind:
     """``_projection_freshness_metadata`` surfaces a per-source ``error_kind``."""
 

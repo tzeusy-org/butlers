@@ -1157,10 +1157,10 @@ async def test_sync_all_triggers_each_target_butler(app):
     general_client = AsyncMock()
     relationship_client = AsyncMock()
     general_client.call_tool = AsyncMock(
-        return_value=_mock_mcp_result({"status": "sync_triggered"})
+        return_value=_mock_mcp_result({"status": "queued", "request_id": "queued-general"})
     )
     relationship_client.call_tool = AsyncMock(
-        return_value=_mock_mcp_result({"status": "sync_triggered"})
+        return_value=_mock_mcp_result({"status": "queued", "request_id": "queued-relationship"})
     )
     app, _, _ = _build_app(
         app,
@@ -1173,10 +1173,15 @@ async def test_sync_all_triggers_each_target_butler(app):
     ) as client:
         resp = await client.post("/api/calendar/workspace/sync", json={"all": True})
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.json()["data"]
     assert data["scope"] == "all"
     assert data["triggered_count"] == 2
+    assert {target["status"] for target in data["targets"]} == {"queued"}
+    for client in (general_client, relationship_client):
+        arguments = client.call_tool.await_args.args[1]
+        assert arguments["queue"] is True
+        assert "calendar_id" not in arguments
 
 
 async def test_sync_all_skips_butler_without_calendar_core_group(app):
@@ -1213,7 +1218,7 @@ async def test_sync_all_skips_butler_without_calendar_core_group(app):
     }
     general_client = AsyncMock()
     general_client.call_tool = AsyncMock(
-        return_value=_mock_mcp_result({"status": "sync_triggered"})
+        return_value=_mock_mcp_result({"status": "queued", "request_id": "queued-general"})
     )
     app, _, mock_mgr = _build_app(
         app,
@@ -1228,7 +1233,7 @@ async def test_sync_all_skips_butler_without_calendar_core_group(app):
     ) as client:
         resp = await client.post("/api/calendar/workspace/sync", json={"all": True})
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.json()["data"]
     target_butlers = {t["butler_name"] for t in data["targets"]}
     assert "finance" not in target_butlers
@@ -1273,7 +1278,7 @@ async def test_sync_all_target_toolerror_degrades_to_failed(app):
     general_client.call_tool = AsyncMock(side_effect=ToolError("Unknown tool: calendar_force_sync"))
     relationship_client = AsyncMock()
     relationship_client.call_tool = AsyncMock(
-        return_value=_mock_mcp_result({"status": "sync_triggered"})
+        return_value=_mock_mcp_result({"status": "queued", "request_id": "queued-relationship"})
     )
     app, _, _ = _build_app(
         app,
@@ -1286,14 +1291,137 @@ async def test_sync_all_target_toolerror_degrades_to_failed(app):
     ) as client:
         resp = await client.post("/api/calendar/workspace/sync", json={"all": True})
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.json()["data"]
     by_butler = {t["butler_name"]: t for t in data["targets"]}
     assert by_butler["general"]["status"] == "failed"
     assert "calendar_force_sync unavailable" in (by_butler["general"]["error"] or "")
-    assert by_butler["relationship"]["status"] == "sync_triggered"
+    assert by_butler["relationship"]["status"] == "queued"
     # Only the healthy target counts as triggered.
     assert data["triggered_count"] == 1
+
+
+def _duplicate_provider_source_rows() -> tuple[dict[str, list[dict]], dict[str, dict]]:
+    """Return one logical provider source copied into stale/non-core and core schemas.
+
+    The fixture deliberately preserves Finance's first fan-out position: router
+    code must choose an operational owner by capability/freshness, not by map
+    iteration order.  Real roster config leaves Finance without the calendar
+    ``core`` group while General/Relationship expose ``calendar_force_sync``.
+    """
+    now = datetime.now(tz=UTC)
+    common = {
+        "source_key": "provider:google:owner@example.com",
+        "source_kind": "provider_event",
+        "lane": "user",
+        "butler_name": None,
+        "provider": "google",
+        "calendar_id": "owner@example.com",
+        "writable": True,
+        "metadata": {"account_email": "owner@example.com"},
+    }
+    finance = _workspace_source_row(**common)
+    finance["last_synced_at"] = None
+    finance["last_success_at"] = None
+    relationship = _workspace_source_row(**common)
+    relationship["last_synced_at"] = now - timedelta(hours=2)
+    relationship["last_success_at"] = now - timedelta(hours=2)
+    general = _workspace_source_row(**common)
+    general["last_synced_at"] = now
+    general["last_success_at"] = now
+    return (
+        {"finance": [finance], "relationship": [relationship], "general": [general]},
+        {"finance": finance, "relationship": relationship, "general": general},
+    )
+
+
+async def test_workspace_source_freshness_prefers_fresh_core_owner_over_stale_duplicate(app):
+    source_rows, rows = _duplicate_provider_source_rows()
+    app, _, _ = _build_app(
+        app,
+        source_rows=source_rows,
+        calendar_butlers=["finance", "relationship", "general"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "user",
+                "start": "2026-08-01T00:00:00Z",
+                "end": "2026-08-02T00:00:00Z",
+            },
+        )
+
+    assert response.status_code == 200
+    freshness = response.json()["data"]["source_freshness"]
+    assert len(freshness) == 1
+    assert freshness[0]["source_id"] == str(rows["general"]["source_id"])
+    assert freshness[0]["butler_name"] == "general"
+    assert freshness[0]["sync_state"] == "fresh"
+
+
+async def test_meta_prefers_fresh_core_owner_for_duplicate_provider_source(app):
+    source_rows, rows = _duplicate_provider_source_rows()
+    app, _, _ = _build_app(
+        app,
+        source_rows=source_rows,
+        calendar_butlers=["finance", "relationship", "general"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/calendar/workspace/meta")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert len(payload["connected_sources"]) == 1
+    assert payload["connected_sources"][0]["source_id"] == str(rows["general"]["source_id"])
+    assert payload["connected_sources"][0]["butler_name"] == "general"
+    assert payload["writable_calendars"][0]["butler_name"] == "general"
+
+
+async def test_sync_all_queues_only_canonical_fresh_core_owner_for_duplicate_provider_source(app):
+    source_rows, _ = _duplicate_provider_source_rows()
+    general_client = AsyncMock()
+    general_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "queued", "request_id": "sync-request"})
+    )
+    relationship_client = AsyncMock()
+    relationship_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "queued", "request_id": "sync-request"})
+    )
+    app, _, mock_mgr = _build_app(
+        app,
+        source_rows=source_rows,
+        mcp_clients={"general": general_client, "relationship": relationship_client},
+        calendar_butlers=["finance", "relationship", "general"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/calendar/workspace/sync", json={"all": True})
+
+    assert response.status_code == 202
+    payload = response.json()["data"]
+    assert payload["triggered_count"] == 1
+    assert len(payload["targets"]) == 1
+    assert payload["targets"][0]["butler_name"] == "general"
+    assert payload["targets"][0]["status"] == "queued"
+    general_client.call_tool.assert_awaited_once()
+    tool_name, arguments = general_client.call_tool.await_args.args
+    assert tool_name == "calendar_force_sync"
+    assert arguments["queue"] is True
+    assert arguments["full"] is False
+    assert arguments.get("request_id")
+    assert "calendar_id" not in arguments
+    relationship_client.call_tool.assert_not_awaited()
+    requested = {call.args[0] for call in mock_mgr.get_client.await_args_list}
+    assert "finance" not in requested
 
 
 # ---------------------------------------------------------------------------
@@ -2358,8 +2486,8 @@ async def test_undo_legacy_corrupted_array_row_still_blocks_second_undo(app):
 async def test_sync_forwards_full_recovery_flag(app):
     """POST /workspace/sync with full=true forwards full to calendar_force_sync.
 
-    The flag reaches the MCP tool and the per-target ``recovery`` result is
-    surfaced; the response echoes ``full``.
+    The command is acknowledged without running the recovery in the request;
+    the flag still reaches the durable queue worker and the response echoes it.
     """
     source_rows = {
         "general": [
@@ -2376,7 +2504,9 @@ async def test_sync_forwards_full_recovery_flag(app):
     }
     general_client = AsyncMock()
     general_client.call_tool = AsyncMock(
-        return_value=_mock_mcp_result({"status": "sync_completed", "full": True, "recovery": True})
+        return_value=_mock_mcp_result(
+            {"status": "queued", "request_id": "queued-general", "full": True}
+        )
     )
     app, _, _ = _build_app(
         app,
@@ -2392,16 +2522,19 @@ async def test_sync_forwards_full_recovery_flag(app):
             json={"source_key": "provider:google:primary", "butler": "general", "full": True},
         )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.json()["data"]
     assert data["full"] is True
     assert data["scope"] == "source"
-    assert data["targets"][0]["recovery"] is True
+    assert data["targets"][0]["status"] == "queued"
+    assert data["targets"][0]["recovery"] is False
 
     # The full flag must be forwarded to the MCP tool call.
     call_args = general_client.call_tool.await_args
     assert call_args.args[0] == "calendar_force_sync"
     assert call_args.args[1]["full"] is True
+    assert call_args.args[1]["queue"] is True
+    assert call_args.args[1]["request_id"] == data["request_id"]
 
 
 async def test_sync_incremental_default_does_not_force_full(app):
@@ -2421,7 +2554,7 @@ async def test_sync_incremental_default_does_not_force_full(app):
     }
     general_client = AsyncMock()
     general_client.call_tool = AsyncMock(
-        return_value=_mock_mcp_result({"status": "sync_completed", "recovery": False})
+        return_value=_mock_mcp_result({"status": "queued", "request_id": "queued-general"})
     )
     app, _, _ = _build_app(app, source_rows=source_rows, mcp_clients={"general": general_client})
 
@@ -2433,11 +2566,13 @@ async def test_sync_incremental_default_does_not_force_full(app):
             json={"source_key": "provider:google:primary", "butler": "general"},
         )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     data = resp.json()["data"]
     assert data["full"] is False
+    assert data["targets"][0]["status"] == "queued"
     assert data["targets"][0]["recovery"] is False
     assert general_client.call_tool.await_args.args[1]["full"] is False
+    assert general_client.call_tool.await_args.args[1]["queue"] is True
 
 
 async def test_meta_carries_per_source_error_kind(app):

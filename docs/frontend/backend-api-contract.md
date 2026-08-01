@@ -176,7 +176,7 @@ Schedule execution semantics (dashboard-facing):
 
 - `GET /api/calendar/workspace` -> `ApiResponse<CalendarWorkspaceReadResponse>`
 - `GET /api/calendar/workspace/meta` -> `ApiResponse<CalendarWorkspaceMetaResponse>`
-- `POST /api/calendar/workspace/sync` -> `ApiResponse<CalendarWorkspaceSyncResponse>`
+- `POST /api/calendar/workspace/sync` -> `202 Accepted` + `ApiResponse<CalendarWorkspaceSyncResponse>`
 - `POST /api/calendar/workspace/user-events` -> `ApiResponse<CalendarWorkspaceMutationResponse>`
 - `POST /api/calendar/workspace/butler-events` -> `ApiResponse<CalendarWorkspaceMutationResponse>`
 
@@ -206,7 +206,11 @@ Meta response requirements:
 Sync response requirements:
 
 - Supports global refresh (`{"all": true}`) and source-targeted refresh (`source_key` or `source_id`).
-- Returns per-target trigger outcomes in `data.targets`.
+- Is an acknowledgement, not provider completion: returns `202 Accepted` only after each selected CalendarModule has accepted or rejected its durable action-log command.
+- Returns outer `data.request_id`, plus per-target `request_id`, `status`, `coalesced`, `detail`, and `error` fields in `data.targets`.
+- Global refresh selects one enabled, core-capable canonical owner per duplicate provider `source_key`, then sends at most one owner-wide queued command (without `calendar_id`) to that owner. It never fan-outs one request per replicated schema row.
+- A source-targeted request with an explicit `source_id` or `butler` preserves that physical target; a source-key-only request resolves its canonical owner.
+- `full=true` is queued cursor-recovery intent. A `queued` acknowledgement must not be rendered as completed/recovered; eventual state is observed through source freshness and action/audit telemetry.
 
 Mutation endpoint requirements:
 
@@ -223,7 +227,7 @@ Operational sync and telemetry guidance:
 
 - Frontend clients should treat `projection_freshness` and `source_freshness.sync_state`/`staleness_ms` as the canonical sync health indicators for UX state.
 - `request_id` is the correlation key for idempotent replay and audit/action-log tracing across API, MCP tool calls, and projection reconciliation.
-- `POST /api/calendar/workspace/sync` target statuses (`status`, `detail`, `error`) are the contract surface for operator-visible sync telemetry.
+- `POST /api/calendar/workspace/sync` target statuses (`queued`, `completed`, `failed`), correlation, coalescing, detail, and error are the contract surface for operator-visible dispatch telemetry; they are not proof of provider completion.
 
 ## Butler State Contract
 

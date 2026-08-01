@@ -3803,7 +3803,7 @@ export default function CalendarWorkspacePage() {
     try {
       const result = await syncMutation.mutateAsync({ all: true });
       toast.success(
-        `Sync triggered for ${result.data.triggered_count} source(s).`,
+        `Sync queued for ${result.data.triggered_count} calendar owner(s).`,
       );
     } catch (error) {
       toast.error(
@@ -3828,13 +3828,15 @@ export default function CalendarWorkspacePage() {
         toast.error(target.error || "Source sync failed.");
       } else if (full) {
         toast.success(
-          target?.recovery
-            ? `Full re-sync (recovery) ran for ${sourceName(source)}.`
-            : `Recovery sync triggered for ${sourceName(source)}.`,
+          target?.coalesced
+            ? `Recovery sync joined queued work for ${sourceName(source)}.`
+            : `Recovery sync queued for ${sourceName(source)}.`,
         );
       } else {
         toast.success(
-          target?.detail || `Sync triggered for ${sourceName(source)}.`,
+          target?.coalesced
+            ? `Sync joined queued work for ${sourceName(source)}.`
+            : `Sync queued for ${sourceName(source)}.`,
         );
       }
     } catch (error) {
