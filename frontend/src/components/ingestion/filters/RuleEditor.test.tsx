@@ -310,7 +310,7 @@ describe('RuleEditor — runtime-valid verdict vocabulary (bu-4rt0h)', () => {
     const endpoint = container.querySelector(
       '[data-testid="rule-editor-condition-source-endpoint"]',
     ) as HTMLInputElement
-    act(() => setInputValue(endpoint, 'Spotify:Tzeusii'))
+    act(() => setInputValue(endpoint, 'Spotify:acct-1'))
 
     const actionSelect = container.querySelector(
       '[data-testid="rule-editor-action"]',
@@ -335,7 +335,7 @@ describe('RuleEditor — runtime-valid verdict vocabulary (bu-4rt0h)', () => {
     expect(body).toMatchObject({
       scope: 'global',
       rule_type: 'source_endpoint',
-      condition: { endpoint_identity: 'spotify:tzeusii' },
+      condition: { endpoint_identity: 'spotify:acct-1' },
       action: 'route_to:lifestyle',
     })
   })
@@ -514,7 +514,7 @@ describe('RuleEditor DSL test panel — sends full envelope shape (bu-95ido)', (
       inputSetter?.call(channelInput, 'gmail')
       channelInput.dispatchEvent(new Event('change', { bubbles: true }))
 
-      inputSetter?.call(sourceEndpointInput, 'spotify:tzeusii')
+      inputSetter?.call(sourceEndpointInput, 'spotify:acct-1')
       sourceEndpointInput.dispatchEvent(new Event('change', { bubbles: true }))
 
       textareaSetter?.call(headersTextarea, 'X-Custom: yes')
@@ -539,7 +539,7 @@ describe('RuleEditor DSL test panel — sends full envelope shape (bu-95ido)', (
     }
     expect(call.envelope.sender_address).toBe('alerts@example.com')
     expect(call.envelope.source_channel).toBe('gmail')
-    expect(call.envelope.source_endpoint_identity).toBe('spotify:tzeusii')
+    expect(call.envelope.source_endpoint_identity).toBe('spotify:acct-1')
     expect(call.envelope.headers).toEqual({ 'X-Custom': 'yes' })
     expect(call.envelope.mime_parts).toEqual(['text/calendar'])
     expect(call.envelope.raw_key).toBe('uid-xyz')

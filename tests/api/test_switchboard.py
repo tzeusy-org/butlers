@@ -627,7 +627,7 @@ async def test_ingestion_rules_create_accepts_global_source_endpoint_rule(app):
     endpoint_rule.update(
         {
             "rule_type": "source_endpoint",
-            "condition": {"endpoint_identity": "spotify:tzeusii"},
+            "condition": {"endpoint_identity": "spotify:acct-1"},
             "action": "route_to:lifestyle",
         }
     )
@@ -643,7 +643,7 @@ async def test_ingestion_rules_create_accepts_global_source_endpoint_rule(app):
             json={
                 "scope": "global",
                 "rule_type": "source_endpoint",
-                "condition": {"endpoint_identity": "spotify:tzeusii"},
+                "condition": {"endpoint_identity": "spotify:acct-1"},
                 "action": "route_to:lifestyle",
                 "priority": 10,
             },
@@ -668,9 +668,9 @@ async def test_ingestion_rules_create_accepts_global_source_endpoint_rule(app):
         ),
         (
             {
-                "scope": "connector:spotify:spotify:tzeusii",
+                "scope": "connector:spotify:spotify:acct-1",
                 "rule_type": "source_endpoint",
-                "condition": {"endpoint_identity": "spotify:tzeusii"},
+                "condition": {"endpoint_identity": "spotify:acct-1"},
                 "action": "block",
                 "priority": 10,
             },
@@ -700,7 +700,7 @@ async def test_ingestion_rules_create_accepts_global_source_endpoint_rule(app):
             {
                 "scope": "connector:gmail:gmail:user:dev",
                 "rule_type": "source_endpoint",
-                "condition": {"endpoint_identity": "spotify:tzeusii"},
+                "condition": {"endpoint_identity": "spotify:acct-1"},
                 "action": "block",
                 "priority": 10,
             },

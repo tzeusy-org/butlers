@@ -99,10 +99,10 @@ qualify.
 
 #### Scenario: Opaque connector identity promotes to an endpoint rule
 
-- **WHEN** `spotify:tzeusii` has qualifying non-email LLM verdict evidence
+- **WHEN** `spotify:acct-1` has qualifying non-email LLM verdict evidence
   for `route_to:lifestyle`
 - **THEN** its suggestion MUST have `proposed_rule_type='source_endpoint'`
-  and `proposed_condition={"endpoint_identity":"spotify:tzeusii"}`
+  and `proposed_condition={"endpoint_identity":"spotify:acct-1"}`
 - **AND** after confirmation, the enabled rule MUST cover the same endpoint so
   later trigger runs do not create another suggestion
 
@@ -345,8 +345,10 @@ conventional value `'promotion'` for rules minted through this flow.
 - **AND** a manually authored `sender_address` rule with the same opaque value
   MUST remain email-only and must not receive this compatibility behavior
 - **AND** when multiple same-priority legacy promotion rows target the same
-  endpoint, only the newest confirmation is effective; older rows remain
-  audit evidence and cannot win through their earlier creation time
+  endpoint, only the newest confirmation is effective; a later exact
+  `source_endpoint` rule for that endpoint also supersedes older legacy rows
+  at the same priority. Older rows remain audit evidence and cannot win through
+  their earlier creation time
 
 #### Scenario: Manually-created rules are unaffected
 

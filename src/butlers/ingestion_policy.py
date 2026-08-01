@@ -453,7 +453,7 @@ def _match_source_channel(envelope: IngestionEnvelope, condition: dict[str, Any]
 def _match_source_endpoint(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
     """Match an exact, normalized connector endpoint identity.
 
-    Condition schema: ``{"endpoint_identity": "spotify:tzeusii"}``.
+    Condition schema: ``{"endpoint_identity": "spotify:acct-1"}``.
     Endpoint identities are normalized to lowercase at ingestion and rule
     authoring boundaries; matching defensively normalizes both values so a
     manually supplied sample envelope has the same behavior. Wildcards are
@@ -490,25 +490,43 @@ def _legacy_promoted_source_endpoint_key(rule: dict[str, Any]) -> str | None:
     return address.lower()
 
 
+def _source_endpoint_rule_key(rule: dict[str, Any]) -> str | None:
+    """Return a normalized exact endpoint from a current endpoint rule."""
+    if str(rule.get("rule_type", "")) != "source_endpoint":
+        return None
+    condition = rule.get("condition")
+    if not isinstance(condition, dict):
+        return None
+    endpoint = str(condition.get("endpoint_identity", "")).strip()
+    return endpoint.lower() or None
+
+
 def _superseded_legacy_promotion_rule_ids(rules: list[dict[str, Any]]) -> frozenset[str]:
-    """Return older same-priority legacy rows superseded by a later confirmation.
+    """Return legacy rows superseded by a later correction at the same priority.
 
     The database query orders rules by ``priority, created_at, id``. Historic
-    rows retain their audit trail, but only the latest provenance-linked opaque
-    promotion for an endpoint may be effective at a given priority.
+    rows retain their audit trail, but a later provenance-linked opaque
+    promotion or exact ``source_endpoint`` rule for the same endpoint prevents
+    an earlier legacy compatibility row from winning by creation time.
     """
-    latest_by_key: dict[tuple[Any, str], str] = {}
+    latest_legacy_by_key: dict[tuple[Any, str], str] = {}
     superseded: set[str] = set()
     for rule in rules:
-        endpoint = _legacy_promoted_source_endpoint_key(rule)
         rule_id = str(rule.get("id", ""))
-        if endpoint is None or not rule_id:
+        legacy_endpoint = _legacy_promoted_source_endpoint_key(rule)
+        if legacy_endpoint is not None and rule_id:
+            key = (rule.get("priority"), legacy_endpoint)
+            previous = latest_legacy_by_key.get(key)
+            if previous is not None:
+                superseded.add(previous)
+            latest_legacy_by_key[key] = rule_id
             continue
-        key = (rule.get("priority"), endpoint)
-        previous = latest_by_key.get(key)
-        if previous is not None:
-            superseded.add(previous)
-        latest_by_key[key] = rule_id
+
+        current_endpoint = _source_endpoint_rule_key(rule)
+        if current_endpoint is not None:
+            previous = latest_legacy_by_key.get((rule.get("priority"), current_endpoint))
+            if previous is not None:
+                superseded.add(previous)
     return frozenset(superseded)
 
 

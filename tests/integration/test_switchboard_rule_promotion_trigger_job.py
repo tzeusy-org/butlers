@@ -241,7 +241,7 @@ async def test_eligible_pattern_creates_pending_suggestion(pool: asyncpg.Pool) -
 
 async def test_opaque_endpoint_pattern_proposes_source_endpoint_rule(pool: asyncpg.Pool) -> None:
     """Opaque connector identities must not be stored as email-address rules."""
-    sender_key = "spotify:tzeusii"
+    sender_key = "spotify:acct-1"
     base = _now() - timedelta(days=3)
     await _seed_evidence(
         pool,

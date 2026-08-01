@@ -41,7 +41,7 @@ React/TypeScript, Vitest, pytest, OpenSpec Markdown.
 
 1. Add failing tests showing that an opaque source endpoint cannot be covered by
    `sender_address`, but is covered by an exact `source_endpoint` rule.
-2. Add an end-to-end promotion test for `spotify:tzeusii` that verifies the new
+2. Add an end-to-end promotion test for `spotify:acct-1` that verifies the new
    proposal shape, application, and subsequent coverage suppression.
 3. Pin routing-verdict identity selection: email uses the observed sender when
    available; non-email uses the stable source endpoint.

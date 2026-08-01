@@ -322,8 +322,8 @@ def test_all_matchers() -> None:
     assert not _match_source_channel(owntracks_env, {"source_channel": ""})
 
     # source_endpoint: exact, case-insensitive, no match, empty target rejection.
-    endpoint_env = IngestionEnvelope(source_endpoint_identity="spotify:TZEUSII")
-    assert _match_source_endpoint(endpoint_env, {"endpoint_identity": "spotify:tzeusii"})
+    endpoint_env = IngestionEnvelope(source_endpoint_identity="spotify:acct-1")
+    assert _match_source_endpoint(endpoint_env, {"endpoint_identity": "spotify:acct-1"})
     assert not _match_source_endpoint(endpoint_env, {"endpoint_identity": "steam:user:123"})
     assert not _match_source_endpoint(endpoint_env, {"endpoint_identity": ""})
 
@@ -360,7 +360,7 @@ def test_legacy_promoted_opaque_sender_address_matches_only_as_source_endpoint()
         _rule(
             id="legacy-promotion",
             rule_type="sender_address",
-            condition={"address": "spotify:tzeusii"},
+            condition={"address": "spotify:acct-1"},
             action="route_to:lifestyle",
             created_by="promotion",
             promoted_from_suggestion_id="suggestion-1",
@@ -368,7 +368,7 @@ def test_legacy_promoted_opaque_sender_address_matches_only_as_source_endpoint()
     ]
 
     decision = evaluator.evaluate(
-        IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:tzeusii")
+        IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:acct-1")
     )
     assert decision.action == "route_to"
     assert decision.target_butler == "lifestyle"
@@ -376,13 +376,13 @@ def test_legacy_promoted_opaque_sender_address_matches_only_as_source_endpoint()
     evaluator._rules[0] = _rule(
         id="manual-rule",
         rule_type="sender_address",
-        condition={"address": "spotify:tzeusii"},
+        condition={"address": "spotify:acct-1"},
         action="route_to:lifestyle",
         created_by="dashboard",
     )
     assert (
         evaluator.evaluate(
-            IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:tzeusii")
+            IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:acct-1")
         ).action
         == "pass_through"
     )
@@ -444,6 +444,38 @@ def test_latest_same_priority_legacy_endpoint_promotion_wins() -> None:
             source_endpoint_identity="steam:user:76561198037633688",
         )
     )
+    assert decision.target_butler == "lifestyle"
+
+
+def test_later_same_priority_source_endpoint_supersedes_legacy_promotion() -> None:
+    """A current exact endpoint correction takes precedence over legacy compatibility."""
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    evaluator._last_loaded_at = time.monotonic()
+    evaluator._rules = [
+        _rule(
+            id="legacy-general",
+            rule_type="sender_address",
+            condition={"address": "steam:acct-1"},
+            action="route_to:general",
+            priority=10,
+            created_at="2026-07-01T00:00:00Z",
+            created_by="promotion",
+            promoted_from_suggestion_id="suggestion-legacy",
+        ),
+        _rule(
+            id="current-lifestyle",
+            rule_type="source_endpoint",
+            condition={"endpoint_identity": "steam:acct-1"},
+            action="route_to:lifestyle",
+            priority=10,
+            created_at="2026-08-01T00:00:00Z",
+        ),
+    ]
+
+    decision = evaluator.evaluate(
+        IngestionEnvelope(source_channel="gaming", source_endpoint_identity="steam:acct-1")
+    )
+
     assert decision.target_butler == "lifestyle"
 
 

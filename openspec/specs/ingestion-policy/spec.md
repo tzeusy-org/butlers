@@ -86,20 +86,33 @@ Each `rule_type` defines the expected shape of the `condition` JSONB field. The 
 - **THEN** the API returns 422 because `sender_domain` is not valid for Telegram bot connectors
 
 #### Scenario: Source endpoint is a global routing condition
-- **WHEN** a rule is created with `scope = 'global'`, `rule_type = 'source_endpoint'`, and `condition = {"endpoint_identity": "spotify:tzeusii"}`
+- **WHEN** a rule is created with `scope = 'global'`, `rule_type = 'source_endpoint'`, and `condition = {"endpoint_identity": "spotify:acct-1"}`
 - **THEN** the API accepts the exact endpoint rule
 - **AND** the same rule type submitted under any connector scope is rejected with 422
 
 ### Requirement: First-match-wins evaluation
 
-The evaluation engine SHALL process rules in `priority ASC, created_at ASC, id ASC` order. The first rule whose condition matches the input envelope determines the outcome. If no rule matches, the result is `pass_through`.
+The evaluation engine SHALL process rules in `priority ASC, created_at ASC, id ASC` order. The first effective rule whose condition matches the input envelope determines the outcome. If no rule matches, the result is `pass_through`.
 
 This applies uniformly to both connector-scoped and global evaluation -- there is no separate blacklist/whitelist composition model.
+
+The sole compatibility exception is an older, provenance-linked opaque
+`sender_address` promotion row: at the same priority and endpoint identity, a
+later provenance-linked legacy confirmation or a later exact `source_endpoint`
+rule makes that older legacy row ineffective. The historic row remains stored as
+audit evidence; all other rules retain normal first-match ordering.
 
 #### Scenario: First match wins
 - **WHEN** two rules exist at priority 10 (block spammer.com) and priority 20 (block all .com)
 - **AND** a message arrives from `spammer.com`
 - **THEN** the priority-10 rule matches first and its action is applied
+
+#### Scenario: Current endpoint rule supersedes legacy compatibility
+- **WHEN** an older provenance-linked opaque `sender_address` promotion and a
+  later `source_endpoint` rule have the same priority and endpoint identity
+- **THEN** the older compatibility row is ineffective and the later endpoint
+  rule determines the outcome
+- **AND** the historic compatibility row remains stored as audit evidence
 
 #### Scenario: No match defaults to pass_through
 - **WHEN** no active rules match the incoming message

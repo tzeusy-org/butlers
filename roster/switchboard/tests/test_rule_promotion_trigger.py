@@ -46,9 +46,9 @@ class TestProposedRuleIdentity:
         )
 
     def test_opaque_connector_identity_proposes_source_endpoint_matcher(self) -> None:
-        assert proposed_rule_for_sender_key("spotify:tzeusii", source_channel="music") == (
+        assert proposed_rule_for_sender_key("spotify:acct-1", source_channel="music") == (
             "source_endpoint",
-            {"endpoint_identity": "spotify:tzeusii"},
+            {"endpoint_identity": "spotify:acct-1"},
         )
 
     def test_non_email_endpoint_containing_at_sign_proposes_source_endpoint_matcher(self) -> None:

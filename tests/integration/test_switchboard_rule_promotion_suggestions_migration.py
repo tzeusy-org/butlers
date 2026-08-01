@@ -307,8 +307,8 @@ async def test_proposed_rule_type_check_accepts_source_endpoint(pool: asyncpg.Po
         INSERT INTO rule_promotion_suggestions
             (suggestion_kind, sender_key, source_channel, proposed_rule_type,
              proposed_condition, proposed_action)
-        VALUES ('promotion', 'spotify:tzeusii', 'music', 'source_endpoint',
-                '{"endpoint_identity": "spotify:tzeusii"}'::jsonb, 'route_to:lifestyle')
+        VALUES ('promotion', 'spotify:acct-1', 'music', 'source_endpoint',
+                '{"endpoint_identity": "spotify:acct-1"}'::jsonb, 'route_to:lifestyle')
         """
     )
 
@@ -743,8 +743,8 @@ def test_source_endpoint_rows_block_data_losing_downgrade_to_sw_028(
                          proposed_rule_type, proposed_condition, proposed_action,
                          evidence_count, first_evidence_at, last_evidence_at, status)
                     VALUES
-                        (:id, 'promotion', 'spotify:tzeusii', 'music',
-                         'source_endpoint', '{"endpoint_identity":"spotify:tzeusii"}'::jsonb,
+                        (:id, 'promotion', 'spotify:acct-1', 'music',
+                         'source_endpoint', '{"endpoint_identity":"spotify:acct-1"}'::jsonb,
                          'route_to:lifestyle', 3, now() - interval '2 days', now(),
                          'pending_review')
                     """

@@ -185,9 +185,9 @@ class TestMakeIngestionEnvelope:
         assert env.source_channel == "email"
 
     def test_source_endpoint_identity_extracted_and_normalized(self) -> None:
-        payload = _base_email_payload(mailbox="Spotify:TZEUSII")
+        payload = _base_email_payload(mailbox="Spotify:acct-1")
         env = _make_ingestion_envelope(payload)
-        assert env.source_endpoint_identity == "spotify:tzeusii"
+        assert env.source_endpoint_identity == "spotify:acct-1"
 
     def test_headers_extracted(self) -> None:
         payload = _base_email_payload()

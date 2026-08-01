@@ -94,7 +94,7 @@ def is_email_sender_key(value: str | None) -> bool:
 
     Promotion runs after :func:`normalize_sender_key`, so it must distinguish
     a real email key from opaque connector identities such as
-    ``spotify:tzeusii`` without applying email parsing to the latter.
+    ``spotify:acct-1`` without applying email parsing to the latter.
     """
     return bool(_EMAIL_RE.fullmatch((value or "").strip()))
 

@@ -467,7 +467,7 @@ class TestMessagePipelineRoutingVerdictLog:
                 "some finance email",
                 tool_args={
                     "source_channel": "email",
-                    "source_identity": "gmail:tzeusii",
+                    "source_identity": "gmail:acct-1",
                     "request_context": {
                         "triage_decision": "route_to",
                         "triage_target": "finance",
@@ -515,10 +515,10 @@ class TestMessagePipelineRoutingVerdictLog:
                     "source_channel": "spotify_user_client",
                     # The connector's ingest.v1 wire identity, used by
                     # source_endpoint policy rules.
-                    "source_identity": "spotify:tzeusii",
+                    "source_identity": "spotify:acct-1",
                     # Internal request context may namespace it further;
                     # promotion evidence deliberately keeps the wire key.
-                    "source_endpoint_identity": "spotify_user_client:spotify:tzeusii",
+                    "source_endpoint_identity": "spotify_user_client:spotify:acct-1",
                     "request_context": {
                         "triage_decision": "route_to",
                         "triage_target": "lifestyle",
@@ -529,7 +529,7 @@ class TestMessagePipelineRoutingVerdictLog:
             )
 
         kwargs = mock_record.await_args.kwargs
-        assert kwargs["sender_identity"] == "spotify:tzeusii"
+        assert kwargs["sender_identity"] == "spotify:acct-1"
         assert kwargs["source_channel"] == "spotify_user_client"
 
     async def test_pinned_target_bypass_records_pinned_verdict_with_no_rule_id(self):
@@ -712,7 +712,7 @@ class TestMessagePipelineRoutingVerdictLog:
                 "I have a headache",
                 tool_args={
                     "source_channel": "email",
-                    "source_identity": "gmail:tzeusii",
+                    "source_identity": "gmail:acct-1",
                     "request_context": {"source_sender_identity": "billing@chase.com"},
                 },
                 message_inbox_id="00000000-0000-0000-0000-000000000007",

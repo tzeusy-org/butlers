@@ -6,7 +6,7 @@ Create Date: 2026-08-01 00:00:00.000000
 
 ``routing_verdict_log.sender_key`` is intentionally multi-channel. The early
 promotion schema allowed only email-address and domain rule types, which caused
-opaque identities such as ``spotify:tzeusii`` to be stored as
+opaque identities such as ``spotify:acct-1`` to be stored as
 ``sender_address`` conditions even though the evaluator correctly treats that
 matcher as email-only. Add the explicit, exact ``source_endpoint`` shape for
 new suggestions. Existing rows are deliberately not rewritten: the runtime

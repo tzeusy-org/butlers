@@ -131,10 +131,10 @@ async def test_mint_source_endpoint_promotion_is_effective_for_that_endpoint(poo
     )
     sid = await _insert_suggestion(
         pool,
-        sender_key="spotify:tzeusii",
+        sender_key="spotify:acct-1",
         source_channel="music",
         proposed_rule_type="source_endpoint",
-        proposed_condition={"endpoint_identity": "spotify:tzeusii"},
+        proposed_condition={"endpoint_identity": "spotify:acct-1"},
         proposed_action="route_to:lifestyle",
         is_clearly_automated=False,
     )
@@ -142,11 +142,11 @@ async def test_mint_source_endpoint_promotion_is_effective_for_that_endpoint(poo
     rule = await apply_suggestion(pool, sid, decided_by="owner")
 
     assert rule["rule_type"] == "source_endpoint"
-    assert rule["condition"] == {"endpoint_identity": "spotify:tzeusii"}
+    assert rule["condition"] == {"endpoint_identity": "spotify:acct-1"}
     evaluator = IngestionPolicyEvaluator(scope="global", db_pool=pool)
     await evaluator.ensure_loaded()
     decision = evaluator.evaluate(
-        IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:tzeusii")
+        IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:acct-1")
     )
     assert decision.action == "route_to"
     assert decision.target_butler == "lifestyle"

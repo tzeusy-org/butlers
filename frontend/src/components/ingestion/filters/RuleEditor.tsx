@@ -254,7 +254,7 @@ function ConditionFields({
           label="source endpoint"
           value={String(condition.endpoint_identity ?? '')}
           onChange={(v) => onChange({ ...condition, endpoint_identity: v })}
-          placeholder="e.g. spotify:tzeusii"
+          placeholder="e.g. spotify:acct-1"
           testid="rule-editor-condition-source-endpoint"
           lowercase
         />
@@ -444,7 +444,7 @@ function DslTestPanel() {
           label="source endpoint"
           value={sourceEndpointIdentity}
           onChange={setSourceEndpointIdentity}
-          placeholder="spotify:tzeusii"
+          placeholder="spotify:acct-1"
           testid="rule-editor-test-source-endpoint"
           lowercase
         />
