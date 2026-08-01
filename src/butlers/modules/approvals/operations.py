@@ -461,6 +461,12 @@ async def abandon_approved_action(
         return {"error": f"Action not found: {action_id}"}
 
     action = PendingAction.from_row(row)
+    # A dashboard request can be delayed behind a handler's execution lock or
+    # its pool connection. Once the handler commits a result, explain that
+    # irreversible outcome instead of presenting it as an abstract transition
+    # failure. This mirrors the result-first check after a failed CAS below.
+    if action.status == ActionStatus.EXECUTED and action.execution_result is not None:
+        return {"error": "Action already has an execution result and cannot be abandoned"}
     if action.status != ActionStatus.APPROVED:
         return {"error": f"Cannot transition from '{action.status.value}' to 'abandoned'"}
     if action.execution_result is not None:

@@ -413,6 +413,24 @@ class TestAbandonRecovery:
         assert mock_db.pending_actions[action_id]["status"] == "approved"
         assert mock_db.approval_events == []
 
+    async def test_abandon_executed_action_reports_persisted_execution_result(
+        self, mock_db: MockDB
+    ):
+        """A delayed dashboard request explains why a completed action cannot be abandoned."""
+        from butlers.modules.approvals.operations import abandon_approved_action
+
+        action_id = mock_db._insert_action(status="executed", execution_result={"success": True})
+
+        result = await abandon_approved_action(
+            mock_db,
+            action_id=str(action_id),
+            reason="Owner no longer wants this recovery",
+        )
+
+        assert "execution result" in result["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "executed"
+        assert mock_db.approval_events == []
+
 
 # ---------------------------------------------------------------------------
 # Full lifecycle: create → approve → execute
