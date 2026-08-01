@@ -41,6 +41,34 @@ async def test_tool_call_capture_fingerprints_hidden_arguments() -> None:
     assert first["input_fingerprint"] != second["input_fingerprint"]
 
 
+async def test_span_wrapper_captures_day_close_date_and_timezone_binding() -> None:
+    """The audited day-close witness retains only its safe target binding."""
+    mock_mcp = MagicMock()
+    mock_mcp.tool = _passthrough_tool_decorator
+    proxy = _SpanWrappingMCP(mock_mcp, "chronicler", module_name="chronicler")
+
+    @proxy.tool()
+    async def chronicler_day_close_bundle(
+        date_label: str,
+        timezone: str,
+        private_context: str,
+    ) -> dict[str, str]:
+        return {"date": date_label}
+
+    with patch("butlers.mcp_wrappers.capture_tool_call") as capture:
+        await chronicler_day_close_bundle(
+            date_label="2026-03-08",
+            timezone="America/Los_Angeles",
+            private_context="must-not-be-persisted",
+        )
+
+    captured = capture.call_args.kwargs
+    assert captured["input_payload"] == {
+        "date_label": "2026-03-08",
+        "timezone": "America/Los_Angeles",
+    }
+
+
 def _passthrough_tool_decorator(*_args: Any, **_kwargs: Any):
     def decorator(fn):
         return fn

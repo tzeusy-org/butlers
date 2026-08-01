@@ -93,6 +93,7 @@ if _spec is not None and _spec.loader is not None:
     DayCloseInvalidResponse = _models.DayCloseInvalidResponse
     DayCloseRefreshRequest = _models.DayCloseRefreshRequest
     DayCloseRefreshResponse = _models.DayCloseRefreshResponse
+    DayCloseRefreshQuietResponse = _models.DayCloseRefreshQuietResponse
     EpisodeExplainResponse = _models.EpisodeExplainResponse
     OpsSessionRow = _models.OpsSessionRow
     ProjectionHealthRow = _models.ProjectionHealthRow
@@ -2775,9 +2776,18 @@ async def get_day_close_cache(
 _REFRESH_RATE_LIMIT_HOURS = 24
 
 
+def _today_in_timezone(
+    timezone: zoneinfo.ZoneInfo,
+    *,
+    now: datetime | None = None,
+) -> date:
+    """Return the current local calendar date for a validated request timezone."""
+    return (now or datetime.now(UTC)).astimezone(timezone).date()
+
+
 @router.post(
     "/aggregate/day-close/refresh",
-    response_model=DayCloseRefreshResponse,
+    response_model=DayCloseRefreshResponse | DayCloseRefreshQuietResponse,
     status_code=200,
 )
 async def refresh_day_close(
@@ -2785,7 +2795,7 @@ async def refresh_day_close(
     body: DayCloseRefreshRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
     dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
-) -> DayCloseRefreshResponse:
+) -> DayCloseRefreshResponse | DayCloseRefreshQuietResponse | JSONResponse:
     """Re-invoke the day-close Tier-2 path on demand (rate-limited: 1 per 24 h per date).
 
     Checks whether a ``tier2_cache`` row for ``day_close:{date}`` was built within
@@ -2800,7 +2810,7 @@ async def refresh_day_close(
     """
     # ── Validate timezone ─────────────────────────────────────────────────────
     try:
-        zoneinfo.ZoneInfo(body.tz)
+        timezone = zoneinfo.ZoneInfo(body.tz)
     except (zoneinfo.ZoneInfoNotFoundError, KeyError):
         return JSONResponse(
             status_code=400,
@@ -2809,6 +2819,24 @@ async def refresh_day_close(
                     code="invalid_timezone",
                     message=f"Unrecognized IANA timezone: {body.tz!r}",
                     butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    today_local = _today_in_timezone(timezone)
+    if body.date >= today_local:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="day_close_not_settled",
+                    message=("Day-close refresh targets must be a settled historical local day."),
+                    butler="chronicler",
+                    details={
+                        "date": body.date.isoformat(),
+                        "today": today_local.isoformat(),
+                        "tz": body.tz,
+                    },
                 )
             ).model_dump(exclude_none=True),
         )
@@ -2912,23 +2940,39 @@ async def refresh_day_close(
         target_date=body.date,
     )
 
-    # Fetch the freshly-written row to return the authoritative cache_built_at.
-    new_row = await pool.fetchrow(
-        "SELECT cache_built_at FROM tier2_cache WHERE cache_key = $1 AND superseded_at IS NULL",
-        cache_key,
-    )
-    if new_row is None:
-        # Dispatch succeeded but write was a no-op (e.g. result had no output).
+    if write_outcome is None:
+        # A blank/malformed or otherwise unproven result must not reuse an
+        # older cache row as if this invocation had produced it.
         return JSONResponse(
             status_code=502,
             content=ErrorResponse(
                 error=ErrorDetail(
                     code="cache_write_failed",
-                    message="Day-close dispatch completed but no cache row was written.",
+                    message="Day-close dispatch completed but no cache outcome was written.",
                     butler="chronicler",
                 )
             ).model_dump(exclude_none=True),
         )
+
+    quiet = write_outcome.quiet
+    new_row = None
+    if not quiet:
+        # Fetch the freshly-written row to return the authoritative cache_built_at.
+        new_row = await pool.fetchrow(
+            "SELECT cache_built_at FROM tier2_cache WHERE cache_key = $1 AND superseded_at IS NULL",
+            cache_key,
+        )
+        if new_row is None:
+            return JSONResponse(
+                status_code=502,
+                content=ErrorResponse(
+                    error=ErrorDetail(
+                        code="cache_write_failed",
+                        message="Day-close dispatch completed but no cache row was written.",
+                        butler="chronicler",
+                    )
+                ).model_dump(exclude_none=True),
+            )
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -2942,6 +2986,10 @@ async def refresh_day_close(
         request=request,
     )
 
+    if quiet:
+        return DayCloseRefreshQuietResponse(cache_key=cache_key)
+
+    assert new_row is not None
     return DayCloseRefreshResponse(
         cache_key=cache_key,
         cache_built_at=new_row["cache_built_at"],

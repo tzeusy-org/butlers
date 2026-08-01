@@ -68,6 +68,7 @@ class DayCloseCacheWriteOutcome:
     """Deterministic admission outcome for a completed day-close candidate."""
 
     invalid_reason: str | None = None
+    quiet: bool = False
 
 
 def _coerce_zone(tz: str | ZoneInfo | None) -> ZoneInfo:
@@ -140,49 +141,89 @@ def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
     return refs
 
 
-def _extract_date_label(tool_calls: list[dict[str, Any]]) -> str | None:
-    """Extract the structured date_label the day-close prompt bound to.
-
-    A canonical executed capture contains ``name``, ``input``, ``outcome``,
-    and ``result``. Exactly one successful bundle call is required, and its
-    input ``date_label`` must match the echoed result ``date``. Missing,
-    failed, malformed, or ambiguous captures fail closed as an unbound date.
-    Legacy ``tool``/``result`` fixtures remain supported only when no canonical
-    bundle capture exists. This extraction is cache-admission metadata only;
-    legacy calls never establish a coverage witness.
-    """
-    canonical_calls = [
+def _canonical_bundle_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return canonical-name day-close bundle records in their original order."""
+    return [
         call
         for call in tool_calls
         if isinstance(call, dict) and call.get("name") == "chronicler_day_close_bundle"
     ]
-    if canonical_calls:
-        if len(canonical_calls) != 1:
-            return None
-        call = canonical_calls[0]
-        input_raw = call.get("input")
-        result_raw = call.get("result")
-        if isinstance(result_raw, str):
-            try:
-                result_raw = json.loads(result_raw)
-            except (json.JSONDecodeError, TypeError):
-                return None
-        if (
-            call.get("outcome") != "success"
-            or not isinstance(input_raw, dict)
-            or not isinstance(result_raw, dict)
-        ):
-            return None
-        input_date = input_raw.get("date_label")
-        result_date = result_raw.get("date")
-        if (
-            isinstance(input_date, str)
-            and input_date
-            and isinstance(result_date, str)
-            and input_date == result_date
-        ):
-            return input_date
+
+
+def _validated_canonical_bundle_capture(
+    tool_calls: list[dict[str, Any]],
+    *,
+    target_date_iso: str | None = None,
+    target_timezone: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the one fully bound executed bundle capture, or ``None``.
+
+    Codex's parser can retain a parser-only record beside the daemon's executed
+    capture when their full-input fingerprints differ (for example, because
+    the wrapper includes handler defaults). The parser record has no
+    ``outcome`` key and is not execution proof, so it is ignored only as that
+    duplicate. A second outcome-bearing record, or any missing/malformed or
+    mismatched execution record, fails closed.
+    """
+    canonical_calls = _canonical_bundle_calls(tool_calls)
+    if not canonical_calls:
         return None
+
+    executed_calls = [call for call in canonical_calls if "outcome" in call]
+    if len(executed_calls) != 1:
+        return None
+
+    call = executed_calls[0]
+    input_raw = call.get("input")
+    result_raw = call.get("result")
+    if (
+        call.get("outcome") != "success"
+        or not isinstance(input_raw, dict)
+        or not isinstance(result_raw, dict)
+    ):
+        return None
+
+    input_date = input_raw.get("date_label")
+    result_date = result_raw.get("date")
+    if (
+        not isinstance(input_date, str)
+        or not input_date
+        or not isinstance(result_date, str)
+        or input_date != result_date
+    ):
+        return None
+    if target_date_iso is not None and input_date != target_date_iso:
+        return None
+    if target_timezone is not None and input_raw.get("timezone") != target_timezone:
+        return None
+    return call
+
+
+def _extract_date_label(
+    tool_calls: list[dict[str, Any]],
+    *,
+    target_date_iso: str | None = None,
+    target_timezone: str | None = None,
+) -> str | None:
+    """Extract the structured date_label the day-close prompt bound to.
+
+    Exactly one successful outcome-bearing canonical bundle capture is required
+    when canonical records are present. Parser-only duplicates are tolerated,
+    but they cannot establish proof and a second execution record fails closed.
+    Legacy ``tool``/``result`` fixtures remain supported only when no canonical
+    bundle capture exists. This extraction is cache-admission metadata only;
+    legacy calls never establish a coverage witness.
+    """
+    canonical_calls = _canonical_bundle_calls(tool_calls)
+    if canonical_calls:
+        capture = _validated_canonical_bundle_capture(
+            tool_calls,
+            target_date_iso=target_date_iso,
+            target_timezone=target_timezone,
+        )
+        if capture is None:
+            return None
+        return capture["input"]["date_label"]
 
     # Legacy fixtures predate executed tool-call capture. Keep their narrow
     # ``tool``/``result`` shape compatible while runtime captures use the
@@ -221,25 +262,24 @@ def _has_matching_coverage_bundle_capture(
     ``outcome=success``, and bind both its date and timezone to this writer's
     explicit local-day target.
     """
-    canonical_calls = [
-        call
-        for call in tool_calls
-        if isinstance(call, dict) and call.get("name") == "chronicler_day_close_bundle"
-    ]
-    if len(canonical_calls) != 1:
-        return False
-
-    call = canonical_calls[0]
-    input_raw = call.get("input")
-    result_raw = call.get("result")
     return (
-        call.get("outcome") == "success"
-        and isinstance(input_raw, dict)
-        and isinstance(result_raw, dict)
-        and input_raw.get("date_label") == target_date_iso
-        and result_raw.get("date") == target_date_iso
-        and input_raw.get("timezone") == target_timezone
+        _validated_canonical_bundle_capture(
+            tool_calls,
+            target_date_iso=target_date_iso,
+            target_timezone=target_timezone,
+        )
+        is not None
     )
+
+
+def _is_empty_bundle_result(capture: dict[str, Any]) -> bool:
+    """Return whether a validated executed bundle explicitly contains no evidence."""
+    result_raw = capture.get("result")
+    if not isinstance(result_raw, dict):
+        return False
+    episodes = result_raw.get("episodes")
+    events = result_raw.get("events")
+    return isinstance(episodes, list) and not episodes and isinstance(events, list) and not events
 
 
 def _compute_day_window(
@@ -346,13 +386,16 @@ async def write_day_close_cache(
             next_local_date.day,
             tzinfo=zone,
         ).astimezone(UTC)
-    tz_name = str(tz)
-
-    if _has_matching_coverage_bundle_capture(
+    # Bind the witness to the same resolved timezone used to calculate the
+    # local-day window (including the writer's documented UTC fail-open).
+    tz_name = str(_coerce_zone(tz))
+    validated_capture = _validated_canonical_bundle_capture(
         tool_calls,
         target_date_iso=day_date.isoformat(),
         target_timezone=tz_name,
-    ):
+    )
+
+    if validated_capture is not None:
         try:
             await record_coverage_witness(pool, day_date, tz_name)
         except Exception:
@@ -366,12 +409,19 @@ async def write_day_close_cache(
         )
 
     if not output or not output.strip():
-        logger.debug("day_close_writer: output is empty, skipping cache write")
+        if validated_capture is not None and _is_empty_bundle_result(validated_capture):
+            logger.debug("day_close_writer: validated empty bundle closed a quiet day")
+            return DayCloseCacheWriteOutcome(quiet=True)
+        logger.debug("day_close_writer: output is empty without a valid quiet bundle")
         return
 
     cache_key = f"day_close:{day_date.isoformat()}"
     provenance_refs = _extract_provenance_refs(tool_calls)
-    date_label = _extract_date_label(tool_calls)
+    date_label = _extract_date_label(
+        tool_calls,
+        target_date_iso=day_date.isoformat(),
+        target_timezone=tz_name,
+    )
     prose = output.strip()
     invalid_reason = classify_day_close_candidate(
         prose, date_label=date_label, expected_date_iso=day_date.isoformat()

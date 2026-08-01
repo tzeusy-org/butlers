@@ -268,6 +268,18 @@ class DayCloseRefreshResponse(BaseModel):
     """``inadmissible_prose`` or ``date_mismatch`` when ``invalid`` is true."""
 
 
+class DayCloseRefreshQuietResponse(BaseModel):
+    """Successful executed close for a day whose canonical bundle was empty.
+
+    A quiet close deliberately writes no prose cache row. It therefore never
+    includes ``cache_built_at`` and cannot be confused with reuse of an older
+    cache entry.
+    """
+
+    cache_key: str
+    quiet: Literal[True] = True
+
+
 class EpisodeExplainResponse(BaseModel):
     """Response body for a successful per-episode explain."""
 
@@ -859,6 +871,7 @@ __all__ = [
     "ChroniclesVoiceSource",
     "DayCloseRefreshRequest",
     "DayCloseRefreshResponse",
+    "DayCloseRefreshQuietResponse",
     "DayCloseFreshResponse",
     "DayCloseStaleResponse",
     "EpisodeExplainResponse",

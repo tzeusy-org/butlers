@@ -429,7 +429,10 @@ evaluates staleness, SHALL detect staleness against the canonical
 `chronicler.episodes`, `chronicler.point_events`, and `chronicler.overrides`
 rows in the cached window, and SHALL expose an explicit invalid-without-prose
 state. The re-invocation endpoint SHALL be rate-limited and SHALL NOT introduce
-a new LLM call path beyond the one already declared in RFC 0014 §D5.
+a new LLM call path beyond the one already declared in RFC 0014 §D5. A manual
+refresh SHALL target only a settled historical local day in its supplied IANA
+timezone, and a successful executed empty bundle SHALL remain distinct from a
+persisted cache response.
 
 The endpoints SHALL be:
 
@@ -499,6 +502,37 @@ The endpoints SHALL be:
 - **AND** the API SHALL NOT introduce a new LLM call path; the invocation MUST
   go through the same Tier-2 token-bound input path the cron-driven schedule
   uses
+
+#### Scenario: Unsettled refresh target is rejected before rate-limit or dispatch
+
+- **WHEN** a client POSTs the refresh endpoint for today or a future date in
+  the supplied request timezone
+- **THEN** the API SHALL respond `400 Bad Request` with `code:
+  day_close_not_settled`
+- **AND** it SHALL perform no rate-limit cache lookup and no Tier-2 dispatch
+- **AND** a date strictly before that request-local current date SHALL remain
+  eligible for the existing rate-limit and dispatch path
+
+#### Scenario: Executed empty bundle returns a distinct quiet success
+
+- **WHEN** the re-invoked day-close path produces blank prose and exactly one
+  successful canonical executed `chronicler_day_close_bundle` capture binds
+  its input `date_label` and `timezone`, and echoed result `date`, to the
+  requested local target
+- **AND** that canonical result explicitly has empty `episodes` and `events`
+- **THEN** the API SHALL return `200 OK` with `{cache_key, quiet: true}`
+- **AND** it SHALL not write a prose cache row or include `cache_built_at`
+- **AND** it SHALL not fetch or return an older cache row as this refresh's
+  outcome
+
+#### Scenario: Unproven blank refresh result remains a write failure
+
+- **WHEN** a refresh result has blank prose but its canonical bundle capture
+  is missing, malformed, mismatched, has duplicate outcome-bearing execution
+  captures, or has non-empty `episodes` or `events`
+- **THEN** the API SHALL respond `502 Bad Gateway` with `code:
+  cache_write_failed`
+- **AND** it SHALL not reuse an older cache row as the refresh result
 
 #### Scenario: Refresh rate limit enforced
 

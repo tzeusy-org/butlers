@@ -6426,6 +6426,25 @@ export type ChroniclerDayCloseResponse =
   | ChroniclerDayCloseStaleResponse
   | ChroniclerDayCloseInvalidResponse;
 
+/** Successful POST /aggregate/day-close/refresh result with a persisted cache row. */
+export interface ChroniclerDayCloseRefreshResponse {
+  cache_key: string;
+  cache_built_at: string;
+  invalid: boolean;
+  invalid_reason: "inadmissible_prose" | "date_mismatch" | null;
+}
+
+/** Successful refresh for a validated canonical bundle with no episodes or events. */
+export interface ChroniclerDayCloseRefreshQuietResponse {
+  cache_key: string;
+  quiet: true;
+}
+
+/** POST /aggregate/day-close/refresh success shape. */
+export type ChroniclerDayCloseRefreshResult =
+  | ChroniclerDayCloseRefreshResponse
+  | ChroniclerDayCloseRefreshQuietResponse;
+
 /** Query parameters for GET /api/chronicler/aggregate/day-close. */
 export interface ChroniclerDayCloseParams {
   /** Local calendar date in YYYY-MM-DD form. */

@@ -30,11 +30,47 @@ _MCP_TOOL_CALL_FAILED_LOG_LINE = "MCP tool call failed (butler=%s module=%s tool
 _VISIBLE_CAPTURE_INPUT_FIELDS = frozenset(
     ("butler", "target_butler", "butler_name", "prompt", "context")
 )
+_VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL = {
+    # The day-close writer must bind its coverage/cache result to the exact
+    # request-local target. These are date/timezone labels, not user prose or
+    # evidence payloads, so they are safe to retain in the executed witness.
+    "chronicler_day_close_bundle": frozenset(("date_label", "timezone")),
+}
 
 
-def _visible_capture_input(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Return the small raw-input allowlist that is safe to persist."""
-    return {k: kwargs.get(k) for k in _VISIBLE_CAPTURE_INPUT_FIELDS if k in kwargs}
+def _visible_capture_input(
+    kwargs: dict[str, Any],
+    *,
+    tool_name: str | None = None,
+    fn: Any | None = None,
+    args: tuple[Any, ...] = (),
+) -> dict[str, Any]:
+    """Return the small raw-input allowlist that is safe to persist.
+
+    Most tools retain only the common cross-butler allowlist. A small
+    per-tool allowlist may add deterministic binding fields when a downstream
+    safety gate needs them. Bind against the handler signature so positional
+    arguments and declared defaults are captured without broadening the raw
+    payload surface.
+    """
+    payload = {k: kwargs.get(k) for k in _VISIBLE_CAPTURE_INPUT_FIELDS if k in kwargs}
+    tool_fields = _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL.get(tool_name or "")
+    if not tool_fields:
+        return payload
+
+    bound_kwargs: dict[str, Any] = kwargs
+    if fn is not None:
+        try:
+            bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+            bound.apply_defaults()
+            bound_kwargs = dict(bound.arguments)
+        except Exception:
+            # The capture must never interfere with a live MCP call. Falling
+            # back to explicit kwargs still preserves the common call shape.
+            pass
+
+    payload.update({field: bound_kwargs[field] for field in tool_fields if field in bound_kwargs})
+    return payload
 
 
 def _declared_tool_name(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
@@ -173,7 +209,12 @@ class _SpanWrappingMCP:
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
                 self._log_tool_call(resolved_tool_name)
-                capture_input = _visible_capture_input(kwargs)
+                capture_input = _visible_capture_input(
+                    kwargs,
+                    tool_name=resolved_tool_name,
+                    fn=fn,
+                    args=args,
+                )
                 input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
                 # Check module enabled state at call time to support live toggling.
                 if runtime_states_ref is not None:

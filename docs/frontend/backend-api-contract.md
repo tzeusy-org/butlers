@@ -175,6 +175,28 @@ equals the selected URL date. A date-keyed query may retain prior placeholder
 data during navigation; that transition must use a safe loading presentation,
 not prior prose, KPI, recent-day rows, cache state, or drilldown content.
 
+## Chronicler Day-Close Refresh Contract
+
+- `POST /api/chronicler/aggregate/day-close/refresh` accepts
+  `{date: YYYY-MM-DD, tz: IANA timezone}` and reuses the scheduled
+  `chronicler_day_close` path; the dashboard has no separate LLM route.
+- The target must be a settled historical local day: `date` is strictly before
+  the server's current date in the supplied `tz`. Today and future targets
+  return `400` with `error.code = "day_close_not_settled"` before any
+  rate-limit lookup or dispatch. A valid historical target continues to the
+  normal rate-limit and dispatch path.
+- A prose-producing or contained-invalid success returns
+  `{cache_key, cache_built_at, invalid, invalid_reason}`. `invalid_reason` is
+  `null`, `inadmissible_prose`, or `date_mismatch`.
+- A canonical executed bundle that is bound to the requested `date` and `tz`
+  and contains empty `episodes` and `events` returns the distinct successful
+  response `{cache_key, quiet: true}`. It writes no cache row and never
+  returns a prior row's `cache_built_at`.
+- Blank prose is quiet only for that validated empty bundle. A missing,
+  malformed, mismatched, duplicate-execution, or non-empty bundle with blank
+  prose returns `502` with `error.code = "cache_write_failed"`; it must not
+  reuse an old cache row as the result of the refresh.
+
 ## Notifications Contract
 
 - `GET /api/notifications` -> `PaginatedResponse<NotificationSummary>`

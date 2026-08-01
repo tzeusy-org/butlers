@@ -24,6 +24,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,6 +40,16 @@ from butlers.chronicler.day_close_writer import (
     build_day_close_completion_hooks,
     write_day_close_cache,
 )
+from butlers.core.runtimes.codex import _parse_codex_output_payload
+from butlers.core.spawner import _merge_tool_call_records
+from butlers.core.tool_call_capture import (
+    consume_runtime_session_tool_calls,
+    discard_runtime_session_tool_calls,
+    ensure_runtime_session_capture,
+    reset_current_runtime_session_id,
+    set_current_runtime_session_id,
+)
+from butlers.mcp_wrappers import _SpanWrappingMCP
 
 pytestmark = pytest.mark.unit
 
@@ -345,6 +356,8 @@ def _canonical_bundle_call(
     outcome: str = "success",
     result_date: str | None = None,
     citations: list[str] | None = None,
+    episodes: list[dict] | None = None,
+    events: list[dict] | None = None,
     timezone: str = "UTC",
 ) -> dict:
     """An executed runtime capture for ``chronicler_day_close_bundle``."""
@@ -352,7 +365,12 @@ def _canonical_bundle_call(
         "name": "chronicler_day_close_bundle",
         "input": {"date_label": date_label, "timezone": timezone},
         "outcome": outcome,
-        "result": {"date": result_date or date_label, "citations": citations or []},
+        "result": {
+            "date": result_date or date_label,
+            "citations": citations or [],
+            "episodes": episodes if episodes is not None else [],
+            "events": events if events is not None else [],
+        },
     }
 
 
@@ -610,6 +628,109 @@ async def test_write_day_close_cache_uses_explicit_target_timezone_window(
     assert kwargs["cache_key"] == "day_close:2026-03-08"
     assert kwargs["start_at"] == datetime(2026, 3, 8, 8, 0, tzinfo=UTC)
     assert kwargs["end_at"] == datetime(2026, 3, 9, 7, 0, tzinfo=UTC)
+
+
+async def test_writer_accepts_executed_wrapper_capture_with_parser_duplicate_and_dst_window(
+    fake_pool, mock_upsert
+) -> None:
+    """The real Codex parser + wrapper merge keeps one validated execution witness.
+
+    The parser emits only the requested arguments, while the execution capture
+    fingerprints defaults too. They therefore remain two canonical-name records
+    after merging; the writer must ignore the parser-only duplicate without
+    accepting an unbound or duplicate execution record.
+    """
+    target = date(2026, 3, 8)
+    timezone = "America/Los_Angeles"
+    session_id = "writer-parser-wrapper-merge"
+    ensure_runtime_session_capture(session_id)
+    token = set_current_runtime_session_id(session_id)
+
+    try:
+        mcp = MagicMock()
+
+        def passthrough_tool(*_args, **_kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mcp.tool = passthrough_tool
+        wrapped_mcp = _SpanWrappingMCP(mcp, "chronicler", module_name="chronicler")
+
+        @wrapped_mcp.tool()
+        async def chronicler_day_close_bundle(
+            date_label: str,
+            timezone: str,
+            max_episodes: int = 50,
+            max_events: int = 100,
+        ) -> dict:
+            assert max_episodes == 50
+            assert max_events == 100
+            return {
+                "date": date_label,
+                "citations": [],
+                "episodes": [],
+                "events": [],
+            }
+
+        await chronicler_day_close_bundle(
+            date_label=target.isoformat(),
+            timezone=timezone,
+        )
+        executed_calls = consume_runtime_session_tool_calls(session_id)
+    finally:
+        reset_current_runtime_session_id(token)
+        discard_runtime_session_tool_calls(session_id)
+
+    _text, parsed_calls, _usage, completed = _parse_codex_output_payload(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "type": "mcp_tool_call",
+                        "id": "parser-call-1",
+                        "server": "chronicler",
+                        "tool": "chronicler_day_close_bundle",
+                        "arguments": {
+                            "date_label": target.isoformat(),
+                            "timezone": timezone,
+                        },
+                    }
+                ),
+                json.dumps({"type": "turn.completed"}),
+            )
+        )
+    )
+    assert completed is True
+    merged_calls = _merge_tool_call_records(
+        parsed_calls,
+        executed_calls,
+        butler_name="chronicler",
+    )
+    assert len(merged_calls) == 2
+    assert sum("outcome" in call for call in merged_calls) == 1
+
+    result = MagicMock()
+    result.success = True
+    result.output = "A concise retrospective of the DST transition day."
+    result.tool_calls = merged_calls
+
+    outcome = await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, tzinfo=UTC),
+        tz=timezone,
+        target_date=target,
+    )
+
+    assert outcome is not None
+    assert outcome.invalid_reason is None
+    assert fake_pool._conn.execute.await_count == 2
+    assert mock_upsert.call_args.kwargs["date_label"] == target.isoformat()
+    assert mock_upsert.call_args.kwargs["start_at"] == datetime(2026, 3, 8, 8, 0, tzinfo=UTC)
+    assert mock_upsert.call_args.kwargs["end_at"] == datetime(2026, 3, 9, 7, 0, tzinfo=UTC)
 
 
 async def test_write_day_close_cache_contains_inadmissible_shape_candidate(
