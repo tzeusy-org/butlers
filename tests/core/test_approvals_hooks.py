@@ -129,6 +129,100 @@ async def test_pool_scoped_recipient_guards_fail_open_only_for_foreign_pool(
         approvals_hooks.unregister_approval_hooks(approvals_pool, runtime)
 
 
+async def test_concurrently_enabled_pools_dispatch_each_hook_to_its_own_runtime() -> None:
+    """Two approvals-enabled butlers must never cross-dispatch hook calls."""
+    first_pool = object()
+    second_pool = object()
+    first_email = AsyncMock(
+        return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="first_email")
+    )
+    first_recipient = AsyncMock(
+        return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="first_recipient")
+    )
+    first_park = AsyncMock(return_value="first_park")
+    second_email = AsyncMock(
+        return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="second_email")
+    )
+    second_recipient = AsyncMock(
+        return_value=approvals_hooks.EmailGuardDecision(allowed=False, reason="second_recipient")
+    )
+    second_park = AsyncMock(return_value="second_park")
+    first_runtime = approvals_hooks.register_approval_hooks(
+        first_pool,
+        email_guard=first_email,
+        recipient_guard=first_recipient,
+        park_pending_action=first_park,
+    )
+    second_runtime = approvals_hooks.register_approval_hooks(
+        second_pool,
+        email_guard=second_email,
+        recipient_guard=second_recipient,
+        park_pending_action=second_park,
+    )
+    common_kwargs = {
+        "rule_tool_name": "notify",
+        "rule_match_args": {},
+        "park_tool_name": "notify",
+        "park_tool_args": {},
+    }
+    park_kwargs = {
+        "action_id": uuid.uuid4(),
+        "tool_name": "notify",
+        "tool_args": {"channel": "telegram"},
+        "agent_summary": "Missing channel identifier",
+        "requested_at": datetime.now(UTC),
+        "expires_at": None,
+    }
+
+    try:
+        first_email_result = await approvals_hooks.check_email_recipient(
+            first_pool,
+            email_target="first@example.invalid",
+            **common_kwargs,
+        )
+        second_email_result = await approvals_hooks.check_email_recipient(
+            second_pool,
+            email_target="second@example.invalid",
+            **common_kwargs,
+        )
+        first_recipient_result = await approvals_hooks.check_recipient(
+            first_pool,
+            channel="telegram",
+            target="first-chat",
+            **common_kwargs,
+        )
+        second_recipient_result = await approvals_hooks.check_recipient(
+            second_pool,
+            channel="telegram",
+            target="second-chat",
+            **common_kwargs,
+        )
+        first_park_result = await approvals_hooks.park_pending_action(first_pool, **park_kwargs)
+        second_park_result = await approvals_hooks.park_pending_action(second_pool, **park_kwargs)
+
+        assert first_email_result.reason == "first_email"
+        assert second_email_result.reason == "second_email"
+        assert first_recipient_result.reason == "first_recipient"
+        assert second_recipient_result.reason == "second_recipient"
+        assert first_park_result == "first_park"
+        assert second_park_result == "second_park"
+        assert approvals_hooks.is_approval_parking_available(first_pool)
+        assert approvals_hooks.is_approval_parking_available(second_pool)
+        for hook, pool in (
+            (first_email, first_pool),
+            (first_recipient, first_pool),
+            (first_park, first_pool),
+            (second_email, second_pool),
+            (second_recipient, second_pool),
+            (second_park, second_pool),
+        ):
+            hook.assert_awaited_once()
+            assert hook.await_args.args[0] is pool
+    finally:
+        approvals_hooks.unregister_approval_hooks(second_pool, second_runtime)
+        approvals_hooks.unregister_approval_hooks(first_pool, first_runtime)
+
+
 async def test_older_module_shutdown_preserves_replacement_pool_hooks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -210,3 +304,67 @@ async def test_older_module_shutdown_preserves_replacement_pool_hooks(
         replacement_park.assert_awaited_once()
     finally:
         await replacement_module.on_shutdown()
+
+
+async def test_sole_module_shutdown_removes_its_pool_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A final module teardown must leave its pool without approval hooks."""
+    from butlers.modules.approvals import email_guard, park
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    pool = object()
+    db = SimpleNamespace(pool=pool)
+    module = ApprovalsModule()
+    email_hook = AsyncMock()
+    recipient_hook = AsyncMock()
+    park_hook = AsyncMock()
+    monkeypatch.setattr(email_guard, "check_email_recipient", email_hook)
+    monkeypatch.setattr(email_guard, "check_recipient", recipient_hook)
+    monkeypatch.setattr(park, "park_pending_action", park_hook)
+
+    await module.on_startup(config=None, db=db)
+    assert approvals_hooks.is_approval_parking_available(pool)
+
+    await module.on_shutdown()
+
+    common_kwargs = {
+        "rule_tool_name": "notify",
+        "rule_match_args": {},
+        "park_tool_name": "notify",
+        "park_tool_args": {},
+    }
+    email_result = await approvals_hooks.check_email_recipient(
+        pool,
+        email_target="contact@example.invalid",
+        **common_kwargs,
+    )
+    recipient_result = await approvals_hooks.check_recipient(
+        pool,
+        channel="telegram",
+        target="12345",
+        **common_kwargs,
+    )
+    park_result = await approvals_hooks.park_pending_action(
+        pool,
+        action_id=uuid.uuid4(),
+        tool_name="notify",
+        tool_args={"channel": "telegram"},
+        agent_summary="Missing channel identifier",
+        requested_at=datetime.now(UTC),
+        expires_at=None,
+    )
+
+    assert not approvals_hooks.is_approval_parking_available(pool)
+    assert email_result == approvals_hooks.EmailGuardDecision(
+        allowed=True,
+        reason="no_approvals_module",
+    )
+    assert recipient_result == approvals_hooks.EmailGuardDecision(
+        allowed=True,
+        reason="no_approvals_module",
+    )
+    assert park_result is None
+    email_hook.assert_not_awaited()
+    recipient_hook.assert_not_awaited()
+    park_hook.assert_not_awaited()
