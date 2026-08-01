@@ -8,8 +8,9 @@
 // same selected day.
 //
 // The selected day is URL state (?date=YYYY-MM-DD), defaulting to the most
-// recent settled day (yesterday in owner tz) and clamped to
-// [earliest_date, yesterday]. Navigation reuses the existing cached/templated
+// recent settled day (yesterday in owner tz). Future values are clamped, but
+// a valid pre-floor deep link stays addressable so the backend can return its
+// truthful no_data state. Navigation reuses the existing cached/templated
 // briefing; it never initiates an LLM call.
 //
 // All copy obeys the voice rules from
@@ -46,7 +47,11 @@ import {
   nextIsoDay,
   prevIsoDay,
 } from "@/pages/chronicles-date-nav";
-import type { ChroniclesAttentionItem, ChroniclesKpi } from "@/api/types";
+import type {
+  ChroniclesAttentionItem,
+  ChroniclesKpi,
+  ChroniclesStateClass,
+} from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,7 +64,7 @@ import type { ChroniclesAttentionItem, ChroniclesKpi } from "@/api/types";
  * "could not be confirmed" rather than borrowing the quiet-day predicate
  * (clarify-chronicles-narrative-truth design.md decision 3 -- an outage or
  * an unproven historical day must never narrate as a quiet day). */
-const STATE_PREDICATE: Record<string, string> = {
+const STATE_PREDICATE: Record<ChroniclesStateClass, string> = {
   urgent: "had loose ends.",
   busy: "was full.",
   mild: "went mostly to plan.",
@@ -71,15 +76,33 @@ const STATE_PREDICATE: Record<string, string> = {
 
 /** Non-content states: coverage/availability for the day was not affirmed.
  * Never render these with quiet-day copy or the Attention/KPI content. */
-const NON_CONTENT_STATES = new Set(["no_data", "unavailable", "degraded"]);
+const NON_CONTENT_STATES = new Set<ChroniclesStateClass>([
+  "no_data",
+  "unavailable",
+  "degraded",
+]);
+const CONTENT_STATES = new Set<ChroniclesStateClass>(["urgent", "busy", "mild", "quiet"]);
+const KNOWN_STATE_CLASSES = new Set<ChroniclesStateClass>([
+  ...CONTENT_STATES,
+  ...NON_CONTENT_STATES,
+]);
+
+const UNAVAILABLE_FALLBACK = {
+  headline: "Coverage for this day could not be confirmed.",
+  voiceParagraph: "Chronicler could not confirm whether this day was chronicled.",
+} as const;
+
+function isChroniclesStateClass(value: unknown): value is ChroniclesStateClass {
+  return typeof value === "string" && KNOWN_STATE_CLASSES.has(value as ChroniclesStateClass);
+}
 
 /** Two-line greeting: a date-relative subject plus the briefing headline.
  *
- * An unrecognized state_class (a backend value this build predates) falls
- * back to a neutral "could not be classified" rather than the quiet
- * predicate -- an unknown state is never presumed calm. */
-function deriveHeadlineLines(stateClass: string, headline: string, subject: string) {
-  const predicate = STATE_PREDICATE[stateClass] ?? "could not be classified.";
+ * Callers must first close the state union. Unknown or missing state values
+ * are rendered with the deterministic unavailable fallback, never quiet-day
+ * content. */
+function deriveHeadlineLines(stateClass: ChroniclesStateClass, headline: string, subject: string) {
+  const predicate = STATE_PREDICATE[stateClass];
   return { greet: `${subject} ${predicate}`, body: headline };
 }
 
@@ -168,8 +191,9 @@ export default function ChroniclesPage() {
   const dateParam = searchParams.get("date");
   const requestedDate = isValidIsoDay(dateParam) ? dateParam : latest;
 
-  // Forward-clamp immediately; the backward (earliest) bound needs earliest_date
-  // from the response, so it is applied after the first fetch.
+  // Future dates are never settled, so canonicalize them immediately. A valid
+  // historic pre-floor date deliberately remains requested: the backend must
+  // distinguish its truthful no_data response from an unavailable gap.
   const fetchDate = clampIsoDay(requestedDate, undefined, latest);
 
   const { data, isFetching, isError, refetch } = useChroniclesBriefing({
@@ -178,10 +202,11 @@ export default function ChroniclesPage() {
   });
 
   // earliest_date arrives with every briefing (it is a global minimum,
-  // independent of the requested day), so it bounds backward navigation after
-  // the first fetch.
+  // independent of the requested day). It gates only *additional* backward
+  // travel: a valid pre-floor deep link remains selected and can recover
+  // forward instead of being silently rewritten to the floor.
   const earliest = data?.earliest_date ?? null;
-  const selectedDate = clampIsoDay(requestedDate, earliest, latest);
+  const selectedDate = fetchDate;
 
   function selectDate(date: string) {
     setSearchParams(
@@ -194,15 +219,15 @@ export default function ChroniclesPage() {
     );
   }
 
-  // Canonicalize the URL when the requested day is out of range (a future or
-  // pre-data deep link), so the eyebrow, the briefing data, and the URL agree.
+  // Canonicalize only future dates. Pre-floor archive links are valid input and
+  // must retain their addressability so no_data has a meaningful date.
   useEffect(() => {
-    if (selectedDate !== requestedDate) {
-      selectDate(selectedDate);
+    if (fetchDate !== requestedDate) {
+      selectDate(fetchDate);
     }
     // selectDate is stable for our purposes; depend on the resolved values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate, requestedDate]);
+  }, [fetchDate, requestedDate]);
 
   // A missing archive floor is not proof that earlier days can be read. Keep
   // the backward control disabled until the response establishes a truthful
@@ -289,16 +314,31 @@ export default function ChroniclesPage() {
   }, [atEarliest, atLatest, atLatestDay, selectedDate, latest]);
   useRegisterShortcut(chroniclesShortcuts);
 
+  const receivedStateClass = data?.state_class;
+  const hasKnownState = isChroniclesStateClass(receivedStateClass);
+  const stateClass: ChroniclesStateClass = hasKnownState ? receivedStateClass : "unavailable";
+  const isKnownContentState = hasKnownState && CONTENT_STATES.has(stateClass);
+  const isKnownNonContentState = hasKnownState && NON_CONTENT_STATES.has(stateClass);
+  // A response object without a recognized state is malformed rather than
+  // quiet. It must not leak a cached headline, prose, KPI, or recent index.
+  const isUnknownState = data != null && !hasKnownState;
+  const isNonContentState = data != null && !isKnownContentState;
   const subject = greetSubject(selectedDate, latest);
-  const headlineLines = deriveHeadlineLines(
-    data?.state_class ?? "quiet",
-    data?.headline ?? "Quiet day.",
-    subject,
+  const headline = isUnknownState
+    ? UNAVAILABLE_FALLBACK.headline
+    : (data?.headline ?? UNAVAILABLE_FALLBACK.headline);
+  const voiceParagraph = isUnknownState
+    ? UNAVAILABLE_FALLBACK.voiceParagraph
+    : (data?.voice_paragraph ?? UNAVAILABLE_FALLBACK.voiceParagraph);
+  const headlineLines = deriveHeadlineLines(stateClass, headline, subject);
+  const isStale = isKnownContentState && data?.voice_source === "stale";
+  const attentionItems = adaptAttention(
+    isUnknownState ? [] : (data?.attention_items ?? []),
+    () => void refetch(),
   );
-  const isStale = data?.voice_source === "stale";
-  const isNonContentState = data != null && NON_CONTENT_STATES.has(data.state_class);
-  const attentionItems = adaptAttention(data?.attention_items ?? [], () => void refetch());
-  const sourceErrorItems = attentionItems.filter((item) => item.isSourceError);
+  const sourceErrorItems = isKnownNonContentState
+    ? attentionItems.filter((item) => item.isSourceError)
+    : [];
 
   return (
     <Page
@@ -364,7 +404,7 @@ export default function ChroniclesPage() {
                 title="Coverage or availability for this day could not be affirmed."
                 aria-label="Coverage or availability for this day could not be affirmed"
               >
-                {data!.state_class.replace("_", " ")}
+                {stateClass.replace("_", " ")}
               </span>
             ) : null}
           </div>
@@ -378,7 +418,7 @@ export default function ChroniclesPage() {
             <Headline greet={headlineLines.greet} body={headlineLines.body} />
 
             <Elaboration
-              text={data?.voice_paragraph ?? "The day is still being composed."}
+              text={voiceParagraph}
               isFetching={false}
             />
           </FetchingDim>
@@ -394,7 +434,7 @@ export default function ChroniclesPage() {
             <>
               <Section eyebrow="Coverage">
                 <p className="text-sm text-muted-foreground" role="status">
-                  {data!.voice_paragraph}
+                  {voiceParagraph}
                 </p>
               </Section>
               {sourceErrorItems.length > 0 ? (
@@ -421,7 +461,7 @@ export default function ChroniclesPage() {
         </FetchingDim>
       </div>
 
-      <ChroniclesDrilldownPanel date={selectedDate} tz={ownerTz} />
+      {isKnownContentState ? <ChroniclesDrilldownPanel date={selectedDate} tz={ownerTz} /> : null}
     </Page>
   );
 }

@@ -40,6 +40,7 @@ let _briefingArgs: { date?: string; tz?: string } | undefined;
 let _isFetching = false;
 let _isError = false;
 let _refetch = vi.fn();
+let _drilldownArgs: { date: string; tz: string } | undefined;
 
 vi.mock("@/hooks/use-chronicles-briefing", () => ({
   useChroniclesBriefing: (args: { date?: string; tz?: string } = {}) => {
@@ -57,9 +58,10 @@ vi.mock("@/hooks/use-chronicles-briefing", () => ({
 // editorial smoke tests we stub it out; content visibility is tested in its
 // own component spec.
 vi.mock("@/components/chronicles/ChroniclesDrilldownPanel", () => ({
-  ChroniclesDrilldownPanel: () => (
-    <section aria-label="Chronicles drilldown stub" data-testid="drilldown" />
-  ),
+  ChroniclesDrilldownPanel: (args: { date: string; tz: string }) => {
+    _drilldownArgs = args;
+    return <section aria-label="Chronicles drilldown stub" data-testid="drilldown" />;
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -140,6 +142,7 @@ describe("ChroniclesPage editorial archetype", () => {
     _isFetching = false;
     _isError = false;
     _refetch = vi.fn();
+    _drilldownArgs = undefined;
   });
 
   afterEach(() => {
@@ -313,6 +316,38 @@ describe("ChroniclesPage editorial archetype", () => {
     unmount();
   });
 
+  it("preserves a valid pre-floor deep link, blocks further backward travel, and recovers forward", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
+    _briefing = buildBriefing({
+      date: "2025-12-31",
+      state_class: "no_data",
+      headline: "Before the chronicled archive.",
+      voice_paragraph: "This day is before the earliest day the archive can confirm was chronicled.",
+      earliest_date: "2026-01-01",
+      attention_items: [],
+      recent_days: [],
+    });
+
+    const { container, unmount } = mountPage("/chronicles?date=2025-12-31");
+    try {
+      const prev = container.querySelector('button[aria-label="Previous day"]') as HTMLButtonElement;
+      const next = container.querySelector('button[aria-label="Next day"]') as HTMLButtonElement;
+      expect(_briefingArgs?.date).toBe("2025-12-31");
+      expect(prev.disabled).toBe(true);
+      expect(next.disabled).toBe(false);
+      expect(_drilldownArgs).toBeUndefined();
+
+      act(() => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(_briefingArgs?.date).toBe("2026-01-01");
+    } finally {
+      unmount();
+    }
+  });
+
   it("disables backward navigation while the archive boundary is unavailable", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
@@ -444,6 +479,7 @@ describe("ChroniclesPage editorial archetype", () => {
       expect(html).toContain(predicate);
       expect(html).toContain("Deterministic state-specific copy.");
       expect(html).toContain(stateClass.replace("_", " "));
+      expect(html).not.toContain("Chronicles drilldown stub");
     });
   });
 
@@ -492,15 +528,46 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).toContain("was quiet.");
   });
 
-  it("falls back to a neutral predicate for an unrecognized state_class, never quiet", () => {
+  it("fails closed for an unrecognized state_class without leaking stale editorial content", () => {
     _briefing = buildBriefing({
       // Cast: simulating a future backend value this build predates.
       state_class: "mystery" as ChroniclesBriefing["state_class"],
-      headline: "Unrecognized state.",
+      headline: "Stale headline that must not render.",
+      voice_paragraph: "Stale prose that must not render.",
+      voice_source: "stale",
+      attention_items: [
+        { kind: "anomaly", severity: "high", title: "Stale attention", detail: null, action_href: null },
+      ],
+      recent_days: [
+        { date: "2026-05-07", total_minutes: 642, top_lane: "stale_lane", episode_count: 23 },
+      ],
     });
     const html = renderPage();
+
     expect(html).not.toContain("was quiet.");
-    expect(html).toContain("could not be classified.");
+    expect(html).toContain("Coverage for this day could not be confirmed.");
+    expect(html).toContain("Chronicler could not confirm whether this day was chronicled.");
+    expect(html).not.toContain("Stale headline that must not render.");
+    expect(html).not.toContain("Stale prose that must not render.");
+    expect(html).not.toContain("Stale attention");
+    expect(html).not.toContain("stale_lane");
+    expect(html).not.toContain("Chronicles drilldown stub");
+  });
+
+  it("fails closed when a briefing response omits state_class", () => {
+    const malformed = buildBriefing({
+      headline: "Stale headline that must not render.",
+      voice_paragraph: "Stale prose that must not render.",
+    }) as Partial<ChroniclesBriefing>;
+    delete malformed.state_class;
+    _briefing = malformed as ChroniclesBriefing;
+
+    const html = renderPage();
+
+    expect(html).toContain("Coverage for this day could not be confirmed.");
+    expect(html).not.toContain("Stale headline that must not render.");
+    expect(html).not.toContain("Stale prose that must not render.");
+    expect(html).not.toContain("Chronicles drilldown stub");
   });
 
   describe("palette verbs + bindings (bu-t64p2)", () => {

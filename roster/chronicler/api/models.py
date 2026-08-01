@@ -365,12 +365,21 @@ class ChroniclesBriefingSubqueryAvailability(BaseModel):
     state: Literal["available", "unavailable", "not_requested"]
 
 
+type ChroniclesStateClass = Literal[
+    "urgent", "busy", "mild", "quiet", "no_data", "unavailable", "degraded"
+]
+"""Closed state union for the editorial briefing response."""
+
+type ChroniclesVoiceSource = Literal["llm·cached", "templated", "stale"]
+"""Closed provenance union for the briefing voice paragraph."""
+
+
 class ChroniclesBriefing(BaseModel):
     """Editorial briefing object for /api/chronicler/briefing."""
 
     date: str
     """ISO calendar date (YYYY-MM-DD)."""
-    state_class: str
+    state_class: ChroniclesStateClass
     """One of 'urgent', 'busy', 'mild', 'quiet', 'no_data', 'unavailable', 'degraded'.
 
     The last three are non-content states: coverage or availability for this
@@ -382,7 +391,7 @@ class ChroniclesBriefing(BaseModel):
     """Templated, sentence case, no exclamation, no em-dash."""
     voice_paragraph: str
     """Sourced from chronicler.tier2_cache when fresh; templated otherwise."""
-    voice_source: str
+    voice_source: ChroniclesVoiceSource
     """One of 'llm·cached', 'templated', 'stale'."""
     kpi: ChroniclesKpi = Field(default_factory=ChroniclesKpi)
     attention_items: list[ChroniclesAttentionItem] = Field(default_factory=list)
@@ -394,8 +403,10 @@ class ChroniclesBriefing(BaseModel):
     failed owned query; ``not_requested`` means an intentional skip or an
     expected optional cold-boot relation."""
     earliest_date: str | None = None
-    """Earliest chronicled calendar day (owner tz, YYYY-MM-DD), or null when
-    no episodes exist. Bounds backward archive navigation."""
+    """Earliest authoritatively covered local day (owner tz, YYYY-MM-DD), or
+    null when no durable Chronicler-local coverage proof exists. It prevents
+    further backward archive navigation; a valid pre-floor deep link remains
+    addressable and returns ``state_class='no_data'``."""
 
 
 # ── Activity evidence chain (IEA, tasks.md S9a) ────────────────────────────
@@ -841,10 +852,12 @@ __all__ = [
     "ChroniclesAttentionItem",
     "ChroniclesBriefing",
     "ChroniclesBriefingSubqueryAvailability",
+    "ChroniclesStateClass",
     "ChroniclesKpi",
     "ChroniclesLaneHours",
     "ChroniclesRecentDay",
     "ChroniclesStreaks",
+    "ChroniclesVoiceSource",
     "DayCloseRefreshRequest",
     "DayCloseRefreshResponse",
     "DayCloseFreshResponse",

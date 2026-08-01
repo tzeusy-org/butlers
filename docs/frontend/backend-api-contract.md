@@ -121,6 +121,51 @@ Required query support:
 - `trace` (OpenTelemetry trace scope; matching sessions and trace-attributed
   notifications only)
 
+## Chronicles Editorial Briefing Contract
+
+- `GET /api/chronicler/briefing?date={YYYY-MM-DD}&tz={IANA timezone}` ->
+  unwrapped `ChroniclesBriefing`.
+- `date` is a local calendar day interpreted in `tz`. The dashboard always
+  passes its owner-timezone selection explicitly; when omitted, the endpoint
+  uses its defensive previous-UTC-date fallback. `tz` defaults to Chronicler's
+  stable owner-timezone fallback.
+- `state_class` is a closed union:
+  - content states: `urgent` | `busy` | `mild` | `quiet`;
+  - non-content states: `no_data` | `unavailable` | `degraded`.
+
+The non-content states are an explicit response union, not a quiet-day
+variant. They carry deterministic headline and voice copy, empty KPI/recent
+day content, and may retain named source-error attention rows. Clients must
+not display cached or stale editorial prose, KPI, recent-days rows, or the
+Chronicles drilldown for a non-content state. An unknown or missing
+`state_class` is malformed input and must fail closed as the deterministic
+`unavailable` presentation.
+
+Coverage and cache precedence are fixed:
+
+1. Chronicler first resolves durable local coverage for the exact requested
+   local day. Only an authoritative witness (`day_close_success`, an admitted
+   day-close cache, active `activity`/`evidence` episode proof) counts;
+   calendar intent, tombstones, and retained `legacy_unverified` rows do not.
+2. A settled day before the authoritative floor returns `no_data`; a gap at or
+   after the floor, or no floor, returns `unavailable`. A failed owned read
+   returns `unavailable` or `degraded` as applicable.
+3. Only a covered, available content state may read a day-close cache. Its
+   deterministic date/admission check runs before freshness: an invalid or
+   mismatched row is never rendered; a valid stale row is marked `stale`; a
+   miss uses the templated fallback. The endpoint never initiates an LLM call.
+
+`earliest_date` is the earliest authoritatively covered local date for the
+requested timezone, or `null` when there is no durable coverage proof. It
+blocks additional backward navigation, but it does not rewrite a valid
+pre-floor deep link: `/chronicles?date=<pre-floor>` remains in the URL and
+receives the explicit `no_data` state so a user can move forward again. Future
+dates are clamped to the most-recent settled day.
+
+`recent_days` contains only exact authoritative witness dates in the recent
+window. It is archive navigation evidence, not an episode-derived rolling list;
+the client must not synthesize omitted dates.
+
 ## Notifications Contract
 
 - `GET /api/notifications` -> `PaginatedResponse<NotificationSummary>`

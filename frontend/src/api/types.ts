@@ -7236,8 +7236,10 @@ export interface ChroniclesBriefing {
    * additive response field; consumers should treat absence as an empty list.
    */
   subquery_availability?: ChroniclesSubqueryAvailability[];
-  /** Earliest chronicled day (owner tz, YYYY-MM-DD), or null when no data.
-   * Bounds backward archive navigation. */
+  /** Earliest authoritatively covered local day (owner tz, YYYY-MM-DD), or
+   * null when Chronicler has no durable coverage proof. It blocks additional
+   * backward archive navigation; a valid pre-floor deep link stays addressable
+   * and returns the explicit `no_data` state. */
   earliest_date?: string | null;
 }
 

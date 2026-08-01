@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
@@ -134,6 +135,27 @@ def _payload() -> BriefingPayload:
             )
         ],
     )
+
+
+def test_briefing_response_model_closes_state_and_voice_source_unions() -> None:
+    """A backend value the frontend does not recognize must fail validation."""
+    chronicler_mod = _load_chronicler_router()
+    kwargs = {
+        "date": "2026-05-08",
+        "state_class": "quiet",
+        "headline": "Quiet day.",
+        "voice_paragraph": "Chronicler found no confirmed concerns.",
+        "voice_source": "templated",
+    }
+
+    response = chronicler_mod.ChroniclesBriefing(**kwargs)
+    assert response.state_class == "quiet"
+    assert response.voice_source == "templated"
+
+    with pytest.raises(ValidationError):
+        chronicler_mod.ChroniclesBriefing(**{**kwargs, "state_class": "unknown"})
+    with pytest.raises(ValidationError):
+        chronicler_mod.ChroniclesBriefing(**{**kwargs, "voice_source": "unknown"})
 
 
 async def _fake_compose(_pool: Any, _target: Any, _tz: str) -> BriefingPayload:

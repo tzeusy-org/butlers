@@ -310,14 +310,38 @@ def test_waking_gap_ignores_long_gap_with_short_waking_overlap() -> None:
 
 
 class _FetchConn:
-    def __init__(self, rows: list[_FakeRow] | None = None) -> None:
+    def __init__(
+        self,
+        rows: list[_FakeRow] | None = None,
+        *,
+        covered_dates: set[date] | None = None,
+    ) -> None:
         self.rows = rows or []
+        # ``None`` models a fixture where every requested day has an
+        # authoritative witness. Individual tests can pass an explicit set to
+        # prove the archive index never invents unverified days.
+        self.covered_dates = covered_dates
         self.fetch_calls: list[tuple[object, ...]] = []
         self.fetchval_calls: list[tuple[object, ...]] = []
         self.execute_calls: list[tuple[object, ...]] = []
 
     async def fetch(self, *args: object) -> list[_FakeRow]:
         self.fetch_calls.append(args)
+        sql = args[0]
+        if isinstance(sql, str) and "FROM covered_local_days" in sql:
+            requested_dates = next(
+                (
+                    arg
+                    for arg in args[1:]
+                    if isinstance(arg, list) and all(isinstance(item, date) for item in arg)
+                ),
+                [],
+            )
+            if self.covered_dates is None:
+                covered_dates = set(requested_dates)
+            else:
+                covered_dates = self.covered_dates
+            return [_FakeRow(local_date=d) for d in requested_dates if d in covered_dates]
         return self.rows
 
     async def fetchval(self, *args: object) -> object:
@@ -368,7 +392,25 @@ async def test_fetch_recent_days_batches_episode_query() -> None:
         "2026-05-03",
         "2026-05-02",
     ]
-    assert len(conn.fetch_calls) == 1
+    assert len(conn.fetch_calls) == 2
+    assert "FROM covered_local_days" in str(conn.fetch_calls[0][0])
+
+
+@pytest.mark.asyncio
+async def test_fetch_recent_days_excludes_days_without_authoritative_witnesses() -> None:
+    """The archive index is proof-scoped, not a rolling episode-derived list."""
+    covered_day = date(2026, 5, 8)
+    conn = _FetchConn(covered_dates={covered_day})
+
+    days = await _fetch_recent_days(
+        _FetchPool(conn),
+        datetime(2026, 5, 9, 0, 0, tzinfo=UTC),
+        days=3,
+        tz_name="UTC",
+    )
+
+    assert [day.date for day in days] == ["2026-05-08"]
+    assert len(conn.fetch_calls) == 2
 
 
 # ── _fetch_recent_days top_lane (bu-m4e3d: intent-leak regression) ─────────
@@ -559,6 +601,15 @@ async def test_fetch_earliest_covered_date_returns_min_local_date() -> None:
     conn = _ValConn(fetchval_result=date(2026, 1, 2))
     earliest = await _fetch_earliest_covered_date(_FetchPool(conn), "Asia/Singapore")
     assert earliest == date(2026, 1, 2)
+    sql, tz_name, origins = conn.fetchval_calls[0]
+    assert "origin = ANY($2::text[])" in str(sql)
+    assert tz_name == "Asia/Singapore"
+    assert set(origins) == {
+        "day_close_success",
+        "day_close_cache",
+        "episode_activity",
+        "episode_evidence",
+    }
 
 
 @pytest.mark.asyncio
@@ -583,6 +634,11 @@ async def test_coverage_floor_does_not_hide_owned_postgres_failure() -> None:
 async def test_is_local_day_covered_true_when_witness_exists() -> None:
     conn = _ValConn(fetchval_result=1)
     assert await _is_local_day_covered(_FetchPool(conn), date(2026, 1, 2), "UTC") is True
+    sql, local_date, tz_name, origins = conn.fetchval_calls[0]
+    assert "origin = ANY($3::text[])" in str(sql)
+    assert local_date == date(2026, 1, 2)
+    assert tz_name == "UTC"
+    assert "legacy_unverified" not in origins
 
 
 @pytest.mark.asyncio
@@ -595,7 +651,7 @@ async def test_is_local_day_covered_false_when_no_witness() -> None:
 async def test_record_coverage_witness_executes_upsert() -> None:
     conn = _FetchConn()
     await record_coverage_witness(_FetchPool(conn), date(2026, 1, 2), "UTC")
-    assert conn.execute_calls == [(date(2026, 1, 2), "UTC")]
+    assert conn.execute_calls == [(date(2026, 1, 2), "UTC", "day_close_success")]
 
 
 @pytest.mark.asyncio
