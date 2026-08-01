@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import asyncpg
 import pytest
 
+from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.editorial import (
     _fetch_earliest_covered_date,
     _fetch_recent_days,
@@ -240,6 +242,92 @@ async def test_compose_quiet_for_covered_empty_day(pool) -> None:
     assert payload.state_class == "quiet"
     assert payload.covered_and_available is True
     assert payload.earliest_date == "2026-05-05"
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        [],
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": "2026-05-05", "timezone": "UTC"},
+                "outcome": "success",
+                "result": {"date": "2026-05-04", "citations": []},
+            }
+        ],
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": "2026-05-01", "timezone": "UTC"},
+                "outcome": "success",
+                "result": {"date": "2026-05-01", "citations": []},
+            }
+        ],
+    ],
+    ids=["no-bundle", "wrong-date", "historical-mismatch"],
+)
+async def test_unproven_day_close_capture_leaves_historical_briefing_unavailable(
+    pool, tool_calls
+) -> None:
+    """A successful dispatch without a matching target capture never proves history."""
+    target = date(2026, 5, 5)
+    result = SimpleNamespace(success=True, output="", tool_calls=tool_calls)
+
+    await write_day_close_cache(
+        pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 5, 6, 1, 5, tzinfo=UTC),
+        tz="UTC",
+    )
+
+    assert await _is_local_day_covered(pool, target, "UTC") is False
+    payload = await compose_briefing_payload(
+        pool,
+        target,
+        "UTC",
+        now=datetime(2026, 5, 10, 12, 0, tzinfo=UTC),
+    )
+    assert payload.state_class == "unavailable"
+    assert payload.covered_and_available is False
+
+
+async def test_valid_empty_canonical_day_close_capture_makes_historical_briefing_quiet(
+    pool,
+) -> None:
+    """A matching canonical empty bundle is durable proof of a quiet closed day."""
+    target = date(2026, 5, 5)
+    result = SimpleNamespace(
+        success=True,
+        output="",
+        tool_calls=[
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": "2026-05-05", "timezone": "UTC"},
+                "outcome": "success",
+                "result": {"date": "2026-05-05", "citations": []},
+            }
+        ],
+    )
+
+    await write_day_close_cache(
+        pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 5, 6, 1, 5, tzinfo=UTC),
+        tz="UTC",
+    )
+
+    assert await _is_local_day_covered(pool, target, "UTC") is True
+    payload = await compose_briefing_payload(
+        pool,
+        target,
+        "UTC",
+        now=datetime(2026, 5, 10, 12, 0, tzinfo=UTC),
+    )
+    assert payload.state_class == "quiet"
+    assert payload.covered_and_available is True
 
 
 async def test_compose_today_bypasses_coverage_gate_even_when_uncovered(pool) -> None:

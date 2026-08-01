@@ -9,10 +9,11 @@ Covers:
   chronicler_day_close_bundle tool call echoed back.
 - write_day_close_cache() writes the expected row to tier2_cache via
   upsert_tier2_cache() (mock the storage function).
-- write_day_close_cache() is a no-op for non-success results or empty output.
-- write_day_close_cache() records a covered-local-day witness on a successful
-  dispatch (independent of output emptiness) but not on a failed one
-  (bu-ep4ks.1 / clarify-chronicles-narrative-truth).
+- write_day_close_cache() skips cache prose for non-success results or empty
+  output, while a valid canonical empty capture may still record coverage.
+- write_day_close_cache() records a covered-local-day witness only after one
+  successful canonical bundle capture bound to the target, including a valid
+  empty output, but not for failed, legacy, duplicate, or mismatched captures.
 - write_day_close_cache() contains an inadmissible-shape or date-mismatched
   candidate rather than rendering it, and never replaces an existing
   admissible row with one.
@@ -344,11 +345,12 @@ def _canonical_bundle_call(
     outcome: str = "success",
     result_date: str | None = None,
     citations: list[str] | None = None,
+    timezone: str = "UTC",
 ) -> dict:
     """An executed runtime capture for ``chronicler_day_close_bundle``."""
     return {
         "name": "chronicler_day_close_bundle",
-        "input": {"date_label": date_label, "timezone": "UTC"},
+        "input": {"date_label": date_label, "timezone": timezone},
         "outcome": outcome,
         "result": {"date": result_date or date_label, "citations": citations or []},
     }
@@ -506,9 +508,12 @@ async def test_write_day_close_cache_noop_when_not_success(fake_pool, mock_upser
 
 
 async def test_write_day_close_cache_records_coverage_witness(fake_pool, mock_upsert) -> None:
-    """A successful dispatch records a covered-local-day witness for the closed day."""
+    """One matching canonical bundle capture records the closed-day witness."""
     run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
-    result = _make_result()
+    result = MagicMock()
+    result.success = True
+    result.output = "Day summary prose."
+    result.tool_calls = [_canonical_bundle_call("2026-04-24")]
 
     await write_day_close_cache(
         fake_pool,
@@ -525,6 +530,86 @@ async def test_write_day_close_cache_records_coverage_witness(fake_pool, mock_up
     lock_sql, lock_key = fake_pool._conn.execute.await_args_list[1].args
     assert "pg_advisory_xact_lock" in lock_sql
     assert lock_key == "day_close:2026-04-24"
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        [],
+        [_bundle_call("2026-04-24")],
+        [_canonical_bundle_call("2026-04-24", outcome="error")],
+        [_canonical_bundle_call("2026-04-24"), _canonical_bundle_call("2026-04-24")],
+        [_canonical_bundle_call("2026-04-24", result_date="2026-04-23")],
+        [_canonical_bundle_call("2026-04-24", timezone="Asia/Singapore")],
+    ],
+    ids=["no-bundle", "legacy-bundle", "failed", "duplicate", "wrong-date", "wrong-timezone"],
+)
+async def test_write_day_close_cache_does_not_record_coverage_without_matching_canonical_capture(
+    fake_pool, mock_upsert, tool_calls: list[dict]
+) -> None:
+    """A success result alone never proves the requested local day was read."""
+    result = MagicMock()
+    result.success = True
+    result.output = ""
+    result.tool_calls = tool_calls
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
+        tz="UTC",
+    )
+
+    fake_pool._conn.execute.assert_not_awaited()
+    mock_upsert.assert_not_awaited()
+
+
+async def test_write_day_close_cache_does_not_use_scheduler_day_for_explicit_historical_target(
+    fake_pool, mock_upsert
+) -> None:
+    """A manual historical target cannot inherit a current scheduler capture."""
+    result = MagicMock()
+    result.success = True
+    result.output = ""
+    result.tool_calls = [_canonical_bundle_call("2026-04-24")]
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
+        tz="UTC",
+        target_date=date(2024, 2, 3),
+    )
+
+    fake_pool._conn.execute.assert_not_awaited()
+    mock_upsert.assert_not_awaited()
+
+
+async def test_write_day_close_cache_uses_explicit_target_timezone_window(
+    fake_pool, mock_upsert
+) -> None:
+    """An explicit refresh target keeps its DST-short local-day boundary."""
+    target = date(2026, 3, 8)
+    result = MagicMock()
+    result.success = True
+    result.output = "A retrospective for the DST transition day."
+    result.tool_calls = [_canonical_bundle_call(target.isoformat(), timezone="America/Los_Angeles")]
+
+    await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
+        tz="America/Los_Angeles",
+        target_date=target,
+    )
+
+    kwargs = mock_upsert.call_args.kwargs
+    assert kwargs["cache_key"] == "day_close:2026-03-08"
+    assert kwargs["start_at"] == datetime(2026, 3, 8, 8, 0, tzinfo=UTC)
+    assert kwargs["end_at"] == datetime(2026, 3, 9, 7, 0, tzinfo=UTC)
 
 
 async def test_write_day_close_cache_contains_inadmissible_shape_candidate(
@@ -747,15 +832,15 @@ async def test_write_day_close_cache_invalid_candidate_replaces_prior_invalid_ro
 
 
 async def test_write_day_close_cache_noop_when_output_empty(fake_pool, mock_upsert) -> None:
-    """No upsert when output is empty / whitespace-only, but the coverage
-    witness IS still recorded: a covered quiet day has no episode, so gating
-    the witness on output emptiness would make a genuinely quiet closed day
-    indistinguishable from one never chronicled."""
+    """A valid canonical empty bundle captures a quiet closed day without prose."""
     run_at = datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC)
     for empty_output in (None, "", "   \n"):
         mock_upsert.reset_mock()
         fake_pool._conn.execute.reset_mock()
-        result = _make_result(output=empty_output)
+        result = MagicMock()
+        result.success = True
+        result.output = empty_output
+        result.tool_calls = [_canonical_bundle_call("2026-04-24")]
         await write_day_close_cache(
             fake_pool,
             task_name=DAY_CLOSE_TASK_NAME,

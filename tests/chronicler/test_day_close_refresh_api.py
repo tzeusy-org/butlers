@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +28,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.chronicler.day_close_writer import DayCloseCacheWriteOutcome
 
 pytestmark = pytest.mark.unit
 
@@ -410,7 +411,7 @@ class TestDayCloseRefreshSuccess:
         mock_upsert.assert_awaited_once()
 
     async def test_dispatch_called_with_prompt_from_scheduled_tasks(self):
-        """Dispatch fn receives the prompt from scheduled_tasks (not a new prompt)."""
+        """Dispatch keeps the scheduled prompt and appends only its trusted target."""
         fresh_built_at = datetime.now(UTC)
         expected_prompt = "The chronicler_day_close cron prompt text."
         pool = _mock_pool(
@@ -430,7 +431,48 @@ class TestDayCloseRefreshSuccess:
             await _post_refresh(app)
 
         dispatch_fn.assert_awaited_once()
-        assert dispatch_fn.call_args.kwargs["prompt"] == expected_prompt
+        prompt = dispatch_fn.call_args.kwargs["prompt"]
+        assert prompt.startswith(expected_prompt)
+        assert "Trusted refresh target:" in prompt
+
+    async def test_refresh_appends_trusted_target_and_binds_writer_to_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Refresh retains the scheduled path while binding it to the request target."""
+        scheduled_prompt = "The chronicler_day_close cron prompt text."
+        refreshed_at = datetime.now(UTC)
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                None,
+                _row({"prompt": scheduled_prompt}),
+                _row({"cache_built_at": refreshed_at}),
+            ]
+        )
+        dispatch_fn = AsyncMock(return_value=_make_spawner_result(output="prose"))
+        chronicler_mod = _load_chronicler_router()
+        writer = AsyncMock(return_value=DayCloseCacheWriteOutcome())
+        monkeypatch.setattr(chronicler_mod, "write_day_close_cache", writer)
+        app = _make_app_with_dispatch(pool, dispatch_fn)
+
+        resp = await _post_refresh(
+            app,
+            date="2024-02-03",
+            tz="America/Los_Angeles",
+        )
+
+        assert resp.status_code == 200, resp.text
+        dispatch_fn.assert_awaited_once()
+        prompt = dispatch_fn.call_args.kwargs["prompt"]
+        assert prompt.startswith(scheduled_prompt)
+        assert "trusted refresh target" in prompt.lower()
+        assert "date_label=2024-02-03" in prompt
+        assert "timezone=America/Los_Angeles" in prompt
+        assert "exactly once" in prompt.lower()
+        assert dispatch_fn.call_args.kwargs["trigger_source"] == "api:day_close_refresh:2024-02-03"
+
+        writer.assert_awaited_once()
+        assert writer.call_args.kwargs["target_date"] == date(2024, 2, 3)
+        assert writer.call_args.kwargs["tz"] == "America/Los_Angeles"
 
 
 # ---------------------------------------------------------------------------

@@ -245,11 +245,10 @@ class DayCloseRefreshRequest(BaseModel):
     date: date
     """YYYY-MM-DD date to refresh the day-close cache for."""
     tz: str = "UTC"
-    """IANA timezone for the request (validated; default UTC).
+    """IANA timezone for the requested local day (validated; default UTC).
 
-    Note: the current implementation computes the day window in UTC regardless of
-    this value.  The field is accepted and validated so the API contract is stable
-    for future per-timezone cache support.
+    Refresh binds the existing day-close Tier-2 path to this local-day timezone
+    and computes the cache window from this request target.
     """
 
 

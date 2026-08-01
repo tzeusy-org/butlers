@@ -5,8 +5,10 @@ Post-execution hook that persists the prose output of the
 
 The hook is registered in the scheduler's ``completion_hooks`` dict for the
 ``chronicler_day_close`` task name.  It runs after the spawner returns
-successfully (non-empty output).  If the spawner returned an empty result or
-an error, the hook is a no-op so that stale cache is not replaced with silence.
+successfully. A matching canonical bundle capture records a quiet closed day
+even when its output is empty; failed or unbound captures never establish
+coverage. If the spawner returned an empty result or an error, the hook never
+replaces stale cache prose with silence.
 
 Window computation
 ------------------
@@ -146,7 +148,8 @@ def _extract_date_label(tool_calls: list[dict[str, Any]]) -> str | None:
     input ``date_label`` must match the echoed result ``date``. Missing,
     failed, malformed, or ambiguous captures fail closed as an unbound date.
     Legacy ``tool``/``result`` fixtures remain supported only when no canonical
-    bundle capture exists.
+    bundle capture exists. This extraction is cache-admission metadata only;
+    legacy calls never establish a coverage witness.
     """
     canonical_calls = [
         call
@@ -204,6 +207,41 @@ def _extract_date_label(tool_calls: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _has_matching_coverage_bundle_capture(
+    tool_calls: list[dict[str, Any]],
+    *,
+    target_date_iso: str,
+    target_timezone: str,
+) -> bool:
+    """Return whether exactly one canonical bundle capture proves the target.
+
+    Coverage is a stronger claim than cache admission. It therefore accepts no
+    legacy ``tool`` records or decoded string payloads: the executed runtime
+    capture must contain dict ``input`` and ``result`` payloads, report
+    ``outcome=success``, and bind both its date and timezone to this writer's
+    explicit local-day target.
+    """
+    canonical_calls = [
+        call
+        for call in tool_calls
+        if isinstance(call, dict) and call.get("name") == "chronicler_day_close_bundle"
+    ]
+    if len(canonical_calls) != 1:
+        return False
+
+    call = canonical_calls[0]
+    input_raw = call.get("input")
+    result_raw = call.get("result")
+    return (
+        call.get("outcome") == "success"
+        and isinstance(input_raw, dict)
+        and isinstance(result_raw, dict)
+        and input_raw.get("date_label") == target_date_iso
+        and result_raw.get("date") == target_date_iso
+        and input_raw.get("timezone") == target_timezone
+    )
+
+
 def _compute_day_window(
     run_at: datetime, tz: str | ZoneInfo = "UTC"
 ) -> tuple[date, datetime, datetime]:
@@ -238,19 +276,19 @@ async def write_day_close_cache(
     result: Any,
     run_at: datetime,
     tz: str | ZoneInfo = "UTC",
+    target_date: date | None = None,
 ) -> DayCloseCacheWriteOutcome | None:
     """Post-execution hook: record coverage and persist day-close prose.
 
     Called by the scheduler tick after ``chronicler_day_close`` dispatches.
 
     Records a covered-local-day witness (``editorial.record_coverage_witness``)
-    for the closed day whenever the dispatch itself succeeded, independent of
-    whether it produced non-empty output — a covered quiet day has no episode
-    and produces no prose, so gating the witness on output emptiness would
-    make a genuinely quiet closed day indistinguishable from one that was
-    never chronicled (clarify-chronicles-narrative-truth design.md decision
-    1). No witness is recorded when the dispatch itself failed or returned no
-    result (its evidence reads cannot be proven to have completed).
+    only after exactly one successful canonical ``chronicler_day_close_bundle``
+    capture binds dict input/result values to the target date and timezone. A
+    valid empty capture still records coverage before the empty-output return,
+    so a genuinely quiet closed day remains distinct from one never chronicled.
+    Legacy date-label extraction remains cache-admission compatibility only and
+    cannot prove coverage.
 
     The tier2_cache prose write is separately gated by the deterministic
     day-close admission predicate (``prose_admission.classify_day_close_candidate``):
@@ -267,6 +305,8 @@ async def write_day_close_cache(
         tz: Owner timezone the closed day is computed in (default ``UTC``).  The
             daemon binds the owner's general timezone so the closed day matches
             the local SGT calendar day (issue #2681).
+        target_date: Explicit closed local date for a manual historical refresh.
+            Scheduler calls omit it and derive the target from ``run_at``.
     """
     if task_name != DAY_CLOSE_TASK_NAME:
         return
@@ -293,13 +333,36 @@ async def write_day_close_cache(
         return
 
     day_date, start_at, end_at = _compute_day_window(run_at, tz)
+    if target_date is not None:
+        day_date = target_date
+        zone = _coerce_zone(tz)
+        start_at = datetime(day_date.year, day_date.month, day_date.day, tzinfo=zone).astimezone(
+            UTC
+        )
+        next_local_date = day_date + timedelta(days=1)
+        end_at = datetime(
+            next_local_date.year,
+            next_local_date.month,
+            next_local_date.day,
+            tzinfo=zone,
+        ).astimezone(UTC)
     tz_name = str(tz)
 
-    try:
-        await record_coverage_witness(pool, day_date, tz_name)
-    except Exception:
-        logger.exception(
-            "day_close_writer: failed to record coverage witness for %s", day_date.isoformat()
+    if _has_matching_coverage_bundle_capture(
+        tool_calls,
+        target_date_iso=day_date.isoformat(),
+        target_timezone=tz_name,
+    ):
+        try:
+            await record_coverage_witness(pool, day_date, tz_name)
+        except Exception:
+            logger.exception(
+                "day_close_writer: failed to record coverage witness for %s", day_date.isoformat()
+            )
+    else:
+        logger.debug(
+            "day_close_writer: no canonical coverage capture for %s; witness not recorded",
+            day_date.isoformat(),
         )
 
     if not output or not output.strip():

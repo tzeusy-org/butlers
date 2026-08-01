@@ -2879,8 +2879,17 @@ async def refresh_day_close(
         )
 
     # ── Dispatch — re-uses the same prompt as the cron schedule ───────────────
+    # The request target is trusted API input, not an LLM inference. Append it
+    # to the scheduled prompt so the existing Tier-2 path receives an explicit
+    # date/timezone bundle target for historical refreshes.
+    refresh_prompt = (
+        f"{task_row['prompt']}\n\n"
+        "Trusted refresh target: call chronicler_day_close_bundle exactly once "
+        f"with date_label={body.date.isoformat()} and timezone={body.tz}. "
+        "Use this exact closed local day; do not substitute another date or timezone."
+    )
     result = await dispatch_fn(
-        prompt=task_row["prompt"],
+        prompt=refresh_prompt,
         trigger_source=f"api:day_close_refresh:{body.date.isoformat()}",
     )
 
@@ -2900,6 +2909,7 @@ async def refresh_day_close(
         result=result,
         run_at=run_at,
         tz=body.tz,
+        target_date=body.date,
     )
 
     # Fetch the freshly-written row to return the authoritative cache_built_at.
