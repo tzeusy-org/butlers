@@ -354,7 +354,7 @@ async def test_recover_orphaned_sessions_preserves_existing_error(pool):
 
 async def test_top_sessions_date_range_filters_by_started_at(pool):
     """from_date/to_date scope results to sessions started within the inclusive range."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
 
     from butlers.core.sessions import session_complete, session_create, top_sessions
 
@@ -383,7 +383,7 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
     await pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
         out_of_range,
-        datetime.now(UTC) - timedelta(days=90),
+        datetime(2026, 4, 30, tzinfo=UTC),
     )
     await session_complete(
         pool,
@@ -414,7 +414,7 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
 
 async def test_schedule_costs_date_range_filters_runs(pool):
     """from_date/to_date scope run aggregates; schedules with no runs in-window still appear."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
 
     from butlers.core.scheduler import schedule_create
     from butlers.core.sessions import schedule_costs, session_complete, session_create
@@ -454,7 +454,7 @@ async def test_schedule_costs_date_range_filters_runs(pool):
     await pool.execute(
         "UPDATE sessions SET started_at = $2 WHERE id = $1",
         old,
-        datetime.now(UTC) - timedelta(days=90),
+        datetime(2026, 4, 30, tzinfo=UTC),
     )
     await session_complete(
         pool,
