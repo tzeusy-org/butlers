@@ -377,6 +377,7 @@ Response model shapes:
 
 ## Approvals Domain Contract
 
+- `GET /api/approvals` and `GET /api/approvals/history` -> `ApiResponse<ApprovalSummary[]>`; summaries carry a nullable, redacted `execution_result`, and Retry is eligible only for `status = approved` with `execution_result = null`
 - `GET /api/approvals/actions` -> `PaginatedResponse<ApprovalAction>`
 - `GET /api/approvals/actions/{actionId}` -> `ApiResponse<ApprovalAction>`
 - `POST /api/approvals/actions/{actionId}/approve` -> `ApiResponse<ApprovalAction>`

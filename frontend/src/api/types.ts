@@ -3158,6 +3158,8 @@ export interface ApprovalSummary {
   created_at: string;
   expires_at?: string | null;
   why?: string | null;
+  /** Durable execution evidence used to distinguish eligible stalled rows. */
+  execution_result?: Record<string, unknown> | null;
   blast_radius?: ApprovalBlastRadius | null;
   reversibility?: ApprovalReversibility | null;
   /**

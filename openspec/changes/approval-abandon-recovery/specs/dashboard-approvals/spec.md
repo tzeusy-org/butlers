@@ -40,6 +40,15 @@ stalled predicate.
 - **AND** it does not return an `executed`, `pending`, `rejected`, `expired`,
   `abandoned`, or approved action with a non-null execution result.
 
+#### Scenario: History retry uses the durable eligibility predicate
+
+- **WHEN** the bounded history response includes approved actions with null and
+  non-null execution results
+- **THEN** each `ApprovalSummary` includes its nullable, redacted
+  `execution_result`
+- **AND** the dashboard renders Retry only for actions whose status is
+  `approved` and whose `execution_result` is null.
+
 #### Scenario: Stalled metadata is independent of the page window
 
 - **WHEN** `GET /api/approvals?state=decided&limit=30` returns a bounded

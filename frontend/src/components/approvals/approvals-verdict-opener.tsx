@@ -68,9 +68,9 @@ function buildClauses(
   }
 
   // This value is not inferred from the history page: that page is bounded
-  // and summaries deliberately omit execution_result. The flat endpoint
-  // derives it from ``status = approved AND execution_result IS NULL`` across
-  // the whole eligible pool population.
+  // and cannot represent every stalled row. The flat endpoint derives it from
+  // ``status = approved AND execution_result IS NULL`` across the whole
+  // eligible pool population.
   if (stalledCount === 1) {
     clauses.push({
       key: "stalled",

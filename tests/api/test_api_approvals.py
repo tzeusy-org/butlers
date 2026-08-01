@@ -501,6 +501,26 @@ async def test_list_approvals_history_reports_sources_degraded_on_pool_failure(a
     assert body["meta"]["sources_degraded"] == ["home"]
 
 
+async def test_history_summary_exposes_a_redacted_execution_result_for_retry_eligibility(app):
+    """History needs the durable null/non-null discriminator used by its Retry control."""
+    row = {
+        **_make_action(tool_name="notify", status="approved"),
+        "execution_result": {"success": False, "error": "private handler diagnostic"},
+    }
+    app = _app_with_one_healthy_one_raising_butler(app, healthy_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/history")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"][0]["execution_result"] == {
+        "success": False,
+        "error": "***REDACTED***",
+    }
+
+
 async def test_list_approvals_flat_no_sources_degraded_when_all_pools_healthy(app):
     """No sources_degraded key when every pool answers successfully."""
     row = _make_action(tool_name="notify")
@@ -2305,10 +2325,12 @@ def _build_dispatch_mocks(
     mock_mcp.butler_names = ["messenger"]
     mock_mcp.get_client = AsyncMock(return_value=mock_client)
 
-    # DB pool — mark_executed is patched at the module level in callers
+    # DB pool — notify now uses the shared executor, so the fixture must model
+    # its pre-delivery row lock and transaction rather than only mark_executed.
     mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchrow = AsyncMock(return_value={"status": "approved", "execution_result": None})
     mock_conn.execute = AsyncMock()
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
 
     class _MockAcquire:
         async def __aenter__(self):
@@ -2317,8 +2339,13 @@ def _build_dispatch_mocks(
         async def __aexit__(self, *a):
             pass
 
-    mock_pool = AsyncMock()
-    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    class _MockPool:
+        """Executor-compatible pool double without AsyncMock child attributes."""
+
+        def acquire(self):
+            return _MockAcquire()
+
+    mock_pool = _MockPool()
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["messenger"]

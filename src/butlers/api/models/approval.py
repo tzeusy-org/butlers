@@ -174,7 +174,7 @@ class ApprovalAbandonRequest(BaseModel):
 
 
 class ApprovalSummary(BaseModel):
-    """Compact approval item for the flat-list GET /api/approvals endpoint."""
+    """Compact approval item for the flat-list and history endpoints."""
 
     id: str
     butler: str
@@ -183,6 +183,7 @@ class ApprovalSummary(BaseModel):
     created_at: datetime
     expires_at: datetime | None = None
     why: str | None = None
+    execution_result: dict[str, Any] | None = None
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (

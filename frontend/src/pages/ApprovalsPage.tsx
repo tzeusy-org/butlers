@@ -1377,7 +1377,7 @@ function HistorySection() {
             </Link>
             {/* Only the exact approved/null-result state is retryable. An
                 abandoned row is terminal and intentionally read-only. */}
-            {item.status === "approved" && (
+            {item.status === "approved" && item.execution_result == null && (
               <RetryDispatchButton actionId={item.id} />
             )}
             <span className="font-mono text-xs text-muted-foreground shrink-0">

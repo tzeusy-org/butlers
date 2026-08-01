@@ -294,6 +294,15 @@ stalled predicate.
 - **AND** it does not return an `executed`, `pending`, `rejected`, `expired`,
   `abandoned`, or approved action with a non-null execution result
 
+#### Scenario: History retry uses the durable eligibility predicate
+
+- **WHEN** the bounded history response includes approved actions with null and
+  non-null execution results
+- **THEN** each `ApprovalSummary` includes its nullable, redacted
+  `execution_result`
+- **AND** the dashboard renders Retry only for actions whose status is
+  `approved` and whose `execution_result` is null
+
 #### Scenario: Stalled metadata is independent of the page window
 
 - **WHEN** `GET /api/approvals?state=decided&limit=30` returns a bounded
@@ -451,7 +460,7 @@ The dashboard SHALL fan approval lifecycle events onto the unified fleet event b
 #### Scenario: Stream event shape
 
 - **WHEN** an approval transitions state
-- **THEN** an event `{type: "approval", data: {kind: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired", approval_id, ...}}` is broadcast on `WS /api/events/stream`.
+- **THEN** an event `{type: "approval", data: {kind: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired"|"abandoned", approval_id, ...}}` is broadcast on `WS /api/events/stream`.
 
 ---
 

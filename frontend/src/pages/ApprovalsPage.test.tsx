@@ -818,7 +818,12 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
 // Honest dispatch status + retry affordance (bu-j1xkd)
 // ---------------------------------------------------------------------------
 
-function makeHistoryItem(id: string, status: string, toolName = "send_email") {
+function makeHistoryItem(
+  id: string,
+  status: string,
+  toolName = "send_email",
+  executionResult: Record<string, unknown> | null = null,
+) {
   return {
     id,
     butler: "general",
@@ -827,6 +832,7 @@ function makeHistoryItem(id: string, status: string, toolName = "send_email") {
     why: null,
     created_at: "2026-05-17T10:00:00Z",
     expires_at: null,
+    execution_result: executionResult,
   };
 }
 
@@ -1437,6 +1443,21 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(retryButtons.length).toBe(1);
   });
 
+  it("does not render Retry dispatch for an approved history row with a persisted result", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([
+        makeHistoryItem("h-completed", "approved", "send_email", { success: false }),
+      ]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="history-row-link"]') !== null,
+    );
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
   it("calls retryApproval and toasts success when retry dispatches", async () => {
     vi.mocked(getApprovalsHistory).mockReturnValue(
       makeApiResponse([makeHistoryItem("h-approved", "approved")]) as AnyMock,
@@ -1872,7 +1893,7 @@ describe("ApprovalsPage — stalled (approved-but-undispatched) state (bu-86c4c.
 
   it("feeds the verdict the flat response's whole-population stalled radar", async () => {
     // History is deliberately empty: the count must not depend on the
-    // bounded history query, which lacks execution_result in its summaries.
+    // bounded history query, which cannot represent every stalled row.
     vi.mocked(getApprovalsFlat).mockReturnValue(
       Promise.resolve({ data: [], meta: { stalled_count: 2 } }) as AnyMock,
     );
