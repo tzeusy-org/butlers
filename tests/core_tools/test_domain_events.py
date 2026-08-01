@@ -12,6 +12,7 @@ import asyncio
 import errno
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -67,6 +68,20 @@ def _register(butler_name: str = "finance", butler_type=ButlerType.BUTLER, switc
     )
     register_domain_event_tools(ctx, mcp, _core_tool)
     return registered
+
+
+class _SweepLockPool:
+    """Minimal pool double that keeps an advisory lock on one connection."""
+
+    def __init__(self, *, lock_acquired: bool = True) -> None:
+        self.connection = AsyncMock()
+        self.connection.fetchval = AsyncMock(
+            side_effect=[lock_acquired, True] if lock_acquired else [False]
+        )
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.connection
 
 
 # ---------------------------------------------------------------------------
@@ -916,7 +931,7 @@ class TestRunDomainEventReconciliationSweep:
     """
 
     async def test_stale_pending_candidate_is_redriven_and_delivered(self, monkeypatch):
-        pool = AsyncMock()
+        pool = _SweepLockPool()
         row = {
             "id": "d1",
             "event_id": "event-1",
@@ -950,7 +965,7 @@ class TestRunDomainEventReconciliationSweep:
         """A candidate that a concurrent live dispatch already resolved between
         selection and processing must be re-observed (via claim_delivery) and
         skipped, never blindly re-dispatched."""
-        pool = AsyncMock()
+        pool = _SweepLockPool()
         row = {
             "id": "d1",
             "event_id": "event-1",
@@ -982,7 +997,7 @@ class TestRunDomainEventReconciliationSweep:
         dispatch_mock.assert_not_awaited()
 
     async def test_permanent_failure_is_counted_and_logged(self, monkeypatch, caplog):
-        pool = AsyncMock()
+        pool = _SweepLockPool()
         row = {
             "id": "d1",
             "event_id": "event-1",
@@ -1016,3 +1031,24 @@ class TestRunDomainEventReconciliationSweep:
         assert result["failed_retried"] == 1
         assert result["newly_permanently_failed"] == 1
         assert any("permanently failed" in message for message in caplog.messages)
+
+    async def test_active_sweep_is_observably_skipped(self, monkeypatch):
+        pool = _SweepLockPool(lock_acquired=False)
+        stale_candidates = AsyncMock()
+        failed_candidates = AsyncMock()
+        monkeypatch.setattr(_domain_events, "select_stale_pending_deliveries", stale_candidates)
+        monkeypatch.setattr(_domain_events, "select_retryable_failed_deliveries", failed_candidates)
+
+        result = await run_domain_event_reconciliation_sweep(pool)
+
+        assert result == {
+            "stale_pending_candidates": 0,
+            "stale_pending_redriven": 0,
+            "stale_pending_delivered": 0,
+            "failed_retry_candidates": 0,
+            "failed_retried": 0,
+            "newly_permanently_failed": 0,
+            "skipped_due_to_active_sweep": True,
+        }
+        stale_candidates.assert_not_awaited()
+        failed_candidates.assert_not_awaited()

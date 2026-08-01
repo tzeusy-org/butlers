@@ -35,15 +35,17 @@ docstring).
 reconciliation sweep ``src/butlers/core/domain_events.py``'s module
 docstring anticipated: it re-drives ``pending`` deliveries stuck since a
 crash and retries ``failed`` deliveries a bounded number of times with
-backoff, reusing ``claim_delivery``/``mark_delivery_*``'s exact idempotence
-so a live in-flight delivery is never double-dispatched. It always runs on
-the Switchboard daemon (the routing backbone, with fleet-wide ``public.*``
-table access) and dispatches via ``_SwitchboardInProcessRouteClient``, which
-calls the real ``route()`` function in-process for every subscriber --
-unlike ``_dispatch_receive_via_switchboard``'s existing self-delivery
-branch (keyed on the *event's publisher* being Switchboard), the sweep
-re-drives deliveries published by every butler, so it cannot rely on that
-identity check.
+backoff.  A non-blocking session advisory lock serializes the complete
+reconciliation sweep across overlapping scheduler/manual invocations; within
+the winning sweep, ``claim_delivery`` re-observes each selected row before
+dispatch so a live path that settled it in the interim is skipped. It always
+runs on the Switchboard daemon (the routing backbone, with fleet-wide
+``public.*`` table access) and dispatches via
+``_SwitchboardInProcessRouteClient``, which calls the real ``route()``
+function in-process for every subscriber -- unlike
+``_dispatch_receive_via_switchboard``'s existing self-delivery branch (keyed
+on the *event's publisher* being Switchboard), the sweep re-drives deliveries
+published by every butler, so it cannot rely on that identity check.
 """
 
 from __future__ import annotations
@@ -98,6 +100,7 @@ _STALE_PENDING_AFTER = timedelta(minutes=10)
 _FAILED_RETRY_BACKOFF = timedelta(minutes=15)
 _MAX_DELIVERY_RETRY_ATTEMPTS = 5
 _SWEEP_BATCH_LIMIT = 200
+_RECONCILIATION_SWEEP_LOCK_KEY = "public.domain_event_deliveries:reconciliation_sweep"
 
 # route() preserves the old ``{"error": "<ExceptionType>: <message>"}``
 # envelope and current Switchboard versions add a literal boolean ``retryable``
@@ -408,8 +411,8 @@ class _SwitchboardInProcessRouteClient:
         return SimpleNamespace(is_error=False, data=result)
 
 
-async def run_domain_event_reconciliation_sweep(
-    pool: Any,
+async def _run_domain_event_reconciliation_sweep_locked(
+    connection: Any,
     *,
     stale_pending_after: timedelta = _STALE_PENDING_AFTER,
     failed_retry_backoff: timedelta = _FAILED_RETRY_BACKOFF,
@@ -426,8 +429,9 @@ async def run_domain_event_reconciliation_sweep(
 
     Two independent passes, both reusing ``claim_delivery``'s exact
     idempotent claim-or-observe primitive so a delivery that has already
-    resolved (by a live in-flight dispatch, or a concurrent sweep run) is
-    re-observed and skipped rather than blindly re-dispatched:
+    resolved by a live in-flight dispatch is re-observed and skipped rather
+    than blindly re-dispatched.  The public wrapper serializes concurrent
+    sweep runs before this helper begins:
 
     1. **Stale pending** (:func:`butlers.core.domain_events.
        select_stale_pending_deliveries`): a ``pending`` row untouched for
@@ -459,16 +463,16 @@ async def run_domain_event_reconciliation_sweep(
     Returns a summary dict of candidate/outcome counts (never raises; a
     per-delivery dispatch failure is recorded in the ledger, not propagated).
     """
-    client = _SwitchboardInProcessRouteClient(pool)
+    client = _SwitchboardInProcessRouteClient(connection)
 
     stale_pending = await select_stale_pending_deliveries(
-        pool, older_than=stale_pending_after, limit=limit
+        connection, older_than=stale_pending_after, limit=limit
     )
     pending_redriven = 0
     pending_now_delivered = 0
     for row in stale_pending:
         delivery = await claim_delivery(
-            pool, event_id=row["event_id"], subscriber_butler=row["subscriber_butler"]
+            connection, event_id=row["event_id"], subscriber_butler=row["subscriber_butler"]
         )
         if delivery["status"] != "pending":
             # Resolved by a concurrent dispatch/sweep since it was selected as
@@ -476,7 +480,7 @@ async def run_domain_event_reconciliation_sweep(
             # keeps this safe; never re-dispatch a delivery that has moved on.
             continue
         outcome = await _dispatch_and_record_delivery(
-            pool,
+            connection,
             client,
             delivery=delivery,
             subscriber_butler=row["subscriber_butler"],
@@ -491,18 +495,18 @@ async def run_domain_event_reconciliation_sweep(
             pending_now_delivered += 1
 
     retryable_failed = await select_retryable_failed_deliveries(
-        pool, backoff_after=failed_retry_backoff, max_attempts=max_attempts, limit=limit
+        connection, backoff_after=failed_retry_backoff, max_attempts=max_attempts, limit=limit
     )
     failed_retried = 0
     newly_permanent = 0
     for row in retryable_failed:
         delivery = await claim_delivery(
-            pool, event_id=row["event_id"], subscriber_butler=row["subscriber_butler"]
+            connection, event_id=row["event_id"], subscriber_butler=row["subscriber_butler"]
         )
         if delivery["status"] != "failed":
             continue
         outcome = await _dispatch_and_record_delivery(
-            pool,
+            connection,
             client,
             delivery=delivery,
             subscriber_butler=row["subscriber_butler"],
@@ -531,7 +535,63 @@ async def run_domain_event_reconciliation_sweep(
         "failed_retry_candidates": len(retryable_failed),
         "failed_retried": failed_retried,
         "newly_permanently_failed": newly_permanent,
+        "skipped_due_to_active_sweep": False,
     }
+
+
+async def run_domain_event_reconciliation_sweep(
+    pool: Any,
+    *,
+    stale_pending_after: timedelta = _STALE_PENDING_AFTER,
+    failed_retry_backoff: timedelta = _FAILED_RETRY_BACKOFF,
+    max_attempts: int = _MAX_DELIVERY_RETRY_ATTEMPTS,
+    limit: int = _SWEEP_BATCH_LIMIT,
+) -> dict[str, Any]:
+    """Run at most one domain-event reconciliation sweep across the fleet.
+
+    Re-observing an existing delivery row is not itself an exclusive claim: two
+    overlapping sweeps could both read the same retryable row and each record
+    a route failure.  Hold a non-blocking, session-scoped advisory lock for
+    the complete select -> dispatch -> outcome sequence so a manual force tick
+    or another replica returns a truthful skipped result instead of consuming
+    a second retry attempt.  The held connection is deliberately threaded
+    through the full sequence; a transaction-scoped lock would be released
+    before the network dispatch, and acquiring a second pool connection while
+    holding this one can deadlock a constrained pool.
+
+    PostgreSQL releases the lock if the owning connection dies.  The normal
+    path explicitly unlocks it before returning the per-pass summary.
+    """
+    async with pool.acquire() as connection:
+        lock_acquired = await connection.fetchval(
+            "SELECT pg_try_advisory_lock(hashtext($1))", _RECONCILIATION_SWEEP_LOCK_KEY
+        )
+        if not lock_acquired:
+            logger.info("domain-event reconciliation sweep skipped: another sweep is active")
+            return {
+                "stale_pending_candidates": 0,
+                "stale_pending_redriven": 0,
+                "stale_pending_delivered": 0,
+                "failed_retry_candidates": 0,
+                "failed_retried": 0,
+                "newly_permanently_failed": 0,
+                "skipped_due_to_active_sweep": True,
+            }
+
+        try:
+            return await _run_domain_event_reconciliation_sweep_locked(
+                connection,
+                stale_pending_after=stale_pending_after,
+                failed_retry_backoff=failed_retry_backoff,
+                max_attempts=max_attempts,
+                limit=limit,
+            )
+        finally:
+            lock_released = await connection.fetchval(
+                "SELECT pg_advisory_unlock(hashtext($1))", _RECONCILIATION_SWEEP_LOCK_KEY
+            )
+            if not lock_released:
+                logger.error("domain-event reconciliation sweep advisory lock was not held")
 
 
 def _invalid_event_type_error(event_type: str) -> dict[str, Any]:
