@@ -2625,7 +2625,9 @@ class TestSpendEventBusWiring:
         assert ev["tokens_in"] == 1000
         assert ev["tokens_out"] == 500
         assert ev["session_id"] == str(session_uuid)
-        assert ev["cost_usd"] == 0.0
+        # Luna uses the configured API-equivalent heuristic: 1K input at
+        # $0.20/M plus 500 output at $1.20/M is $0.0008.
+        assert ev["cost_usd"] == pytest.approx(0.0008)
         assert "ts" in ev
 
     async def test_spend_event_preserves_unknown_model_cost_as_unpriced(self, tmp_path: Path):

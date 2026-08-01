@@ -60,24 +60,47 @@ output_price_per_token = 0.0000025  # $2.50 / 1M tokens
 # gpt-5.4-pro (>272K): $60.00/$270.00 per 1M tokens
 # gpt-5.5-pro has no long-context tier.
 
-# Codex subscription models — usage is real and recorded in the ledger, but
-# it has no marginal API price under the active subscription. These entries
-# intentionally price at $0 while carrying an explicit classification; an
-# absent gpt-5.6 entry would instead be rendered as unpriced.
-[models."gpt-5.6-luna"]
-billing_class = "subscription"
-input_price_per_token = 0.0
-output_price_per_token = 0.0
-
+# GPT-5.6 estimates use OpenAI Standard API-equivalent token prices, independent
+# of the active Codex subscription, so the dashboard remains a general usage
+# heuristic. This deployment assumes every request is <=272K, so entries are
+# deliberately flat rather than context-tiered.
+# Source: https://developers.openai.com/api/docs/pricing (2026-08-01).
 [models."gpt-5.6-sol"]
-billing_class = "subscription"
-input_price_per_token = 0.0
-output_price_per_token = 0.0
+billing_class = "metered"
+input_price_per_token = 0.000005  # $5.00 / 1M tokens (≤272K context)
+cached_input_price_per_token = 0.0000005  # $0.50 / 1M tokens
+cache_creation_price_per_token = 0.00000625  # $6.25 / 1M tokens
+output_price_per_token = 0.00003  # $30.00 / 1M tokens
 
 [models."gpt-5.6-terra"]
-billing_class = "subscription"
-input_price_per_token = 0.0
-output_price_per_token = 0.0
+billing_class = "metered"
+input_price_per_token = 0.000002  # $2.00 / 1M tokens (≤272K context)
+cached_input_price_per_token = 0.0000002  # $0.20 / 1M tokens
+cache_creation_price_per_token = 0.0000025  # $2.50 / 1M tokens
+output_price_per_token = 0.000012  # $12.00 / 1M tokens
+
+[models."gpt-5.6-luna"]
+billing_class = "metered"
+input_price_per_token = 0.0000002  # $0.20 / 1M tokens (≤272K context)
+cached_input_price_per_token = 0.00000002  # $0.02 / 1M tokens
+cache_creation_price_per_token = 0.00000025  # $0.25 / 1M tokens
+output_price_per_token = 0.0000012  # $1.20 / 1M tokens
+
+# The catalog uses these effort-suffixed Luna IDs directly, so each requires
+# an explicit pricing key even though the API-equivalent rates match base Luna.
+[models."gpt-5.6-luna-high"]
+billing_class = "metered"
+input_price_per_token = 0.0000002
+cached_input_price_per_token = 0.00000002
+cache_creation_price_per_token = 0.00000025
+output_price_per_token = 0.0000012
+
+[models."gpt-5.6-luna-xhigh"]
+billing_class = "metered"
+input_price_per_token = 0.0000002
+cached_input_price_per_token = 0.00000002
+cache_creation_price_per_token = 0.00000025
+output_price_per_token = 0.0000012
 
 [models."gpt-5.5"]
 input_price_per_token = 0.000005    # $5.00 / 1M tokens (<272K context)

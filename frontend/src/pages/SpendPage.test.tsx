@@ -1037,8 +1037,8 @@ describe("SpendPage — spend breakdown", () => {
         return Promise.resolve({
           data: {
             by: "model",
-            breakdown: { "gpt-5.6-luna": 0 },
-            billing_classes: { "gpt-5.6-luna": "subscription" },
+            breakdown: { "known-zero-example": 0 },
+            billing_classes: { "known-zero-example": "subscription" },
             unpriced_models: [
               {
                 model: "unpriced-codex",
@@ -1063,7 +1063,7 @@ describe("SpendPage — spend breakdown", () => {
       fireEvent.click(screen.getByRole("button", { name: "model" }))
     })
 
-    expect(await screen.findByText("gpt-5.6-luna")).toBeTruthy()
+    expect(await screen.findByText("known-zero-example")).toBeTruthy()
     expect(screen.getByText(/subscription/)).toBeTruthy()
     expect(screen.getByText("—/unpriced")).toBeTruthy()
     expect((await screen.findByTestId("breakdown-unpriced")).textContent).toContain(
