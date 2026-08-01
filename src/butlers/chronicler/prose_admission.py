@@ -24,9 +24,10 @@ import re
 _CODE_FENCE_RE = re.compile(r"```")
 
 # Machine role / protocol framing a day-close narration should never start
-# with (a leaked transcript line, not owner-facing prose).
+# with (a leaked transcript line or assignment-form tool payload, not
+# owner-facing prose).
 _PROTOCOL_MARKER_RE = re.compile(
-    r"^\s*(system|assistant|user|tool(?:[_ -]*(?:calls?|result))?|function)\s*:",
+    r"^\s*(?:system|assistant|user|(?:tool|function)(?:[_ -]*(?:calls?|result))?)\s*(?::|=)",
     re.IGNORECASE,
 )
 

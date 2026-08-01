@@ -643,6 +643,36 @@ async def test_write_day_close_cache_invalid_candidate_does_not_clobber_valid_ro
     mock_upsert.assert_not_awaited()
 
 
+async def test_write_day_close_cache_assignment_tool_calls_does_not_clobber_valid_row(
+    fake_pool, mock_upsert
+) -> None:
+    """An assignment-form tool trace cannot replace an admissible cache row."""
+    fake_pool._conn.fetchrow = AsyncMock(
+        return_value={
+            "prose": "A valid earlier retrospective.",
+            "date_label": "2026-04-24",
+            "invalid_reason": None,
+        }
+    )
+    result = MagicMock()
+    result.success = True
+    result.output = (
+        "tool_calls = [{'name': 'chronicler_day_close_bundle', 'result': {'date': '2026-04-24'}}]"
+    )
+    result.tool_calls = [_canonical_bundle_call("2026-04-24")]
+
+    outcome = await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
+    )
+
+    assert outcome is not None
+    assert outcome.invalid_reason == "inadmissible_prose"
+    mock_upsert.assert_not_awaited()
+
+
 async def test_write_day_close_cache_does_not_preserve_legacy_malformed_row_as_valid(
     fake_pool, mock_upsert
 ) -> None:

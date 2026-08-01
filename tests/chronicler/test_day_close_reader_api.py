@@ -235,6 +235,12 @@ class TestDayCloseReaderInvalid:
                 "inadmissible_prose",
             ),
             (
+                "tool_calls = [{'name': 'chronicler_day_close_bundle', "
+                "'result': {'date': '2026-04-23'}}]",
+                "2026-04-23",
+                "inadmissible_prose",
+            ),
+            (
                 "('tool', {'result': 'raw tool payload'})",
                 "2026-04-23",
                 "inadmissible_prose",

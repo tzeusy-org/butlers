@@ -454,8 +454,8 @@ The endpoints SHALL be:
   `{invalid: true, invalid_reason, cache_built_at}` where `invalid_reason` is
   `inadmissible_prose` or `date_mismatch`
 - **AND** a serialized JSON or Python-literal container, including a
-  whitespace-formatted empty-set literal, SHALL be classified as
-  `inadmissible_prose`
+  whitespace-formatted empty-set literal, or an assignment-form
+  tool/function-call payload, SHALL be classified as `inadmissible_prose`
 - **AND** the response SHALL NOT contain `prose` or `provenance_refs`
 - **AND** the row SHALL NOT be relabeled as fresh or stale
 - **AND** no LLM SHALL be invoked
