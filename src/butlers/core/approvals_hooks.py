@@ -13,8 +13,9 @@ This module provides:
    ``modules.approvals.email_guard.EmailGuardDecision`` so that callers in
    core can type-check against it without importing the module package.
 
-2. A hook-registration API that ``modules.approvals`` calls during startup
-   to wire up its concrete implementation.
+2. A pool-scoped hook-registration API that ``modules.approvals`` calls during
+   startup to wire up its concrete implementation without leaking that module
+   into other butlers hosted in the same process.
 
 3. Thin stubs (``check_email_recipient``, ``check_recipient``,
    ``park_pending_action``) that delegate to the registered hooks.  The
@@ -297,6 +298,44 @@ _email_guard_hook: Callable[..., Coroutine[Any, Any, EmailGuardDecision]] | None
 #: Signature: ``async (pool, *, channel, target, ...) -> EmailGuardDecision``
 _recipient_guard_hook: Callable[..., Coroutine[Any, Any, EmailGuardDecision]] | None = None
 
+# ``butlers up`` hosts every butler daemon in one Python process.  The optional
+# approvals module is enabled per butler, and every butler has a distinct pool
+# whose connections carry that butler's schema search path.  Keep production
+# registrations keyed by pool identity so enabling approvals on (for example)
+# Messenger cannot make Finance query approvals tables that do not exist in the
+# Finance schema.  The singular slots above remain as compatibility injection
+# points for focused tests and non-daemon callers that explicitly opt into a
+# process-wide implementation.
+_email_guard_hooks_by_pool: dict[
+    int,
+    tuple[Any, Callable[..., Coroutine[Any, Any, EmailGuardDecision]]],
+] = {}
+_recipient_guard_hooks_by_pool: dict[
+    int,
+    tuple[Any, Callable[..., Coroutine[Any, Any, EmailGuardDecision]]],
+] = {}
+
+
+def _register_pool_hook(
+    registry: dict[int, tuple[Any, Callable[..., Coroutine[Any, Any, Any]]]],
+    pool: Any,
+    fn: Callable[..., Coroutine[Any, Any, Any]],
+) -> None:
+    """Register *fn* for exactly *pool*, retaining identity for id safety."""
+    registry[id(pool)] = (pool, fn)
+
+
+def _resolve_pool_hook(
+    registry: dict[int, tuple[Any, Callable[..., Coroutine[Any, Any, Any]]]],
+    pool: Any,
+    fallback: Callable[..., Coroutine[Any, Any, Any]] | None,
+) -> Callable[..., Coroutine[Any, Any, Any]] | None:
+    """Resolve a scoped hook, falling back only to explicit legacy injection."""
+    registered = registry.get(id(pool))
+    if registered is not None and registered[0] is pool:
+        return registered[1]
+    return fallback
+
 
 # ---------------------------------------------------------------------------
 # Registration API (called by modules.approvals)
@@ -305,6 +344,8 @@ _recipient_guard_hook: Callable[..., Coroutine[Any, Any, EmailGuardDecision]] | 
 
 def register_email_guard(
     fn: Callable[..., Coroutine[Any, Any, Any]],
+    *,
+    pool: Any | None = None,
 ) -> None:
     """Register the email-guard implementation from ``modules.approvals``.
 
@@ -315,13 +356,21 @@ def register_email_guard(
 
     Args:
         fn: Async callable implementing the email-guard check.
+        pool: Owning butler pool.  When omitted, installs the legacy explicit
+            process-wide test/integration hook.
     """
+    if pool is not None:
+        _register_pool_hook(_email_guard_hooks_by_pool, pool, fn)
+        return
+
     global _email_guard_hook
     _email_guard_hook = fn
 
 
 def register_recipient_guard(
     fn: Callable[..., Coroutine[Any, Any, Any]],
+    *,
+    pool: Any | None = None,
 ) -> None:
     """Register the channel-general recipient guard from ``modules.approvals``.
 
@@ -331,9 +380,27 @@ def register_recipient_guard(
 
     Args:
         fn: Async callable implementing the channel-general recipient check.
+        pool: Owning butler pool.  When omitted, installs the legacy explicit
+            process-wide test/integration hook.
     """
+    if pool is not None:
+        _register_pool_hook(_recipient_guard_hooks_by_pool, pool, fn)
+        return
+
     global _recipient_guard_hook
     _recipient_guard_hook = fn
+
+
+def unregister_approval_hooks(pool: Any) -> None:
+    """Remove every approvals implementation registered for *pool*."""
+    for registry in (
+        _email_guard_hooks_by_pool,
+        _recipient_guard_hooks_by_pool,
+        _park_pending_action_hooks_by_pool,
+    ):
+        registered = registry.get(id(pool))
+        if registered is not None and registered[0] is pool:
+            del registry[id(pool)]
 
 
 # ---------------------------------------------------------------------------
@@ -374,11 +441,12 @@ async def check_email_recipient(
     core; the registered hook applies it when parking an action so the owner
     is actually notified (bu-mda0r).
     """
-    if _email_guard_hook is None:
+    hook = _resolve_pool_hook(_email_guard_hooks_by_pool, pool, _email_guard_hook)
+    if hook is None:
         # Approvals module not loaded — fail open.
         return EmailGuardDecision(allowed=True, reason="no_approvals_module")
 
-    result = await _email_guard_hook(
+    result = await hook(
         pool,
         email_target=email_target,
         rule_tool_name=rule_tool_name,
@@ -444,11 +512,12 @@ async def check_recipient(
     :func:`check_email_recipient`) so a parked action is actually pushed to
     the owner (bu-mda0r).
     """
-    if _recipient_guard_hook is None:
+    hook = _resolve_pool_hook(_recipient_guard_hooks_by_pool, pool, _recipient_guard_hook)
+    if hook is None:
         # Approvals module not loaded — fail open.
         return EmailGuardDecision(allowed=True, reason="no_approvals_module")
 
-    result = await _recipient_guard_hook(
+    result = await hook(
         pool,
         channel=channel,
         target=target,
@@ -485,10 +554,16 @@ async def check_recipient(
 #: Registered by modules.approvals during on_startup.
 #: Signature: modules.approvals.park.park_pending_action (same keyword args).
 _park_pending_action_hook: Callable[..., Coroutine[Any, Any, Any]] | None = None
+_park_pending_action_hooks_by_pool: dict[
+    int,
+    tuple[Any, Callable[..., Coroutine[Any, Any, Any]]],
+] = {}
 
 
 def register_park_pending_action(
     fn: Callable[..., Coroutine[Any, Any, Any]],
+    *,
+    pool: Any | None = None,
 ) -> None:
     """Register the park_pending_action implementation from ``modules.approvals``.
 
@@ -501,7 +576,13 @@ def register_park_pending_action(
 
     Args:
         fn: Async callable implementing the park-and-push choke point.
+        pool: Owning butler pool.  When omitted, installs the legacy explicit
+            process-wide test/integration hook.
     """
+    if pool is not None:
+        _register_pool_hook(_park_pending_action_hooks_by_pool, pool, fn)
+        return
+
     global _park_pending_action_hook
     _park_pending_action_hook = fn
 
@@ -537,7 +618,12 @@ async def park_pending_action(
     returns ``None`` (no row written, no push attempted) rather than
     fabricating a park that never happened.
     """
-    if _park_pending_action_hook is None:
+    hook = _resolve_pool_hook(
+        _park_pending_action_hooks_by_pool,
+        pool,
+        _park_pending_action_hook,
+    )
+    if hook is None:
         logger.warning(
             "park_pending_action called but no approvals module is registered on "
             "this butler; action %s (tool=%r) was NOT parked",
@@ -563,4 +649,4 @@ async def park_pending_action(
     }
     if deduplication_key is not None:
         kwargs["deduplication_key"] = deduplication_key
-    return await _park_pending_action_hook(pool, **kwargs)
+    return await hook(pool, **kwargs)
