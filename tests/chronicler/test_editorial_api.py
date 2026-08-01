@@ -288,8 +288,16 @@ async def test_briefing_uses_templated_fallback_when_cache_invalid(
         '```json\n{"tool": "x"}\n```',
         'Tool result: {"date": "2026-05-08", "citations": []}',
         "{'tool': 'chronicler_day_close_bundle', 'result': {'date': '2026-05-08'}}",
+        "('tool', {'result': 'raw tool payload'})",
+        "set()",
     ],
-    ids=["code-fence", "tool-result-header", "python-literal-object"],
+    ids=[
+        "code-fence",
+        "tool-result-header",
+        "python-literal-object",
+        "python-literal-tuple",
+        "empty-set",
+    ],
 )
 async def test_briefing_contains_legacy_malformed_cache_with_templated_copy(
     monkeypatch: pytest.MonkeyPatch, prose: str

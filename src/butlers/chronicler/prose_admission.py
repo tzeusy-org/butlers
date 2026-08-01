@@ -63,7 +63,7 @@ def classify_prose_shape(text: str | None) -> str | None:
     Rejects: empty/whitespace-only text, a fenced code block, a leaked
     machine-role/protocol prefix, a tool-call/agent-protocol payload, a
     planning-verb preamble, or a candidate that is itself a serialized JSON or
-    Python-literal object/array. Fails closed: only affirmatively prose-shaped
+    Python-literal container. Fails closed: only affirmatively prose-shaped
     text passes.
     """
     if text is None:
@@ -81,7 +81,10 @@ def classify_prose_shape(text: str | None) -> str | None:
         return INADMISSIBLE_PROSE
     if _EXECUTION_SCAFFOLD_RE.match(stripped):
         return INADMISSIBLE_PROSE
-    if stripped[0] in "{[":
+    # JSON containers begin with ``{``/``[``; Python literal containers can
+    # also begin with ``(`` (tuple) or be the special empty-set spelling.
+    # A parenthetical narrative that is not a parseable literal stays admissible.
+    if stripped[0] in "{[(" or stripped == "set()":
         try:
             json.loads(stripped)
         except (json.JSONDecodeError, ValueError):
@@ -90,7 +93,7 @@ def classify_prose_shape(text: str | None) -> str | None:
             except (SyntaxError, ValueError):
                 pass
             else:
-                if isinstance(parsed, (dict, list, set)):
+                if isinstance(parsed, (dict, list, set, tuple)):
                     return INADMISSIBLE_PROSE
         else:
             return INADMISSIBLE_PROSE

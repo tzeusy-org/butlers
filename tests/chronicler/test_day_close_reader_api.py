@@ -234,6 +234,12 @@ class TestDayCloseReaderInvalid:
                 "2026-04-23",
                 "inadmissible_prose",
             ),
+            (
+                "('tool', {'result': 'raw tool payload'})",
+                "2026-04-23",
+                "inadmissible_prose",
+            ),
+            ("set()", "2026-04-23", "inadmissible_prose"),
             ("A concise retrospective.", "2026-04-22", "date_mismatch"),
         ],
     )

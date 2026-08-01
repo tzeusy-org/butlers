@@ -99,9 +99,28 @@ def test_rejects_serialized_python_literal_object() -> None:
     assert classify_prose_shape(text) == INADMISSIBLE_PROSE
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "('tool', {'result': 'raw tool payload'})",
+        "set()",
+    ],
+    ids=["tuple-tool-payload", "empty-set"],
+)
+def test_rejects_serialized_python_literal_containers(text: str) -> None:
+    """Container literals are protocol-shaped cache content, never prose."""
+    assert classify_prose_shape(text) == INADMISSIBLE_PROSE
+
+
 def test_admits_prose_starting_with_brace_like_char_that_is_not_json() -> None:
     # Not valid JSON despite starting with '{' -- must not be rejected.
     text = "{The day} was quiet, mostly."
+    assert classify_prose_shape(text) is None
+
+
+def test_admits_parenthetical_narrative_prose() -> None:
+    """Parsing a literal container must not reject ordinary parenthetical prose."""
+    text = "(After lunch) the day settled into a calm evening walk."
     assert classify_prose_shape(text) is None
 
 
