@@ -29,6 +29,7 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION record_episode_tombstone()
         RETURNS trigger
         LANGUAGE plpgsql
+        SET search_path FROM CURRENT
         AS $$
         BEGIN
             INSERT INTO episode_tombstones (episode_id)

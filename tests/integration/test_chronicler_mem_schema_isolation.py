@@ -243,6 +243,40 @@ async def test_memory_link_api_reads_chronicler_mem_not_domain_schema(isolated_d
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_episode_delete_from_domain_pool_writes_private_tombstone(
+    isolated_db_url: str,
+) -> None:
+    """The deletion trigger must target its owning memory schema, not its caller's path."""
+    pool = await asyncpg.create_pool(
+        isolated_db_url,
+        min_size=1,
+        max_size=1,
+        server_settings={"search_path": "chronicler,public"},
+        init=register_jsonb_codec,
+    )
+    episode_id = uuid.uuid4()
+    try:
+        await pool.execute(
+            "INSERT INTO chronicler_mem.episodes (id, butler, content) VALUES ($1, $2, $3)",
+            episode_id,
+            "chronicler",
+            "private episode deleted from a domain-scoped connection",
+        )
+
+        await pool.execute("DELETE FROM chronicler_mem.episodes WHERE id = $1", episode_id)
+
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM chronicler_mem.episode_tombstones WHERE episode_id = $1",
+                episode_id,
+            )
+            == 1
+        )
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
     isolated_db_url: str,
 ) -> None:
