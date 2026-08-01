@@ -116,7 +116,8 @@ atomically require the reviewed target ref or base SHA. This helper therefore:
 1. confirms the currently open PR still has the final reviewed head, target
    branch name, and live target-branch SHA,
 2. keeps the supported head-SHA pin on the REST squash request, and
-3. verifies that the resulting squash commit has exactly the reviewed base as
+3. re-reads the merged PR's retained target branch name through GraphQL, and
+4. verifies that the resulting squash commit has exactly the reviewed base as
    its sole parent.
 
 It is a final merge guard, not a substitute for terminal hosted CI, independent
@@ -148,7 +149,10 @@ Bead. A `premerge-head-drift`, `premerge-base-ref-drift`, or
 `postmerge-base-drift` means GitHub merged the SHA-pinned head on a newer base
 during the unavoidable API race: leave the source Bead open and record/run the
 required post-merge race audit instead of treating it as exact-current-base
-evidence.
+evidence. `postmerge-base-ref-drift` means the post-merge GraphQL lookup either
+could not verify the retained target ref or found a different ref name. It is
+also exit `4` and blocks closure even if the squash commit's sole parent still
+matches the reviewed base SHA.
 
 ## fix_beads_dependency_timestamps.py
 

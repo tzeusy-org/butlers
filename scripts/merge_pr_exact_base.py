@@ -36,6 +36,7 @@ class MergeOutcome(StrEnum):
     MERGE_NOT_COMPLETED = "merge-not-completed"
     MERGE_RESPONSE_MISSING_SHA = "merge-response-missing-sha"
     MERGED_EXACT_BASE = "merged-exact-base"
+    POSTMERGE_BASE_REF_DRIFT = "postmerge-base-ref-drift"
     POSTMERGE_BASE_DRIFT = "postmerge-base-drift"
     POSTMERGE_UNEXPECTED_PARENT_SHAPE = "postmerge-unexpected-squash-parent-shape"
 
@@ -61,6 +62,7 @@ class MergeAudit:
     expected_base_ref_name: str
     expected_base_sha: str
     premerge: PullRequestSnapshot
+    postmerge_base_ref_name: str | None = None
     merge_sha: str | None = None
     parent_shas: list[str] | None = None
     message: str | None = None
@@ -83,7 +85,10 @@ class MergeAudit:
             return "eligible-to-close-source-bead"
         if self.rebase_and_repeat_required:
             return "rebase-and-repeat-exact-head-review-and-ci"
-        if self.outcome is MergeOutcome.POSTMERGE_BASE_DRIFT:
+        if self.outcome in {
+            MergeOutcome.POSTMERGE_BASE_REF_DRIFT,
+            MergeOutcome.POSTMERGE_BASE_DRIFT,
+        }:
             return "leave-source-bead-open-and-run-postmerge-race-audit"
         return "leave-source-bead-open-and-investigate"
 
@@ -94,6 +99,7 @@ class MergeAudit:
         if self.rebase_and_repeat_required:
             return 2
         if self.outcome in {
+            MergeOutcome.POSTMERGE_BASE_REF_DRIFT,
             MergeOutcome.POSTMERGE_BASE_DRIFT,
             MergeOutcome.POSTMERGE_UNEXPECTED_PARENT_SHAPE,
         }:
@@ -151,8 +157,8 @@ query($owner:String!, $name:String!, $number:Int!) {
 """.strip()
 
 
-def fetch_pull_request_snapshot(repo: str, pr_number: int) -> PullRequestSnapshot:
-    """Fetch the PR head plus the target branch's live object ID."""
+def _fetch_pull_request_record(repo: str, pr_number: int) -> dict[str, Any]:
+    """Return the GraphQL PR record, including its retained target ref after merge."""
     owner, name = normalize_repo(repo).split("/", 1)
     data = run_gh_json(
         [
@@ -168,18 +174,41 @@ def fetch_pull_request_snapshot(repo: str, pr_number: int) -> PullRequestSnapsho
             f"query={_PULL_REQUEST_SNAPSHOT_QUERY}",
         ]
     )
-    pr = data["data"]["repository"]["pullRequest"]
-    if pr is None:
+    try:
+        pr = data["data"]["repository"]["pullRequest"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(f"PR #{pr_number} returned an invalid GraphQL response") from exc
+    if not isinstance(pr, dict):
         raise RuntimeError(f"PR #{pr_number} not found in {repo}")
-    base_ref_name = pr["baseRefName"]
+    return pr
+
+
+def _required_pr_string(pr: dict[str, Any], field: str, pr_number: int) -> str:
+    """Read a required GraphQL string field without weakening the merge guard."""
+    value = pr.get(field)
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"PR #{pr_number} did not return {field}")
+    return value
+
+
+def fetch_pull_request_snapshot(repo: str, pr_number: int) -> PullRequestSnapshot:
+    """Fetch the PR head plus the target branch's live object ID."""
+    pr = _fetch_pull_request_record(repo, pr_number)
+    base_ref_name = _required_pr_string(pr, "baseRefName", pr_number)
     return PullRequestSnapshot(
-        state=pr["state"],
-        url=pr["url"],
-        head_sha=pr["headRefOid"],
-        base_ref_oid=pr["baseRefOid"],
+        state=_required_pr_string(pr, "state", pr_number),
+        url=_required_pr_string(pr, "url", pr_number),
+        head_sha=_required_pr_string(pr, "headRefOid", pr_number),
+        base_ref_oid=_required_pr_string(pr, "baseRefOid", pr_number),
         base_ref_name=base_ref_name,
         current_base_sha=fetch_branch_head_sha(repo, base_ref_name),
     )
+
+
+def fetch_pull_request_base_ref_name(repo: str, pr_number: int) -> str:
+    """Re-read the merged PR's retained target ref name through GraphQL."""
+    pr = _fetch_pull_request_record(repo, pr_number)
+    return _required_pr_string(pr, "baseRefName", pr_number)
 
 
 def fetch_branch_head_sha(repo: str, branch_name: str) -> str:
@@ -239,6 +268,7 @@ def _audit(
     *,
     merge_sha: str | None = None,
     parent_shas: list[str] | None = None,
+    postmerge_base_ref_name: str | None = None,
     message: str | None = None,
 ) -> MergeAudit:
     return MergeAudit(
@@ -247,6 +277,7 @@ def _audit(
         expected_base_ref_name=expected_base_ref_name,
         expected_base_sha=expected_base_sha,
         premerge=premerge,
+        postmerge_base_ref_name=postmerge_base_ref_name,
         merge_sha=merge_sha,
         parent_shas=parent_shas,
         message=message,
@@ -328,6 +359,32 @@ def merge_after_exact_base_revalidation(
         )
 
     parent_shas = fetch_commit_parent_shas(repo, merge_sha)
+    try:
+        postmerge_base_ref_name = fetch_pull_request_base_ref_name(repo, pr_number)
+    except (RuntimeError, ValueError) as exc:
+        return _audit(
+            MergeOutcome.POSTMERGE_BASE_REF_DRIFT,
+            expected_head_sha,
+            expected_base_ref_name,
+            expected_base_sha,
+            premerge,
+            merge_sha=merge_sha,
+            parent_shas=parent_shas,
+            message=f"Could not verify merged PR target branch: {exc}",
+        )
+    if postmerge_base_ref_name != expected_base_ref_name:
+        return _audit(
+            MergeOutcome.POSTMERGE_BASE_REF_DRIFT,
+            expected_head_sha,
+            expected_base_ref_name,
+            expected_base_sha,
+            premerge,
+            merge_sha=merge_sha,
+            parent_shas=parent_shas,
+            postmerge_base_ref_name=postmerge_base_ref_name,
+            message="GitHub retargeted the pull request after final revalidation",
+        )
+
     if parent_shas == [expected_base_sha]:
         return _audit(
             MergeOutcome.MERGED_EXACT_BASE,
@@ -337,6 +394,7 @@ def merge_after_exact_base_revalidation(
             premerge,
             merge_sha=merge_sha,
             parent_shas=parent_shas,
+            postmerge_base_ref_name=postmerge_base_ref_name,
             message=str(response.get("message") or "Pull Request successfully merged"),
         )
     if len(parent_shas) != 1:
@@ -348,6 +406,7 @@ def merge_after_exact_base_revalidation(
             premerge,
             merge_sha=merge_sha,
             parent_shas=parent_shas,
+            postmerge_base_ref_name=postmerge_base_ref_name,
             message="Squash merge must produce exactly one parent before a source Bead can close",
         )
     return _audit(
@@ -358,6 +417,7 @@ def merge_after_exact_base_revalidation(
         premerge,
         merge_sha=merge_sha,
         parent_shas=parent_shas,
+        postmerge_base_ref_name=postmerge_base_ref_name,
         message="GitHub merged the reviewed head onto a different base after preflight",
     )
 

@@ -202,6 +202,90 @@ def test_postmerge_base_drift_is_classified_and_blocks_source_bead_closure(
     assert result.rebase_and_repeat_required is False
 
 
+def test_postmerge_retarget_during_rest_merge_blocks_closure_despite_exact_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retarget during the REST request is unsafe even if its SHA is unchanged."""
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+    current_base_ref_name = "main"
+    merge_calls: list[tuple[object, ...]] = []
+    parent_queries: list[tuple[object, ...]] = []
+
+    def request_squash_merge(*args: object) -> dict[str, object]:
+        nonlocal current_base_ref_name
+        merge_calls.append(args)
+        current_base_ref_name = "release"
+        return {"merged": True, "sha": MERGE_SHA}
+
+    def fetch_commit_parent_shas(*args: object) -> list[str]:
+        parent_queries.append(args)
+        return [REVIEWED_BASE_SHA]
+
+    monkeypatch.setattr(merge_guard, "request_squash_merge", request_squash_merge)
+    monkeypatch.setattr(merge_guard, "fetch_commit_parent_shas", fetch_commit_parent_shas)
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_pull_request_base_ref_name",
+        lambda *_: current_base_ref_name,
+        raising=False,
+    )
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert merge_calls == [(REPO, PR_NUMBER, HEAD_SHA)]
+    assert parent_queries == [(REPO, MERGE_SHA)]
+    assert result.parent_shas == [REVIEWED_BASE_SHA]
+    assert result.outcome.value == "postmerge-base-ref-drift"
+    assert result.postmerge_base_ref_name == "release"
+    assert result.to_dict()["postmerge_base_ref_name"] == "release"
+    assert result.source_bead_closure_allowed is False
+    assert result.rebase_and_repeat_required is False
+    assert result.next_action == "leave-source-bead-open-and-run-postmerge-race-audit"
+
+
+def test_postmerge_base_ref_lookup_failure_blocks_source_bead_closure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merged PR is not closeable when its retained target ref cannot be read."""
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+    monkeypatch.setattr(
+        merge_guard,
+        "request_squash_merge",
+        lambda *_: {"merged": True, "sha": MERGE_SHA},
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_commit_parent_shas",
+        lambda *_: [REVIEWED_BASE_SHA],
+    )
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_pull_request_base_ref_name",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("GraphQL unavailable")),
+        raising=False,
+    )
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert result.outcome.value == "postmerge-base-ref-drift"
+    assert result.postmerge_base_ref_name is None
+    assert result.source_bead_closure_allowed is False
+    assert result.exit_code == 4
+    assert result.next_action == "leave-source-bead-open-and-run-postmerge-race-audit"
+
+
 def test_rest_request_keeps_sha_pinning_and_squash_method(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[list[str]] = []
 
