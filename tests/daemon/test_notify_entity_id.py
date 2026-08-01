@@ -14,6 +14,7 @@ Migration notes (bu-km8xr):
 
 from __future__ import annotations
 
+import json
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
@@ -586,7 +587,7 @@ class TestNotifyMissingIdentifierAndOwner:
 
         assert result["status"] == "error"
         assert result["retryable"] is False
-        assert "not enabled" in result["error"]
+        assert "approval parking is unavailable" in result["error"].lower()
         assert "pending_action_id" not in result
         assert not any(
             "INSERT INTO pending_actions" in call.args[0]
@@ -602,6 +603,9 @@ class TestNotifyMissingIdentifierAndOwner:
         assert len(failed_ledger_rows) == 1
         assert failed_ledger_rows[0][8] == "failed"
         assert failed_ledger_rows[0][9] == "approval_parking_unavailable"
+        metadata = json.loads(failed_ledger_rows[0][11])
+        assert metadata == {"entity_id": str(entity_id), "retryable": False}
+        assert "Hello contact" not in failed_ledger_rows[0][11]
 
     async def test_missing_identifier_parks_and_owner_fallback(self, butler_dir: Path) -> None:
         """Missing identifier -> pending_missing_identifier, parked through the shared

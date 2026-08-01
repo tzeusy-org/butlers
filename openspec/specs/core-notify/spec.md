@@ -421,6 +421,7 @@ a pending action or owner notification.
 
 #### Scenario: Entity missing identifier when approval parking is unavailable
 - **WHEN** a runtime instance calls `notify()` with an `entity_id` that has no `relationship.entity_facts` triple for the requested channel
+- **AND** normal input validation and any required non-owner decision-dossier validation have succeeded
 - **AND** approval parking is unavailable for the calling butler's own database pool
 - **THEN** the tool MUST return `status="error"` with `retryable=false`
 - **AND** it MUST NOT create a `pending_actions` row, report a pending action as created, or attempt an owner-facing approval push

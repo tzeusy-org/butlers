@@ -280,8 +280,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "Optional entity UUID (public.entities.id). When provided, the channel"
                         " identifier is resolved "
                         "from relationship.entity_facts (active triple preferred). If no matching "
-                        "entity_facts triple exists, the notification is parked as a "
-                        "pending_action and {status: pending_missing_identifier} is returned."
+                        "entity_facts triple exists and approval parking is available for this "
+                        "butler, the notification is parked as a pending_action and "
+                        "status=pending_missing_identifier is returned. Otherwise notify() "
+                        "fails closed without creating a pending action or owner notification."
                     )
                 ),
             ] = None,
@@ -355,9 +357,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             Optional fields:
             - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
             - `entity_id` (UUID): resolve recipient from relationship.entity_facts (active
-              triple preferred) keyed on this entity. If no matching triple exists the
-              notification is parked as a pending_action and
-              `{"status": "pending_missing_identifier"}` is returned.
+              triple preferred) keyed on this entity. If no matching triple exists and approval
+              parking is available for this butler, the notification is parked as a pending_action
+              and `{"status": "pending_missing_identifier"}` is returned. Otherwise notify()
+              fails closed without creating a pending action or owner notification.
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react` | `insight`
             - `emoji` (string): required when `intent="react"`
@@ -542,7 +545,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     msg_context=msg_context,
                 )
                 if entity_identifier is None:
-                    # No matching entity_facts triple — park as pending_action and notify owner
+                    # No matching entity_facts triple — validate the dossier, then park only when
+                    # this butler has a durable approval-parking implementation.
                     action_id: uuid.UUID | None = None
                     pool = daemon.db.pool if daemon.db is not None else None
                     from butlers.core.approvals_hooks import (
@@ -619,9 +623,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "Cannot deliver "
                                 f"{channel!r} notification to entity {entity_id}: "
                                 f"no {info_type!r} identifier is configured. "
-                                "The approvals module is not enabled for this butler. "
+                                "Approval parking is unavailable for this butler. "
                                 "No pending action or owner notification was created. "
-                                "Add the missing identifier or enable approvals, then retry."
+                                "Add the missing identifier or enable/recover approval parking, "
+                                "then retry."
                             ),
                             "retryable": False,
                         }
