@@ -1837,6 +1837,22 @@ async def test_detail_returns_typed_decision_dossier_fields(app):
     assert detail["evidence"] == row["evidence"]
 
 
+async def test_detail_preserves_failed_push_delivery_state(app):
+    """The dossier keeps failed-push truth instead of silently dropping it."""
+    row = {**_make_pending_row(), "push_outcome": "failed"}
+    app, _ = _app_with_mock_db(app, fetchrow_return=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{row['id']}")
+
+    assert resp.status_code == 200
+    detail = resp.json()["data"]
+    assert detail["push_outcome"] == "failed"
+    assert detail["push_failed"] is True
+
+
 async def test_detail_includes_originating_session_id(app):
     """GET /api/approvals/{id} surfaces session_id so the dossier can link to
     the originating session/trace that proposed the action."""
