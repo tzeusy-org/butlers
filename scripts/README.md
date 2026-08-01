@@ -109,19 +109,21 @@ Optional environment variable:
 ## merge_pr_exact_base.py
 
 Performs the final REST squash merge for a reviewed pull request without
-silently accepting a base-branch advance. GitHub's REST merge endpoint can
-condition only on the pull request head SHA; it cannot atomically require the
-base SHA that was reviewed. This helper therefore:
+silently accepting a target-branch retarget or base-branch advance. GitHub's
+REST merge endpoint can condition only on the pull request head SHA; it cannot
+atomically require the reviewed target ref or base SHA. This helper therefore:
 
-1. confirms the currently open PR still has the final reviewed head and base,
+1. confirms the currently open PR still has the final reviewed head, target
+   branch name, and live target-branch SHA,
 2. keeps the supported head-SHA pin on the REST squash request, and
 3. verifies that the resulting squash commit has exactly the reviewed base as
    its sole parent.
 
 It is a final merge guard, not a substitute for terminal hosted CI, independent
-review, or resolved review threads. Capture `headRefOid` and the *live target
-branch tip* from the same final revalidation. Do not use a PR's `baseRefOid` as
-the expected base: it can remain stale while the target branch has advanced.
+review, or resolved review threads. Capture `headRefOid`, `baseRefName`, and
+the *live target branch tip* from the same final revalidation. Do not use a
+PR's `baseRefOid` as the expected base: it can remain stale while the target
+branch has advanced.
 
 ```bash
 HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
@@ -129,22 +131,24 @@ BASE_REF=$(gh pr view "$PR" --json baseRefName --jq .baseRefName)
 BASE_SHA=$(gh api "repos/Tzeusy/butlers/git/ref/heads/$BASE_REF" --jq .object.sha)
 ```
 
-Then pass both exact values to the helper:
+Then pass all three exact values to the helper:
 
 ```bash
 python3 scripts/merge_pr_exact_base.py \
   --pr "$PR" \
   --expected-head "$HEAD_SHA" \
+  --expected-base-ref "$BASE_REF" \
   --expected-base "$BASE_SHA"
 ```
 
 Only `merged-exact-base` (exit `0`) permits the coordinator to close the source
-Bead. A `premerge-head-drift` or `premerge-base-drift` result sends no merge
-request; rebase onto current `origin/main`, then repeat the full exact-head
-review and CI gates. `postmerge-base-drift` means GitHub merged the SHA-pinned
-head on a newer base during the unavoidable API race: leave the source Bead
-open and record/run the required post-merge race audit instead of treating it
-as exact-current-base evidence.
+Bead. A `premerge-head-drift`, `premerge-base-ref-drift`, or
+`premerge-base-drift` result sends no merge request; rebase onto current
+`origin/main`, then repeat the full exact-head review and CI gates.
+`postmerge-base-drift` means GitHub merged the SHA-pinned head on a newer base
+during the unavoidable API race: leave the source Bead open and record/run the
+required post-merge race audit instead of treating it as exact-current-base
+evidence.
 
 ## fix_beads_dependency_timestamps.py
 

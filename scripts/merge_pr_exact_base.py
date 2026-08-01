@@ -3,10 +3,11 @@
 
 GitHub's REST ``PUT /repos/{owner}/{repo}/pulls/{number}/merge`` endpoint can
 pin the pull-request *head* SHA, but it has no matching conditional for the
-base branch SHA.  A base branch can therefore advance after final
-revalidation and before the REST request is processed.  This helper catches a
-pre-request mismatch and, because that remaining race cannot be atomically
-prevented through the API, audits the parent of the resulting squash commit.
+base branch ref or SHA.  A pull request can therefore be retargeted or its base
+branch can advance after final revalidation and before the REST request is
+processed.  This helper catches a pre-request mismatch and, because that
+remaining race cannot be atomically prevented through the API, audits the
+parent of the resulting squash commit.
 
 This is a merge execution guard, not a replacement for the existing
 independent review and terminal-CI gates.  A source Bead may close only when
@@ -30,6 +31,7 @@ class MergeOutcome(StrEnum):
 
     PREMERGE_NOT_OPEN = "premerge-pr-not-open"
     PREMERGE_HEAD_DRIFT = "premerge-head-drift"
+    PREMERGE_BASE_REF_DRIFT = "premerge-base-ref-drift"
     PREMERGE_BASE_DRIFT = "premerge-base-drift"
     MERGE_NOT_COMPLETED = "merge-not-completed"
     MERGE_RESPONSE_MISSING_SHA = "merge-response-missing-sha"
@@ -56,6 +58,7 @@ class MergeAudit:
 
     outcome: MergeOutcome
     expected_head_sha: str
+    expected_base_ref_name: str
     expected_base_sha: str
     premerge: PullRequestSnapshot
     merge_sha: str | None = None
@@ -70,6 +73,7 @@ class MergeAudit:
     def rebase_and_repeat_required(self) -> bool:
         return self.outcome in {
             MergeOutcome.PREMERGE_HEAD_DRIFT,
+            MergeOutcome.PREMERGE_BASE_REF_DRIFT,
             MergeOutcome.PREMERGE_BASE_DRIFT,
         }
 
@@ -229,6 +233,7 @@ def fetch_commit_parent_shas(repo: str, commit_sha: str) -> list[str]:
 def _audit(
     outcome: MergeOutcome,
     expected_head_sha: str,
+    expected_base_ref_name: str,
     expected_base_sha: str,
     premerge: PullRequestSnapshot,
     *,
@@ -239,6 +244,7 @@ def _audit(
     return MergeAudit(
         outcome=outcome,
         expected_head_sha=expected_head_sha,
+        expected_base_ref_name=expected_base_ref_name,
         expected_base_sha=expected_base_sha,
         premerge=premerge,
         merge_sha=merge_sha,
@@ -252,6 +258,7 @@ def merge_after_exact_base_revalidation(
     pr_number: int,
     *,
     expected_head_sha: str,
+    expected_base_ref_name: str,
     expected_base_sha: str,
 ) -> MergeAudit:
     """Merge only from matching final evidence, then prove the landed parent.
@@ -266,6 +273,7 @@ def merge_after_exact_base_revalidation(
         return _audit(
             MergeOutcome.PREMERGE_NOT_OPEN,
             expected_head_sha,
+            expected_base_ref_name,
             expected_base_sha,
             premerge,
             message=f"PR state is {premerge.state}, expected OPEN",
@@ -274,14 +282,25 @@ def merge_after_exact_base_revalidation(
         return _audit(
             MergeOutcome.PREMERGE_HEAD_DRIFT,
             expected_head_sha,
+            expected_base_ref_name,
             expected_base_sha,
             premerge,
             message="PR head changed after final revalidation",
+        )
+    if premerge.base_ref_name != expected_base_ref_name:
+        return _audit(
+            MergeOutcome.PREMERGE_BASE_REF_DRIFT,
+            expected_head_sha,
+            expected_base_ref_name,
+            expected_base_sha,
+            premerge,
+            message="PR target branch changed after final revalidation",
         )
     if premerge.current_base_sha != expected_base_sha:
         return _audit(
             MergeOutcome.PREMERGE_BASE_DRIFT,
             expected_head_sha,
+            expected_base_ref_name,
             expected_base_sha,
             premerge,
             message="Base branch changed after final revalidation",
@@ -292,6 +311,7 @@ def merge_after_exact_base_revalidation(
         return _audit(
             MergeOutcome.MERGE_NOT_COMPLETED,
             expected_head_sha,
+            expected_base_ref_name,
             expected_base_sha,
             premerge,
             message=str(response.get("message") or "GitHub did not merge the pull request"),
@@ -301,6 +321,7 @@ def merge_after_exact_base_revalidation(
         return _audit(
             MergeOutcome.MERGE_RESPONSE_MISSING_SHA,
             expected_head_sha,
+            expected_base_ref_name,
             expected_base_sha,
             premerge,
             message="GitHub reported a merge without a commit SHA",
@@ -311,6 +332,7 @@ def merge_after_exact_base_revalidation(
         return _audit(
             MergeOutcome.MERGED_EXACT_BASE,
             expected_head_sha,
+            expected_base_ref_name,
             expected_base_sha,
             premerge,
             merge_sha=merge_sha,
@@ -321,6 +343,7 @@ def merge_after_exact_base_revalidation(
         return _audit(
             MergeOutcome.POSTMERGE_UNEXPECTED_PARENT_SHAPE,
             expected_head_sha,
+            expected_base_ref_name,
             expected_base_sha,
             premerge,
             merge_sha=merge_sha,
@@ -330,6 +353,7 @@ def merge_after_exact_base_revalidation(
     return _audit(
         MergeOutcome.POSTMERGE_BASE_DRIFT,
         expected_head_sha,
+        expected_base_ref_name,
         expected_base_sha,
         premerge,
         merge_sha=merge_sha,
@@ -357,6 +381,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="live target-branch SHA captured during that same final revalidation",
     )
+    parser.add_argument(
+        "--expected-base-ref",
+        dest="expected_base_ref_name",
+        required=True,
+        help="target branch name captured during that same final revalidation",
+    )
     return parser
 
 
@@ -367,6 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             args.repo,
             args.pr,
             expected_head_sha=args.expected_head,
+            expected_base_ref_name=args.expected_base_ref_name,
             expected_base_sha=args.expected_base,
         )
     except (RuntimeError, ValueError) as exc:

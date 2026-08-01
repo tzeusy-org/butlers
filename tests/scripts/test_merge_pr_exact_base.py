@@ -30,6 +30,7 @@ def _snapshot(
     *,
     head_sha: str = HEAD_SHA,
     base_ref_oid: str = REVIEWED_BASE_SHA,
+    base_ref_name: str = "main",
     current_base_sha: str = REVIEWED_BASE_SHA,
 ):
     return merge_guard.PullRequestSnapshot(
@@ -37,7 +38,7 @@ def _snapshot(
         url=f"https://github.com/{REPO}/pull/{PR_NUMBER}",
         head_sha=head_sha,
         base_ref_oid=base_ref_oid,
-        base_ref_name="main",
+        base_ref_name=base_ref_name,
         current_base_sha=current_base_sha,
     )
 
@@ -63,6 +64,7 @@ def test_premerge_live_base_drift_skips_rest_merge_request(monkeypatch: pytest.M
         REPO,
         PR_NUMBER,
         expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
         expected_base_sha=REVIEWED_BASE_SHA,
     )
 
@@ -71,6 +73,39 @@ def test_premerge_live_base_drift_skips_rest_merge_request(monkeypatch: pytest.M
     assert result.rebase_and_repeat_required is True
     assert result.premerge.base_ref_oid == REVIEWED_BASE_SHA
     assert result.premerge.current_base_sha == ADVANCED_BASE_SHA
+    assert merge_calls == []
+
+
+def test_premerge_base_ref_retarget_at_same_sha_skips_rest_merge_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A same-SHA retarget must not merge into an unreviewed branch."""
+    monkeypatch.setattr(
+        merge_guard,
+        "fetch_pull_request_snapshot",
+        lambda *_: _snapshot(base_ref_name="release"),
+    )
+    merge_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        merge_guard,
+        "request_squash_merge",
+        lambda *args: merge_calls.append(args),
+    )
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_sha=REVIEWED_BASE_SHA,
+        expected_base_ref_name="main",
+    )
+
+    assert result.outcome is merge_guard.MergeOutcome.PREMERGE_BASE_REF_DRIFT
+    assert result.source_bead_closure_allowed is False
+    assert result.rebase_and_repeat_required is True
+    assert result.expected_base_ref_name == "main"
+    assert result.premerge.base_ref_name == "release"
+    assert result.to_dict()["expected_base_ref_name"] == "main"
     assert merge_calls == []
 
 
@@ -91,6 +126,7 @@ def test_premerge_head_drift_skips_rest_merge_request(monkeypatch: pytest.Monkey
         REPO,
         PR_NUMBER,
         expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
         expected_base_sha=REVIEWED_BASE_SHA,
     )
 
@@ -121,6 +157,7 @@ def test_exact_base_squash_merge_allows_source_bead_closure(
         REPO,
         PR_NUMBER,
         expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
         expected_base_sha=REVIEWED_BASE_SHA,
     )
 
@@ -155,6 +192,7 @@ def test_postmerge_base_drift_is_classified_and_blocks_source_bead_closure(
         REPO,
         PR_NUMBER,
         expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
         expected_base_sha=REVIEWED_BASE_SHA,
     )
 
