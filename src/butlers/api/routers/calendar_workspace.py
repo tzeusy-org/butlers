@@ -406,6 +406,71 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
     )
 
 
+def _calendar_source_owner_rank(
+    row: Mapping[str, Any],
+    *,
+    core_calendar_butlers: set[str],
+) -> tuple[int, int, int, float, str, str]:
+    """Return a stable preference order for duplicate physical source rows.
+
+    ``query_calendar_sources`` intentionally returns every schema-local ledger
+    row. The dashboard must collapse only its *logical* view, choosing an
+    owner that can actually expose ``calendar_force_sync`` before looking at
+    source health. Otherwise Finance's alphabetically first, non-core copy can
+    make a healthy General source look permanently unsynced.
+    """
+    owner = str(row.get("db_butler") or row.get("butler_name") or "")
+    metadata = _normalize_json_object(row.get("source_metadata"))
+    enabled_rank = 0 if metadata.get("sync_enabled") is not False else 1
+    core_rank = 0 if owner in core_calendar_butlers else 1
+    source_freshness = _to_source_freshness(row)
+    state_rank = {"fresh": 0, "stale": 1, "failed": 2}.get(source_freshness.sync_state, 3)
+    observed_at = source_freshness.last_success_at or source_freshness.last_synced_at
+    observed_timestamp = observed_at.timestamp() if observed_at is not None else float("-inf")
+    return (
+        enabled_rank,
+        core_rank,
+        state_rank,
+        -observed_timestamp,
+        owner,
+        str(row.get("source_id") or ""),
+    )
+
+
+def _select_canonical_source_rows(
+    source_rows: list[dict[str, Any]],
+    *,
+    core_calendar_butlers: set[str],
+) -> list[dict[str, Any]]:
+    """Select one operational owner per logical source without hiding raw evidence.
+
+    This policy intentionally lives above the v1 read-model boundary: callers
+    that need physical ledger evidence still receive all fan-out rows from
+    ``query_calendar_sources``. Dashboard read/meta/sync paths get one
+    deterministic, operational source owner per ``source_key`` instead.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in source_rows:
+        source_key = row.get("source_key")
+        group_key = (
+            str(source_key)
+            if isinstance(source_key, str) and source_key
+            else f"source-id:{row.get('source_id')}"
+        )
+        grouped[group_key].append(row)
+
+    return [
+        min(
+            grouped[source_key],
+            key=lambda row: _calendar_source_owner_rank(
+                row,
+                core_calendar_butlers=core_calendar_butlers,
+            ),
+        )
+        for source_key in sorted(grouped)
+    ]
+
+
 def _extract_mcp_result_text(result: object) -> str | None:
     content = getattr(result, "content", None)
     if isinstance(content, list):
@@ -1332,16 +1397,13 @@ async def get_workspace(
             }
         source_rows = list(deduped.values())
 
-    # Dedup sources by source_key — fan_out across butler schemas can return
-    # the same provider source from multiple schemas.
-    seen_source_keys: set[str] = set()
-    deduped_source_rows: list[dict[str, Any]] = []
-    for row in source_rows:
-        sk = row.get("source_key")
-        if sk in seen_source_keys:
-            continue
-        seen_source_keys.add(sk)
-        deduped_source_rows.append(row)
+    # Fan-out returns physical copies of a logical provider source from every
+    # calendar-owning schema. Collapse only this dashboard view, preferring a
+    # fresh owner that exposes calendar_force_sync over first-row-wins order.
+    deduped_source_rows = _select_canonical_source_rows(
+        source_rows,
+        core_calendar_butlers=_calendar_core_enabled_butlers(),
+    )
     source_freshness = [_to_source_freshness(row) for row in deduped_source_rows]
     # Keep each entry paired with its source row so the keyset cursor can be
     # derived from the raw (un-tz-converted) ``instance_starts_at`` + id.
@@ -1780,17 +1842,11 @@ async def get_workspace_meta(
     # fresh). calendar_sources is a core calendar table present in every calendar
     # butler, so a failure is genuine — never a legitimately-absent table (bu-sn71y).
     sources_available = not sources_failed
-    connected_sources = [_to_source_freshness(row) for row in source_rows]
-
-    # Dedup sources by source_key — fan_out across butler schemas can return
-    # the same provider source from multiple schemas.
-    seen_keys: set[str] = set()
-    deduped_sources: list[CalendarWorkspaceSourceFreshness] = []
-    for source in connected_sources:
-        if source.source_key in seen_keys:
-            continue
-        seen_keys.add(source.source_key)
-        deduped_sources.append(source)
+    canonical_source_rows = _select_canonical_source_rows(
+        source_rows,
+        core_calendar_butlers=_calendar_core_enabled_butlers(),
+    )
+    deduped_sources = [_to_source_freshness(row) for row in canonical_source_rows]
 
     # Build writable calendars from the deduped list with formatted display
     # names. Only include *submittable* calendars — those that resolve to an
@@ -1872,15 +1928,26 @@ async def set_primary_calendar(
     return ApiResponse[SetPrimaryCalendarResponse](data=response)
 
 
-@router.post("/sync", response_model=ApiResponse[CalendarWorkspaceSyncResponse])
+@router.post(
+    "/sync",
+    response_model=ApiResponse[CalendarWorkspaceSyncResponse],
+    status_code=202,
+)
 async def sync_workspace(
     request: CalendarWorkspaceSyncRequest,
     db: DatabaseManager = Depends(_get_db_manager),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[CalendarWorkspaceSyncResponse]:
-    """Trigger projection/provider sync for all sources or one selected source."""
+    """Queue projection/provider sync for all sources or one selected source.
+
+    The API returns after a butler durably acknowledges its action-log command;
+    provider pulls and Google mirror writes run in that butler's queue worker,
+    never under the browser's 15-second request budget.
+    """
     target_rows: list[dict[str, Any]] = []
     scope = "all"
+    request_id = str(uuid4())
+    core_calendar_butlers = _calendar_core_enabled_butlers()
     if request.source_key is not None or request.source_id is not None:
         scope = "source"
         # Sync targets only need the source rows; per-target failures already
@@ -1895,27 +1962,36 @@ async def sync_workspace(
             source_rows = [row for row in source_rows if row.get("source_id") == request.source_id]
         if not source_rows:
             raise HTTPException(status_code=404, detail="Requested source was not found")
-        target_rows = source_rows
+        # A source-key-only request is logical rather than physical, so choose
+        # its operational owner. Explicit source IDs and explicit butlers retain
+        # the caller's exact schema target for recovery/debugging.
+        target_rows = (
+            _select_canonical_source_rows(
+                source_rows,
+                core_calendar_butlers=core_calendar_butlers,
+            )
+            if request.source_id is None and request.butler is None
+            else source_rows
+        )
     else:
-        # Fetch all provider_event sources so we sync every registered calendar,
-        # not just each butler's single default resolved calendar ID.
         source_rows, _ = await _fetch_sources(
             db,
             butlers=[request.butler] if request.butler else None,
         )
         if request.butler and request.butler not in db.butler_names:
             raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
-        # Butlers whose calendar module does not expose the 'core' tool group do
-        # not register calendar_force_sync; syncing them would only ever produce
-        # a failed target, so drop them from the fan-out entirely.
-        core_calendar_butlers = _calendar_core_enabled_butlers()
-        # Keep only provider_event sources with a calendar_id; deduplicate by
-        # (butler, calendar_id) so we don't hit the same Google API twice.
-        seen: set[tuple[str, str]] = set()
-        for row in source_rows:
+        # One owner-wide no-id command performs the module's pull-all sync. Do
+        # not submit every replicated source/calendar row: that was the 48-call
+        # fan-out that rate-limited Google and exceeded the browser timeout.
+        seen_owners: set[str] = set()
+        for row in _select_canonical_source_rows(
+            source_rows,
+            core_calendar_butlers=core_calendar_butlers,
+        ):
             if row.get("source_kind") != "provider_event" or not row.get("calendar_id"):
                 continue
-            if str(row["db_butler"]) not in core_calendar_butlers:
+            owner = str(row["db_butler"])
+            if owner not in core_calendar_butlers:
                 continue
             # Skip sources disabled via POST /api/calendar/sources — a disabled
             # source is off and must not be polled by the sync loop. An explicit
@@ -1923,10 +1999,9 @@ async def sync_workspace(
             # operator can still recover a specific source on demand.
             if _normalize_json_object(row.get("source_metadata")).get("sync_enabled") is False:
                 continue
-            key = (str(row["db_butler"]), str(row["calendar_id"]))
-            if key in seen:
+            if owner in seen_owners:
                 continue
-            seen.add(key)
+            seen_owners.add(owner)
             target_rows.append(row)
 
     async def _sync_target(
@@ -1936,18 +2011,21 @@ async def sync_workspace(
         source_key: str | None = None,
         calendar_id: str | None = None,
     ) -> CalendarWorkspaceSyncTarget:
-        # Forward the cursor-recovery flag to the MCP tool. ``full=False``
-        # preserves today's incremental sync behavior.
-        forwarded_args = {**call_args, "full": request.full}
+        # The module records this request before returning. ``full=False``
+        # preserves incremental behavior; queue=true changes only transport
+        # lifetime, not the sync semantics.
+        forwarded_args = {
+            **call_args,
+            "full": request.full,
+            "queue": True,
+            "request_id": request_id,
+        }
         try:
             client = await mcp_manager.get_client(butler_name)
             result = await client.call_tool("calendar_force_sync", forwarded_args)
             parsed = _parse_mcp_payload(_extract_mcp_result_text(result))
-            status = (
-                parsed.get("status", "sync_triggered")
-                if isinstance(parsed, dict)
-                else "sync_triggered"
-            )
+            raw_status = parsed.get("status", "queued") if isinstance(parsed, dict) else "queued"
+            status = "failed" if raw_status in {"error", "failed"} else str(raw_status)
             recovery = bool(parsed.get("recovery")) if isinstance(parsed, dict) else False
             return CalendarWorkspaceSyncTarget(
                 butler_name=butler_name,
@@ -1955,7 +2033,18 @@ async def sync_workspace(
                 calendar_id=calendar_id,
                 status=status,
                 detail=_sync_detail(parsed),
+                error=(
+                    str(parsed.get("error"))
+                    if isinstance(parsed, dict) and parsed.get("error")
+                    else None
+                ),
                 recovery=recovery,
+                request_id=(
+                    str(parsed.get("request_id"))
+                    if isinstance(parsed, dict) and parsed.get("request_id")
+                    else request_id
+                ),
+                coalesced=bool(parsed.get("coalesced")) if isinstance(parsed, dict) else False,
             )
         except ButlerUnreachableError as exc:
             return CalendarWorkspaceSyncTarget(
@@ -1994,13 +2083,7 @@ async def sync_workspace(
                 *[
                     _sync_target(
                         butler_name=str(source["db_butler"]),
-                        call_args=(
-                            {"calendar_id": source["calendar_id"]}
-                            if source.get("calendar_id")
-                            else {}
-                        ),
-                        source_key=source.get("source_key"),
-                        calendar_id=source.get("calendar_id"),
+                        call_args={},
                     )
                     for source in target_rows
                 ]
@@ -2030,6 +2113,7 @@ async def sync_workspace(
         scope=scope,
         requested_source_key=request.source_key,
         requested_source_id=request.source_id,
+        request_id=request_id,
         full=request.full,
         targets=targets,
         triggered_count=sum(1 for target in targets if target.status != "failed"),

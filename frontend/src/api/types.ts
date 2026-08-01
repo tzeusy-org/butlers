@@ -1591,7 +1591,7 @@ export interface CalendarWorkspaceSyncRequest {
   full?: boolean;
 }
 
-/** One sync trigger attempt result. */
+/** One durable sync-command acknowledgement/result. */
 export interface CalendarWorkspaceSyncTarget {
   butler_name: string;
   source_key: string | null;
@@ -1599,8 +1599,12 @@ export interface CalendarWorkspaceSyncTarget {
   status: string;
   detail: string | null;
   error: string | null;
-  /** Whether a full re-sync (cursor recovery) ran for this target. */
+  /** False for a queued acknowledgement; observe action/freshness telemetry for completion. */
   recovery: boolean;
+  /** Correlation id of the durable action-log command. */
+  request_id: string | null;
+  /** True when this acknowledgement joined an existing queued command. */
+  coalesced: boolean;
 }
 
 /** Response payload for POST /api/calendar/workspace/sync. */
@@ -1608,6 +1612,8 @@ export interface CalendarWorkspaceSyncResponse {
   scope: "all" | "source";
   requested_source_key: string | null;
   requested_source_id: string | null;
+  /** Correlation id generated for this dashboard/API request. */
+  request_id: string;
   /** Echoes whether the request asked for a full recovery sync. */
   full: boolean;
   targets: CalendarWorkspaceSyncTarget[];
