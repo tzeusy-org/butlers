@@ -770,10 +770,10 @@ async def disconnect_spotify(
 ) -> SpotifyDisconnectResponse:
     """Clear locally stored Spotify OAuth state from CredentialStore.
 
-    Deletes SPOTIFY_ACCESS_TOKEN, SPOTIFY_REFRESH_TOKEN, and
-    SPOTIFY_TOKEN_EXPIRES_AT. Preserves SPOTIFY_CLIENT_ID so the user
-    does not need to re-enter it when reconnecting. Does not call Spotify or
-    revoke provider-side authorization.
+    Deletes SPOTIFY_ACCESS_TOKEN, SPOTIFY_REFRESH_TOKEN,
+    SPOTIFY_TOKEN_EXPIRES_AT, and SPOTIFY_GRANTED_SCOPES. Preserves
+    SPOTIFY_CLIENT_ID so the user does not need to re-enter it when reconnecting.
+    Does not call Spotify or revoke provider-side authorization.
 
     Returns success=True even when no credentials were stored (idempotent).
     """

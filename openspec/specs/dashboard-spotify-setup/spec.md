@@ -158,8 +158,9 @@ The dashboard SHALL expose REST API endpoints for Spotify account management.
 #### Scenario: Disconnect endpoint
 
 - **WHEN** `POST /api/connectors/spotify/disconnect` is called
-- **THEN** it SHALL delete `SPOTIFY_ACCESS_TOKEN`, `SPOTIFY_REFRESH_TOKEN`, `SPOTIFY_TOKEN_EXPIRES_AT`, and `SPOTIFY_GRANTED_SCOPES` from `CredentialStore`
-- **AND** it SHALL preserve `SPOTIFY_CLIENT_ID` so reconnecting does not require reconfiguration
+- **THEN** it SHALL delete the locally stored `SPOTIFY_ACCESS_TOKEN`, `SPOTIFY_REFRESH_TOKEN`, `SPOTIFY_TOKEN_EXPIRES_AT`, and `SPOTIFY_GRANTED_SCOPES` keys from `CredentialStore`
+- **AND** it SHALL retain `SPOTIFY_CLIENT_ID` so the user can reconnect without re-entering it
+- **AND** it SHALL not issue a provider-side authorization-revocation request
 - **AND** it SHALL return `{"disconnected": true}`
 
 #### Scenario: Client ID configuration endpoint

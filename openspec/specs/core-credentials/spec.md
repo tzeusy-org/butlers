@@ -224,8 +224,10 @@ The `CredentialStore` SHALL support storing and resolving Spotify OAuth tokens f
 #### Scenario: Delete Spotify credentials on disconnect
 
 - **WHEN** the user disconnects Spotify via the dashboard
-- **THEN** all four Spotify credential keys SHALL be deleted from `CredentialStore`
-- **AND** `store.delete()` SHALL be called for each key
+- **THEN** it SHALL delete the locally stored `SPOTIFY_ACCESS_TOKEN`, `SPOTIFY_REFRESH_TOKEN`, `SPOTIFY_TOKEN_EXPIRES_AT`, and `SPOTIFY_GRANTED_SCOPES` keys from `CredentialStore`
+- **AND** it SHALL retain `SPOTIFY_CLIENT_ID` so the user can reconnect without re-entering it
+- **AND** `store.delete()` SHALL be called for each of the four local token or scope keys
+- **AND** it SHALL not issue a provider-side authorization-revocation request
 
 <!-- Source: redesign-secrets-passport -->
 
