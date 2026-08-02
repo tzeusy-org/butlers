@@ -391,10 +391,8 @@ async def export_data(
     token = _sign_token(export_id, body.scope, issued_at)
     expires_at = datetime.fromtimestamp(issued_at + _EXPORT_TTL_SECONDS, tz=UTC)
 
-    signed_url = (
-        f"/api/data/export/download/{export_id}"
-        f"?scope={body.scope}&issued_at={issued_at}&token={token}"
-    )
+    signed_query = f"scope={body.scope}&issued_at={issued_at}&token={token}"
+    signed_url = f"/data/export/download/{export_id}?{signed_query}"
 
     # data.export has no companion state mutation to roll back (the signed
     # URL is stateless — see the module docstring), so unlike the

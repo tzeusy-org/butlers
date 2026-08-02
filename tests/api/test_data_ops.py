@@ -110,6 +110,8 @@ async def test_export_returns_signed_url(app):
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert "signed_url" in data
+    assert data["signed_url"].startswith("/data/export/download/")
+    assert not data["signed_url"].startswith("/api/")
     assert data["scope"] == "all"
     assert "expires_at" in data
 
@@ -402,9 +404,10 @@ async def test_download_round_trip_decrypt(app):
     assert post_resp.status_code == 200
     signed_url = post_resp.json()["data"]["signed_url"]
 
-    # Step 2: GET the signed URL
+    # Step 2: the client resolves the API-relative signed URL against its API
+    # base before requesting it.
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        get_resp = await client.get(signed_url)
+        get_resp = await client.get(f"/api{signed_url}")
 
     assert get_resp.status_code == 200
     assert get_resp.headers["content-type"] == "application/octet-stream"
