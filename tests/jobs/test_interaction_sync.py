@@ -99,6 +99,7 @@ def _make_inbox_row(
     sender_identities: list[str] | None = None,
     message_count: int = 1,
     participant_count: int | None = None,
+    owner_sender_identity: str | None = None,
 ) -> dict[str, Any]:
     """Build a dict mimicking a row returned by the group-by inbox query."""
     row: dict[str, Any] = {
@@ -108,6 +109,7 @@ def _make_inbox_row(
         "sender_identities": sender_identities or ["sender-alice"],
         "message_count": message_count,
         "participant_count": participant_count,
+        "owner_sender_identity": owner_sender_identity,
     }
     # Wrap in a MagicMock so row["key"] and row.get() both work.
     mock_row = MagicMock()
@@ -123,14 +125,19 @@ def _make_entity_row(
     entity_id: uuid.UUID,
     roles: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a dict mimicking a row from the entity_facts batch-resolve query.
+    """Build a row as returned by ``resolve_contacts_by_channel_bulk``'s query.
 
-    The query now returns entity_id (= ef.subject) instead of contact_id.
+    Resolution now goes through the canonical channel resolver rather than a
+    bespoke join, so rows are keyed by ``(predicate, object)`` — the shape that
+    resolver matches its candidate chain against. ``ci_type`` selects the
+    predicate the way ``_channel_candidates`` does.
     """
+    predicate = {"email": "has-email", "phone": "has-phone"}.get(ci_type, "has-handle")
     row: dict[str, Any] = {
-        "ci_type": ci_type,
-        "ci_value": ci_value,
+        "predicate": predicate,
+        "object": ci_value,
         "entity_id": entity_id,
+        "name": "Test Contact",
         "roles": roles or [],
     }
     mock_row = MagicMock()
@@ -917,3 +924,68 @@ async def test_knows_edge_idempotent_on_rerun():
     assert mock_assert.call_count == 2
     assert stats["knows_edges_minted"] == 0
     assert stats["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: a total resolution failure is not reported as an empty result
+# ---------------------------------------------------------------------------
+
+
+async def test_zero_resolutions_flags_degradation():
+    """resolve_contacts_by_channel_bulk is fail-open, so all-unresolved is ambiguous.
+
+    A DB outage there returns every pair as None — identical to "nobody is a
+    known contact". Reporting that as a clean zero-fact run is the exact silent
+    failure this job exists to prevent.
+    """
+    pool = _make_pool()
+    _make_state_get_none(pool)
+
+    stats, mock_log = await _run_with_mocked_deps(
+        pool,
+        inbox_rows=[_make_inbox_row(sender_identities=["sender-alice", "sender-bob"])],
+        contact_rows=[],  # nothing resolves
+    )
+
+    assert stats["resolution_degraded"] is True
+    assert stats["errors"] >= 1
+    assert stats["logged"] == 0
+    mock_log.assert_not_awaited()
+
+
+async def test_successful_resolution_does_not_flag_degradation():
+    pool = _make_pool()
+    _make_state_get_none(pool)
+
+    stats, _ = await _run_with_mocked_deps(
+        pool,
+        inbox_rows=[_make_inbox_row(sender_identities=["sender-alice"])],
+        contact_rows=[_make_entity_row(ci_value="sender-alice", entity_id=_ENTITY_A)],
+    )
+
+    assert stats["resolution_degraded"] is False
+
+
+async def test_owner_sender_identity_drives_direction_without_role_lookup():
+    """The connector-reported owner id works with no owner entity resolved."""
+    pool = _make_pool()
+    _make_state_get_none(pool)
+
+    stats, mock_log = await _run_with_mocked_deps(
+        pool,
+        inbox_rows=[
+            _make_inbox_row(
+                sender_identities=["sender-alice", "owner-jid"],
+                owner_sender_identity="owner-jid",
+                participant_count=2,
+            )
+        ],
+        # Only the contact resolves; the owner has no handle fact for this channel.
+        contact_rows=[_make_entity_row(ci_value="sender-alice", entity_id=_ENTITY_A)],
+    )
+
+    directions = {c.kwargs["direction"] for c in mock_log.await_args_list}
+    assert directions == {"incoming", "outgoing"}
+    assert stats["skipped_owner"] == 1
+    # The owner must never be logged as a contact of the owner.
+    assert all(c.kwargs["entity_id"] == _ENTITY_A for c in mock_log.await_args_list)

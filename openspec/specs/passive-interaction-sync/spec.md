@@ -28,8 +28,20 @@ The relationship butler SHALL run a scheduled job (`interaction_sync`) that scan
 #### Scenario: Group-aware pre-grouping by chat identity
 - **WHEN** `interaction_sync` runs
 - **THEN** it SHALL query `switchboard.message_inbox` grouped by `(source_thread_identity, source_channel, DATE(received_at))` instead of `(source_sender_identity, source_channel, DATE(received_at))`
-- **AND** it SHALL collect DISTINCT `source_sender_identity` values per chat per day
+- **AND** it SHALL collect the DISTINCT sender identities per chat per day from `request_context->'source_sender_identities'` when present, falling back to the scalar `source_sender_identity` otherwise
 - **AND** it SHALL skip messages where `request_context->>'interaction_eligible'` is `'false'`
+
+#### Scenario: Batch envelopes carry per-sender identities
+- **WHEN** a connector submits a buffered/batch envelope covering several senders
+- **THEN** `sender.identity` MUST remain the collapsed sentinel `'multiple'` for backward compatibility
+- **AND** the ingest path MUST persist the real per-sender identities to `request_context.source_sender_identities` (a JSON array, derived from `sender.participants`)
+- **AND** it MUST persist `sender.owner_sender_id` to `request_context.owner_sender_identity` when the connector reports one
+- **AND** `interaction_sync` MUST NOT treat the literal `'multiple'` (or `'unknown'`) as a sender identity
+- **AND** single-message envelopes MUST omit both keys, keeping `request_context` unchanged
+
+#### Scenario: Message count is not inflated by the sender fan-out
+- **WHEN** the grouping query expands each inbox row to one row per (message, sender) pair
+- **THEN** the `message_count` recorded in fact metadata MUST count DISTINCT inbox rows, not fanned-out pairs
 
 #### Scenario: Participant count gate
 - **WHEN** the interaction_sync job processes a chat group
@@ -37,6 +49,13 @@ The relationship butler SHALL run a scheduled job (`interaction_sync`) that scan
 - **AND** it SHALL fall back to COUNT(DISTINCT source_sender_identity) in the group if `participant_count` is absent
 - **AND** if the resolved participant count exceeds 20, the entire chat group MUST be skipped
 - **AND** for DM chats (only one non-owner sender), `group_size` MUST be 1
+
+#### Scenario: Connector-reported owner identity outranks role lookup
+- **WHEN** `request_context.owner_sender_identity` is present for a chat group
+- **THEN** owner presence SHALL be determined by testing that identity for membership in the group's sender set
+- **AND** that sender MUST be excluded from contact resolution, counting as `skipped_owner`
+- **AND** this MUST hold even when the owner entity carries no identifier fact for the channel (the normal case for WhatsApp, where resolution runs through phone numbers)
+- **AND** when the key is absent, the job SHALL fall back to role-based detection via `public.entities.roles`
 
 #### Scenario: Direction detection from owner presence
 - **WHEN** the interaction_sync job processes senders in a chat group
@@ -79,9 +98,20 @@ The relationship butler SHALL run a scheduled job (`interaction_sync`) that scan
   - `metadata` = `{"source": "interaction_sync", "message_count": N, "group_size": G}`
 
 #### Scenario: Unresolved senders are skipped
-- **WHEN** `source_sender_identity` does not resolve to an active `relationship.entity_facts` triple for the expected predicate
+- **WHEN** a sender identity does not resolve to an active `relationship.entity_facts` triple for the expected predicate
 - **THEN** the job SHALL skip that sender without error
 - **AND** it SHALL increment a `skipped_unresolved` counter in the return stats
+
+#### Scenario: Sender resolution uses the canonical channel resolver
+- **WHEN** the job resolves sender identities to entities
+- **THEN** it SHALL use the shared channel resolver (`resolve_contacts_by_channel_bulk`) rather than an exact-equality triple lookup
+- **AND** it MUST therefore honour the canonical `telegram:<bare>` handle prefix and the WhatsApp JID → phone cross-reference
+
+#### Scenario: A total resolution failure is not reported as an empty result
+- **WHEN** the job has a non-empty set of sender identities to resolve and resolves none of them
+- **THEN** it MUST NOT report a successful zero-fact run
+- **AND** it SHALL increment `errors` and set `resolution_degraded` to `true` in the return stats
+- **AND** the rationale is that the shared resolver is fail-open by contract (a database error yields all-unresolved rather than raising), which is otherwise indistinguishable from "none of these senders is a known contact"
 
 #### Scenario: Owner messages are excluded from contact resolution
 - **WHEN** the resolved entity has role `'owner'` in `public.entities.roles`
@@ -179,6 +209,7 @@ on every run.
   - `skipped_group_too_large` (int) — chat groups exceeding the 20-participant gate
   - `calendar_events_scanned` (int)
   - `errors` (int) — checkpoint I/O failures and other non-fatal errors
+  - `resolution_degraded` (bool) — `true` when a non-empty set of sender identities resolved to zero entities, which the fail-open resolver cannot distinguish from a genuine "no known contacts" result; callers MUST NOT read a zero-fact run as an all-clear while this is set
   - `co_attended_edges_minted` (int), count of co-attendance relationship edges created from shared calendar events
   - `knows_edges_minted` (int), count of "knows" relationship edges minted during the sync
 
@@ -209,9 +240,26 @@ core_115 / bead bu-e2ja9):
 | `whatsapp_user_client` | `whatsapp_jid`   | `has-handle`             |
 | `email`                | `email`          | `has-email`              |
 
-Sender identities are resolved by matching `entity_facts.object = sender_identity`
-(exact match, case-sensitive for handles; `LOWER()` equality for emails) to find
-the entity UUID. Unresolved senders are skipped without error.
+Resolution delegates to the shared channel resolver rather than a bespoke
+exact-equality join, so it walks the same candidate chain as the rest of the
+system. Exact equality alone is insufficient in practice:
+
+- **Telegram** handles are stored canonically as `telegram:<bare>` (rel_019)
+  while senders arrive bare, so the prefixed form must be tried.
+- **WhatsApp** has no `has-handle` triples at all; a JID resolves by extracting
+  its phone digits and cross-referencing `has-phone`. Stored numbers keep their
+  source formatting (`"+65 9815 0802"`, `"+6598150802"`, `"91153887"`), so the
+  comparison is digits-only and suffix-based to bridge an omitted country code.
+  A JID may also carry a device ordinal (`"<phone>:33@s.whatsapp.net"`) or be an
+  opaque linked id (`"<lid>@lid"`); the connector strips the former and
+  translates the latter before the identity leaves the ingest path.
+- **Email** matches `LOWER()` equality on the address.
+
+Because a digits suffix cannot distinguish a country code from a longer
+national number, an ambiguous match (more than one entity) resolves to nobody.
+Declining to match is deliberate: this path mints permanent facts, so crediting
+the wrong person is worse than crediting none. Unresolved senders are skipped
+without error.
 
 ### Calendar attendee resolution
 

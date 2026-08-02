@@ -23,6 +23,7 @@ from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
 )
+from butlers.identity import resolve_contacts_by_channel_bulk
 from butlers.modules.approvals.command_contracts import MEMORY_RECLASSIFY_COMMAND
 
 logger = logging.getLogger(__name__)
@@ -978,6 +979,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "calendar_events_scanned": 0,
         "co_attended_edges_minted": 0,
         "knows_edges_minted": 0,
+        # True when sender resolution returned nothing for a non-empty lookup
+        # set, which the fail-open resolver cannot distinguish from a genuine
+        # "no known contacts" result. Callers must not read a zero-fact run as
+        # an all-clear while this is set.
+        "resolution_degraded": False,
         "errors": checkpoint_errors,
     }
 
@@ -1004,9 +1010,14 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )                                              AS thread_identity,
                 request_context ->> 'source_channel'           AS source_channel,
                 (received_at AT TIME ZONE 'UTC')::date         AS interaction_date,
-                array_agg(DISTINCT request_context ->> 'source_sender_identity')
-                                                               AS sender_identities,
-                COUNT(*)                                       AS message_count,
+                array_agg(DISTINCT sender.identity)             AS sender_identities,
+                MAX(request_context ->> 'owner_sender_identity')
+                                                               AS owner_sender_identity,
+                -- DISTINCT over the inbox row identity: the lateral unnest
+                -- below fans out one row per (message x sender), so a plain
+                -- COUNT(*) would report sender-pairs and inflate the
+                -- message_count written into permanent fact metadata.
+                COUNT(DISTINCT (id, received_at))              AS message_count,
                 MAX(
                     CASE
                         WHEN request_context ->> 'participant_count' IS NOT NULL
@@ -1015,11 +1026,27 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     END
                 )                                              AS participant_count
             FROM switchboard.message_inbox
+            -- Buffered/batch envelopes collapse source_sender_identity to the
+            -- literal 'multiple' and carry the real per-sender identities in
+            -- source_sender_identities.  Prefer that list; fall back to the
+            -- scalar for single-message envelopes (spec passive-interaction-sync).
+            CROSS JOIN LATERAL (
+                SELECT COALESCE(
+                    (
+                        SELECT array_agg(value)
+                        FROM jsonb_array_elements_text(
+                            request_context -> 'source_sender_identities'
+                        ) AS t(value)
+                    ),
+                    ARRAY[request_context ->> 'source_sender_identity']
+                ) AS identities
+            ) AS batch
+            CROSS JOIN LATERAL unnest(batch.identities) AS sender(identity)
             WHERE direction = 'inbound'
               AND received_at >= $1
               AND request_context ->> 'source_channel' = ANY($2::text[])
-              AND request_context ->> 'source_sender_identity' IS NOT NULL
-              AND request_context ->> 'source_sender_identity' != 'unknown'
+              AND sender.identity IS NOT NULL
+              AND sender.identity NOT IN ('unknown', 'multiple')
               AND COALESCE(request_context ->> 'interaction_eligible', 'true') != 'false'
             GROUP BY
                 COALESCE(
@@ -1058,63 +1085,43 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             if sender_identity:
                 lookup_pairs.append((ci_type, sender_identity))
 
-    # Resolve (ci_type, value) → entity_id via relationship.entity_facts.
-    # interaction_log() now accepts entity_id directly, so the LEFT JOIN to
-    # public.contacts that previously bridged entity_id→contact_id is removed.
+    # Resolve (ci_type, value) → entity_id via the canonical channel resolver.
+    # A bespoke exact-equality join used to live here; it silently missed every
+    # telegram handle (stored canonically as "telegram:<bare>") and every
+    # WhatsApp sender (matched by phone, stored in mixed formats).
+    # resolve_contacts_by_channel_bulk walks the same fallback chain the rest
+    # of the system uses, in one batched pass.
     resolved: dict[tuple[str, str], uuid.UUID] = {}  # (ci_type, value) -> entity_id
     owner_entity_ids: set[uuid.UUID] = set()
 
     if lookup_pairs:
-        ci_types = [t for t, _ in lookup_pairs]
-        ci_values = [v for _, v in lookup_pairs]
-
         try:
-            contact_rows = await db_pool.fetch(
-                """
-                SELECT
-                    pairs.ci_type,
-                    pairs.ci_value,
-                    ef.subject                  AS entity_id,
-                    COALESCE(e.roles, '{}')     AS roles
-                FROM (
-                    SELECT DISTINCT p.ci_type, p.ci_value
-                    FROM UNNEST($1::text[], $2::text[]) AS p(ci_type, ci_value)
-                ) pairs
-                JOIN relationship.entity_facts ef
-                  ON ef.predicate = CASE pairs.ci_type
-                        WHEN 'email'            THEN 'has-email'
-                        WHEN 'phone'            THEN 'has-phone'
-                        WHEN 'telegram_chat_id' THEN 'has-handle'
-                        WHEN 'whatsapp_jid'     THEN 'has-handle'
-                        ELSE 'has-handle'
-                     END
-                 AND ef.object      = pairs.ci_value
-                 AND ef.object_kind = 'literal'
-                 AND ef.validity    = 'active'
-                JOIN public.entities e ON e.id = ef.subject
-                """,
-                ci_types,
-                ci_values,
-            )
+            resolved_contacts = await resolve_contacts_by_channel_bulk(db_pool, lookup_pairs)
         except Exception:
             logger.exception("interaction_sync: failed to resolve contact identities")
             stats["errors"] += 1
             return stats
 
-        for cr in contact_rows:
-            entity_id = cr["entity_id"]
-            if entity_id is None:
+        for key, contact in resolved_contacts.items():
+            if contact is None or contact.entity_id is None:
                 continue
-            if not isinstance(entity_id, uuid.UUID):
-                try:
-                    entity_id = uuid.UUID(str(entity_id))
-                except (ValueError, AttributeError):
-                    continue
-            key = (cr["ci_type"], cr["ci_value"])
-            resolved[key] = entity_id
-            roles: list[str] = list(cr["roles"] or [])
-            if "owner" in roles:
-                owner_entity_ids.add(entity_id)
+            resolved[key] = contact.entity_id
+            if "owner" in (contact.roles or []):
+                owner_entity_ids.add(contact.entity_id)
+
+        if not resolved:
+            # resolve_contacts_by_channel_bulk is fail-open by contract: a DB
+            # error returns all-unresolved rather than raising. Without this
+            # signal a total resolution outage is indistinguishable from
+            # "none of these senders is a known contact" — a silent zero-fact
+            # run, which is the failure mode this job exists to prevent.
+            logger.error(
+                "interaction_sync: resolved 0 of %d sender identities — "
+                "treating as a resolution failure, not an empty result",
+                len(lookup_pairs),
+            )
+            stats["errors"] += 1
+            stats["resolution_degraded"] = True
 
     # -----------------------------------------------------------------------
     # Step 3: For each (chat, channel, date) group apply the group-aware logic:
@@ -1163,7 +1170,16 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             continue
 
         # --- owner presence and group_size ---
-        owner_sent = any(e in owner_entity_ids for e in sender_entities)
+        # The connector tags the owner's own sender id on batch envelopes
+        # (WhatsApp reads it straight off the bridge's is_from_me flag), which
+        # is authoritative even when the owner entity carries no handle fact
+        # for this channel. Fall back to role-based detection otherwise.
+        owner_sender_identity = row["owner_sender_identity"]
+        owner_sent = (
+            owner_sender_identity in sender_identities
+            if owner_sender_identity
+            else any(e in owner_entity_ids for e in sender_entities)
+        )
 
         # group_size = participant_count for group chats.
         # For DMs (only one non-owner participant), clamp to 1 so the
@@ -1185,6 +1201,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         # --- per-sender logging ---
         for si in sender_identities:
             stats["processed"] += 1
+
+            if owner_sender_identity and si == owner_sender_identity:
+                # Owner's presence drives direction; never log a self-interaction.
+                stats["skipped_owner"] += 1
+                continue
 
             eid = resolved.get((ci_type, si))
 
