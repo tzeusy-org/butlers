@@ -318,7 +318,7 @@ async function mockAllSecretRoutes(page: Page) {
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
   );
   await page.route("**/api/connectors/spotify/oauth/start**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authorization_url: "https://accounts.spotify.com/authorize?mock=1" }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authorization_url: "https://accounts.spotify.com/authorize?mock=1", state: "opaque-csrf-state" }) })
   );
   await page.route("**/api/connectors/spotify/disconnect**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ disconnected: true }) })

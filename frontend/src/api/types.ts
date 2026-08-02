@@ -4975,9 +4975,11 @@ export interface SpotifyStatusResponse {
   missing_scopes: string[];
 }
 
-/** Response from POST /api/spotify/oauth/start */
+/** Response from POST /api/connectors/spotify/oauth/start */
 export interface SpotifyOAuthStartResponse {
   authorization_url: string;
+  /** Opaque CSRF state token; clients must not persist or log it. */
+  state: string;
 }
 
 /** Request body for POST /api/spotify/config */
