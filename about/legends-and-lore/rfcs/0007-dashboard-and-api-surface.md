@@ -111,6 +111,9 @@ Admission-control decisions that did not launch a runtime session (for example c
 |----------|----------|-------------|
 | `POST /api/butlers/{name}/conversations` | `text/event-stream` | Create a conversation and submit an immutable dashboard user turn |
 | `POST /api/butlers/{name}/conversations/{conversation_id}/messages` | `text/event-stream` | Submit a follow-up immutable user turn |
+| `GET /api/butlers/{name}/conversations` | `PaginatedResponse<ConversationSummary>` | List conversation history |
+| `GET /api/butlers/{name}/conversations/search` | `PaginatedResponse<ConversationSearchResult>` | Search conversation history |
+| `GET /api/butlers/{name}/conversations/{conversation_id}/messages` | `PaginatedResponse<ConversationMessage>` | Read one conversation's messages |
 | `POST /api/butlers/{name}/conversation-turns/{message_id}/cancel` | `ConversationCancelResponse` | Canonical durable Stop for one message turn |
 | `POST /api/butlers/{name}/conversations/{conversation_id}/cancel` | `ConversationCancelResponse` | Compatibility-only legacy Stop route |
 
@@ -122,6 +125,24 @@ response represents exactly one truthful domain outcome: `cancelled`,
 cancellation settlement as `INGEST_IN_PROGRESS` (observe/check again, never
 Retry), confirmed Stop as `SESSION_CANCELLED`, and an unprovable recovered
 predecessor as `TURN_OUTCOME_UNKNOWN` (no automatic replay).
+
+The SSE vocabulary additionally includes `dispatch_accepted` for the immutable
+message that owns the stream. It is a current-turn receipt, not a durable reply
+or terminal-action result. After immutable ingress has durably bound as accepted
+and `dispatch_status` safely observes an active turn, the first receipt is
+always `{"routed_butler": null}`—even if that observation already names a
+non-empty `route` target. Only a later distinct safe status observation may emit
+one named upgrade; the first observation never emits both receipts. It MUST NOT
+derive the target from classifier triage or historical conversation routing, and
+MUST NOT emit a receipt for legacy streams without immutable message identity,
+an unavailable or unsafe observation, cancellation/ambiguity, or a terminal
+action target. A client may link only a named current receipt; historical
+`routed_butler` is not current-turn accountability evidence.
+
+Conversation list, search, and history reads remain ordinary query data. A
+query failure is not an empty result: the dashboard preserves cached same-thread
+rows and the current draft/selection where present, exposes a direct query
+refetch, and never displays optimistic messages from another conversation.
 
 ### Session Endpoints
 

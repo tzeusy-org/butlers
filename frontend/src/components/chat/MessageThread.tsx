@@ -302,14 +302,32 @@ export function MessageThread({
   // Auto-scroll to bottom when new messages arrive, unless user scrolled up
   useEffect(() => {
     if (!userScrolledUp) {
-      bottomRef.current?.scrollIntoView();
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages.length, streaming?.cancelError, streaming?.cancelled, streaming?.content, streaming?.pending, userScrolledUp]);
+  }, [
+    messages.length,
+    streaming?.cancelError,
+    streaming?.cancelling,
+    streaming?.cancelled,
+    streaming?.content,
+    streaming?.dispatchReceipt?.routedButler,
+    streaming?.pending,
+    userScrolledUp,
+  ]);
 
   const isStreamingThisConversation =
     streaming !== null &&
     (streaming.conversationId === conversationId ||
       (streaming.conversationId === "pending" && conversationId === null));
+  // Stop owns the one authoritative live status while it is settling or has
+  // completed. Keeping receipt progress here would duplicate that live region
+  // and retain a routing claim after the current turn has been terminated.
+  const showPendingActivity =
+    isStreamingThisConversation &&
+    streaming.pending &&
+    !streaming.cancelling &&
+    !streaming.cancelled &&
+    !streaming.interrupted;
 
   if (messages.length === 0 && !isStreamingThisConversation && !suppressEmptyState) {
     return (
@@ -348,7 +366,7 @@ export function MessageThread({
       })}
 
       {/* The visible dots are decorative; the status text communicates progress. */}
-      {isStreamingThisConversation && streaming.pending && (
+      {showPendingActivity && (
         <div className="flex flex-col gap-1">
           <p
             className="text-xs text-muted-foreground"

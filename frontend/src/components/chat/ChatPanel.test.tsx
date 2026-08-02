@@ -845,7 +845,7 @@ describe("ChatContent — Stop button", () => {
     expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
   });
 
-  it("uses the immutable message id and visibly confirms Stop before new-conversation SSE starts", async () => {
+  it("keeps the optimistic message visible through a confirmed Stop before conversation_created", async () => {
     const { queryClient } = await sendAndEnterStreamingState({
       conversationCreated: false,
       token: false,
@@ -866,10 +866,63 @@ describe("ChatContent — Stop button", () => {
     const messageId = (createConversationMock.mock.calls[0][1] as { message_id: string }).message_id;
     expect(cancelConversationMessageTurnMock).toHaveBeenCalledWith("switchboard", messageId);
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(screen.getByText("hello")).toBeDefined();
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["conversation-messages", "switchboard", "conv-stop-1"],
     });
     expect(useConversationMessages).toHaveBeenLastCalledWith("switchboard", "conv-stop-1");
+  });
+
+  it("suppresses a named receipt during Stop settlement and confirmed cancellation", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-stop-route", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: "finance" } },
+    ];
+    renderChatContent();
+    fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+      target: { value: "route then stop" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Routed to finance; waiting for a reply.",
+    );
+    expect(screen.getByRole("link", { name: "finance" })).toBeDefined();
+
+    let resolveCancel!: (result: { cancelled: boolean; already_finished: boolean }) => void;
+    cancelConversationMessageTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.queryByTestId("chat-activity-status")).toBeNull();
+    expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
+
+    await act(async () => {
+      activeSseEventHandler?.({
+        event: "error",
+        data: { code: "SESSION_CANCELLED", message: "This turn was stopped before routing." },
+      });
+    });
+    expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.queryByTestId("chat-activity-status")).toBeNull();
+    expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
+
+    await act(async () => {
+      resolveCancel({ cancelled: false, already_finished: true });
+      await Promise.resolve();
+    });
   });
 
   it("accepts a terminal server cancellation after Stop was still settling", async () => {
@@ -1003,6 +1056,7 @@ describe("ChatContent — Stop button", () => {
 
     expect(screen.queryByText("Cancelled by owner")).toBeNull();
     expect(screen.queryByTestId("chat-stop-button")).toBeNull();
+    expect(screen.getByText("hello")).toBeDefined();
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["conversations", "switchboard"],
     });

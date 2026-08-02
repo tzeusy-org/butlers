@@ -230,6 +230,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       // bubble disappear with a pending local conversation id.
       void queryClient.invalidateQueries({ queryKey: conversationKeys.all(WIDGET_BUTLER) });
       if (conversationId) {
+        localMessagesConversationIdRef.current = conversationId;
         setActiveConversationId(conversationId);
         setLocalMessages((prev) =>
           prev.map((message) =>
@@ -252,6 +253,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               cancelled: true,
               pending: false,
               cancelError: null,
+              dispatchReceipt: undefined,
             }
           : prev,
       );
@@ -519,6 +521,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             queryKey: conversationKeys.all(WIDGET_BUTLER),
           });
           if (conversationId) {
+            localMessagesConversationIdRef.current = conversationId;
             setActiveConversationId(conversationId);
             setLocalMessages((prev) =>
               prev.map((message) =>
@@ -592,6 +595,10 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 
   const visibleMessages =
     localMessagesConversationIdRef.current === activeConversationId ? localMessages : [];
+  const visibleDispatchReceipt =
+    streaming && !streaming.cancelling && !streaming.cancelled && !streaming.interrupted
+      ? streaming.dispatchReceipt
+      : undefined;
 
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="dialog" + onKeyDown provides the shared Escape/focus choreography; the rule's static role allowlist does not recognize the WAI-ARIA dialog pattern.
@@ -685,7 +692,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             conversation={activeConversation}
             messages={visibleMessages}
             pricingMap={pricingMap}
-            routedButler={streaming?.dispatchReceipt?.routedButler}
+            routedButler={visibleDispatchReceipt?.routedButler}
           />
 
           {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (

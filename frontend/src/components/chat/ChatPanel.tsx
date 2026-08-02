@@ -254,6 +254,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       // bubble disappear with a pending local conversation id.
       void queryClient.invalidateQueries({ queryKey: conversationKeys.all(butlerName) });
       if (conversationId) {
+        localMessagesConversationIdRef.current = conversationId;
         setActiveConversationId(conversationId);
         setLocalMessages((prev) =>
           prev.map((message) =>
@@ -276,6 +277,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
               cancelled: true,
               pending: false,
               cancelError: null,
+              dispatchReceipt: undefined,
             }
           : prev,
       );
@@ -548,6 +550,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             queryKey: conversationKeys.all(butlerName),
           });
           if (conversationId) {
+            localMessagesConversationIdRef.current = conversationId;
             setActiveConversationId(conversationId);
             setLocalMessages((prev) =>
               prev.map((message) =>
@@ -620,6 +623,10 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   const visibleMessages =
     localMessagesConversationIdRef.current === activeConversationId ? localMessages : [];
+  const visibleDispatchReceipt =
+    streaming && !streaming.cancelling && !streaming.cancelled && !streaming.interrupted
+      ? streaming.dispatchReceipt
+      : undefined;
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -642,7 +649,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           conversation={activeConversation}
           messages={visibleMessages}
           pricingMap={pricingMap}
-          routedButler={streaming?.dispatchReceipt?.routedButler}
+          routedButler={visibleDispatchReceipt?.routedButler}
         />
 
         {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (

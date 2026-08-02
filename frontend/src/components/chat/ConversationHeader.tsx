@@ -43,7 +43,7 @@ export interface ConversationHeaderProps {
   conversation: ConversationSummary | null;
   messages: Message[];
   pricingMap: PricingMap | null;
-  /** Accepted route for the currently pending turn, if Switchboard supplied one. */
+  /** Durable route for the currently pending turn, if its stream proved one. */
   routedButler?: string | null;
 }
 
@@ -56,34 +56,31 @@ export function ConversationHeader({
 }: ConversationHeaderProps) {
   const title = conversation?.title ?? "New conversation";
   const costStr = totalConversationCost(messages, pricingMap);
-  // `null` is an explicit targetless receipt for this turn; only an absent
-  // receipt (`undefined`) may fall back to the conversation's older route.
-  const accountableButler =
-    routedButler !== undefined ? routedButler : (conversation?.routed_butler ?? null);
+  // A historical conversation route is not proof of responsibility for this
+  // current message. Only the live stream's durable receipt can earn a link.
+  const accountableButler = routedButler ?? null;
 
   return (
     <div className="flex items-center gap-2 px-4 py-3 border-b">
       <MessageCircleIcon className="size-4 text-muted-foreground shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium truncate">{title}</p>
-        {(conversation || accountableButler) && (
-          <p className="text-xs text-muted-foreground">
-            {accountableButler ? (
-              <>
-                Handled by{" "}
-                <a
-                  href={`/butlers/${encodeURIComponent(accountableButler)}`}
-                  className="underline underline-offset-4 hover:text-foreground"
-                >
-                  {accountableButler}
-                </a>
-              </>
-            ) : (
-              butlerName
-            )}
-            {costStr && ` · ${costStr}`}
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground">
+          {accountableButler ? (
+            <>
+              Routed to{" "}
+              <a
+                href={`/butlers/${encodeURIComponent(accountableButler)}`}
+                className="underline underline-offset-4 hover:text-foreground"
+              >
+                {accountableButler}
+              </a>
+            </>
+          ) : (
+            butlerName
+          )}
+          {costStr && ` · ${costStr}`}
+        </p>
       </div>
     </div>
   );

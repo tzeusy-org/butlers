@@ -48,6 +48,7 @@ from butlers.api.routers.conversations import (
     _stream_conversation_response,
     _submit_to_switchboard,
 )
+from butlers.core.dashboard_turns import DashboardTurnResult
 
 pytestmark = pytest.mark.unit
 
@@ -980,68 +981,683 @@ class _FakeRequest:
         return False
 
 
+def _dashboard_turn_result(
+    outcome: str,
+    *,
+    message_id: UUID,
+    request_id: UUID | None = None,
+    target_kind: str | None = None,
+    target_butler: str | None = None,
+) -> DashboardTurnResult:
+    return DashboardTurnResult(
+        outcome=outcome,
+        message_id=message_id,
+        conversation_id=_CONV_ID,
+        request_id=request_id,
+        target_butler=target_butler,
+        target_kind=target_kind,
+        route_inbox_id=None,
+        cancel_requested_at=None,
+        cancel_confirmed_at=None,
+        terminal_state=None,
+        terminal_at=None,
+    )
+
+
+def _dispatch_receipts(events: list[str]) -> list[dict[str, str | None]]:
+    return [
+        json.loads(event.split("data: ", 1)[1])
+        for event in events
+        if "event: dispatch_accepted" in event
+    ]
+
+
+async def test_stream_receipt_stays_targetless_until_a_durable_route_exists(monkeypatch):
+    """A pre-routing classification target is not a receipt-worthy route."""
+    message_id = uuid4()
+    request_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(request_id),
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "relationship",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(return_value=_dashboard_turn_result("dispatch", message_id=message_id)),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "bind_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "accepted", message_id=message_id, request_id=request_id
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "dispatch_status",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "active", message_id=message_id, request_id=request_id
+            )
+        ),
+    )
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+            message_id=message_id,
+        )
+    ]
+
+    assert _dispatch_receipts(events) == [{"routed_butler": None}]
+
+
+async def test_stream_receipt_uses_only_the_durable_route_target(monkeypatch):
+    """A later receipt names only the committed target, never a triage proposal."""
+    message_id = uuid4()
+    request_id = uuid4()
+    durable_route = _dashboard_turn_result(
+        "active",
+        message_id=message_id,
+        request_id=request_id,
+        target_kind="route",
+        target_butler="finance",
+    )
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(request_id),
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "relationship",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(return_value=_dashboard_turn_result("dispatch", message_id=message_id)),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "bind_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "accepted", message_id=message_id, request_id=request_id
+            )
+        ),
+    )
+    status = AsyncMock(side_effect=[durable_route, durable_route])
+    monkeypatch.setattr(conversations_router, "dispatch_status", status)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+            message_id=message_id,
+        )
+    ]
+
+    # Even when the first safe observation has a route, the initial receipt
+    # stays targetless. A second authoritative observation may upgrade it.
+    assert _dispatch_receipts(events) == [
+        {"routed_butler": None},
+        {"routed_butler": "finance"},
+    ]
+    assert status.await_count == 2
+
+
+async def test_stream_receipt_upgrades_once_when_a_durable_route_appears(monkeypatch):
+    """A later route claim upgrades the targetless receipt exactly once."""
+    message_id = uuid4()
+    request_id = uuid4()
+    initial_status = _dashboard_turn_result("active", message_id=message_id, request_id=request_id)
+    durable_route = _dashboard_turn_result(
+        "active",
+        message_id=message_id,
+        request_id=request_id,
+        target_kind="route",
+        target_butler="finance",
+    )
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(request_id),
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "relationship",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(return_value=_dashboard_turn_result("dispatch", message_id=message_id)),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "bind_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "accepted", message_id=message_id, request_id=request_id
+            )
+        ),
+    )
+    status = AsyncMock(side_effect=[initial_status, durable_route, durable_route])
+    monkeypatch.setattr(conversations_router, "dispatch_status", status)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(side_effect=[None, _make_reply_row()])
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+    monkeypatch.setattr(conversations_router.asyncio, "sleep", AsyncMock())
+
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+            message_id=message_id,
+        )
+    ]
+
+    assert _dispatch_receipts(events) == [
+        {"routed_butler": None},
+        {"routed_butler": "finance"},
+    ]
+    # A third identical durable-route observation cannot duplicate the upgrade.
+    assert status.await_count == 3
+
+
+async def test_stream_does_not_emit_a_receipt_while_bind_ingress_is_cancelling(monkeypatch):
+    """A pending Stop after Switchboard acceptance is not a positive receipt."""
+    message_id = uuid4()
+    request_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(request_id),
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(return_value=_dashboard_turn_result("dispatch", message_id=message_id)),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "bind_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "cancelling", message_id=message_id, request_id=request_id
+            )
+        ),
+    )
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+            message_id=message_id,
+        )
+    ]
+
+    assert _dispatch_receipts(events) == []
+    assert any("INGEST_IN_PROGRESS" in event for event in events)
+
+
+async def test_stream_continues_reply_polling_when_bind_ingress_is_finished(monkeypatch):
+    """A fast durable completion has no receipt, but its reply remains readable."""
+    message_id = uuid4()
+    request_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(request_id),
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(return_value=_dashboard_turn_result("dispatch", message_id=message_id)),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "bind_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "finished",
+                message_id=message_id,
+                request_id=request_id,
+                target_kind="route",
+                target_butler="finance",
+            )
+        ),
+    )
+    status = AsyncMock(
+        return_value=_dashboard_turn_result(
+            "finished",
+            message_id=message_id,
+            request_id=request_id,
+            target_kind="route",
+            target_butler="finance",
+        )
+    )
+    monkeypatch.setattr(conversations_router, "dispatch_status", status)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+            message_id=message_id,
+        )
+    ]
+
+    assert _dispatch_receipts(events) == []
+    assert not any("TURN_OUTCOME_UNKNOWN" in event for event in events)
+    assert any("event: message_complete" in event for event in events)
+    # Initial status is observed for receipt safety, then polling continues
+    # normally until the already-persisted reply is found.
+    assert status.await_count == 2
+
+
 @pytest.mark.parametrize(
-    ("triage_decision", "triage_target", "expected_routed_butler"),
+    ("bind_outcome", "expected_code"),
     [
-        ("route_to", "relationship", "relationship"),
-        ("file_bug_report", None, None),
+        ("cancelled", "SESSION_CANCELLED"),
+        ("ambiguous", "TURN_OUTCOME_UNKNOWN"),
+        ("conflict", "SWITCHBOARD_ERROR"),
     ],
 )
-async def test_stream_conversation_response_emits_dispatch_accepted_truthfully(
-    triage_decision: str,
-    triage_target: str | None,
-    expected_routed_butler: str | None,
+async def test_stream_does_not_emit_a_receipt_for_terminal_or_conflicting_bind_outcomes(
+    monkeypatch,
+    bind_outcome: str,
+    expected_code: str,
 ):
-    """Accepted dispatches surface the actual domain route, if one exists.
+    """Only a durably active ingress can yield a current-turn receipt."""
+    message_id = uuid4()
+    request_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(request_id),
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(return_value=_dashboard_turn_result("dispatch", message_id=message_id)),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "bind_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                bind_outcome,
+                message_id=message_id,
+                request_id=request_id,
+            )
+        ),
+    )
+    status = AsyncMock()
+    monkeypatch.setattr(conversations_router, "dispatch_status", status)
 
-    A Switchboard acceptance is not itself a domain route.  The receipt must
-    therefore preserve the route target only for ``route_to`` decisions and
-    explicitly send ``null`` for accepted, non-routing decisions.
-    """
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+            message_id=message_id,
+        )
+    ]
+
+    assert _dispatch_receipts(events) == []
+    assert any(expected_code in event for event in events)
+    status.assert_not_awaited()
+
+
+async def test_stream_does_not_emit_a_receipt_without_an_immutable_message_id():
+    """Legacy streams cannot prove a durable current-turn receipt."""
     mock_client = MagicMock()
     mock_client.call_tool = AsyncMock(
         return_value=_FakeMcpResult(
             {
                 "request_id": str(uuid4()),
                 "status": "accepted",
-                "triage_decision": triage_decision,
-                "triage_target": triage_target,
+                "triage_decision": "route_to",
+                "triage_target": "relationship",
             }
         )
     )
-    mgr = _make_mcp_manager(mock_client)
-
     shared_pool = AsyncMock()
     shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
     shared_pool.execute = AsyncMock(return_value=None)
-
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = shared_pool
 
-    envelope = build_dashboard_envelope(
-        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=uuid4(),
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+        )
+    ]
+
+    assert _dispatch_receipts(events) == []
+
+
+async def test_reused_accepted_ingress_emits_one_targetless_durable_receipt(monkeypatch):
+    """An observer of accepted ingress reports only its durable target state."""
+    message_id = uuid4()
+    request_id = uuid4()
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "accepted",
+                message_id=message_id,
+                request_id=request_id,
+                target_kind="route",
+                target_butler="relationship",
+            )
+        ),
     )
-
-    events: list[str] = []
-    async for chunk in _stream_conversation_response(
-        request=_FakeRequest(),
-        butler_name=_SWITCHBOARD_BUTLER,
-        conversation_id=_CONV_ID,
-        message_created_at=_NOW - timedelta(seconds=1),
-        envelope=envelope,
-        db=mock_db,
-        mcp_mgr=mgr,
-    ):
-        events.append(chunk)
-
-    receipt_index = next(
-        index for index, event in enumerate(events) if "event: dispatch_accepted" in event
+    monkeypatch.setattr(
+        conversations_router,
+        "dispatch_status",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "active", message_id=message_id, request_id=request_id
+            )
+        ),
     )
-    token_index = next(index for index, event in enumerate(events) if "event: token" in event)
-    receipt = events[receipt_index]
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock()
 
-    assert receipt_index < token_index
-    assert f"data: {json.dumps({'routed_butler': expected_routed_butler})}" in receipt
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=mgr,
+            message_id=message_id,
+        )
+    ]
+
+    assert _dispatch_receipts(events) == [{"routed_butler": None}]
+    mgr.get_client.assert_not_awaited()
+
+
+async def test_stream_does_not_emit_a_receipt_when_durable_status_is_unavailable(monkeypatch):
+    """A failed status read cannot support even a targetless receipt."""
+    message_id = uuid4()
+    request_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(request_id),
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "relationship",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(return_value=_dashboard_turn_result("dispatch", message_id=message_id)),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "bind_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "accepted", message_id=message_id, request_id=request_id
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        conversations_router, "dispatch_status", AsyncMock(side_effect=RuntimeError())
+    )
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+            message_id=message_id,
+        )
+    ]
+
+    assert _dispatch_receipts(events) == []
+
+
+async def test_stream_does_not_emit_a_route_receipt_for_a_terminal_action(monkeypatch):
+    """Non-route terminal actions have their own truthful surface, not a receipt."""
+    message_id = uuid4()
+    request_id = uuid4()
+    terminal_action = _dashboard_turn_result(
+        "external_action_in_progress",
+        message_id=message_id,
+        request_id=request_id,
+        target_kind="bug_report",
+    )
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": str(request_id),
+                "status": "accepted",
+                "triage_decision": "file_bug_report",
+                "triage_target": None,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "claim_ingress",
+        AsyncMock(return_value=_dashboard_turn_result("dispatch", message_id=message_id)),
+    )
+    monkeypatch.setattr(
+        conversations_router,
+        "bind_ingress",
+        AsyncMock(
+            return_value=_dashboard_turn_result(
+                "accepted", message_id=message_id, request_id=request_id
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        conversations_router, "dispatch_status", AsyncMock(return_value=terminal_action)
+    )
+    shared_pool = AsyncMock()
+    shared_pool.fetchrow = AsyncMock(return_value=_make_reply_row())
+    shared_pool.execute = AsyncMock(return_value=None)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    events = [
+        chunk
+        async for chunk in _stream_conversation_response(
+            request=_FakeRequest(),
+            butler_name=_SWITCHBOARD_BUTLER,
+            conversation_id=_CONV_ID,
+            message_created_at=_NOW - timedelta(seconds=1),
+            envelope=build_dashboard_envelope(
+                conversation_id=_CONV_ID,
+                message_id=message_id,
+                message_text="hi",
+                pinned_target=None,
+            ),
+            db=mock_db,
+            mcp_mgr=_make_mcp_manager(mock_client),
+            message_id=message_id,
+        )
+    ]
+
+    assert _dispatch_receipts(events) == []
 
 
 async def test_stream_conversation_response_times_out_gracefully(monkeypatch):

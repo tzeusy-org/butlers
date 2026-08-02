@@ -37,21 +37,18 @@ pretends an effect was filed or cancelled when the system cannot establish that.
   effect, or silently collapse ambiguity into failure/success.
 - Add a generic question lane, first-token streaming, or a cross-channel reader.
 
-**Pre-signoff HOLD:** PR #3624 must first land at an independently verified
-current-base head. This delta must then rebase on its exact landing commit and
-fully reconcile the replaced `dashboard-chat-ui` → `SSE Client Integration`
-requirement, preserving or explicitly owner-approving supersession of every
-landed Stop clause, including immutable pre-conversation `message_id`, accessible
-pending intent, ingress/runtime fencing, terminal `SESSION_CANCELLED` SSE, and
-truthful non-calm failure. PR #3618's active dashboard Stop/SSE delta must also
-be rebased and reconciled with this change, or closed as superseded only after
-the owner dispositions each distinct guarantee: its truthful
-`dispatch_accepted` receipt and accessible routed-versus-targetless announcement,
-accountable routed-butler link, and non-destructive list/history read recovery.
-Retained guarantees MUST be transplanted into the surviving delta after #3618 no
-longer actively modifies the same main requirement; an omission needs an explicit
-owner rejection. The changes cannot define competing requirements for the same
-owner-visible cancellation path or silently discard a truthful UI behavior.
+**Reconciled dashboard UI boundary:** PR #3624's durable message-scoped
+authority is the current base. The owner approved retaining all #3618 guarantees
+and directed their reconciliation onto that base: the truthful
+`dispatch_accepted` routed-versus-targetless announcement, a current-turn-only
+accountable Butler link, and non-destructive conversation list/search/history
+recovery. The reconciled surface preserves every landed Stop clause, including
+immutable pre-conversation `message_id`, accessible pending intent,
+ingress/runtime fencing, terminal `SESSION_CANCELLED` SSE, and truthful
+non-calm failure. Those clauses now live in this active delta and its RFC/API
+contracts; the competing change is removed. This disposition does not sign off
+the terminal-action recovery implementation: its remaining RFC, migration,
+receipt, reconciliation, and canary HOLD gates stay in force.
 
 ## Decisions
 
@@ -211,6 +208,24 @@ projection; the UI invalidates/refetches that message and resumes only the
 appropriate bounded polling rather than opening a second SSE stream. Reconnect/
 reload reads the same durable object. The widget renders the durable result from
 that model.
+
+The current SSE may additionally carry a transient `dispatch_accepted` receipt
+for the immutable message that owns the stream. It is not a substitute for the
+durable read model or a terminal-action outcome. After `bind_ingress` returns
+`accepted` (or a prior accepted ingress is reused), its first safe active
+`dispatch_status` observation emits exactly `{"routed_butler": null}`, even
+when it already exposes `target_kind: "route"` and a non-empty
+`target_butler`. Only a separate later safe status observation may emit the one
+named upgrade, and the first observation never emits both events. It SHALL not
+use triage, sticky conversation history, or another message as receipt evidence,
+and SHALL not emit a receipt for legacy requests without immutable message
+identity, an unavailable/unsafe status observation, `cancelling`, a
+cancelled/ambiguous turn, or a terminal-action target. The UI uses the receipt
+only for the live turn's accessible pending announcement and optional named
+Butler link; a historical `conversation.routed_butler` never earns that link.
+List/search/history query errors remain errors with direct query retry, keeping
+cached same-thread data, draft, and selection while isolating optimistic messages
+to their owning conversation.
 
 The cancel endpoint returns a durable outcome of `cancelled`, `already_finished`,
 `pending_reconciliation`, or `ambiguous`. It persists action-level Stop intent

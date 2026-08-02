@@ -267,13 +267,14 @@ export function ConversationList({
       <div
         className={cn("flex-1 overflow-y-auto py-1", collapsed ? "px-1.5" : "px-2 space-y-0.5")}
       >
-        {readError ? (
+        {readError && (
           <ConversationReadError
             label={errorLabel}
             onRetry={() => void retryRead()}
             compact={collapsed}
           />
-        ) : loading ? (
+        )}
+        {loading && !readError ? (
           collapsed ? null : (
             <div className="space-y-1 px-1">
               {Array.from({ length: 4 }, (_, i) => (
@@ -282,7 +283,7 @@ export function ConversationList({
             </div>
           )
         ) : conversations.length === 0 ? (
-          collapsed ? null : (
+          readError || collapsed ? null : (
             <EmptyState
               variant="page"
               title="No conversations yet."
