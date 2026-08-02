@@ -64,7 +64,6 @@
   "src/components/secrets/passport/ProviderConfigDrawer.tsx": 1,
   "src/components/secrets/passport/WhatBreaks.tsx": 4,
   "src/components/settings/QaStafferCard.tsx": 2,
-  "src/components/switchboard/RegistryTable.tsx": 1,
   "src/components/switchboard/RoutingLogTable.tsx": 2,
   "src/pages/ApprovalsPage.tsx": 5,
   "src/pages/CalendarWorkspacePage.tsx": 18,

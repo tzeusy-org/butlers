@@ -8,6 +8,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
+import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -95,68 +96,88 @@ function normalizeModules(rawModules: unknown, depth = 0): string[] {
 // ---------------------------------------------------------------------------
 
 export default function RegistryTable() {
-  const { data: response, isLoading } = useRegistry();
+  const { data: response, isLoading, isError, error, refetch } = useRegistry();
 
-  const entries = response?.data ?? [];
+  const entries = response?.data;
+  const hasEntries = Boolean(entries?.length);
+
+  const table = (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Name</TableHead>
+          <TableHead>Endpoint</TableHead>
+          <TableHead>Modules</TableHead>
+          <TableHead>Description</TableHead>
+          <TableHead>Last Seen</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {isLoading ? (
+          <SkeletonRows />
+        ) : (
+          entries?.map((entry) => {
+            const modules = normalizeModules(entry.modules);
+
+            return (
+              <TableRow key={entry.name}>
+                <TableCell className="font-medium">{entry.name}</TableCell>
+                <TableCell>
+                  <code className="text-xs text-muted-foreground">
+                    {entry.endpoint_url}
+                  </code>
+                </TableCell>
+                <TableCell>
+                  <div className="flex flex-wrap gap-1">
+                    {modules.length > 0 ? (
+                      modules.map((mod, idx) => (
+                        <Badge key={`${mod}-${idx}`} variant="secondary" className="text-xs">
+                          {mod}
+                        </Badge>
+                      ))
+                    ) : (
+                      <span className="text-xs text-muted-foreground">{"\u2014"}</span>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="max-w-xs truncate text-sm text-muted-foreground">
+                  {entry.description ?? "\u2014"}
+                </TableCell>
+                <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                  {entry.last_seen_at
+                    ? <Time value={entry.last_seen_at} mode="relative" />
+                    : "\u2014"}
+                </TableCell>
+              </TableRow>
+            );
+          })
+        )}
+      </TableBody>
+    </Table>
+  );
 
   return (
-    <div className="space-y-4">
-      {!isLoading && entries.length === 0 ? (
-        <EmptyRegistryState />
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Endpoint</TableHead>
-              <TableHead>Modules</TableHead>
-              <TableHead>Description</TableHead>
-              <TableHead>Last Seen</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <SkeletonRows />
-            ) : (
-              entries.map((entry) => {
-                const modules = normalizeModules(entry.modules);
-
-                return (
-                  <TableRow key={entry.name}>
-                  <TableCell className="font-medium">{entry.name}</TableCell>
-                  <TableCell>
-                    <code className="text-xs text-muted-foreground">
-                      {entry.endpoint_url}
-                    </code>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-1">
-                      {modules.length > 0 ? (
-                        modules.map((mod, idx) => (
-                          <Badge key={`${mod}-${idx}`} variant="secondary" className="text-xs">
-                            {mod}
-                          </Badge>
-                        ))
-                      ) : (
-                        <span className="text-xs text-muted-foreground">{"\u2014"}</span>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="max-w-xs truncate text-sm text-muted-foreground">
-                    {entry.description ?? "\u2014"}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                    {entry.last_seen_at
-                      ? <Time value={entry.last_seen_at} mode="relative" />
-                      : "\u2014"}
-                  </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
-      )}
-    </div>
+    <QueryBoundary
+      isLoading={isLoading}
+      isError={isError && !hasEntries}
+      error={error}
+      isEmpty={!hasEntries}
+      onRetry={() => void refetch()}
+      sourceLabel="Switchboard registry"
+      loadingFallback={<div className="space-y-4">{table}</div>}
+      emptyFallback={<div className="space-y-4"><EmptyRegistryState /></div>}
+    >
+      <div className="space-y-4">
+        {isError && hasEntries && (
+          <SourceDegradedNote
+            label="Switchboard registry"
+            detail="Showing last known registry entries."
+            onRetry={() => void refetch()}
+            testId="registry-source-degraded"
+          />
+        )}
+        {table}
+      </div>
+    </QueryBoundary>
   );
 }
