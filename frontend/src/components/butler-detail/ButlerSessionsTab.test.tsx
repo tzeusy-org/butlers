@@ -230,6 +230,14 @@ describe("ButlerSessionsTab — SessionTable integration", () => {
     expect(stub.getAttribute("data-count")).toBe("2");
   });
 
+  it("keeps the existing empty session table visible for a successful empty response", () => {
+    setupEmpty();
+    renderTab();
+
+    expect(screen.getByTestId("session-table-stub").getAttribute("data-count")).toBe("0");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("renders a retryable alert instead of a calm session list on an initial query error", () => {
     const refetch = vi.fn();
     vi.mocked(useButlerSessions).mockReturnValue({
