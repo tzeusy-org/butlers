@@ -16,7 +16,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -228,6 +228,77 @@ describe("ButlerSessionsTab — SessionTable integration", () => {
     renderTab();
     const stub = screen.getByTestId("session-table-stub");
     expect(stub.getAttribute("data-count")).toBe("2");
+  });
+
+  it("keeps the existing empty session table visible for a successful empty response", () => {
+    setupEmpty();
+    renderTab();
+
+    expect(screen.getByTestId("session-table-stub").getAttribute("data-count")).toBe("0");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("renders a retryable alert instead of a calm session list on an initial query error", () => {
+    const refetch = vi.fn();
+    vi.mocked(useButlerSessions).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("Session service unavailable"),
+      refetch,
+    } as unknown as ReturnType<typeof useButlerSessions>);
+
+    renderTab();
+
+    expect(screen.getByRole("alert").textContent).toContain("Session service unavailable");
+    expect(screen.queryByTestId("session-table-stub")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledOnce();
+  });
+
+  it("renders a retryable alert rather than a calm empty table when a cached empty refetch fails", () => {
+    const refetch = vi.fn();
+    vi.mocked(useButlerSessions).mockReturnValue({
+      data: {
+        data: [],
+        meta: { total: 0, offset: 0, limit: 20, has_more: false },
+      },
+      isLoading: false,
+      isError: true,
+      error: new Error("Session service unavailable"),
+      refetch,
+    } as unknown as ReturnType<typeof useButlerSessions>);
+
+    renderTab();
+
+    expect(screen.getByRole("alert").textContent).toContain("Session service unavailable");
+    expect(screen.queryByTestId("session-table-stub")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps cached sessions visible and names a failed background refetch", () => {
+    const refetch = vi.fn();
+    vi.mocked(useButlerSessions).mockReturnValue({
+      data: {
+        data: [SESSION_1, SESSION_2],
+        meta: { total: 2, offset: 0, limit: 20, has_more: false },
+      },
+      isLoading: false,
+      isError: true,
+      error: new Error("Session service unavailable"),
+      refetch,
+    } as unknown as ReturnType<typeof useButlerSessions>);
+
+    renderTab();
+
+    expect(screen.getByTestId("session-table-stub").getAttribute("data-count")).toBe("2");
+    expect(screen.getByRole("alert").textContent).toContain("Showing last known sessions");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledOnce();
   });
 });
 
