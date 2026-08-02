@@ -311,28 +311,30 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
     expect(mockReauth).not.toHaveBeenCalled();
   });
 
-  it("routes spotify through the OAuth connect dance, not a stub drawer (bu-5gliy)", () => {
-    mockReauth.mockResolvedValue({
-      data: { redirect_url: "/oauth/spotify/start" },
-      meta: {},
-    } as never);
+  it("routes spotify to its connector drawer, not the generalized OAuth dance", () => {
+    // Reverses bu-5gliy. Spotify has two OAuth implementations: the connector
+    // PKCE flow (/api/connectors/spotify/oauth/*, client_id only) that the
+    // drawer drives and the registered Spotify app's redirect URIs point at,
+    // and the generalized confidential-client flow whose
+    // SPOTIFY_OAUTH_CLIENT_ID/SECRET were never provisioned. bu-5gliy pointed
+    // this pill at the latter, giving Spotify a connect button that could only
+    // fail. The drawer owns the control.
     renderAddPanel("entity-uuid-123");
     fireEvent.click(screen.getByText("connect provider"));
 
-    // Spotify is a first-class OAuth provider — offered as a "connect now" pill
-    // (like Google), and clicking it drives the reauthorize dance for "spotify".
-    const spotifyBtn = screen
-      .getByText(/connect spotify/i)
-      .closest("button") as HTMLButtonElement;
+    // Spotify sits with the other drawer integrations, labelled by name only —
+    // there is no "connect Spotify" OAuth pill.
+    expect(screen.queryByText(/connect spotify/i)).toBeNull();
+    const spotifyBtn = screen.getByText("Spotify").closest("button") as HTMLButtonElement;
     expect(spotifyBtn).toBeTruthy();
-    expect(spotifyBtn.disabled).toBe(false);
-    fireEvent.click(spotifyBtn);
-    expect(mockReauth).toHaveBeenCalledWith("spotify", "entity-uuid-123");
 
-    // It never opens the stub provider-config drawer.
+    fireEvent.click(spotifyBtn);
+
+    // Opens the provider-config drawer; never fires the generalized dance.
     expect(
       document.querySelector('[data-provider-connect-drawer="spotify"]'),
-    ).toBeNull();
+    ).toBeTruthy();
+    expect(mockReauth).not.toHaveBeenCalled();
   });
 
   it("connect Google button is enabled when ownerEntityId is provided", () => {

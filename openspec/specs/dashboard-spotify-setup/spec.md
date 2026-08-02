@@ -2,7 +2,7 @@
 
 ## Purpose
 
-A dedicated section on the Butlers dashboard settings page at `/butlers/settings` for linking, monitoring, and managing the user's Spotify account. Uses the OAuth 2.0 PKCE flow (no client secret required) for authorization. Modeled after the Google OAuth account management pattern: status card with health badge, account linking flow, and disconnect capability.
+The Spotify credential card on the Secrets passport (`/secrets?focus=u:spotify`) and its inline drawer, for linking, monitoring, and managing the user's Spotify account. Uses the OAuth 2.0 PKCE flow (no client secret required) for authorization. Modeled after the Google OAuth account management pattern: status card with health badge, account linking flow, and disconnect capability.
 
 ## Requirements
 
@@ -46,14 +46,14 @@ The dashboard SHALL implement the Spotify OAuth 2.0 Authorization Code with PKCE
 - **AND** the response SHALL contain `access_token`, `refresh_token`, `expires_in`, `token_type`, and `scope`
 - **AND** tokens SHALL be stored in `CredentialStore` under keys `SPOTIFY_ACCESS_TOKEN` and `SPOTIFY_REFRESH_TOKEN`
 - **AND** the token expiry time SHALL be stored under key `SPOTIFY_TOKEN_EXPIRES_AT`
-- **AND** the user SHALL be redirected back to the settings page with a success indicator
+- **AND** the user SHALL be redirected back to the Spotify credential card on `/secrets` (`?focus=u:spotify&toast=connected`) — the surface whose drawer starts this dance — using the same transient params the generalized OAuth callback emits, which the Secrets page surfaces as a toast and strips
 
 #### Scenario: OAuth error handling
 
 - **WHEN** Spotify redirects back with an `error` parameter (e.g., `access_denied`)
 - **THEN** the dashboard SHALL display a user-friendly error message
 - **AND** it SHALL NOT store any tokens
-- **AND** the user SHALL be redirected back to the settings page with the error displayed
+- **AND** the user SHALL be redirected back to the Spotify credential card on `/secrets` (`?focus=u:spotify&oauth_error=<code>`), the shared error param the Secrets page renders and strips
 
 #### Scenario: CSRF protection
 
@@ -100,12 +100,12 @@ The dashboard SHALL detect when existing tokens lack required scopes and prompt 
 
 ### Requirement: Connection Status Card
 
-The dashboard SHALL display a Spotify connection status card on the settings page.
+The dashboard SHALL display a Spotify connection status card on the Spotify credential card's drawer.
 
 #### Scenario: Connected state
 
 - **WHEN** the user has valid Spotify credentials stored
-- **THEN** the settings page SHALL display a `SpotifyStatusCard` showing:
+- **THEN** the drawer SHALL display a `SpotifyStatusCard` showing:
   - Connection status badge: "Connected" (green)
   - Spotify display name and account type (free/premium)
   - Last sync time (from connector heartbeat)
@@ -114,7 +114,7 @@ The dashboard SHALL display a Spotify connection status card on the settings pag
 #### Scenario: Disconnected state
 
 - **WHEN** no Spotify credentials are stored
-- **THEN** the settings page SHALL display the card with:
+- **THEN** the drawer SHALL display the card with:
   - Connection status badge: "Not connected" (grey)
   - "Connect Spotify" button (initiates OAuth flow)
   - Brief explanation of what Spotify integration provides
@@ -122,7 +122,7 @@ The dashboard SHALL display a Spotify connection status card on the settings pag
 #### Scenario: Error state
 
 - **WHEN** Spotify credentials are stored but the token refresh has failed
-- **THEN** the settings page SHALL display the card with:
+- **THEN** the drawer SHALL display the card with:
   - Connection status badge: "Error — re-authorization needed" (red)
   - "Re-connect" button (initiates fresh OAuth flow)
   - Error description
@@ -145,7 +145,7 @@ The dashboard SHALL expose REST API endpoints for Spotify account management.
 #### Scenario: OAuth callback endpoint
 
 - **WHEN** `GET /api/connectors/spotify/oauth/callback` is called with valid `code` and `state` parameters
-- **THEN** it SHALL perform the token exchange and redirect to the settings page
+- **THEN** it SHALL perform the token exchange and redirect to the Spotify credential card on `/secrets`
 
 #### Scenario: Disconnect endpoint
 

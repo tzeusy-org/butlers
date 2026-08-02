@@ -69,6 +69,7 @@ from butlers.api.models.spotify import (
     SpotifyOAuthStartResponse,
     SpotifyStatusResponse,
 )
+from butlers.core.credential_keys import normalize_credential_key
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -296,20 +297,32 @@ def _get_dashboard_url() -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _build_redirect_url(base_url: str, **params: str) -> str:
-    """Build a redirect URL by safely merging query parameters into *base_url*.
+def _secrets_redirect(base_url: str, **params: str) -> str:
+    """Build the post-callback redirect to the Spotify credential card.
 
-    Handles the case where *base_url* already contains query parameters by
-    parsing and merging (not concatenating), and URL-encodes all param values
-    to prevent query-string injection or malformed redirects.
+    The dance is driven from that card's drawer, so it is also where the user
+    is returned — with the same ``?toast=`` / ``?oauth_error=`` params the
+    generalized OAuth callback uses, which the Secrets page already surfaces as
+    a toast and strips. The dashboard root used to be the destination, flagged
+    with a ``spotify_connected=1`` param no frontend code ever read, which left
+    an authorization landing away from the surface that started it.
+
+    *base_url* is the frontend base (``OAUTH_DASHBOARD_URL``); any query it
+    already carries is preserved by merging rather than concatenating, and all
+    values are URL-encoded to prevent query-string injection.
     """
+    focus = normalize_credential_key("user", "spotify")
     parsed = urlparse(base_url)
     existing = parse_qs(parsed.query, keep_blank_values=True)
-    # Merge: new params overwrite existing ones with the same name
-    merged = {k: v[0] if len(v) == 1 else v for k, v in existing.items()}
+    merged: dict[str, Any] = {k: v[0] if len(v) == 1 else v for k, v in existing.items()}
+    merged["focus"] = focus
     merged.update(params)
-    new_query = urlencode(merged, doseq=True)
-    return urlunparse(parsed._replace(query=new_query))
+    return urlunparse(
+        parsed._replace(
+            path=parsed.path.rstrip("/") + "/secrets",
+            query=urlencode(merged, doseq=True),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -522,8 +535,11 @@ async def spotify_oauth_callback(
     """Handle Spotify's OAuth callback.
 
     Validates the CSRF state, exchanges the authorization code + PKCE
-    verifier for tokens, stores them in CredentialStore, and redirects
-    to the dashboard (or returns JSON if OAUTH_DASHBOARD_URL is not set).
+    verifier for tokens, stores them in CredentialStore, and redirects to the
+    Spotify credential card on /secrets — the surface whose drawer starts this
+    dance — carrying the same ``?toast=connected`` / ``?oauth_error=<code>``
+    params the generalized OAuth callback uses (see ``_secrets_redirect``).
+    Returns JSON instead if OAUTH_DASHBOARD_URL is not set.
 
     Spotify sends ``?error=access_denied`` if the user cancels authorization.
     """
@@ -534,7 +550,7 @@ async def spotify_oauth_callback(
         logger.warning("Spotify OAuth returned error: %s", error)
         if dashboard_url:
             return RedirectResponse(
-                url=_build_redirect_url(dashboard_url, spotify_error=error),
+                url=_secrets_redirect(dashboard_url, oauth_error=error),
                 status_code=302,
             )
         raise HTTPException(
@@ -652,7 +668,7 @@ async def spotify_oauth_callback(
 
     if dashboard_url:
         return RedirectResponse(
-            url=_build_redirect_url(dashboard_url, spotify_connected="1"),
+            url=_secrets_redirect(dashboard_url, toast="connected"),
             status_code=302,
         )
 

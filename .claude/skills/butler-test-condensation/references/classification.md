@@ -2,6 +2,14 @@
 
 Use this to decide keep/delete/rewrite for every test during condensation.
 
+> The project-agnostic core of this matrix (decision tree, plumbing-vs-contract
+> litmus, contract archetypes, structural-vs-behavioral rule) is now canonical in
+> `~/.dotfiles/ai-bootstrap/skills/personal/th-engineering/subskills/test-rigor/references/condensation-classification.md`.
+> This file keeps the Butlers-specific bindings: the tier mapping (steps 5–7),
+> the named invariants/RFCs, the codebase's contract-archetype instances, the
+> "MCP tool interface" definitions, and the marker table. If the general doc and
+> this file disagree on a general rule, fix this file.
+
 ## Quick Decision Tree
 
 For each `def test_*` function, walk this tree:

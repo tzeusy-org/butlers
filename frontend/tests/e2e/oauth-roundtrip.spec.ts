@@ -6,7 +6,8 @@
  *      browser navigates → callback URL (mocked) redirects to
  *      /secrets?focus=u:google&toast=connected → ?toast= is stripped (effect fired).
  *
- *   2. Spotify: Same roundtrip for the Spotify provider.
+ *   2. (removed) Spotify used to run the same roundtrip; it now authorizes
+ *      through the connector PKCE flow instead — see the note at section 2.
  *
  *   3. Error path: callback returns oauth_error → ?oauth_error= is stripped
  *      (warning-toast effect fired).
@@ -316,58 +317,17 @@ test("oauth roundtrip: google re-authorize click → redirect → callback → t
 });
 
 // ---------------------------------------------------------------------------
-// 2. Spotify OAuth roundtrip
+// 2. (Spotify roundtrip removed)
+//
+// Spotify no longer uses the generalized /oauth/<provider>/start dance. It
+// authorizes through the connector PKCE flow (POST
+// /api/connectors/spotify/oauth/start → the provider's own authorization URL →
+// /api/connectors/spotify/oauth/callback), which is what the registered Spotify
+// app's redirect URIs point at. The generalized roundtrip and its ?toast=
+// stripping are covered by the Google tests above and below; that the Spotify
+// commit pill fires the connector start is covered in
+// secrets-passport-parity.spec.ts.
 // ---------------------------------------------------------------------------
-
-test("oauth roundtrip: spotify re-authorize → callback → toast-connected strips param", async ({
-  page,
-}) => {
-  await mockSecretsRoutes(page);
-
-  await page.route("**/api/secrets/user/spotify/reauthorize**", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          redirect_url: "/oauth/spotify/callback?code=stub-spotify-code&state=stub-state",
-        },
-      }),
-    });
-  });
-
-  // Spotify callback → success redirect.
-  await page.route("**/api/oauth/spotify/callback**", (route) => {
-    route.fulfill({
-      status: 302,
-      headers: {
-        Location: "/secrets?focus=u:spotify&toast=connected",
-      },
-    });
-  });
-
-  await page.goto("/secrets?focus=u:spotify", { timeout: 10_000 });
-  await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({
-    timeout: 8_000,
-  });
-  await expect(page.locator('[data-page="user"]')).toBeAttached({ timeout: 5_000 });
-  await expect(page.locator('[data-provider="spotify"]')).toBeAttached({ timeout: 5_000 });
-
-  const reauthorizeBtn = page.getByRole("button", { name: /re-authorize/i });
-  await expect(reauthorizeBtn).toBeAttached({ timeout: 5_000 });
-
-  const roundtrip = waitForOAuthRoundtripComplete(
-    page,
-    "/api/oauth/spotify/callback",
-    "u:spotify",
-    "toast",
-    "connected",
-  );
-
-  await reauthorizeBtn.click();
-
-  await roundtrip;
-});
 
 // ---------------------------------------------------------------------------
 // 3. Error path: callback returns oauth_error → warning effect fires

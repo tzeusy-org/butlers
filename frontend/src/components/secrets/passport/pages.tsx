@@ -79,6 +79,7 @@ import {
   useDisconnectAccount,
 } from "@/hooks/use-secrets.ts";
 import { useDisconnectGoogleHealth, useGoogleHealthStatus } from "@/hooks/use-google-health.ts";
+import { useSpotifyOAuthStart } from "@/hooks/use-spotify.ts";
 import {
   getGoogleOAuthStartUrl,
   googleHealthScopeFamily,
@@ -104,6 +105,7 @@ const GOOGLE_APP_KEYS = new Set(["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_
 function isGoogleAppCredential(credential: SystemCredential): boolean {
   return GOOGLE_APP_KEYS.has(credential.key);
 }
+
 
 // Display names for the known system-credential consumers (bu-aqoiq). These
 // are the module/subsystem labels emitted by the backend's _SYSTEM_KEY_USED_BY
@@ -1177,6 +1179,15 @@ export function PageUser({
   const isOauth = provider.kind === "oauth";
   const isWebhook = provider.kind === "webhook";
   const isTelegramSession = provider.id === "telegram_bot";
+  // Spotify authorizes through the connector's PKCE flow
+  // (POST /api/connectors/spotify/oauth/start — client_id only, no client
+  // secret), which is what the registered Spotify app's redirect URIs point at
+  // and what is connected today. The generalized /oauth/<provider>/start dance
+  // has its own `spotify` registry entry, but that is a confidential-client
+  // flow whose SPOTIFY_OAUTH_CLIENT_ID/SECRET were never provisioned — pointing
+  // this card's commit pill there (bu-5gliy) gave Spotify a connect button that
+  // could only fail. The pill stays; the flow behind it changes.
+  const usesConnectorOAuth = provider.id === "spotify";
   const isMissing = credential.state === "never_set";
   const sick = credential.state !== "ok" && credential.state !== "never_set";
   const provenance = userSecretProvenanceForTypes(credential.sourceTypes);
@@ -1184,7 +1195,9 @@ export function PageUser({
   // ── Reauthorize / Connect ───────────────────────────────────────────────────
   // Both "re-authorize" (expired/revoked) and "connect" (never_set) flow through
   // the same endpoint — POST /api/secrets/user/<provider>/reauthorize — which
-  // initiates the OAuth dance and returns a redirect_url.
+  // initiates the OAuth dance and returns a redirect_url. Connector-OAuth
+  // providers (see usesConnectorOAuth) take their own start endpoint instead.
+  const spotifyOAuthStart = useSpotifyOAuthStart();
   const [reauthPending, setReauthPending] = React.useState(false);
   const [reauthError, setReauthError] = React.useState<string | null>(null);
   // Honest "not yet available" notice: the backend returns HTTP 501 when a
@@ -1199,6 +1212,16 @@ export function PageUser({
     setReauthError(null);
     setReauthNotAvailable(null);
     try {
+      if (usesConnectorOAuth) {
+        // Connector PKCE flow: the start call returns the provider's own
+        // authorization URL (absolute), so there is no API path to resolve.
+        const started = await spotifyOAuthStart.mutateAsync();
+        if (!started?.authorization_url) {
+          throw new Error("No authorization URL returned from the server.");
+        }
+        window.location.href = started.authorization_url;
+        return;
+      }
       const resp = await reauthorizeUserCredential(credential.provider, credential.identity);
       // Follow the returned redirect_url to begin the OAuth dance.
       if (!resp?.data?.redirect_url) {
@@ -3157,22 +3180,31 @@ export function PassportEmptyState() {
 // Static provider collections — module-scope so they are not re-allocated on
 // every PassportAddPanel render.
 // Providers served by real provider-config drawers (bu-ayp6v.8/.9).
-const DRAWER_PROVIDER_SLUGS = new Set(["homeassistant", "owntracks", "steam", "whatsapp"]);
+const DRAWER_PROVIDER_SLUGS = new Set([
+  "homeassistant",
+  "owntracks",
+  "spotify",
+  "steam",
+  "whatsapp",
+]);
 
 // Providers connected via the generalized OAuth dance (reauthorizeUserCredential
-// → /api/oauth/<provider>/start). spotify is a first-class OAuth provider
-// (secrets_provider_catalog kind=oauth; oauth.py _PROVIDER_REGISTRY has its real
-// auth/token URLs), so the add panel connects it like google rather than the
-// stub drawer (bu-5gliy). The connected-Spotify reconfigure/disconnect surface
-// (SpotifyDrawer) still lives on PageUser.
-const OAUTH_PROVIDERS = [
-  { slug: "google", label: "Google" },
-  { slug: "spotify", label: "Spotify" },
-];
+// → /oauth/<provider>/start).
+//
+// Spotify is deliberately NOT here. It has its own complete OAuth
+// implementation — the connector PKCE flow at /api/connectors/spotify/oauth/*,
+// client_id only, no client secret — and that is the flow the registered
+// Spotify app's redirect URIs point at. The generalized router's `spotify`
+// registry entry is a confidential-client flow needing
+// SPOTIFY_OAUTH_CLIENT_ID/SECRET, which were never provisioned; routing this
+// pill there (bu-5gliy) gave Spotify a connect button that could only fail.
+// SpotifyDrawer owns the control, on this panel and on PageUser.
+const OAUTH_PROVIDERS = [{ slug: "google", label: "Google" }];
 
 const STUB_PROVIDERS = [
   { slug: "homeassistant", label: "Home Assistant" },
   { slug: "owntracks", label: "OwnTracks" },
+  { slug: "spotify", label: "Spotify" },
   { slug: "steam", label: "Steam" },
   { slug: "whatsapp", label: "WhatsApp" },
 ];
@@ -3783,9 +3815,10 @@ export function PassportAddPanel({
               ))}
             </div>
 
-            {/* Real provider-config drawers for HA / OwnTracks / Steam / WhatsApp.
-                Spotify is no longer here — it connects via the OAuth dance above
-                (bu-5gliy); its reconfigure/disconnect drawer lives on PageUser. */}
+            {/* Real provider-config drawers for HA / OwnTracks / Spotify / Steam
+                / WhatsApp. Spotify is back here: its connect flow is the
+                connector PKCE dance the drawer drives, not the generalized
+                /oauth/<provider>/start one. */}
             {providerSlug !== null && DRAWER_PROVIDER_SLUGS.has(providerSlug) && (
               <div className="mt-3" data-provider-connect-drawer={providerSlug}>
                 {providerSlug === "homeassistant" && (
@@ -3793,6 +3826,9 @@ export function PassportAddPanel({
                 )}
                 {providerSlug === "owntracks" && (
                   <OwnTracksDrawer onClose={() => setProviderSlug(null)} />
+                )}
+                {providerSlug === "spotify" && (
+                  <SpotifyDrawer onClose={() => setProviderSlug(null)} />
                 )}
                 {providerSlug === "steam" && (
                   <SteamDrawer onClose={() => setProviderSlug(null)} />
