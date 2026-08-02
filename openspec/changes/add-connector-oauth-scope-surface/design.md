@@ -52,7 +52,7 @@ And the binding component contract (`ScopeList`):
 The existing specs only cover this for Google specifically
 (`google-multi-account-oauth/spec.md:84-120`, `google-account-registry/spec.md:150-162`)
 and for Spotify within a narrow dashboard-setup card
-(`dashboard-spotify-setup/spec.md:84-99`). Neither generalizes to the
+(`dashboard-spotify-setup/spec.md:86-102`). Neither generalizes to the
 connector-list-and-detail surface the redesign demands, neither defines a
 shared `auth.status` enum, neither defines the per-scope `serif_note` field,
 and neither defines what happens to connectors that have no OAuth surface at
@@ -636,7 +636,7 @@ populated `auth.status` on first introspection after the deploy.
 - Spotify connector OAuth scopes (manifest reference) —
   `openspec/specs/connector-spotify/spec.md:229-247`
 - Spotify dashboard `needs_reauth` pattern —
-  `openspec/specs/dashboard-spotify-setup/spec.md:84-99`
+  `openspec/specs/dashboard-spotify-setup/spec.md:86-102`
 - Credential masking contract —
   `openspec/specs/core-credentials/spec.md:52-99`
 - Non-OAuth connector references for applicability matrix —

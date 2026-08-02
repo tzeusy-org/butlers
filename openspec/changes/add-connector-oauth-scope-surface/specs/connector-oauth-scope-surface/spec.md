@@ -788,7 +788,7 @@ SHALL be uniform regardless of provider.
 - Spotify connector OAuth scope declaration —
   `openspec/specs/connector-spotify/spec.md:229-247`
 - Spotify dashboard's `needs_reauth` pattern this spec generalizes —
-  `openspec/specs/dashboard-spotify-setup/spec.md:84-99`
+  `openspec/specs/dashboard-spotify-setup/spec.md:86-102`
 - Credential storage contract this spec must not contradict —
   `openspec/specs/core-credentials/spec.md:52-99,200-223`
 - Non-OAuth connector references for applicability matrix —

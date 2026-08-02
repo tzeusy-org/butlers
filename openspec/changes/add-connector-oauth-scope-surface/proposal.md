@@ -244,7 +244,7 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 - Spotify connector OAuth scope declaration —
   `openspec/specs/connector-spotify/spec.md:229-247`
 - Spotify dashboard's existing `needs_reauth` pattern —
-  `openspec/specs/dashboard-spotify-setup/spec.md:84-99`
+  `openspec/specs/dashboard-spotify-setup/spec.md:86-102`
 - Connector base spec (extension target) —
   `openspec/specs/connector-base-spec/spec.md:381-419`
 - Credential masking contract (must not contradict) —
