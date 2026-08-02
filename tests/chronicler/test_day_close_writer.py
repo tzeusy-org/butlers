@@ -581,6 +581,67 @@ async def test_write_day_close_cache_records_coverage_witness(fake_pool, mock_up
 
 
 @pytest.mark.parametrize(
+    ("field", "missing"),
+    [
+        ("episodes", True),
+        ("events", True),
+        ("episodes", False),
+        ("events", False),
+    ],
+    ids=["missing-episodes", "missing-events", "nonlist-episodes", "nonlist-events"],
+)
+async def test_write_day_close_cache_requires_list_shaped_bundle_evidence_for_coverage(
+    fake_pool, mock_upsert, field: str, missing: bool
+) -> None:
+    """Malformed bundle evidence cannot prove a closed local day."""
+    capture = _canonical_bundle_call("2026-04-24")
+    if missing:
+        del capture["result"][field]
+    else:
+        capture["result"][field] = {"unexpected": "shape"}
+    result = MagicMock()
+    result.success = True
+    result.output = ""
+    result.tool_calls = [capture]
+
+    outcome = await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
+        tz="UTC",
+    )
+
+    assert outcome is None
+    mock_upsert.assert_not_awaited()
+    fake_pool._conn.execute.assert_not_awaited()
+
+
+async def test_write_day_close_cache_records_coverage_for_nonempty_list_bundle_without_prose(
+    fake_pool, mock_upsert
+) -> None:
+    """A blank render does not invalidate list-shaped evidence of a closed day."""
+    result = MagicMock()
+    result.success = True
+    result.output = ""
+    result.tool_calls = [
+        _canonical_bundle_call("2026-04-24", episodes=[{"source_ref": "core.sessions:1"}])
+    ]
+
+    outcome = await write_day_close_cache(
+        fake_pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=datetime(2026, 4, 25, 1, 5, 0, tzinfo=UTC),
+        tz="UTC",
+    )
+
+    assert outcome is None
+    mock_upsert.assert_not_awaited()
+    assert fake_pool._conn.execute.await_count == 1
+
+
+@pytest.mark.parametrize(
     "tool_calls",
     [
         [],

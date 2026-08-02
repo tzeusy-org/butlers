@@ -282,6 +282,16 @@ def _is_empty_bundle_result(capture: dict[str, Any]) -> bool:
     return isinstance(episodes, list) and not episodes and isinstance(events, list) and not events
 
 
+def _has_list_shaped_bundle_evidence(capture: dict[str, Any]) -> bool:
+    """Return whether a validated capture carries both evidence collections."""
+    result_raw = capture.get("result")
+    return (
+        isinstance(result_raw, dict)
+        and isinstance(result_raw.get("episodes"), list)
+        and isinstance(result_raw.get("events"), list)
+    )
+
+
 def _compute_day_window(
     run_at: datetime, tz: str | ZoneInfo = "UTC"
 ) -> tuple[date, datetime, datetime]:
@@ -324,11 +334,12 @@ async def write_day_close_cache(
 
     Records a covered-local-day witness (``editorial.record_coverage_witness``)
     only after exactly one successful canonical ``chronicler_day_close_bundle``
-    capture binds dict input/result values to the target date and timezone. A
-    valid empty capture still records coverage before the empty-output return,
-    so a genuinely quiet closed day remains distinct from one never chronicled.
-    Legacy date-label extraction remains cache-admission compatibility only and
-    cannot prove coverage.
+    capture binds dict input/result values to the target date and timezone and
+    carries list-shaped ``episodes`` and ``events`` evidence. A valid empty
+    capture still records coverage before the empty-output return, so a
+    genuinely quiet closed day remains distinct from one never chronicled.
+    Legacy date-label extraction remains cache-admission compatibility only
+    and cannot prove coverage.
 
     The tier2_cache prose write is separately gated by the deterministic
     day-close admission predicate (``prose_admission.classify_day_close_candidate``):
@@ -395,7 +406,7 @@ async def write_day_close_cache(
         target_timezone=tz_name,
     )
 
-    if validated_capture is not None:
+    if validated_capture is not None and _has_list_shaped_bundle_evidence(validated_capture):
         try:
             await record_coverage_witness(pool, day_date, tz_name)
         except Exception:
@@ -404,7 +415,8 @@ async def write_day_close_cache(
             )
     else:
         logger.debug(
-            "day_close_writer: no canonical coverage capture for %s; witness not recorded",
+            "day_close_writer: no list-shaped canonical coverage capture for %s; "
+            "witness not recorded",
             day_date.isoformat(),
         )
 

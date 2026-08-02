@@ -253,7 +253,12 @@ async def test_compose_quiet_for_covered_empty_day(pool) -> None:
                 "name": "chronicler_day_close_bundle",
                 "input": {"date_label": "2026-05-05", "timezone": "UTC"},
                 "outcome": "success",
-                "result": {"date": "2026-05-04", "citations": []},
+                "result": {
+                    "date": "2026-05-04",
+                    "citations": [],
+                    "episodes": [],
+                    "events": [],
+                },
             }
         ],
         [
@@ -261,11 +266,66 @@ async def test_compose_quiet_for_covered_empty_day(pool) -> None:
                 "name": "chronicler_day_close_bundle",
                 "input": {"date_label": "2026-05-01", "timezone": "UTC"},
                 "outcome": "success",
-                "result": {"date": "2026-05-01", "citations": []},
+                "result": {
+                    "date": "2026-05-01",
+                    "citations": [],
+                    "episodes": [],
+                    "events": [],
+                },
+            }
+        ],
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": "2026-05-05", "timezone": "UTC"},
+                "outcome": "success",
+                "result": {"date": "2026-05-05", "citations": [], "events": []},
+            }
+        ],
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": "2026-05-05", "timezone": "UTC"},
+                "outcome": "success",
+                "result": {"date": "2026-05-05", "citations": [], "episodes": []},
+            }
+        ],
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": "2026-05-05", "timezone": "UTC"},
+                "outcome": "success",
+                "result": {
+                    "date": "2026-05-05",
+                    "citations": [],
+                    "episodes": {"unexpected": "shape"},
+                    "events": [],
+                },
+            }
+        ],
+        [
+            {
+                "name": "chronicler_day_close_bundle",
+                "input": {"date_label": "2026-05-05", "timezone": "UTC"},
+                "outcome": "success",
+                "result": {
+                    "date": "2026-05-05",
+                    "citations": [],
+                    "episodes": [],
+                    "events": {"unexpected": "shape"},
+                },
             }
         ],
     ],
-    ids=["no-bundle", "wrong-date", "historical-mismatch"],
+    ids=[
+        "no-bundle",
+        "wrong-date",
+        "historical-mismatch",
+        "missing-episodes",
+        "missing-events",
+        "nonlist-episodes",
+        "nonlist-events",
+    ],
 )
 async def test_unproven_day_close_capture_leaves_historical_briefing_unavailable(
     pool, tool_calls
@@ -306,7 +366,12 @@ async def test_valid_empty_canonical_day_close_capture_makes_historical_briefing
                 "name": "chronicler_day_close_bundle",
                 "input": {"date_label": "2026-05-05", "timezone": "UTC"},
                 "outcome": "success",
-                "result": {"date": "2026-05-05", "citations": []},
+                "result": {
+                    "date": "2026-05-05",
+                    "citations": [],
+                    "episodes": [],
+                    "events": [],
+                },
             }
         ],
     )

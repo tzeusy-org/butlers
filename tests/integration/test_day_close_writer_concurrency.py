@@ -56,7 +56,12 @@ def _result(*, prose: str, date_label: str) -> SimpleNamespace:
                 "name": "chronicler_day_close_bundle",
                 "input": {"date_label": date_label, "timezone": "UTC"},
                 "outcome": "success",
-                "result": {"date": date_label, "citations": []},
+                "result": {
+                    "date": date_label,
+                    "citations": [],
+                    "episodes": [],
+                    "events": [],
+                },
             }
         ],
     )
