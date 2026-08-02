@@ -5042,7 +5042,7 @@ export function saveSpotifyConfig(data: SpotifyConfigRequest): Promise<SpotifyCo
   });
 }
 
-/** POST /api/spotify/disconnect — remove all Spotify credentials */
+/** POST /api/connectors/spotify/disconnect — clear locally stored OAuth tokens and scopes */
 export function disconnectSpotify(): Promise<SpotifyDisconnectResponse> {
   return apiFetch<SpotifyDisconnectResponse>("/connectors/spotify/disconnect", {
     method: "POST",

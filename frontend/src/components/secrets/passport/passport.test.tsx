@@ -16,6 +16,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { fireEvent, render } from "@testing-library/react";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -173,6 +174,17 @@ function renderInRouter(element: React.ReactElement, initialEntries: string[] = 
     defaultOptions: { queries: { retry: false } },
   });
   return renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderInDomRouter(element: React.ReactElement, initialEntries: string[] = ["/secrets"]) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
     </QueryClientProvider>,
@@ -1367,6 +1379,19 @@ describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
   it("renders disconnect action when configured", () => {
     const html = renderInRouter(<SpotifyDrawerContent />);
     expect(html).toContain("disconnect");
+  });
+
+  it("says disconnect clears local auth state and keeps the configured client ID", () => {
+    const { getByRole, getByText, unmount } = renderInDomRouter(<SpotifyDrawerContent />);
+
+    fireEvent.click(getByRole("button", { name: /^disconnect$/i }));
+
+    expect(
+      getByText(
+        "Disconnect Spotify? Clears locally stored access and refresh tokens, plus locally recorded scopes. Your client ID remains configured.",
+      ),
+    ).toBeTruthy();
+    unmount();
   });
 
   it("renders red error-state card when token refresh failed (state=error)", async () => {

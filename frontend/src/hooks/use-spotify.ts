@@ -78,7 +78,8 @@ export function useSpotifyOAuthStart() {
  * Disconnect the Spotify account.
  *
  * On success, invalidates all Spotify queries so the settings card
- * transitions to the not_configured state.
+ * transitions to the needs_auth state after local credential cleanup while
+ * retaining the configured client ID.
  */
 export function useSpotifyDisconnect() {
   const queryClient = useQueryClient();

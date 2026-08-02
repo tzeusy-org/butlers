@@ -28,7 +28,8 @@ The bootstrap flow:
      - Returns SpotifyConnectionState plus user info.
 
   5. POST /api/connectors/spotify/disconnect
-     - Deletes all Spotify credential keys from CredentialStore.
+     - Clears locally stored OAuth tokens and recorded scopes while preserving
+       client_id for a later reconnect; it does not revoke access at Spotify.
 
 Environment variables:
   SPOTIFY_OAUTH_REDIRECT_URI  — Callback URL registered with Spotify
@@ -767,11 +768,12 @@ async def get_spotify_status(
 async def disconnect_spotify(
     db_manager: Any = Depends(_get_db_manager),
 ) -> SpotifyDisconnectResponse:
-    """Revoke Spotify credentials and delete all tokens from CredentialStore.
+    """Clear locally stored Spotify OAuth state from CredentialStore.
 
-    Deletes SPOTIFY_ACCESS_TOKEN, SPOTIFY_REFRESH_TOKEN, and
-    SPOTIFY_TOKEN_EXPIRES_AT. Preserves SPOTIFY_CLIENT_ID so the user
-    does not need to re-enter it when reconnecting.
+    Deletes SPOTIFY_ACCESS_TOKEN, SPOTIFY_REFRESH_TOKEN,
+    SPOTIFY_TOKEN_EXPIRES_AT, and SPOTIFY_GRANTED_SCOPES. Preserves
+    SPOTIFY_CLIENT_ID so the user does not need to re-enter it when reconnecting.
+    Does not call Spotify or revoke provider-side authorization.
 
     Returns success=True even when no credentials were stored (idempotent).
     """

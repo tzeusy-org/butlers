@@ -322,6 +322,37 @@ class TestSpotifyAPI:
         assert resp.status_code == 200
         assert resp.json() == {"disconnected": True}
 
+    async def test_disconnect_preserves_client_id_while_clearing_local_oauth_state(
+        self, monkeypatch
+    ):
+        """Disconnect clears local token/scope rows but leaves reconnect configuration intact."""
+        from butlers.api.routers import spotify as spotify_router
+
+        deleted_keys: list[str] = []
+
+        class _CredentialStore:
+            async def delete(self, key: str) -> bool:
+                deleted_keys.append(key)
+                return True
+
+        monkeypatch.setattr(
+            spotify_router, "_make_credential_store", lambda _db: _CredentialStore()
+        )
+        app = self._make_app(access_token="tok-abc")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/connectors/spotify/disconnect")
+
+        assert resp.status_code == 200
+        assert deleted_keys == [
+            "SPOTIFY_ACCESS_TOKEN",
+            "SPOTIFY_REFRESH_TOKEN",
+            "SPOTIFY_TOKEN_EXPIRES_AT",
+            "SPOTIFY_GRANTED_SCOPES",
+        ]
+        assert "SPOTIFY_CLIENT_ID" not in deleted_keys
+
 
 # ---------------------------------------------------------------------------
 # Modules API — unreachable butler returns gracefully

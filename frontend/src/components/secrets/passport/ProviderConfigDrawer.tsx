@@ -1208,7 +1208,7 @@ export function SpotifyDrawerContent() {
           data-spotify-disconnect-confirm="true"
         >
           <Mono size={11} color="var(--red)">
-            Disconnect Spotify? Removes client ID, access token, and refresh token.
+            Disconnect Spotify? Clears locally stored access and refresh tokens, plus locally recorded scopes. Your client ID remains configured.
           </Mono>
           {disconnectMutation.error && (
             <Mono size={11} color="var(--red)">

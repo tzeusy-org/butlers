@@ -2666,7 +2666,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Error: re-authorization needed
 - spotify · client id
 - from developer.spotify.com/dashboard
-- Disconnect Spotify? Removes client ID, access token, and refresh token.
+- Disconnect Spotify? Clears locally stored access and refresh tokens, plus locally recorded scopes. Your client ID remains configured.
 - whatsapp · scan qr code to pair
 - paired successfully
 - qr code expired, try again
