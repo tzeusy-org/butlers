@@ -54,6 +54,37 @@ class _DbManager:
         assert butler_name == "relationship"
         return self._pool
 
+    def butlers_with_module(self, module_name: str) -> list[str] | None:
+        """Describe known fixture capabilities without turning unknown into absent."""
+        if module_name == "approvals":
+            return self.butler_names
+        if module_name == "memory":
+            return []
+        return None
+
+
+async def test_fixture_skips_decision_memory_writer_when_memory_is_known_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The core-plus-approvals fixture must not fall back to roster memory config."""
+
+    def _unexpected_settings_lookup(_butler_name: str) -> Any:
+        raise AssertionError("known absent memory must skip decision-memory settings")
+
+    monkeypatch.setattr(
+        approvals_router,
+        "_decision_memory_settings_for",
+        _unexpected_settings_lookup,
+    )
+
+    db_mgr = _DbManager(object())
+    assert db_mgr.butlers_with_module("approvals") == ["relationship"]
+    assert db_mgr.butlers_with_module("memory") == []
+    assert db_mgr.butlers_with_module("calendar") is None
+    writer = approvals_router._decision_memory_writer_for(db_mgr, "relationship", object())
+
+    assert writer is None
+
 
 class _ExecutingButlerClient:
     """Expose the real owning-butler executor through the MCP dispatch seam."""
