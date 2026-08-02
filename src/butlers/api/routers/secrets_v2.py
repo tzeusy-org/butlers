@@ -401,7 +401,8 @@ class UserSecretDetail(BaseModel):
     """Full evidence payload for a single user credential.
 
     Returned by GET /api/secrets/user/<provider>.
-    Fields without a DB column yet are nullable and default to None/[].
+    Fields with an authoritative source are populated; unavailable evidence
+    remains nullable or empty rather than fabricated.
     """
 
     # Identity
@@ -421,7 +422,8 @@ class UserSecretDetail(BaseModel):
     last_verified: datetime | None = None
     last_used: datetime | None = None  # not yet persisted
 
-    # Scope inventory (not yet persisted)
+    # Scope inventory. Required scopes come from the feature catalogue; granted
+    # scopes are tracked per credential only for Google.
     scopes_required: list[str] = Field(default_factory=list)
     scopes_granted: list[str] = Field(default_factory=list)
 
@@ -871,6 +873,7 @@ async def _fetch_audit_bulk(
     targets: list[str],
     *,
     limit: int = _INVENTORY_AUDIT_LIMIT,
+    raise_on_failure: bool = False,
 ) -> dict[str, list[dict]]:
     """Fetch the most recent audit rows for each canonical target in one query.
 
@@ -887,8 +890,13 @@ async def _fetch_audit_bulk(
     from the dict — callers should treat a missing key as "no audit rows"
     rather than fabricate an empty placeholder with different semantics.
 
-    Silently returns an empty dict when ``public.audit_log`` does not exist
-    (migration not yet run) or when ``targets`` is empty.
+    The inventory retains its existing best-effort behavior. A single
+    credential's evidence page sets ``raise_on_failure`` so a source failure
+    is never rendered as a truthful empty audit history.
+
+    Returns an empty dict when ``targets`` is empty. With
+    ``raise_on_failure=False`` (the inventory default), it also returns an
+    empty dict when ``public.audit_log`` does not exist yet.
     """
     if not targets:
         return {}
@@ -909,11 +917,19 @@ async def _fetch_audit_bulk(
             targets,
             limit,
         )
-    except UndefinedTableError:
+    except UndefinedTableError as exc:
+        if raise_on_failure:
+            raise _AuditSourceUnavailableError from exc
         return {}
     except PostgresError as exc:
+        if raise_on_failure:
+            raise _AuditSourceUnavailableError from exc
         logger.debug("audit_log bulk lookup failed for targets=%s: %s", targets, exc)
         return {}
+    except Exception as exc:  # noqa: BLE001
+        if raise_on_failure:
+            raise _AuditSourceUnavailableError from exc
+        raise
 
     result: dict[str, list[dict]] = {}
     for row in rows:
@@ -1198,6 +1214,10 @@ class _SystemSecretSourceUnavailableError(RuntimeError):
 
 class _CliSecretSourceUnavailableError(RuntimeError):
     """The shared CLI-secret source failed after (or without) startup evidence."""
+
+
+class _AuditSourceUnavailableError(RuntimeError):
+    """The credential audit source could not be read truthfully."""
 
 
 # ---------------------------------------------------------------------------
@@ -2069,6 +2089,7 @@ async def _fetch_single_user_secret(
     *,
     provider: str,
     identity: UUID | None,
+    include_audit: bool = False,
 ) -> UserSecretDetail | None:
     """Fetch a single entity_info row matching the given provider.
 
@@ -2078,7 +2099,10 @@ async def _fetch_single_user_secret(
     'home_assistant_token').  When identity is provided, filters to that
     entity; otherwise uses the owner entity.
 
-    Returns None when no matching row exists.
+    Returns None when no matching row exists. ``include_audit`` is reserved
+    for the user-detail GET route: it fetches history strictly so an audit
+    source failure can be reported explicitly without changing mutation
+    semantics.
     """
     patterns = _provider_like_patterns(provider)
     try:
@@ -2164,6 +2188,25 @@ async def _fetch_single_user_secret(
     fp = _fingerprint(value)
     test = await _fetch_probe_log(pool, "user", row["type"])
     capability_map = await _fetch_capability_probe_logs_bulk(pool, "user", [row["type"]])
+    scopes_required_map = await _fetch_scopes_required_by_provider(pool)
+    scopes_required_by_provider = {
+        _infer_provider_from_type(catalogue_provider): scopes
+        for catalogue_provider, scopes in scopes_required_map.items()
+    }
+    scopes_granted: list[str] = []
+    if provider == "google":
+        scopes_granted = (await _fetch_google_granted_scopes(pool, [entity_id])).get(entity_id, [])
+
+    audit: list[dict] = []
+    if include_audit:
+        audit_target = normalize_credential_key("user", provider)
+        audit_map = await _fetch_audit_bulk(
+            pool,
+            [audit_target],
+            limit=_AUDIT_DEFAULT_LIMIT,
+            raise_on_failure=True,
+        )
+        audit = audit_map.get(audit_target, [])
 
     return UserSecretDetail(
         id=str(row["id"]),
@@ -2176,8 +2219,11 @@ async def _fetch_single_user_secret(
         issued=row["created_at"],
         expires=expires_at,
         last_verified=row["last_verified"],
+        scopes_required=scopes_required_by_provider.get(provider, []),
+        scopes_granted=scopes_granted,
         failure_tail=row["last_test_message"],
         test=test,
+        audit=audit,
         capabilities=capability_map.get(row["type"], []),
     )
 
@@ -2393,7 +2439,16 @@ async def get_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    try:
+        detail = await _fetch_single_user_secret(
+            shared_pool,
+            provider=provider,
+            identity=identity,
+            include_audit=True,
+        )
+    except _AuditSourceUnavailableError as exc:
+        logger.warning("User credential audit source unavailable for provider %s", provider)
+        raise HTTPException(status_code=503, detail="Audit history is unavailable") from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 

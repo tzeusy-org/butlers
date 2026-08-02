@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers._sql_utils import escape_like_pattern as _escape_like_pattern
@@ -297,6 +298,86 @@ def test_user_credential_hit_with_probe_test_result():
     data = resp.json()["data"]
     assert data["test"] is not None
     assert data["test"]["ok"] is True
+
+
+def test_user_credential_detail_uses_existing_google_evidence_sources():
+    """Google detail reuses the inventory's metadata-only evidence sources."""
+    entity_id = str(uuid4())
+    refreshed_at = _NOW - timedelta(days=2)
+    user_row = _make_entity_info_row(entity_id=entity_id, last_test_ok=True)
+    catalogue_row = _make_row(provider="google", required_scopes=["calendar.readonly"])
+    granted_row = _make_row(entity_id=entity_id, granted_scopes=["calendar.readonly"])
+    expiry_row = _make_row(entity_id=entity_id, last_token_refresh_at=refreshed_at)
+    audit_row = _make_row(
+        target="u:google",
+        ts=_NOW,
+        actor="owner",
+        action="verified",
+        note="checked",
+    )
+    mock_db = _make_db_manager_for_per_credential(user_row=user_row)
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "provider_feature_catalogue" in sql:
+            return [catalogue_row]
+        if "granted_scopes" in sql:
+            return [granted_row]
+        if "last_token_refresh_at" in sql:
+            return [expiry_row]
+        if "public.audit_log" in sql:
+            assert args == (["u:google"], 10)
+            return [audit_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["scopes_required"] == ["calendar.readonly"]
+    assert data["scopes_granted"] == ["calendar.readonly"]
+    assert datetime.fromisoformat(data["expires"]) == refreshed_at + timedelta(days=7)
+    assert [event["action"] for event in data["audit"]] == ["verified"]
+
+
+def test_user_credential_returns_503_when_audit_source_fails():
+    """An audit-read failure is unavailable evidence, never empty history."""
+    mock_db = _make_db_manager_for_per_credential(user_row=_make_entity_info_row())
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "public.audit_log" in sql:
+            raise RuntimeError("audit storage unavailable")
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 503
+    assert "audit" in response.json()["detail"].lower()
+    assert "storage unavailable" not in response.text
+
+
+def test_user_credential_returns_503_when_audit_table_is_unavailable():
+    """A missing audit table is unavailable evidence, not empty history."""
+    mock_db = _make_db_manager_for_per_credential(user_row=_make_entity_info_row())
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "public.audit_log" in sql:
+            raise UndefinedTableError("audit table unavailable")
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 503
+    assert "audit" in response.json()["detail"].lower()
+    assert "table unavailable" not in response.text
 
 
 def test_spotify_detail_is_excluded_before_identity_lookup():

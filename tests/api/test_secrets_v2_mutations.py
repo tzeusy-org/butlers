@@ -224,6 +224,38 @@ def test_rotate_returns_200_and_writes_canonical_audit(monkeypatch):
     assert rotated[0].get("target") == "u:google"
 
 
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/secrets/user/openai/rotate", {"value": "replacement-value"}),
+        ("/api/secrets/user/openai/disconnect", None),
+        ("/api/secrets/user/openai/probe", None),
+    ],
+)
+def test_user_mutations_do_not_require_detail_audit_history(
+    path: str, payload: dict[str, str] | None
+) -> None:
+    """Audit-history strictness is isolated to the user-detail GET route."""
+    row = _make_entity_info_row(info_type="openai_api_key", value="")
+    mock_db = _make_db(user_row=row)
+    shared_pool = mock_db.credential_shared_pool()
+
+    async def _fetch(sql: str, *_args: object) -> list[object]:
+        if "public.audit_log" in sql:
+            raise RuntimeError("audit source unavailable")
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(path, json=payload)
+
+    assert response.status_code == 200, response.text
+    assert not any("public.audit_log" in call.args[0] for call in shared_pool.fetch.await_args_list)
+
+
 def test_rotate_404_on_missing_credential():
     """rotate returns 404 when no credential exists for the provider."""
     mock_db = _make_db(user_row=None)
@@ -562,6 +594,28 @@ def test_probe_404_on_missing_credential():
 # ---------------------------------------------------------------------------
 # Tests: POST /api/secrets/user/<provider>/reauthorize
 # ---------------------------------------------------------------------------
+
+
+def test_reauthorize_does_not_require_detail_audit_history():
+    """A detail-audit outage must not block configured-Google reauthorization."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh")
+    mock_db = _make_db(user_row=row, oauth_app_configured=True)
+    shared_pool = mock_db.credential_shared_pool()
+
+    async def _fetch(sql: str, *_args: object) -> list[object]:
+        if "public.audit_log" in sql:
+            raise RuntimeError("audit source unavailable")
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/api/secrets/user/google/reauthorize")
+
+    assert response.status_code == 200, response.text
+    assert not any("public.audit_log" in call.args[0] for call in shared_pool.fetch.await_args_list)
 
 
 def test_reauthorize_returns_200_with_redirect_url():
