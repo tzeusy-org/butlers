@@ -393,10 +393,16 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     """Build the owner-facing notification body for one lifecycle transition.
 
     Always includes a deep link to the exact card on /secrets
-    (``?focus=<key>``). For OAuth providers, also includes the re-authorize
-    URL — ``GET /api/oauth/<provider>/start`` redirects straight to the
-    provider's consent screen, so it's directly clickable from a Telegram
-    message without a separate POST round-trip.
+    (``?focus=<key>``). For OAuth providers it adds a line pointing the owner
+    at the re-authorize control on that card.
+
+    The message deliberately carries NO API endpoint URL. ``DASHBOARD_URL`` is
+    the *frontend* base (e.g. ``https://host/butlers-dev``); the dashboard API
+    lives behind a separate, deployment-specific mount (``/butlers-dev-api/api``)
+    that cannot be derived from it, so a composed
+    ``{dashboard_url}/api/oauth/<provider>/start`` was a dead link everywhere
+    except a bare-root deployment. The /secrets deep link already lands on the
+    card whose re-authorize button starts the same dance.
     """
     focus_url = f"{dashboard_url}{_focus_fragment(snapshot.key)}"
     description = _STATE_DESCRIPTIONS.get(snapshot.state, f"is now '{snapshot.state}'")
@@ -405,7 +411,7 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     if snapshot.provider is not None:
         provider_meta = PROVIDER_CATALOG.get(snapshot.provider)
         if provider_meta is not None and provider_meta.kind == "oauth":
-            lines.append(f"Re-authorize: {dashboard_url}/api/oauth/{snapshot.provider}/start")
+            lines.append("Re-authorize from the credential card on that page.")
 
     return "\n".join(lines)
 
