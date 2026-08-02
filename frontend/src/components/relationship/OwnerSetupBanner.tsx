@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import {
   useCreateEntityInfo,
   useUpdateEntity,
@@ -69,6 +70,23 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   // Don't render if not the owner entity
   if (!entity.roles?.includes("owner")) return null;
 
+  const contacts = linkedContacts.data;
+  const contactFactsDegradedNote = linkedContacts.isError ? (
+    <SourceDegradedNote
+      label="Owner contact facts"
+      detail={
+        contacts === undefined
+          ? "unavailable"
+          : "unavailable; showing last loaded contact facts"
+      }
+      onRetry={() => void linkedContacts.refetch()}
+    />
+  ) : null;
+
+  // A missing query result is unknown, not proof that Telegram facts are
+  // absent. Avoid inviting a duplicate identity setup while the facts load.
+  if (contacts === undefined) return contactFactsDegradedNote;
+
   // Check what's missing
   const nameIsPlaceholder =
     !entity.canonical_name?.trim() ||
@@ -76,7 +94,7 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   // Telegram has-handle facts surface as type "telegram_user_id" with the
   // "telegram:" prefix stripped from the display value. The deliverable chat ID
   // is numeric; a username handle is non-numeric — distinguish on that.
-  const telegramValues = (linkedContacts.data ?? [])
+  const telegramValues = contacts
     .flatMap((c) => c.contact_info)
     .filter((e) => e.type === "telegram_user_id" && e.value)
     .map((e) => e.value!.trim());
@@ -85,7 +103,7 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
 
   // Don't render if all core identity fields are configured
   if (!nameIsPlaceholder && hasTelegram && hasTelegramChatId) {
-    return null;
+    return contactFactsDegradedNote;
   }
 
   const entityId = entity.id;
@@ -223,7 +241,8 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   }
 
   return (
-    <div className="rounded-lg border border-[var(--amber)] bg-[var(--amber)] px-4 py-3">
+    <div className="space-y-2 rounded-lg border border-[var(--amber)] bg-[var(--amber)] px-4 py-3">
+      {contactFactsDegradedNote}
       <div className="flex items-center justify-between gap-4">
         <div>
           <p className="text-sm font-medium text-[var(--amber-text)]">

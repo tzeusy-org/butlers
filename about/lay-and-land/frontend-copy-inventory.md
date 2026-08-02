@@ -2544,6 +2544,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Telegram API hash
 - Home Assistant URL
 - Home Assistant token
+- Owner contact facts
 - Jane Doe
 - @username
 
