@@ -15,18 +15,20 @@
   recovery and the canonical message-scoped cancel endpoint with RFC 0001, RFC
   0003, and the dashboard API inventory, and cover both no-resubmit retry after
   accepted ingress and observer-side `SESSION_CANCELLED` rendering.
-- [ ] 1.2 After #3624 lands, decide PR #3618 explicitly: rebase it onto the
-  landing and independently revalidate its truthful dispatch receipt/UI scope,
-  or close it as superseded only after an owner-approved per-guarantee
-  disposition. That record SHALL cover its `dispatch_accepted` route-versus-
-  targetless receipt and accessible announcement, accountable routed-butler
-  link, and non-destructive conversation-list/history read recovery. After
-  #3618 no longer actively modifies the same main requirements, transplant every
-  retained guarantee into the surviving changeset and independently validate it;
-  an omitted guarantee requires an explicit owner rejection. This is a
-  pre-signoff HOLD gate for this changeset, not merely an implementation
-  sequencing note: do not approve competing dashboard Stop/SSE requirements or
-  silently discard truthful UI behavior.
+- [x] 1.2 The owner approved retaining every #3618 guarantee after #3624
+  landed: reconcile #3618 onto the current durable message-scoped authority and
+  independently validate its truthful `dispatch_accepted` route-versus-targetless
+  receipt and accessible announcement, current-turn-only accountable Butler
+  link, and non-destructive conversation-list/search/history read recovery.
+  Receipt attribution SHALL come only from safe durable `dispatch_status` after
+  accepted immutable ingress. Its first safe receipt SHALL be targetless even
+  when a route is already durable; only a later distinct poll may issue one
+  named upgrade. Triage, sticky history, legacy requests, unsafe observations,
+  cancellation/ambiguity, and terminal-action targets SHALL not yield a receipt.
+  Preserve every landed Stop clause. Record the retained
+  guarantees in this surviving delta and the authoritative RFC/API contracts;
+  remove the competing change. This completes the disposition gate only, not the
+  wider terminal-action recovery implementation or its remaining HOLD gates.
 - [ ] 1.3 After `reconcile-dashboard-conversation-contracts` lands its RFC 0003
   vocabulary/provenance authority, rebase on that exact head and amend only the
   recovery guidance: a dashboard route-inbox row recovered from `processing`

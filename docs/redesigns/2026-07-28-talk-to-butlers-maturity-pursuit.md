@@ -1,11 +1,23 @@
 # Talk to Butlers Maturity Pursuit — 2026-07-28
 
 A focused JARVIS-style maturity pursuit for the **Talk to Butlers** front door,
-not a whole-ecosystem page audit. It reconciles the live dashboard path, the
-current implementation, active pull requests, persistent turn state, and the
-next trustworthy delivery boundary.
+not a whole-ecosystem page audit. This is a historical audit record as of
+2026-07-28: it reconciles the live dashboard path, implementation,
+pull-request state, persistent turn state, and next trustworthy delivery
+boundary observed on that date.
 
 **Data:** [structured audit data](2026-07-28-talk-to-butlers-maturity-pursuit-data.json).
+
+> **Historical scope.** The audit findings and evidence below remain preserved
+> as observed on 2026-07-28. The subsequent-status note records later branch
+> state without rewriting that evidence.
+
+## Subsequent status (2026-08-02)
+
+`main` now includes #3624's durable message-scoped authority. #3618 is the
+owner-approved retain-all reconciliation of its truthful dispatch receipt,
+current-stream accountability, and non-destructive read recovery; it remains
+pending final independent review, terminal CI, and exact-base merge validation.
 
 ## North star
 
@@ -16,7 +28,7 @@ being told a report was filed, a route completed, or a Stop succeeded when the
 system cannot prove it. It is not a generic chat wrapper and it must not silently
 route uncertainty to General.
 
-## Current maturity verdict
+## Audit-time maturity verdict (as of 2026-07-28)
 
 **Functional, not mature.** The dev stack is available and the entry path is a
 real vertical slice, but its most consequential control and recovery guarantees
@@ -46,7 +58,7 @@ self-origin TLS path, so it is **[Unknown]** remote-tailnet behavior, not proof
 that the owner's remote browser is broken. A remote-tailnet smoke must establish
 the intended path before this surface is called externally verified.
 
-## What is true today
+## Audit-time findings (as of 2026-07-28)
 
 - `POST /api/butlers/{name}/conversation-turns/{message_id}/cancel` is the
   intended canonical message-scoped Stop endpoint on PR #3624. The current
@@ -60,12 +72,13 @@ the intended path before this surface is called externally verified.
   replaces it with one required semantic `outcome`; the implementation migrates
   the dashboard client and chat surfaces before deleting the boolean model,
   type, tests, and adapter in the same change.
-- PR #3618 (`make-dashboard-chat-truthful`) is an open draft based on an older
-  base. Its dispatch-receipt/UI work must be rebased and revalidated after
-  #3624, or its truthful routed-versus-targetless receipt, routed-butler
-  accountability, and non-destructive read recovery must each be retained in the
-  surviving packet or explicitly owner-rejected before it is closed as
-  superseded; it cannot be silently folded in.
+- PR #3618's older-base draft has been superseded by the owner's retain-all
+  reconciliation on the current #3624 durable authority. It preserves truthful
+  targetless-first dispatch receipts with a later durable-route upgrade only,
+  a `Routed to` link for the current stream only, and non-destructive read
+  recovery. Final exact-head review, terminal CI, and exact-base merge remain
+  required; the historical audit chronology below intentionally remains as
+  provenance rather than a current disposition.
 - A route acknowledgement, a QA report, a dead-letter capture, and an
   in-thread reply are distinct visible effects. One turn row alone cannot prove
   their independent crash boundaries.
@@ -73,7 +86,7 @@ the intended path before this surface is called externally verified.
   linkage for support-grade causal tracing; this is a distinct observability gap,
   not evidence that the recent backplane routes failed.
 
-## Independent #3624 review gates
+## Audit-time #3624 review gates (as of 2026-07-28)
 
 Three focused exact-head reviews found that #3624 is not merge-ready, despite
 its historical-base CI being green:
@@ -208,8 +221,8 @@ changesets are approved.
 | What “mature” includes now | Stop at truthful ingress/route acknowledgement plus terminal bug/dead-letter effects; or add durable downstream routed-session/reply outcome now | Stop at the current reliability slice. A downstream session/reply durability contract is valuable but must be a separately approved change. |
 | Ambiguous generic questions | Truthful dead-letter/rephrase; bounded domain clarification; or deliberately constrained General authority | Keep truthful dead-letter/rephrase behavior. The current system must not invent General residual authority. |
 | Intended-host evidence | Owner-run or explicitly authorized remote-tailnet passive smoke of the actual widget request; or authorize an anonymized send/reply/Stop canary after passive success | Require the privacy-bounded passive smoke before any configured/external availability claim; authorize a content-safe canary only if end-to-end proof is needed before the recovery release. |
-| #3618 truthful-UI disposition | Rebase and independently reconcile #3618; or, after per-guarantee review, retain its routed-versus-targetless receipt, routed-butler accountability, and read-recovery behavior in the surviving packet; or explicitly reject one or more guarantees | Preserve all three guarantees, through a rebase or explicit transplant after #3618 no longer actively modifies the same requirements. |
-| Direction-packet approval | Approve both narrow changesets after the above choices and, after #3624 lands, resolve #3618 through rebase-and-reconcile or owner-approved per-guarantee retention/rejection before closing it; or revise their scope | Approve only after the product boundary and maturity definition are explicit and the #3618 HOLD is resolved without silently discarding a truthful UI behavior. |
+| #3618 truthful-UI disposition | Historical options were rebase/reconcile, retain each guarantee in the surviving packet, or reject one or more guarantees | Resolved: the owner retained all three guarantees and #3618 is reconciled on current #3624 authority; final review, terminal CI, and exact-base merge remain. |
+| Direction-packet approval | Historical approval depended on resolving the #3618 HOLD after #3624 landed | #3618 is no longer a disposition HOLD; preserve its final merge gates without reopening the settled retain-all decision. |
 
 ## Conclusion
 

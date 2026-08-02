@@ -5262,6 +5262,7 @@ export interface ConversationCancelResponse {
 /** SSE event types emitted by the conversation streaming endpoints. */
 export type ConversationSseEventType =
   | "conversation_created"
+  | "dispatch_accepted"
   | "token"
   | "message_complete"
   | "error"

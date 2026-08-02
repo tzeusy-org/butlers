@@ -43,6 +43,8 @@ export interface ConversationHeaderProps {
   conversation: ConversationSummary | null;
   messages: Message[];
   pricingMap: PricingMap | null;
+  /** Durable route for the currently pending turn, if its stream proved one. */
+  routedButler?: string | null;
 }
 
 export function ConversationHeader({
@@ -50,21 +52,35 @@ export function ConversationHeader({
   conversation,
   messages,
   pricingMap,
+  routedButler,
 }: ConversationHeaderProps) {
   const title = conversation?.title ?? "New conversation";
   const costStr = totalConversationCost(messages, pricingMap);
+  // A historical conversation route is not proof of responsibility for this
+  // current message. Only the live stream's durable receipt can earn a link.
+  const accountableButler = routedButler ?? null;
 
   return (
     <div className="flex items-center gap-2 px-4 py-3 border-b">
       <MessageCircleIcon className="size-4 text-muted-foreground shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium truncate">{title}</p>
-        {conversation && (
-          <p className="text-xs text-muted-foreground">
-            {butlerName}
-            {costStr && ` · ${costStr}`}
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground">
+          {accountableButler ? (
+            <>
+              Routed to{" "}
+              <a
+                href={`/butlers/${encodeURIComponent(accountableButler)}`}
+                className="underline underline-offset-4 hover:text-foreground"
+              >
+                {accountableButler}
+              </a>
+            </>
+          ) : (
+            butlerName
+          )}
+          {costStr && ` · ${costStr}`}
+        </p>
       </div>
     </div>
   );

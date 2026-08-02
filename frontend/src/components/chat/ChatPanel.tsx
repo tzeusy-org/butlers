@@ -35,6 +35,7 @@ import type { Message, ConversationSummary } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
+import { ConversationReadError } from "./ConversationReadError.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
@@ -75,6 +76,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
   // Local messages during / after stream (committed messages from cache)
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  const localMessagesConversationIdRef = useRef<string | null>(null);
   // Classified SSE/transport send error (offline / timeout / generic) —
   // mirrors FloatingChatWidget's sendError seam, see ./send-error.tsx.
   const [sendError, setSendError] = useState<SendError | null>(null);
@@ -115,22 +117,33 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   );
 
   // Fetch messages for the active conversation
-  const { data: messagesData, isLoading: isLoadingMessages } = useConversationMessages(
-    butlerName,
-    activeConversationId,
-  );
+  const {
+    data: messagesData,
+    isLoading: isLoadingMessages,
+    isError: isMessagesError,
+    refetch: refetchMessages,
+  } = useConversationMessages(butlerName, activeConversationId);
 
   // Sync server messages into local state
   // Avoid overwriting optimistic/streaming messages while an SSE stream is active.
   useEffect(() => {
     if (streaming) return;
     // A conversation-key switch can briefly expose `messagesData` as undefined
-    // before the next query result lands. Keep the rendered thread during that
-    // gap rather than treating it as a successful empty conversation.
+    // before the next query result lands. Preserve the previous conversation's
+    // cached local state for a same-thread retry, but never reconcile it into
+    // the newly selected conversation.
     if (messagesData?.data) {
-      setLocalMessages((previous) =>
-        reconcileConversationMessages(messagesData.data, previous, activeConversationId),
-      );
+      const previousBelongsToActiveConversation =
+        localMessagesConversationIdRef.current === activeConversationId;
+      localMessagesConversationIdRef.current = activeConversationId;
+      setLocalMessages((previous) => {
+        const activeMessages = previousBelongsToActiveConversation ? previous : [];
+        return reconcileConversationMessages(
+          messagesData.data,
+          activeMessages,
+          activeConversationId,
+        );
+      });
     }
   }, [activeConversationId, messagesData, streaming]);
 
@@ -222,6 +235,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     confirmedStopMessageIdRef.current = null;
     hasResumedRef.current = false;
     setActiveConversationId(null);
+    localMessagesConversationIdRef.current = null;
     setLocalMessages([]);
     setStreaming(null);
     setSendError(null);
@@ -240,6 +254,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       // bubble disappear with a pending local conversation id.
       void queryClient.invalidateQueries({ queryKey: conversationKeys.all(butlerName) });
       if (conversationId) {
+        localMessagesConversationIdRef.current = conversationId;
         setActiveConversationId(conversationId);
         setLocalMessages((prev) =>
           prev.map((message) =>
@@ -262,6 +277,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
               cancelled: true,
               pending: false,
               cancelError: null,
+              dispatchReceipt: undefined,
             }
           : prev,
       );
@@ -324,9 +340,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         request_id: null,
         created_at: new Date().toISOString(),
       };
-      setLocalMessages((prev) =>
-        prev.some((message) => message.id === userMessage.id) ? prev : [...prev, userMessage],
-      );
+      const previousBelongsToActiveConversation =
+        localMessagesConversationIdRef.current === activeConversationId;
+      localMessagesConversationIdRef.current = activeConversationId;
+      setLocalMessages((previous) => {
+        const activeMessages = previousBelongsToActiveConversation ? previous : [];
+        return activeMessages.some((message) => message.id === userMessage.id)
+          ? activeMessages
+          : [...activeMessages, userMessage];
+      });
 
       let currentConversationId = activeConversationId;
 
@@ -384,10 +406,20 @@ export function ChatContent({ butlerName }: ChatContentProps) {
                   : prev,
               );
               // Update optimistic user message with real conversation_id
+              localMessagesConversationIdRef.current = data.conversation_id;
               setLocalMessages((prev) =>
                 prev.map((m) =>
                   m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
                 ),
+              );
+              break;
+            }
+            case "dispatch_accepted": {
+              const data = event.data as { routed_butler?: unknown };
+              const routedButler =
+                typeof data.routed_butler === "string" ? data.routed_butler : null;
+              setStreaming((prev) =>
+                prev ? { ...prev, dispatchReceipt: { routedButler } } : null,
               );
               break;
             }
@@ -518,6 +550,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             queryKey: conversationKeys.all(butlerName),
           });
           if (conversationId) {
+            localMessagesConversationIdRef.current = conversationId;
             setActiveConversationId(conversationId);
             setLocalMessages((prev) =>
               prev.map((message) =>
@@ -574,6 +607,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   function handleNewConversation() {
     abandonCurrentStream();
     setActiveConversationId(null);
+    localMessagesConversationIdRef.current = null;
     setLocalMessages([]);
     setSendError(null);
   }
@@ -586,6 +620,13 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       });
     }
   }
+
+  const visibleMessages =
+    localMessagesConversationIdRef.current === activeConversationId ? localMessages : [];
+  const visibleDispatchReceipt =
+    streaming && !streaming.cancelling && !streaming.cancelled && !streaming.interrupted
+      ? streaming.dispatchReceipt
+      : undefined;
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -606,18 +647,27 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         <ConversationHeader
           butlerName={butlerName}
           conversation={activeConversation}
-          messages={localMessages}
+          messages={visibleMessages}
           pricingMap={pricingMap}
+          routedButler={visibleDispatchReceipt?.routedButler}
         />
 
-        {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
+        {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (
           <MessageThreadSkeleton />
         ) : (
           <MessageThread
-            messages={localMessages}
+            messages={visibleMessages}
             streaming={streaming}
             pricingMap={pricingMap}
             conversationId={activeConversationId}
+            suppressEmptyState={isMessagesError}
+          />
+        )}
+
+        {isMessagesError && (
+          <ConversationReadError
+            label="conversation history"
+            onRetry={() => void refetchMessages()}
           />
         )}
 

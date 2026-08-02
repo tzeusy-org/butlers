@@ -22,6 +22,7 @@ import { Tip } from "@/components/ui/tip";
 import { useConversations, useConversationSearch } from "@/hooks/use-conversations.ts";
 import { useDebounce } from "@/hooks/use-debounce.ts";
 import type { ConversationSummary } from "@/api/types.ts";
+import { ConversationReadError } from "./ConversationReadError.tsx";
 
 // ---------------------------------------------------------------------------
 // Storage key for sidebar collapse state
@@ -143,11 +144,18 @@ export function ConversationList({
   });
   const collapsed = collapsible && collapsedState;
 
-  const { data: conversationsData, isLoading } = useConversations(butlerName);
-  const { data: searchData, isLoading: isSearching } = useConversationSearch(
-    butlerName,
-    debouncedQuery,
-  );
+  const {
+    data: conversationsData,
+    isLoading,
+    isError: isConversationsError,
+    refetch: refetchConversations,
+  } = useConversations(butlerName);
+  const {
+    data: searchData,
+    isLoading: isSearching,
+    isError: isSearchError,
+    refetch: refetchSearch,
+  } = useConversationSearch(butlerName, debouncedQuery);
 
   function toggleCollapse() {
     const next = !collapsed;
@@ -164,6 +172,9 @@ export function ConversationList({
     ? (searchData?.data ?? [])
     : (conversationsData?.data ?? []);
   const loading = isSearchActive ? isSearching : isLoading;
+  const readError = isSearchActive ? isSearchError : isConversationsError;
+  const retryRead = isSearchActive ? refetchSearch : refetchConversations;
+  const errorLabel = isSearchActive ? "conversation search results" : "conversations";
 
   // Collapse strategy: width switches INSTANTLY (no width transition) so no
   // layout property is animated. Expandable content (search, list labels) is
@@ -256,7 +267,14 @@ export function ConversationList({
       <div
         className={cn("flex-1 overflow-y-auto py-1", collapsed ? "px-1.5" : "px-2 space-y-0.5")}
       >
-        {loading ? (
+        {readError && (
+          <ConversationReadError
+            label={errorLabel}
+            onRetry={() => void retryRead()}
+            compact={collapsed}
+          />
+        )}
+        {loading && !readError ? (
           collapsed ? null : (
             <div className="space-y-1 px-1">
               {Array.from({ length: 4 }, (_, i) => (
@@ -265,7 +283,7 @@ export function ConversationList({
             </div>
           )
         ) : conversations.length === 0 ? (
-          collapsed ? null : (
+          readError || collapsed ? null : (
             <EmptyState
               variant="page"
               title="No conversations yet."

@@ -86,6 +86,34 @@ Scope: v1-mandatory
 - **AND** it SHALL not render `Cancelled by owner`, `Interrupted`, or any other
   terminal-state indicator implying that the runtime or action actually stopped
 
+#### Scenario: Dispatch receipt is an accessible current-turn-only status
+
+- **WHEN** the stream emits `dispatch_accepted` for the immutable message owned
+  by the active chat turn
+- **THEN** the UI SHALL render exactly one polite, atomic textual pending status:
+  `Received by Switchboard; waiting for a reply.` for `routed_butler: null`, or
+  `Routed to <name>; waiting for a reply.` for a named durable route
+- **AND** the first receipt SHALL be rendered as the targetless status even
+  when its safe durable observation already has a route; only the later named
+  upgrade may change that status and add the current-turn link
+- **AND** before any receipt it SHALL render `Sending to Switchboard.`, preserve
+  its animated typing dots as decorative `aria-hidden` elements, and expose the
+  pending text through one `role="status"` live region
+- **AND** it SHALL link `/butlers/{encodeURIComponent(name)}` only for the
+  named receipt on that current stream; targetless receipts and absent receipts
+  SHALL keep the ordinary Butler label with no current-route link
+- **AND** it SHALL never use a historical `conversation.routed_butler` or a
+  pre-routing triage value as a fallback link or pending status target
+
+#### Scenario: Receipt preserves durable Stop semantics
+
+- **WHEN** a turn is cancelling, cancelled, ambiguous, or owns a terminal action
+- **THEN** the UI SHALL retain the exact existing Stop/error/result presentation
+  and SHALL not synthesize receipt progress or route language
+- **AND** during cancelling or confirmed Stop it SHALL suppress the pending
+  receipt live region, decorative dots, and `Routed to` link so the authoritative
+  Stop status is the only live status
+
 ### Requirement: Conversation React Query Hooks
 
 TanStack Query hooks SHALL manage conversation data fetching and caching,
@@ -150,6 +178,24 @@ Scope: v1-mandatory
   when the returned/refetched state is pending; it SHALL render a terminal,
   rejected, retryable, cancellation, or ambiguous result from the read model
   without opening a second SSE stream or inserting another local user message
+
+#### Scenario: List and search read errors preserve cached rows
+
+- **WHEN** a conversation-list or search query errors while it still has cached
+  rows
+- **THEN** the UI SHALL show those cached rows together with a retryable
+  `role="alert"` that calls that query's own `refetch`
+- **AND** it SHALL not replace the rows with an empty-state claim
+
+#### Scenario: History read recovery preserves the active thread only
+
+- **WHEN** the active conversation history query fails or refreshes while it
+  retains same-thread messages
+- **THEN** the UI SHALL preserve the draft, selection, and same-thread cached or
+  optimistic messages beside a retryable query-refetch alert
+- **AND** after the owner selects a different loading or failed conversation it
+  SHALL not render optimistic messages owned by the previous conversation or a
+  false empty-history state
 
 ## ADDED Requirements
 

@@ -47,6 +47,13 @@ SSE event types
 ---------------
 ``conversation_created``
     First event on POST /conversations. Data: ``{conversation_id, title}``.
+``dispatch_accepted``
+    Durable current-turn receipt after immutable ingress has been accepted.
+    The first receipt is always ``{routed_butler: null}``, even if that safe
+    observation already has a durable ``route`` target. At most one later
+    durable-status observation may emit the named route upgrade. Legacy
+    streams without an immutable user-message id and terminal-action states
+    do not emit this event.
 ``token``
     Streamed assistant response token. Data: ``{content}``.
 ``message_complete``
@@ -358,6 +365,31 @@ async def _record_dashboard_ingress_failure(
         return None
 
 
+def _durable_receipt_route_target(turn: DashboardTurnResult) -> str | None:
+    """Return a receipt target only for a durably committed domain route."""
+    if turn.target_kind != "route":
+        return None
+    target = turn.target_butler
+    if not isinstance(target, str) or not target.strip():
+        return None
+    return target
+
+
+def _can_emit_dispatch_receipt(turn: DashboardTurnResult) -> bool:
+    """Whether a durable turn state represents ingress, not a terminal action.
+
+    A targetless state is a truthful Switchboard acceptance. A route needs a
+    durable non-empty target. Any other target kind belongs to a different
+    owner-visible outcome surface and must not be repackaged as a route receipt.
+    """
+    return turn.target_kind is None or _durable_receipt_route_target(turn) is not None
+
+
+def _receipt_observation_is_safe(turn: DashboardTurnResult) -> bool:
+    """Return whether a control-plane observation supports a live receipt."""
+    return turn.outcome == "active"
+
+
 # ---------------------------------------------------------------------------
 # SSE generator
 # ---------------------------------------------------------------------------
@@ -382,7 +414,9 @@ async def _stream_conversation_response(
     1. Optionally emit ``conversation_created`` (for new conversations).
     2. Submit the ingest envelope to the Switchboard; stamp sticky
        ``routed_butler`` on first classification route (widget conversations
-       only — pinned conversations are already deterministic).
+       only — pinned conversations are already deterministic), then observe
+       the durable dashboard-turn state before emitting any current-turn
+       ``dispatch_accepted`` receipt.
     3. Poll for the routed butler's ``conversation_reply`` message, streaming
        keepalives every 15 s.
     4. On arrival, emit ``message_complete`` + ``done`` for the (already
@@ -550,6 +584,17 @@ async def _stream_conversation_response(
                 yield _sse_error("SWITCHBOARD_ERROR", "Ingress control state conflicted.")
                 yield _sse_done()
                 return
+            if bound_turn.outcome == "cancelling":
+                yield _sse_error(
+                    "INGEST_IN_PROGRESS",
+                    "Cancellation is still settling; this turn has not been confirmed stopped.",
+                )
+                yield _sse_done()
+                return
+            if bound_turn.outcome not in {"accepted", "finished"}:
+                yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
+                yield _sse_done()
+                return
 
     if request_id_str is None:
         yield _sse_error("SWITCHBOARD_ERROR", "Switchboard returned no request reference.")
@@ -602,6 +647,56 @@ async def _stream_conversation_response(
         _ACTIVE_TURNS[conversation_id] = active_turn
 
     try:
+        # A receipt is attributable only to the durable dashboard-turn record,
+        # never to an optimistic classification result or sticky conversation
+        # history. It is deliberately unavailable for legacy streams that lack
+        # the immutable user-message identity required to observe that record.
+        receipt_emitted = False
+        receipt_observation_closed = message_id is None
+
+        if message_id is not None:
+            try:
+                initial_turn_status = await dispatch_status(shared_pool, message_id=message_id)
+            except Exception:
+                # Do not fabricate even a targetless receipt when the durable
+                # observation itself is unavailable. A later successful poll
+                # may still surface the receipt from authoritative state.
+                logger.debug(
+                    "Could not observe durable receipt state for conversation %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+            else:
+                if initial_turn_status.outcome == "cancelled":
+                    yield _sse_error("SESSION_CANCELLED", "This turn was stopped by its owner.")
+                    yield _sse_done()
+                    return
+                if initial_turn_status.outcome == "ambiguous":
+                    yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
+                    yield _sse_done()
+                    return
+                if initial_turn_status.outcome == "cancelling":
+                    yield _sse_error(
+                        "INGEST_IN_PROGRESS",
+                        "Cancellation is still settling; this turn has not been confirmed stopped.",
+                    )
+                    yield _sse_done()
+                    return
+                if _receipt_observation_is_safe(initial_turn_status):
+                    if _can_emit_dispatch_receipt(initial_turn_status):
+                        receipt_emitted = True
+                        # The first safe observation always reports accepted
+                        # ingress rather than naming a route. The one possible
+                        # name is an upgrade from a later status poll, never a
+                        # second receipt from this same observation.
+                        yield _sse_event("dispatch_accepted", {"routed_butler": None})
+                    else:
+                        # A terminal-action target has a separate durable
+                        # outcome surface; never represent it as ingress.
+                        receipt_observation_closed = True
+                elif initial_turn_status.target_kind is not None:
+                    receipt_observation_closed = True
+
         # Step 3: Poll for the conversation_reply message, with keepalive.
         start_ts = time.monotonic()
         last_keepalive_ts = start_ts
@@ -635,6 +730,35 @@ async def _stream_conversation_response(
                         yield _sse_error("TURN_OUTCOME_UNKNOWN", _TURN_OUTCOME_UNKNOWN_MESSAGE)
                         yield _sse_done()
                         return
+                    if turn_status.outcome == "cancelling":
+                        yield _sse_error(
+                            "INGEST_IN_PROGRESS",
+                            (
+                                "Cancellation is still settling; this turn has not been confirmed "
+                                "stopped."
+                            ),
+                        )
+                        yield _sse_done()
+                        return
+
+                    if not receipt_observation_closed and _receipt_observation_is_safe(turn_status):
+                        if not _can_emit_dispatch_receipt(turn_status):
+                            receipt_observation_closed = True
+                        else:
+                            durable_target = _durable_receipt_route_target(turn_status)
+                            if not receipt_emitted:
+                                receipt_emitted = True
+                                # A delayed first safe observation follows the
+                                # same targetless-first contract, even if it
+                                # already contains a route target.
+                                yield _sse_event("dispatch_accepted", {"routed_butler": None})
+                            elif durable_target is not None:
+                                receipt_observation_closed = True
+                                yield _sse_event(
+                                    "dispatch_accepted", {"routed_butler": durable_target}
+                                )
+                    elif turn_status.target_kind is not None:
+                        receipt_observation_closed = True
 
             # Keepalive check
             now = time.monotonic()

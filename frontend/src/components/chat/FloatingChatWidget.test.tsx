@@ -222,6 +222,14 @@ function mockHooksForConversationRefetchGap() {
         isLoading: false,
       } as unknown as ReturnType<typeof useConversationMessages>;
     },
+    failOlderThread() {
+      olderMessagesResult = {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useConversationMessages>;
+    },
   };
 }
 
@@ -376,7 +384,7 @@ describe("FloatingChatWidget — history view", () => {
     expect(screen.getByTestId("chat-widget-history-button")).toBeDefined();
   });
 
-  it("keeps the current thread visible while loading, then synchronizes the selected thread", async () => {
+  it("hides the current thread while loading, then synchronizes the selected thread", async () => {
     const { resolveOlderThread } = mockHooksForConversationRefetchGap();
     const view = renderWidget();
 
@@ -386,7 +394,7 @@ describe("FloatingChatWidget — history view", () => {
     fireEvent.click(screen.getByTestId("chat-widget-history-button"));
     fireEvent.click(screen.getByText("Older thread"));
 
-    expect(screen.getByText("Alice is child-of Bob")).toBeDefined();
+    expect(screen.queryByText("Alice is child-of Bob")).toBeNull();
     expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
 
     resolveOlderThread();
@@ -396,6 +404,25 @@ describe("FloatingChatWidget — history view", () => {
       expect(screen.getByText("Rendered when the older thread arrives")).toBeDefined();
     });
     expect(screen.queryByText("Alice is child-of Bob")).toBeNull();
+  });
+
+  it("does not expose the previous thread when the selected thread fails to load", async () => {
+    const { failOlderThread } = mockHooksForConversationRefetchGap();
+    const view = renderWidget();
+
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    expect(screen.getByText("Alice is child-of Bob")).toBeDefined();
+
+    fireEvent.click(screen.getByTestId("chat-widget-history-button"));
+    fireEvent.click(screen.getByText("Older thread"));
+    failOlderThread();
+    view.rerenderWidget();
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Could not load conversation history.",
+    );
+    expect(screen.queryByText("Alice is child-of Bob")).toBeNull();
+    expect(screen.getByText("Older thread")).toBeDefined();
   });
 
   it("New button from history resets to a fresh conversation in thread view", () => {
@@ -479,6 +506,104 @@ describe("FloatingChatWidget — page-context capture", () => {
         message_id: expect.any(String),
       }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispatch_accepted SSE routing receipt
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — dispatch_accepted routing receipt", () => {
+  it("announces and links the actual routed butler while waiting for a reply", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-route-1", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: "relationship" } },
+    ];
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "remember this" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    const activity = screen.getByTestId("chat-activity-status");
+    expect(activity.textContent).toBe("Routed to relationship; waiting for a reply.");
+    expect(activity.getAttribute("role")).toBe("status");
+    expect(activity.getAttribute("aria-live")).toBe("polite");
+    expect(activity.getAttribute("aria-atomic")).toBe("true");
+
+    const routedButler = screen.getByRole("link", { name: "relationship" });
+    expect(routedButler.getAttribute("href")).toBe("/butlers/relationship");
+  });
+
+  it("does not invent a domain route for a targetless acceptance", async () => {
+    // The resumed thread has a persisted `relationship` route. An explicit
+    // targetless receipt for this turn must override it rather than showing
+    // stale accountability.
+    sendMessageMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "dispatch_accepted", data: { routed_butler: null } }];
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "log this" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Received by Switchboard; waiting for a reply.",
+    );
+    expect(screen.queryByRole("link", { name: "relationship" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "switchboard" })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Conversation read recovery
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — conversation read recovery", () => {
+  it("keeps the draft available and offers retry when resumed history cannot load", async () => {
+    const refetchMessages = vi.fn();
+    const noConversationResult = {
+      data: { data: [], meta: {} },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useConversationMessages>;
+    const failedHistoryResult = {
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: refetchMessages,
+    } as unknown as ReturnType<typeof useConversationMessages>;
+    vi.mocked(useConversationMessages).mockImplementation(
+      (_butlerName: string, conversationId: string | null) =>
+        (conversationId === "conv-2"
+          ? failedHistoryResult
+          : noConversationResult) as ReturnType<typeof useConversationMessages>,
+    );
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not load conversation history.");
+    expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
+
+    const input = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    expect(input.value).toBe("Keep this draft");
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(refetchMessages).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -813,7 +938,7 @@ describe("FloatingChatWidget — Stop button", () => {
     expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
   });
 
-  it("uses the immutable message id and visibly confirms Stop before new-conversation SSE starts", async () => {
+  it("keeps the optimistic message visible through a confirmed Stop before conversation_created", async () => {
     const { queryClient } = await sendAndEnterStreamingState({
       conversationCreated: false,
       token: false,
@@ -834,10 +959,65 @@ describe("FloatingChatWidget — Stop button", () => {
     const messageId = (createConversationMock.mock.calls[0][1] as { message_id: string }).message_id;
     expect(cancelConversationMessageTurnMock).toHaveBeenCalledWith("switchboard", messageId);
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(screen.getByText("hello")).toBeDefined();
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["conversation-messages", "switchboard", "conv-stop-1"],
     });
     expect(useConversationMessages).toHaveBeenLastCalledWith("switchboard", "conv-stop-1");
+  });
+
+  it("suppresses a named receipt during Stop settlement and confirmed cancellation", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-stop-route", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: "finance" } },
+    ];
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+      target: { value: "route then stop" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Routed to finance; waiting for a reply.",
+    );
+    expect(screen.getByRole("link", { name: "finance" })).toBeDefined();
+
+    let resolveCancel!: (result: { cancelled: boolean; already_finished: boolean }) => void;
+    cancelConversationMessageTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.queryByTestId("chat-activity-status")).toBeNull();
+    expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
+
+    await act(async () => {
+      activeSseEventHandler?.({
+        event: "error",
+        data: { code: "SESSION_CANCELLED", message: "This turn was stopped before routing." },
+      });
+    });
+    expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.queryByTestId("chat-activity-status")).toBeNull();
+    expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
+
+    await act(async () => {
+      resolveCancel({ cancelled: false, already_finished: true });
+      await Promise.resolve();
+    });
   });
 
   it("accepts a terminal server cancellation after Stop was still settling", async () => {
@@ -974,6 +1154,7 @@ describe("FloatingChatWidget — Stop button", () => {
 
     expect(screen.queryByText("Cancelled by owner")).toBeNull();
     expect(screen.queryByTestId("chat-stop-button")).toBeNull();
+    expect(screen.getByText("hello")).toBeDefined();
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["conversations", "switchboard"],
     });

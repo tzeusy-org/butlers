@@ -4,6 +4,21 @@
   "date": "2026-07-28",
   "scope": "Focused JARVIS-style audit of the Talk to Butlers dashboard front door",
   "north_star": "A durable specialist-roster front door that never fabricates routing, filing, or Stop success.",
+  "audit_snapshot": {
+    "as_of": "2026-07-28",
+    "fields": ["live_baseline", "maturity", "active_work.pr_3624"],
+    "note": "These fields preserve audit-time observations and review state; the later current_status overlay does not revise their evidence."
+  },
+  "current_status": {
+    "as_of": "2026-08-02",
+    "note": "Subsequent status only; the 2026-07-28 audit snapshot remains historical.",
+    "pr_3624": {
+      "state": "landed_on_main"
+    },
+    "pr_3618": {
+      "state": "owner_retain_all_reconciled_on_current_3624_authority_pending_final_review_ci_and_exact_base_merge"
+    }
+  },
   "live_baseline": {
     "api_health": "ok",
     "frontend_http_status": 200,
@@ -15,6 +30,7 @@
     "interpretation": "Local components are reachable from a root checkout at 73031a850 that is 27 commits behind origin/main; remote-tailnet ingress and live end-to-end owner-message flow were not proven."
   },
   "maturity": {
+    "snapshot_as_of": "2026-07-28",
     "overall": "functional_not_mature",
     "dimensions": [
       {
@@ -53,14 +69,16 @@
     "pr_3624": {
       "title": "Durable dashboard Stop and route handoff",
       "head_at_audit": "d5827d42fe23cfda07508896db433695b1a0a53c",
+      "snapshot_only": true,
       "state": "open_green_historical_base_with_review_blockers",
       "required_next_gate": "Repair the processing-lease ownership race, reconcile RFC 0001/RFC 0003/dashboard API inventory and the completed but unarchived chat-stop-button-server-cancel delta with dashboard-specific no-replay ambiguity and canonical cancel behavior, add post-acceptance retry and cross-client Stop regressions, then rebase and obtain current-base exact-head or validated merge-result evidence before owner-authorized merge; after landing, rebase and fully reconcile the recovery packet's replacement Stop/SSE contract."
     },
     "pr_3618": {
       "title": "Truthful dashboard dispatch receipt",
       "head_at_audit": "e40dc2505ac0a26a4d9628f5e04718eca7a2f305",
-      "state": "open_draft_on_stale_base",
-      "required_next_gate": "After #3624, rebase and independently validate, or record an owner-approved per-guarantee disposition before closing: retain or explicitly reject the routed-versus-targetless dispatch receipt, routed-butler accountability, and non-destructive read recovery."
+      "status_scope": "subsequent_current_reconciliation",
+      "state": "owner_retain_all_reconciled_on_current_3624_authority_pending_final_review_ci_and_exact_base_merge",
+      "required_next_gate": "Run final exact-head independent review and terminal-green CI, then perform the exact-base merge audit. The owner already retained all three guarantees: targetless-first truthful dispatch receipt with one later durable-route upgrade, current-stream-only routed-butler accountability, and non-destructive read recovery."
     },
     "bead_bu_s3qvp": {
       "title": "Reconcile ambiguous dashboard terminal external actions",
@@ -92,5 +110,5 @@
     "traceability": "whole-tree authoring trace remains blocked by 2589 repository-wide errors; targeted strict validation is the authored-packet gate",
     "implementation_tests": "not yet applicable; requirements are planned and have expected pre-implementation citation warnings"
   },
-  "unresolved_owner_decision": "Approve a narrow dashboard operator-ingress exception, choose whether current maturity stops at route acknowledgement versus includes durable downstream session/reply outcome, choose generic-question behavior (truthful dead-letter/rephrase, bounded clarification, or constrained General authority), choose whether to authorize an anonymized send/reply/Stop canary after a remote-tailnet passive smoke, and after #3624 disposition #3618's truthful dispatch receipt, routed-butler accountability, and non-destructive read recovery: retain each in the surviving packet or explicitly reject it."
+  "unresolved_owner_decision": "Approve a narrow dashboard operator-ingress exception, choose whether current maturity stops at route acknowledgement versus includes durable downstream session/reply outcome, choose generic-question behavior (truthful dead-letter/rephrase, bounded clarification, or constrained General authority), and choose whether to authorize an anonymized send/reply/Stop canary after a remote-tailnet passive smoke."
 }

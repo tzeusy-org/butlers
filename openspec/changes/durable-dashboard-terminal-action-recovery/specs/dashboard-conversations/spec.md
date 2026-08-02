@@ -245,6 +245,69 @@ Scope: v1-mandatory
 - **AND** reload, reconnect, a repeat Stop, and ingress recovery SHALL not
   present or cause a new delivery
 
+### Requirement: Durable Current-Turn Dispatch Receipt
+
+For an SSE request that owns an immutable dashboard `message_id`, the API MAY
+emit `dispatch_accepted` only after its ingress is durably accepted: either
+`bind_ingress` returned `accepted` for the submitted request or
+`claim_ingress` reused an already-accepted request. Before emitting, the API
+SHALL take a safe durable `dispatch_status` observation. Its first emitted
+receipt SHALL be exactly `{"routed_butler": null}`, regardless of whether that
+observation is targetless or already has `target_kind: "route"` with a non-empty
+`target_butler`. Only a later, distinct safe status observation MAY emit exactly
+one named upgrade for that durable route; the first observation SHALL NOT emit
+both receipts. The API SHALL NOT derive a receipt target from `triage_decision`,
+`triage_target`, a historical
+`conversation.routed_butler`, or another message.
+
+Legacy streams without an immutable `message_id` SHALL emit no dispatch receipt.
+The API SHALL also emit no receipt when the status observation is unavailable or
+unsafe, when the turn is `cancelling`, cancelled, or ambiguous, or when its
+target is a terminal action rather than a route. Those terminal/cancellation
+facts retain their existing SSE error/outcome semantics; a dispatch receipt is
+not a terminal-action receipt or confirmation of an assistant reply.
+
+ID: REQ-dashboard-conversations-008
+Source: dashboard-turn cancellation migration core_193; design.md Decision 6;
+RFC 0007 Dashboard Conversation Endpoints
+Scope: v1-mandatory
+
+#### Scenario: Safe accepted ingress yields a targetless receipt
+
+- **WHEN** immutable ingress has bound as `accepted` and `dispatch_status`
+  safely observes an active turn with no target kind
+- **THEN** the stream SHALL emit one `dispatch_accepted` event with
+  `routed_butler: null`
+- **AND** a pre-routing `triage_target` or historical conversation route SHALL
+  not change that targetless receipt
+
+#### Scenario: Existing durable route begins targetless then upgrades
+
+- **WHEN** immutable ingress has been accepted and `dispatch_status` safely
+  observes `target_kind: "route"` with a non-empty `target_butler`
+- **THEN** the first `dispatch_accepted` event SHALL be
+  `{"routed_butler": null}`
+- **AND** only a later safe `dispatch_status` observation MAY emit one named
+  event naming that exact durable target
+- **AND** the first observation SHALL not emit both events
+
+#### Scenario: Targetless receipt upgrades only after a durable route claim
+
+- **WHEN** a stream has emitted a targetless receipt and a later safe
+  `dispatch_status` observation first exposes a non-empty durable route target
+- **THEN** the stream SHALL emit one named `dispatch_accepted` upgrade
+- **AND** it SHALL not emit a second named upgrade for that turn, including on a
+  third identical durable-route poll
+
+#### Scenario: Unsafe or non-message stream emits no receipt
+
+- **WHEN** a request has no immutable `message_id`, the durable status cannot
+  be observed safely, ingress is cancelling/cancelled/ambiguous, or the durable
+  target is a terminal action
+- **THEN** the stream SHALL not emit `dispatch_accepted`
+- **AND** it SHALL preserve the applicable existing Stop or error outcome rather
+  than substituting route/progress language
+
 ## MODIFIED Requirements
 
 ### Requirement: Conversation Reply Channel

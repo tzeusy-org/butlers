@@ -36,6 +36,50 @@ All endpoints and payload shapes below are mandatory. Absence or shape drift is 
 - `GET /api/butlers/{name}/mcp/tools` -> `ApiResponse<MCPToolInfo[]>`
 - `POST /api/butlers/{name}/mcp/call` -> `ApiResponse<MCPToolCallResponse>`
 
+## Dashboard Conversations Contract
+
+- `GET /api/butlers/{name}/conversations` ->
+  `PaginatedResponse<ConversationSummary>`; accepts `status` (`active` |
+  `archived` | `all`), `offset`, and `limit`.
+- `GET /api/butlers/{name}/conversations/search` ->
+  `PaginatedResponse<ConversationSearchResult>`; requires non-empty `q` and
+  accepts `offset` and `limit`.
+- `GET /api/butlers/{name}/conversations/{conversationId}/messages` ->
+  `PaginatedResponse<ConversationMessage>`; accepts `offset` and `limit`.
+- `POST /api/butlers/{name}/conversations` and `POST
+  /api/butlers/{name}/conversations/{conversationId}/messages` accept a
+  client-created immutable `message_id` and return `text/event-stream`.
+- `POST /api/butlers/{name}/conversation-turns/{messageId}/cancel` is the
+  canonical durable Stop endpoint for that immutable turn. The older
+  conversation-scoped route is compatibility-only.
+
+The conversation stream emits `conversation_created` for a new conversation,
+`dispatch_accepted`, `token`, `message_complete`, `error`, and `done`.
+`dispatch_accepted` has `{ routed_butler: string | null }` and is a transient,
+current-turn ingress receipt only. It may appear only after immutable ingress is
+durably accepted and `dispatch_status` safely observes that same active turn:
+
+- The first receipt is always `routed_butler: null`, even if that observation
+  already has `target_kind: "route"`; it means Switchboard accepted the turn,
+  not that the turn is permanently targetless.
+- Only a later distinct safe observation may issue one non-empty named upgrade
+  for the durable `route` target. The server never emits both receipts from one
+  observation or a second named upgrade.
+- The server does not emit it for a legacy stream without immutable message
+  identity, unavailable/unsafe status, cancellation/ambiguity, a terminal
+  action target, or based on classifier triage/stored conversation routing.
+
+The UI must use a named receipt only for the current stream's accountable Butler
+link; it must not infer a current target from `conversation.routed_butler`.
+While pending, it presents one polite atomic status (`Sending to Switchboard.`,
+the targetless acceptance text, or the named-route text) while treating typing
+dots as decorative. During cancellation settlement or confirmed Stop, the
+receipt status/dots and named link are suppressed so the Stop status is the
+single authoritative live region. A list, search, or history query error is never an empty
+result: show a retry that calls that query's `refetch`, retain cached same-thread
+data, draft, and selection, and keep optimistic messages scoped to their owning
+conversation.
+
 ## Sessions Contract
 
 - `GET /api/sessions` -> `PaginatedResponse<SessionSummary>`

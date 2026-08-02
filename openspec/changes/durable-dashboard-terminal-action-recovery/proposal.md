@@ -91,34 +91,29 @@ ambiguity as well.
 - new migration, reconciliation worker ownership, and fault-injection tests
 
 This is the implementation contract for existing P1 Bead `bu-s3qvp` ("Reconcile
-ambiguous dashboard terminal external actions"). It is currently an open live
-Bead; this planning run neither claims nor mutates it. Before implementation is
-dispatched, the owner must approve this changeset and create an explicit HOLD-
-gated execution graph rather than treating this text as a release gate. #3624
-must first resolve its processing-lease ownership race (a slow conversation
-anchor must not permit a displaced worker to invoke), reconcile RFC 0001/RFC
-0003/dashboard API inventory vocabulary with dashboard-only no-replay ambiguity,
-cover post-acceptance retry and cross-client `SESSION_CANCELLED`, and rebase with
-exact-head or merge-result evidence. After #3624 lands at that independently
-verified current-base head, this change must
-rebase on that exact landing commit and fully reconcile its replacement
-`dashboard-chat-ui` → `SSE Client Integration` requirement: preserve or
-explicitly owner-approve supersession of every landed Stop clause, including
-pre-conversation immutable identity, accessible pending intent, ingress/runtime
-fencing, terminal `SESSION_CANCELLED` SSE, and truthful non-calm failure. PR
-#3618 must then be explicitly rebased and independently reconciled against this
-delta, or closed as superseded only after the owner dispositions each of its
-distinct guarantees: the truthful `dispatch_accepted` routed-versus-targetless
-receipt and accessible announcement, accountable routed-butler link, and
-non-destructive conversation-list/history read recovery. After #3618 no longer
-actively modifies the same main requirements, every retained guarantee must be
-transplanted into the surviving delta and independently validated; an omitted
-guarantee needs an explicit owner rejection. The changes cannot remain competing
-active requirements.
-This change depends on the durable route/runtime authority in PR #3624 landing
-first and on `reconcile-dashboard-conversation-contracts` landing its RFC 0003
-vocabulary/provenance amendment before this change applies its separate RFC
-recovery amendment. No recovery implementation may silently duplicate or discard
-#3618's dashboard receipt/UI changes. It
-deliberately does not add a question lane, silently retry an unknown external
-action, or duplicate route-inbox cancellation work.
+ambiguous dashboard terminal external actions"). It remains an open live Bead;
+this reconciliation neither claims it nor declares its terminal-action recovery
+work complete.
+
+PR #3624's durable message-scoped ingress and Stop authority is the current
+base. The owner explicitly directed that #3618 be reconciled onto that authority
+and that all three of its distinct guarantees be retained: a truthful
+`dispatch_accepted` routed-versus-targetless receipt and accessible announcement,
+an accountable Butler link for the current turn only, and non-destructive
+conversation list/search/history recovery. The reconciled implementation keeps
+the #3624 `claim_ingress`/`bind_ingress`/`dispatch_status` and Stop outcomes
+intact. It emits a receipt only from a safe durable observation after accepted
+immutable ingress, never from triage, sticky history, a legacy request, an
+unavailable observation, cancellation/ambiguity, or a terminal-action target.
+The first safe receipt is always targetless even if that observation already
+records a durable route; only one later distinct status observation may emit the
+named route upgrade.
+The owner-approved clauses now live in this active delta and its supporting
+RFC/API contracts rather than in a competing dashboard change.
+
+This bounded reconciliation completes only the #3618 disposition gate. The
+remaining terminal-action recovery work still depends on the documented
+RFC 0003 vocabulary/provenance amendment and the HOLD-gated task graph. It does
+not add a question lane, silently retry an unknown external action, duplicate
+route-inbox cancellation work, or treat a truthful current-stream receipt as a
+durable terminal-action outcome.

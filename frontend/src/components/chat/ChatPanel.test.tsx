@@ -246,7 +246,7 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
 });
 
 // ---------------------------------------------------------------------------
-// Retained thread during conversation-key refetch (bu-zu265)
+// Conversation-key refetch isolation (bu-zu265)
 // ---------------------------------------------------------------------------
 
 const SWITCHING_CONVERSATIONS = [
@@ -333,11 +333,19 @@ function mockHooksForConversationRefetchGap() {
         isLoading: false,
       } as unknown as ReturnType<typeof useConversationMessages>;
     },
+    failNextThread() {
+      nextMessagesResult = {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useConversationMessages>;
+    },
   };
 }
 
 describe("ChatContent — conversation switch refetch floor (bu-zu265)", () => {
-  it("keeps the current thread visible while loading, then synchronizes the next thread", async () => {
+  it("hides the previous thread while loading, then synchronizes the next thread", async () => {
     const { resolveNextThread } = mockHooksForConversationRefetchGap();
     const view = renderChatContent();
 
@@ -346,10 +354,10 @@ describe("ChatContent — conversation switch refetch floor (bu-zu265)", () => {
     fireEvent.click(screen.getByText("Next thread"));
 
     // The conversation selection changes immediately and TanStack Query's
-    // pending result has no data. Retain the rendered thread instead of
-    // replacing it with a loading skeleton during that gap.
+    // pending result has no data. Never render the previous conversation's
+    // messages under the newly selected conversation's header.
     expect(screen.getAllByText("Next thread")).toHaveLength(2);
-    expect(screen.getByText("Retained while the next thread refetches")).toBeDefined();
+    expect(screen.queryByText("Retained while the next thread refetches")).toBeNull();
     expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
 
     resolveNextThread();
@@ -357,6 +365,23 @@ describe("ChatContent — conversation switch refetch floor (bu-zu265)", () => {
 
     await waitFor(() => expect(screen.getByText("Rendered when the next thread arrives")).toBeDefined());
     expect(screen.queryByText("Retained while the next thread refetches")).toBeNull();
+  });
+
+  it("does not expose the previous thread when the selected thread fails to load", async () => {
+    const { failNextThread } = mockHooksForConversationRefetchGap();
+    const view = renderChatContent();
+
+    expect(screen.getByText("Retained while the next thread refetches")).toBeDefined();
+    fireEvent.click(screen.getByText("Next thread"));
+
+    failNextThread();
+    view.rerenderChatContent();
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Could not load conversation history.",
+    );
+    expect(screen.queryByText("Retained while the next thread refetches")).toBeNull();
+    expect(screen.getAllByText("Next thread")).toHaveLength(2);
   });
 });
 
@@ -394,6 +419,141 @@ describe("ChatContent — conversation_created SSE handling", () => {
 
     expect(sendMessageMock).toHaveBeenCalledTimes(1);
     expect(sendMessageMock.mock.calls[0][1]).toBe("conv-new-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Conversation read recovery
+// ---------------------------------------------------------------------------
+
+function mockHistoryReadFailureAfterInitialLoad() {
+  const refetchMessages = vi.fn();
+  const historyMessage: Message = {
+    id: "history-message-1",
+    conversation_id: "conv-1",
+    role: "assistant",
+    content: "Already loaded history stays visible",
+    tool_calls: null,
+    error: null,
+    model: null,
+    input_tokens: null,
+    output_tokens: null,
+    duration_ms: null,
+    session_id: null,
+    request_id: null,
+    created_at: "2026-07-04T12:00:00.000Z",
+  };
+  const noConversationResult = {
+    data: { data: [], meta: {} },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  let activeConversationResult = {
+    data: { data: [historyMessage], meta: {} },
+    isLoading: false,
+    isError: false,
+    refetch: refetchMessages,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+
+  vi.mocked(useConversations).mockReturnValue({
+    data: { data: EXISTING_CONVERSATIONS, meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversations>);
+  vi.mocked(useConversationMessages).mockImplementation(
+    (_butlerName: string, conversationId: string | null) =>
+      (conversationId === "conv-1"
+        ? activeConversationResult
+        : noConversationResult) as ReturnType<typeof useConversationMessages>,
+  );
+  vi.mocked(useConversationSearch).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationSearch>);
+
+  return {
+    failHistory() {
+      activeConversationResult = {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        refetch: refetchMessages,
+      } as unknown as ReturnType<typeof useConversationMessages>;
+    },
+    refetchMessages,
+  };
+}
+
+describe("ChatContent — conversation read recovery", () => {
+  it("keeps loaded history and the draft visible when history refresh fails, with retry", async () => {
+    const { failHistory, refetchMessages } = mockHistoryReadFailureAfterInitialLoad();
+    const view = renderChatContent();
+
+    await waitFor(() => {
+      expect(screen.getByText("Already loaded history stays visible")).toBeDefined();
+    });
+
+    failHistory();
+    view.rerenderChatContent();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not load conversation history.");
+    const input = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    expect(input.value).toBe("Keep this draft");
+    expect(screen.getByText("Already loaded history stays visible")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(refetchMessages).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispatch_accepted SSE routing receipt
+// ---------------------------------------------------------------------------
+
+describe("ChatContent — dispatch_accepted routing receipt", () => {
+  it("announces and links the actual routed butler while waiting for a reply", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-route-1", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: "finance" } },
+    ];
+
+    renderChatContent();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "categorize this" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Routed to finance; waiting for a reply.",
+    );
+    const routedButler = screen.getByRole("link", { name: "finance" });
+    expect(routedButler.getAttribute("href")).toBe("/butlers/finance");
+  });
+
+  it("does not label a targetless acceptance as a domain route", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-route-2", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: null } },
+    ];
+
+    renderChatContent();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "capture this" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Received by Switchboard; waiting for a reply.",
+    );
+    expect(screen.queryByRole("link", { name: "switchboard" })).toBeNull();
   });
 });
 
@@ -685,7 +845,7 @@ describe("ChatContent — Stop button", () => {
     expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
   });
 
-  it("uses the immutable message id and visibly confirms Stop before new-conversation SSE starts", async () => {
+  it("keeps the optimistic message visible through a confirmed Stop before conversation_created", async () => {
     const { queryClient } = await sendAndEnterStreamingState({
       conversationCreated: false,
       token: false,
@@ -706,10 +866,63 @@ describe("ChatContent — Stop button", () => {
     const messageId = (createConversationMock.mock.calls[0][1] as { message_id: string }).message_id;
     expect(cancelConversationMessageTurnMock).toHaveBeenCalledWith("switchboard", messageId);
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(screen.getByText("hello")).toBeDefined();
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["conversation-messages", "switchboard", "conv-stop-1"],
     });
     expect(useConversationMessages).toHaveBeenLastCalledWith("switchboard", "conv-stop-1");
+  });
+
+  it("suppresses a named receipt during Stop settlement and confirmed cancellation", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-stop-route", title: null } },
+      { event: "dispatch_accepted", data: { routed_butler: "finance" } },
+    ];
+    renderChatContent();
+    fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+      target: { value: "route then stop" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
+      "Routed to finance; waiting for a reply.",
+    );
+    expect(screen.getByRole("link", { name: "finance" })).toBeDefined();
+
+    let resolveCancel!: (result: { cancelled: boolean; already_finished: boolean }) => void;
+    cancelConversationMessageTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.queryByTestId("chat-activity-status")).toBeNull();
+    expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
+
+    await act(async () => {
+      activeSseEventHandler?.({
+        event: "error",
+        data: { code: "SESSION_CANCELLED", message: "This turn was stopped before routing." },
+      });
+    });
+    expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.queryByTestId("chat-activity-status")).toBeNull();
+    expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
+
+    await act(async () => {
+      resolveCancel({ cancelled: false, already_finished: true });
+      await Promise.resolve();
+    });
   });
 
   it("accepts a terminal server cancellation after Stop was still settling", async () => {
@@ -843,6 +1056,7 @@ describe("ChatContent — Stop button", () => {
 
     expect(screen.queryByText("Cancelled by owner")).toBeNull();
     expect(screen.queryByTestId("chat-stop-button")).toBeNull();
+    expect(screen.getByText("hello")).toBeDefined();
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["conversations", "switchboard"],
     });
