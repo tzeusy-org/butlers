@@ -180,6 +180,16 @@ Development is spec-driven: normative requirements live in `openspec/` (see the 
 
 ## API Conventions
 
+### Dashboard API mount boundary
+
+The dashboard API is mounted at `/api` locally but may be path-mounted or use
+an absolute `VITE_API_URL` in deployed environments. Backend payloads that
+contain an API endpoint for the browser to follow must return the path below
+the API root (for example, `/data/export/download/...`), never a site-rooted
+`/api/...` path. Frontend requests use `apiFetch`; browser navigation or
+download links returned by the backend use `resolveApiHref`. Keep frontend
+routes separate from this convention.
+
 ### Cursor Pagination (BREAKING — Phase 2b, PR #1755)
 
 `GET /api/ingestion/events` uses **keyset (cursor) pagination** — the `page` param is gone (use `limit` and `cursor` instead).

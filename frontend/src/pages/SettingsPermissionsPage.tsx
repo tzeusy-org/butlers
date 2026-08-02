@@ -54,6 +54,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { apiFetch, resolveApiHref } from "@/api/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -169,13 +170,13 @@ async function testWebhook(id: string): Promise<{ ok: boolean; status_code: numb
 }
 
 async function postExport(scope: ExportScope): Promise<{ signed_url: string; expires_at: string }> {
-  const resp = await fetch("/api/data/export", {
+  const body = await apiFetch<{
+    data: { signed_url: string; expires_at: string };
+  }>("/data/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ scope }),
   });
-  if (!resp.ok) throw new Error(`POST /api/data/export failed: ${resp.status}`);
-  const body = await resp.json();
   return body.data;
 }
 
@@ -559,7 +560,7 @@ function DataOpsSection() {
         </div>
         {exportUrl && (
           <a
-            href={exportUrl}
+            href={resolveApiHref(exportUrl)}
             className="text-xs font-mono text-primary hover:underline break-all"
           >
             {exportUrl}

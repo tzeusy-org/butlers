@@ -369,3 +369,38 @@ describe("resolveApiHref", () => {
     expect(resolveApiHref(url)).toBe(url);
   });
 });
+
+describe("API-base resolution for backend export paths", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it.each([
+    { name: "the default API base", configuredBase: undefined, apiBase: "/api" },
+    {
+      name: "a relative path-mounted API base",
+      configuredBase: "/butlers-dev-api/api",
+      apiBase: "/butlers-dev-api/api",
+    },
+    {
+      name: "an absolute API base",
+      configuredBase: "https://example.test/butlers-dev-api/api",
+      apiBase: "https://example.test/butlers-dev-api/api",
+    },
+  ])("uses $name for export requests and download links", async ({ configuredBase, apiBase }) => {
+    vi.stubEnv("VITE_API_URL", configuredBase);
+    vi.resetModules();
+    const { apiFetch: isolatedApiFetch, resolveApiHref: isolatedResolveApiHref } = await import("./client.ts");
+    const exportPath = "/data/export/download/export-123?scope=all&issued_at=1&token=signed";
+
+    mockApiResponse({});
+    await isolatedApiFetch("/data/export", { method: "POST" });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      `${apiBase}/data/export`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(isolatedResolveApiHref(exportPath)).toBe(`${apiBase}${exportPath}`);
+  });
+});

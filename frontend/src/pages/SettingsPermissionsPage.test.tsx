@@ -37,6 +37,13 @@ vi.mock("@/hooks/use-audit-log", () => ({
   useAuditLog: useAuditLogMock,
 }));
 
+const apiFetchMock = vi.hoisted(() => vi.fn());
+const resolveApiHrefMock = vi.hoisted(() => vi.fn((path: string) => path));
+vi.mock("@/api/client", () => ({
+  apiFetch: apiFetchMock,
+  resolveApiHref: resolveApiHrefMock,
+}));
+
 // Mock sonner to prevent DOM errors in jsdom
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
@@ -222,6 +229,33 @@ describe("SettingsPermissionsPage — export section [bu-9q1dx.1]", () => {
     // Verify the scope select trigger is present (default = "All data")
     const trigger = await screen.findByRole("combobox");
     expect(trigger.textContent).toContain("All data");
+  });
+
+  it("posts and resolves an API-relative export download through the API client", async () => {
+    const signedUrl = "/data/export/download/export-123?scope=all&issued_at=1&token=signed";
+    const resolvedUrl = `/butlers-dev-api/api${signedUrl}`;
+    apiFetchMock.mockResolvedValueOnce({
+      data: { signed_url: signedUrl, expires_at: "2026-08-02T01:00:00Z" },
+    });
+    resolveApiHrefMock.mockReturnValueOnce(resolvedUrl);
+
+    await act(async () => {
+      renderPage();
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /export/i }));
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith("/data/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "all" }),
+      });
+    });
+    expect(resolveApiHrefMock).toHaveBeenCalledWith(signedUrl);
+
+    const downloadLink = await screen.findByRole("link", { name: signedUrl });
+    expect(downloadLink.getAttribute("href")).toBe(resolvedUrl);
   });
 });
 
