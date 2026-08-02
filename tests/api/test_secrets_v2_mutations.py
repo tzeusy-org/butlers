@@ -82,13 +82,22 @@ def _make_shared_pool(
     user_row: MagicMock | None = None,
     probe_row: MagicMock | None = None,
     execute_ok: bool = True,
+    oauth_app_configured: bool = False,
 ) -> AsyncMock:
-    """Build a mock shared-pool that supports fetchrow, execute, and transaction."""
+    """Build a mock shared-pool that supports fetchrow, execute, and transaction.
+
+    ``oauth_app_configured`` controls the ``butler_secrets`` lookup backing
+    CredentialStore.load — i.e. whether the deployment has this provider's
+    ``*_OAUTH_CLIENT_ID`` / ``*_OAUTH_CLIENT_SECRET`` stored.  reauthorize
+    pre-flights those before handing back a start URL.
+    """
     shared_pool = AsyncMock()
 
     async def _fetchrow(sql, *args):
         if "secret_probe_log" in sql:
             return probe_row
+        if "butler_secrets" in sql:
+            return _make_row(secret_value="app-cred") if oauth_app_configured else None
         if "entity_info" in sql or "entities" in sql:
             return user_row
         return None
@@ -130,6 +139,7 @@ def _make_db(
     probe_row: MagicMock | None = None,
     shared_pool_available: bool = True,
     execute_ok: bool = True,
+    oauth_app_configured: bool = False,
 ) -> MagicMock:
     """Build a mock DatabaseManager for mutation endpoint tests."""
     mock_db = MagicMock(spec=DatabaseManager)
@@ -141,6 +151,7 @@ def _make_db(
             user_row=user_row,
             probe_row=probe_row,
             execute_ok=execute_ok,
+            oauth_app_configured=oauth_app_configured,
         )
         mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
     else:
@@ -532,16 +543,17 @@ def test_probe_404_on_missing_credential():
 
 def test_reauthorize_returns_200_with_redirect_url():
     """reauthorize returns 200 with ApiResponse<{redirect_url}>; the redirect points to
-    /api/oauth/<provider>/start, carries page_of_origin=secrets, and includes an
-    account_hint when the credential has a label."""
+    the API-relative /oauth/<provider>/start (NO "/api" prefix — the client
+    prepends its own deployment-specific API base), carries page_of_origin=secrets,
+    and includes an account_hint when the credential has a label."""
     row = _make_entity_info_row(info_type="google_oauth_refresh", label="user@example.com")
-    mock_db = _make_db(user_row=row)
+    mock_db = _make_db(user_row=row, oauth_app_configured=True)
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/user/google/reauthorize")
     assert resp.status_code == 200
     redirect_url = resp.json()["data"]["redirect_url"]
-    assert "/api/oauth/google/start" in redirect_url, redirect_url
+    assert redirect_url.startswith("/oauth/google/start"), redirect_url
     assert "page_of_origin=secrets" in redirect_url, redirect_url
     assert (
         "account_hint=user%40example.com" in redirect_url
@@ -549,10 +561,62 @@ def test_reauthorize_returns_200_with_redirect_url():
     ), f"Expected account_hint in redirect_url: {redirect_url!r}"
 
 
+def test_reauthorize_redirect_url_carries_no_api_prefix():
+    """redirect_url must be API-relative, never rooted at a hardcoded "/api".
+
+    Regression: the endpoint used to return "/api/oauth/<provider>/start", which
+    the browser navigated to verbatim.  The dashboard is served behind
+    deployment-specific path mounts (/butlers → API at /butlers-api/api,
+    /butlers-dev → API at /butlers-dev-api/api), where no "/api" route exists —
+    so clicking "connect Spotify" landed on a dead URL.  The API mount point is
+    the client's knowledge, not the backend's: return the path below the API
+    root and let the client prepend its own base.
+    """
+    mock_db = _make_db(user_row=None, oauth_app_configured=True)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/spotify/reauthorize")
+    assert resp.status_code == 200, resp.text
+    redirect_url = resp.json()["data"]["redirect_url"]
+    assert not redirect_url.startswith("/api/"), (
+        f"redirect_url must not hardcode an /api prefix: {redirect_url!r}"
+    )
+
+
+def test_reauthorize_503s_when_provider_oauth_app_is_unconfigured(monkeypatch):
+    """No app credentials → 503 with the actionable "configure <KEY>" detail, and
+    no 'attempted' audit row.
+
+    The caller navigates the browser to redirect_url, so letting the start
+    endpoint raise this 503 would paint a raw JSON page outside the dashboard.
+    Pre-flighting it here keeps the message inside the Secrets page, and keeps
+    the audit trail honest: nothing was attempted.
+    """
+    mock_db = _make_db(user_row=None, oauth_app_configured=False)
+
+    audit_calls: list[dict] = []
+
+    async def _fake_append(pool, actor, action, **kwargs):
+        audit_calls.append({"action": action})
+        return 1
+
+    import butlers.api.routers.audit as _audit_mod
+
+    monkeypatch.setattr(_audit_mod, "append", _fake_append)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/spotify/reauthorize")
+    assert resp.status_code == 503, resp.text
+    detail = resp.json()["detail"]
+    assert "SPOTIFY_OAUTH_CLIENT_ID" in detail, detail
+    assert "SPOTIFY_OAUTH_CLIENT_SECRET" in detail, detail
+    assert audit_calls == [], audit_calls
+
+
 def test_reauthorize_writes_attempted_audit_row(monkeypatch):
     """reauthorize appends an 'attempted' audit row to public.audit_log."""
     row = _make_entity_info_row(info_type="google_oauth_refresh")
-    mock_db = _make_db(user_row=row)
+    mock_db = _make_db(user_row=row, oauth_app_configured=True)
 
     audit_calls: list[dict] = []
 
@@ -580,15 +644,15 @@ def test_reauthorize_first_time_connect_oauth_provider_returns_start_url():
     provider (e.g. spotify) used to 404 because the reauthorize endpoint required
     a pre-existing credential row.  Google bypassed this via its own start flow;
     the other OAuth providers had no equivalent.  Now every OAuth-kind provider
-    routes a first-time connect to /api/oauth/<provider>/start.
+    routes a first-time connect to the OAuth start endpoint.
     """
-    mock_db = _make_db(user_row=None)
+    mock_db = _make_db(user_row=None, oauth_app_configured=True)
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/user/spotify/reauthorize")
     assert resp.status_code == 200, resp.text
     redirect_url = resp.json()["data"]["redirect_url"]
-    assert "/api/oauth/spotify/start" in redirect_url, redirect_url
+    assert redirect_url.startswith("/oauth/spotify/start"), redirect_url
     assert "page_of_origin=secrets" in redirect_url, redirect_url
     # No stored account → no account_hint on a first-time connect.
     assert "account_hint" not in redirect_url, redirect_url
@@ -624,7 +688,7 @@ def test_reauthorize_unregistered_catalog_oauth_provider_returns_501():
 
 def test_reauthorize_first_time_connect_writes_attempted_audit_row(monkeypatch):
     """First-time connect (no row) still writes an 'attempted' audit row."""
-    mock_db = _make_db(user_row=None)
+    mock_db = _make_db(user_row=None, oauth_app_configured=True)
 
     audit_calls: list[dict] = []
 
@@ -644,13 +708,13 @@ def test_reauthorize_first_time_connect_writes_attempted_audit_row(monkeypatch):
 
 def test_reauthorize_google_first_time_connect_still_works():
     """Google's first-time connect path stays intact (start URL, not 404)."""
-    mock_db = _make_db(user_row=None)
+    mock_db = _make_db(user_row=None, oauth_app_configured=True)
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/user/google/reauthorize")
     assert resp.status_code == 200, resp.text
     redirect_url = resp.json()["data"]["redirect_url"]
-    assert "/api/oauth/google/start" in redirect_url, redirect_url
+    assert redirect_url.startswith("/oauth/google/start"), redirect_url
 
 
 def test_reauthorize_404_on_missing_non_oauth_credential():

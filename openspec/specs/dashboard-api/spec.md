@@ -830,7 +830,8 @@ The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action 
 
 #### Scenario: User credential mutations
 - **WHEN** `POST /api/secrets/user/<provider>/reauthorize?identity=<uuid>` is called
-- **THEN** the response is `ApiResponse<{ redirect_url: str }>` and the redirect URL begins the OAuth dance with `page_of_origin=secrets` carried in the state token
+- **THEN** the response is `ApiResponse<{ redirect_url: str }>` whose `redirect_url` is an API-relative path (`/oauth/<provider>/start?...`, with no `/api` prefix — the dashboard API's mount point is deployment-specific, so the client prepends its own API base) that begins the OAuth dance with `page_of_origin=secrets` carried in the state token
+- **AND** when the provider's OAuth app credentials are absent from the credential store the endpoint returns `503` naming the missing `*_OAUTH_CLIENT_ID` / `*_OAUTH_CLIENT_SECRET` keys and writes no `attempted` audit row, rather than handing back a start URL whose failure would render as a raw JSON page outside the dashboard
 - **AND** `POST /api/secrets/user/<provider>/rotate?identity=<uuid>` with body `{ value }` returns `ApiResponse<UserSecret>` (updated) and writes an audit row with action `rotated`
 - **AND** `POST /api/secrets/user/<provider>/disconnect?identity=<uuid>` returns `ApiResponse<{ status: "disconnected" }>` and writes an audit row with action `disconnected`
 - **AND** `POST /api/secrets/user/<provider>/probe?identity=<uuid>` returns `ApiResponse<TestResult>`, writes one row to `public.secret_probe_log`, and writes one audit row with action `verified` (on ok) or `failed` (on fail)

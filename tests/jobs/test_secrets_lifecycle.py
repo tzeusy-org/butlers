@@ -338,8 +338,24 @@ def test_compose_message_includes_deep_link_and_reauthorize_for_oauth():
     )
     message = _compose_message(snapshot, "http://localhost:41200")
     assert "http://localhost:41200/secrets?focus=u%3Agoogle" in message
-    assert "http://localhost:41200/api/oauth/google/start" in message
+    assert "Re-authorize from the credential card" in message
     assert "expiring soon" in message
+
+
+def test_compose_message_embeds_no_api_url():
+    """The message links to the dashboard only — never to an API endpoint.
+
+    DASHBOARD_URL is the *frontend* base (e.g. https://host/butlers-dev); the
+    API sits behind a separate deployment-specific mount (/butlers-dev-api/api)
+    that cannot be derived from it, so a composed "{dashboard_url}/api/oauth/…"
+    re-authorize link was dead on every path-mounted deployment.
+    """
+    snapshot = CredentialSnapshot(
+        key="u:spotify", family="user", label="Spotify", state="expired", provider="spotify"
+    )
+    message = _compose_message(snapshot, "https://host.example/butlers-dev")
+    assert "/api/" not in message, message
+    assert "https://host.example/butlers-dev/secrets?focus=u%3Aspotify" in message
 
 
 def test_compose_message_omits_reauthorize_for_non_oauth():
@@ -347,7 +363,7 @@ def test_compose_message_omits_reauthorize_for_non_oauth():
         key="c:claude-cli-token", family="cli", label="claude-cli-token", state="failing"
     )
     message = _compose_message(snapshot, "http://localhost:41200")
-    assert "/api/oauth/" not in message
+    assert "Re-authorize" not in message
     assert "failing its health probe" in message
 
 

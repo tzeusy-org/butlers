@@ -58,6 +58,8 @@ import {
   reauthorizeCliCredential,
   // Already-existing reauthorize (must not be duplicated)
   reauthorizeUserCredential,
+  // Deployment-prefix resolution for backend-returned redirect paths
+  resolveApiHref,
 } from "./client.ts";
 
 // ---------------------------------------------------------------------------
@@ -336,12 +338,34 @@ describe("reauthorizeCliCredential", () => {
 
 describe("reauthorizeUserCredential (existing — not duplicated)", () => {
   it("calls POST /api/secrets/user/<provider>/reauthorize?identity=<uuid>", async () => {
-    mockApiResponse({ redirect_url: "/api/oauth/google/start?page_of_origin=secrets" });
+    mockApiResponse({ redirect_url: "/oauth/google/start?page_of_origin=secrets" });
     const result = await reauthorizeUserCredential("google", "entity-uuid-42");
     const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/api/secrets/user/google/reauthorize");
     expect(url).toContain("identity=entity-uuid-42");
     expect(opts?.method).toBe("POST");
-    expect(result.data.redirect_url).toContain("/api/oauth/google/start");
+    expect(result.data.redirect_url).toContain("/oauth/google/start");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveApiHref — deployment-prefix resolution for backend redirect_urls
+// ---------------------------------------------------------------------------
+
+describe("resolveApiHref", () => {
+  it("prepends the API base to an API-relative redirect path", () => {
+    // The backend returns the path below the API root; only the client knows
+    // where the API is mounted for this deployment (bare /api locally,
+    // /butlers-api/api or /butlers-dev-api/api behind the path mounts), so the
+    // expectation is derived from the configured base rather than hardcoded.
+    const apiBase = import.meta.env.VITE_API_URL ?? "/api";
+    expect(resolveApiHref("/oauth/spotify/start?page_of_origin=secrets")).toBe(
+      `${apiBase}/oauth/spotify/start?page_of_origin=secrets`,
+    );
+  });
+
+  it("passes an absolute provider URL through untouched", () => {
+    const url = "https://accounts.spotify.com/authorize?client_id=test";
+    expect(resolveApiHref(url)).toBe(url);
   });
 });

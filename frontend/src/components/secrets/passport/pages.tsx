@@ -40,7 +40,7 @@ import {
 } from "./atoms.tsx";
 import { WhatBreaks, ConfirmImpact, type ConfirmImpactState } from "./WhatBreaks.tsx";
 import type { Identity } from "./types.ts";
-import { reauthorizeUserCredential, ApiError } from "@/api/client.ts";
+import { reauthorizeUserCredential, resolveApiHref, ApiError } from "@/api/client.ts";
 import {
   SECRET_TEMPLATES,
   SECRET_CATEGORIES,
@@ -1204,7 +1204,7 @@ export function PageUser({
       if (!resp?.data?.redirect_url) {
         throw new Error("No redirect URL returned from the server.");
       }
-      window.location.href = resp.data.redirect_url;
+      window.location.href = resolveApiHref(resp.data.redirect_url);
     } catch (err) {
       if (err instanceof ApiError && err.status === 501) {
         // Provider OAuth is not yet available — honest, non-error messaging.
@@ -3339,7 +3339,7 @@ export function PassportAddPanel({
       const resolvedIdentity = identity ?? ownerEntityId;
       const resp = await reauthorizeUserCredential(slug, resolvedIdentity);
       if (!resp?.data?.redirect_url) throw new Error("No redirect URL returned.");
-      window.location.assign(resp.data.redirect_url);
+      window.location.assign(resolveApiHref(resp.data.redirect_url));
     } catch (err) {
       setOauthError(err instanceof Error ? err.message : "Connection failed.");
       setOauthPending(false);

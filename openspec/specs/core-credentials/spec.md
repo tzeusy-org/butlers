@@ -436,7 +436,7 @@ This read-then-write debounce SHALL be operated with one dashboard-API replica. 
 - **AND** after confirmed direct delivery with a successful audit write it appends a new marker with `note="expired"`
 
 ### Requirement: Lifecycle Notification Remediation and Delivery Honesty
-The lifecycle notification SHALL identify the credential state and include a dashboard URL ending in `/secrets?focus=<URL-encoded canonical credential key>`. For a User credential whose catalogued provider is OAuth, it SHALL additionally include the clickable reauthorization URL `/api/oauth/<provider>/start`; non-OAuth credentials SHALL not receive that reauthorization URL.
+The lifecycle notification SHALL identify the credential state and include a dashboard URL ending in `/secrets?focus=<URL-encoded canonical credential key>`. For a User credential whose catalogued provider is OAuth, it SHALL additionally include a remediation line directing the owner to re-authorize from that credential card; non-OAuth credentials SHALL not receive that line. The notification SHALL NOT embed a dashboard-API URL: `DASHBOARD_URL` is the frontend base and the API is reachable only under a separate, deployment-specific mount that is not derivable from it, so a composed `/api/oauth/<provider>/start` link is dead on every path-mounted deployment. The `/secrets` deep link already lands on the card whose re-authorize control starts the same dance.
 
 Lifecycle delivery SHALL use medium-priority owner Telegram delivery and the established notify-boundary order: (1) Switchboard `delivery_preferences` quiet-hours evaluation, (2) owner quiet-hours and context-bus suppression, then (3) recipient resolution and delivery. The first gate defers by placing a `notify.v1` envelope on Switchboard's deferred-notifications queue; the next gates suppress and rely on a later lifecycle scan. Every delivery decision SHALL be recorded to the attention ledger as `delivered`, `deferred`, `suppressed`, or `failed` with a machine-readable reason. A ledger-write failure MUST NOT change the delivery decision or lifecycle-marker behavior it describes; `failed` and `deferred` are never interchangeable.
 
@@ -445,7 +445,7 @@ For a failed transport delivery, or an unexpected error after a complete message
 #### Scenario: The owner gets an actionable OAuth remediation message
 - **WHEN** `u:google` transitions to `expiring` and direct delivery succeeds
 - **THEN** the message includes `/secrets?focus=u%3Agoogle`
-- **AND** it includes `/api/oauth/google/start`
+- **AND** it includes a re-authorize remediation line and no `/api/` URL
 - **AND** the attention ledger records `outcome="delivered"` with a `state_transition:expiring` reason
 
 #### Scenario: Quiet hours defer without pretending the transition is delivered

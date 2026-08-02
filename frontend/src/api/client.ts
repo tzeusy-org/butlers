@@ -435,6 +435,22 @@ import type {
 const API_BASE_URL: string =
   import.meta.env.VITE_API_URL ?? "/api";
 
+/**
+ * Resolve an API-relative path (as carried in a backend `redirect_url`) into a
+ * URL the browser can actually navigate to.
+ *
+ * The backend cannot know where its own API is mounted: the same app is served
+ * at `/butlers` (API at `/butlers-api/api`) and `/butlers-dev` (API at
+ * `/butlers-dev-api/api`) behind Tailscale path mounts, so a backend-built
+ * `/api/...` path is a dead link on every deployment except a bare-root one.
+ * Backend payloads therefore carry the path *below* the API root and the client
+ * prepends `API_BASE_URL`. Absolute URLs pass through untouched.
+ */
+export function resolveApiHref(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_BASE_URL}${path}`;
+}
+
 // ---------------------------------------------------------------------------
 // Error class
 // ---------------------------------------------------------------------------

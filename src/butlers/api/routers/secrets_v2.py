@@ -2854,7 +2854,14 @@ class ReauthorizeResponse(BaseModel):
     """Response payload for POST /api/secrets/user/<provider>/reauthorize."""
 
     redirect_url: str
-    """URL the caller should redirect to, beginning the OAuth dance."""
+    """API-relative path the caller should redirect to, beginning the OAuth dance.
+
+    The path is relative to the API root (``/oauth/<provider>/start?...``), NOT
+    absolute from the site root.  The API is mounted under a deployment-specific
+    prefix (``/butlers-api/api``, ``/butlers-dev-api/api``, bare ``/api``) that
+    the backend cannot know, so the client prepends its own API base URL — see
+    ``resolveApiHref`` in ``frontend/src/api/client.ts``.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -4581,11 +4588,13 @@ async def reauthorize_user_credential(
 ) -> ApiResponse[ReauthorizeResponse]:
     """Initiate an OAuth (re)authorization dance for a user-scoped credential.
 
-    Builds and returns a ``redirect_url`` pointing to
-    ``/api/oauth/<provider>/start?page_of_origin=secrets`` (plus any
-    account hint derived from the credential's stored label/email).  The
-    caller is expected to redirect the browser to this URL, which begins
-    the OAuth dance.  The OAuth callback will redirect back to
+    Builds and returns an API-relative ``redirect_url`` pointing to
+    ``/oauth/<provider>/start?page_of_origin=secrets`` (plus any account hint
+    derived from the credential's stored label/email).  The caller resolves it
+    against its own API base URL — the API mount prefix is deployment-specific
+    (``/butlers-api/api`` vs ``/butlers-dev-api/api``) and unknowable here — and
+    redirects the browser there, which begins the OAuth dance.  The OAuth
+    callback will redirect back to
     ``/secrets?focus=u:<provider>&toast=connected`` on success.
 
     First-time connect: when no ``entity_info`` row exists yet (the credential
@@ -4596,6 +4605,13 @@ async def reauthorize_user_credential(
     previously this 404'd for non-Google providers because Google had a separate
     bypass.  Non-OAuth providers (token / apikey / webhook) still return 404 on a
     missing credential, since they are established by writing a value, not a dance.
+
+    Unconfigured OAuth app: when the provider's ``*_OAUTH_CLIENT_ID`` /
+    ``*_OAUTH_CLIENT_SECRET`` are absent from the credential store this returns
+    503 with the same actionable "configure … on the Secrets page" detail the
+    start endpoint would have produced.  Because the caller navigates the
+    browser to ``redirect_url``, letting that failure happen at /start would
+    render a raw JSON page outside the dashboard; failing here keeps it inline.
 
     Appends an ``attempted`` audit row (because the reauth dance has been
     initiated but not yet completed).
@@ -4645,7 +4661,10 @@ async def reauthorize_user_credential(
     # would land the browser on a confusing JSON "unknown_provider" page.  Detect
     # that case here and return a clear 501 with a stable error code so the FE can
     # show an honest "<Provider> connect is not yet available" message instead.
-    from butlers.api.routers.oauth import _PROVIDER_REGISTRY  # noqa: PLC0415
+    from butlers.api.routers.oauth import (  # noqa: PLC0415
+        _PROVIDER_REGISTRY,
+        _resolve_provider_credentials,
+    )
 
     if provider not in _PROVIDER_REGISTRY:
         meta = PROVIDER_CATALOG.get(provider)
@@ -4655,6 +4674,16 @@ async def reauthorize_user_credential(
             detail=f"{label} OAuth connect is not yet available.",
         )
 
+    # Pre-flight the provider's OAuth app credentials, using the very resolver
+    # the start endpoint runs (same butler_secrets keys, including Google's).
+    # The caller *navigates* the browser to the returned redirect_url, so a
+    # start endpoint that 503s on unconfigured app credentials would render its
+    # error as a raw JSON page outside the dashboard.  Failing here instead
+    # surfaces the same actionable "configure <KEY>… on the Secrets page"
+    # message as an API error the page can show inline.  It also keeps the
+    # 'attempted' audit row below honest: no dance was ever initiated.
+    await _resolve_provider_credentials(_PROVIDER_REGISTRY[provider], db)
+
     # Build the OAuth start URL.  page_of_origin=secrets so the callback
     # routes the user back to the /secrets page on completion.
     params: dict[str, str] = {"page_of_origin": "secrets"}
@@ -4662,7 +4691,9 @@ async def reauthorize_user_credential(
         # The label field stores the account email for OAuth credentials.
         params["account_hint"] = detail.label
 
-    redirect_url = f"/api/oauth/{provider}/start?{urlencode(params)}"
+    # API-relative (no "/api" prefix): the client prepends its own API base URL,
+    # which varies per deployment mount (/butlers-api/api, /butlers-dev-api/api).
+    redirect_url = f"/oauth/{provider}/start?{urlencode(params)}"
 
     # Audit — attempted (dance initiated, not yet completed).
     audit_note = (
