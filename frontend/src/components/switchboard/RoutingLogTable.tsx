@@ -10,12 +10,13 @@
 
 import { useState } from "react";
 
-import type { RoutingLogParams } from "@/api/types.ts";
+import type { RoutingEntry, RoutingLogParams } from "@/api/types.ts";
 import { Time } from "@/components/ui/time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
+import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -65,6 +66,63 @@ function EmptyRoutingLogState() {
   );
 }
 
+function RoutingLogEntriesTable({
+  entries,
+  isLoading,
+}: {
+  entries: RoutingEntry[];
+  isLoading: boolean;
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Timestamp</TableHead>
+          <TableHead>Source</TableHead>
+          <TableHead>Target</TableHead>
+          <TableHead>Tool</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead>Duration</TableHead>
+          <TableHead>Error</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {isLoading ? (
+          <SkeletonRows />
+        ) : (
+          entries.map((entry) => (
+            <TableRow key={entry.id}>
+              <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                <Time value={entry.created_at} mode="absolute" precision="second" compact />
+              </TableCell>
+              <TableCell className="text-sm font-medium">
+                {entry.source_butler}
+              </TableCell>
+              <TableCell className="text-sm font-medium">
+                {entry.target_butler}
+              </TableCell>
+              <TableCell>
+                <code className="text-xs">{entry.tool_name}</code>
+              </TableCell>
+              <TableCell>
+                <Badge variant={entry.success ? "default" : "destructive"}>
+                  {entry.success ? "OK" : "Failed"}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-sm text-muted-foreground">
+                {entry.duration_ms != null ? `${entry.duration_ms}ms` : "\u2014"}
+              </TableCell>
+              <TableCell className="max-w-xs truncate text-xs text-destructive">
+                {entry.error ?? "\u2014"}
+              </TableCell>
+            </TableRow>
+          ))
+        )}
+      </TableBody>
+    </Table>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // RoutingLogTable
 // ---------------------------------------------------------------------------
@@ -81,13 +139,9 @@ export default function RoutingLogTable() {
     limit: PAGE_SIZE,
   };
 
-  const { data, isLoading } = useRoutingLog(params);
+  const { data, isLoading, isError, error, refetch } = useRoutingLog(params);
 
-  const entries = data?.data ?? [];
-  const total = data?.meta?.total ?? 0;
-  const hasMore = data?.meta?.has_more ?? false;
-
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = data ? Math.max(1, Math.ceil(data.meta.total / PAGE_SIZE)) : 1;
   const currentPage = page + 1;
 
   return (
@@ -127,60 +181,33 @@ export default function RoutingLogTable() {
         )}
       </div>
 
-      {/* Table or empty state */}
-      {!isLoading && entries.length === 0 ? (
-        <EmptyRoutingLogState />
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Timestamp</TableHead>
-              <TableHead>Source</TableHead>
-              <TableHead>Target</TableHead>
-              <TableHead>Tool</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Duration</TableHead>
-              <TableHead>Error</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <SkeletonRows />
-            ) : (
-              entries.map((entry) => (
-                <TableRow key={entry.id}>
-                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                    <Time value={entry.created_at} mode="absolute" precision="second" compact />
-                  </TableCell>
-                  <TableCell className="text-sm font-medium">
-                    {entry.source_butler}
-                  </TableCell>
-                  <TableCell className="text-sm font-medium">
-                    {entry.target_butler}
-                  </TableCell>
-                  <TableCell>
-                    <code className="text-xs">{entry.tool_name}</code>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={entry.success ? "default" : "destructive"}>
-                      {entry.success ? "OK" : "Failed"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {entry.duration_ms != null ? `${entry.duration_ms}ms` : "\u2014"}
-                  </TableCell>
-                  <TableCell className="max-w-xs truncate text-xs text-destructive">
-                    {entry.error ?? "\u2014"}
-                  </TableCell>
-                </TableRow>
-              ))
+      <QueryBoundary
+        isLoading={isLoading}
+        isError={isError && !data}
+        error={error}
+        isEmpty={data != null && !isError && data.data.length === 0}
+        onRetry={() => void refetch()}
+        sourceLabel="routing log"
+        loadingFallback={<RoutingLogEntriesTable entries={[]} isLoading />}
+        emptyFallback={<EmptyRoutingLogState />}
+      >
+        {data && (
+          <>
+            {isError && (
+              <SourceDegradedNote
+                label="Routing log"
+                detail="could not be reached"
+                onRetry={() => void refetch()}
+                testId="routing-log-degraded"
+              />
             )}
-          </TableBody>
-        </Table>
-      )}
+            <RoutingLogEntriesTable entries={data.data} isLoading={false} />
+          </>
+        )}
+      </QueryBoundary>
 
-      {/* Pagination */}
-      {total > 0 && (
+      {/* Pagination stays available when a later page is temporarily empty. */}
+      {data && data.meta.total > 0 && (
         <div className="flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
             Page {currentPage} of {totalPages}
@@ -197,7 +224,7 @@ export default function RoutingLogTable() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!hasMore}
+              disabled={!data.meta.has_more}
               onClick={() => setPage((p) => p + 1)}
             >
               Next

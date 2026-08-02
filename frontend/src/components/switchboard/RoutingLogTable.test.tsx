@@ -1,28 +1,36 @@
 // @vitest-environment jsdom
 /**
- * RoutingLogTable — focused tests for empty-state rendering.
+ * RoutingLogTable — focused tests for query-state rendering.
  *
  * Tests cover:
- *  - Empty state renders when hook returns zero entries (not loading)
+ *  - Empty state renders only for a defined successful zero-entry response
  *  - Empty state title and description contain expected text
  *  - Empty state copy contains no user-visible em-dash (—)
  *  - Table renders (not empty state) when entries are present
  *  - Table (skeleton) renders while loading
+ *  - Initial query errors and failed cached refetches remain visibly degraded
  *
  * bead: bu-vbizz
  */
 
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import RoutingLogTable from "@/components/switchboard/RoutingLogTable";
 import { useRoutingLog } from "@/hooks/use-general";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
 
 vi.mock("@/hooks/use-general", () => ({
   useRoutingLog: vi.fn(),
 }));
 
 type UseRoutingLogResult = ReturnType<typeof useRoutingLog>;
+
+const mountedTables: Array<{ container: HTMLDivElement; root: Root }> = [];
 
 function setQueryState(state: Partial<UseRoutingLogResult>) {
   vi.mocked(useRoutingLog).mockReturnValue({
@@ -36,6 +44,19 @@ function setQueryState(state: Partial<UseRoutingLogResult>) {
 
 function renderTable(): string {
   return renderToStaticMarkup(<RoutingLogTable />);
+}
+
+async function mountTable(): Promise<HTMLDivElement> {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  mountedTables.push({ container, root });
+
+  await act(async () => {
+    root.render(<RoutingLogTable />);
+  });
+
+  return container;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,9 +78,18 @@ const SAMPLE_ENTRY = {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("RoutingLogTable — empty state", () => {
+describe("RoutingLogTable — query states", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  afterEach(() => {
+    for (const { container, root } of mountedTables.splice(0)) {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
   });
 
   it("renders the empty state with expected copy when there are no entries and not loading", () => {
@@ -127,14 +157,127 @@ describe("RoutingLogTable — empty state", () => {
     expect(html).toContain("get_status");
   });
 
-  it("renders no data, undefined state as empty state", () => {
+  it("renders an initial query error with Retry instead of the empty state", async () => {
+    const refetch = vi.fn();
     setQueryState({
       data: undefined,
       isLoading: false,
+      isError: true,
+      error: new Error("routing log unavailable"),
+      refetch,
     });
 
-    // data?.data ?? [] resolves to [] when data is undefined
-    const html = renderTable();
-    expect(html).toContain("No routing log entries found");
+    const container = await mountTable();
+    expect(container.querySelector('[role="alert"]')).toBeTruthy();
+    expect(container.textContent).toContain("Couldn't reach routing log");
+    expect(container.textContent).toContain("routing log unavailable");
+    expect(container.textContent).not.toContain("No routing log entries found");
+
+    const retry = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Retry",
+    );
+    expect(retry).toBeTruthy();
+    act(() => {
+      retry!.click();
+    });
+    expect(refetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps cached rows visibly degraded when a refetch fails", async () => {
+    const refetch = vi.fn();
+    setQueryState({
+      data: {
+        data: [SAMPLE_ENTRY],
+        meta: { total: 1, offset: 0, limit: 50, has_more: false },
+      },
+      isLoading: false,
+      isError: true,
+      error: new Error("routing log refresh failed"),
+      refetch,
+    });
+
+    const container = await mountTable();
+    const degraded = container.querySelector('[data-testid="routing-log-degraded"]');
+    expect(degraded).toBeTruthy();
+    expect(degraded?.getAttribute("role")).toBe("alert");
+    expect(degraded?.textContent).toContain("Routing log: could not be reached");
+    expect(container.textContent).toContain("memory");
+    expect(container.textContent).toContain("Page 1 of 1");
+    expect(container.textContent).not.toContain("Couldn't reach routing log");
+
+    const retry = degraded?.querySelector("button");
+    expect(retry).toBeTruthy();
+    act(() => {
+      retry!.click();
+    });
+    expect(refetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a cached empty response visibly degraded when a refetch fails", async () => {
+    const refetch = vi.fn();
+    setQueryState({
+      data: {
+        data: [],
+        meta: { total: 0, offset: 0, limit: 25, has_more: false },
+      },
+      isLoading: false,
+      isError: true,
+      error: new Error("routing log refresh failed"),
+      refetch,
+    });
+
+    const container = await mountTable();
+    const degraded = container.querySelector('[data-testid="routing-log-degraded"]');
+
+    expect(degraded).toBeTruthy();
+    expect(degraded?.getAttribute("role")).toBe("alert");
+    expect(container.textContent).toContain("Routing log: could not be reached");
+    expect(container.textContent).not.toContain("No routing log entries found");
+    expect(container.querySelector("table")).toBeTruthy();
+
+    const retry = degraded?.querySelector("button");
+    expect(retry).toBeTruthy();
+    act(() => {
+      retry!.click();
+    });
+    expect(refetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Previous available on a successful empty later page", async () => {
+    vi.mocked(useRoutingLog).mockImplementation((params) => {
+      const isSecondPage = params?.offset === 25;
+      return {
+        data: isSecondPage
+          ? {
+              data: [],
+              meta: { total: 26, offset: 25, limit: 25, has_more: false },
+            }
+          : {
+              data: [SAMPLE_ENTRY],
+              meta: { total: 26, offset: 0, limit: 25, has_more: true },
+            },
+        isLoading: false,
+        isError: false,
+        error: null,
+      } as UseRoutingLogResult;
+    });
+
+    const container = await mountTable();
+    const next = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Next",
+    );
+    expect(next).toBeTruthy();
+
+    act(() => {
+      next!.click();
+    });
+
+    expect(container.textContent).toContain("No routing log entries found");
+    expect(container.textContent).toContain("Page 2 of 2");
+    const previous = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Previous",
+    );
+    expect(previous).toBeTruthy();
+    expect((previous as HTMLButtonElement).disabled).toBe(false);
   });
 });
