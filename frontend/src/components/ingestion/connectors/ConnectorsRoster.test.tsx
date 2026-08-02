@@ -161,7 +161,6 @@ const DORMANT_PROFILE: ConnectorProfile = {
   channel: 'long-poll',
   provider: 'homeassistant',
   display_name: 'Home Assistant',
-  supports_backfill: false,
 }
 
 // ---------------------------------------------------------------------------
@@ -650,7 +649,6 @@ describe('honest metadata', () => {
     channel: 'email',
     provider: 'google',
     display_name: 'Gmail',
-    supports_backfill: true,
   }
 
   it('shows the real catalog channel when the connector_type is in the catalog', () => {

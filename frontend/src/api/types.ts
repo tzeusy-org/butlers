@@ -3929,7 +3929,6 @@ export interface ConnectorProfile {
   channel: string;
   provider: string;
   display_name: string;
-  supports_backfill: boolean;
 }
 
 // ---------------------------------------------------------------------------

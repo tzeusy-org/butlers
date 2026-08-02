@@ -1515,7 +1515,7 @@ async def reauth_connector(
 # whether any instance is currently registered in connector_registry.
 # The response is safe to cache on the client for at least 60 seconds.
 #
-# Fields: connector_type, channel, provider, display_name, supports_backfill
+# Fields: connector_type, channel, provider, display_name
 # ---------------------------------------------------------------------------
 
 _CONNECTOR_CATALOG: list[dict[str, Any]] = [
@@ -1524,91 +1524,78 @@ _CONNECTOR_CATALOG: list[dict[str, Any]] = [
         "channel": "email",
         "provider": "google",
         "display_name": "Gmail",
-        "supports_backfill": True,
     },
     {
         "connector_type": "telegram_bot",
         "channel": "telegram",
         "provider": "telegram",
         "display_name": "Telegram Bot",
-        "supports_backfill": False,
     },
     {
         "connector_type": "telegram_user_client",
         "channel": "telegram",
         "provider": "telegram",
         "display_name": "Telegram User Client",
-        "supports_backfill": True,
     },
     {
         "connector_type": "home_assistant",
         "channel": "home-assistant",
         "provider": "home_assistant",
         "display_name": "Home Assistant",
-        "supports_backfill": False,
     },
     {
         "connector_type": "discord_user",
         "channel": "discord",
         "provider": "discord",
         "display_name": "Discord User Client",
-        "supports_backfill": True,
     },
     {
         "connector_type": "spotify",
         "channel": "spotify",
         "provider": "spotify",
         "display_name": "Spotify",
-        "supports_backfill": False,
     },
     {
         "connector_type": "owntracks",
         "channel": "owntracks",
         "provider": "owntracks",
         "display_name": "OwnTracks",
-        "supports_backfill": False,
     },
     {
         "connector_type": "whatsapp_user_client",
         "channel": "whatsapp",
         "provider": "whatsapp",
         "display_name": "WhatsApp User Client",
-        "supports_backfill": False,
     },
     {
         "connector_type": "steam",
         "channel": "steam",
         "provider": "steam",
         "display_name": "Steam",
-        "supports_backfill": False,
     },
     {
         "connector_type": "google_calendar",
         "channel": "google_calendar",
         "provider": "google",
         "display_name": "Google Calendar",
-        "supports_backfill": True,
     },
     {
         "connector_type": "google_drive",
         "channel": "google_drive",
         "provider": "google",
         "display_name": "Google Drive",
-        "supports_backfill": True,
     },
     {
         "connector_type": "google_health",
         "channel": "google_health",
         "provider": "google",
         "display_name": "Google Health",
-        "supports_backfill": True,
     },
     {
         "connector_type": "activitywatch",
         "channel": "activitywatch",
         "provider": "activitywatch",
         "display_name": "ActivityWatch",
-        "supports_backfill": False,
     },
 ]
 
@@ -1620,7 +1607,6 @@ class ConnectorProfile(BaseModel):
     channel: str
     provider: str
     display_name: str
-    supports_backfill: bool
 
 
 class ConnectorAvailableResponse(BaseModel):

@@ -2,8 +2,8 @@
 
 Covers:
 - Returns 200 with an array of connector profiles
-- Each profile has required fields (connector_type, channel, provider, display_name,
-  supports_backfill)
+- Each profile has exactly four discovery fields (connector_type, channel,
+  provider, display_name)
 - Response does NOT depend on any database / connector_registry rows
 - Known connector types are present in the response
 
@@ -33,7 +33,7 @@ async def test_available_connectors_200(app):
 
 
 async def test_available_connectors_schema(app):
-    """Each profile has required fields per spec."""
+    """Each profile has exactly the discovery fields required by the spec."""
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -42,21 +42,19 @@ async def test_available_connectors_schema(app):
     assert resp.status_code == 200
     profiles = resp.json()["data"]
 
-    required_fields = {"connector_type", "channel", "provider", "display_name", "supports_backfill"}
+    required_fields = {"connector_type", "channel", "provider", "display_name"}
     for profile in profiles:
-        for field in required_fields:
-            assert field in profile, f"Profile missing required field: {field}"
-        assert isinstance(profile["supports_backfill"], bool)
+        assert set(profile) == required_fields
 
 
 @pytest.mark.parametrize(
     "connector_type,expected",
     [
-        ("gmail", {"channel": "email", "provider": "google", "supports_backfill": True}),
+        ("gmail", {"channel": "email", "provider": "google"}),
         ("telegram_bot", {"channel": "telegram"}),
         (
             "activitywatch",
-            {"channel": "activitywatch", "provider": "activitywatch", "supports_backfill": False},
+            {"channel": "activitywatch", "provider": "activitywatch"},
         ),
     ],
 )
