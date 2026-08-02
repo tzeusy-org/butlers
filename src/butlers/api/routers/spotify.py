@@ -28,7 +28,8 @@ The bootstrap flow:
      - Returns SpotifyConnectionState plus user info.
 
   5. POST /api/connectors/spotify/disconnect
-     - Deletes all Spotify credential keys from CredentialStore.
+     - Clears OAuth tokens and granted permissions while preserving client_id
+       for a later reconnect.
 
 Environment variables:
   SPOTIFY_OAUTH_REDIRECT_URI  — Callback URL registered with Spotify

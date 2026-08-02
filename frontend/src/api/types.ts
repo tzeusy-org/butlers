@@ -4990,7 +4990,7 @@ export interface SpotifyConfigResponse {
   configured: boolean;
 }
 
-/** Response from POST /api/spotify/disconnect */
+/** Response from POST /api/connectors/spotify/disconnect */
 export interface SpotifyDisconnectResponse {
   disconnected: boolean;
 }
