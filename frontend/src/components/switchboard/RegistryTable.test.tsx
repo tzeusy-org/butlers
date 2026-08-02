@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+
+import { fireEvent, render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -256,15 +259,50 @@ describe("RegistryTable", () => {
     expect(html).toContain("switchboard");
   });
 
-  it("renders empty state when data is undefined and not loading", () => {
+  it("renders an accessible retryable alert instead of an empty state when the initial registry query fails", () => {
+    const refetch = vi.fn();
     setQueryState({
       data: undefined,
       isLoading: false,
+      isError: true,
+      error: new Error("Registry service unavailable"),
+      refetch,
     });
 
-    // response?.data ?? [] resolves to [] when data is undefined
-    const html = renderTable();
-    expect(html).toContain("No butlers registered in the switchboard");
+    const view = render(<RegistryTable />);
+
+    expect(view.getByRole("alert").textContent).toContain("Couldn't reach Switchboard registry");
+    expect(view.getByRole("alert").textContent).toContain("Registry service unavailable");
+    expect(view.queryByText("No butlers registered in the switchboard.")).toBeNull();
+
+    fireEvent.click(view.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledOnce();
+
+    view.unmount();
+  });
+
+  it("keeps cached registry rows visible and names a failed background refetch", () => {
+    const refetch = vi.fn();
+    setQueryState({
+      data: { data: [SAMPLE_REGISTRY_ENTRY], meta: {} },
+      isLoading: false,
+      isError: true,
+      error: new Error("Registry service unavailable"),
+      refetch,
+    });
+
+    const view = render(<RegistryTable />);
+    const degradedNote = view.getByTestId("registry-source-degraded");
+
+    expect(view.getByText("switchboard")).toBeTruthy();
+    expect(degradedNote.getAttribute("role")).toBe("alert");
+    expect(degradedNote.textContent).toContain("Switchboard registry");
+    expect(view.queryByText("No butlers registered in the switchboard.")).toBeNull();
+
+    fireEvent.click(view.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledOnce();
+
+    view.unmount();
   });
 
   // Regression test: butlers-992
