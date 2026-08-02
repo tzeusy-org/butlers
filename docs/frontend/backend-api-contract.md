@@ -121,6 +121,82 @@ Required query support:
 - `trace` (OpenTelemetry trace scope; matching sessions and trace-attributed
   notifications only)
 
+## Chronicles Editorial Briefing Contract
+
+- `GET /api/chronicler/briefing?date={YYYY-MM-DD}&tz={IANA timezone}` ->
+  unwrapped `ChroniclesBriefing`.
+- `date` is a local calendar day interpreted in `tz`. The dashboard always
+  passes its owner-timezone selection explicitly; when omitted, the endpoint
+  uses its defensive previous-UTC-date fallback. `tz` defaults to Chronicler's
+  stable owner-timezone fallback.
+- `state_class` is a closed union:
+  - content states: `urgent` | `busy` | `mild` | `quiet`;
+  - non-content states: `no_data` | `unavailable` | `degraded`.
+
+The non-content states are an explicit response union, not a quiet-day
+variant. They carry deterministic headline and voice copy, empty KPI/recent
+day content, and may retain named source-error attention rows. Clients must
+not display cached or stale editorial prose, KPI, recent-days rows, or the
+Chronicles drilldown for a non-content state. An unknown or missing
+`state_class` is malformed input and must fail closed as the deterministic
+`unavailable` presentation.
+
+Coverage and cache precedence are fixed:
+
+1. Chronicler first resolves durable local coverage for the exact requested
+   local day. Only an authoritative witness (`day_close_success`, an admitted
+   day-close cache, active `activity`/`evidence` episode proof) counts;
+   calendar intent, tombstones, and retained `legacy_unverified` rows do not.
+   A cache witness additionally requires an active, admitted row whose
+   `day_close:{date}` key and `date_label` agree with the witness and whose
+   `[start_at, end_at)` exactly equals that date's owner-timezone local-day UTC
+   window; a UTC-midnight window is not proof for a non-UTC owner.
+2. A settled day before the authoritative floor returns `no_data`; a gap at or
+   after the floor, or no floor, returns `unavailable`. A failed owned read
+   returns `unavailable` or `degraded` as applicable.
+3. Only a covered, available content state may read a day-close cache. Its
+   deterministic date/admission check runs before freshness: an invalid or
+   mismatched row is never rendered; a valid stale row is marked `stale`; a
+   miss uses the templated fallback. The endpoint never initiates an LLM call.
+
+`earliest_date` is the earliest authoritatively covered local date for the
+requested timezone, or `null` when there is no durable coverage proof. It
+blocks additional backward navigation, but it does not rewrite a valid
+pre-floor deep link: `/chronicles?date=<pre-floor>` remains in the URL and
+receives the explicit `no_data` state so a user can move forward again. Future
+dates are clamped to the most-recent settled day.
+
+`recent_days` contains only exact authoritative witness dates in the recent
+window. It is archive navigation evidence, not an episode-derived rolling list;
+the client must not synthesize omitted dates.
+
+The client must render briefing editorial content only when response `date`
+equals the selected URL date. A date-keyed query may retain prior placeholder
+data during navigation; that transition must use a safe loading presentation,
+not prior prose, KPI, recent-day rows, cache state, or drilldown content.
+
+## Chronicler Day-Close Refresh Contract
+
+- `POST /api/chronicler/aggregate/day-close/refresh` accepts
+  `{date: YYYY-MM-DD, tz: IANA timezone}` and reuses the scheduled
+  `chronicler_day_close` path; the dashboard has no separate LLM route.
+- The target must be a settled historical local day: `date` is strictly before
+  the server's current date in the supplied `tz`. Today and future targets
+  return `400` with `error.code = "day_close_not_settled"` before any
+  rate-limit lookup or dispatch. A valid historical target continues to the
+  normal rate-limit and dispatch path.
+- A prose-producing or contained-invalid success returns
+  `{cache_key, cache_built_at, invalid, invalid_reason}`. `invalid_reason` is
+  `null`, `inadmissible_prose`, or `date_mismatch`.
+- A canonical executed bundle that is bound to the requested `date` and `tz`
+  and contains empty `episodes` and `events` returns the distinct successful
+  response `{cache_key, quiet: true}`. It writes no cache row and never
+  returns a prior row's `cache_built_at`.
+- Blank prose is quiet only for that validated empty bundle. A missing,
+  malformed, mismatched, duplicate-execution, or non-empty bundle with blank
+  prose returns `502` with `error.code = "cache_write_failed"`; it must not
+  reuse an old cache row as the result of the refresh.
+
 ## Notifications Contract
 
 - `GET /api/notifications` -> `PaginatedResponse<NotificationSummary>`

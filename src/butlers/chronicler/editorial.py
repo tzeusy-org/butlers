@@ -138,6 +138,19 @@ STATE_DEGRADED = "degraded"
 
 NON_CONTENT_STATES = frozenset({STATE_NO_DATA, STATE_UNAVAILABLE, STATE_DEGRADED})
 
+# ``covered_local_days`` preserves historical rows that could not be proven
+# from durable, Chronicler-local records. They remain useful audit data, but
+# only these origins may establish the archive floor or an exact readable day.
+# Keep this tuple aligned with chronicler_024's CHECK constraint.
+_COVERAGE_ORIGIN_LEGACY_UNVERIFIED = "legacy_unverified"
+_COVERAGE_ORIGIN_DAY_CLOSE_SUCCESS = "day_close_success"
+_AUTHORITATIVE_COVERAGE_ORIGINS = (
+    _COVERAGE_ORIGIN_DAY_CLOSE_SUCCESS,
+    "day_close_cache",
+    "episode_activity",
+    "episode_evidence",
+)
+
 AVAILABILITY_AVAILABLE = "available"
 AVAILABILITY_UNAVAILABLE = "unavailable"
 AVAILABILITY_NOT_REQUESTED = "not_requested"
@@ -450,7 +463,13 @@ async def _fetch_sleep_minutes_for_day(
 async def _fetch_recent_days(
     pool: asyncpg.Pool, end_utc: datetime, days: int, tz_name: str
 ) -> list[RecentDay]:
-    """Return up to ``days`` recent calendar days ending at ``end_utc``."""
+    """Return recent calendar days that have exact authoritative witnesses.
+
+    The index is archive navigation data, not a rolling episode-derived
+    summary. A date is included only when its own ``covered_local_days`` row
+    has durable, authoritative provenance; retained legacy rows cannot make an
+    unverified day look checked or quiet.
+    """
     try:
         tz = zoneinfo.ZoneInfo(tz_name)
     except Exception:
@@ -459,6 +478,11 @@ async def _fetch_recent_days(
     local_dates = [
         end_local_date - timedelta(days=offset + 1) for offset in range(days)
     ]  # skip "today"; recent_days = prior days
+    if not local_dates:
+        return []
+
+    covered_dates = await _fetch_authoritative_covered_local_dates(pool, local_dates, tz_name)
+    local_dates = [local_date for local_date in local_dates if local_date in covered_dates]
     if not local_dates:
         return []
 
@@ -702,18 +726,53 @@ async def _fetch_earliest_covered_date(pool: asyncpg.Pool, tz_name: str) -> date
     has been recorded yet for ``tz_name``, meaning no authoritative coverage
     floor is established.
     """
-    sql = "SELECT MIN(local_date) AS d FROM covered_local_days WHERE timezone = $1"
+    sql = """
+        SELECT MIN(local_date) AS d
+        FROM covered_local_days
+        WHERE timezone = $1
+          AND origin = ANY($2::text[])
+    """
     async with pool.acquire() as conn:
-        result = await conn.fetchval(sql, tz_name)
+        result = await conn.fetchval(sql, tz_name, list(_AUTHORITATIVE_COVERAGE_ORIGINS))
     return result
 
 
 async def _is_local_day_covered(pool: asyncpg.Pool, local_date: date, tz_name: str) -> bool:
     """True when ``local_date`` has an authoritative covered-local-day witness."""
-    sql = "SELECT 1 FROM covered_local_days WHERE local_date = $1 AND timezone = $2"
+    sql = """
+        SELECT 1
+        FROM covered_local_days
+        WHERE local_date = $1
+          AND timezone = $2
+          AND origin = ANY($3::text[])
+    """
     async with pool.acquire() as conn:
-        row = await conn.fetchval(sql, local_date, tz_name)
+        row = await conn.fetchval(sql, local_date, tz_name, list(_AUTHORITATIVE_COVERAGE_ORIGINS))
     return bool(row)
+
+
+async def _fetch_authoritative_covered_local_dates(
+    pool: asyncpg.Pool, local_dates: Sequence[date], tz_name: str
+) -> set[date]:
+    """Return exactly the requested days backed by authoritative witnesses."""
+    if not local_dates:
+        return set()
+
+    sql = """
+        SELECT local_date
+        FROM covered_local_days
+        WHERE timezone = $1
+          AND local_date = ANY($2::date[])
+          AND origin = ANY($3::text[])
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            sql,
+            tz_name,
+            list(local_dates),
+            list(_AUTHORITATIVE_COVERAGE_ORIGINS),
+        )
+    return {row["local_date"] for row in rows}
 
 
 async def record_coverage_witness(pool: asyncpg.Pool, local_date: date, tz_name: str) -> None:
@@ -725,15 +784,24 @@ async def record_coverage_witness(pool: asyncpg.Pool, local_date: date, tz_name:
     completion hook is the current sole caller: a successful nightly
     dispatch — independent of whether it produced non-empty prose, since a
     covered quiet day has no episode — proves the closed day's evidence was
-    read. Idempotent: recording an already-covered day is a no-op.
+    read. An old ``legacy_unverified`` row is promoted to the direct
+    ``day_close_success`` proof; an already authoritative historic origin is
+    retained rather than rewritten.
     """
-    sql = """
-        INSERT INTO covered_local_days (local_date, timezone)
-        VALUES ($1, $2)
-        ON CONFLICT (local_date, timezone) DO NOTHING
+    sql = f"""
+        INSERT INTO covered_local_days (local_date, timezone, origin)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (local_date, timezone) DO UPDATE
+        SET origin = EXCLUDED.origin
+        WHERE covered_local_days.origin = '{_COVERAGE_ORIGIN_LEGACY_UNVERIFIED}'
     """
     async with pool.acquire() as conn:
-        await conn.execute(sql, local_date, tz_name)
+        await conn.execute(
+            sql,
+            local_date,
+            tz_name,
+            _COVERAGE_ORIGIN_DAY_CLOSE_SUCCESS,
+        )
 
 
 # ── Anomaly detection helpers ──────────────────────────────────────────────

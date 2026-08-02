@@ -15,9 +15,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useNavigate } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ChroniclesPage from "@/pages/ChroniclesPage";
@@ -32,14 +32,18 @@ import type { ChroniclesBriefing } from "@/api/types";
 // ---------------------------------------------------------------------------
 
 vi.mock("@/components/ui/timezone-context", () => ({
-  useTimezone: () => "Asia/Singapore",
+  useTimezone: () => _timezone,
 }));
 
 let _briefing: ChroniclesBriefing | undefined;
 let _briefingArgs: { date?: string; tz?: string } | undefined;
 let _isFetching = false;
 let _isError = false;
+let _isPlaceholderData = false;
 let _refetch = vi.fn();
+let _drilldownArgs: { date: string; tz: string } | undefined;
+let _navigate: ((to: string) => void) | undefined;
+let _timezone = "Asia/Singapore";
 
 vi.mock("@/hooks/use-chronicles-briefing", () => ({
   useChroniclesBriefing: (args: { date?: string; tz?: string } = {}) => {
@@ -48,6 +52,7 @@ vi.mock("@/hooks/use-chronicles-briefing", () => ({
       data: _briefing,
       isFetching: _isFetching,
       isError: _isError,
+      isPlaceholderData: _isPlaceholderData,
       refetch: _refetch,
     };
   },
@@ -57,10 +62,22 @@ vi.mock("@/hooks/use-chronicles-briefing", () => ({
 // editorial smoke tests we stub it out; content visibility is tested in its
 // own component spec.
 vi.mock("@/components/chronicles/ChroniclesDrilldownPanel", () => ({
-  ChroniclesDrilldownPanel: () => (
-    <section aria-label="Chronicles drilldown stub" data-testid="drilldown" />
-  ),
+  ChroniclesDrilldownPanel: (args: { date: string; tz: string }) => {
+    _drilldownArgs = args;
+    return <section aria-label="Chronicles drilldown stub" data-testid="drilldown" />;
+  },
 }));
+
+function NavigationHarness() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    _navigate = navigate;
+    return () => {
+      _navigate = undefined;
+    };
+  }, [navigate]);
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -79,7 +96,11 @@ function renderPage(entry = "/chronicles"): string {
   );
 }
 
-function mountPage(entry = "/chronicles"): { container: HTMLElement; unmount: () => void } {
+function mountPage(entry = "/chronicles"): {
+  container: HTMLElement;
+  navigate: (to: string) => void;
+  unmount: () => void;
+} {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -90,6 +111,7 @@ function mountPage(entry = "/chronicles"): { container: HTMLElement; unmount: ()
     root.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[entry]}>
+          <NavigationHarness />
           <ChroniclesPage />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -97,6 +119,14 @@ function mountPage(entry = "/chronicles"): { container: HTMLElement; unmount: ()
   });
   return {
     container,
+    navigate: (to) => {
+      act(() => {
+        if (_navigate === undefined) {
+          throw new Error("Navigation harness was not mounted");
+        }
+        _navigate(to);
+      });
+    },
     unmount: () => act(() => root.unmount()),
   };
 }
@@ -135,11 +165,19 @@ function buildBriefing(overrides: Partial<ChroniclesBriefing> = {}): ChroniclesB
 
 describe("ChroniclesPage editorial archetype", () => {
   beforeEach(() => {
+    // Default rendering targets yesterday in SGT, which makes the default
+    // fixture's date (2026-05-08) an exact response-date match.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-08T16:30:00.000Z"));
     _briefing = undefined;
     _briefingArgs = undefined;
     _isFetching = false;
     _isError = false;
+    _isPlaceholderData = false;
     _refetch = vi.fn();
+    _drilldownArgs = undefined;
+    _navigate = undefined;
+    _timezone = "Asia/Singapore";
   });
 
   afterEach(() => {
@@ -285,6 +323,7 @@ describe("ChroniclesPage editorial archetype", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
     _briefing = buildBriefing({
+      date: "2026-05-09",
       recent_days: [
         { date: "2026-05-05", total_minutes: 120, top_lane: "butler_ops", episode_count: 4 },
       ],
@@ -311,6 +350,117 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(prev.disabled).toBe(true);
     expect(next.disabled).toBe(false);
     unmount();
+  });
+
+  it("preserves a valid pre-floor deep link, blocks further backward travel, and recovers forward", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
+    _briefing = buildBriefing({
+      date: "2025-12-31",
+      state_class: "no_data",
+      headline: "Before the chronicled archive.",
+      voice_paragraph: "This day is before the earliest day the archive can confirm was chronicled.",
+      earliest_date: "2026-01-01",
+      attention_items: [],
+      recent_days: [],
+    });
+
+    const { container, unmount } = mountPage("/chronicles?date=2025-12-31");
+    try {
+      const prev = container.querySelector('button[aria-label="Previous day"]') as HTMLButtonElement;
+      const next = container.querySelector('button[aria-label="Next day"]') as HTMLButtonElement;
+      expect(_briefingArgs?.date).toBe("2025-12-31");
+      expect(prev.disabled).toBe(true);
+      expect(next.disabled).toBe(false);
+      expect(_drilldownArgs).toBeUndefined();
+
+      act(() => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(_briefingArgs?.date).toBe("2026-01-01");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("does not render a covered day's placeholder briefing after navigating to a pre-floor URL", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-08T16:30:00.000Z"));
+    _briefing = buildBriefing({
+      date: "2026-05-08",
+      headline: "Covered day headline that must not leak.",
+      voice_paragraph: "Covered day prose that must not leak.",
+      voice_source: "stale",
+    });
+
+    const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+    try {
+      expect(container.textContent).toContain("Covered day headline that must not leak.");
+      _isFetching = true;
+
+      navigate("/chronicles?date=2025-12-31");
+
+      expect(_briefingArgs?.date).toBe("2025-12-31");
+      expect(container.querySelector('[data-testid="workspace-skeleton"]')).toBeTruthy();
+      expect(container.textContent).not.toContain("Covered day headline that must not leak.");
+      expect(container.textContent).not.toContain("Covered day prose that must not leak.");
+      expect(container.textContent).not.toContain("2.4h");
+      expect(
+        container.querySelector('[aria-label="Day-close summary may be out of date"]'),
+      ).toBeNull();
+      expect(container.textContent).not.toContain("Chronicles drilldown stub");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("treats same-date cross-timezone placeholder data as loading", () => {
+    // Both owner timezones resolve this instant to the same settled local day.
+    // The query key still changes because the coverage witness and day-close
+    // prose are timezone-specific.
+    vi.setSystemTime(new Date("2026-05-09T12:00:00.000Z"));
+    _briefing = buildBriefing({
+      date: "2026-05-08",
+      headline: "Singapore headline that must not leak.",
+      voice_paragraph: "Singapore prose that must not leak.",
+      attention_items: [
+        {
+          kind: "source_error",
+          severity: "high",
+          title: "Singapore coverage that must not leak.",
+          detail: "Timezone-specific archive coverage.",
+          action_href: null,
+        },
+      ],
+    });
+
+    const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+    try {
+      expect(container.textContent).toContain("Singapore headline that must not leak.");
+      expect(container.textContent).toContain("Singapore prose that must not leak.");
+      expect(container.textContent).toContain("Singapore coverage that must not leak.");
+      expect(container.textContent).toContain("2.4h");
+      expect(container.querySelector('[aria-label="Previous day"]')).toBeTruthy();
+      expect(container.querySelector('[aria-label="Next day"]')).toBeTruthy();
+
+      _timezone = "America/Los_Angeles";
+      _isFetching = true;
+      _isPlaceholderData = true;
+      navigate("/chronicles?date=2026-05-08&timezone-transition=1");
+
+      expect(_briefingArgs).toEqual({ date: "2026-05-08", tz: "America/Los_Angeles" });
+      expect(container.querySelector('[data-testid="workspace-skeleton"]')).toBeTruthy();
+      expect(container.textContent).not.toContain("Singapore headline that must not leak.");
+      expect(container.textContent).not.toContain("Singapore prose that must not leak.");
+      expect(container.textContent).not.toContain("Singapore coverage that must not leak.");
+      expect(container.textContent).not.toContain("2.4h");
+      expect(container.querySelector('[aria-label="Previous day"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Next day"]')).toBeNull();
+      expect(container.textContent).not.toContain("Chronicles drilldown stub");
+    } finally {
+      unmount();
+    }
   });
 
   it("disables backward navigation while the archive boundary is unavailable", () => {
@@ -351,23 +501,23 @@ describe("ChroniclesPage editorial archetype", () => {
   });
 
   // ---------------------------------------------------------------------
-  // Never-blank floor (bu-nhcp5): day-step navigation must keep the
-  // outgoing day's content on screen (dimmed), never fall back to the full
-  // WorkspaceSkeleton, and never let a dimmed stale render mask a real error.
+  // A same-date refresh keeps its matching content on screen (dimmed), while
+  // a cross-date placeholder takes the safe loading path tested above. An
+  // in-place dim also must never mask a real error.
   // ---------------------------------------------------------------------
 
-  it("keeps the previous day's content visible (not the full skeleton) while the next day is fetching", () => {
+  it("keeps matching content visible (not the full skeleton) while it is fetching", () => {
     _briefing = buildBriefing({ headline: "Quiet day." });
     _isFetching = true;
     const html = renderPage();
-    // placeholderData means `data` is still populated during the day-step
-    // refetch, so the page must not fall back to the editorial WorkspaceSkeleton
-    // (ui/page.tsx's WorkspaceSkeleton, marked with data-testid="workspace-skeleton").
+    // Matching data may be refreshed in place rather than showing the editorial
+    // WorkspaceSkeleton (ui/page.tsx's WorkspaceSkeleton is marked with
+    // data-testid="workspace-skeleton").
     expect(html).not.toContain("workspace-skeleton");
     expect(html).toContain("Quiet day.");
   });
 
-  it("dims the stale content with FetchingDim while a day-step refetch is in flight", () => {
+  it("dims matching content with FetchingDim while a refetch is in flight", () => {
     _briefing = buildBriefing();
     _isFetching = true;
     const html = renderPage();
@@ -444,6 +594,7 @@ describe("ChroniclesPage editorial archetype", () => {
       expect(html).toContain(predicate);
       expect(html).toContain("Deterministic state-specific copy.");
       expect(html).toContain(stateClass.replace("_", " "));
+      expect(html).not.toContain("Chronicles drilldown stub");
     });
   });
 
@@ -492,15 +643,46 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).toContain("was quiet.");
   });
 
-  it("falls back to a neutral predicate for an unrecognized state_class, never quiet", () => {
+  it("fails closed for an unrecognized state_class without leaking stale editorial content", () => {
     _briefing = buildBriefing({
       // Cast: simulating a future backend value this build predates.
       state_class: "mystery" as ChroniclesBriefing["state_class"],
-      headline: "Unrecognized state.",
+      headline: "Stale headline that must not render.",
+      voice_paragraph: "Stale prose that must not render.",
+      voice_source: "stale",
+      attention_items: [
+        { kind: "anomaly", severity: "high", title: "Stale attention", detail: null, action_href: null },
+      ],
+      recent_days: [
+        { date: "2026-05-07", total_minutes: 642, top_lane: "stale_lane", episode_count: 23 },
+      ],
     });
     const html = renderPage();
+
     expect(html).not.toContain("was quiet.");
-    expect(html).toContain("could not be classified.");
+    expect(html).toContain("Coverage for this day could not be confirmed.");
+    expect(html).toContain("Chronicler could not confirm whether this day was chronicled.");
+    expect(html).not.toContain("Stale headline that must not render.");
+    expect(html).not.toContain("Stale prose that must not render.");
+    expect(html).not.toContain("Stale attention");
+    expect(html).not.toContain("stale_lane");
+    expect(html).not.toContain("Chronicles drilldown stub");
+  });
+
+  it("fails closed when a briefing response omits state_class", () => {
+    const malformed = buildBriefing({
+      headline: "Stale headline that must not render.",
+      voice_paragraph: "Stale prose that must not render.",
+    }) as Partial<ChroniclesBriefing>;
+    delete malformed.state_class;
+    _briefing = malformed as ChroniclesBriefing;
+
+    const html = renderPage();
+
+    expect(html).toContain("Coverage for this day could not be confirmed.");
+    expect(html).not.toContain("Stale headline that must not render.");
+    expect(html).not.toContain("Stale prose that must not render.");
+    expect(html).not.toContain("Chronicles drilldown stub");
   });
 
   describe("palette verbs + bindings (bu-t64p2)", () => {

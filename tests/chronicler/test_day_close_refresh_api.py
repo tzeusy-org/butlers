@@ -18,16 +18,18 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.chronicler.day_close_writer import DayCloseCacheWriteOutcome
 
 pytestmark = pytest.mark.unit
 
@@ -120,8 +122,10 @@ def _mock_db(pool: AsyncMock) -> MagicMock:
 def _make_spawner_result(
     *,
     success: bool = True,
-    output: str = "Refreshed day-close summary prose.",
+    output: str | None = "Refreshed day-close summary prose.",
     date_label: str | None = "2026-04-24",
+    episodes: list[dict[str, Any]] | None = None,
+    events: list[dict[str, Any]] | None = None,
 ) -> MagicMock:
     r = MagicMock()
     r.success = success
@@ -132,7 +136,12 @@ def _make_spawner_result(
                 "name": "chronicler_day_close_bundle",
                 "input": {"date_label": date_label, "timezone": "UTC"},
                 "outcome": "success",
-                "result": {"date": date_label, "citations": []},
+                "result": {
+                    "date": date_label,
+                    "citations": [],
+                    "episodes": episodes if episodes is not None else [],
+                    "events": events if events is not None else [],
+                },
             }
         ]
         if date_label
@@ -410,7 +419,7 @@ class TestDayCloseRefreshSuccess:
         mock_upsert.assert_awaited_once()
 
     async def test_dispatch_called_with_prompt_from_scheduled_tasks(self):
-        """Dispatch fn receives the prompt from scheduled_tasks (not a new prompt)."""
+        """Dispatch keeps the scheduled prompt and appends only its trusted target."""
         fresh_built_at = datetime.now(UTC)
         expected_prompt = "The chronicler_day_close cron prompt text."
         pool = _mock_pool(
@@ -430,7 +439,127 @@ class TestDayCloseRefreshSuccess:
             await _post_refresh(app)
 
         dispatch_fn.assert_awaited_once()
-        assert dispatch_fn.call_args.kwargs["prompt"] == expected_prompt
+        prompt = dispatch_fn.call_args.kwargs["prompt"]
+        assert prompt.startswith(expected_prompt)
+        assert "Trusted refresh target:" in prompt
+
+    async def test_refresh_appends_trusted_target_and_binds_writer_to_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Refresh retains the scheduled path while binding it to the request target."""
+        scheduled_prompt = "The chronicler_day_close cron prompt text."
+        refreshed_at = datetime.now(UTC)
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                None,
+                _row({"prompt": scheduled_prompt}),
+                _row({"cache_built_at": refreshed_at}),
+            ]
+        )
+        dispatch_fn = AsyncMock(return_value=_make_spawner_result(output="prose"))
+        chronicler_mod = _load_chronicler_router()
+        writer = AsyncMock(return_value=DayCloseCacheWriteOutcome())
+        monkeypatch.setattr(chronicler_mod, "write_day_close_cache", writer)
+        app = _make_app_with_dispatch(pool, dispatch_fn)
+
+        resp = await _post_refresh(
+            app,
+            date="2024-02-03",
+            tz="America/Los_Angeles",
+        )
+
+        assert resp.status_code == 200, resp.text
+        dispatch_fn.assert_awaited_once()
+        prompt = dispatch_fn.call_args.kwargs["prompt"]
+        assert prompt.startswith(scheduled_prompt)
+        assert "trusted refresh target" in prompt.lower()
+        assert "date_label=2024-02-03" in prompt
+        assert "timezone=America/Los_Angeles" in prompt
+        assert "exactly once" in prompt.lower()
+        assert dispatch_fn.call_args.kwargs["trigger_source"] == "api:day_close_refresh:2024-02-03"
+
+        writer.assert_awaited_once()
+        assert writer.call_args.kwargs["target_date"] == date(2024, 2, 3)
+        assert writer.call_args.kwargs["tz"] == "America/Los_Angeles"
+
+
+# ---------------------------------------------------------------------------
+# Tests: executed quiet close (200 without a cache row)
+# ---------------------------------------------------------------------------
+
+
+class TestDayCloseRefreshQuiet:
+    async def test_quiet_empty_bundle_returns_200_without_cache_row(self):
+        """A validated empty bundle is a successful quiet close, not a write failure."""
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                None,
+                _row({"prompt": "Day close prompt."}),
+            ]
+        )
+        dispatch_fn = AsyncMock(return_value=_make_spawner_result(output=""))
+
+        with patch(
+            "butlers.chronicler.day_close_writer.upsert_tier2_cache",
+            new_callable=AsyncMock,
+        ) as mock_upsert:
+            app = _make_app_with_dispatch(pool, dispatch_fn)
+            resp = await _post_refresh(app)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"cache_key": _CACHE_KEY, "quiet": True}
+        mock_upsert.assert_not_awaited()
+        # The response must branch before a post-write lookup because no row exists.
+        assert pool.fetchrow.await_count == 2
+
+    async def test_quiet_empty_bundle_never_returns_old_cache_timestamp(self):
+        """A quiet rerun cannot reuse the stale row it intentionally did not replace."""
+        old_built_at = datetime.now(UTC) - timedelta(hours=25)
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                _row({"cache_built_at": old_built_at}),
+                _row({"prompt": "Day close prompt."}),
+            ]
+        )
+        dispatch_fn = AsyncMock(return_value=_make_spawner_result(output="  \n"))
+        app = _make_app_with_dispatch(pool, dispatch_fn)
+
+        resp = await _post_refresh(app)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"cache_key": _CACHE_KEY, "quiet": True}
+        assert "cache_built_at" not in resp.json()
+        assert pool.fetchrow.await_count == 2
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            _make_spawner_result(output="", date_label=None),
+            _make_spawner_result(output=None, date_label=None),
+            _make_spawner_result(output="", episodes=[{"id": "episode-1"}]),
+        ],
+        ids=[
+            "missing-canonical-capture",
+            "missing-canonical-capture-and-prose",
+            "nonempty-bundle-with-blank-prose",
+        ],
+    )
+    async def test_blank_output_without_a_valid_empty_bundle_returns_502(self, result: MagicMock):
+        """Quiet is reserved for an executed canonical bundle that proves emptiness."""
+        old_built_at = datetime.now(UTC) - timedelta(hours=25)
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                _row({"cache_built_at": old_built_at}),
+                _row({"prompt": "Day close prompt."}),
+            ]
+        )
+        app = _make_app_with_dispatch(pool, AsyncMock(return_value=result))
+
+        resp = await _post_refresh(app)
+
+        assert resp.status_code == 502
+        assert resp.json()["error"]["code"] == "cache_write_failed"
+        assert pool.fetchrow.await_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +615,59 @@ class TestDayCloseRefreshValidation:
         resp = await _post_refresh(app, tz="America/New_York")
         # Should proceed past tz validation → hit dispatch guard → 503
         assert resp.status_code == 503
+
+
+class TestDayCloseRefreshSettledDate:
+    def test_today_in_timezone_uses_the_request_timezone_at_utc_boundary(self):
+        """A local date can still be yesterday while UTC has already crossed midnight."""
+        chronicler_mod = _load_chronicler_router()
+
+        assert chronicler_mod._today_in_timezone(
+            ZoneInfo("America/Los_Angeles"),
+            now=datetime(2026, 1, 2, 0, 30, tzinfo=UTC),
+        ) == date(2026, 1, 1)
+
+    async def test_today_and_future_are_rejected_before_rate_limit_or_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Unsettled local dates must not consume a rate-limit lookup or dispatch."""
+        chronicler_mod = _load_chronicler_router()
+        monkeypatch.setattr(
+            chronicler_mod,
+            "_today_in_timezone",
+            lambda _zone: date(2026, 1, 2),
+            raising=False,
+        )
+        pool = _mock_pool(fetchrow_returns=None)
+        dispatch_fn = AsyncMock()
+        app = _make_app_with_dispatch(pool, dispatch_fn)
+
+        for target in ("2026-01-02", "2026-01-03"):
+            resp = await _post_refresh(app, date=target, tz="America/Los_Angeles")
+            assert resp.status_code == 400
+            assert resp.json()["error"]["code"] == "day_close_not_settled"
+
+        pool.fetchrow.assert_not_awaited()
+        dispatch_fn.assert_not_awaited()
+
+    async def test_historical_local_date_reaches_the_existing_dispatch_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The request-local day before today remains eligible for refresh."""
+        chronicler_mod = _load_chronicler_router()
+        monkeypatch.setattr(
+            chronicler_mod,
+            "_today_in_timezone",
+            lambda _zone: date(2026, 1, 2),
+            raising=False,
+        )
+        pool = _mock_pool(fetchrow_returns=None)
+        app = _make_app_no_dispatch(pool)
+
+        resp = await _post_refresh(app, date="2026-01-01", tz="America/Los_Angeles")
+
+        assert resp.status_code == 503
+        pool.fetchrow.assert_awaited_once()
 
 
 # The no-LLM-import guardrail for router.py is authoritative in

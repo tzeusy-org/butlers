@@ -6426,6 +6426,25 @@ export type ChroniclerDayCloseResponse =
   | ChroniclerDayCloseStaleResponse
   | ChroniclerDayCloseInvalidResponse;
 
+/** Successful POST /aggregate/day-close/refresh result with a persisted cache row. */
+export interface ChroniclerDayCloseRefreshResponse {
+  cache_key: string;
+  cache_built_at: string;
+  invalid: boolean;
+  invalid_reason: "inadmissible_prose" | "date_mismatch" | null;
+}
+
+/** Successful refresh for a validated canonical bundle with no episodes or events. */
+export interface ChroniclerDayCloseRefreshQuietResponse {
+  cache_key: string;
+  quiet: true;
+}
+
+/** POST /aggregate/day-close/refresh success shape. */
+export type ChroniclerDayCloseRefreshResult =
+  | ChroniclerDayCloseRefreshResponse
+  | ChroniclerDayCloseRefreshQuietResponse;
+
 /** Query parameters for GET /api/chronicler/aggregate/day-close. */
 export interface ChroniclerDayCloseParams {
   /** Local calendar date in YYYY-MM-DD form. */
@@ -7236,8 +7255,10 @@ export interface ChroniclesBriefing {
    * additive response field; consumers should treat absence as an empty list.
    */
   subquery_availability?: ChroniclesSubqueryAvailability[];
-  /** Earliest chronicled day (owner tz, YYYY-MM-DD), or null when no data.
-   * Bounds backward archive navigation. */
+  /** Earliest authoritatively covered local day (owner tz, YYYY-MM-DD), or
+   * null when Chronicler has no durable coverage proof. It blocks additional
+   * backward archive navigation; a valid pre-floor deep link stays addressable
+   * and returns the explicit `no_data` state. */
   earliest_date?: string | null;
 }
 

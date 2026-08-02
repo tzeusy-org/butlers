@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
@@ -136,12 +137,35 @@ def _payload() -> BriefingPayload:
     )
 
 
+def test_briefing_response_model_closes_state_and_voice_source_unions() -> None:
+    """A backend value the frontend does not recognize must fail validation."""
+    chronicler_mod = _load_chronicler_router()
+    kwargs = {
+        "date": "2026-05-08",
+        "state_class": "quiet",
+        "headline": "Quiet day.",
+        "voice_paragraph": "Chronicler found no confirmed concerns.",
+        "voice_source": "templated",
+    }
+
+    response = chronicler_mod.ChroniclesBriefing(**kwargs)
+    assert response.state_class == "quiet"
+    assert response.voice_source == "templated"
+
+    with pytest.raises(ValidationError):
+        chronicler_mod.ChroniclesBriefing(**{**kwargs, "state_class": "unknown"})
+    with pytest.raises(ValidationError):
+        chronicler_mod.ChroniclesBriefing(**{**kwargs, "voice_source": "unknown"})
+
+
 async def _fake_compose(_pool: Any, _target: Any, _tz: str) -> BriefingPayload:
     return _payload()
 
 
-async def test_briefing_returns_cached_voice_without_llm_call(monkeypatch: pytest.MonkeyPatch):
-    """Fresh day-close cache supplies the voice paragraph."""
+async def test_briefing_returns_cached_voice_for_matching_timezone_window(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Fresh day-close cache supplies prose when its local-day window matches."""
 
     monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose)
     templated = MagicMock(return_value="templated fallback")
@@ -179,6 +203,50 @@ async def test_briefing_returns_cached_voice_without_llm_call(monkeypatch: pytes
     assert body["attention_items"][0]["title"] == "Short sleep"
     assert body["subquery_availability"] == []
     templated.assert_not_called()
+
+
+async def test_briefing_rejects_same_date_cache_from_other_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A cache key and date label cannot make an SGT day valid for Los Angeles."""
+
+    monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose)
+    templated = MagicMock(return_value="The day was led by butler_ops.")
+    monkeypatch.setattr(editorial, "templated_voice_paragraph", templated)
+
+    # The date label matches 2026-05-08, but this is the SGT local-day window
+    # (2026-05-07T16:00Z to 2026-05-08T16:00Z), not Los Angeles's window.
+    conn = _Conn(
+        fetchrow_returns=[
+            _Row(
+                {
+                    "prose": "Singapore day-close prose that must not leak.",
+                    "cache_built_at": datetime(2026, 5, 8, 3, 0, tzinfo=UTC),
+                    "start_at": datetime(2026, 5, 7, 16, 0, tzinfo=UTC),
+                    "end_at": datetime(2026, 5, 8, 16, 0, tzinfo=UTC),
+                    "date_label": "2026-05-08",
+                    "invalid_reason": None,
+                }
+            )
+        ]
+    )
+    app = _make_app(conn)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/chronicler/briefing",
+            params={"date": "2026-05-08", "tz": "America/Los_Angeles"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["voice_source"] == "templated"
+    assert body["voice_paragraph"] == "The day was led by butler_ops."
+    templated.assert_called_once()
+    # A mismatched window is invalid before the cache's staleness read.
+    assert conn.fetchval_calls == []
 
 
 async def test_briefing_exposes_named_subquery_availability(
