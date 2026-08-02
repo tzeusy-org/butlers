@@ -11,6 +11,12 @@ import type {
 const mockFetch = vi.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
+const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
+const EXPECTED_DAY_CLOSE_URL = new URL(
+  `${API_BASE}/chronicler/aggregate/day-close`,
+  "http://butlers.test",
+);
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -43,7 +49,8 @@ describe("getChroniclerDayClose", () => {
     const response = await getChroniclerDayClose({ date: "2026-03-15" });
 
     const requestUrl = new URL(mockFetch.mock.calls[0][0], "http://butlers.test");
-    expect(requestUrl.pathname).toBe("/api/chronicler/aggregate/day-close");
+    expect(requestUrl.origin).toBe(EXPECTED_DAY_CLOSE_URL.origin);
+    expect(requestUrl.pathname).toBe(EXPECTED_DAY_CLOSE_URL.pathname);
     expect(requestUrl.searchParams.get("date")).toBe("2026-03-15");
     expect(requestUrl.searchParams.has("window_start")).toBe(false);
     expect(requestUrl.searchParams.has("window_end")).toBe(false);

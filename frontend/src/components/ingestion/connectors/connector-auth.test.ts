@@ -23,6 +23,17 @@ import {
 } from './connector-auth'
 import type { ConnectorSummary } from '@/api/types'
 
+const API_BASE = import.meta.env.VITE_API_URL ?? '/api'
+const EXPECTED_GOOGLE_OAUTH_START_URL = new URL(
+  `${API_BASE}/oauth/google/start`,
+  'http://localhost',
+)
+
+function expectGoogleOAuthStartUrl(url: URL) {
+  expect(url.origin).toBe(EXPECTED_GOOGLE_OAUTH_START_URL.origin)
+  expect(url.pathname).toBe(EXPECTED_GOOGLE_OAUTH_START_URL.pathname)
+}
+
 const BASE: ConnectorSummary = {
   connector_type: 'gmail',
   endpoint_identity: 'user@example.com',
@@ -284,7 +295,7 @@ describe('resolveConnectorRecovery', () => {
     if (recovery.kind !== 'oauth') throw new Error('expected OAuth recovery')
 
     const url = new URL(recovery.href, 'http://localhost')
-    expect(url.pathname).toBe('/api/oauth/google/start')
+    expectGoogleOAuthStartUrl(url)
     expect(url.searchParams.get('page_of_origin')).toBe('ingestion')
     expect(url.searchParams.get('connector_detail_path')).toBe('gmail/user@example.com')
     expect(url.searchParams.get('force_consent')).toBe('true')
@@ -297,7 +308,7 @@ describe('resolveConnectorRecovery', () => {
     if (recovery.kind !== 'oauth') throw new Error('expected OAuth recovery')
 
     const url = new URL(recovery.href, 'http://localhost')
-    expect(url.pathname).toBe('/api/oauth/google/start')
+    expectGoogleOAuthStartUrl(url)
     expect(url.searchParams.get('scope_set')).toBe('health')
     expect(url.searchParams.get('force_consent')).toBe('true')
     expect(url.searchParams.get('connector_detail_path')).toBe('gmail/user@example.com')
@@ -310,7 +321,7 @@ describe('resolveConnectorRecovery', () => {
 
       expect(recovery.kind).toBe('oauth')
       if (recovery.kind !== 'oauth') throw new Error('expected OAuth recovery')
-      expect(new URL(recovery.href, 'http://localhost').pathname).toBe('/api/oauth/google/start')
+      expectGoogleOAuthStartUrl(new URL(recovery.href, 'http://localhost'))
     },
   )
 
