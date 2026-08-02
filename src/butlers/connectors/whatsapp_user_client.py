@@ -1609,6 +1609,25 @@ class WhatsAppUserClientConnector:
     # Internal: Participant identity
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _split_jid(sender_jid: str) -> tuple[str, str] | None:
+        """Split a bridge sender JID into ``(user, server)``, dropping the device.
+
+        WhatsApp appends a device ordinal for non-primary devices
+        (``"6591153887:33@s.whatsapp.net"``, ``"122204922638508:33@lid"``).  It
+        identifies a handset, not a person, so it is stripped before any lookup:
+        the LID map is keyed on the bare id and ``has-phone`` triples store bare
+        numbers.
+        """
+        jid = (sender_jid or "").strip()
+        if not jid or jid == "unknown" or "@" not in jid:
+            return None
+        user, _, server = jid.partition("@")
+        user = user.partition(":")[0]
+        if not user or not server:
+            return None
+        return user, server
+
     def _participant_identity(self, sender_jid: str) -> str | None:
         """Normalise a bridge sender JID into a resolvable participant identity.
 
@@ -1619,13 +1638,14 @@ class WhatsAppUserClientConnector:
         ``whatsmeow_lid_map``.  Returns ``None`` when a ``@lid`` has no known
         mapping — an untranslatable identity would only resolve to nobody.
         """
-        jid = (sender_jid or "").strip()
-        if not jid or jid == "unknown":
+        split = self._split_jid(sender_jid)
+        if split is None:
             return None
-        if jid.endswith("@lid"):
-            phone = self._lid_to_phone.get(jid[: -len("@lid")])
+        user, server = split
+        if server == "lid":
+            phone = self._lid_to_phone.get(user)
             return f"{phone}@s.whatsapp.net" if phone else None
-        return jid
+        return f"{user}@{server}"
 
     async def _refresh_lid_map(self, sender_jids: set[str]) -> None:
         """Load ``lid → phone`` rows for the LIDs about to be flushed.
@@ -1633,7 +1653,11 @@ class WhatsAppUserClientConnector:
         Fails soft: an unavailable map degrades participant extraction to the
         phone JIDs already present, it never blocks the flush.
         """
-        lids = {j[: -len("@lid")] for j in sender_jids if j.endswith("@lid")}
+        lids = set()
+        for jid in sender_jids:
+            split = self._split_jid(jid)
+            if split is not None and split[1] == "lid":
+                lids.add(split[0])
         missing = sorted(lids - self._lid_to_phone.keys())
         if not missing or self._db_pool is None:
             return
@@ -1642,11 +1666,23 @@ class WhatsAppUserClientConnector:
                 "SELECT lid, pn FROM public.whatsmeow_lid_map WHERE lid = ANY($1::text[])",
                 missing,
             )
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to refresh whatsmeow lid map", exc_info=True)
+        except Exception:
+            # The table is owned by the Go bridge, not a Butlers migration, so
+            # schema drift there would otherwise silently zero out participant
+            # recovery for every LID sender — the exact failure this connector
+            # change exists to fix.  Warn rather than debug so it is visible.
+            logger.warning(
+                "Could not read whatsmeow_lid_map; %d LID sender(s) will not "
+                "resolve to contacts this flush",
+                len(missing),
+                exc_info=True,
+            )
             return
         for row in rows:
             self._lid_to_phone[str(row["lid"])] = str(row["pn"])
+        unmapped = len(missing) - len(rows)
+        if unmapped:
+            logger.debug("%d LID sender(s) have no phone mapping", unmapped)
 
     def _extract_participants(
         self, buffered_events: list[dict[str, Any]]
@@ -1663,15 +1699,19 @@ class WhatsAppUserClientConnector:
         for event in buffered_events:
             raw_jid = event.get("sender_jid") or event.get("from_jid") or ""
             identity = self._participant_identity(str(raw_jid))
+            raw = event.get("raw")
+            is_owner = isinstance(raw, dict) and bool(raw.get("is_from_me"))
+            if is_owner and identity is not None:
+                # Recorded before the skip below so an owner message with an
+                # untranslatable co-sender cannot cost the batch its
+                # owner-direction signal.
+                owner_sender_id = identity
             if identity is None:
                 continue
             if identity not in participants:
                 participants[identity] = str(
                     event.get("sender_name") or event.get("push_name") or identity
                 )
-            raw = event.get("raw")
-            if isinstance(raw, dict) and raw.get("is_from_me"):
-                owner_sender_id = identity
         return participants, owner_sender_id
 
     # -------------------------------------------------------------------------

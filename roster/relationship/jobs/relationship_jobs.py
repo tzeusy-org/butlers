@@ -979,6 +979,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "calendar_events_scanned": 0,
         "co_attended_edges_minted": 0,
         "knows_edges_minted": 0,
+        # True when sender resolution returned nothing for a non-empty lookup
+        # set, which the fail-open resolver cannot distinguish from a genuine
+        # "no known contacts" result. Callers must not read a zero-fact run as
+        # an all-clear while this is set.
+        "resolution_degraded": False,
         "errors": checkpoint_errors,
     }
 
@@ -1008,7 +1013,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 array_agg(DISTINCT sender.identity)             AS sender_identities,
                 MAX(request_context ->> 'owner_sender_identity')
                                                                AS owner_sender_identity,
-                COUNT(*)                                       AS message_count,
+                -- DISTINCT over the inbox row identity: the lateral unnest
+                -- below fans out one row per (message x sender), so a plain
+                -- COUNT(*) would report sender-pairs and inflate the
+                -- message_count written into permanent fact metadata.
+                COUNT(DISTINCT (id, received_at))              AS message_count,
                 MAX(
                     CASE
                         WHEN request_context ->> 'participant_count' IS NOT NULL
@@ -1099,6 +1108,20 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             resolved[key] = contact.entity_id
             if "owner" in (contact.roles or []):
                 owner_entity_ids.add(contact.entity_id)
+
+        if not resolved:
+            # resolve_contacts_by_channel_bulk is fail-open by contract: a DB
+            # error returns all-unresolved rather than raising. Without this
+            # signal a total resolution outage is indistinguishable from
+            # "none of these senders is a known contact" — a silent zero-fact
+            # run, which is the failure mode this job exists to prevent.
+            logger.error(
+                "interaction_sync: resolved 0 of %d sender identities — "
+                "treating as a resolution failure, not an empty result",
+                len(lookup_pairs),
+            )
+            stats["errors"] += 1
+            stats["resolution_degraded"] = True
 
     # -----------------------------------------------------------------------
     # Step 3: For each (chat, channel, date) group apply the group-aware logic:

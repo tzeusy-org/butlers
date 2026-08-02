@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from butlers.identity import _channel_candidates, _normalize_phone_digits
+from butlers.identity import _channel_candidates, _extract_whatsapp_jid_phone
 
 pytestmark = pytest.mark.unit
 
@@ -31,30 +31,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Layer D: phone normalisation for WhatsApp JID cross-reference
 # ---------------------------------------------------------------------------
-
-
-class TestPhoneNormalisation:
-    """``has-phone`` triples are stored in wildly inconsistent formats."""
-
-    @pytest.mark.parametrize(
-        "stored",
-        [
-            "+65 9815 0802",  # spaced international (Google Contacts export)
-            "+6598150802",  # compact international
-            "6598150802",  # bare with country code
-            "+65-9815-0802",  # dashed
-            "(65) 9815 0802",  # parenthesised
-        ],
-    )
-    def test_stored_formats_normalise_to_same_digits(self, stored: str) -> None:
-        assert _normalize_phone_digits(stored) == "6598150802"
-
-    def test_normalisation_drops_non_digits_only(self) -> None:
-        assert _normalize_phone_digits("+1 (646) 693-8892") == "16466938892"
-
-    def test_empty_and_junk_return_none(self) -> None:
-        assert _normalize_phone_digits("") is None
-        assert _normalize_phone_digits("not-a-phone") is None
 
 
 class TestWhatsAppJidCandidates:
@@ -230,41 +206,98 @@ class TestWhatsAppBatchEnvelopeParticipants:
         assert "6598150802@s.whatsapp.net" in env["sender"]["participants"]
 
 
+class TestDeviceSuffixedJids:
+    """WhatsApp appends a device ordinal for non-primary devices.
+
+    ``"6591153887:33@s.whatsapp.net"`` identifies a handset, not a person.
+    Live data showed 16% of sender entries carrying one — including the
+    owner's own, whose loss silently degrades outgoing interactions (direction
+    weight 10.0) to incoming (1.0).
+    """
+
+    def test_phone_extraction_drops_device_ordinal(self) -> None:
+        assert _extract_whatsapp_jid_phone("6591153887:33@s.whatsapp.net") == "6591153887"
+
+    def test_phone_extraction_still_handles_plain_jid(self) -> None:
+        assert _extract_whatsapp_jid_phone("6591153887@s.whatsapp.net") == "6591153887"
+
+    def test_group_jid_still_yields_no_phone(self) -> None:
+        assert _extract_whatsapp_jid_phone("6598150802-1386556114@g.us") is None
+
+    def test_device_suffixed_jid_yields_phone_candidates(self) -> None:
+        candidates = _channel_candidates("whatsapp_jid", "6591153887:33@s.whatsapp.net")
+        assert ("phone_digits", "6591153887") in candidates
+
+
 # ---------------------------------------------------------------------------
-# Layer C: interaction_sync reads the participant list, not "multiple"
+# Layer C: interaction_sync owner-direction detection
 # ---------------------------------------------------------------------------
 
 
-class TestInteractionSyncSenderExtraction:
-    """The job's inbox query must unnest source_sender_identities."""
+class TestOwnerDirectionFromConnector:
+    """The connector-reported owner id outranks role-based detection.
 
-    def _query(self) -> str:
-        import sys
+    It is authoritative even when the owner entity carries no handle fact for
+    the channel — which is the norm for WhatsApp, where zero ``has-handle``
+    triples exist and resolution runs through phone numbers.
+    """
 
-        mod = sys.modules.get("butlers.jobs._roster.relationship_jobs")
-        if mod is None:
-            from butlers.jobs._roster_loader import load_roster_jobs
-
-            mod = load_roster_jobs("relationship")
-        import inspect
-
-        return inspect.getsource(mod.run_interaction_sync)
-
-    def test_query_unnests_participant_identities(self) -> None:
-        src = self._query()
-        assert "source_sender_identities" in src, (
-            "interaction_sync must read the per-sender identity list; reading only "
-            "source_sender_identity resolves every batch against the literal 'multiple'"
+    def _connector(self) -> Any:
+        from butlers.connectors.whatsapp_user_client import (
+            WhatsAppUserClientConnector,
+            WhatsAppUserClientConnectorConfig,
         )
 
-    def test_query_excludes_the_multiple_sentinel(self) -> None:
-        src = self._query()
-        assert "'unknown', 'multiple'" in src, (
-            "the 'multiple' collapse sentinel must never be treated as a real sender"
+        return WhatsAppUserClientConnector(
+            config=WhatsAppUserClientConnectorConfig(
+                switchboard_mcp_url="http://localhost:1/mcp",
+                endpoint_identity="whatsapp:+6591153887",
+            ),
+            db_pool=AsyncMock(),
         )
 
-    def test_uses_canonical_resolver_not_bespoke_join(self) -> None:
-        src = self._query()
-        assert "resolve_contacts_by_channel_bulk" in src
-        # The old exact-equality join missed telegram's "telegram:" prefix.
-        assert "ef.object      = pairs.ci_value" not in src
+    def test_owner_detected_through_device_suffixed_lid(self) -> None:
+        conn = self._connector()
+        conn._lid_to_phone = {"122204922638508": "6591153887"}
+        participants, owner = conn._extract_participants(
+            [
+                {
+                    "message_id": "m1",
+                    "sender_jid": "122204922638508:33@lid",
+                    "timestamp": 1785000000,
+                    "content": {"text": "on my way"},
+                    "raw": {"is_from_me": True},
+                }
+            ]
+        )
+        assert owner == "6591153887@s.whatsapp.net"
+        assert "6591153887@s.whatsapp.net" in participants
+
+    def test_owner_survives_an_untranslatable_co_sender(self) -> None:
+        """An unmappable LID must not cost the batch its direction signal."""
+        conn = self._connector()
+        conn._lid_to_phone = {"122204922638508": "6591153887"}
+        _, owner = conn._extract_participants(
+            [
+                {
+                    "message_id": "m1",
+                    "sender_jid": "999999999999999@lid",  # unmapped
+                    "raw": {"is_from_me": False},
+                },
+                {
+                    "message_id": "m2",
+                    "sender_jid": "122204922638508@lid",
+                    "raw": {"is_from_me": True},
+                },
+            ]
+        )
+        assert owner == "6591153887@s.whatsapp.net"
+
+    def test_unmappable_lid_is_dropped_not_emitted_raw(self) -> None:
+        """A raw @lid would resolve to nobody; emitting it is worse than None."""
+        conn = self._connector()
+        conn._lid_to_phone = {}
+        participants, _ = conn._extract_participants(
+            [{"message_id": "m1", "sender_jid": "999999999999999@lid", "raw": {}}]
+        )
+        assert participants == {}

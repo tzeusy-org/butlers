@@ -173,7 +173,15 @@ The Switchboard SHALL build an immutable request context from each accepted inge
 - **WHEN** a message is accepted for processing
 - **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `external_thread_id`), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
 - **AND** if triage was evaluated: `triage_decision`, `triage_target`, `triage_rule_id`, `triage_rule_type`
+- **AND** if the envelope carries group-chat metadata: `participant_count`, `chat_type`, and `interaction_eligible` (only when `false`)
+- **AND** if the envelope is a batch covering several senders: `source_sender_identities` (a JSON array built from `sender.participants`) and, when the connector reports one, `owner_sender_identity` (from `sender.owner_sender_id`)
+- **AND** both batch keys are omitted for single-sender envelopes, whose `source_sender_identity` already names the sender
 - **AND** the `request_id` is passed through to the spawned butler session as both `session.request_id` and `session.ingestion_event_id`
+
+#### Scenario: Batch envelopes preserve per-sender identity
+- **WHEN** a connector flushes a buffered batch spanning several senders
+- **THEN** `sender.identity` remains the collapsed sentinel `"multiple"`
+- **AND** the per-sender identities MUST still reach `request_context` via `source_sender_identities`, because downstream consumers (notably passive interaction sync) resolve contacts from them and cannot resolve the sentinel
 
 ### Requirement: Triage Integration
 

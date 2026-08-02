@@ -924,3 +924,68 @@ async def test_knows_edge_idempotent_on_rerun():
     assert mock_assert.call_count == 2
     assert stats["knows_edges_minted"] == 0
     assert stats["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: a total resolution failure is not reported as an empty result
+# ---------------------------------------------------------------------------
+
+
+async def test_zero_resolutions_flags_degradation():
+    """resolve_contacts_by_channel_bulk is fail-open, so all-unresolved is ambiguous.
+
+    A DB outage there returns every pair as None — identical to "nobody is a
+    known contact". Reporting that as a clean zero-fact run is the exact silent
+    failure this job exists to prevent.
+    """
+    pool = _make_pool()
+    _make_state_get_none(pool)
+
+    stats, mock_log = await _run_with_mocked_deps(
+        pool,
+        inbox_rows=[_make_inbox_row(sender_identities=["sender-alice", "sender-bob"])],
+        contact_rows=[],  # nothing resolves
+    )
+
+    assert stats["resolution_degraded"] is True
+    assert stats["errors"] >= 1
+    assert stats["logged"] == 0
+    mock_log.assert_not_awaited()
+
+
+async def test_successful_resolution_does_not_flag_degradation():
+    pool = _make_pool()
+    _make_state_get_none(pool)
+
+    stats, _ = await _run_with_mocked_deps(
+        pool,
+        inbox_rows=[_make_inbox_row(sender_identities=["sender-alice"])],
+        contact_rows=[_make_entity_row(ci_value="sender-alice", entity_id=_ENTITY_A)],
+    )
+
+    assert stats["resolution_degraded"] is False
+
+
+async def test_owner_sender_identity_drives_direction_without_role_lookup():
+    """The connector-reported owner id works with no owner entity resolved."""
+    pool = _make_pool()
+    _make_state_get_none(pool)
+
+    stats, mock_log = await _run_with_mocked_deps(
+        pool,
+        inbox_rows=[
+            _make_inbox_row(
+                sender_identities=["sender-alice", "owner-jid"],
+                owner_sender_identity="owner-jid",
+                participant_count=2,
+            )
+        ],
+        # Only the contact resolves; the owner has no handle fact for this channel.
+        contact_rows=[_make_entity_row(ci_value="sender-alice", entity_id=_ENTITY_A)],
+    )
+
+    directions = {c.kwargs["direction"] for c in mock_log.await_args_list}
+    assert directions == {"incoming", "outgoing"}
+    assert stats["skipped_owner"] == 1
+    # The owner must never be logged as a contact of the owner.
+    assert all(c.kwargs["entity_id"] == _ENTITY_A for c in mock_log.await_args_list)

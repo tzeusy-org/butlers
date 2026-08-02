@@ -87,20 +87,36 @@ SELECT
               AND c ->> 'sender_id' <> ''
         )
         ELSE (
+            -- The device ordinal in "<user>:<device>@<server>" identifies a
+            -- handset, not a person, so it is stripped before the LID lookup
+            -- and before the identity is emitted. The LID join is restricted
+            -- to actual "@lid" senders so a lid numerically equal to a phone
+            -- can never rewrite an already-valid phone JID.
             SELECT array_agg(DISTINCT COALESCE(
-                       lm.pn || '@s.whatsapp.net', ev -> 'raw' ->> 'sender'))
+                       lm.pn || '@s.whatsapp.net',
+                       j.user_part || '@' || j.server))
             FROM jsonb_array_elements(mi.raw_payload -> 'payload' -> 'raw' -> 'events') AS ev
+            CROSS JOIN LATERAL (
+                SELECT split_part(split_part(ev -> 'raw' ->> 'sender', '@', 1), ':', 1)
+                           AS user_part,
+                       split_part(ev -> 'raw' ->> 'sender', '@', 2)
+                           AS server
+            ) AS j
             LEFT JOIN public.whatsmeow_lid_map lm
-                   ON lm.lid = split_part(ev -> 'raw' ->> 'sender', '@', 1)
+                   ON j.server = 'lid' AND lm.lid = j.user_part
             WHERE ev -> 'raw' ->> 'sender' IS NOT NULL
               AND ev -> 'raw' ->> 'sender' <> ''
+              AND j.user_part <> ''
+              AND j.server <> ''
         )
     END AS senders
 FROM switchboard.message_inbox mi
 WHERE mi.request_context ->> 'source_sender_identity' = 'multiple'
   AND mi.request_context -> 'source_sender_identities' IS NULL
   AND mi.request_context ->> 'source_channel' = ANY($1::text[])
-ORDER BY mi.received_at
+-- id breaks received_at ties: both modes page with OFFSET, so an unstable
+-- sort between queries could skip a row.
+ORDER BY mi.received_at, mi.id
 LIMIT $2 OFFSET $3
 """
 
@@ -120,6 +136,10 @@ async def _process(
     dry_run: bool,
 ) -> dict[str, int]:
     stats = {"scanned": 0, "updated": 0, "empty": 0}
+    # Rows left deliberately untouched (no recoverable sender) keep matching the
+    # candidate query forever, so the read window must step past them or the
+    # loop never terminates.  A dry run writes nothing at all, so every scanned
+    # row is "left behind" and the window advances by the whole batch.
     offset = 0
 
     while True:
@@ -134,11 +154,13 @@ async def _process(
                 # No recoverable identity in the payload; leave the row alone so
                 # a later, better extractor can still find it.
                 stats["empty"] += 1
+                offset += 1
                 logger.debug("no senders recoverable for row %s", row["id"])
                 continue
 
             if dry_run:
                 stats["updated"] += 1
+                offset += 1
                 continue
 
             await pool.execute(
@@ -148,11 +170,6 @@ async def _process(
                 json.dumps({"source_sender_identities": sorted(senders)}),
             )
             stats["updated"] += 1
-
-        # A dry run never shrinks the candidate set, so it must page forward.
-        # A real run does (the rows stop matching), so the window stays at 0.
-        if dry_run:
-            offset += BATCH_SIZE
 
     return stats
 
