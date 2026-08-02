@@ -148,7 +148,10 @@ describe("GoogleHealthStatusCard — single account", () => {
 
   it("shows the account state text on the widget", () => {
     renderCard(SINGLE_ACCOUNT_STATUS);
-    expect(screen.getByTestId("account-state").textContent).toBe("healthy");
+    const accountState = screen.getByTestId("account-state");
+    expect(accountState.textContent).toBe("healthy");
+    expect(accountState.className).toContain("var(--green)");
+    expect(accountState.className).not.toContain("oklch(");
   });
 
   it("shows sleep_sessions_7d correctly", () => {
@@ -184,7 +187,10 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
       ],
     };
     renderCard(degraded);
-    expect(screen.getByTestId("account-state").textContent).toBe("degraded");
+    const accountState = screen.getByTestId("account-state");
+    expect(accountState.textContent).toBe("degraded");
+    expect(accountState.className).toContain("var(--amber)");
+    expect(accountState.className).not.toContain("oklch(");
   });
 
   it("renders error state on widget", () => {
@@ -194,7 +200,10 @@ describe("GoogleHealthStatusCard — single account state colours", () => {
       accounts: [{ ...SINGLE_ACCOUNT_STATUS.accounts[0], state: "error" }],
     };
     renderCard(error);
-    expect(screen.getByTestId("account-state").textContent).toBe("error");
+    const accountState = screen.getByTestId("account-state");
+    expect(accountState.textContent).toBe("error");
+    expect(accountState.className).toContain("var(--red)");
+    expect(accountState.className).not.toContain("oklch(");
   });
 });
 
@@ -240,6 +249,8 @@ describe("GoogleHealthStatusCard — connector-failing (degraded) signal", () =>
     renderCard(errored);
     const banner = screen.getByTestId("connector-error-banner");
     expect(banner.textContent).toContain("unavailable");
+    expect(banner.className).toContain("var(--red)");
+    expect(banner.className).not.toContain("oklch(");
   });
 
   it("does NOT render the banner for a healthy account (empty-but-healthy stays empty)", () => {

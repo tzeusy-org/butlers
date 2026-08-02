@@ -42,11 +42,11 @@ import type {
 function stateTextClass(state: GoogleHealthConnectorState): string {
   switch (state) {
     case "healthy":
-      return "text-[color:var(--green,oklch(0.72_0.17_150))]";
+      return "text-[color:var(--green)]";
     case "degraded":
-      return "text-[color:var(--amber,oklch(0.72_0.12_70))]";
+      return "text-[color:var(--amber)]";
     case "error":
-      return "text-[color:var(--red,oklch(0.62_0.20_25))]";
+      return "text-[color:var(--red)]";
     default:
       return "text-muted-foreground";
   }
@@ -110,7 +110,7 @@ function ConnectorErrorBanner({ code }: { code: string }) {
     <div
       role="alert"
       data-testid="connector-error-banner"
-      className="mb-3 rounded border border-[color:var(--red,oklch(0.62_0.20_25))]/40 bg-[color:var(--red,oklch(0.62_0.20_25))]/10 px-2.5 py-2 text-xs text-[color:var(--red,oklch(0.62_0.20_25))]"
+      className="mb-3 rounded border border-[color:var(--red)]/40 bg-[color:var(--red)]/10 px-2.5 py-2 text-xs text-[color:var(--red)]"
     >
       {formatConnectorError(code)}
     </div>
