@@ -31,6 +31,20 @@ _WHATSAPP_INDIVIDUAL_JID_SUFFIX = "@s.whatsapp.net"
 # Matches numeric prefixes like "1234567890" from "1234567890@s.whatsapp.net".
 _WHATSAPP_JID_PHONE_RE = re.compile(r"^(\d+)@s\.whatsapp\.net$")
 
+# Synthetic predicate marking a digits-normalised phone candidate.  It is not a
+# real ``entity_facts`` predicate — the resolver translates it into a
+# digits-only comparison against every ``has-phone`` triple, because stored
+# numbers are wildly inconsistent ("+65 9815 0802", "+6598150802", "91153887")
+# while a WhatsApp JID always yields bare digits ("6598150802").  Exact equality
+# therefore misses nearly every contact (bu passive-interaction-sync).
+_PHONE_DIGITS_PREDICATE = "phone_digits"
+
+# Minimum digit count for a normalised-phone suffix match.  Short local numbers
+# are stored without a country code ("91153887") while WhatsApp reports the
+# full E.164 digits ("6591153887"), so the comparison is suffix-based.  Eight
+# digits keeps that useful without collapsing distinct numbers together.
+_PHONE_SUFFIX_MIN_DIGITS = 8
+
 # Telegram channel types whose values may be usernames (with or without @-prefix).
 # These also get the case-insensitive username-variant normalization below.
 _TELEGRAM_USERNAME_CHANNEL_TYPES: frozenset[str] = frozenset({"telegram", "telegram_username"})
@@ -187,6 +201,20 @@ def _extract_whatsapp_jid_phone(jid: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _normalize_phone_digits(value: str) -> str | None:
+    """Reduce a phone number to bare digits for format-insensitive comparison.
+
+    ``has-phone`` triples arrive from many sources (Google Contacts, manual
+    entry, connector backfills) and are stored verbatim, so the same number
+    appears as ``"+65 9815 0802"``, ``"+6598150802"`` or ``"6598150802"``.
+    Stripping every non-digit gives a stable comparison key.
+
+    Returns ``None`` when the value carries no digits at all.
+    """
+    digits = re.sub(r"\D", "", value or "")
+    return digits or None
+
+
 def _telegram_username_candidates(value: str) -> list[str]:
     """Return the ordered list of username variants to try for a Telegram lookup.
 
@@ -306,6 +334,51 @@ async def _resolve_entity_by_triple(
         return None
 
 
+async def _resolve_entity_by_phone_digits(
+    pool: asyncpg.Pool,
+    digits: str,
+) -> asyncpg.Record | None:
+    """Resolve an entity by comparing ``has-phone`` triples on digits alone.
+
+    Stored numbers keep their source formatting, so the comparison strips every
+    non-digit from both sides.  Local numbers omit the country code
+    (``"91153887"`` for ``"6591153887"``), hence the suffix match — bounded by
+    :data:`_PHONE_SUFFIX_MIN_DIGITS` so short fragments cannot alias two people.
+
+    Returns ``None`` when not found, ambiguous, or on DB error.
+    """
+    if len(digits) < _PHONE_SUFFIX_MIN_DIGITS:
+        return None
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT DISTINCT ef.subject              AS entity_id,
+                   e.canonical_name                 AS name,
+                   COALESCE(e.roles, '{}')          AS roles
+            FROM   relationship.entity_facts ef
+            JOIN   public.entities e ON e.id = ef.subject
+            WHERE  ef.predicate   = 'has-phone'
+              AND  ef.object_kind = 'literal'
+              AND  ef.validity    = 'active'
+              AND  length(regexp_replace(ef.object, '\\D', '', 'g')) >= $2
+              AND  (
+                     regexp_replace(ef.object, '\\D', '', 'g') LIKE '%' || $1
+                  OR $1 LIKE '%' || regexp_replace(ef.object, '\\D', '', 'g')
+                   )
+            LIMIT  2
+            """,
+            digits,
+            _PHONE_SUFFIX_MIN_DIGITS,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    # An ambiguous match is worse than none: silently attributing an
+    # interaction to the wrong person corrupts the Dunbar ranking.
+    if len(rows) != 1:
+        return None
+    return rows[0]
+
+
 async def resolve_contact_by_channel(
     pool: asyncpg.Pool,
     channel_type: str,
@@ -417,6 +490,12 @@ async def resolve_contact_by_channel(
                         exc_info=True,
                     )
                     return None
+                if row is None:
+                    # Exact equality misses the common stored formats
+                    # ("+65 9815 0802"); retry on digits alone.
+                    normalized = _normalize_phone_digits(phone)
+                    if normalized is not None:
+                        row = await _resolve_entity_by_phone_digits(pool, normalized)
         if row is None:
             return None
 
@@ -468,6 +547,9 @@ def _channel_candidates(channel_type: str, channel_value: str) -> list[tuple[str
         phone = _extract_whatsapp_jid_phone(channel_value)
         if phone is not None:
             candidates.append(("has-phone", phone))
+            normalized = _normalize_phone_digits(phone)
+            if normalized is not None:
+                candidates.append((_PHONE_DIGITS_PREDICATE, normalized))
 
     return candidates
 
@@ -515,26 +597,33 @@ async def resolve_contacts_by_channel_bulk(
     if not wanted_pairs:
         return result
 
-    predicates, objects = map(list, zip(*wanted_pairs))
+    # The digits-normalised phone candidates cannot join on equality, so they
+    # are resolved by a separate comparison below.
+    exact_pairs = {p for p in wanted_pairs if p[0] != _PHONE_DIGITS_PREDICATE}
+    digit_values = sorted({p[1] for p in wanted_pairs if p[0] == _PHONE_DIGITS_PREDICATE})
 
+    rows: list[asyncpg.Record] = []
     try:
-        rows = await pool.fetch(
-            """
-            SELECT ef.predicate            AS predicate,
-                   ef.object               AS object,
-                   ef.subject              AS entity_id,
-                   e.canonical_name        AS name,
-                   COALESCE(e.roles, '{}') AS roles
-            FROM   relationship.entity_facts ef
-            JOIN   public.entities e ON e.id = ef.subject
-            JOIN   unnest($1::text[], $2::text[]) AS wanted(predicate, object)
-              ON   ef.predicate = wanted.predicate AND ef.object = wanted.object
-            WHERE  ef.object_kind = 'literal'
-              AND  ef.validity    = 'active'
-            """,
-            predicates,
-            objects,
-        )
+        if exact_pairs:
+            predicates = [p for p, _ in exact_pairs]
+            objects = [o for _, o in exact_pairs]
+            rows = await pool.fetch(
+                """
+                SELECT ef.predicate            AS predicate,
+                       ef.object               AS object,
+                       ef.subject              AS entity_id,
+                       e.canonical_name        AS name,
+                       COALESCE(e.roles, '{}') AS roles
+                FROM   relationship.entity_facts ef
+                JOIN   public.entities e ON e.id = ef.subject
+                JOIN   unnest($1::text[], $2::text[]) AS wanted(predicate, object)
+                  ON   ef.predicate = wanted.predicate AND ef.object = wanted.object
+                WHERE  ef.object_kind = 'literal'
+                  AND  ef.validity    = 'active'
+                """,
+                predicates,
+                objects,
+            )
     except Exception:  # noqa: BLE001
         logger.debug(
             "resolve_contacts_by_channel_bulk: DB query failed "
@@ -546,6 +635,16 @@ async def resolve_contacts_by_channel_bulk(
     match_by_candidate: dict[tuple[str, str], asyncpg.Record] = {}
     for row in rows:
         match_by_candidate.setdefault((row["predicate"], row["object"]), row)
+
+    # Digits-normalised phone matches, one query per distinct number.  Only
+    # WhatsApp senders that failed every exact candidate reach here, so the
+    # count stays small relative to the page.
+    for digits in digit_values:
+        if (_PHONE_DIGITS_PREDICATE, digits) in match_by_candidate:
+            continue
+        digit_row = await _resolve_entity_by_phone_digits(pool, digits)
+        if digit_row is not None:
+            match_by_candidate[(_PHONE_DIGITS_PREDICATE, digits)] = digit_row
 
     for pair, pair_candidates in candidates_by_pair.items():
         for candidate in pair_candidates:

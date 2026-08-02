@@ -647,6 +647,12 @@ class WhatsAppUserClientConnector:
         # Per-chat message buffers: chat_jid → ChatBuffer
         self._chat_buffers: dict[str, ChatBuffer] = {}
 
+        # LID → phone-number cache, refreshed from ``whatsmeow_lid_map`` before
+        # each flush.  WhatsApp increasingly reports senders as opaque
+        # "<lid>@lid" identifiers, which resolve to no contact; the phone JID
+        # form does (see _participant_identity).
+        self._lid_to_phone: dict[str, str] = {}
+
         # Background flush scanner task
         self._flush_scanner_task: asyncio.Task[None] | None = None
 
@@ -1444,6 +1450,12 @@ class WhatsAppUserClientConnector:
         batch_event_id = f"batch:{chat_jid}:{min_id}-{max_id}"
 
         try:
+            # a2. Translate any opaque "@lid" senders to phone JIDs so the
+            # batch's participant list is resolvable downstream.
+            await self._refresh_lid_map(
+                {str(e.get("sender_jid") or e.get("from_jid") or "") for e in buffered_events}
+            )
+
             # b. Build batch envelope
             envelope = self._build_batch_envelope(chat_jid, buffered_events, batch_event_id)
 
@@ -1594,6 +1606,75 @@ class WhatsAppUserClientConnector:
         )
 
     # -------------------------------------------------------------------------
+    # Internal: Participant identity
+    # -------------------------------------------------------------------------
+
+    def _participant_identity(self, sender_jid: str) -> str | None:
+        """Normalise a bridge sender JID into a resolvable participant identity.
+
+        WhatsApp reports senders either as a phone JID
+        (``"6598150802@s.whatsapp.net"``) or as an opaque linked identifier
+        (``"164772343488740@lid"``).  Only the phone form carries anything a
+        contact can be matched on, so ``@lid`` values are translated through
+        ``whatsmeow_lid_map``.  Returns ``None`` when a ``@lid`` has no known
+        mapping — an untranslatable identity would only resolve to nobody.
+        """
+        jid = (sender_jid or "").strip()
+        if not jid or jid == "unknown":
+            return None
+        if jid.endswith("@lid"):
+            phone = self._lid_to_phone.get(jid[: -len("@lid")])
+            return f"{phone}@s.whatsapp.net" if phone else None
+        return jid
+
+    async def _refresh_lid_map(self, sender_jids: set[str]) -> None:
+        """Load ``lid → phone`` rows for the LIDs about to be flushed.
+
+        Fails soft: an unavailable map degrades participant extraction to the
+        phone JIDs already present, it never blocks the flush.
+        """
+        lids = {j[: -len("@lid")] for j in sender_jids if j.endswith("@lid")}
+        missing = sorted(lids - self._lid_to_phone.keys())
+        if not missing or self._db_pool is None:
+            return
+        try:
+            rows = await self._db_pool.fetch(
+                "SELECT lid, pn FROM public.whatsmeow_lid_map WHERE lid = ANY($1::text[])",
+                missing,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to refresh whatsmeow lid map", exc_info=True)
+            return
+        for row in rows:
+            self._lid_to_phone[str(row["lid"])] = str(row["pn"])
+
+    def _extract_participants(
+        self, buffered_events: list[dict[str, Any]]
+    ) -> tuple[dict[str, str], str | None]:
+        """Return ``(participants, owner_sender_id)`` for a batch.
+
+        ``participants`` maps each resolvable sender identity to a display
+        name.  The owner is identified by the bridge's ``raw.is_from_me`` flag
+        rather than a phone comparison, matching how
+        ``_record_owner_outbound_if_applicable`` already reads ownership.
+        """
+        participants: dict[str, str] = {}
+        owner_sender_id: str | None = None
+        for event in buffered_events:
+            raw_jid = event.get("sender_jid") or event.get("from_jid") or ""
+            identity = self._participant_identity(str(raw_jid))
+            if identity is None:
+                continue
+            if identity not in participants:
+                participants[identity] = str(
+                    event.get("sender_name") or event.get("push_name") or identity
+                )
+            raw = event.get("raw")
+            if isinstance(raw, dict) and raw.get("is_from_me"):
+                owner_sender_id = identity
+        return participants, owner_sender_id
+
+    # -------------------------------------------------------------------------
     # Internal: Envelope building
     # -------------------------------------------------------------------------
 
@@ -1736,6 +1817,8 @@ class WhatsAppUserClientConnector:
             "conversation_history": conversation_history,
         }
 
+        participants, owner_sender_id = self._extract_participants(buffered_events)
+
         return {
             "schema_version": "ingest.v1",
             "source": {
@@ -1750,6 +1833,8 @@ class WhatsAppUserClientConnector:
             },
             "sender": {
                 "identity": "multiple",
+                "participants": participants or None,
+                "owner_sender_id": owner_sender_id,
                 "participant_count": participant_count,
                 "chat_type": chat_type,
             },

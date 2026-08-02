@@ -99,6 +99,7 @@ def _make_inbox_row(
     sender_identities: list[str] | None = None,
     message_count: int = 1,
     participant_count: int | None = None,
+    owner_sender_identity: str | None = None,
 ) -> dict[str, Any]:
     """Build a dict mimicking a row returned by the group-by inbox query."""
     row: dict[str, Any] = {
@@ -108,6 +109,7 @@ def _make_inbox_row(
         "sender_identities": sender_identities or ["sender-alice"],
         "message_count": message_count,
         "participant_count": participant_count,
+        "owner_sender_identity": owner_sender_identity,
     }
     # Wrap in a MagicMock so row["key"] and row.get() both work.
     mock_row = MagicMock()
@@ -123,14 +125,19 @@ def _make_entity_row(
     entity_id: uuid.UUID,
     roles: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a dict mimicking a row from the entity_facts batch-resolve query.
+    """Build a row as returned by ``resolve_contacts_by_channel_bulk``'s query.
 
-    The query now returns entity_id (= ef.subject) instead of contact_id.
+    Resolution now goes through the canonical channel resolver rather than a
+    bespoke join, so rows are keyed by ``(predicate, object)`` — the shape that
+    resolver matches its candidate chain against. ``ci_type`` selects the
+    predicate the way ``_channel_candidates`` does.
     """
+    predicate = {"email": "has-email", "phone": "has-phone"}.get(ci_type, "has-handle")
     row: dict[str, Any] = {
-        "ci_type": ci_type,
-        "ci_value": ci_value,
+        "predicate": predicate,
+        "object": ci_value,
         "entity_id": entity_id,
+        "name": "Test Contact",
         "roles": roles or [],
     }
     mock_row = MagicMock()

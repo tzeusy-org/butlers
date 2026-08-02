@@ -403,6 +403,16 @@ def _build_request_context(
         if triage_decision.spot_check:
             context["triage_spot_check"] = True
 
+    # Batch envelopes collapse sender.identity to "multiple" because one flush
+    # spans several senders; the real per-sender identities live in
+    # sender.participants.  Passive interaction sync resolves contacts from
+    # these, so dropping them here silently starves Dunbar scoring of every
+    # group/buffered conversation (spec passive-interaction-sync).
+    if sender.participants:
+        context["source_sender_identities"] = sorted(sender.participants)
+    if sender.owner_sender_id:
+        context["owner_sender_identity"] = sender.owner_sender_id
+
     # Group chat metadata from RFC 0013 D3/D4.
     # These are optional additive keys; omitting them preserves existing behavior.
     if sender.participant_count is not None:
