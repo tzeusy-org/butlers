@@ -2854,7 +2854,14 @@ class ReauthorizeResponse(BaseModel):
     """Response payload for POST /api/secrets/user/<provider>/reauthorize."""
 
     redirect_url: str
-    """URL the caller should redirect to, beginning the OAuth dance."""
+    """API-relative path the caller should redirect to, beginning the OAuth dance.
+
+    The path is relative to the API root (``/oauth/<provider>/start?...``), NOT
+    absolute from the site root.  The API is mounted under a deployment-specific
+    prefix (``/butlers-api/api``, ``/butlers-dev-api/api``, bare ``/api``) that
+    the backend cannot know, so the client prepends its own API base URL — see
+    ``resolveApiHref`` in ``frontend/src/api/client.ts``.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -4581,11 +4588,13 @@ async def reauthorize_user_credential(
 ) -> ApiResponse[ReauthorizeResponse]:
     """Initiate an OAuth (re)authorization dance for a user-scoped credential.
 
-    Builds and returns a ``redirect_url`` pointing to
-    ``/api/oauth/<provider>/start?page_of_origin=secrets`` (plus any
-    account hint derived from the credential's stored label/email).  The
-    caller is expected to redirect the browser to this URL, which begins
-    the OAuth dance.  The OAuth callback will redirect back to
+    Builds and returns an API-relative ``redirect_url`` pointing to
+    ``/oauth/<provider>/start?page_of_origin=secrets`` (plus any account hint
+    derived from the credential's stored label/email).  The caller resolves it
+    against its own API base URL — the API mount prefix is deployment-specific
+    (``/butlers-api/api`` vs ``/butlers-dev-api/api``) and unknowable here — and
+    redirects the browser there, which begins the OAuth dance.  The OAuth
+    callback will redirect back to
     ``/secrets?focus=u:<provider>&toast=connected`` on success.
 
     First-time connect: when no ``entity_info`` row exists yet (the credential
@@ -4662,7 +4671,9 @@ async def reauthorize_user_credential(
         # The label field stores the account email for OAuth credentials.
         params["account_hint"] = detail.label
 
-    redirect_url = f"/api/oauth/{provider}/start?{urlencode(params)}"
+    # API-relative (no "/api" prefix): the client prepends its own API base URL,
+    # which varies per deployment mount (/butlers-api/api, /butlers-dev-api/api).
+    redirect_url = f"/oauth/{provider}/start?{urlencode(params)}"
 
     # Audit — attempted (dance initiated, not yet completed).
     audit_note = (

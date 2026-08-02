@@ -313,7 +313,7 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
 
   it("routes spotify through the OAuth connect dance, not a stub drawer (bu-5gliy)", () => {
     mockReauth.mockResolvedValue({
-      data: { redirect_url: "/api/oauth/spotify/start" },
+      data: { redirect_url: "/oauth/spotify/start" },
       meta: {},
     } as never);
     renderAddPanel("entity-uuid-123");
@@ -442,7 +442,7 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
   });
 
   it("clicking connect Google in the user family calls reauthorizeUserCredential(google, ownerEntityId)", () => {
-    mockReauth.mockResolvedValue({ data: { redirect_url: "/api/oauth/google/start" }, meta: {} } as never);
+    mockReauth.mockResolvedValue({ data: { redirect_url: "/oauth/google/start" }, meta: {} } as never);
     renderUserFamily("entity-uuid-123");
     fireEvent.click(screen.getByText(/connect google/i));
     expect(mockReauth).toHaveBeenCalledWith("google", "entity-uuid-123");

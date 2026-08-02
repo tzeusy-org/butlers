@@ -532,8 +532,9 @@ def test_probe_404_on_missing_credential():
 
 def test_reauthorize_returns_200_with_redirect_url():
     """reauthorize returns 200 with ApiResponse<{redirect_url}>; the redirect points to
-    /api/oauth/<provider>/start, carries page_of_origin=secrets, and includes an
-    account_hint when the credential has a label."""
+    the API-relative /oauth/<provider>/start (NO "/api" prefix — the client
+    prepends its own deployment-specific API base), carries page_of_origin=secrets,
+    and includes an account_hint when the credential has a label."""
     row = _make_entity_info_row(info_type="google_oauth_refresh", label="user@example.com")
     mock_db = _make_db(user_row=row)
     client = _build_app(mock_db)
@@ -541,12 +542,34 @@ def test_reauthorize_returns_200_with_redirect_url():
     resp = client.post("/api/secrets/user/google/reauthorize")
     assert resp.status_code == 200
     redirect_url = resp.json()["data"]["redirect_url"]
-    assert "/api/oauth/google/start" in redirect_url, redirect_url
+    assert redirect_url.startswith("/oauth/google/start"), redirect_url
     assert "page_of_origin=secrets" in redirect_url, redirect_url
     assert (
         "account_hint=user%40example.com" in redirect_url
         or "account_hint=user@example.com" in redirect_url
     ), f"Expected account_hint in redirect_url: {redirect_url!r}"
+
+
+def test_reauthorize_redirect_url_carries_no_api_prefix():
+    """redirect_url must be API-relative, never rooted at a hardcoded "/api".
+
+    Regression: the endpoint used to return "/api/oauth/<provider>/start", which
+    the browser navigated to verbatim.  The dashboard is served behind
+    deployment-specific path mounts (/butlers → API at /butlers-api/api,
+    /butlers-dev → API at /butlers-dev-api/api), where no "/api" route exists —
+    so clicking "connect Spotify" landed on a dead URL.  The API mount point is
+    the client's knowledge, not the backend's: return the path below the API
+    root and let the client prepend its own base.
+    """
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/spotify/reauthorize")
+    assert resp.status_code == 200, resp.text
+    redirect_url = resp.json()["data"]["redirect_url"]
+    assert not redirect_url.startswith("/api/"), (
+        f"redirect_url must not hardcode an /api prefix: {redirect_url!r}"
+    )
 
 
 def test_reauthorize_writes_attempted_audit_row(monkeypatch):
@@ -580,7 +603,7 @@ def test_reauthorize_first_time_connect_oauth_provider_returns_start_url():
     provider (e.g. spotify) used to 404 because the reauthorize endpoint required
     a pre-existing credential row.  Google bypassed this via its own start flow;
     the other OAuth providers had no equivalent.  Now every OAuth-kind provider
-    routes a first-time connect to /api/oauth/<provider>/start.
+    routes a first-time connect to the OAuth start endpoint.
     """
     mock_db = _make_db(user_row=None)
     client = _build_app(mock_db)
@@ -588,7 +611,7 @@ def test_reauthorize_first_time_connect_oauth_provider_returns_start_url():
     resp = client.post("/api/secrets/user/spotify/reauthorize")
     assert resp.status_code == 200, resp.text
     redirect_url = resp.json()["data"]["redirect_url"]
-    assert "/api/oauth/spotify/start" in redirect_url, redirect_url
+    assert redirect_url.startswith("/oauth/spotify/start"), redirect_url
     assert "page_of_origin=secrets" in redirect_url, redirect_url
     # No stored account → no account_hint on a first-time connect.
     assert "account_hint" not in redirect_url, redirect_url
@@ -650,7 +673,7 @@ def test_reauthorize_google_first_time_connect_still_works():
     resp = client.post("/api/secrets/user/google/reauthorize")
     assert resp.status_code == 200, resp.text
     redirect_url = resp.json()["data"]["redirect_url"]
-    assert "/api/oauth/google/start" in redirect_url, redirect_url
+    assert redirect_url.startswith("/oauth/google/start"), redirect_url
 
 
 def test_reauthorize_404_on_missing_non_oauth_credential():

@@ -133,6 +133,44 @@ describe("PageUser: re-authorize button (expired credential)", () => {
     }
   })
 
+  it("resolves an API-relative redirect_url against the API base before navigating", async () => {
+    // Regression: the backend used to hand back a site-rooted "/api/oauth/…"
+    // path that was navigated to verbatim. Under the deployment path mounts
+    // (/butlers, /butlers-dev) the API lives at /butlers-api/api and
+    // /butlers-dev-api/api, so that URL was a dead link. The backend now returns
+    // the path below the API root and the client prepends its own base.
+    const locationDescriptor = Object.getOwnPropertyDescriptor(window, "location")
+    const hrefSetter = vi.fn()
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...window.location,
+        set href(v: string) {
+          hrefSetter(v)
+        },
+      },
+    })
+
+    mockReauth.mockResolvedValue({
+      data: { redirect_url: "/oauth/spotify/start?page_of_origin=secrets" },
+      meta: {},
+    })
+    renderPageUser()
+
+    fireEvent.click(screen.getByText("re-authorize"))
+
+    await waitFor(() => {
+      const apiBase = import.meta.env.VITE_API_URL ?? "/api"
+      expect(hrefSetter).toHaveBeenCalledWith(
+        `${apiBase}/oauth/spotify/start?page_of_origin=secrets`,
+      )
+    })
+
+    if (locationDescriptor) {
+      Object.defineProperty(window, "location", locationDescriptor)
+    }
+  })
+
   it("shows error message and re-enables button when request fails", async () => {
     mockReauth.mockRejectedValue(new Error("network timeout"))
     renderPageUser()

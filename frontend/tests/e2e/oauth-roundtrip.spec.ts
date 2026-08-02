@@ -205,7 +205,7 @@ test("oauth roundtrip: delayed callback response cannot complete the flow early"
       contentType: "application/json",
       body: JSON.stringify({
         data: {
-          redirect_url: "/api/oauth/google/callback?code=delayed-code&state=delayed-state",
+          redirect_url: "/oauth/google/callback?code=delayed-code&state=delayed-state",
         },
       }),
     });
@@ -267,7 +267,7 @@ test("oauth roundtrip: google re-authorize click → redirect → callback → t
       contentType: "application/json",
       body: JSON.stringify({
         data: {
-          redirect_url: "/api/oauth/google/callback?code=stub-e2e-code&state=stub-e2e-state",
+          redirect_url: "/oauth/google/callback?code=stub-e2e-code&state=stub-e2e-state",
         },
       }),
     });
@@ -330,7 +330,7 @@ test("oauth roundtrip: spotify re-authorize → callback → toast-connected str
       contentType: "application/json",
       body: JSON.stringify({
         data: {
-          redirect_url: "/api/oauth/spotify/callback?code=stub-spotify-code&state=stub-state",
+          redirect_url: "/oauth/spotify/callback?code=stub-spotify-code&state=stub-state",
         },
       }),
     });
@@ -384,7 +384,7 @@ test("oauth roundtrip: callback returns oauth_error → error param stripped (wa
       contentType: "application/json",
       body: JSON.stringify({
         data: {
-          redirect_url: "/api/oauth/google/callback?code=fail-code&state=fail-state",
+          redirect_url: "/oauth/google/callback?code=fail-code&state=fail-state",
         },
       }),
     });
