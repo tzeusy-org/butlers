@@ -31,10 +31,20 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
   }
 })
 
+// The Spotify card authorizes through the connector PKCE start endpoint rather
+// than the generalized dance, so that call is mocked too (it is reached via
+// use-spotify.ts, which imports from the api barrel, not client.ts).
+vi.mock("@/api/index.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/index.ts")>()
+  return { ...actual, startSpotifyOAuth: vi.fn() }
+})
+
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 import { reauthorizeUserCredential, ApiError } from "@/api/client.ts"
+import { startSpotifyOAuth } from "@/api/index.ts"
 const mockReauth = vi.mocked(reauthorizeUserCredential)
+const mockSpotifyStart = vi.mocked(startSpotifyOAuth)
 
 // ---------------------------------------------------------------------------
 // Component + mock data — imported after mocks are established
@@ -47,10 +57,27 @@ import { MOCK_USER_CREDENTIALS, MOCK_PROVIDERS } from "./mock-data.ts"
 // Helpers
 // ---------------------------------------------------------------------------
 
+// The generalized dance is exercised through Google. Spotify used to stand in
+// here, but its connect control is now the connector-PKCE drawer rather than
+// /oauth/<provider>/start (see DRAWER_CONNECT_PROVIDERS in pages.tsx), so it no
+// longer renders a re-authorize pill at all — see the guard test at the bottom.
+const GOOGLE = MOCK_USER_CREDENTIALS.find((u) => u.provider === "google")!
+const EXPIRED_GOOGLE = { ...GOOGLE, state: "expired" as const }
+const GOOGLE_PROVIDER = MOCK_PROVIDERS.google
+
 const SPOTIFY = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!
 const SPOTIFY_PROVIDER = MOCK_PROVIDERS.spotify
 
 function renderPageUser() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <PageUser credential={EXPIRED_GOOGLE} provider={GOOGLE_PROVIDER} />
+    </QueryClientProvider>,
+  )
+}
+
+function renderSpotifyPageUser() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
@@ -80,7 +107,7 @@ describe("PageUser: re-authorize button (expired credential)", () => {
 
     // Assert: API called with the spotify credential's provider + identity
     expect(mockReauth).toHaveBeenCalledOnce()
-    expect(mockReauth).toHaveBeenCalledWith("spotify", "tze")
+    expect(mockReauth).toHaveBeenCalledWith("google", "tze")
   })
 
   it("shows 'redirecting…' and disables the button while pending", async () => {
@@ -152,7 +179,7 @@ describe("PageUser: re-authorize button (expired credential)", () => {
     })
 
     mockReauth.mockResolvedValue({
-      data: { redirect_url: "/oauth/spotify/start?page_of_origin=secrets" },
+      data: { redirect_url: "/oauth/google/start?page_of_origin=secrets" },
       meta: {},
     })
     renderPageUser()
@@ -162,7 +189,7 @@ describe("PageUser: re-authorize button (expired credential)", () => {
     await waitFor(() => {
       const apiBase = import.meta.env.VITE_API_URL ?? "/api"
       expect(hrefSetter).toHaveBeenCalledWith(
-        `${apiBase}/oauth/spotify/start?page_of_origin=secrets`,
+        `${apiBase}/oauth/google/start?page_of_origin=secrets`,
       )
     })
 
@@ -261,5 +288,45 @@ describe("PageUser: re-authorize button (expired credential)", () => {
     fireEvent.click(disabledBtn)
 
     expect(mockReauth).toHaveBeenCalledOnce()
+  })
+
+  it("drives spotify through the connector PKCE start, not the generalized dance", async () => {
+    // Spotify has two OAuth implementations: the connector PKCE flow
+    // (POST /api/connectors/spotify/oauth/start, client_id only — what the
+    // registered Spotify app's redirect URIs point at, and what is connected
+    // today) and the generalized confidential-client dance, whose
+    // SPOTIFY_OAUTH_CLIENT_ID/SECRET were never provisioned. bu-5gliy pointed
+    // this pill at the latter, so it could only ever fail. The pill stays — a
+    // sick credential must keep its commit action — but the flow behind it is
+    // the connector's, and the provider URL it returns is absolute (no API base
+    // to resolve against).
+    const authUrl = "https://accounts.spotify.com/authorize?client_id=abc&code_challenge=xyz"
+    mockSpotifyStart.mockResolvedValue({ authorization_url: authUrl })
+
+    const locationDescriptor = Object.getOwnPropertyDescriptor(window, "location")
+    const hrefSetter = vi.fn()
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...window.location,
+        set href(v: string) {
+          hrefSetter(v)
+        },
+      },
+    })
+
+    renderSpotifyPageUser()
+
+    const [btn] = screen.getAllByText("re-authorize")
+    fireEvent.click(btn)
+
+    await waitFor(() => {
+      expect(hrefSetter).toHaveBeenCalledWith(authUrl)
+    })
+    expect(mockReauth).not.toHaveBeenCalled()
+
+    if (locationDescriptor) {
+      Object.defineProperty(window, "location", locationDescriptor)
+    }
   })
 })

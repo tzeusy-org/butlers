@@ -123,7 +123,7 @@ export function ConnectorRosterRow({
         })
       : null
   const authDisplayLabel =
-    recovery?.kind === 'passport'
+    recovery?.kind === 'passport' && recovery.action === 'pair'
       ? 'pair'
       : recovery?.kind === 'unsupported'
         ? 'unavailable'
@@ -233,7 +233,11 @@ export function ConnectorRosterRow({
             to={recovery.to}
             className={`relative z-10 inline-flex items-center gap-1 font-mono text-[10px] tracking-[0.06em] uppercase underline decoration-current/40 underline-offset-2 hover:decoration-current transition-colors ${authColorClass}`}
             data-testid={`auth-status-${c.connector_type}`}
-            aria-label={`Open ${displayName} pairing`}
+            aria-label={
+              recovery.action === 'pair'
+                ? `Open ${displayName} pairing`
+                : `Re-authorize ${displayName}`
+            }
           >
             {authDisplayLabel}
           </Link>

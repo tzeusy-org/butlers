@@ -606,16 +606,20 @@ describe('reauth pill is the reauth action', () => {
   })
   afterEach(() => cleanup(root, container))
 
-  it('renders the auth pill as a link into the OAuth start URL when needs_reauth', () => {
+  it('links the auth pill to the Spotify Passport card when needs_reauth', () => {
+    // Spotify recovers through its Passport card (the connector PKCE drawer),
+    // not the generalized /oauth/spotify/start dance — that entry is a
+    // confidential-client flow whose app credentials were never provisioned.
+    // The pill keeps the "reauth" wording of the attention strip; only
+    // WhatsApp's Passport recovery reads "pair".
     mockHooks([REAUTH_CONNECTOR])
     renderRoster(container, root)
 
     const pill = container.querySelector('[data-testid="auth-status-spotify"]')
     expect(pill?.tagName).toBe('A')
-    const href = pill?.getAttribute('href') ?? ''
-    expect(href).toContain('/oauth/spotify/start')
-    expect(href).toContain('page_of_origin=ingestion')
-    expect(href).toContain('connector_detail_path=spotify%2Fme')
+    expect(pill?.getAttribute('href')).toBe('/secrets?focus=u:spotify')
+    expect(pill?.textContent).toContain('reauth')
+    expect(pill?.getAttribute('aria-label')).toContain('Re-authorize')
   })
 
   it('renders the auth pill as plain text (not a link) for a healthy connector', () => {

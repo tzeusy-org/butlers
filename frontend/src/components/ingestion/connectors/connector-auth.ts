@@ -248,7 +248,17 @@ export interface ConnectorRecoveryOptions {
 /** A recovery route chosen from an explicit, supported connector capability. */
 export type ConnectorRecovery =
   | { kind: 'oauth'; href: string }
-  | { kind: 'passport'; to: '/secrets?focus=u:whatsapp' }
+  | {
+      kind: 'passport'
+      to: '/secrets?focus=u:whatsapp' | '/secrets?focus=u:spotify'
+      /**
+       * Verb for the pill / CTA. The Passport is the recovery destination for
+       * both, but the action there differs: WhatsApp pairs a device, Spotify
+       * re-authorizes through its connector drawer. Labelling Spotify "pair"
+       * would contradict the attention strip, which says it needs reauth.
+       */
+      action: 'pair' | 'reauthorize'
+    }
   | { kind: 'unsupported'; reason: string }
 
 const GOOGLE_OAUTH_CONNECTOR_TYPES = new Set([
@@ -289,19 +299,21 @@ export function resolveConnectorRecovery(
     }
   }
 
+  // Spotify recovery goes to the passport card, not the generalized dance.
+  // Spotify authorizes through the connector PKCE flow
+  // (POST /api/connectors/spotify/oauth/start — client_id only, no client
+  // secret), which is what the registered Spotify app's redirect URIs point at.
+  // The generalized router does carry a `spotify` registry entry, but it is a
+  // confidential-client flow whose SPOTIFY_OAUTH_CLIENT_ID/SECRET were never
+  // provisioned, so linking there produced a recovery button that could only
+  // fail. /secrets?focus=u:spotify lands on the card whose drawer drives the
+  // real flow — same shape as the WhatsApp recovery below.
   if (connectorType === 'spotify') {
-    return {
-      kind: 'oauth',
-      href: getProviderOAuthStartUrl('spotify', {
-        pageOfOrigin: 'ingestion',
-        connectorDetailPath: options.connectorDetailPath,
-        forceConsent: options.forceConsent,
-      }),
-    }
+    return { kind: 'passport', to: '/secrets?focus=u:spotify', action: 'reauthorize' }
   }
 
   if (WHATSAPP_CONNECTOR_TYPES.has(connectorType)) {
-    return { kind: 'passport', to: '/secrets?focus=u:whatsapp' }
+    return { kind: 'passport', to: '/secrets?focus=u:whatsapp', action: 'pair' }
   }
 
   return { kind: 'unsupported', reason: UNSUPPORTED_RECOVERY_REASON }

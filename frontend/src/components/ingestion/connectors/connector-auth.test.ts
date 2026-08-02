@@ -314,22 +314,24 @@ describe('resolveConnectorRecovery', () => {
     },
   )
 
-  it('routes Spotify through its registered OAuth endpoint', () => {
-    const recovery = resolveConnectorRecovery('spotify', detailContext)
-
-    expect(recovery.kind).toBe('oauth')
-    if (recovery.kind !== 'oauth') throw new Error('expected OAuth recovery')
-
-    const url = new URL(recovery.href, 'http://localhost')
-    expect(url.pathname).toBe('/api/oauth/spotify/start')
-    expect(url.searchParams.get('page_of_origin')).toBe('ingestion')
-    expect(url.searchParams.get('force_consent')).toBe('true')
+  it('routes Spotify to its Passport card, not the generalized OAuth endpoint', () => {
+    // Spotify authorizes through the connector PKCE flow the Passport drawer
+    // drives (client_id only — what the registered Spotify app's redirect URIs
+    // point at). The generalized router's `spotify` entry is a separate
+    // confidential-client flow whose SPOTIFY_OAUTH_CLIENT_ID/SECRET were never
+    // provisioned, so a recovery link there could only ever fail.
+    expect(resolveConnectorRecovery('spotify', detailContext)).toEqual({
+      kind: 'passport',
+      to: '/secrets?focus=u:spotify',
+      action: 'reauthorize',
+    })
   })
 
   it('routes WhatsApp to Passport pairing instead of an OAuth endpoint', () => {
     expect(resolveConnectorRecovery('whatsapp_user_client', detailContext)).toEqual({
       kind: 'passport',
       to: '/secrets?focus=u:whatsapp',
+      action: 'pair',
     })
   })
 

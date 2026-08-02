@@ -318,7 +318,7 @@ async function mockAllSecretRoutes(page: Page) {
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
   );
   await page.route("**/api/connectors/spotify/oauth/start**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ auth_url: "https://accounts.spotify.com/authorize?mock=1" }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authorization_url: "https://accounts.spotify.com/authorize?mock=1" }) })
   );
   await page.route("**/api/connectors/spotify/disconnect**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ disconnected: true }) })
@@ -445,14 +445,17 @@ test.describe("PageUser (C10–C15)", () => {
     await expect(revealBtn).not.toBeAttached({ timeout: 2_000 });
   });
 
-  test("C11: re-authorize button for expired credential fires reauthorize (redirects)", async ({ page }) => {
+  test("C11: re-authorize button for expired credential starts the OAuth flow", async ({ page }) => {
     // Covers C11 -- re-authorize for expired credentials.
-    // Deterministic assertion: clicking re-authorize must fire the reauthorize POST.
-    // We assert on the network request (not transient "redirecting" text). The
-    // success handler sets window.location.href = redirect_url; abort that redirect
-    // target so it cannot navigate the test page away.
+    // Spotify authorizes through the connector PKCE flow, so the deterministic
+    // assertion is the POST to /api/connectors/spotify/oauth/start (not the
+    // generalized /api/secrets/user/spotify/reauthorize, whose app credentials
+    // were never provisioned). We assert on the network request rather than
+    // transient "redirecting" text; the success handler sets
+    // window.location.href to the provider URL, so abort that target to keep
+    // the test page put.
     await mockAllSecretRoutes(page);
-    await page.route("https://accounts.google.com/**", (route) => route.abort());
+    await page.route("https://accounts.spotify.com/**", (route) => route.abort());
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
     await expect(page.locator('[data-page="user"][data-provider="spotify"]')).toBeAttached({ timeout: 5_000 });
@@ -466,7 +469,7 @@ test.describe("PageUser (C10–C15)", () => {
     // is fully deterministic: a dead/stub button would never issue this request.
     const [reauthRequest] = await Promise.all([
       page.waitForRequest(
-        (req) => /\/api\/secrets\/user\/spotify\/reauthorize/.test(req.url()) && req.method() === "POST",
+        (req) => /\/api\/connectors\/spotify\/oauth\/start/.test(req.url()) && req.method() === "POST",
         { timeout: 5_000 },
       ),
       reauthorizeBtn.click(),
@@ -1485,7 +1488,7 @@ test.describe("No-dead-control assertion", () => {
     // from navigating away, abort any request to the redirect target. The request-firing
     // assertion below is the load-bearing proof that the control is wired.
     await mockAllSecretRoutes(page);
-    await page.route("https://accounts.google.com/**", (route) => route.abort());
+    await page.route("https://accounts.spotify.com/**", (route) => route.abort());
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
     await page.locator('[data-page="user"][data-provider="spotify"]').waitFor({ timeout: 5_000 });
@@ -1498,7 +1501,7 @@ test.describe("No-dead-control assertion", () => {
     // If the button were dead (no onClick / stub handler), no request would fire and this fails.
     const [reauthRequest] = await Promise.all([
       page.waitForRequest(
-        (req) => /\/api\/secrets\/user\/spotify\/reauthorize/.test(req.url()) && req.method() === "POST",
+        (req) => /\/api\/connectors\/spotify\/oauth\/start/.test(req.url()) && req.method() === "POST",
         { timeout: 5_000 },
       ),
       reAuthBtn.click(),

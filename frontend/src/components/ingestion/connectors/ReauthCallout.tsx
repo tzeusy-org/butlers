@@ -109,7 +109,9 @@ export function ReauthCallout({
             data-testid="reauth-button"
             className="font-mono text-[11px] border border-foreground px-3 py-1.5 hover:bg-foreground hover:text-background transition-colors"
           >
-            {recovery?.kind === 'passport' ? 'open pairing' : 're-authorize'}
+            {recovery?.kind === 'passport' && recovery.action === 'pair'
+              ? 'open pairing'
+              : 're-authorize'}
           </button>
         )}
       </div>
