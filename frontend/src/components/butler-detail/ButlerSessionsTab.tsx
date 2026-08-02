@@ -26,6 +26,7 @@ import type { SessionParams, SessionSummary } from "@/api/types";
 import { SessionTable } from "@/components/sessions/SessionTable";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { Button } from "@/components/ui/button";
+import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary";
 import { ButlerPanelGrid, Panel } from "@/components/butler-detail/atoms";
 import { useButlerSessions } from "@/hooks/use-sessions";
 
@@ -70,8 +71,12 @@ export default function ButlerSessionsTab({
     ...(until ? { until } : {}),
   };
 
-  const { data: sessionsResponse, isLoading } = useButlerSessions(butlerName, params);
-  const sessions = sessionsResponse?.data ?? [];
+  const { data: sessionsResponse, isLoading, isError, error, refetch } = useButlerSessions(
+    butlerName,
+    params,
+  );
+  const sessions = sessionsResponse?.data;
+  const hasSessions = Boolean(sessions?.length);
   const meta = sessionsResponse?.meta;
   const total = meta?.total ?? 0;
   const hasMore = meta?.has_more ?? false;
@@ -82,6 +87,15 @@ export default function ButlerSessionsTab({
   function handleSessionClick(session: SessionSummary) {
     setSelectedSessionId(session.id);
   }
+
+  const sessionTable = (
+    <SessionTable
+      sessions={sessions ?? []}
+      isLoading={isLoading}
+      onSessionClick={handleSessionClick}
+      showButlerColumn={false}
+    />
+  );
 
   return (
     <div data-testid="butler-sessions-tab">
@@ -106,12 +120,26 @@ export default function ButlerSessionsTab({
       )}
       <ButlerPanelGrid>
         <Panel title="sessions" span={4} testId="panel-sessions">
-          <SessionTable
-            sessions={sessions}
+          <QueryBoundary
             isLoading={isLoading}
-            onSessionClick={handleSessionClick}
-            showButlerColumn={false}
-          />
+            isError={isError && !hasSessions}
+            error={error}
+            isEmpty={!hasSessions}
+            onRetry={() => void refetch()}
+            sourceLabel="session history"
+            loadingFallback={sessionTable}
+            emptyFallback={sessionTable}
+          >
+            {isError && hasSessions && (
+              <SourceDegradedNote
+                label="Session history"
+                detail="Showing last known sessions."
+                onRetry={() => void refetch()}
+                testId="sessions-source-degraded"
+              />
+            )}
+            {sessionTable}
+          </QueryBoundary>
         </Panel>
       </ButlerPanelGrid>
 
@@ -150,7 +178,7 @@ export default function ButlerSessionsTab({
       {/* Session detail drawer — resolves globally by id (bu-tpudw.2). */}
       <SessionDetailDrawer
         sessionId={selectedSessionId}
-        seed={sessions.find((session) => session.id === selectedSessionId)}
+        seed={sessions?.find((session) => session.id === selectedSessionId)}
         onClose={() => setSelectedSessionId(null)}
       />
     </div>
