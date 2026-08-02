@@ -13,6 +13,7 @@ from butlers.modules.memory import consolidation_executor
 from butlers.modules.memory.consolidation_parser import (
     ConsolidationResult,
     NewFact,
+    NewRule,
     UpdatedFact,
 )
 
@@ -442,3 +443,295 @@ async def test_post_lookup_stale_target_warns_but_unexpected_store_error_is_erro
     assert [record.levelno for record in caplog.records] == [logging.WARNING, logging.ERROR]
     assert f"Skipping stale property fact update {stale_id}" in caplog.text
     assert f"Failed to update fact ({unexpected_id})" in caplog.text
+
+
+class _AtomicTransaction:
+    def __init__(self, connection: _AtomicConnection) -> None:
+        self._connection = connection
+        self._snapshot: list[str] = []
+
+    async def __aenter__(self) -> _AtomicTransaction:
+        self._snapshot = list(self._connection.persisted_artifacts)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not None:
+            self._connection.persisted_artifacts[:] = self._snapshot
+            self._connection.rollbacks += 1
+        else:
+            self._connection.commits += 1
+        return False
+
+
+class _AtomicConnection:
+    def __init__(self) -> None:
+        self.persisted_artifacts: list[str] = []
+        self.commits = 0
+        self.rollbacks = 0
+        self.executes: list[tuple] = []
+
+    def transaction(self) -> _AtomicTransaction:
+        return _AtomicTransaction(self)
+
+    async def execute(self, *args) -> str:
+        self.executes.append(args)
+        return "UPDATE 0"
+
+
+class _AtomicAcquire:
+    def __init__(self, connection: _AtomicConnection) -> None:
+        self._connection = connection
+
+    async def __aenter__(self) -> _AtomicConnection:
+        return self._connection
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+
+class _AtomicPool:
+    def __init__(self) -> None:
+        self.connection = _AtomicConnection()
+
+    def acquire(self) -> _AtomicAcquire:
+        return _AtomicAcquire(self.connection)
+
+    async def execute(self, *args) -> str:
+        return await self.connection.execute(*args)
+
+
+@pytest.mark.asyncio
+async def test_invalid_artifact_evidence_stops_before_any_write(monkeypatch) -> None:
+    source_episode_id = uuid.uuid4()
+    foreign_episode_id = uuid.uuid4()
+    store_fact_mock = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
+    monkeypatch.setattr(consolidation_executor, "store_fact", store_fact_mock)
+    monkeypatch.setattr(
+        consolidation_executor,
+        "_lookup_episode_ttl_days",
+        AsyncMock(return_value=7),
+    )
+
+    for evidence in (
+        None,
+        [],
+        ["not-a-uuid"],
+        [str(source_episode_id), str(source_episode_id)],
+        [str(foreign_episode_id)],
+    ):
+        parsed = ConsolidationResult(
+            new_facts=[
+                NewFact(
+                    subject="owner",
+                    predicate="preference",
+                    content="likes quiet dinners",
+                    evidence_episode_ids=evidence,
+                )
+            ]
+        )
+
+        with pytest.raises(consolidation_executor.ConsolidationEvidenceValidationError):
+            await consolidation_executor.execute_consolidation(
+                pool=AsyncMock(),
+                embedding_engine=object(),
+                parsed=parsed,
+                source_episode_ids=[source_episode_id],
+                butler_name="relationship",
+            )
+
+    store_fact_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invalid_later_artifact_evidence_stops_before_any_write(monkeypatch) -> None:
+    source_episode_id = uuid.uuid4()
+    foreign_episode_id = uuid.uuid4()
+    store_fact_mock = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
+    monkeypatch.setattr(consolidation_executor, "store_fact", store_fact_mock)
+
+    parsed = ConsolidationResult(
+        new_facts=[
+            NewFact(
+                subject="owner",
+                predicate="preference",
+                content="likes quiet dinners",
+                evidence_episode_ids=[str(source_episode_id)],
+            )
+        ],
+        new_rules=[
+            NewRule(
+                content="Prefer quiet venues for dinner planning.",
+                evidence_episode_ids=[str(foreign_episode_id)],
+            )
+        ],
+    )
+
+    with pytest.raises(consolidation_executor.ConsolidationEvidenceValidationError):
+        await consolidation_executor.execute_consolidation(
+            pool=AsyncMock(),
+            embedding_engine=object(),
+            parsed=parsed,
+            source_episode_ids=[source_episode_id],
+            butler_name="relationship",
+        )
+
+    store_fact_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_each_artifact_links_only_its_validated_episode_evidence(monkeypatch) -> None:
+    first_episode_id = uuid.uuid4()
+    second_episode_id = uuid.uuid4()
+    fact_id = uuid.uuid4()
+    rule_id = uuid.uuid4()
+    pool = _AtomicPool()
+    links: list[tuple] = []
+
+    monkeypatch.setattr(
+        consolidation_executor,
+        "store_fact",
+        AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
+    )
+    monkeypatch.setattr(consolidation_executor, "store_rule", AsyncMock(return_value=rule_id))
+    monkeypatch.setattr(
+        consolidation_executor,
+        "create_link",
+        AsyncMock(side_effect=lambda *args: links.append(args)),
+    )
+    monkeypatch.setattr(
+        consolidation_executor,
+        "_lookup_episode_ttl_days",
+        AsyncMock(return_value=7),
+    )
+
+    result = await consolidation_executor.execute_consolidation(
+        pool=pool,
+        embedding_engine=object(),
+        parsed=ConsolidationResult(
+            new_facts=[
+                NewFact(
+                    subject="owner",
+                    predicate="preference",
+                    content="likes quiet dinners",
+                    evidence_episode_ids=[str(first_episode_id)],
+                )
+            ],
+            new_rules=[
+                NewRule(
+                    content="Prefer quiet venues for dinner planning.",
+                    evidence_episode_ids=[str(second_episode_id)],
+                )
+            ],
+        ),
+        source_episode_ids=[first_episode_id, second_episode_id],
+        butler_name="relationship",
+    )
+
+    assert result["errors"] == []
+    assert [link[1:] for link in links] == [
+        ("fact", fact_id, "episode", first_episode_id, "derived_from"),
+        ("rule", rule_id, "episode", second_episode_id, "derived_from"),
+    ]
+    assert pool.connection.commits == 2
+
+
+@pytest.mark.asyncio
+async def test_updated_fact_links_only_its_validated_episode_evidence(monkeypatch) -> None:
+    first_episode_id = uuid.uuid4()
+    second_episode_id = uuid.uuid4()
+    target_id = uuid.uuid4()
+    new_fact_id = uuid.uuid4()
+    pool = _AtomicPool()
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "subject": "owner",
+            "predicate": "preference",
+            "entity_id": uuid.uuid4(),
+            "scope": "relationship",
+        }
+    )
+    pool.fetchval = AsyncMock(return_value=False)
+    links: list[tuple] = []
+
+    monkeypatch.setattr(
+        consolidation_executor,
+        "store_fact",
+        AsyncMock(return_value={"id": new_fact_id, "supersedes_id": target_id}),
+    )
+    monkeypatch.setattr(
+        consolidation_executor,
+        "create_link",
+        AsyncMock(side_effect=lambda *args: links.append(args)),
+    )
+    monkeypatch.setattr(
+        consolidation_executor,
+        "_lookup_episode_ttl_days",
+        AsyncMock(return_value=7),
+    )
+
+    result = await consolidation_executor.execute_consolidation(
+        pool=pool,
+        embedding_engine=object(),
+        parsed=ConsolidationResult(
+            updated_facts=[
+                UpdatedFact(
+                    target_id=str(target_id),
+                    content="prefers quiet dinners",
+                    evidence_episode_ids=[str(second_episode_id)],
+                )
+            ]
+        ),
+        source_episode_ids=[first_episode_id, second_episode_id],
+        butler_name="relationship",
+    )
+
+    assert result["errors"] == []
+    assert result["facts_updated"] == 1
+    assert [link[1:] for link in links] == [
+        ("fact", new_fact_id, "episode", second_episode_id, "derived_from")
+    ]
+    assert pool.connection.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_evidence_link_rolls_back_its_artifact(monkeypatch) -> None:
+    source_episode_id = uuid.uuid4()
+    pool = _AtomicPool()
+
+    async def _store_fact(*args, **kwargs):
+        pool.connection.persisted_artifacts.append("fact")
+        return {"id": uuid.uuid4(), "supersedes_id": None}
+
+    monkeypatch.setattr(consolidation_executor, "store_fact", _store_fact)
+    monkeypatch.setattr(
+        consolidation_executor,
+        "create_link",
+        AsyncMock(side_effect=RuntimeError("evidence link insert failed")),
+    )
+    monkeypatch.setattr(
+        consolidation_executor,
+        "_lookup_episode_ttl_days",
+        AsyncMock(return_value=7),
+    )
+
+    result = await consolidation_executor.execute_consolidation(
+        pool=pool,
+        embedding_engine=object(),
+        parsed=ConsolidationResult(
+            new_facts=[
+                NewFact(
+                    subject="owner",
+                    predicate="preference",
+                    content="likes quiet dinners",
+                    evidence_episode_ids=[str(source_episode_id)],
+                )
+            ]
+        ),
+        source_episode_ids=[source_episode_id],
+        butler_name="relationship",
+    )
+
+    assert result["facts_created"] == 0
+    assert result["errors"] == ["Failed to store new fact (owner/preference)"]
+    assert pool.connection.persisted_artifacts == []
+    assert pool.connection.rollbacks == 1

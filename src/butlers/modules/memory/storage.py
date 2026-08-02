@@ -416,28 +416,35 @@ async def _upsert_catalog(
             object_entity_id = EXCLUDED.object_entity_id,
             updated_at       = now()
     """
-    await pool.execute(
-        sql,
-        source_schema,
-        source_table,
-        source_id,
-        source_butler,
-        tenant_id,
-        entity_id,
-        summary,
-        str(embedding),
-        search_text,
-        memory_type,
-        title,
-        predicate,
-        scope,
-        valid_at,
-        confidence,
-        importance,
-        retention_class,
-        sensitivity,
-        object_entity_id,
-    )
+    # When the caller is already persisting a canonical artifact in an outer
+    # transaction, a catalog SQL error must roll back only this best-effort
+    # write.  Without the savepoint, catching the error at the caller leaves
+    # the outer transaction aborted and can incorrectly roll back the artifact
+    # plus its durable provenance links.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                sql,
+                source_schema,
+                source_table,
+                source_id,
+                source_butler,
+                tenant_id,
+                entity_id,
+                summary,
+                str(embedding),
+                search_text,
+                memory_type,
+                title,
+                predicate,
+                scope,
+                valid_at,
+                confidence,
+                importance,
+                retention_class,
+                sensitivity,
+                object_entity_id,
+            )
 
 
 async def _mark_catalog_stale(
@@ -1976,13 +1983,15 @@ async def store_fact(
         # entries stale so cross-butler search stops surfacing the old summaries.
         if superseded_ids:
             try:
-                await _mark_catalog_stale(
-                    pool,
-                    source_schema=source_schema,
-                    source_table="facts",
-                    source_ids=superseded_ids,
-                    invalid_at=now,
-                )
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        await _mark_catalog_stale(
+                            conn,
+                            source_schema=source_schema,
+                            source_table="facts",
+                            source_ids=superseded_ids,
+                            invalid_at=now,
+                        )
             except Exception:
                 logger.warning(
                     "memory_catalog: failed to mark superseded facts %s stale (schema=%r)",

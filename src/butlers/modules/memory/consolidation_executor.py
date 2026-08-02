@@ -1,9 +1,10 @@
 """Consolidation executor for the Memory Butler.
 
-Takes a parsed ``ConsolidationResult`` (from ``consolidation_parser.py``) and
-applies each action to the database via ``storage.py``.  Each action is wrapped
-in its own try/except so that one failure does not prevent the remaining actions
-from executing.
+Takes a parsed ``ConsolidationResult`` (from ``consolidation_parser.py``),
+validates every artifact's claimed-episode evidence, and applies each action to
+the database via ``storage.py``.  Each valid action is wrapped in its own
+try/except so that one failure does not prevent the remaining actions from
+executing.
 
 Terminal state handling
 -----------------------
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from butlers.modules.memory.consolidation_parser import ConsolidationResult
@@ -46,6 +48,141 @@ if TYPE_CHECKING:
     from asyncpg import Pool
 
 logger = logging.getLogger(__name__)
+
+
+class ConsolidationEvidenceValidationError(ValueError):
+    """Raised when an output artifact lacks valid claimed-episode evidence."""
+
+
+class _ConnectionAcquire:
+    """Make one acquired connection look like a pool to storage helpers."""
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    async def __aenter__(self) -> Any:
+        return self._connection
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class _ConnectionBackedPool:
+    """Adapter that keeps nested storage writes on an outer transaction's connection."""
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    def acquire(self) -> _ConnectionAcquire:
+        return _ConnectionAcquire(self._connection)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+
+def _validate_artifact_evidence(
+    *,
+    artifact_kind: str,
+    artifacts: list[Any],
+    source_episode_ids: list[uuid.UUID],
+) -> list[list[uuid.UUID]]:
+    """Validate evidence before any output artifact is persisted.
+
+    Parser-level validation cannot establish group membership.  This function
+    deliberately validates every artifact first so one malformed or foreign
+    evidence reference fails the whole claimed group through the caller's
+    existing retry/dead-letter path rather than allowing partial persistence.
+    """
+    source_episode_id_set = set(source_episode_ids)
+    evidence_by_artifact: list[list[uuid.UUID]] = []
+
+    for index, artifact in enumerate(artifacts):
+        evidence = artifact.evidence_episode_ids
+        prefix = f"invalid consolidation episode evidence for {artifact_kind}[{index}]"
+        if not isinstance(evidence, list) or not evidence:
+            raise ConsolidationEvidenceValidationError(f"{prefix}: expected a non-empty list")
+
+        normalized_ids: list[uuid.UUID] = []
+        seen_ids: set[uuid.UUID] = set()
+        for item_index, episode_id_raw in enumerate(evidence):
+            if not isinstance(episode_id_raw, str):
+                raise ConsolidationEvidenceValidationError(
+                    f"{prefix}: item {item_index} must be a UUID string"
+                )
+            try:
+                episode_id = uuid.UUID(episode_id_raw)
+            except ValueError:
+                raise ConsolidationEvidenceValidationError(
+                    f"{prefix}: item {item_index} is not a valid UUID"
+                ) from None
+            if episode_id in seen_ids:
+                raise ConsolidationEvidenceValidationError(f"{prefix}: duplicate episode ID")
+            if episode_id not in source_episode_id_set:
+                raise ConsolidationEvidenceValidationError(
+                    f"{prefix}: episode is outside the claimed group"
+                )
+            seen_ids.add(episode_id)
+            normalized_ids.append(episode_id)
+        evidence_by_artifact.append(normalized_ids)
+
+    return evidence_by_artifact
+
+
+def _validate_all_artifact_evidence(
+    parsed: ConsolidationResult,
+    source_episode_ids: list[uuid.UUID],
+) -> tuple[list[list[uuid.UUID]], list[list[uuid.UUID]], list[list[uuid.UUID]]]:
+    """Return validated evidence for every output artifact in a non-empty group."""
+    if not source_episode_ids:
+        # Direct executor callers without a claimed group retain the historical
+        # no-link behavior. Production consolidation always passes a claimed
+        # non-empty group, where evidence is mandatory.
+        return [], [], []
+
+    return (
+        _validate_artifact_evidence(
+            artifact_kind="new_facts",
+            artifacts=parsed.new_facts,
+            source_episode_ids=source_episode_ids,
+        ),
+        _validate_artifact_evidence(
+            artifact_kind="updated_facts",
+            artifacts=parsed.updated_facts,
+            source_episode_ids=source_episode_ids,
+        ),
+        _validate_artifact_evidence(
+            artifact_kind="new_rules",
+            artifacts=parsed.new_rules,
+            source_episode_ids=source_episode_ids,
+        ),
+    )
+
+
+async def _persist_artifact_with_evidence(
+    pool: Pool,
+    *,
+    artifact_type: str,
+    evidence_episode_ids: list[uuid.UUID],
+    persist: Callable[[Any], Awaitable[uuid.UUID]],
+) -> uuid.UUID:
+    """Persist one artifact and all of its evidence links atomically."""
+    if not evidence_episode_ids:
+        return await persist(pool)
+
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            connection_pool = _ConnectionBackedPool(connection)
+            artifact_id = await persist(connection_pool)
+            for episode_id in evidence_episode_ids:
+                await create_link(
+                    connection_pool,
+                    artifact_type,
+                    artifact_id,
+                    "episode",
+                    episode_id,
+                    "derived_from",
+                )
+    return artifact_id
 
 
 # ---------------------------------------------------------------------------
@@ -70,10 +207,12 @@ async def execute_consolidation(
     """Apply parsed consolidation results to the database.
 
     For each action in the ConsolidationResult:
-    1. New facts: store via store_fact(), create derived_from links to source episodes
+    1. New facts: store via store_fact(), create derived_from links to that
+       artifact's validated evidence episodes
     2. Updated facts: reload the target's identity key, store via store_fact()
-       (auto-supersedes), create derived_from links
-    3. New rules: store via store_rule(), create derived_from links to source episodes
+       (auto-supersedes), create derived_from links to validated evidence episodes
+    3. New rules: store via store_rule(), create derived_from links to validated
+       evidence episodes
     4. Confirmations: call confirm_memory() for each referenced fact UUID
     5. Mark all source episodes as consolidated (terminal state), clearing leases
 
@@ -81,7 +220,8 @@ async def execute_consolidation(
         pool: asyncpg connection pool
         embedding_engine: EmbeddingEngine for storing new facts/rules
         parsed: Parsed ConsolidationResult from consolidation_parser
-        source_episode_ids: UUIDs of episodes that were consolidated
+        source_episode_ids: UUIDs of the claimed group used to validate exact
+            artifact evidence and later mark episodes consolidated
         butler_name: Name of the butler that sourced these episodes
         scope: Scope for new facts/rules (defaults to butler_name)
         retention_class: Retention class to look up episode TTL from
@@ -112,6 +252,12 @@ async def execute_consolidation(
     rules_created = 0
     confirmations_made = 0
 
+    (
+        new_fact_evidence,
+        updated_fact_evidence,
+        new_rule_evidence,
+    ) = _validate_all_artifact_evidence(parsed, source_episode_ids)
+
     # When the caller wants catalog write-behind but didn't resolve a schema
     # itself (e.g. the deterministic scheduled-job path, which has no access
     # to the module's toml config), fall back to the pool's own
@@ -125,7 +271,7 @@ async def execute_consolidation(
     episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
 
     # --- New facts ---
-    for fact in parsed.new_facts:
+    for fact_index, fact in enumerate(parsed.new_facts):
         try:
             fact_entity_id = uuid.UUID(fact.entity_id) if fact.entity_id else None
             fact_object_entity_id = (
@@ -150,32 +296,35 @@ async def execute_consolidation(
                     fact.subject,
                     fact.predicate,
                 )
-            store_result = await store_fact(
+
+            async def persist_new_fact(connection_pool: Any) -> uuid.UUID:
+                store_result = await store_fact(
+                    connection_pool,
+                    fact.subject,
+                    fact.predicate,
+                    fact.content,
+                    embedding_engine,
+                    importance=fact.importance,
+                    permanence=fact.permanence,
+                    scope=effective_scope,
+                    tags=fact.tags,
+                    source_butler=butler_name,
+                    entity_id=fact_entity_id,
+                    object_entity_id=fact_object_entity_id,
+                    valid_at=fact.valid_at,
+                    tenant_id=tenant_id,
+                    request_id=request_id,
+                    enable_shared_catalog=enable_shared_catalog,
+                    source_schema=source_schema,
+                )
+                return store_result["id"]
+
+            await _persist_artifact_with_evidence(
                 pool,
-                fact.subject,
-                fact.predicate,
-                fact.content,
-                embedding_engine,
-                importance=fact.importance,
-                permanence=fact.permanence,
-                scope=effective_scope,
-                tags=fact.tags,
-                source_butler=butler_name,
-                entity_id=fact_entity_id,
-                object_entity_id=fact_object_entity_id,
-                valid_at=fact.valid_at,
-                tenant_id=tenant_id,
-                request_id=request_id,
-                enable_shared_catalog=enable_shared_catalog,
-                source_schema=source_schema,
+                artifact_type="fact",
+                evidence_episode_ids=(new_fact_evidence[fact_index] if source_episode_ids else []),
+                persist=persist_new_fact,
             )
-            # store_fact returns a dict ({"id": ..., "supersedes_id": ...}), not a
-            # bare UUID. Extract the id before passing it to create_link's
-            # UUID-typed source_id, or asyncpg raises an encoding error that
-            # silently fails every episode link.
-            new_fact_id = store_result["id"]
-            for episode_id in source_episode_ids:
-                await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
             facts_created += 1
         except Exception as exc:
             # Log detailed error internally
@@ -190,7 +339,7 @@ async def execute_consolidation(
             errors.append(f"Failed to store new fact ({fact.subject}/{fact.predicate})")
 
     # --- Updated facts ---
-    for fact in parsed.updated_facts:
+    for fact_index, fact in enumerate(parsed.updated_facts):
         try:
             target_id = uuid.UUID(fact.target_id)
             target = await pool.fetchrow(
@@ -253,21 +402,33 @@ async def execute_consolidation(
                     fact.target_id,
                 )
             try:
-                store_result = await store_fact(
+
+                async def persist_updated_fact(connection_pool: Any) -> uuid.UUID:
+                    store_result = await store_fact(
+                        connection_pool,
+                        target["subject"],
+                        target["predicate"],
+                        fact.content,
+                        embedding_engine,
+                        permanence=fact.permanence,
+                        scope=target["scope"],
+                        source_butler=butler_name,
+                        entity_id=fact_entity_id,
+                        tenant_id=tenant_id,
+                        request_id=request_id,
+                        expected_supersedes_id=target_id,
+                        enable_shared_catalog=enable_shared_catalog,
+                        source_schema=source_schema,
+                    )
+                    return store_result["id"]
+
+                await _persist_artifact_with_evidence(
                     pool,
-                    target["subject"],
-                    target["predicate"],
-                    fact.content,
-                    embedding_engine,
-                    permanence=fact.permanence,
-                    scope=target["scope"],
-                    source_butler=butler_name,
-                    entity_id=fact_entity_id,
-                    tenant_id=tenant_id,
-                    request_id=request_id,
-                    expected_supersedes_id=target_id,
-                    enable_shared_catalog=enable_shared_catalog,
-                    source_schema=source_schema,
+                    artifact_type="fact",
+                    evidence_episode_ids=(
+                        updated_fact_evidence[fact_index] if source_episode_ids else []
+                    ),
+                    persist=persist_updated_fact,
                 )
             except StaleSupersessionTargetError:
                 logger.warning(
@@ -278,13 +439,6 @@ async def execute_consolidation(
                 )
                 errors.append(f"Failed to update fact ({fact.target_id})")
                 continue
-            # store_fact returns a dict ({"id": ..., "supersedes_id": ...}), not a
-            # bare UUID. Extract the id before passing it to create_link's
-            # UUID-typed source_id, or asyncpg raises an encoding error that
-            # silently fails every episode link.
-            new_fact_id = store_result["id"]
-            for episode_id in source_episode_ids:
-                await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
             facts_updated += 1
         except Exception as exc:
             # Log detailed error internally
@@ -293,22 +447,29 @@ async def execute_consolidation(
             errors.append(f"Failed to update fact ({fact.target_id})")
 
     # --- New rules ---
-    for rule in parsed.new_rules:
+    for rule_index, rule in enumerate(parsed.new_rules):
         try:
-            new_rule_id = await store_rule(
+
+            async def persist_new_rule(connection_pool: Any) -> uuid.UUID:
+                return await store_rule(
+                    connection_pool,
+                    rule.content,
+                    embedding_engine,
+                    scope=effective_scope,
+                    tags=rule.tags,
+                    source_butler=butler_name,
+                    tenant_id=tenant_id,
+                    request_id=request_id,
+                    enable_shared_catalog=enable_shared_catalog,
+                    source_schema=source_schema,
+                )
+
+            await _persist_artifact_with_evidence(
                 pool,
-                rule.content,
-                embedding_engine,
-                scope=effective_scope,
-                tags=rule.tags,
-                source_butler=butler_name,
-                tenant_id=tenant_id,
-                request_id=request_id,
-                enable_shared_catalog=enable_shared_catalog,
-                source_schema=source_schema,
+                artifact_type="rule",
+                evidence_episode_ids=(new_rule_evidence[rule_index] if source_episode_ids else []),
+                persist=persist_new_rule,
             )
-            for episode_id in source_episode_ids:
-                await create_link(pool, "rule", new_rule_id, "episode", episode_id, "derived_from")
             rules_created += 1
         except Exception as exc:
             # Log detailed error internally

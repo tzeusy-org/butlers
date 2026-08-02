@@ -4,24 +4,30 @@ You are performing memory consolidation for the butler ecosystem. Review the epi
 
 ## Instructions
 
-1. **New Facts**: Extract facts with subject-predicate-content structure. Classify permanence:
+1. **Artifact Evidence**: Every new fact, updated fact, and new rule MUST
+   include a non-empty `evidence_episode_ids` list. Use only episode UUIDs
+   shown in the episode headings, include every episode that directly supports
+   that artifact, and never invent an ID. Do not add evidence to
+   confirmations.
+
+2. **New Facts**: Extract facts with subject-predicate-content structure. Classify permanence:
    - `permanent`: Identity, medical, biographical facts that never change
    - `stable`: Long-term preferences, professional info (~346-day half-life)
    - `standard`: Current interests, opinions, ongoing projects (~87-day half-life)
    - `volatile`: Temporary states, short-term plans (~23-day half-life)
    - `ephemeral`: One-off events, what happened today (~7-day half-life)
 
-2. **Updated Facts**: Use only for property facts. If an episode contradicts or
+3. **Updated Facts**: Use only for property facts. If an episode contradicts or
    updates an existing property fact, specify its `target_id`, replacement
    `content`, and optional `permanence` so it can be superseded. The system
    reloads the target's identity from storage. Do not repeat `subject`,
    `predicate`, `entity_id`, or `scope` in an updated fact.
 
-3. **New Rules**: Extract behavioral patterns worth remembering as candidate rules.
+4. **New Rules**: Extract behavioral patterns worth remembering as candidate rules.
 
-4. **Confirmations**: If episodes support existing facts without changing them, list those fact IDs.
+5. **Confirmations**: If episodes support existing facts without changing them, list those fact IDs.
 
-5. **Temporal Facts**: Facts about events, interactions, measurements, or other
+6. **Temporal Facts**: Facts about events, interactions, measurements, or other
    time-bound observations MUST include `valid_at` as an ISO-8601 timestamp for
    when the fact is or was true. Temporal observations belong in `new_facts`,
    never `updated_facts`: they coexist with prior facts rather than superseding
@@ -38,14 +44,14 @@ Respond with a JSON block:
 ```json
 {
   "new_facts": [
-    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>", "valid_at": "<ISO-8601 timestamp>"},
-    {"subject": "...", "predicate": "planned_dinner_with", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>", "object_entity_id": "<uuid of target entity>"}
+    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>", "valid_at": "<ISO-8601 timestamp>", "evidence_episode_ids": ["<uuid-of-supporting-episode>"]},
+    {"subject": "...", "predicate": "planned_dinner_with", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "entity_id": "<uuid of subject entity>", "object_entity_id": "<uuid of target entity>", "evidence_episode_ids": ["<uuid-of-supporting-episode>"]}
   ],
   "updated_facts": [
-    {"target_id": "uuid-of-existing-fact", "content": "...", "permanence": "..."}
+    {"target_id": "uuid-of-existing-fact", "content": "...", "permanence": "...", "evidence_episode_ids": ["<uuid-of-supporting-episode>"]}
   ],
   "new_rules": [
-    {"content": "...", "tags": []}
+    {"content": "...", "tags": [], "evidence_episode_ids": ["<uuid-of-supporting-episode>"]}
   ],
   "confirmations": ["uuid-of-fact-1", "uuid-of-fact-2"]
 }

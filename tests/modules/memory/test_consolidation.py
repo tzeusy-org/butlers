@@ -336,5 +336,64 @@ def test_consolidation_prompt_derives_updated_fact_identity_from_target() -> Non
     prompt = build_consolidation_prompt([], [], [], "relationship")
     normalized_prompt = " ".join(prompt.split())
 
-    assert '{"target_id": "uuid-of-existing-fact", "content": "...", "permanence": "..."}' in prompt
+    assert (
+        '{"target_id": "uuid-of-existing-fact", "content": "...", '
+        '"permanence": "...", "evidence_episode_ids": '
+        '["<uuid-of-supporting-episode>"]}'
+    ) in prompt
     assert "Do not repeat `subject`, `predicate`, `entity_id`, or `scope`" in normalized_prompt
+
+
+def test_consolidation_prompt_exposes_episode_ids_and_requires_artifact_evidence() -> None:
+    from butlers.modules.memory.prompt_template import build_consolidation_prompt
+
+    episode_id = str(uuid.uuid4())
+
+    prompt = build_consolidation_prompt(
+        [
+            {
+                "id": episode_id,
+                "butler": "relationship",
+                "created_at": "2026-08-03T12:00:00Z",
+                "content": "Dinner with Sam confirmed a weekly preference.",
+            }
+        ],
+        [],
+        [],
+        "relationship",
+    )
+
+    assert f"episode_id={episode_id}" in prompt
+    assert '"evidence_episode_ids": ["<uuid-of-supporting-episode>"]' in prompt
+
+
+def test_parser_retains_per_artifact_episode_evidence() -> None:
+    payload = {
+        "new_facts": [
+            {
+                "subject": "owner",
+                "predicate": "dining_preference",
+                "content": "weekly dinner with Sam",
+                "evidence_episode_ids": [UUID1],
+            }
+        ],
+        "updated_facts": [
+            {
+                "target_id": UUID1,
+                "content": "prefers Wednesday dinner",
+                "evidence_episode_ids": [UUID2],
+            }
+        ],
+        "new_rules": [
+            {
+                "content": "Keep Wednesday evenings free for dinner planning.",
+                "evidence_episode_ids": [UUID1, UUID2],
+            }
+        ],
+    }
+
+    result = parse(_json(payload))
+
+    assert result.new_facts[0].evidence_episode_ids == [UUID1]
+    assert result.updated_facts[0].evidence_episode_ids == [UUID2]
+    assert result.new_rules[0].evidence_episode_ids == [UUID1, UUID2]

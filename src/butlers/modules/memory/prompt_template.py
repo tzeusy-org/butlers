@@ -26,7 +26,8 @@ def _format_episodes(episodes: list[dict]) -> str:
         butler = ep.get("butler", "unknown")
         content = ep.get("content", "")
         importance = ep.get("importance")
-        header = f"### Episode {i}  ({butler}, {ts})"
+        episode_id = ep.get("id", "unknown")
+        header = f"### Episode {i}  ({butler}, {ts}, episode_id={episode_id})"
         if importance is not None:
             header += f"  [importance={importance}]"
         lines.append(header)

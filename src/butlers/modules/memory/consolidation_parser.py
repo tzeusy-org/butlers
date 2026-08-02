@@ -34,6 +34,9 @@ class NewFact:
     entity_id: str | None = None
     object_entity_id: str | None = None
     valid_at: datetime | None = None
+    # Validation happens in the executor because membership is relative to the
+    # claimed episode group, which the parser does not receive.
+    evidence_episode_ids: object | None = None
 
 
 @dataclass
@@ -41,12 +44,14 @@ class UpdatedFact:
     target_id: str  # UUID string of fact to supersede
     content: str
     permanence: str = "standard"
+    evidence_episode_ids: object | None = None
 
 
 @dataclass
 class NewRule:
     content: str
     tags: list[str] = field(default_factory=list)
+    evidence_episode_ids: object | None = None
 
 
 @dataclass
@@ -210,6 +215,7 @@ def _parse_new_fact(raw: dict, errors: list[str]) -> NewFact | None:
         entity_id=entity_id,
         object_entity_id=object_entity_id,
         valid_at=valid_at,
+        evidence_episode_ids=raw.get("evidence_episode_ids"),
     )
 
 
@@ -248,6 +254,7 @@ def _parse_updated_fact(raw: dict, errors: list[str]) -> UpdatedFact | None:
         target_id=target_id,
         content=content,
         permanence=permanence,
+        evidence_episode_ids=raw.get("evidence_episode_ids"),
     )
 
 
@@ -264,7 +271,11 @@ def _parse_new_rule(raw: dict, errors: list[str]) -> NewRule | None:
     if not isinstance(tags, list):
         tags = []
 
-    return NewRule(content=content, tags=tags)
+    return NewRule(
+        content=content,
+        tags=tags,
+        evidence_episode_ids=raw.get("evidence_episode_ids"),
+    )
 
 
 def _parse_confirmation(raw: str, errors: list[str]) -> str | None:

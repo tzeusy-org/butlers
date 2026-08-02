@@ -1589,6 +1589,7 @@ async def _consolidate_with_episode_links(db_url: str) -> dict:
                     subject="consolidation_user",
                     predicate="preference",
                     content="prefers window seats",
+                    evidence_episode_ids=[str(episode_id) for episode_id in episode_ids],
                 )
             ]
         )
@@ -1598,9 +1599,17 @@ async def _consolidate_with_episode_links(db_url: str) -> dict:
             parsed,
             episode_ids,
             "general",
+            enable_shared_catalog=True,
+            source_schema="public",
         )
         fact_row = await pool.fetchrow(
             "SELECT id FROM facts WHERE subject = 'consolidation_user' AND predicate = 'preference'"
+        )
+        catalog_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog "
+            "WHERE source_schema = 'public' AND source_table = 'facts' "
+            "AND source_id = $1",
+            fact_row["id"] if fact_row else None,
         )
         links = await pool.fetch(
             "SELECT source_type, source_id, target_type, target_id, relation "
@@ -1612,6 +1621,7 @@ async def _consolidate_with_episode_links(db_url: str) -> dict:
         return {
             "result": result,
             "fact_id": fact_row["id"] if fact_row else None,
+            "catalog_row_found": catalog_row is not None,
             "links": [dict(r) for r in links],
             "episode_ids": episode_ids,
         }
@@ -1641,6 +1651,7 @@ def test_consolidation_creates_episode_links_with_uuid_source_id(
     assert result["errors"] == [], f"unexpected consolidation errors: {result['errors']}"
     assert result["facts_created"] == 1
     assert out["fact_id"] is not None
+    assert out["catalog_row_found"] is True
 
     # One derived_from link per source episode, each anchored on the fact's UUID.
     links = out["links"]
@@ -1651,6 +1662,61 @@ def test_consolidation_creates_episode_links_with_uuid_source_id(
         assert link["target_type"] == "episode"
         assert link["relation"] == "derived_from"
     assert {link["target_id"] for link in links} == set(out["episode_ids"])
+
+
+async def _consolidate_with_failed_evidence_link(db_url: str) -> dict:
+    """Ensure a real PostgreSQL transaction rolls a fact back with its failed link."""
+    from butlers.modules.memory.consolidation_executor import execute_consolidation
+    from butlers.modules.memory.consolidation_parser import ConsolidationResult, NewFact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        subject = f"atomic_evidence_user_{uuid.uuid4().hex}"
+        source_episode_id = uuid.uuid4()
+        result = await execute_consolidation(
+            pool,
+            _fake_embedding_engine(),
+            ConsolidationResult(
+                new_facts=[
+                    NewFact(
+                        subject=subject,
+                        predicate="preference",
+                        content="prefers window seats",
+                        evidence_episode_ids=[str(source_episode_id)],
+                    )
+                ]
+            ),
+            [source_episode_id],
+            "general",
+        )
+        fact_count = await pool.fetchval("SELECT count(*) FROM facts WHERE subject = $1", subject)
+        return {"result": result, "fact_count": fact_count, "subject": subject}
+    finally:
+        await pool.close()
+
+
+def test_consolidation_rolls_back_artifact_when_evidence_link_fails(
+    memory_migrated_db: str,
+    monkeypatch,
+) -> None:
+    """A link failure must not leave the associated fact persisted on real PostgreSQL."""
+    from butlers.modules.memory import consolidation_executor
+
+    async def _fail_evidence_link(*args, **kwargs) -> None:
+        raise RuntimeError("forced evidence link failure")
+
+    monkeypatch.setattr(consolidation_executor, "create_link", _fail_evidence_link)
+
+    out = asyncio.run(_consolidate_with_failed_evidence_link(memory_migrated_db))
+
+    assert out["result"]["facts_created"] == 0
+    assert out["result"]["errors"] == [f"Failed to store new fact ({out['subject']}/preference)"]
+    assert out["fact_count"] == 0
 
 
 # ---------------------------------------------------------------------------

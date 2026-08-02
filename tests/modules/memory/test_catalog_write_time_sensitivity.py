@@ -80,8 +80,43 @@ class TestIsCatalogWriteExcluded:
 class TestUpsertCatalogSkipsExcludedSensitivity:
     """_upsert_catalog must short-circuit before touching the DB for excluded rows."""
 
-    async def _call(self, *, sensitivity: str | None) -> AsyncMock:
-        pool = AsyncMock()
+    class _Transaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info) -> bool:
+            return False
+
+    class _Connection:
+        def __init__(self) -> None:
+            self.execute = AsyncMock()
+
+        def transaction(self) -> TestUpsertCatalogSkipsExcludedSensitivity._Transaction:
+            return TestUpsertCatalogSkipsExcludedSensitivity._Transaction()
+
+    class _Acquire:
+        def __init__(
+            self, connection: TestUpsertCatalogSkipsExcludedSensitivity._Connection
+        ) -> None:
+            self._connection = connection
+
+        async def __aenter__(self) -> TestUpsertCatalogSkipsExcludedSensitivity._Connection:
+            return self._connection
+
+        async def __aexit__(self, *exc_info) -> bool:
+            return False
+
+    class _Pool:
+        def __init__(self) -> None:
+            self.connection = TestUpsertCatalogSkipsExcludedSensitivity._Connection()
+            self.acquire_calls = 0
+
+        def acquire(self) -> TestUpsertCatalogSkipsExcludedSensitivity._Acquire:
+            self.acquire_calls += 1
+            return TestUpsertCatalogSkipsExcludedSensitivity._Acquire(self.connection)
+
+    async def _call(self, *, sensitivity: str | None) -> _Pool:
+        pool = self._Pool()
         await storage._upsert_catalog(
             pool,
             source_schema="health",
@@ -101,11 +136,13 @@ class TestUpsertCatalogSkipsExcludedSensitivity:
     @pytest.mark.parametrize("sensitivity", ["pii", "confidential"])
     async def test_excluded_sensitivity_never_executes_sql(self, sensitivity: str) -> None:
         pool = await self._call(sensitivity=sensitivity)
-        pool.execute.assert_not_awaited()
+        assert pool.acquire_calls == 0
+        pool.connection.execute.assert_not_awaited()
 
     @pytest.mark.parametrize("sensitivity", ["normal", None])
     async def test_non_excluded_sensitivity_still_writes(self, sensitivity: str | None) -> None:
         pool = await self._call(sensitivity=sensitivity)
-        pool.execute.assert_awaited_once()
-        sql = pool.execute.await_args.args[0]
+        assert pool.acquire_calls == 1
+        pool.connection.execute.assert_awaited_once()
+        sql = pool.connection.execute.await_args.args[0]
         assert "INSERT INTO public.memory_catalog" in sql

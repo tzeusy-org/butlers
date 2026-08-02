@@ -432,6 +432,42 @@ class TestRunConsolidationWritesAuditRow:
         ]
         assert failure_updates[0][0] == detail
 
+    async def test_invalid_evidence_uses_existing_group_failure_path(self) -> None:
+        claim_rows = [
+            {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "butler": "relationship",
+                "content": "c",
+                "importance": 5.0,
+                "metadata": {},
+                "created_at": None,
+                "tenant_id": "t1",
+                "consolidation_attempts": 0,
+            }
+        ]
+        pool = _FakePool(claim_rows=claim_rows)
+
+        stats = await consolidation_module.run_consolidation(
+            pool,
+            embedding_engine=None,
+            cc_spawner=_FakeSpawner(
+                output=(
+                    '{"new_facts": [{"subject": "owner", '
+                    '"predicate": "preference", "content": "likes quiet dinners"}]}'
+                )
+            ),
+        )
+
+        assert stats["groups_consolidated"] == 0
+        assert stats["errors"] == ["Failed to consolidate relationship"]
+        assert pool.consolidation_run_inserts() == []
+        failure_updates = [
+            args for query, args in pool.executes if "last_consolidation_error" in query
+        ]
+        assert failure_updates[0][0] == (
+            "invalid consolidation episode evidence for new_facts[0]: expected a non-empty list"
+        )
+
 
 # ---------------------------------------------------------------------------
 # (c) Integration — table + columns + grant after migration SQL runs
