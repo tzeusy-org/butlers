@@ -322,8 +322,10 @@ class TestSpotifyAPI:
         assert resp.status_code == 200
         assert resp.json() == {"disconnected": True}
 
-    async def test_disconnect_preserves_client_id_while_clearing_oauth_state(self, monkeypatch):
-        """Disconnect clears token/scopes state but leaves reconnect configuration intact."""
+    async def test_disconnect_preserves_client_id_while_clearing_local_oauth_state(
+        self, monkeypatch
+    ):
+        """Disconnect clears local token/scope rows but leaves reconnect configuration intact."""
         from butlers.api.routers import spotify as spotify_router
 
         deleted_keys: list[str] = []

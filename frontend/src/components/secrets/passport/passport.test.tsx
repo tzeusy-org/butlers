@@ -1381,14 +1381,14 @@ describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
     expect(html).toContain("disconnect");
   });
 
-  it("says disconnect keeps the configured client ID", () => {
+  it("says disconnect clears local auth state and keeps the configured client ID", () => {
     const { getByRole, getByText, unmount } = renderInDomRouter(<SpotifyDrawerContent />);
 
     fireEvent.click(getByRole("button", { name: /^disconnect$/i }));
 
     expect(
       getByText(
-        "Disconnect Spotify? Clears access and refresh tokens and granted permissions. Your client ID remains configured.",
+        "Disconnect Spotify? Clears locally stored access and refresh tokens, plus locally recorded scopes. Your client ID remains configured.",
       ),
     ).toBeTruthy();
     unmount();
