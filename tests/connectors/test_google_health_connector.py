@@ -56,7 +56,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthTokenRevokedError,
     exponential_backoff_delay,
 )
-from butlers.google_account_registry import HealthScopedAccount
+from butlers.google_account_registry import GoogleAccount, HealthScopedAccount
 
 _OWNER_EMAIL = "owner@example.com"
 _ENDPOINT = _endpoint_identity_for_user(_OWNER_EMAIL)
@@ -1014,6 +1014,81 @@ async def test_resolve_owner_and_scopes_diffs_account_set_across_cycles() -> Non
     assert connector._accounts_removed == []
     # teardown not called again.
     assert teardown_calls == ["y@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_last_scope_loss_replaces_account_heartbeat_with_degraded_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live connector must not go heartbeat-silent after its final scope loss."""
+    connector, ctx = _make_connector_with_account()
+    connector._shared_pool = MagicMock()
+    connector._running = True
+    connector._mcp_client.call_tool = AsyncMock(return_value={"status": "accepted"})
+
+    async def _fake_teardown(removed: OwnerContext) -> None:
+        connector._heartbeats.pop(removed.account_id, None)
+
+    connector._teardown_account = _fake_teardown  # type: ignore[method-assign]
+
+    primary_without_health_scopes = GoogleAccount(
+        id=ctx.account_id,
+        entity_id=ctx.entity_id,
+        email=ctx.email,
+        display_name=None,
+        is_primary=True,
+        granted_scopes=[_NON_HEALTH_SCOPE],
+        status="active",
+        connected_at=MagicMock(),
+        last_token_refresh_at=None,
+    )
+    monkeypatch.setattr(
+        "butlers.connectors.google_health.list_health_scoped_accounts",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "butlers.connectors.google_health.get_google_account",
+        AsyncMock(return_value=primary_without_health_scopes),
+    )
+
+    try:
+        await connector._resolve_owner_and_scopes()
+
+        assert connector._accounts == {}
+        assert connector._scope_missing is True
+        assert connector._degraded_heartbeat is not None
+        connector._mcp_client.call_tool.assert_awaited_once()
+        tool_name, envelope = connector._mcp_client.call_tool.await_args.args
+        assert tool_name == "connector.heartbeat"
+        assert envelope["connector"]["endpoint_identity"] == ctx.endpoint_identity
+        assert envelope["status"]["state"] == "degraded"
+        assert envelope["status"]["error_message"] == "scope_missing"
+    finally:
+        if connector._degraded_heartbeat is not None:
+            await connector._degraded_heartbeat.stop()
+
+
+@pytest.mark.asyncio
+async def test_initial_degraded_heartbeat_failure_is_non_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An immediate degraded heartbeat failure must not escape account resolution."""
+    connector = _make_connector()
+    connector._running = True
+    send_heartbeat = AsyncMock(side_effect=RuntimeError("heartbeat failed"))
+    monkeypatch.setattr(
+        "butlers.connectors.google_health.ConnectorHeartbeat._send_heartbeat",
+        send_heartbeat,
+    )
+
+    try:
+        await connector._ensure_degraded_heartbeat_running()
+
+        assert connector._degraded_heartbeat is not None
+        send_heartbeat.assert_awaited_once()
+    finally:
+        if connector._degraded_heartbeat is not None:
+            await connector._degraded_heartbeat.stop()
 
 
 # ---------------------------------------------------------------------------

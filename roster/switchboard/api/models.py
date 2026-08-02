@@ -318,6 +318,19 @@ class SenderAddressCondition(BaseModel):
         return v
 
 
+class SourceEndpointCondition(BaseModel):
+    """Condition schema for rule_type='source_endpoint'."""
+
+    endpoint_identity: str
+
+    @field_validator("endpoint_identity")
+    @classmethod
+    def endpoint_identity_lowercase_nonempty(cls, v: str) -> str:
+        if not v or not v.strip() or v != v.lower():
+            raise ValueError("endpoint_identity must be lowercase and non-empty")
+        return v
+
+
 class HeaderCondition(BaseModel):
     """Condition schema for rule_type='header_condition'."""
 
@@ -349,7 +362,7 @@ class MimeTypeCondition(BaseModel):
         return v
 
 
-# All 7 rule types supported by the unified ingestion_rules table (design.md D7)
+# Rule types that the dashboard create/update API accepts (design.md D7).
 INGESTION_RULE_TYPES = frozenset(
     {
         "sender_domain",
@@ -359,6 +372,7 @@ INGESTION_RULE_TYPES = frozenset(
         "substring",
         "chat_id",
         "channel_id",
+        "source_endpoint",
     }
 )
 
@@ -428,6 +442,8 @@ def validate_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, A
         return SenderDomainCondition(**condition).model_dump()
     elif rule_type == "sender_address":
         return SenderAddressCondition(**condition).model_dump()
+    elif rule_type == "source_endpoint":
+        return SourceEndpointCondition(**condition).model_dump()
     elif rule_type == "header_condition":
         cond = HeaderCondition(**condition)
         d = cond.model_dump()
@@ -504,6 +520,12 @@ def validate_rule_type_for_scope(rule_type: str, scope: str) -> str:
     """
     if scope == "global":
         return rule_type
+
+    # Endpoint identities describe the source as it reaches Switchboard's
+    # post-ingest policy evaluator. They are not connector-local filter keys,
+    # so only global routing rules may use this exact-match condition.
+    if rule_type == "source_endpoint":
+        raise ValueError("rule_type 'source_endpoint' is only valid for global scope")
 
     if scope.startswith("connector:"):
         parts = scope.split(":", 2)
@@ -627,6 +649,7 @@ class IngestionRuleTestEnvelope(BaseModel):
 
     sender_address: str = ""
     source_channel: str = ""
+    source_endpoint_identity: str = ""
     headers: dict[str, str] = {}
     mime_parts: list[str] = []
     raw_key: str = ""

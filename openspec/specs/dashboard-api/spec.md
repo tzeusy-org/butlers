@@ -51,6 +51,8 @@ All API responses SHALL use consistent wrapper types. Backend Pydantic models an
   - Timeline: `GET /api/timeline` returns `TimelineResponse` (unwrapped)
   - Relationship domain: `GET /api/relationship/contacts/{contactId}` returns `ContactDetail` (unwrapped), and other relationship sub-resource endpoints return unwrapped arrays
   - Trigger: `POST /api/butlers/{name}/trigger` returns `TriggerResponse` (unwrapped)
+  - Conversation create and follow-up: `POST /api/butlers/{name}/conversations` and `POST /api/butlers/{name}/conversations/{conversation_id}/messages` return `text/event-stream`
+  - Conversation Stop: canonical `POST /api/butlers/{name}/conversation-turns/{message_id}/cancel` (and the legacy conversation-scoped compatibility route) returns raw `ConversationCancelResponse`
 - **AND** the frontend type layer accounts for these exceptions with dedicated response interfaces
 
 #### Scenario: TypeScript mirror types
@@ -362,6 +364,26 @@ The API SHALL expose the following complete endpoint inventory, grouped by domai
 | GET | `/api/butlers/{name}/modules` | Module health status |
 | GET | `/api/butlers/{name}/module-states` | Module runtime states |
 | PUT | `/api/butlers/{name}/module-states/{module}/enabled` | Toggle module enabled state |
+
+#### Dashboard Conversations
+| Method | Path | Response | Purpose |
+|--------|------|----------|---------|
+| GET | `/api/butlers/{name}/conversations` | `PaginatedResponse<ConversationSummary>` | List conversations |
+| GET | `/api/butlers/{name}/conversations/search` | `PaginatedResponse<ConversationSearchResult>` | Search conversation history |
+| GET | `/api/butlers/{name}/conversations/summary` | `ConversationStats` | Conversation statistics |
+| POST | `/api/butlers/{name}/conversations` | `text/event-stream` | Create and submit an immutable dashboard user turn |
+| GET | `/api/butlers/{name}/conversations/{conversation_id}/messages` | `PaginatedResponse<ConversationMessage>` | List messages |
+| POST | `/api/butlers/{name}/conversations/{conversation_id}/messages` | `text/event-stream` | Submit a follow-up user turn |
+| PATCH | `/api/butlers/{name}/conversations/{conversation_id}` | `ConversationSummary` | Rename, archive, or unarchive a conversation |
+| POST | `/api/butlers/{name}/conversation-turns/{message_id}/cancel` | `ConversationCancelResponse` | Canonical durable Stop for one immutable user turn |
+| POST | `/api/butlers/{name}/conversations/{conversation_id}/cancel` | `ConversationCancelResponse` | Legacy compatibility Stop route; dashboard clients use the message-scoped route |
+
+#### Scenario: Dashboard conversation stream and Stop semantics
+- **WHEN** the dashboard submits a user turn
+- **THEN** the API opens durable control keyed by the immutable `message_id` before external ingress, and only the caller with the `dispatch` claim may invoke `ingest.v1`
+- **AND** a caller observing `accepted` observes the original request, while `pending` or `cancelling` yields `INGEST_IN_PROGRESS` plus `done` and never creates a replay
+- **AND** confirmed cancellation yields `SESSION_CANCELLED`; an unprovable recovered predecessor yields `TURN_OUTCOME_UNKNOWN`; both suppress automatic replay
+- **AND** the raw `ConversationCancelResponse` documents exactly one truthful Stop result (`cancelled`, `already_finished`, or unconfirmed), while non-2xx failures retain `ErrorResponse`
 
 #### Sessions
 | Method | Path | Purpose |
@@ -1055,6 +1077,19 @@ data source; no affordance on the redesigned page may ship without its wire here
   filter (facts with importance ≥ the threshold). The response `meta.total`
   reflects the filtered count (the attention rail reads it for the
   "important facts fading" row).
+- A fact or rule with a non-null `source_episode_id` SHALL expose a typed
+  `source_episode_status` of `available`, `expired`, or `unresolved`: only a
+  live readable episode is `available`; a content-free tombstone is `expired`;
+  and an identifier with neither relation is `unresolved`. The field SHALL be
+  `null` when there is no source episode. A source status MUST NOT disclose raw
+  episode content or internal tombstone details.
+- `GET /api/memory/links/{memory_type}/{memory_id}` SHALL return the durable
+  incoming, outgoing, or combined `memory_links` relations in an
+  `ApiResponse`. Each endpoint whose type is `episode` SHALL carry the matching
+  `source_episode_status` or `target_episode_status` using the same typed
+  vocabulary; non-episode endpoints SHALL be `null`. The reader is read-only
+  and MUST retain an expired or unresolved relation rather than representing it
+  as a live episode or silently omitting it.
 - `GET /api/memory/facts/{id}` SHALL additionally return `superseded_by:
   str | null`, computed by the reverse query `WHERE supersedes_id = $1`
   (the forward `supersedes_id` field already exists).
@@ -1127,6 +1162,27 @@ pools without memory tables are silently skipped.
 - **WHEN** `GET /api/memory/facts?importance_min=8&validity=fading` is called
 - **THEN** `meta.total` reflects the count of high-importance fading facts
   (backing the rail's "important facts fading" row)
+
+#### Scenario: Fact and rule sources expose typed availability
+
+- **WHEN** a fact or rule has a `source_episode_id` whose live episode exists
+- **THEN** its response MUST return `source_episode_status = 'available'`
+- **WHEN** that source episode has only a content-free tombstone
+- **THEN** the response MUST retain the identifier and return
+  `source_episode_status = 'expired'`
+- **WHEN** neither a live episode nor a tombstone establishes the identifier
+- **THEN** the response MUST return `source_episode_status = 'unresolved'`
+- **AND** neither unavailable state may expose raw episode content or deletion
+  metadata
+
+#### Scenario: Generic memory links expose typed episode endpoints
+
+- **WHEN** `GET /api/memory/links/{memory_type}/{memory_id}` returns a link
+  whose source or target endpoint is an episode
+- **THEN** that endpoint MUST carry `available`, `expired`, or `unresolved`
+  status in its corresponding source/target status field
+- **AND** an expired or unresolved endpoint MUST remain in the returned durable
+  relation without a live episode claim
 
 #### Scenario: Fact detail carries superseded-by
 - **WHEN** `GET /api/memory/facts/{id}` is called and another fact has

@@ -611,6 +611,60 @@ describe("deriveOverviewTriageModel", () => {
     });
   });
 
+  it("names a partial pending-actions aggregate instead of deriving an approval all-clear", () => {
+    const partialMetricsInput = {
+      approvalMetrics: approvalMetrics({ total_pending: 0 }),
+      approvalMetricsPendingActionsSourcesDegraded: ["home"],
+    } as unknown as Parameters<typeof deriveOverviewTriageModel>[0];
+
+    const model = deriveOverviewTriageModel(partialMetricsInput);
+
+    expect(model.nowRows).toContainEqual(
+      expect.objectContaining({
+        id: "now:approvals:unavailable",
+        kind: "error",
+        label: "Pending approvals: unavailable (home)",
+        href: "/approvals",
+      }),
+    );
+    expect(model.nowRows.some((row) => row.id === "now:approvals")).toBe(false);
+  });
+
+  it("emits a source-error attention row when approval metrics are unavailable", () => {
+    const model = deriveOverviewTriageModel({
+      approvalMetrics: null,
+      approvalMetricsUnavailable: true,
+    });
+
+    expect(model.attentionRows).toContainEqual(
+      expect.objectContaining({
+        id: "approvals:metrics-unavailable",
+        kind: "approval",
+        severity: "high",
+        title: "Pending approvals unavailable",
+        href: "/approvals",
+        isSourceError: true,
+      }),
+    );
+  });
+
+  it("keeps healthy individual approval rows usable beside a partial aggregate warning", () => {
+    const partialMetricsInput = {
+      approvals: [approvalSummary("approval-1")],
+      approvalMetrics: approvalMetrics({ total_pending: 0 }),
+      approvalMetricsPendingActionsSourcesDegraded: ["home"],
+    } as unknown as Parameters<typeof deriveOverviewTriageModel>[0];
+
+    const model = deriveOverviewTriageModel(partialMetricsInput);
+
+    expect(model.attentionRows).toContainEqual(
+      expect.objectContaining({ id: "approvals:approval-1", approvalId: "approval-1" }),
+    );
+    expect(model.nowRows).toContainEqual(
+      expect.objectContaining({ id: "now:approvals:unavailable" }),
+    );
+  });
+
   it("derives overdue-cadence attention and enriched butler index metadata from the board's own verdict", () => {
     // The board's `activity: "overdue"` is the canonical cadence-aware
     // verdict (bu-qvnce.4) -- the model no longer runs its own stale-

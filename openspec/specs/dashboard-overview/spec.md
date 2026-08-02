@@ -296,6 +296,15 @@ tabular-numeric, and visually calm.
   any other interactive control
 - **AND** a genuine zero value is unaffected by this rule and keeps its door
 
+#### Scenario: Degraded Sessions aggregate leaves the other KPI doors available
+
+- **WHEN** `GET /api/butlers/board` succeeds but reports
+  `aggregates.sessions_source_error = true`
+- **THEN** `Sessions · 24h` renders `—` with unavailable semantics and no
+  Sessions door, because its aggregate is only a partial sum
+- **AND** the available `Total butlers`, `Healthy`, and `Pending approvals`
+  values retain their normal values and supported doors
+
 ### Requirement: Operations Index
 
 The home page SHALL render a right-column `Operations` section summarizing the

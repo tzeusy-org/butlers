@@ -4343,6 +4343,354 @@ class TestCalendarForceSyncRecovery:
         assert "410" in messages or "expired" in messages
 
 
+class TestQueuedCalendarForceSync:
+    """Dashboard-triggered syncs are durable commands, not long MCP calls."""
+
+    async def _make_sync_module(self, provider) -> tuple[CalendarModule, _StubMCP]:
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        mod._all_provider_calendar_ids = ["primary"]
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+            butler_name="test-butler",
+        )
+        return mod, mcp
+
+    async def test_queue_acknowledges_before_provider_io(self):
+        provider = TestCalendarForceSyncRecovery._recording_provider()
+        mod, mcp = await self._make_sync_module(provider)
+        mod._enqueue_force_sync_command = AsyncMock(
+            return_value={
+                "status": "queued",
+                "request_id": "dashboard-request",
+                "full": True,
+                "coalesced": False,
+            }
+        )
+
+        result = await mcp.tools["calendar_force_sync"](
+            queue=True,
+            full=True,
+            request_id="dashboard-request",
+        )
+
+        assert result["status"] == "queued"
+        assert result["request_id"] == "dashboard-request"
+        mod._enqueue_force_sync_command.assert_awaited_once_with(
+            calendar_id=None,
+            full=True,
+            request_id="dashboard-request",
+        )
+        assert provider.tokens == []
+
+    async def test_startup_wakes_queue_worker_when_periodic_sync_is_disabled(self):
+        """Dashboard commands drain through the real wait/wake loop without polling."""
+        mod = CalendarModule()
+        db = SimpleNamespace(pool=MagicMock())
+        provider = MagicMock()
+        provider.shutdown = AsyncMock()
+        internal_projection_started = asyncio.Event()
+        first_drain_finished = asyncio.Event()
+        worker_waiting_for_queue_wake = asyncio.Event()
+        queued_work_drained = asyncio.Event()
+        drain_calls = 0
+
+        async def _wait_for_shutdown(started: asyncio.Event) -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        async def _drain_force_sync_commands() -> int:
+            nonlocal drain_calls
+            drain_calls += 1
+            if drain_calls == 1:
+                first_drain_finished.set()
+                return 0
+            if drain_calls == 2:
+                queued_work_drained.set()
+                return 1
+            return 0
+
+        original_queue_wake_wait = mod._force_sync_queue_wake.wait
+
+        async def _wait_for_queue_wake() -> bool:
+            worker_waiting_for_queue_wake.set()
+            return await original_queue_wake_wait()
+
+        provider_factory = MagicMock(return_value=provider)
+        with (
+            patch.object(mod, "_resolve_credentials", new=AsyncMock(return_value=MagicMock())),
+            patch.object(
+                mod,
+                "_resolve_startup_calendar_id",
+                new=AsyncMock(return_value="primary"),
+            ),
+            patch.object(
+                mod,
+                "_discover_and_register_all_calendars",
+                new=AsyncMock(return_value=["primary"]),
+            ),
+            patch.object(mod, "_purge_invalid_probe_sources", new=AsyncMock()),
+            patch.object(mod, "_purge_obsolete_internal_sources", new=AsyncMock()),
+            patch.object(mod, "_projection_tables_available", new=AsyncMock(return_value=True)),
+            patch.object(mod, "_recover_force_sync_commands", new=AsyncMock(return_value=0)),
+            patch.object(mod, "_drain_force_sync_commands", new=_drain_force_sync_commands),
+            patch.object(
+                mod._force_sync_queue_wake,
+                "wait",
+                new=_wait_for_queue_wake,
+            ),
+            patch.object(
+                mod,
+                "_run_internal_projection_poller",
+                new=lambda: _wait_for_shutdown(internal_projection_started),
+            ),
+            patch.dict(CalendarModule._PROVIDER_CLASSES, {"google": provider_factory}),
+        ):
+            await mod.on_startup(
+                {"provider": "google", "calendar_id": "primary", "sync": {"enabled": False}},
+                db=db,
+            )
+            try:
+                await asyncio.wait_for(first_drain_finished.wait(), timeout=0.5)
+                await asyncio.wait_for(worker_waiting_for_queue_wake.wait(), timeout=0.5)
+                await asyncio.wait_for(internal_projection_started.wait(), timeout=0.5)
+
+                assert mod._sync_task is None
+                assert mod._force_sync_queue_task is not None
+                assert not mod._force_sync_queue_task.done()
+                assert drain_calls == 1
+
+                # This is the same wake signal set after durable enqueue. The
+                # real worker must leave its idle wait and perform another drain.
+                mod._force_sync_queue_wake.set()
+                await asyncio.wait_for(queued_work_drained.wait(), timeout=0.5)
+                assert drain_calls >= 2
+            finally:
+                await mod.on_shutdown()
+
+        assert mod._force_sync_queue_task is None
+        provider.shutdown.assert_awaited_once()
+
+    async def test_queue_persists_pending_action_before_acknowledging(self):
+        mod = CalendarModule()
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                None,
+                None,
+                {
+                    "idempotency_key": "calendar_force_sync:request:dashboard-request",
+                    "request_id": "dashboard-request",
+                    "action_status": "pending",
+                    "action_payload": {"calendar_ids": ["primary"], "full": False},
+                },
+            ]
+        )
+        mod._db = SimpleNamespace(pool=pool)
+        mod._projection_tables_available = AsyncMock(return_value=True)
+
+        result = await mod._enqueue_force_sync_command(
+            calendar_id="primary",
+            full=False,
+            request_id="dashboard-request",
+        )
+
+        assert result == {
+            "status": "queued",
+            "request_id": "dashboard-request",
+            "full": False,
+            "coalesced": False,
+        }
+        insert_sql, _, _, action_type, action_status, payload = pool.fetchrow.await_args.args
+        assert "INSERT INTO calendar_action_log" in insert_sql
+        assert "ON CONFLICT DO NOTHING" in insert_sql
+        assert action_type == "calendar_force_sync"
+        assert action_status == "pending"
+        assert payload == {"calendar_ids": ["primary"], "full": False}
+
+    async def test_queue_drain_finalizes_applied_command(self):
+        mod = CalendarModule()
+        command = {
+            "idempotency_key": "calendar_force_sync:request:dashboard-request",
+            "request_id": "dashboard-request",
+            "action_payload": {"calendar_id": "primary", "full": False},
+        }
+        mod._claim_next_force_sync_command = AsyncMock(side_effect=[command, None])
+        mod._run_force_sync = AsyncMock(return_value={"status": "sync_completed", "errors": None})
+        mod._finalize_force_sync_command = AsyncMock()
+
+        processed = await mod._drain_force_sync_commands()
+
+        assert processed == 1
+        mod._run_force_sync.assert_awaited_once_with(calendar_id="primary", full=False)
+        mod._finalize_force_sync_command.assert_awaited_once_with(
+            command=command,
+            action_status="applied",
+            action_result={"status": "sync_completed", "errors": None},
+            error=None,
+        )
+
+    async def test_queue_drain_records_provider_errors_as_failed(self):
+        mod = CalendarModule()
+        command = {
+            "idempotency_key": "calendar_force_sync:request:dashboard-request",
+            "request_id": "dashboard-request",
+            "action_payload": {"calendar_id": "primary", "full": False},
+        }
+        mod._claim_next_force_sync_command = AsyncMock(side_effect=[command, None])
+        mod._run_force_sync = AsyncMock(
+            return_value={"status": "sync_completed", "errors": ["push: rate limited"]}
+        )
+        mod._finalize_force_sync_command = AsyncMock()
+
+        processed = await mod._drain_force_sync_commands()
+
+        assert processed == 1
+        mod._finalize_force_sync_command.assert_awaited_once_with(
+            command=command,
+            action_status="failed",
+            action_result={"status": "sync_completed", "errors": ["push: rate limited"]},
+            error="push: rate limited",
+        )
+
+    async def test_full_request_upgrades_pending_incremental_command(self):
+        mod = CalendarModule()
+        mod._projection_tables_available = AsyncMock(return_value=True)
+        mod._db = SimpleNamespace(pool=object())
+        pending = {
+            "idempotency_key": "calendar_force_sync:request:existing",
+            "request_id": "existing",
+            "action_status": "pending",
+            "action_payload": {"calendar_ids": ["primary"], "full": False},
+        }
+        merged = {
+            **pending,
+            "action_payload": {"calendar_ids": ["primary"], "full": True},
+        }
+        mod._load_force_sync_command = AsyncMock(return_value=None)
+        mod._load_active_force_sync_command = AsyncMock(return_value=pending)
+        mod._merge_pending_force_sync_command = AsyncMock(return_value=merged)
+
+        result = await mod._enqueue_force_sync_command(
+            calendar_id="primary",
+            full=True,
+            request_id="new-recovery-request",
+        )
+
+        assert result == {
+            "status": "queued",
+            "request_id": "existing",
+            "full": True,
+            "coalesced": True,
+        }
+        mod._merge_pending_force_sync_command.assert_awaited_once()
+        assert mod._merge_pending_force_sync_command.await_args.kwargs["action_payload"] == {
+            "calendar_ids": ["primary"],
+            "full": True,
+        }
+
+    async def test_full_request_queues_successor_behind_running_incremental_command(self):
+        mod = CalendarModule()
+        mod._projection_tables_available = AsyncMock(return_value=True)
+        mod._db = SimpleNamespace(pool=object())
+        running = {
+            "idempotency_key": "calendar_force_sync:request:running",
+            "request_id": "running",
+            "action_status": "running",
+            "action_payload": {"calendar_ids": ["primary"], "full": False},
+        }
+        inserted = {
+            "idempotency_key": "calendar_force_sync:request:new-recovery-request",
+            "request_id": "new-recovery-request",
+            "action_status": "pending",
+            "action_payload": {"calendar_ids": ["primary"], "full": True},
+        }
+        mod._load_force_sync_command = AsyncMock(return_value=None)
+        mod._load_active_force_sync_command = AsyncMock(return_value=running)
+        mod._insert_pending_force_sync_command = AsyncMock(return_value=inserted)
+
+        result = await mod._enqueue_force_sync_command(
+            calendar_id="primary",
+            full=True,
+            request_id="new-recovery-request",
+        )
+
+        assert result == {
+            "status": "queued",
+            "request_id": "new-recovery-request",
+            "full": True,
+            "coalesced": False,
+        }
+        mod._insert_pending_force_sync_command.assert_awaited_once()
+
+    async def test_recovery_returns_interrupted_running_commands_to_pending(self):
+        mod = CalendarModule()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "idempotency_key": "calendar_force_sync:request:interrupted",
+                    "request_id": "interrupted",
+                    "action_status": "running",
+                    "action_payload": {"calendar_ids": ["primary"], "full": False},
+                }
+            ]
+        )
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        mod._db = SimpleNamespace(pool=pool)
+        mod._projection_tables_available = AsyncMock(return_value=True)
+
+        assert await mod._recover_force_sync_commands() == 1
+        sql, action_id, pending, payload, action_type, running = pool.execute.await_args.args
+        assert "UPDATE calendar_action_log" in sql
+        assert action_id == "calendar_force_sync:request:interrupted"
+        assert action_type == "calendar_force_sync"
+        assert pending == "pending"
+        assert running == "running"
+        assert payload == {"calendar_ids": ["primary"], "full": False}
+
+    async def test_recovery_coalesces_pending_successor_before_requeueing_running_command(self):
+        mod = CalendarModule()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "idempotency_key": "calendar_force_sync:request:running",
+                    "request_id": "running",
+                    "action_status": "running",
+                    "action_payload": {"calendar_ids": ["primary"], "full": False},
+                },
+                {
+                    "idempotency_key": "calendar_force_sync:request:recovery",
+                    "request_id": "recovery",
+                    "action_status": "pending",
+                    "action_payload": {"calendar_ids": ["work"], "full": True},
+                },
+            ]
+        )
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        mod._db = SimpleNamespace(pool=pool)
+        mod._projection_tables_available = AsyncMock(return_value=True)
+
+        assert await mod._recover_force_sync_commands() == 1
+        assert pool.execute.await_count == 2
+        noop_args = pool.execute.await_args_list[0].args
+        assert noop_args[1] == "calendar_force_sync:request:recovery"
+        assert noop_args[2] == "noop"
+        assert noop_args[3] == {
+            "status": "coalesced_after_restart",
+            "coalesced_into": "calendar_force_sync:request:running",
+        }
+        requeue_args = pool.execute.await_args_list[1].args
+        assert requeue_args[1] == "calendar_force_sync:request:running"
+        assert requeue_args[2] == "pending"
+        assert requeue_args[3] == {"calendar_ids": ["primary", "work"], "full": True}
+
+
 class TestProjectionFreshnessErrorKind:
     """``_projection_freshness_metadata`` surfaces a per-source ``error_kind``."""
 
@@ -4526,236 +4874,3 @@ class TestSourceSyncEnabled:
         mod._sync_states["c1"] = CalendarSyncState()
         # full=False (background loop): a disabled source is skipped → returns False.
         assert await mod._sync_calendar("c1", full=False) is False
-
-
-# ---------------------------------------------------------------------------
-# Reminder push: description + location survive into CalendarEventCreate/Update
-# [bu-nacgn]
-# ---------------------------------------------------------------------------
-
-
-class TestReminderPushDescriptionLocation:
-    """_push_internal_events_to_provider threads description+location from reminders rows.
-
-    The reminder path is currently unreachable in production (reminders table
-    was dropped by relationship migrations 007+020), but the projection code
-    should be correct if the path is ever revived.
-    """
-
-    def _make_module(self, provider: _ProviderDouble, pool: MagicMock) -> CalendarModule:
-        mod = CalendarModule()
-        db = MagicMock()
-        db.pool = pool
-        mod._db = db
-        mod._provider = provider
-        mod._resolved_calendar_id = "cal-butlers"
-        mod._butler_name = "health"
-        return mod
-
-    async def test_create_event_carries_description_and_location(self) -> None:
-        """When a reminder lacks a calendar_event_id, create_event receives description+location."""
-        reminder_id = uuid.uuid4()
-        remind_at = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
-
-        pool = MagicMock()
-        pool.execute = AsyncMock()
-
-        # Reminder row without a google event_id → will trigger create_event
-        pool.fetch = AsyncMock(
-            return_value=[
-                {
-                    "id": reminder_id,
-                    "label": "Doctor visit",
-                    "message": None,
-                    "next_trigger_at": remind_at,
-                    "timezone": "UTC",
-                    "cron": None,
-                    "calendar_event_id": None,
-                    "dismissed": False,
-                    "updated_at": remind_at,
-                    "description": "Annual checkup with Dr. Smith",
-                    "location": "123 Medical Center Dr",
-                }
-            ]
-        )
-
-        created_event = _make_event(event_id="new-google-id", title="Doctor visit")
-        provider = _ProviderDouble(event=created_event)
-
-        mod = self._make_module(provider, pool)
-
-        # Patch _table_exists and _table_columns to simulate a reminders table with all columns
-        with (
-            patch.object(
-                mod,
-                "_table_exists",
-                AsyncMock(
-                    side_effect=lambda t: {
-                        "reminders": True,
-                        "scheduled_tasks": False,
-                    }.get(t, False)
-                ),
-            ),
-            patch.object(
-                mod,
-                "_table_columns",
-                AsyncMock(
-                    return_value={
-                        "id",
-                        "label",
-                        "message",
-                        "next_trigger_at",
-                        "timezone",
-                        "cron",
-                        "calendar_event_id",
-                        "dismissed",
-                        "updated_at",
-                        "description",
-                        "location",
-                    }
-                ),
-            ),
-        ):
-            await mod._push_internal_events_to_provider()
-
-        assert len(provider.create_calls) == 1
-        payload: CalendarEventCreate = provider.create_calls[0]["payload"]
-        assert payload.description == "Annual checkup with Dr. Smith"
-        assert payload.location == "123 Medical Center Dr"
-
-    async def test_update_event_carries_description_and_location(self) -> None:
-        """When a reminder has a calendar_event_id, update_event receives description+location."""
-        reminder_id = uuid.uuid4()
-        remind_at = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
-
-        pool = MagicMock()
-        pool.execute = AsyncMock()
-
-        # Reminder row with an existing google event_id → will trigger update_event
-        pool.fetch = AsyncMock(
-            return_value=[
-                {
-                    "id": reminder_id,
-                    "label": "Yoga class",
-                    "message": None,
-                    "next_trigger_at": remind_at,
-                    "timezone": "Europe/London",
-                    "cron": None,
-                    "calendar_event_id": "existing-google-id",
-                    "dismissed": False,
-                    "updated_at": remind_at,
-                    "description": "Bring a mat and water bottle",
-                    "location": "Studio B, Wellness Centre",
-                }
-            ]
-        )
-
-        existing_event = _make_event(event_id="existing-google-id", title="Yoga class")
-        provider = _ProviderDouble(event=existing_event)
-
-        mod = self._make_module(provider, pool)
-
-        with (
-            patch.object(
-                mod,
-                "_table_exists",
-                AsyncMock(
-                    side_effect=lambda t: {
-                        "reminders": True,
-                        "scheduled_tasks": False,
-                    }.get(t, False)
-                ),
-            ),
-            patch.object(
-                mod,
-                "_table_columns",
-                AsyncMock(
-                    return_value={
-                        "id",
-                        "label",
-                        "message",
-                        "next_trigger_at",
-                        "timezone",
-                        "cron",
-                        "calendar_event_id",
-                        "dismissed",
-                        "updated_at",
-                        "description",
-                        "location",
-                    }
-                ),
-            ),
-        ):
-            await mod._push_internal_events_to_provider()
-
-        assert len(provider.update_calls) == 1
-        patch_payload: CalendarEventUpdate = provider.update_calls[0]["patch"]
-        assert patch_payload.description == "Bring a mat and water bottle"
-        assert patch_payload.location == "Studio B, Wellness Centre"
-
-    async def test_push_without_description_location_columns_omits_them(self) -> None:
-        """When the reminders table lacks description/location columns, create_event gets None."""
-        reminder_id = uuid.uuid4()
-        remind_at = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
-
-        pool = MagicMock()
-        pool.execute = AsyncMock()
-
-        # Row without description or location keys (old schema)
-        pool.fetch = AsyncMock(
-            return_value=[
-                {
-                    "id": reminder_id,
-                    "label": "Old schema reminder",
-                    "message": None,
-                    "next_trigger_at": remind_at,
-                    "timezone": "UTC",
-                    "cron": None,
-                    "calendar_event_id": None,
-                    "dismissed": False,
-                    "updated_at": remind_at,
-                }
-            ]
-        )
-
-        created_event = _make_event(event_id="new-id", title="Old schema reminder")
-        provider = _ProviderDouble(event=created_event)
-
-        mod = self._make_module(provider, pool)
-
-        # Columns without description/location
-        with (
-            patch.object(
-                mod,
-                "_table_exists",
-                AsyncMock(
-                    side_effect=lambda t: {
-                        "reminders": True,
-                        "scheduled_tasks": False,
-                    }.get(t, False)
-                ),
-            ),
-            patch.object(
-                mod,
-                "_table_columns",
-                AsyncMock(
-                    return_value={
-                        "id",
-                        "label",
-                        "message",
-                        "next_trigger_at",
-                        "timezone",
-                        "cron",
-                        "calendar_event_id",
-                        "dismissed",
-                        "updated_at",
-                    }
-                ),
-            ),
-        ):
-            await mod._push_internal_events_to_provider()
-
-        assert len(provider.create_calls) == 1
-        payload: CalendarEventCreate = provider.create_calls[0]["payload"]
-        assert payload.description is None
-        assert payload.location is None

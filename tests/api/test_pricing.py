@@ -293,3 +293,43 @@ class TestPricingDependency:
         assert entry.cache_creation_price_per_token == pytest.approx(
             entry.input_price_per_token * 1.25
         )
+
+    @pytest.mark.parametrize(
+        ("model_ids", "expected_rates", "expected_cost"),
+        [
+            (("gpt-5.6-sol",), (0.000005, 0.0000005, 0.00000625, 0.00003), 41.75),
+            (("gpt-5.6-terra",), (0.000002, 0.0000002, 0.0000025, 0.000012), 16.70),
+            (
+                ("gpt-5.6-luna", "gpt-5.6-luna-high", "gpt-5.6-luna-xhigh"),
+                (0.0000002, 0.00000002, 0.00000025, 0.0000012),
+                1.67,
+            ),
+        ],
+    )
+    def test_repo_default_gpt_5_6_models_assume_short_context_api_pricing(
+        self, model_ids, expected_rates, expected_cost
+    ):
+        # The dashboard intentionally estimates general usage at the Standard
+        # API's <=272K rate, regardless of the active subscription or a
+        # context_tokens value. Luna reasoning aliases need exact keys.
+        cfg = load_pricing()
+
+        for model_id in model_ids:
+            entry = cfg.get_model_pricing(model_id)
+            assert isinstance(entry, ModelPricing)
+            assert cfg.billing_class_for(model_id) == "metered"
+            assert (
+                entry.input_price_per_token,
+                entry.cached_input_price_per_token,
+                entry.cache_creation_price_per_token,
+                entry.output_price_per_token,
+            ) == pytest.approx(expected_rates)
+
+            assert cfg.estimate_cost(
+                model_id,
+                1_000_000,
+                1_000_000,
+                cached_input_tokens=1_000_000,
+                cache_creation_tokens=1_000_000,
+                context_tokens=272_001,
+            ) == pytest.approx(expected_cost)

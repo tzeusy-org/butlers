@@ -35,7 +35,9 @@ async def approvals_pool(provisioned_postgres_pool):
                 reversibility TEXT,
                 approval_rule_id UUID,
                 CONSTRAINT pending_actions_status_check
-                    CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed')),
+                    CHECK (status IN (
+                        'pending', 'approved', 'rejected', 'expired', 'executed', 'abandoned'
+                    )),
                 CONSTRAINT pending_actions_blast_radius_check
                     CHECK (blast_radius IS NULL OR blast_radius IN (
                         'none', 'self', 'contact', 'external'
@@ -82,6 +84,7 @@ async def approvals_pool(provisioned_postgres_pool):
                         'action_approved',
                         'action_rejected',
                         'action_expired',
+                        'action_abandoned',
                         'action_execution_succeeded',
                         'action_execution_failed',
                         'rule_created',

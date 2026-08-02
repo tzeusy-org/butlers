@@ -103,7 +103,14 @@ CHAIN_TABLES: dict[str, set[str]] = {
     },
     # entities/contact_info are core identity tables in PUBLIC (core_002), not
     # per-schema memory-chain tables, so they are not asserted here.
-    "memory": {"episodes", "facts", "rules", "memory_links", "memory_events"},
+    "memory": {
+        "episodes",
+        "episode_tombstones",
+        "facts",
+        "rules",
+        "memory_links",
+        "memory_events",
+    },
     "travel": {"trips", "legs", "accommodations", "reservations", "documents"},
     "home": {"ha_entity_snapshot", "ha_command_log", "maintenance_items"},
     # lifestyle has a butler chain but no domain tables in v1 (schema-only).

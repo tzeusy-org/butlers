@@ -31,7 +31,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module, ToolGroupMixin
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
 
 from .insight_broker import InsightBrokerConfig, InsightBrokerModule  # noqa: F401
 from .owner_conditions_broker import (  # noqa: F401
@@ -58,6 +58,7 @@ class SwitchboardModuleConfig(ToolGroupMixin, BaseModel):
     Tool groups
     -----------
     routing : list_butlers, route, post_mail, correct_route, deliver
+    lifecycle : connector_disconnect
     extraction : log_extraction, extraction_log_list, extraction_log_undo
     backfill : create_backfill_job, backfill_pause, backfill_cancel,
                backfill_resume, backfill_list
@@ -90,6 +91,17 @@ class SwitchboardModule(Module):
 
     def migration_revisions(self) -> str | None:
         return None  # switchboard tables already exist via separate migrations
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        """Declare the connector identity as safety-critical for approval rules."""
+        return {
+            "connector_disconnect": ToolMeta(
+                arg_sensitivities={
+                    "connector_type": True,
+                    "endpoint_identity": True,
+                }
+            )
+        }
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None

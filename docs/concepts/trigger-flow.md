@@ -20,7 +20,7 @@ Any MCP client connected to a butler can call the `trigger` tool with a prompt s
 
 The Switchboard butler dispatches classified messages to domain butlers via the `route.execute` MCP tool. When a target butler receives a route envelope, it persists the request to the `route_inbox` table in `accepted` state and returns `{"status": "accepted"}` immediately. A background task then transitions the row to `processing` and calls `spawner.trigger()` with the routed prompt. The trigger source is recorded as `"route"`.
 
-The `route_inbox` provides crash recovery. On startup, each butler scans for rows stuck in `accepted` or `processing` state (older than a configurable grace period, default 10 seconds) and re-dispatches them. Both states are scanned because a daemon crash or graceful shutdown can leave rows in either state with no task to complete them.
+The `route_inbox` provides crash recovery. On startup, each butler scans for rows stuck in `accepted` or `processing` state (older than a configurable grace period, default 10 seconds) and claims them under a processing lease. Ordinary work can then be re-dispatched through the normal fenced path. A reclaimed dashboard `processing` row is different: it reconciles its durable message turn, and when the predecessor cannot be proven terminal it is surfaced as ambiguous rather than automatically replayed. Both states are scanned because a daemon crash or graceful shutdown can leave rows in either state with no task to complete them.
 
 The route inbox tracks four lifecycle states:
 

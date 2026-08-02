@@ -18,6 +18,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.switchboard.backfill import controls as _backfill_ctl
+    from butlers.tools.switchboard.connector import lifecycle as _connector_lifecycle
     from butlers.tools.switchboard.dead_letter import capture as _dl_capture
     from butlers.tools.switchboard.dead_letter import replay as _dl_replay
     from butlers.tools.switchboard.extraction import audit_log as _extraction
@@ -41,6 +42,27 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     async def list_butlers(routable_only: bool = False) -> list[dict[str, Any]]:
         """List registered butlers, optionally filtered by routing eligibility."""
         return await _registry.list_butlers(module._get_pool(), routable_only=routable_only)
+
+    # =================================================================
+    # Connector lifecycle tools
+    # =================================================================
+
+    @_tool("lifecycle")
+    async def connector_disconnect(
+        connector_type: str,
+        endpoint_identity: str,
+    ) -> dict[str, Any]:
+        """Soft-delete an approved connector lifecycle target.
+
+        The Switchboard approvals gate intercepts ordinary MCP invocations;
+        after an owner approves the action, the approvals executor invokes this
+        original handler directly with the stored command arguments.
+        """
+        return await _connector_lifecycle.connector_disconnect(
+            module._get_pool(),
+            connector_type,
+            endpoint_identity,
+        )
 
     # =================================================================
     # Routing tools

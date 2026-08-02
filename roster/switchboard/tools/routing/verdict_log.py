@@ -89,18 +89,32 @@ VALID_VERDICT_ACTIONS = frozenset({"route_to", "skip", "metadata_only", "pass_th
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[\w]+", re.ASCII)
 
 
-def normalize_sender_key(raw: str | None) -> str:
+def is_email_sender_key(value: str | None) -> bool:
+    """Return whether a normalized verdict key is one complete email address.
+
+    Promotion runs after :func:`normalize_sender_key`, so it must distinguish
+    a real email key from opaque connector identities such as
+    ``spotify:acct-1`` without applying email parsing to the latter.
+    """
+    return bool(_EMAIL_RE.fullmatch((value or "").strip()))
+
+
+def normalize_sender_key(raw: str | None, *, source_channel: str | None = None) -> str:
     """Return a normalized, lowercase sender key for mining/grouping.
 
     Multi-channel by design: the sender identity may be an email or a
     channel-scoped id (``owntracks:th``, ``telegram:bot:@x``,
-    ``home_assistant:<host>:443``, …). If an email address is present (handling
-    RFC 2822 ``"Display Name <user@example.com>"`` as well as a bare address),
-    the EMAIL is canonicalized via the shared
+    ``home_assistant:<host>:443``, …). When ``source_channel`` is ``email``,
+    an address is extracted (handling RFC 2822 ``"Display Name
+    <user@example.com>"`` as well as a bare address) and canonicalized via the shared
     :func:`butlers.identity.normalize_email_sender` (bead 7 convergence —
     email keys stay byte-identical to the pre-convergence local lowercase).
-    Otherwise the whole stripped value is lowercased, so a channel-scoped id
+    For every known non-email channel the whole stripped value is lowercased,
+    so a channel-scoped id
     keeps its ``prefix:id`` shape and stays a stable, collision-free key.
+
+    ``source_channel=None`` retains the legacy helper behavior for direct
+    callers that do not yet carry channel provenance.
 
     The shared helper is deliberately applied only to the *extracted address*,
     never the raw value: running ``parseaddr`` on a channel id strips its
@@ -111,6 +125,8 @@ def normalize_sender_key(raw: str | None) -> str:
     text = (raw or "").strip()
     if not text:
         return ""
+    if source_channel is not None and source_channel.strip().lower() != "email":
+        return text.lower()
     emails = _EMAIL_RE.findall(text)
     if emails:
         return normalize_email_sender(emails[0])
@@ -160,7 +176,7 @@ async def record_routing_verdict(
         )
         return None
 
-    sender_key = normalize_sender_key(sender_identity)
+    sender_key = normalize_sender_key(sender_identity, source_channel=source_channel)
 
     try:
         row_id = await pool.fetchval(

@@ -92,6 +92,15 @@ class TimelineMeta(BaseModel):
             "single flag."
         ),
     )
+    degraded_butlers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of butler pools whose session query failed for this request. "
+            "This is additive evidence alongside degraded_sources: a non-empty "
+            "list means reachable Timeline rows are partial, not a complete "
+            "fleet-history claim."
+        ),
+    )
 
 
 class TimelineResponse(BaseModel):

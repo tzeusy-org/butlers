@@ -10,7 +10,12 @@ The Finance Butler believes that financial clarity is not a luxury that requires
 
 ## Our Promise
 
-We watch your financial email so you do not have to. Every receipt, every invoice, every "your subscription renews soon" notice: your Finance Butler reads it, records it, and remembers it. By the time you think to ask "what did I spend on restaurants last month?" the answer is already waiting for you.
+We watch your financial email so you do not have to. When you explicitly opt in
+to a read-only bank feed, we use that as a second source of transaction evidence
+without gaining the ability to move money. Every receipt, every invoice, every
+"your subscription renews soon" notice: your Finance Butler reads it, records
+it, and remembers it. By the time you think to ask "what did I spend on
+restaurants last month?" the answer is already waiting for you.
 
 We will never surprise you with a bill you forgot about. We will never let a subscription renew without warning you first. We will not let overdue obligations pile up silently. We surface what is urgent, flag what is coming, and keep a clear record of where your money went.
 
@@ -23,6 +28,9 @@ With your Finance Butler, you can:
 - **Track your subscriptions**: Know every recurring charge, when it renews, how much it costs, and whether it is still active. No more "wait, am I still paying for that?"
 - **Get a monthly overview**: At the start of each month, we prepare a quiet summary of where your money went: top categories, biggest changes from last month, obligations still outstanding. We surface it when your chosen insight settings make room for it.
 - **Find any transaction**: Search across your recorded spending by merchant, category, date range, or amount. Your financial history is organized and searchable, not lost in a thousand email threads.
+- **Reconcile the evidence**: If you connect a read-only bank feed, compare its
+  settled transactions with email receipts while keeping the feed optional,
+  transparent, and unable to initiate payments.
 
 ## Why It Matters
 

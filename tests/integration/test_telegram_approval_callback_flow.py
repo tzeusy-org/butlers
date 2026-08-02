@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
@@ -312,6 +313,115 @@ async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(
         "message_id": 44,
         "reply_markup": None,
     }
+
+
+async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
+    approval_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A notification side effect cannot be abandoned after delivery begins.
+
+    This exercises the real dashboard retry and abandonment routes against
+    PostgreSQL. The delivery stub pauses after the API has begun dispatching;
+    Abandon must remain blocked on the executor's row lock until the delivery
+    result and terminal execution event are durable.
+    """
+    action_id = uuid4()
+    await approval_pool.execute(
+        """
+        INSERT INTO pending_actions (id, tool_name, tool_args, status)
+        VALUES ($1, 'notify', $2, 'approved')
+        """,
+        action_id,
+        {"channel": "telegram", "recipient": "42", "message": "Race-proof delivery"},
+    )
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+    abandon_started = asyncio.Event()
+
+    from butlers.modules.approvals import operations as approvals_operations
+
+    real_abandon = approvals_operations.abandon_approved_action
+
+    async def _observe_abandon(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        abandon_started.set()
+        return await real_abandon(*args, **kwargs)
+
+    monkeypatch.setattr(approvals_operations, "abandon_approved_action", _observe_abandon)
+
+    class _BlockingDeliverClient:
+        calls: list[tuple[str, dict[str, Any]]]
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+            assert tool_name == "deliver"
+            self.calls.append((tool_name, arguments))
+            delivery_started.set()
+            await release_delivery.wait()
+            return SimpleNamespace(
+                is_error=False,
+                content=[SimpleNamespace(text=json.dumps({"message_id": "notify-race-proof"}))],
+            )
+
+    class _NotifyMcpManager:
+        def __init__(self, client: _BlockingDeliverClient) -> None:
+            self._client = client
+
+        async def get_client(self, butler_name: str) -> _BlockingDeliverClient:
+            assert butler_name == "switchboard"
+            return self._client
+
+    delivery_client = _BlockingDeliverClient()
+    app = _protected_approvals_app(approval_pool, mcp_mgr=_NotifyMcpManager(delivery_client))
+    headers = {"X-API-Key": _DASHBOARD_API_KEY}
+
+    async with (
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://dashboard-api:41200"
+        ) as retry_client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://dashboard-api:41200"
+        ) as abandon_client,
+    ):
+        retry_task = asyncio.create_task(
+            retry_client.post(f"/api/approvals/{action_id}/retry", headers=headers)
+        )
+        await asyncio.wait_for(delivery_started.wait(), timeout=2)
+        abandon_task = asyncio.create_task(
+            abandon_client.post(
+                f"/api/approvals/{action_id}/abandon",
+                json={"reason": "Owner changed their mind"},
+                headers=headers,
+            )
+        )
+        await asyncio.wait_for(abandon_started.wait(), timeout=2)
+
+        # Give the Abandon route a scheduling turn. Before the fix it completes
+        # here, marking the row abandoned while delivery is still in flight.
+        await asyncio.sleep(0.05)
+        abandon_blocked = not abandon_task.done()
+
+        release_delivery.set()
+        retry_response = await asyncio.wait_for(retry_task, timeout=2)
+        abandon_response = await asyncio.wait_for(abandon_task, timeout=2)
+
+    assert abandon_blocked, "Abandon must wait once notification delivery has begun"
+    assert retry_response.status_code == 200, retry_response.text
+    assert retry_response.json()["data"]["status"] == "executed"
+    assert abandon_response.status_code == 409, abandon_response.text
+    assert len(delivery_client.calls) == 1
+
+    action = await approval_pool.fetchrow(
+        "SELECT status, execution_result FROM pending_actions WHERE id = $1", action_id
+    )
+    assert action is not None
+    assert action["status"] == "executed"
+    assert action["execution_result"]["success"] is True
+    events = await approval_pool.fetch(
+        "SELECT event_type FROM approval_events WHERE action_id = $1", action_id
+    )
+    assert {row["event_type"] for row in events} == {"action_execution_succeeded"}
 
 
 async def test_owner_reject_tap_transitions_and_audits_via_standard_approval_route(

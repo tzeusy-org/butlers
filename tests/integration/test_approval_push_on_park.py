@@ -23,6 +23,7 @@ from butlers.modules.approvals.notifications import (
     ApprovalPushRuntime,
     emit_approval_push,
 )
+from butlers.modules.approvals.park import park_pending_action
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -74,6 +75,42 @@ def _runtime(dispatch: AsyncMock) -> ApprovalPushRuntime:
         credential_store=credential_store,
         dashboard_base_url="https://dashboard.example.test",
     )
+
+
+async def test_park_deduplication_key_blocks_owner_decisions_and_allows_expiry(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """A durable key preserves owner decisions without blocking expiry resurfacing."""
+    now = datetime.now(UTC)
+    deduplication_key = "relationship:entity-dedup:test-source:test-target"
+
+    async def _park(action_id: uuid.UUID) -> None:
+        await park_pending_action(
+            approval_push_pool,
+            action_id=action_id,
+            tool_name="memory_entity_merge",
+            tool_args={"source_entity_id": "test-source", "target_entity_id": "test-target"},
+            agent_summary="Merge test duplicate entities",
+            requested_at=now,
+            expires_at=now + timedelta(days=3),
+            origin_butler="relationship",
+            approval_push_runtime=None,
+            deduplication_key=deduplication_key,
+        )
+
+    first_action_id = uuid.uuid4()
+    await _park(first_action_id)
+
+    await approval_push_pool.execute(
+        "UPDATE pending_actions SET status = 'abandoned' WHERE id = $1", first_action_id
+    )
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await _park(uuid.uuid4())
+
+    await approval_push_pool.execute(
+        "UPDATE pending_actions SET status = 'expired' WHERE id = $1", first_action_id
+    )
+    await _park(uuid.uuid4())
 
 
 async def _insert_pending_action(

@@ -393,21 +393,26 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
     @_tool("core")
     async def reconcile_feed_vs_email(lookback_days: int = 30) -> dict[str, Any]:
-        """Cross-check aggregator-fed transactions against the email-parsed ledger.
+        """Cross-check optional SimpleFIN aggregator-feed transactions against the email ledger.
 
         Matches ``transactions.source = 'aggregator'`` rows against
         ``source_message_id IS NOT NULL`` (email-parsed) rows on (amount ±$0.01,
-        date ±3 days, merchant-fuzzy). No aggregator connector ships yet (the
-        owner must provision a token first) so today this always returns
-        `configured=false` with empty match lists — that is the honest state,
-        not an error.
+        date ±3 days, merchant-fuzzy). SimpleFIN is an optional bridge: a
+        successful aggregator sync creates persisted completed feed-sync evidence
+        and makes feed rows available for matching. `configured` reports that
+        evidence, not whether there is a current credential or configuration. If
+        no account has completed a successful aggregator sync, this returns
+        `configured=false` with empty feed match lists. That is the honest
+        no-feed state, not an all-clear.
 
         lookback_days: Outer scan horizon for both transaction sets (default 30).
 
         Returns:
-          configured: whether any account has ever completed an aggregator sync.
-            False means the empty lists reflect "not connected yet", not "all
-            reconciled".
+          configured: whether any account has persisted completed feed-sync
+            evidence through a successful aggregator sync, including the
+            optional SimpleFIN bridge. It does not report a current credential
+            or configuration. False means the empty lists reflect missing feed
+            data, not "all reconciled".
           matched: [{feed, email}, ...] — paired transactions.
           unmatched_feed: aggregator transactions with no matching email receipt
             (e.g. a merchant that never emails receipts).
@@ -421,15 +426,15 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
     @_tool("core")
     async def account_feed_freshness(staleness_threshold_hours: int = 24) -> dict[str, Any]:
-        """Report per-account aggregator-feed freshness.
+        """Report per-account optional SimpleFIN aggregator-feed freshness.
 
-        An account is `degraded=true` when it has never completed an
-        aggregator sync (`reason="never_synced"`) or its last sync is older
-        than `staleness_threshold_hours` (`reason="stale"`). Until an
-        aggregator connector is wired up, every account reports
-        `never_synced` — this is the honest degraded state per the
-        Degraded-Mode Response Envelope convention, never a fabricated "all
-        healthy".
+        Accounts with no successful aggregator sync are
+        `degraded=true, reason="never_synced"`. This reports persisted completed
+        feed-sync evidence, not a current credential or configuration. A
+        completed sync older than `staleness_threshold_hours` is
+        `degraded=true, reason="stale"`; a recent completed sync is healthy.
+        This preserves the honest degraded state for absent feed data rather
+        than fabricating "all healthy".
 
         Returns:
           accounts: [{account_id, institution, type, name, last_synced_at,

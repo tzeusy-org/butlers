@@ -39,11 +39,8 @@ class _ScheduleCreatePool:
         self.schedule_create_calls: list[dict] = []
 
     async def fetchval(self, query: str, *args) -> object:
-        # _table_exists check for "reminders" and general existence checks
+        # General table-existence checks used by the scheduled-task path.
         if "information_schema.tables" in query or "to_regclass" in query:
-            # scheduled_tasks exists; reminders does NOT (forces scheduled_task path)
-            if "reminders" in (args[0] if args else ""):
-                return None
             return "scheduled_tasks"
         return None
 

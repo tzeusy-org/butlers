@@ -109,6 +109,47 @@ def _mock_db(pools: dict[str, MagicMock]):
     return db
 
 
+class _ApprovalPoolAcquire:
+    """Async context manager used by the real approvals-table discovery path."""
+
+    def __init__(self, connection: MagicMock):
+        self._connection = connection
+
+    async def __aenter__(self) -> MagicMock:
+        return self._connection
+
+    async def __aexit__(self, *_args) -> bool:
+        return False
+
+
+def _mock_approval_pool(pending_count: int) -> tuple[MagicMock, MagicMock]:
+    """Return a pool whose real catalog probe and pending count both succeed."""
+    probe_connection = MagicMock()
+    probe_connection.fetchval = AsyncMock(return_value=True)
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=_ApprovalPoolAcquire(probe_connection))
+    pool.fetchval = AsyncMock(return_value=pending_count)
+    return pool, probe_connection
+
+
+def _mock_approval_db(
+    *pending_counts: int,
+) -> tuple[MagicMock, dict[str, MagicMock], dict[str, MagicMock]]:
+    """Build named approval pools for real ``_find_all_approvals_pools`` fan-out."""
+    pools: dict[str, MagicMock] = {}
+    probe_connections: dict[str, MagicMock] = {}
+    for index, pending_count in enumerate(pending_counts):
+        name = f"settings-console-approval-{index}"
+        pool, probe_connection = _mock_approval_pool(pending_count)
+        pools[name] = pool
+        probe_connections[name] = probe_connection
+
+    db = MagicMock(spec=DatabaseManager)
+    db.butler_names = list(pools)
+    db.pool = MagicMock(side_effect=pools.__getitem__)
+    return db, pools, probe_connections
+
+
 _LEDGER_USAGE_ROWS = [
     {
         "model_id": "claude-haiku",
@@ -128,6 +169,40 @@ _LEDGER_USAGE_ROWS = [
 def _reset_cache():
     console_mod._cache_ts = 0.0
     console_mod._cache_payload = None
+
+
+@pytest.fixture
+def clear_approval_table_cache():
+    """Keep real approvals-table discovery independent from other tests."""
+    from butlers.api.routers.approvals import _clear_table_cache
+
+    _clear_table_cache()
+    yield
+    _clear_table_cache()
+
+
+@pytest.mark.asyncio
+async def test_approval_and_model_headers_are_unavailable_without_db_manager():
+    approvals, approval_err = await console_mod._count_open_approvals(None)
+    verified, total, model_err = await console_mod._count_models(None)
+    assert approvals is None and approval_err is not None
+    assert verified is None and total is None and model_err is not None
+
+
+@pytest.mark.asyncio
+async def test_approval_pool_failure_never_silently_reduces_total():
+    good = MagicMock()
+    good.fetchval = AsyncMock(return_value=2)
+    bad = MagicMock()
+    bad.fetchval = AsyncMock(side_effect=RuntimeError("down"))
+    db = MagicMock(spec=DatabaseManager)
+    with patch(
+        "butlers.api.routers.approvals._find_all_approvals_pools",
+        new=AsyncMock(return_value=[good, bad]),
+    ):
+        total, err = await console_mod._count_open_approvals(db)
+    assert total is None
+    assert err is not None
 
 
 # ---------------------------------------------------------------------------
@@ -282,8 +357,8 @@ async def test_console_endpoint_ceiling_alarm_fires_only_on_true_mtd_breach():
 
 
 @pytest.mark.asyncio
-async def test_console_no_db_returns_zeros():
-    """With no DB, all counts should be zero and no crash."""
+async def test_console_healthy_zero_results_serialize_without_attention():
+    """Healthy subsystem zeros remain truthful and produce no attention."""
     app = _make_app(db=None)
 
     with (
@@ -999,3 +1074,134 @@ async def test_settings_console_delta_loop_rejects_non_positive_interval():
         await console_mod.run_settings_console_delta_loop(
             _BUTLER_CONFIG, MagicMock(), _PRICING, None, interval_s=0
         )
+
+
+@pytest.mark.asyncio
+async def test_console_endpoint_db_none_marks_approval_and_models_unavailable():
+    app = _make_app(db=None)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/settings/console")
+    body = response.json()["data"]
+    assert body["header_counts"]["open_approvals"] is None
+    assert body["header_counts"]["models_total"] is None
+    assert {item["id"] for item in body["attention"]} >= {
+        "subsystem_error:approvals",
+        "subsystem_error:models",
+    }
+
+
+@pytest.mark.asyncio
+async def test_console_endpoint_healthy_empty_approvals_remain_truthful(
+    clear_approval_table_cache,
+):
+    db, pools, probe_connections = _mock_approval_db(0)
+    app = _make_app(db=db)
+    with (
+        patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(1, None))),
+        patch.object(console_mod, "_get_spend_mtd", new=AsyncMock(return_value=(0.0, None, None))),
+        patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(0, 0, None))),
+        patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_model_errors", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_failed_webhooks", new=AsyncMock(return_value=[])),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/settings/console")
+
+    assert response.status_code == 200, response.text
+    body = response.json()["data"]
+    attention_ids = {item["id"] for item in body["attention"]}
+    assert body["header_counts"]["open_approvals"] == 0
+    assert "open_approvals" not in attention_ids
+    assert "subsystem_error:approvals" not in attention_ids
+    for name, pool in pools.items():
+        probe_connections[name].fetchval.assert_awaited_once_with(
+            "SELECT to_regclass($1) IS NOT NULL", "pending_actions"
+        )
+        pool.fetchval.assert_awaited_once_with(
+            "SELECT COUNT(*) FROM pending_actions WHERE status = 'pending'"
+        )
+
+
+@pytest.mark.asyncio
+async def test_console_endpoint_sums_two_healthy_approval_pools(
+    clear_approval_table_cache,
+):
+    db, pools, probe_connections = _mock_approval_db(2, 3)
+    app = _make_app(db=db)
+    with (
+        patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(1, None))),
+        patch.object(console_mod, "_get_spend_mtd", new=AsyncMock(return_value=(0.0, None, None))),
+        patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(0, 0, None))),
+        patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_model_errors", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_failed_webhooks", new=AsyncMock(return_value=[])),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/settings/console")
+
+    assert response.status_code == 200, response.text
+    body = response.json()["data"]
+    approval_items = [item for item in body["attention"] if item["id"] == "open_approvals"]
+    assert body["header_counts"]["open_approvals"] == 5
+    assert approval_items == [
+        {
+            "id": "open_approvals",
+            "tone": "red",
+            "kind": "open_approvals",
+            "text": "5 approval(s) are waiting for your review.",
+            "action_route": "/approvals",
+        }
+    ]
+    assert "subsystem_error:approvals" not in {item["id"] for item in body["attention"]}
+    for name, pool in pools.items():
+        probe_connections[name].fetchval.assert_awaited_once_with(
+            "SELECT to_regclass($1) IS NOT NULL", "pending_actions"
+        )
+        pool.fetchval.assert_awaited_once_with(
+            "SELECT COUNT(*) FROM pending_actions WHERE status = 'pending'"
+        )
+
+
+@pytest.mark.asyncio
+async def test_console_endpoint_degraded_approval_discovery_never_returns_partial_total(
+    clear_approval_table_cache,
+):
+    db, pools, probe_connections = _mock_approval_db(2, 3)
+    failing_name = "settings-console-approval-1"
+    probe_connections[failing_name].fetchval = AsyncMock(
+        side_effect=RuntimeError("catalog unavailable")
+    )
+    app = _make_app(db=db)
+    with (
+        patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(1, None))),
+        patch.object(console_mod, "_get_spend_mtd", new=AsyncMock(return_value=(0.0, None, None))),
+        patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(0, 0, None))),
+        patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_model_errors", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_failed_webhooks", new=AsyncMock(return_value=[])),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/settings/console")
+
+    assert response.status_code == 200, response.text
+    body = response.json()["data"]
+    approval_items = [
+        item for item in body["attention"] if item["id"] == "subsystem_error:approvals"
+    ]
+    assert body["header_counts"]["open_approvals"] is None
+    assert approval_items == [
+        {
+            "id": "subsystem_error:approvals",
+            "tone": "amber",
+            "kind": "subsystem_error",
+            "text": "Could not reach the approvals subsystem.",
+            "action_route": "/approvals",
+        }
+    ]
+    assert "open_approvals" not in {item["id"] for item in body["attention"]}
+    for probe_connection in probe_connections.values():
+        probe_connection.fetchval.assert_awaited_once_with(
+            "SELECT to_regclass($1) IS NOT NULL", "pending_actions"
+        )
+    for pool in pools.values():
+        pool.fetchval.assert_not_awaited()

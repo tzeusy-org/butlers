@@ -163,8 +163,9 @@ async def list_timeline(
     response.
 
     ``meta.degraded_sources`` lists any of ``sessions``/``notifications``
-    whose query failed this request — the returned page for that source is
-    then a partial, not a truthful empty, result (mirrors the
+    whose query failed this request, while ``meta.degraded_butlers`` names
+    failed session pools. The returned page for either state is partial, not a
+    truthful empty or complete-fleet result (mirrors the
     ``aggregates_available`` degraded-mode convention, applied per source).
     """
     before_ts: datetime | None = None
@@ -206,6 +207,7 @@ async def list_timeline(
     target_butlers = butler if butler else None
     events: list[TimelineEvent] = []
     degraded_sources: list[str] = []
+    degraded_butlers: list[str] = []
 
     # --- Sessions — via versioned timeline read-model boundary (timeline_v1) ---
     if want_sessions:
@@ -282,5 +284,6 @@ async def list_timeline(
             has_more=has_more,
             heartbeat_rollup=heartbeat_rollup,
             degraded_sources=degraded_sources,
+            degraded_butlers=degraded_butlers,
         ),
     )

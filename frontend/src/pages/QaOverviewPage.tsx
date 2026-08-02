@@ -825,9 +825,12 @@ export default function QaOverviewPage() {
           {cases.isLoading ? (
             <p className="font-serif text-sm italic text-muted-foreground">Loading cases…</p>
           ) : cases.isError ? (
-            <p className="font-serif text-sm italic text-destructive">
-              Couldn't reach the staffer.
-            </p>
+            <SourceDegradedNote
+              label="Case rail"
+              detail="unavailable"
+              onRetry={() => void cases.refetch()}
+              testId="qa-case-rail-degraded"
+            />
           ) : casesData.length === 0 ? (
             <p className="font-serif text-sm italic text-muted-foreground">
               Nothing in the dossier.

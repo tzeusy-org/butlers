@@ -35,8 +35,9 @@ _domain_events.py``, dispatched by the Switchboard's ``domain_event_
 reconciliation_sweep`` scheduled job: it re-drives ``pending`` rows stuck
 since a crash (:func:`select_stale_pending_deliveries`) and retries
 ``failed`` rows a bounded number of times with backoff
-(:func:`select_retryable_failed_deliveries`), reusing this exact claim/mark
-idempotence so a genuinely in-flight delivery is never double-dispatched.
+(:func:`select_retryable_failed_deliveries`). The sweep serializes overlapping
+invocations with a session advisory lock, then re-observes each selected row
+before dispatch so a live path that settled it in the interim is skipped.
 :func:`mark_delivery_failed` transitions a delivery to the terminal
 ``failed_permanent`` status -- distinct from the retryable ``failed`` --
 once a route error is classified permanent (e.g. the subscriber lacks the

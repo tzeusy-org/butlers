@@ -7,8 +7,9 @@ Verifies that:
 - Both dict and string input.context values are preserved
 
 Note: route.execute now uses accept-then-process async dispatch (butlers-963.6).
-Tests mock route_inbox_insert/mark_processing/mark_processed and await asyncio.sleep(0.05)
-before checking trigger call_args to allow the background task to complete.
+Tests mock route_inbox_insert/claim_processing/lease_heartbeat/mark_processed and
+await asyncio.sleep(0.05) before checking trigger call_args to allow the
+background task to complete.
 """
 
 from __future__ import annotations
@@ -26,6 +27,14 @@ from butlers.daemon import ButlerDaemon
 pytestmark = pytest.mark.unit
 
 
+class _NoopLeaseHeartbeat:
+    async def __aenter__(self) -> asyncio.Event:
+        return asyncio.Event()
+
+    async def __aexit__(self, *_args: object) -> bool:
+        return False
+
+
 @pytest.fixture(autouse=True)
 def _mock_route_inbox(monkeypatch):
     """Patch route_inbox functions for all tests in this module.
@@ -34,12 +43,20 @@ def _mock_route_inbox(monkeypatch):
     allows the background trigger task to complete cleanly.
     """
     mock_insert = AsyncMock(return_value=uuid.uuid4())
-    mock_mark_processing = AsyncMock()
+    mock_claim_processing = AsyncMock(return_value=uuid.uuid4())
     mock_mark_processed = AsyncMock()
     mock_mark_errored = AsyncMock()
     monkeypatch.setattr("butlers.core_tools._routing.route_inbox_insert", mock_insert)
     monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_processing", mock_mark_processing
+        "butlers.core_tools._routing.route_inbox_claim_processing", mock_claim_processing
+    )
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
+        MagicMock(side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat()),
+    )
+    monkeypatch.setattr(
+        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+        AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
         "butlers.core_tools._routing.route_inbox_mark_processed", mock_mark_processed

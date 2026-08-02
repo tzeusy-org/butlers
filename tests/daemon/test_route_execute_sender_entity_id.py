@@ -21,6 +21,14 @@ from butlers.daemon import ButlerDaemon
 pytestmark = pytest.mark.unit
 
 
+class _NoopLeaseHeartbeat:
+    async def __aenter__(self) -> asyncio.Event:
+        return asyncio.Event()
+
+    async def __aexit__(self, *_args: object) -> bool:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Helpers (shared with other route_execute test modules)
 # ---------------------------------------------------------------------------
@@ -162,12 +170,20 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
 def _mock_route_inbox(monkeypatch):
     """Patch route_inbox functions to avoid DB calls in all tests here."""
     mock_insert = AsyncMock(return_value=uuid.uuid4())
-    mock_mark_processing = AsyncMock()
+    mock_claim_processing = AsyncMock(return_value=uuid.uuid4())
     mock_mark_processed = AsyncMock()
     mock_mark_errored = AsyncMock()
     monkeypatch.setattr("butlers.core_tools._routing.route_inbox_insert", mock_insert)
     monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_processing", mock_mark_processing
+        "butlers.core_tools._routing.route_inbox_claim_processing", mock_claim_processing
+    )
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
+        MagicMock(side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat()),
+    )
+    monkeypatch.setattr(
+        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+        AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
         "butlers.core_tools._routing.route_inbox_mark_processed", mock_mark_processed

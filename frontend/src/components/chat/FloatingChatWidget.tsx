@@ -49,7 +49,11 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { cancelConversationTurn, createConversation, sendMessage } from "@/api/index.ts";
+import {
+  cancelConversationMessageTurn,
+  createConversation,
+  sendMessage,
+} from "@/api/index.ts";
 import type {
   ConversationSummary,
   CreateConversationRequest,
@@ -64,7 +68,11 @@ import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
 import { SendErrorBanner } from "./send-error.tsx";
-import { classifySendError, type SendError } from "./send-error-utils.ts";
+import {
+  classifySendError,
+  isConfirmedConversationCancellation,
+  type SendError,
+} from "./send-error-utils.ts";
 import { createClientMessageId } from "./message-id.ts";
 import {
   optimisticUserMessageId,
@@ -139,15 +147,19 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 
   const abortRef = useRef<AbortController | null>(null);
   const interruptedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeMessageIdRef = useRef<string | null>(null);
+  const confirmedStopMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
       abortRef.current = null;
+      activeMessageIdRef.current = null;
       if (interruptedTimeoutRef.current !== null) {
         clearTimeout(interruptedTimeoutRef.current);
         interruptedTimeoutRef.current = null;
       }
+      confirmedStopMessageIdRef.current = null;
     };
   }, []);
 
@@ -207,6 +219,58 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
   const isStreaming = streaming !== null;
+  const hasActiveRuntime = isStreaming && !streaming?.cancelled;
+
+  const confirmStoppedTurn = useCallback(
+    (messageId: string, conversationId?: string | null) => {
+      if (activeMessageIdRef.current !== messageId) return;
+      confirmedStopMessageIdRef.current = messageId;
+      // A Stop can win before the first conversation_created SSE event. Keep
+      // the persisted thread addressable instead of letting its optimistic
+      // bubble disappear with a pending local conversation id.
+      void queryClient.invalidateQueries({ queryKey: conversationKeys.all(WIDGET_BUTLER) });
+      if (conversationId) {
+        setActiveConversationId(conversationId);
+        setLocalMessages((prev) =>
+          prev.map((message) =>
+            message.id === optimisticUserMessageId(messageId)
+              ? { ...message, conversation_id: conversationId }
+              : message,
+          ),
+        );
+        void queryClient.invalidateQueries({
+          queryKey: conversationKeys.messages(WIDGET_BUTLER, conversationId),
+        });
+      }
+      abortRef.current?.abort();
+      setStreaming((prev) =>
+        prev?.messageId === messageId
+          ? {
+              ...prev,
+              conversationId: conversationId ?? prev.conversationId,
+              cancelling: false,
+              cancelled: true,
+              pending: false,
+              cancelError: null,
+            }
+          : prev,
+      );
+      if (interruptedTimeoutRef.current !== null) {
+        clearTimeout(interruptedTimeoutRef.current);
+      }
+      const timeout = setTimeout(() => {
+        if (interruptedTimeoutRef.current !== timeout) return;
+        if (activeMessageIdRef.current === messageId) {
+          activeMessageIdRef.current = null;
+          abortRef.current = null;
+          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
+        }
+        interruptedTimeoutRef.current = null;
+      }, 1500);
+      interruptedTimeoutRef.current = timeout;
+    },
+    [queryClient],
+  );
 
   const sendText = useCallback(
     async (text: string, retryMessageId?: string) => {
@@ -216,8 +280,17 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       setSendError(null);
       const isNew = activeConversationId == null;
       const messageId = retryMessageId ?? createClientMessageId();
+      if (activeMessageIdRef.current !== null && activeMessageIdRef.current !== messageId) {
+        abortRef.current?.abort();
+      }
+      if (interruptedTimeoutRef.current !== null) {
+        clearTimeout(interruptedTimeoutRef.current);
+        interruptedTimeoutRef.current = null;
+      }
       const controller = new AbortController();
       abortRef.current = controller;
+      activeMessageIdRef.current = messageId;
+      confirmedStopMessageIdRef.current = null;
 
       const userMessage: Message = {
         // The backend retry identity also identifies this local optimistic
@@ -250,9 +323,11 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 
       setStreaming({
         conversationId: currentConversationId ?? "pending",
+        messageId,
         content: "",
         pending: true,
         interrupted: false,
+        stopReady: false,
       });
 
       // Snapshot page context NOW, not before — this is the exact moment of
@@ -278,7 +353,20 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           throw new Error(`HTTP ${response.status}`);
         }
 
+        // The API creates the durable user-message/turn record before it
+        // returns its SSE response. Stop may become actionable now, even
+        // though the first conversation_created event can still be pending.
+        setStreaming((prev) =>
+          prev?.messageId === messageId ? { ...prev, stopReady: true } : prev,
+        );
+
         await consumeSseStream(response, (event) => {
+          if (
+            activeMessageIdRef.current !== messageId ||
+            confirmedStopMessageIdRef.current === messageId
+          ) {
+            return;
+          }
           switch (event.event) {
             case "conversation_created": {
               // Backend emits `conversation_id` (see routers/conversations.py
@@ -287,7 +375,9 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               currentConversationId = data.conversation_id;
               setActiveConversationId(data.conversation_id);
               setStreaming((prev) =>
-                prev ? { ...prev, conversationId: data.conversation_id } : null,
+                prev?.messageId === messageId
+                  ? { ...prev, conversationId: data.conversation_id }
+                  : prev,
               );
               localMessagesConversationIdRef.current = data.conversation_id;
               setLocalMessages((prev) =>
@@ -312,7 +402,9 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
                   ? event.data
                   : ((event.data as { content?: string })?.content ?? "");
               setStreaming((prev) =>
-                prev ? { ...prev, content: prev.content + token, pending: false } : null,
+                prev?.messageId === messageId
+                  ? { ...prev, content: prev.content + token, pending: false }
+                  : prev,
               );
               break;
             }
@@ -326,28 +418,58 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
                   queryKey: conversationKeys.messages(WIDGET_BUTLER, cid),
                 });
               }
-              setStreaming(null);
+              activeMessageIdRef.current = null;
+              abortRef.current = null;
+              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
               break;
             }
             case "error": {
+              if (isConfirmedConversationCancellation(event.data)) {
+                confirmStoppedTurn(messageId, currentConversationId);
+                break;
+              }
               setSendError(classifySendError(event.data, trimmed, messageId));
-              setStreaming(null);
+              activeMessageIdRef.current = null;
+              abortRef.current = null;
+              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
               break;
             }
             case "done":
-              setStreaming(null);
+              activeMessageIdRef.current = null;
+              abortRef.current = null;
+              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
               break;
           }
         });
       } catch (err) {
+        if (activeMessageIdRef.current !== messageId) return;
         if (err instanceof Error && err.name === "AbortError") {
-          setStreaming((prev) => (prev ? { ...prev, interrupted: true, pending: false } : null));
-          interruptedTimeoutRef.current = setTimeout(() => {
+          if (confirmedStopMessageIdRef.current === messageId) {
+            // handleStop already rendered the durable confirmation and owns
+            // the short visual handoff; do not overwrite it with a generic
+            // client-side "interrupted" state.
+            return;
+          }
+          setStreaming((prev) =>
+            prev?.messageId === messageId ? { ...prev, interrupted: true, pending: false } : prev,
+          );
+          if (interruptedTimeoutRef.current !== null) {
+            clearTimeout(interruptedTimeoutRef.current);
+          }
+          const timeout = setTimeout(() => {
+            if (interruptedTimeoutRef.current !== timeout) return;
+            if (activeMessageIdRef.current === messageId) {
+              activeMessageIdRef.current = null;
+              abortRef.current = null;
+              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
+            }
             interruptedTimeoutRef.current = null;
-            setStreaming(null);
           }, 1500);
+          interruptedTimeoutRef.current = timeout;
         } else {
-          setStreaming(null);
+          activeMessageIdRef.current = null;
+          abortRef.current = null;
+          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
           setSendError({
             kind: "generic",
             message: "Failed to send message.",
@@ -357,7 +479,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
         }
       }
     },
-    [activeConversationId, queryClient, capturePageContext],
+    [activeConversationId, capturePageContext, confirmStoppedTurn, queryClient],
   );
 
   function handleSendClick() {
@@ -368,52 +490,93 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   }
 
   async function handleStop() {
-    if (!streaming || streaming.cancelling) return;
-    const conversationId = streaming.conversationId;
-    if (!conversationId || conversationId === "pending") {
-      // No conversation exists server-side yet — nothing to cancel remotely.
-      abortRef.current?.abort();
-      return;
-    }
+    if (!streaming || !streaming.stopReady || streaming.cancelling) return;
+    const messageId = streaming.messageId;
+    if (activeMessageIdRef.current !== messageId) return;
 
-    setStreaming((prev) => (prev ? { ...prev, cancelling: true, cancelError: null } : prev));
+    setStreaming((prev) =>
+      prev?.messageId === messageId ? { ...prev, cancelling: true, cancelError: null } : prev,
+    );
     try {
-      const result = await cancelConversationTurn(WIDGET_BUTLER, conversationId);
+      const result = await cancelConversationMessageTurn(WIDGET_BUTLER, messageId);
+      if (activeMessageIdRef.current !== messageId) return;
       if (!result.cancelled) {
         if (result.already_finished) {
+          if (confirmedStopMessageIdRef.current === messageId) {
+            // The stream already delivered authoritative cancellation for this
+            // exact message while the Stop POST was in flight. Keep that
+            // confirmation visible through its deliberate handoff window.
+            return;
+          }
           // The turn already finished on its own — quietly stop watching.
-          // Never claim we stopped something that had already ended.
+          // Never claim we stopped something that had already ended. Refresh
+          // before aborting the SSE: completion can commit just before this
+          // status read, while its message_complete event is still buffered.
+          const conversationId =
+            result.conversation_id ??
+            (streaming.conversationId === "pending" ? activeConversationId : streaming.conversationId);
+          void queryClient.invalidateQueries({
+            queryKey: conversationKeys.all(WIDGET_BUTLER),
+          });
+          if (conversationId) {
+            setActiveConversationId(conversationId);
+            setLocalMessages((prev) =>
+              prev.map((message) =>
+                message.id === optimisticUserMessageId(messageId)
+                  ? { ...message, conversation_id: conversationId }
+                  : message,
+              ),
+            );
+            void queryClient.invalidateQueries({
+              queryKey: conversationKeys.messages(WIDGET_BUTLER, conversationId),
+            });
+          }
           abortRef.current?.abort();
-          setStreaming(null);
+          abortRef.current = null;
+          activeMessageIdRef.current = null;
+          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
           return;
         }
         setStreaming((prev) =>
-          prev
+          prev?.messageId === messageId
             ? {
                 ...prev,
                 cancelling: false,
+                pending: false,
                 cancelError: result.message ?? "Could not stop. Try again.",
               }
             : prev,
         );
         return;
       }
-      abortRef.current?.abort();
-      setStreaming((prev) => (prev ? { ...prev, cancelling: false, cancelled: true } : prev));
+      confirmStoppedTurn(messageId, result.conversation_id);
     } catch {
+      if (activeMessageIdRef.current !== messageId) return;
       setStreaming((prev) =>
-        prev
-          ? { ...prev, cancelling: false, cancelError: "Could not stop. Try again." }
+        prev?.messageId === messageId
+          ? { ...prev, cancelling: false, pending: false, cancelError: "Could not stop. Try again." }
           : prev,
       );
     }
   }
 
+  function abandonCurrentStream() {
+    activeMessageIdRef.current = null;
+    confirmedStopMessageIdRef.current = null;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (interruptedTimeoutRef.current !== null) {
+      clearTimeout(interruptedTimeoutRef.current);
+      interruptedTimeoutRef.current = null;
+    }
+    setStreaming(null);
+  }
+
   function handleNewConversation() {
+    abandonCurrentStream();
     setActiveConversationId(null);
     localMessagesConversationIdRef.current = null;
     setLocalMessages([]);
-    setStreaming(null);
     setSendError(null);
     setViewMode("thread");
   }
@@ -507,8 +670,8 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             activeConversationId={activeConversationId}
             collapsible={false}
             onSelectConversation={(id) => {
+              abandonCurrentStream();
               setActiveConversationId(id);
-              setStreaming(null);
               setSendError(null);
               setViewMode("thread");
             }}
@@ -559,8 +722,18 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             onSend={handleSendClick}
             onStop={handleStop}
             stopPending={streaming?.cancelling ?? false}
+            stopAvailable={streaming?.stopReady ?? true}
+            stopStatus={
+              streaming?.cancelling
+                ? "Stopping this turn."
+                : streaming?.cancelled
+                  ? "This turn was stopped."
+                  : streaming?.cancelError
+                    ? `Could not stop this turn: ${streaming.cancelError}`
+                    : null
+            }
             disabled={isLoadingConversations}
-            isStreaming={isStreaming}
+            isStreaming={hasActiveRuntime}
           />
         </div>
       )}

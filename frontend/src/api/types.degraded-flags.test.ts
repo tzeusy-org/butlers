@@ -149,7 +149,11 @@ const REGISTRY: DegradedFlagEntry[] = [
   },
   { flag: "unavailable_butlers", emittedBy: "spend summary/daily/by-schedule/top-sessions" },
   { flag: "stripe_source_error", emittedBy: "butlers board (per-row hourly activity)" },
-  { flag: "sessions_source_error", emittedBy: "butlers board (aggregate rollup)" },
+  {
+    flag: "sessions_source_error",
+    emittedBy: "butlers board (aggregate rollup, Overview Sessions KPI)",
+    consumerFiles: ["pages/DashboardPage.tsx"],
+  },
   { flag: "registry_source_error", emittedBy: "butlers board (registry fan-out)" },
   { flag: "cost_source_error", emittedBy: "butlers board (cost fan-out)" },
   { flag: "sources_partially_degraded", emittedBy: "butlers board (aggregate rollup)" },

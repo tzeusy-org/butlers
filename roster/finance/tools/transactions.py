@@ -273,13 +273,14 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
         Requires ``source_message_id`` to be non-None in *txn*.
 
     **Priority 3 — composite fallback** (cross-source / account-scoped entry)
-        Always attempted as a last resort when Priorities 1–2 found no match.
-        Matches on transaction day, ``amount``, and ``merchant``; when
-        ``account_id`` is available it is included to keep the match scoped to
-        one account. This catches cross-source duplicates where the same
-        real-world transaction arrives from different channels with different
-        ``source_message_id`` values without collapsing repeated manual entries
-        that have no provenance key or account linkage.
+        Attempted as a last resort only when no provider ``external_id`` was
+        supplied. Matches on transaction day, ``amount``, and ``merchant``;
+        when ``account_id`` is available it is included to keep the match
+        scoped to one account. This catches cross-source duplicates where the
+        same real-world transaction arrives from different channels with
+        different ``source_message_id`` values without collapsing repeated
+        manual entries that have no provenance key or account linkage. A new
+        provider ID instead creates its own provenance-bearing ledger row.
 
     Parameters
     ----------
@@ -353,8 +354,9 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
 
     # ------------------------------------------------------------------
     # Priority 3: composite fallback (same-day posted_at + amount + merchant)
-    # Runs when P1/P2 did not find a match and we still have enough provenance
-    # to avoid collapsing user-entered duplicates. That means either:
+    # Runs when P1/P2 did not find a match, no provider external_id was supplied,
+    # and we still have enough provenance to avoid collapsing user-entered
+    # duplicates. That means either:
     # - account_id is present (CSV/bank-import style matching), or
     # - source_message_id is present (cross-source duplicates with different
     #   message ids but the same real-world transaction).
@@ -363,6 +365,7 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
         posted_at is not None
         and stored_amount is not None
         and merchant is not None
+        and external_id is None
         and (account_id is not None or source_message_id is not None)
     ):
         row = None
@@ -401,16 +404,17 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
     return None
 
 
-async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
+async def _has_column(pool: asyncpg.Pool | asyncpg.Connection, table: str, column: str) -> bool:
     """Return True if the given table has the named column in the current schema.
 
     Results are cached for the lifetime of the process to avoid repeated
     ``information_schema`` queries on every deduplication call.
     """
-    per_pool = _column_existence_cache.setdefault(pool, {})
     cache_key = (table, column)
-    if cache_key in per_pool:
-        return per_pool[cache_key]
+    if isinstance(pool, asyncpg.Pool):
+        per_pool = _column_existence_cache.setdefault(pool, {})
+        if cache_key in per_pool:
+            return per_pool[cache_key]
     count = await pool.fetchval(
         """
         SELECT COUNT(*) FROM information_schema.columns
@@ -421,20 +425,22 @@ async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
         column,
     )
     result = bool(count)
-    per_pool[cache_key] = result
+    if isinstance(pool, asyncpg.Pool):
+        per_pool[cache_key] = result
     return result
 
 
-async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
+async def _has_table(pool: asyncpg.Pool | asyncpg.Connection, table: str) -> bool:
     """Return True if the given table exists in the current schema.
 
     Results are cached per pool for the lifetime of the process to avoid
     repeated ``information_schema`` queries on every insert / dedup call
     (hot during bulk imports).
     """
-    per_pool = _table_existence_cache.setdefault(pool, {})
-    if table in per_pool:
-        return per_pool[table]
+    if isinstance(pool, asyncpg.Pool):
+        per_pool = _table_existence_cache.setdefault(pool, {})
+        if table in per_pool:
+            return per_pool[table]
     count = await pool.fetchval(
         """
         SELECT COUNT(*) FROM information_schema.tables
@@ -443,7 +449,8 @@ async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
         table,
     )
     result = bool(count)
-    per_pool[table] = result
+    if isinstance(pool, asyncpg.Pool):
+        per_pool[table] = result
     return result
 
 
@@ -584,6 +591,52 @@ async def record_transaction(
     metadata: dict[str, Any] | None = None,
     external_id: str | None = None,
 ) -> dict[str, Any]:
+    """Record a transaction through the public Finance tool surface.
+
+    Provenance remains an internal concern so existing MCP callers retain the
+    established signature and manual-source behavior.
+    """
+    return await _record_transaction(
+        pool,
+        posted_at,
+        merchant,
+        amount,
+        currency,
+        category,
+        direction,
+        description,
+        payment_method,
+        account_id,
+        receipt_url,
+        external_ref,
+        source_message_id,
+        metadata,
+        external_id,
+        source="manual",
+    )
+
+
+async def _record_transaction(
+    pool: asyncpg.Pool,
+    posted_at: datetime,
+    merchant: str,
+    amount: Decimal | float | int,
+    currency: str,
+    category: str,
+    direction: str | None = None,
+    description: str | None = None,
+    payment_method: str | None = None,
+    account_id: str | None = None,
+    receipt_url: str | None = None,
+    external_ref: str | None = None,
+    source_message_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    external_id: str | None = None,
+    *,
+    source: str = "manual",
+    connection: asyncpg.Connection | None = None,
+    include_insert_status: bool = False,
+) -> dict[str, Any]:
     """Record a transaction in the finance.transactions ledger.
 
     Direction is inferred from the amount sign when not provided:
@@ -638,6 +691,16 @@ async def record_transaction(
         Optional free-form JSONB metadata dict.
     external_id:
         Stable external transaction ID from bank APIs (used for Priority-1 dedup).
+    connection:
+        Optional already-acquired connection for the foreground ledger work.
+        Callers holding an advisory lock use this to avoid recursively leasing
+        the pool; the asynchronous SPO mirror still uses ``pool`` after the
+        foreground work completes.
+    include_insert_status:
+        Internal-only observability flag. When true, the result includes
+        ``_inserted`` so deterministic import jobs can distinguish a fresh
+        ledger write from an idempotent replay without changing the public
+        ``record_transaction`` contract.
 
     Returns
     -------
@@ -647,8 +710,13 @@ async def record_transaction(
         its threshold, the dict additionally carries a ``large_transaction_alert``
         key: ``{threshold, amount, merchant, exceeds_by}``.
     """
+    # Jobs that hold an advisory lock may supply their acquired connection so
+    # every foreground query remains on that session.  Keep the original pool
+    # for the fire-and-forget mirror, which can run after this connection exits.
+    executor = connection if connection is not None else pool
+
     # Resolve human-readable account identifiers to UUID.
-    account_id = await _resolve_account_id(pool, account_id)
+    account_id = await _resolve_account_id(executor, account_id)
 
     signed_amount, effective_direction = _coerce_signed_amount(amount, direction)
     stored_amount = _normalize_amount(signed_amount)
@@ -662,22 +730,25 @@ async def record_transaction(
         "amount": signed_amount,
         "merchant": merchant,
     }
-    existing_id = await _deduplicate(pool, txn_dict)
+    existing_id = await _deduplicate(executor, txn_dict)
     if existing_id is not None:
-        existing = await pool.fetchrow(
+        existing = await executor.fetchrow(
             "SELECT * FROM transactions WHERE id = $1::uuid",
             existing_id,
         )
         if existing is not None:
-            return _row_to_dict(existing)
+            result = _row_to_dict(existing)
+            if include_insert_status:
+                result["_inserted"] = False
+            return result
 
-    has_external_id = await _has_column(pool, "transactions", "external_id")
+    has_external_id = await _has_column(executor, "transactions", "external_id")
 
     # --- Auto-categorization via merchant mappings ---
     effective_category = category
     category_source = "manual"
     if category in ("uncategorized", "") or category is None:
-        mapped_category = await _lookup_merchant_category(pool, merchant)
+        mapped_category = await _lookup_merchant_category(executor, merchant)
         if mapped_category is not None:
             effective_category = mapped_category
             category_source = "auto"
@@ -687,15 +758,16 @@ async def record_transaction(
 
     meta_dict = dict(metadata or {})
     effective_category, used_category_fallback = await _resolve_category_for_insert(
-        pool,
+        executor,
         effective_category,
         meta_dict,
     )
     if used_category_fallback:
         category_source = "manual"
 
-    # Check for optional new columns from finance_002 migration.
-    has_category_source = await _has_column(pool, "transactions", "category_source")
+    # Check for optional new columns from finance_002 / finance_006 migrations.
+    has_category_source = await _has_column(executor, "transactions", "category_source")
+    has_source = await _has_column(executor, "transactions", "source")
 
     # Build the INSERT with explicit casts to avoid IndeterminateDatatypeError.
     # We always include the 13 base columns; optional columns are appended.
@@ -716,6 +788,12 @@ async def record_transaction(
         extra_params.append(category_source)
         param_idx += 1
 
+    if has_source:
+        extra_cols.append("source")
+        extra_vals.append(f"${param_idx}::text")
+        extra_params.append(source)
+        param_idx += 1
+
     cols_clause = ", ".join(extra_cols)
     vals_clause = ", ".join(extra_vals)
     extra_cols_sql = f", {cols_clause}" if extra_cols else ""
@@ -723,7 +801,7 @@ async def record_transaction(
 
     is_fresh_insert = True
     try:
-        row = await pool.fetchrow(
+        row = await executor.fetchrow(
             f"""
             INSERT INTO transactions (
                 source_message_id,
@@ -767,7 +845,7 @@ async def record_transaction(
         is_fresh_insert = False
         row = None
         if source_message_id is not None:
-            row = await pool.fetchrow(
+            row = await executor.fetchrow(
                 """
                 SELECT * FROM transactions
                 WHERE source_message_id = $1
@@ -781,7 +859,7 @@ async def record_transaction(
                 posted_at,
             )
         if row is None and has_external_id and external_id is not None and account_id is not None:
-            row = await pool.fetchrow(
+            row = await executor.fetchrow(
                 """
                 SELECT * FROM transactions
                 WHERE account_id = $1::uuid AND external_id = $2
@@ -793,7 +871,7 @@ async def record_transaction(
             source_filter = "AND source_message_id IS NULL"
             if has_external_id:
                 source_filter += " AND external_id IS NULL"
-            row = await pool.fetchrow(
+            row = await executor.fetchrow(
                 f"""
                 SELECT * FROM transactions
                 WHERE account_id = $1::uuid
@@ -811,7 +889,7 @@ async def record_transaction(
             raise
 
     await _log_activity(
-        pool,
+        executor,
         "transaction_recorded",
         (
             f"Recorded {effective_direction} transaction: "
@@ -842,6 +920,8 @@ async def record_transaction(
     )
 
     result = _row_to_dict(row)
+    if include_insert_status:
+        result["_inserted"] = is_fresh_insert
 
     # --- Bill reconciliation hook (Track C / bu-y6gpw) ---
     # Synchronous and in-process for fresh debit inserts only.  The try/except
@@ -871,13 +951,13 @@ async def record_transaction(
                 "posted_at": _posted_at_tz,
                 "metadata": meta_dict,
             }
-            _match = await match_transaction_to_bills(pool, _txn_for_match)
+            _match = await match_transaction_to_bills(executor, _txn_for_match)
             _tier = _match.get("tier", "none")
 
             if _tier == "auto_settle":
                 _bill = _match["bill"]
                 _settled = await _settle_bill(
-                    pool,
+                    executor,
                     _bill["id"],
                     {
                         "id": str(row["id"]),
@@ -935,7 +1015,7 @@ async def record_transaction(
             get_large_transaction_alert_config,
         )
 
-        _alert_config = await get_large_transaction_alert_config(pool)
+        _alert_config = await get_large_transaction_alert_config(executor)
         _alert = evaluate_large_transaction_alert(stored_amount, merchant, _alert_config)
         if _alert is not None:
             result["large_transaction_alert"] = _alert

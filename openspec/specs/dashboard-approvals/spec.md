@@ -13,7 +13,7 @@ The dashboard API SHALL expose `GET /api/approvals/actions` which returns a pagi
 The endpoint SHALL accept the following query parameters:
 - `offset` (integer, optional, default 0) -- pagination offset
 - `limit` (integer, optional, default 50) -- maximum number of actions to return
-- `status` (string, optional) -- filter by action status: `pending`, `approved`, `rejected`, `expired`, or `executed`
+- `status` (string, optional) -- filter by action status: `pending`, `approved`, `rejected`, `expired`, `executed`, or `abandoned`
 - `tool_name` (string, optional) -- filter by the tool that requested the action
 - `since` (ISO 8601 timestamp, optional) -- include only actions created on or after this timestamp
 - `until` (ISO 8601 timestamp, optional) -- include only actions created on or before this timestamp
@@ -22,7 +22,7 @@ The response MUST be a `PaginatedResponse<ApprovalAction>` where each `ApprovalA
 - `id` -- string UUID identifying the action
 - `tool_name` -- string name of the tool requesting approval
 - `butler` -- string name of the butler that owns the action
-- `status` -- one of `"pending"`, `"approved"`, `"rejected"`, `"expired"`, `"executed"`
+- `status` -- one of `"pending"`, `"approved"`, `"rejected"`, `"expired"`, `"executed"`, `"abandoned"`
 - `description` -- string human-readable description of the action
 - `why` -- string | null serif paragraph explaining why human input is needed
 - `evidence` -- string[] | null array of mono evidence lines
@@ -248,16 +248,101 @@ An approval whose backend `status` is `"approved"` (approved but not yet dispatc
 
 ### Requirement: Approvals Flat List API
 
-The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all` as a flat-list view complementing the existing `GET /api/approvals/actions` paginated list.
+The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all|stalled` as a flat-list view complementing the existing `GET /api/approvals/actions` paginated list.
 
 #### Scenario: Filter by state
 
 - **WHEN** `GET /api/approvals?state=waiting` is called
 - **THEN** the response is `ApiResponse[ApprovalSummary[]]` containing only actions in `pending` state, ordered `created_at DESC`.
 - **WHEN** `GET /api/approvals?state=decided` is called
-- **THEN** the response contains actions in `approved | rejected | expired | executed` states.
+- **THEN** the response contains actions in `approved | rejected | expired | executed | abandoned` states.
 - **WHEN** `GET /api/approvals?state=all` is called or `state` is omitted
 - **THEN** all states are included.
+
+### Requirement: Whole-population stalled approval radar
+
+The flat `GET /api/approvals` endpoint SHALL accept `state=stalled` in
+addition to its existing states. A stalled approval SHALL be derived only when
+its persisted `status` is exactly `approved` and its `execution_result` is
+`NULL`; stalled SHALL NOT be persisted as a new status or inferred from a time
+threshold.
+
+Every flat approvals response, regardless of requested state, offset, or
+limit, SHALL include `meta.stalled_count`: the count of all currently stalled
+actions across the endpoint's eligible approval-source population. The list
+filter and the aggregate SHALL use the same per-pool eligibility and exact
+stalled predicate.
+
+#### Scenario: Dashboard abandons an eligible stalled action
+
+- **WHEN** `POST /api/approvals/{id}/abandon` receives a non-blank reason from
+  the dashboard for an action whose status is `approved` and whose execution
+  result is null
+- **THEN** the response reports terminal `abandoned` status
+- **AND** the action immediately leaves stalled results and has no Retry
+  affordance.
+- **WHEN** a callback, MCP, automatic, bulk, or scheduled path attempts the
+  same operation
+- **THEN** that path does not expose or invoke abandonment.
+
+#### Scenario: Stalled filter selects only approved actions without execution
+
+- **WHEN** `GET /api/approvals?state=stalled` reads a population containing
+  approved actions with null and non-null execution results plus other statuses
+- **THEN** it returns only actions whose status is `approved` and whose
+  `execution_result` is null
+- **AND** it does not return an `executed`, `pending`, `rejected`, `expired`,
+  `abandoned`, or approved action with a non-null execution result
+
+#### Scenario: History retry uses the durable eligibility predicate
+
+- **WHEN** the bounded history response includes approved actions with null and
+  non-null execution results
+- **THEN** each `ApprovalSummary` includes its nullable, redacted
+  `execution_result`
+- **AND** the dashboard renders Retry only for actions whose status is
+  `approved` and whose `execution_result` is null
+
+#### Scenario: Stalled metadata is independent of the page window
+
+- **WHEN** `GET /api/approvals?state=decided&limit=30` returns a bounded
+  history page while more than 30 older/newer rows exist
+- **THEN** `meta.stalled_count` equals the count of every eligible stalled
+  approval, not the count of rows on that page
+- **AND** the same count is returned for `state=waiting`, `state=decided`,
+  `state=all`, and `state=stalled` requests over the same healthy population
+
+#### Scenario: Degraded approval sources cannot imply an all-clear
+
+- **WHEN** any eligible approval source cannot supply its list or stalled
+  aggregate contribution
+- **THEN** the flat response identifies that source in `meta.sources_degraded`
+- **AND** any returned `meta.stalled_count` is treated as observed partial
+  coverage rather than proof that no stalled approvals exist
+
+### Requirement: Trust Console verdict uses stalled radar metadata
+
+The approvals Trust Console verdict opener SHALL derive its stalled-approval
+clause from the flat response's `meta.stalled_count`, never by inspecting the
+bounded decided-history rows. When the response names degraded sources, the
+opener SHALL visibly name incomplete source coverage and SHALL NOT present zero
+as a calm all-clear.
+
+#### Scenario: History-window eviction cannot hide a stalled approval
+
+- **WHEN** the decided-history response contains no stalled row because it is
+  limited to its recent history window but its metadata has
+  `stalled_count > 0`
+- **THEN** the verdict opener reports the stalled count
+- **AND** it does not conclude that no approval is stalled from the empty or
+  bounded history rows
+
+#### Scenario: Degraded stalled radar remains explicit
+
+- **WHEN** the flat response has `meta.sources_degraded` and a zero or partial
+  `meta.stalled_count`
+- **THEN** the verdict opener names the unavailable source coverage
+- **AND** it does not render a healthy no-stalled-approvals conclusion
 
 ### Requirement: Approval Detail API
 
@@ -375,7 +460,7 @@ The dashboard SHALL fan approval lifecycle events onto the unified fleet event b
 #### Scenario: Stream event shape
 
 - **WHEN** an approval transitions state
-- **THEN** an event `{type: "approval", data: {kind: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired", approval_id, ...}}` is broadcast on `WS /api/events/stream`.
+- **THEN** an event `{type: "approval", data: {kind: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired"|"abandoned", approval_id, ...}}` is broadcast on `WS /api/events/stream`.
 
 ---
 

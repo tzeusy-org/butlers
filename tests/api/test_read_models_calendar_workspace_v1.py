@@ -369,6 +369,51 @@ async def test_query_calendar_sources_multiple_butlers_flattened():
     assert failed == []
 
 
+async def test_query_calendar_sources_preserves_duplicate_provider_ledger_rows_with_schema_owners():
+    """Router policy, not v1, chooses the operational duplicate owner.
+
+    A stale physical source copy is evidence that must remain available to
+    diagnostics even when the Calendar Workspace router selects a healthier
+    owner for the user-facing aggregate surface.
+    """
+    finance_source_id = UUID("10000000-0000-0000-0000-000000000009")
+    general_source_id = UUID("10000000-0000-0000-0000-000000000010")
+    db = _make_db(
+        {
+            "finance": [
+                _make_record(
+                    _source_dict(
+                        source_id=finance_source_id,
+                        source_key="provider:google:owner@example.com",
+                        butler_name=None,
+                        last_synced_at=None,
+                        last_success_at=None,
+                    )
+                )
+            ],
+            "general": [
+                _make_record(
+                    _source_dict(
+                        source_id=general_source_id,
+                        source_key="provider:google:owner@example.com",
+                        butler_name=None,
+                        last_synced_at=_NOW,
+                        last_success_at=_NOW,
+                    )
+                )
+            ],
+        }
+    )
+
+    result, failed = await query_calendar_sources(db)
+
+    assert failed == []
+    assert [(row.db_butler, row.source_id, row.last_success_at) for row in result] == [
+        ("finance", finance_source_id, None),
+        ("general", general_source_id, _NOW),
+    ]
+
+
 async def test_query_calendar_sources_threads_failed_butlers():
     """A partial fan-out failure is threaded out so the caller can flag degraded —
     the healthy schema's rows still surface (bu-sn71y)."""

@@ -431,6 +431,96 @@ async def reject_action(
 
 
 # ---------------------------------------------------------------------------
+# Abandon approved recovery
+# ---------------------------------------------------------------------------
+
+
+async def abandon_approved_action(
+    pool: Any,
+    action_id: str,
+    reason: str,
+    actor_id: str = "dashboard:rest-api",
+) -> dict[str, Any]:
+    """Durably abandon one approved action that has never executed.
+
+    This operation is intentionally not an MCP tool: the dashboard is the
+    only owner-decision boundary permitted to invoke it.  Its compare-and-set
+    predicate is also the stalled/retry predicate, so a stale client cannot
+    abandon an action that has already acquired an execution result.
+    """
+    if not reason or not reason.strip():
+        return {"error": "Abandon reason must not be blank"}
+
+    try:
+        parsed_id = uuid.UUID(action_id)
+    except ValueError:
+        return {"error": f"Invalid action_id: {action_id}"}
+
+    row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+    if row is None:
+        return {"error": f"Action not found: {action_id}"}
+
+    action = PendingAction.from_row(row)
+    # A dashboard request can be delayed behind a handler's execution lock or
+    # its pool connection. Once the handler commits a result, explain that
+    # irreversible outcome instead of presenting it as an abstract transition
+    # failure. This mirrors the result-first check after a failed CAS below.
+    if action.status == ActionStatus.EXECUTED and action.execution_result is not None:
+        return {"error": "Action already has an execution result and cannot be abandoned"}
+    if action.status != ActionStatus.APPROVED:
+        return {"error": f"Cannot transition from '{action.status.value}' to 'abandoned'"}
+    if action.execution_result is not None:
+        return {"error": "Action already has an execution result and cannot be abandoned"}
+
+    now = datetime.now(UTC)
+    decided_by = f"human:{actor_id}"
+    try:
+        async with _approval_write_transaction(pool) as write_target:
+            abandoned_row = await write_target.fetchrow(
+                "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
+                "WHERE id = $4 AND status = $5 AND execution_result IS NULL "
+                "RETURNING *",
+                ActionStatus.ABANDONED.value,
+                decided_by,
+                now,
+                parsed_id,
+                ActionStatus.APPROVED.value,
+            )
+            if abandoned_row is None:
+                latest_row = await write_target.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+                )
+                if latest_row is None:
+                    return {"error": f"Action not found: {action_id}"}
+                latest_action = PendingAction.from_row(latest_row)
+                if latest_action.execution_result is not None:
+                    return {
+                        "error": "Action already has an execution result and cannot be abandoned"
+                    }
+                return {
+                    "error": (
+                        f"Cannot transition from '{latest_action.status.value}' to 'abandoned'"
+                    )
+                }
+
+            abandoned_action = PendingAction.from_row(abandoned_row)
+            await record_approval_event(
+                write_target,
+                ApprovalEventType.ACTION_ABANDONED,
+                actor=_decision_event_actor(actor_id),
+                action_id=parsed_id,
+                reason=reason.strip(),
+                metadata={"tool_name": abandoned_action.tool_name},
+                occurred_at=now,
+            )
+    except Exception as exc:  # noqa: BLE001 -- terminal transition must remain atomic
+        logger.error("Could not abandon approval action %s: %s", action_id, exc)
+        return {"error": f"Could not abandon approval action: {exc}"}
+
+    return abandoned_action.to_dict()
+
+
+# ---------------------------------------------------------------------------
 # Create approval rule
 # ---------------------------------------------------------------------------
 

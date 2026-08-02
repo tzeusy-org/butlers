@@ -389,6 +389,48 @@ def test_opencode_adapter_empty_response_excluded_without_session_records_covera
     assert _should_include_entry(entry) is False
 
 
+def test_opencode_adapter_nonzero_exit_excluded_as_pre_failover_attempt():
+    """Adapter exit errors do not prove that the logical session failed."""
+    entry = LogEntry(
+        level="error",
+        event="OpenCode CLI exited with code 1: APIError: No provider available",
+        timestamp=datetime.now(UTC),
+        butler_name="chronicler",
+        logger="butlers.core.runtimes.opencode",
+    )
+    assert _should_include_entry(entry) is False
+
+
+def test_spawner_opencode_nonzero_exit_remains_actionable():
+    """A terminal OpenCode failure still reaches QA through the spawner log."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: RuntimeError: "
+            "OpenCode CLI exited with code 1: APIError: No provider available"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="chronicler",
+        logger="butlers.core.spawner",
+    )
+    assert _should_include_entry(entry) is True
+
+
+def test_spawner_opencode_nonzero_exit_excluded_when_session_records_covers_it():
+    """Session records supersede the terminal spawner duplicate when available."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: RuntimeError: "
+            "OpenCode CLI exited with code 1: APIError: No provider available"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="chronicler",
+        logger="butlers.core.spawner",
+    )
+    assert _should_include_entry(entry, suppress_session_duplicate_timeouts=True) is False
+
+
 def test_opencode_empty_response_excluded_when_session_records_covers_it():
     """OpenCode empty-response adapter logs are duplicate evidence with session records."""
     entry = LogEntry(

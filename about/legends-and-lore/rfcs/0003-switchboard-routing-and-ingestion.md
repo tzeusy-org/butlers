@@ -195,7 +195,16 @@ accepted --> processing --> processed (session_id stored)
                        \--> errored   (error message stored)
 ```
 
-**Crash recovery:** On startup, each butler scans for rows in `accepted` or `processing` state older than a configurable grace period (default 10 seconds) and re-dispatches them.
+**Crash recovery:** On startup, each butler scans for rows in `accepted` or `processing` state older than a configurable grace period (default 10 seconds) and claims them for recovery. Ordinary work is re-dispatched through its fenced claim. A `processing` worker owns an opaque lease: it synchronously fences the claim before protected work and again immediately before runtime creation, heartbeats while live, and may terminally settle only with that same claim. A displaced worker cancels/relinquishes its local work instead of writing a terminal state.
+
+Dashboard internal ingress carries the immutable dashboard user `message_id` as
+its `external_event_id` and opens a durable turn before ingress. Exactly one
+claim may submit `ingest.v1`; later callers observe the original request or a
+truthful terminal state. If recovery reclaims a stale dashboard `processing`
+row, it MUST mark the durable turn ambiguous and suppress automatic replay:
+the lease cannot prove the predecessor runtime died. This exception is limited
+to dashboard-originated durable turns; ordinary channel recovery still
+re-dispatches its fenced claim.
 
 ### Email Priority Queuing
 

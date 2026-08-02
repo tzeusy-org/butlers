@@ -1443,6 +1443,8 @@ describe("CalendarWorkspacePage", () => {
         scope: "all",
         requested_source_key: null,
         requested_source_id: null,
+        request_id: "sync-all-request",
+        full: false,
         targets: [],
         triggered_count: 2,
       },
@@ -1463,6 +1465,7 @@ describe("CalendarWorkspacePage", () => {
     });
 
     expect(syncMutateAsync).toHaveBeenCalledWith({ all: true });
+    expect(toast.success).toHaveBeenCalledWith("Sync queued for 2 calendar owner(s).");
   });
 
   it("creates user event through workspace mutation endpoint", async () => {

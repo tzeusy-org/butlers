@@ -166,12 +166,15 @@ class MockDB:
                         "rejected",
                         "executed",
                         "expired",
+                        "abandoned",
                     ):
                         row["status"] = a
                         break
                 # Apply decision provenance and time if present.
                 for i, a in enumerate(args):
-                    if isinstance(a, str) and ("user:" in a or a == "system:expiry"):
+                    if isinstance(a, str) and (
+                        "user:" in a or "human:" in a or a == "system:expiry"
+                    ):
                         row["decided_by"] = a
                     elif hasattr(a, "tzinfo") and not isinstance(a, str):
                         if "decided_at" not in row or row.get("decided_at") is None:
@@ -356,6 +359,9 @@ class TestStatusTransitions:
     def test_pending_to_rejected(self):
         assert validate_transition(ActionStatus.PENDING, ActionStatus.REJECTED) is None
 
+    def test_approved_to_abandoned(self):
+        assert validate_transition(ActionStatus.APPROVED, ActionStatus.ABANDONED) is None
+
     def test_invalid_rejected_to_approved(self):
         with pytest.raises(InvalidTransitionError):
             validate_transition(ActionStatus.REJECTED, ActionStatus.APPROVED)
@@ -363,6 +369,67 @@ class TestStatusTransitions:
     def test_invalid_executed_to_pending(self):
         with pytest.raises(InvalidTransitionError):
             validate_transition(ActionStatus.EXECUTED, ActionStatus.PENDING)
+
+
+class TestAbandonRecovery:
+    async def test_abandon_approved_unexecuted_action_records_reason_and_event(
+        self, mock_db: MockDB
+    ):
+        from butlers.modules.approvals.operations import abandon_approved_action
+
+        action_id = mock_db._insert_action(status="approved")
+
+        result = await abandon_approved_action(
+            mock_db,
+            action_id=str(action_id),
+            reason="Recipient no longer needs this message",
+            actor_id="dashboard:rest-api",
+        )
+
+        assert result["status"] == "abandoned"
+        assert mock_db.pending_actions[action_id]["decided_by"] == "human:dashboard:rest-api"
+        assert len(mock_db.approval_events) == 1
+        assert mock_db.approval_events[0]["args"][0] == "action_abandoned"
+        assert mock_db.approval_events[0]["args"][4] == "Recipient no longer needs this message"
+
+    async def test_abandon_rejects_blank_reason_and_execution_result(self, mock_db: MockDB):
+        from butlers.modules.approvals.operations import abandon_approved_action
+
+        action_id = mock_db._insert_action(status="approved", execution_result={"success": True})
+
+        blank = await abandon_approved_action(
+            mock_db,
+            action_id=str(action_id),
+            reason="   ",
+        )
+        ineligible = await abandon_approved_action(
+            mock_db,
+            action_id=str(action_id),
+            reason="No longer needed",
+        )
+
+        assert blank["error"] == "Abandon reason must not be blank"
+        assert "execution result" in ineligible["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+        assert mock_db.approval_events == []
+
+    async def test_abandon_executed_action_reports_persisted_execution_result(
+        self, mock_db: MockDB
+    ):
+        """A delayed dashboard request explains why a completed action cannot be abandoned."""
+        from butlers.modules.approvals.operations import abandon_approved_action
+
+        action_id = mock_db._insert_action(status="executed", execution_result={"success": True})
+
+        result = await abandon_approved_action(
+            mock_db,
+            action_id=str(action_id),
+            reason="Owner no longer wants this recovery",
+        )
+
+        assert "execution result" in result["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "executed"
+        assert mock_db.approval_events == []
 
 
 # ---------------------------------------------------------------------------

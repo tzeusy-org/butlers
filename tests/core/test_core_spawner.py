@@ -22,11 +22,13 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
+from butlers.core.dashboard_turns import DashboardTurnResult
+from butlers.core.route_inbox import RouteInboxLeaseLost, route_inbox_wait_while_claimed
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import (
@@ -394,6 +396,27 @@ def _make_config(
         modules=modules or {},
         env_required=env_required or [],
         env_optional=env_optional or [],
+    )
+
+
+def _dashboard_turn_result(
+    outcome: str,
+    *,
+    message_id: uuid.UUID,
+    request_id: uuid.UUID,
+) -> DashboardTurnResult:
+    return DashboardTurnResult(
+        outcome=outcome,
+        message_id=message_id,
+        conversation_id=uuid.uuid4(),
+        request_id=request_id,
+        target_butler="test-butler",
+        target_kind="route",
+        route_inbox_id=uuid.uuid4(),
+        cancel_requested_at=None,
+        cancel_confirmed_at=None,
+        terminal_state=None,
+        terminal_at=None,
     )
 
 
@@ -2602,7 +2625,9 @@ class TestSpendEventBusWiring:
         assert ev["tokens_in"] == 1000
         assert ev["tokens_out"] == 500
         assert ev["session_id"] == str(session_uuid)
-        assert ev["cost_usd"] == 0.0
+        # Luna uses the configured API-equivalent heuristic: 1K input at
+        # $0.20/M plus 500 output at $1.20/M is $0.0008.
+        assert ev["cost_usd"] == pytest.approx(0.0008)
         assert "ts" in ev
 
     async def test_spend_event_preserves_unknown_model_cost_as_unpriced(self, tmp_path: Path):
@@ -2910,6 +2935,459 @@ class TestCancelSession:
             # No leaked bookkeeping once the attempt has unwound.
             assert str(fake_session_id) not in spawner._pending_invoke_sessions
             assert str(fake_session_id) not in spawner._invoke_tasks_by_session
+
+    async def test_dashboard_route_lease_loss_cancels_runtime_without_terminal_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """Lease loss stops the local runtime but leaves the dashboard turn unresolved.
+
+        A recovery owner must be able to mark this predecessor ambiguous rather
+        than reading a false ``failed`` terminal state from finalization.
+        """
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        message_id = uuid.uuid4()
+        request_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+        route_row_id = uuid.uuid4()
+        route_claim_id = uuid.uuid4()
+        active = _dashboard_turn_result("active", message_id=message_id, request_id=request_id)
+        lease_lost = asyncio.Event()
+        invocation_started = asyncio.Event()
+        invocation_cancelled = asyncio.Event()
+        never = asyncio.Event()
+        claim_conn = AsyncMock()
+        claim_conn.fetchval = AsyncMock(return_value=route_row_id)
+        mock_pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=claim_conn),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
+
+        class BlockingAdapter(MockAdapter):
+            async def invoke(self, *args: Any, **kwargs: Any):
+                del args, kwargs
+                invocation_started.set()
+                try:
+                    await never.wait()
+                except asyncio.CancelledError:
+                    invocation_cancelled.set()
+                    raise
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.register_session_and_check_cancel",
+                new_callable=AsyncMock,
+                return_value=active,
+            ),
+            patch(
+                "butlers.core.spawner.claim_invoke",
+                new_callable=AsyncMock,
+                return_value=active,
+            ),
+            patch(
+                "butlers.core.spawner.release_invoke",
+                new_callable=AsyncMock,
+                return_value=active,
+            ) as release,
+            patch("butlers.core.spawner.complete_session", new_callable=AsyncMock) as complete,
+        ):
+            create.return_value = session_id
+            spawner = Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=BlockingAdapter(),
+            )
+            waiter = asyncio.create_task(
+                route_inbox_wait_while_claimed(
+                    mock_pool,
+                    route_row_id,
+                    route_claim_id,
+                    lease_lost,
+                    lambda: spawner.trigger(
+                        "cancel on route lease loss",
+                        "route",
+                        request_id=str(request_id),
+                        dashboard_turn_id=message_id,
+                        route_lease_lost=lease_lost,
+                    ),
+                )
+            )
+            try:
+                await asyncio.wait_for(invocation_started.wait(), timeout=5.0)
+                lease_lost.set()
+                with pytest.raises(RouteInboxLeaseLost):
+                    await asyncio.wait_for(waiter, timeout=5.0)
+            finally:
+                if not waiter.done():
+                    waiter.cancel()
+
+        assert invocation_cancelled.is_set()
+        release.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=session_id,
+        )
+        complete.assert_not_awaited()
+
+    async def test_dashboard_control_gate_blocks_runtime_before_invoke(self, tmp_path: Path):
+        """A durable Stop that wins before invoke means the adapter never starts."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        message_id = uuid.uuid4()
+        request_id = uuid.UUID("018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b")
+        fake_session_id = uuid.uuid4()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.register_session_and_check_cancel",
+                new_callable=AsyncMock,
+                return_value=_dashboard_turn_result(
+                    "active", message_id=message_id, request_id=request_id
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.claim_invoke",
+                new_callable=AsyncMock,
+                return_value=_dashboard_turn_result(
+                    "cancelled", message_id=message_id, request_id=request_id
+                ),
+            ) as claim_invoke,
+            patch("butlers.core.spawner.complete_session", new_callable=AsyncMock) as complete,
+        ):
+            create.return_value = fake_session_id
+            spawner = Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            )
+            result = await spawner.trigger(
+                "stop before invoke",
+                "route",
+                request_id=str(request_id),
+                dashboard_turn_id=message_id,
+            )
+
+        assert result.success is False
+        assert result.error == SESSION_CANCELLED_ERROR
+        assert adapter.calls == []
+        claim_invoke.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+        )
+        complete.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+            success=False,
+        )
+
+    async def test_dashboard_registration_stop_returns_cancelled_result(self, tmp_path: Path):
+        """A Stop at registration unwinds before the failover loop safely."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        message_id = uuid.uuid4()
+        request_id = uuid.UUID("018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b")
+        fake_session_id = uuid.uuid4()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+        cancelled = _dashboard_turn_result(
+            "cancelled", message_id=message_id, request_id=request_id
+        )
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.register_session_and_check_cancel",
+                new_callable=AsyncMock,
+                return_value=cancelled,
+            ),
+            patch("butlers.core.spawner.claim_invoke", new_callable=AsyncMock) as claim_invoke,
+            patch("butlers.core.spawner.complete_session", new_callable=AsyncMock) as complete,
+        ):
+            create.return_value = fake_session_id
+            spawner = Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            )
+            result = await spawner.trigger(
+                "stop before registration completes",
+                "route",
+                request_id=str(request_id),
+                dashboard_turn_id=message_id,
+            )
+
+        assert result.success is False
+        assert result.error == SESSION_CANCELLED_ERROR
+        assert result.session_id == fake_session_id
+        assert adapter.calls == []
+        claim_invoke.assert_not_awaited()
+        complete.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+            success=False,
+        )
+
+    async def test_dashboard_stop_waits_through_claim_invoke_before_task_registration(
+        self, tmp_path: Path
+    ):
+        """Stop cannot acknowledge a dashboard session in the claim-to-task gap.
+
+        The durable invoke claim has succeeded, but the local ``invoke_task``
+        does not exist yet.  The owner must wait for the exact session to
+        acknowledge and complete instead of receiving a premature success.
+        """
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        message_id = uuid.uuid4()
+        request_id = uuid.UUID("018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b")
+        fake_session_id = uuid.uuid4()
+        active = _dashboard_turn_result("active", message_id=message_id, request_id=request_id)
+        cancelling = _dashboard_turn_result(
+            "cancelling", message_id=message_id, request_id=request_id
+        )
+        cancelled = _dashboard_turn_result(
+            "cancelled", message_id=message_id, request_id=request_id
+        )
+        claim_entered = asyncio.Event()
+        allow_claim_to_finish = asyncio.Event()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+
+        async def _blocking_claim(*_args: Any, **_kwargs: Any) -> DashboardTurnResult:
+            claim_entered.set()
+            await allow_claim_to_finish.wait()
+            return active
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.register_session_and_check_cancel",
+                new_callable=AsyncMock,
+                return_value=active,
+            ),
+            patch(
+                "butlers.core.spawner.claim_invoke",
+                side_effect=_blocking_claim,
+            ),
+            patch(
+                "butlers.core.spawner.acknowledge_cancel",
+                new_callable=AsyncMock,
+                return_value=cancelling,
+            ) as acknowledge,
+            patch(
+                "butlers.core.spawner.complete_session",
+                new_callable=AsyncMock,
+                return_value=cancelled,
+            ) as complete,
+        ):
+            create.return_value = fake_session_id
+            spawner = Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            )
+            trigger_task = asyncio.create_task(
+                spawner.trigger(
+                    "stop in the claim gap",
+                    "route",
+                    request_id=str(request_id),
+                    dashboard_turn_id=message_id,
+                )
+            )
+            try:
+                await asyncio.wait_for(claim_entered.wait(), timeout=5.0)
+                stop_task = asyncio.create_task(
+                    spawner.cancel_session_and_wait(str(fake_session_id), timeout_s=5.0)
+                )
+                await asyncio.sleep(0)
+                assert not stop_task.done(), "Stop acknowledged before its session settled"
+
+                allow_claim_to_finish.set()
+                assert await asyncio.wait_for(stop_task, timeout=5.0) is True
+                result = await asyncio.wait_for(trigger_task, timeout=5.0)
+            finally:
+                allow_claim_to_finish.set()
+                if not trigger_task.done():
+                    trigger_task.cancel()
+
+        assert result.success is False
+        assert result.error == SESSION_CANCELLED_ERROR
+        assert adapter.calls == []
+        acknowledge.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+        )
+        complete.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+            success=False,
+        )
+
+    async def test_dashboard_preinvoke_stop_waits_for_cancelled_completion(self, tmp_path: Path):
+        """A pending dashboard session wakes Stop only after terminal cancel proof."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        message_id = uuid.uuid4()
+        request_id = uuid.UUID("018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b")
+        fake_session_id = uuid.uuid4()
+        active = _dashboard_turn_result("active", message_id=message_id, request_id=request_id)
+        cancelled = _dashboard_turn_result(
+            "cancelled", message_id=message_id, request_id=request_id
+        )
+        prompt_fetch_started = asyncio.Event()
+        allow_prompt_fetch = asyncio.Event()
+        adapter = MockAdapter(result_text="must not run", capture=True)
+
+        async def _block_after_registration(*_args: Any, **_kwargs: Any) -> None:
+            prompt_fetch_started.set()
+            await allow_prompt_fetch.wait()
+            return None
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.register_session_and_check_cancel",
+                new_callable=AsyncMock,
+                return_value=active,
+            ),
+            patch(
+                "butlers.core.spawner.fetch_system_prompt_override",
+                side_effect=_block_after_registration,
+            ),
+            patch(
+                "butlers.core.spawner.claim_invoke",
+                new_callable=AsyncMock,
+                return_value=cancelled,
+            ) as claim_invoke,
+            patch(
+                "butlers.core.spawner.complete_session",
+                new_callable=AsyncMock,
+                return_value=cancelled,
+            ) as complete,
+        ):
+            create.return_value = fake_session_id
+            spawner = Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            )
+            trigger_task = asyncio.create_task(
+                spawner.trigger(
+                    "stop before claim",
+                    "route",
+                    request_id=str(request_id),
+                    dashboard_turn_id=message_id,
+                )
+            )
+            try:
+                await asyncio.wait_for(prompt_fetch_started.wait(), timeout=5.0)
+                stop_task = asyncio.create_task(
+                    spawner.cancel_session_and_wait(str(fake_session_id), timeout_s=5.0)
+                )
+                await asyncio.sleep(0)
+                assert not stop_task.done(), "Stop woke before durable cancellation completed"
+
+                allow_prompt_fetch.set()
+                assert await asyncio.wait_for(stop_task, timeout=5.0) is True
+                result = await asyncio.wait_for(trigger_task, timeout=5.0)
+            finally:
+                allow_prompt_fetch.set()
+                if not trigger_task.done():
+                    trigger_task.cancel()
+
+        assert result.success is False
+        assert result.error == SESSION_CANCELLED_ERROR
+        assert adapter.calls == []
+        claim_invoke.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+        )
+        complete.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+            success=False,
+        )
+
+    async def test_dashboard_control_releases_each_runtime_attempt_before_completion(
+        self, tmp_path: Path
+    ):
+        """Stop can distinguish an actively invoking runtime from a settled attempt."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        message_id = uuid.uuid4()
+        request_id = uuid.UUID("018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b")
+        fake_session_id = uuid.uuid4()
+        adapter = MockAdapter(result_text="done", capture=True)
+        active = _dashboard_turn_result("active", message_id=message_id, request_id=request_id)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.register_session_and_check_cancel",
+                new_callable=AsyncMock,
+                return_value=active,
+            ),
+            patch("butlers.core.spawner.claim_invoke", new_callable=AsyncMock, return_value=active),
+            patch(
+                "butlers.core.spawner.release_invoke", new_callable=AsyncMock, return_value=active
+            ) as release,
+            patch("butlers.core.spawner.complete_session", new_callable=AsyncMock) as complete,
+        ):
+            create.return_value = fake_session_id
+            spawner = Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            )
+            result = await spawner.trigger(
+                "finish normally",
+                "route",
+                request_id=str(request_id),
+                dashboard_turn_id=message_id,
+            )
+
+        assert result.success is True
+        assert len(adapter.calls) == 1
+        release.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+        )
+        complete.assert_awaited_once_with(
+            mock_pool,
+            message_id=message_id,
+            session_id=fake_session_id,
+            success=True,
+        )
 
     async def test_drain_forced_cancel_not_swallowed_by_overlapping_owner_cancel(
         self, tmp_path: Path

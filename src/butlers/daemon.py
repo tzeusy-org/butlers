@@ -559,11 +559,12 @@ class ButlerDaemon:
         wire_pipelines(self, pool)
 
     async def _recover_route_inbox(self, pool: asyncpg.Pool) -> None:
-        """Re-dispatch route_inbox rows that were accepted but never processed.
+        """Recover eligible route-inbox rows under a fenced processing lease.
 
-        Called on startup to recover from crashes or restarts.  Rows in
-        'accepted' state older than the grace period are re-dispatched
-        as background tasks through the same path as the hot path.
+        Called on startup to recover from crashes or restarts. Accepted rows
+        and stale processing leases are eligible for recovery; reclaimed
+        dashboard processing rows reconcile their durable predecessor and
+        suppress automatic replay when it is unprovable.
 
         The implementation lives in :mod:`butlers.switchboard_wiring` to keep
         this file focused on class structure.
@@ -1457,8 +1458,17 @@ class ButlerDaemon:
 
             set_executor = getattr(approvals_module, "set_tool_executor", None)
             mcp = getattr(self, "mcp", None)
+            butler_name = getattr(self.config, "name", "")
+            # Direct approval producers bypass the normal gate wrapper, so
+            # validate their declared durable commands against this daemon's
+            # actual registered MCP surface before it can accept new work.
+            if mcp is not None:
+                from butlers.modules.approvals.command_contracts import (
+                    validate_owner_command_registry,
+                )
+
+                await validate_owner_command_registry(mcp, butler_name)
             if callable(set_executor) and mcp is not None:
-                butler_name = getattr(self.config, "name", "")
                 aliases = _LEGACY_APPROVAL_TOOL_ALIASES.get(butler_name, {})
 
                 async def _execute_approved_tool(

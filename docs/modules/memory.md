@@ -63,7 +63,11 @@ Behavior guidance learned from repeated outcomes. Rules track maturity (`candida
 
 ## Tools Provided
 
-The module registers 23 MCP tools:
+The module registers 23 shared MCP tools. Relationship additionally registers
+the approval-gated `memory_reclassify` command used by its episodic-predicate
+curation job. That conditional command only changes an active fact to
+`volatile`; its memory type, fact ID, and target permanence are all
+safety-critical approval-rule arguments.
 
 | Tool | Category | Description |
 |------|----------|-------------|
@@ -78,6 +82,7 @@ The module registers 23 MCP tools:
 | `memory_mark_helpful` | Feedback | Mark a rule application as helpful |
 | `memory_mark_harmful` | Feedback | Mark a rule application as harmful |
 | `memory_forget` | Management | Retract a memory artifact |
+| `memory_reclassify` | Management (Relationship only) | Reclassify an approved active fact to volatile permanence |
 | `memory_stats` | Management | Get memory statistics |
 | `memory_predicate_list` | Predicates | List registered predicates |
 | `memory_predicate_search` | Predicates | Hybrid search for predicates (trigram + full-text + semantic) |
@@ -158,7 +163,7 @@ validity.
 
 Anti-pattern detection: rules with repeated harmful, low-effectiveness outcomes transition to `anti_pattern` status and are surfaced as warnings rather than guidance.
 
-Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows.
+Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows. Before an episode is deleted, a database trigger records a content-free `episode_tombstones` row. Durable facts and rules retain their source UUID, and a generic `memory_links` endpoint names the deleted episode as `expired`; neither path retains raw episode content or authorizes a historical cleanup drain.
 
 ### HNSW recall and churn observability
 
@@ -231,6 +236,7 @@ Entities are never hard-deleted. Merging sets `metadata.merged_into`; the source
 The module owns tables in the hosting butler's schema (Alembic branch: `memory`):
 
 - `episodes` -- session observations with TTL
+- `episode_tombstones` -- content-free deletion evidence for durable episode provenance
 - `facts` -- durable SPO knowledge with entity anchoring
 - `rules` -- procedural memory with maturity tracking
 - `memory_links` -- provenance edges between memory artifacts

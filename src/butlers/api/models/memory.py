@@ -9,6 +9,7 @@ Provides models for the three-tier memory subsystem:
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,31 @@ class ConsolidationStatus(StrEnum):
     CONSOLIDATED = "consolidated"
     FAILED = "failed"
     DEAD_LETTER = "dead_letter"
+
+
+class EpisodeSourceStatus(StrEnum):
+    """Availability of a durable reference to an episode source."""
+
+    AVAILABLE = "available"
+    EXPIRED = "expired"
+    UNRESOLVED = "unresolved"
+
+
+class MemoryLink(BaseModel):
+    """A durable relation between two memory records.
+
+    Episode endpoints expose their bounded availability without returning a
+    deleted episode's content or tombstone details.
+    """
+
+    source_type: Literal["episode", "fact", "rule"]
+    source_id: str
+    target_type: Literal["episode", "fact", "rule"]
+    target_id: str
+    relation: str
+    created_at: str
+    source_episode_status: EpisodeSourceStatus | None = None
+    target_episode_status: EpisodeSourceStatus | None = None
 
 
 class Episode(BaseModel):
@@ -60,6 +86,7 @@ class Fact(BaseModel):
     permanence: str = "standard"
     source_butler: str | None = None
     source_episode_id: str | None = None
+    source_episode_status: EpisodeSourceStatus | None = None
     session_id: str | None = None
     supersedes_id: str | None = None
     superseded_by: str | None = None
@@ -99,6 +126,7 @@ class Rule(BaseModel):
     success_count: int = 0
     harmful_count: int = 0
     source_episode_id: str | None = None
+    source_episode_status: EpisodeSourceStatus | None = None
     source_butler: str | None = None
     tenant_id: str = "owner"
     request_id: str | None = None

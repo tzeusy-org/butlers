@@ -10,6 +10,7 @@ Verifies that:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,14 @@ import pytest
 from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
+
+
+class _NoopLeaseHeartbeat:
+    async def __aenter__(self) -> asyncio.Event:
+        return asyncio.Event()
+
+    async def __aexit__(self, *_args: object) -> bool:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +210,16 @@ def _mock_route_inbox(monkeypatch):
         AsyncMock(return_value=fake_inbox_id),
     )
     monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_processing",
-        AsyncMock(),
+        "butlers.core_tools._routing.route_inbox_claim_processing",
+        AsyncMock(return_value=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
+        MagicMock(side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat()),
+    )
+    monkeypatch.setattr(
+        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+        AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
         "butlers.core_tools._routing.route_inbox_mark_processed",

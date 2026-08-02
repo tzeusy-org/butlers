@@ -32,7 +32,12 @@ from butlers.modules.memory.tools.feedback import (
     memory_mark_harmful,
     memory_mark_helpful,
 )
-from butlers.modules.memory.tools.management import memory_forget, memory_stats, predicate_list
+from butlers.modules.memory.tools.management import (
+    memory_forget,
+    memory_reclassify,
+    memory_stats,
+    predicate_list,
+)
 from butlers.modules.memory.tools.preferences import get_preferences, set_preference
 from butlers.modules.memory.tools.writing import (
     memory_store_episode,
@@ -56,6 +61,7 @@ __all__ = [
     "memory_confirm",
     "memory_context",
     "memory_forget",
+    "memory_reclassify",
     "memory_mark_harmful",
     "memory_mark_helpful",
     "memory_stats",

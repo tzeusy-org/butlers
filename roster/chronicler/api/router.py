@@ -57,6 +57,7 @@ from butlers.chronicler.balance import (
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
 from butlers.chronicler.models import RoutineOrigin
+from butlers.chronicler.prose_admission import classify_day_close_candidate
 from butlers.chronicler.rollups import DEFAULT_TIMEZONE as ROLLUPS_DEFAULT_TIMEZONE
 from butlers.chronicler.storage import (
     create_declared_routine,
@@ -97,6 +98,7 @@ if _spec is not None and _spec.loader is not None:
     ProjectionHealthRow = _models.ProjectionHealthRow
     ChroniclesAttentionItem = _models.ChroniclesAttentionItem
     ChroniclesBriefing = _models.ChroniclesBriefing
+    ChroniclesBriefingSubqueryAvailability = _models.ChroniclesBriefingSubqueryAvailability
     ChroniclesKpi = _models.ChroniclesKpi
     ChroniclesLaneHours = _models.ChroniclesLaneHours
     ChroniclesRecentDay = _models.ChroniclesRecentDay
@@ -2552,7 +2554,7 @@ async def get_day_close_cache(
         cache_row = await pool.fetchrow(
             """
             SELECT cache_key, start_at, end_at, cache_built_at, prose, provenance_refs,
-                   invalid_reason
+                   date_label, invalid_reason
             FROM tier2_cache
             WHERE cache_key = $1
               AND superseded_at IS NULL
@@ -2573,7 +2575,11 @@ async def get_day_close_cache(
         # ── Step 1b: admission precedes staleness ────────────────────────────
         # A row that failed the deterministic day-close admission predicate is
         # contained regardless of its staleness state (design.md decision 4).
-        invalid_reason = cache_row.get("invalid_reason")
+        invalid_reason = cache_row.get("invalid_reason") or classify_day_close_candidate(
+            cache_row.get("prose"),
+            date_label=cache_row.get("date_label"),
+            expected_date_iso=parsed_date.isoformat(),
+        )
         if invalid_reason:
             span.set_attribute("chronicler.day_close.cache_state", "invalid")
             return DayCloseInvalidResponse(
@@ -3003,6 +3009,15 @@ def _recent_days_to_pydantic(rows: list[Any]) -> list[ChroniclesRecentDay]:
     ]
 
 
+def _subquery_availability_to_pydantic(
+    rows: list[Any],
+) -> list[ChroniclesBriefingSubqueryAvailability]:
+    return [
+        ChroniclesBriefingSubqueryAvailability(subquery=row.subquery, state=row.state)
+        for row in rows
+    ]
+
+
 async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | None, str]:
     """Return (paragraph, source) read from the day-close Tier-2 cache.
 
@@ -3016,7 +3031,7 @@ async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | No
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT prose, cache_built_at, start_at, end_at, invalid_reason
+            SELECT prose, cache_built_at, start_at, end_at, date_label, invalid_reason
             FROM tier2_cache
             WHERE cache_key = $1
               AND superseded_at IS NULL
@@ -3025,7 +3040,11 @@ async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | No
         )
     if row is None:
         return None, "templated"
-    if row.get("invalid_reason"):
+    if row.get("invalid_reason") or classify_day_close_candidate(
+        row.get("prose"),
+        date_label=row.get("date_label"),
+        expected_date_iso=target.isoformat(),
+    ):
         return None, "templated"
     prose = row["prose"]
     cache_built_at = row["cache_built_at"]
@@ -3104,6 +3123,7 @@ async def get_briefing(
         kpi=_kpi_to_pydantic(payload.kpi),
         attention_items=_attention_to_pydantic(payload.attention_items),
         recent_days=_recent_days_to_pydantic(payload.recent_days),
+        subquery_availability=_subquery_availability_to_pydantic(payload.subquery_availability),
         earliest_date=payload.earliest_date,
     )
 

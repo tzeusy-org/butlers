@@ -1,8 +1,8 @@
 /**
  * Provides live badge counts for nav items.
  *
- * Returns a map from badgeKey → count so the Sidebar can render
- * badge indicators without needing to know about domain specifics.
+ * Returns a map from badgeKey → count or explicit availability state so the
+ * Sidebar can render badge indicators without inventing a calm zero.
  *
  * The QA badge query is only fired when the QA butler is present in the
  * roster (i.e. the nav item will actually be visible), to avoid spurious
@@ -11,7 +11,10 @@
 
 import { useQaSummary } from './use-qa'
 import { useButlers } from './use-butlers'
-import { useApprovalMetrics } from './use-approvals'
+import {
+  pendingApprovalMetricSourcesDegraded,
+  useApprovalMetrics,
+} from './use-approvals'
 import { useDecisions } from './use-decisions'
 
 /**
@@ -31,19 +34,25 @@ export function useQaEscalationsBadge(): number {
   return data?.data.active_breakdown.escalated_open_cases ?? 0
 }
 
-/** Returns the count of pending approval actions for the sidebar badge. */
-export function useApprovalsPendingBadge(): number {
-  const { data } = useApprovalMetrics()
-  return data?.data.total_pending ?? 0
+/** A sidebar badge with an explicit unavailable state. */
+export type AvailabilityBadgeState =
+  | { kind: 'count'; count: number }
+  | { kind: 'unavailable' }
+
+/** Returns the pending-approval badge state without inventing a zero on partial metrics. */
+export function useApprovalsPendingBadge(): AvailabilityBadgeState {
+  const { data, isError } = useApprovalMetrics()
+  if (isError || pendingApprovalMetricSourcesDegraded(data).length > 0) {
+    return { kind: 'unavailable' }
+  }
+  return { kind: 'count', count: data?.data.total_pending ?? 0 }
 }
 
 /**
- * The Decisions badge needs to distinguish a readable empty digest from an
- * unavailable one. Other sidebar badges remain simple numeric counts.
+ * Decisions uses the same explicit availability shape as approvals so a
+ * readable empty digest remains distinct from an unavailable one.
  */
-export type DecisionsBadgeState =
-  | { kind: 'count'; count: number }
-  | { kind: 'unavailable' }
+export type DecisionsBadgeState = AvailabilityBadgeState
 
 export function useDecisionsOpenBadge(): DecisionsBadgeState {
   const { data, isError } = useDecisions()
@@ -51,8 +60,8 @@ export function useDecisionsOpenBadge(): DecisionsBadgeState {
   return { kind: 'count', count: data?.data.length ?? 0 }
 }
 
-/** Badge registry — only Decisions carries an explicit availability state. */
-export function useBadgeCounts(): Record<string, number | DecisionsBadgeState> {
+/** Badge registry — approval and decision badges carry explicit availability. */
+export function useBadgeCounts(): Record<string, number | AvailabilityBadgeState> {
   const qaEscalations = useQaEscalationsBadge()
   const approvalsPending = useApprovalsPendingBadge()
   const decisionsOpen = useDecisionsOpenBadge()

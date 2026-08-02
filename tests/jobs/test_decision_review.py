@@ -22,7 +22,7 @@ import os
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -144,11 +144,57 @@ def test_digest_unavailable_when_export_stale(tmp_path):
 def test_digest_unavailable_on_unparseable_json(tmp_path):
     export = tmp_path / "issues.export.jsonl"
     export.write_text("{not valid json\n")
+    export_mtime = export.stat().st_mtime
 
     digest = compute_decision_digest(export, now=_NOW)
     assert digest.available is False
     assert digest.unavailable_reason is not None
     assert digest.unavailable_reason.startswith("export_read_error:")
+    assert digest.export_as_of is not None
+    assert digest.export_as_of.timestamp() == pytest.approx(export_mtime, abs=1)
+
+
+def test_digest_preserves_export_as_of_when_stattable_export_cannot_be_read(tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(export, [_decision("bu-a")])
+    export_mtime = export.stat().st_mtime
+
+    with patch(
+        "butlers.jobs.decision_review._load_issues",
+        side_effect=OSError("permission denied"),
+    ):
+        digest = compute_decision_digest(export, now=_NOW)
+
+    assert digest.available is False
+    assert digest.unavailable_reason == "export_read_error:permission denied"
+    assert digest.export_as_of is not None
+    assert digest.export_as_of.timestamp() == pytest.approx(export_mtime, abs=1)
+
+
+def test_digest_does_not_fabricate_export_as_of_when_stat_fails():
+    export = MagicMock(spec=Path)
+    export.is_file.return_value = True
+    export.stat.side_effect = OSError("stat denied")
+
+    digest = compute_decision_digest(export, now=_NOW)
+
+    assert digest.available is False
+    assert digest.unavailable_reason == "export_read_error:stat denied"
+    assert digest.export_as_of is None
+
+
+def test_digest_never_raises_when_checked_at_is_naive(tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(export, [_decision("bu-a")])
+    export_mtime = export.stat().st_mtime
+
+    digest = compute_decision_digest(export, now=_NOW.replace(tzinfo=None))
+
+    assert digest.available is False
+    assert digest.unavailable_reason is not None
+    assert digest.unavailable_reason.startswith("export_read_error:")
+    assert digest.export_as_of is not None
+    assert digest.export_as_of.timestamp() == pytest.approx(export_mtime, abs=1)
 
 
 def test_digest_genuine_zero_is_available_and_empty(tmp_path):

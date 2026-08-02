@@ -29,6 +29,11 @@ from butlers.core.tool_call_capture import (
 
 logger = logging.getLogger(__name__)
 
+
+class StaleSupersessionTargetError(ValueError):
+    """Raised when an optimistic supersession target is no longer current."""
+
+
 # ---------------------------------------------------------------------------
 # Load sibling modules from disk (roster/ is not a Python package).
 # ---------------------------------------------------------------------------
@@ -1379,7 +1384,8 @@ async def store_fact(
             property-fact update.  When set, the current fact matching the
             supersession identity key must have this exact ID.  The check and
             supersession happen in the same transaction; otherwise a
-            ``ValueError`` is raised and no fact is written.
+            ``StaleSupersessionTargetError`` (a ``ValueError`` subclass) is
+            raised and no fact is written.
         retention_class: Retention policy class for the fact (default
             'operational').  Controls lifecycle management behaviour.
         sensitivity: Data sensitivity classification (default 'normal').
@@ -1700,7 +1706,7 @@ async def store_fact(
 
                 current_id = existing["id"] if existing else None
                 if expected_supersedes_id is not None and current_id != expected_supersedes_id:
-                    raise ValueError(
+                    raise StaleSupersessionTargetError(
                         f"expected supersession target {expected_supersedes_id!r} "
                         "is no longer current"
                     )
@@ -2186,6 +2192,7 @@ async def get_links(
     memory_id: uuid.UUID,
     *,
     direction: str = "both",
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """Get all links for a memory item.
 
@@ -2194,6 +2201,7 @@ async def get_links(
         memory_type: Type of the memory ('episode', 'fact', 'rule').
         memory_id: UUID of the memory item.
         direction: 'outgoing' (source), 'incoming' (target), or 'both'.
+        memory_schema: Optional owning schema for dashboard fan-out readers.
 
     Returns:
         List of dicts with keys: source_type, source_id, target_type, target_id,
@@ -2205,12 +2213,39 @@ async def get_links(
     if memory_type not in _VALID_MEMORY_TYPES:
         raise ValueError(f"Invalid memory_type: {memory_type!r}")
 
+    episodes_relation = _memory_relation("episode", memory_schema)
+    tombstones_relation = (
+        "episode_tombstones" if memory_schema is None else f'"{memory_schema}"."episode_tombstones"'
+    )
+    links_relation = (
+        "memory_links" if memory_schema is None else f'"{memory_schema}"."memory_links"'
+    )
     results: list[dict] = []
 
     if direction in ("outgoing", "both"):
         rows = await pool.fetch(
-            "SELECT source_type, source_id, target_type, target_id, relation, created_at "
-            "FROM memory_links WHERE source_type = $1 AND source_id = $2",
+            "SELECT ml.source_type, ml.source_id, ml.target_type, ml.target_id, ml.relation, "
+            "ml.created_at, "
+            "CASE WHEN ml.source_type = 'episode' THEN "
+            "  CASE WHEN source_episode.id IS NOT NULL THEN 'available' "
+            "       WHEN source_tombstone.episode_id IS NOT NULL THEN 'expired' "
+            "       ELSE 'unresolved' END "
+            "END AS source_episode_status, "
+            "CASE WHEN ml.target_type = 'episode' THEN "
+            "  CASE WHEN target_episode.id IS NOT NULL THEN 'available' "
+            "       WHEN target_tombstone.episode_id IS NOT NULL THEN 'expired' "
+            "       ELSE 'unresolved' END "
+            "END AS target_episode_status "
+            f"FROM {links_relation} ml "
+            f"LEFT JOIN {episodes_relation} source_episode "
+            "  ON ml.source_type = 'episode' AND source_episode.id = ml.source_id "
+            f"LEFT JOIN {tombstones_relation} source_tombstone "
+            "  ON ml.source_type = 'episode' AND source_tombstone.episode_id = ml.source_id "
+            f"LEFT JOIN {episodes_relation} target_episode "
+            "  ON ml.target_type = 'episode' AND target_episode.id = ml.target_id "
+            f"LEFT JOIN {tombstones_relation} target_tombstone "
+            "  ON ml.target_type = 'episode' AND target_tombstone.episode_id = ml.target_id "
+            "WHERE ml.source_type = $1 AND ml.source_id = $2",
             memory_type,
             memory_id,
         )
@@ -2218,8 +2253,28 @@ async def get_links(
 
     if direction in ("incoming", "both"):
         rows = await pool.fetch(
-            "SELECT source_type, source_id, target_type, target_id, relation, created_at "
-            "FROM memory_links WHERE target_type = $1 AND target_id = $2",
+            "SELECT ml.source_type, ml.source_id, ml.target_type, ml.target_id, ml.relation, "
+            "ml.created_at, "
+            "CASE WHEN ml.source_type = 'episode' THEN "
+            "  CASE WHEN source_episode.id IS NOT NULL THEN 'available' "
+            "       WHEN source_tombstone.episode_id IS NOT NULL THEN 'expired' "
+            "       ELSE 'unresolved' END "
+            "END AS source_episode_status, "
+            "CASE WHEN ml.target_type = 'episode' THEN "
+            "  CASE WHEN target_episode.id IS NOT NULL THEN 'available' "
+            "       WHEN target_tombstone.episode_id IS NOT NULL THEN 'expired' "
+            "       ELSE 'unresolved' END "
+            "END AS target_episode_status "
+            f"FROM {links_relation} ml "
+            f"LEFT JOIN {episodes_relation} source_episode "
+            "  ON ml.source_type = 'episode' AND source_episode.id = ml.source_id "
+            f"LEFT JOIN {tombstones_relation} source_tombstone "
+            "  ON ml.source_type = 'episode' AND source_tombstone.episode_id = ml.source_id "
+            f"LEFT JOIN {episodes_relation} target_episode "
+            "  ON ml.target_type = 'episode' AND target_episode.id = ml.target_id "
+            f"LEFT JOIN {tombstones_relation} target_tombstone "
+            "  ON ml.target_type = 'episode' AND target_tombstone.episode_id = ml.target_id "
+            "WHERE ml.target_type = $1 AND ml.target_id = $2",
             memory_type,
             memory_id,
         )

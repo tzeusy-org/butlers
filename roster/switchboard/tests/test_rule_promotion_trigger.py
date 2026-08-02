@@ -26,6 +26,7 @@ from butlers.tools.switchboard.routing.rule_promotion import (
     distinct_utc_calendar_days,
     parse_proposed_action,
     passes_evidence_quality_gate,
+    proposed_rule_for_sender_key,
     run_rule_promotion_trigger,
     verdicts_agree,
 )
@@ -35,6 +36,27 @@ pytestmark = pytest.mark.unit
 
 def _ts(*, day: int, hour: int = 12, minute: int = 0) -> datetime:
     return datetime(2026, 7, day, hour, minute, tzinfo=UTC)
+
+
+class TestProposedRuleIdentity:
+    def test_email_sender_key_proposes_email_matcher(self) -> None:
+        assert proposed_rule_for_sender_key("billing@example.com", source_channel="email") == (
+            "sender_address",
+            {"address": "billing@example.com"},
+        )
+
+    def test_opaque_connector_identity_proposes_source_endpoint_matcher(self) -> None:
+        assert proposed_rule_for_sender_key("spotify:acct-1", source_channel="music") == (
+            "source_endpoint",
+            {"endpoint_identity": "spotify:acct-1"},
+        )
+
+    def test_non_email_endpoint_containing_at_sign_proposes_source_endpoint_matcher(self) -> None:
+        endpoint = "google_calendar:user:owner@example.com"
+        assert proposed_rule_for_sender_key(endpoint, source_channel="calendar") == (
+            "source_endpoint",
+            {"endpoint_identity": endpoint},
+        )
 
 
 # ---------------------------------------------------------------------------

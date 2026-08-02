@@ -8,7 +8,7 @@ Provides the frontend conversational interface for the Butlers dashboard, enabli
 
 ### Requirement: Chat Panel on Butler Detail Page
 
-The chat interface renders as a slide-out panel on the butler detail page (`/butlers/:name`), toggled by a dedicated button in the butler detail header area.
+The chat interface SHALL render as a slide-out panel on the butler detail page (`/butlers/:name`), toggled by a dedicated button in the butler detail header area.
 
 #### Scenario: Chat panel toggle
 
@@ -31,7 +31,7 @@ The chat interface renders as a slide-out panel on the butler detail page (`/but
 
 ### Requirement: Conversation List Sidebar
 
-Within the chat panel, a conversation list allows switching between threads or starting new ones.
+Within the chat panel, a conversation list SHALL allow switching between threads or starting new ones.
 
 #### Scenario: Conversation list renders
 
@@ -56,7 +56,7 @@ Within the chat panel, a conversation list allows switching between threads or s
 
 ### Requirement: Message Thread Display
 
-The active conversation renders as a scrollable message thread with user and assistant messages differentiated by alignment and styling.
+The active conversation SHALL render as a scrollable message thread with user and assistant messages differentiated by alignment and styling.
 
 #### Scenario: User message rendering
 
@@ -125,7 +125,7 @@ The message input area SHALL occupy the bottom of the chat panel with a text inp
 
 ### Requirement: Typing Indicator
 
-A typing indicator provides visual feedback while the butler is processing a response.
+A typing indicator SHALL provide visual feedback while the butler is processing a response.
 
 #### Scenario: Typing indicator during processing
 
@@ -140,7 +140,7 @@ A typing indicator provides visual feedback while the butler is processing a res
 
 ### Requirement: Cost Indicator
 
-Each conversation and message displays cost-related metrics for operator awareness.
+Each conversation and message SHALL display cost-related metrics for operator awareness.
 
 #### Scenario: Per-message cost display
 
@@ -156,7 +156,7 @@ Each conversation and message displays cost-related metrics for operator awarene
 
 ### Requirement: Conversation Quick-Switch
 
-Operators can quickly switch between conversations using keyboard shortcuts.
+The chat UI SHALL allow operators to quickly switch between conversations using keyboard shortcuts.
 
 #### Scenario: Keyboard navigation in conversation list
 
@@ -171,7 +171,7 @@ Operators can quickly switch between conversations using keyboard shortcuts.
 
 ### Requirement: Conversation Search UI
 
-A search input in the conversation list enables full-text search across conversation history.
+A search input in the conversation list SHALL enable full-text search across conversation history.
 
 #### Scenario: Search input
 
@@ -207,16 +207,24 @@ The frontend SHALL connect to the SSE streaming endpoints for real-time response
 
 - **WHEN** the user clicks the "Stop" button during streaming
 - **THEN** the frontend calls `POST
-  /api/butlers/{name}/conversations/{conversation_id}/cancel` with a pending
-  ("Stopping…") state on the Stop button, disabling it against a second click
-- **AND** the backend resolves the conversation's active turn to its
-  in-flight session and kills the routed butler's runtime subprocess (not
-  merely detaching a watcher) via the `cancel_session` MCP tool
-- **AND** only once the server confirms `cancelled: true` does the frontend
-  abort its own SSE watch (`AbortController`) and render the partial
-  assistant message with a "Cancelled by owner" indicator, distinct from the
-  generic "Interrupted" indicator used for unrelated client-side aborts
-  (e.g. component unmount, switching conversations)
+  /api/butlers/{name}/conversation-turns/{message_id}/cancel`, where
+  `message_id` is the client-created immutable user-turn identifier; this
+  SHALL work before a new conversation has delivered its `conversation_id`
+  over SSE
+- **AND** the Stop button enters a pending ("Stopping…") state that prevents
+  a second request and exposes its state to assistive technology
+- **AND** the backend records cancellation intent against that durable turn,
+  preventing any later Switchboard ingress claim, classifier, target-route,
+  recovery, or runtime-invoke transition from starting work for it
+- **AND** if a runtime already crossed the invocation boundary, the backend
+  resolves every exact registered runtime session and kills the subprocesses
+  through the `cancel_session` MCP tool (not merely detaching a watcher)
+- **AND** only once the server confirms `cancelled: true` **or** emits the
+  terminal `SESSION_CANCELLED` SSE outcome from the durable turn record does
+  the frontend abort its own SSE watch (`AbortController`) and render the
+  partial assistant message with a "Cancelled by owner" indicator, distinct
+  from the generic "Interrupted" indicator used for unrelated client-side
+  aborts (e.g. component unmount, switching conversations)
 - **AND** the input is re-enabled
 
 #### Scenario: Stop click on an already-finished turn is a benign no-op
@@ -230,15 +238,28 @@ The frontend SHALL connect to the SSE streaming endpoints for real-time response
 #### Scenario: A failed cancel attempt is never rendered as calm
 
 - **WHEN** the cancel request itself fails (e.g. the routed butler is
-  unreachable) so the server cannot confirm the session was killed
-- **THEN** the frontend surfaces the failure message inline in the thread
-  and re-enables the Stop button for another attempt
+  unreachable), an already-ended runtime is still settling, or an irreversible
+  action was already committed, so the server cannot confirm cancellation
+- **THEN** the frontend surfaces the returned explanation inline in the thread
+  and gives the owner an actionable, truthful Stop state
 - **AND** it SHALL NOT render "Cancelled by owner", "Interrupted", or any
   other terminal-state indicator implying the session actually stopped
 
+#### Scenario: A same-message ingress is still in progress
+
+- **WHEN** the SSE stream reports `INGEST_IN_PROGRESS` because another caller
+  owns or is settling the same immutable dashboard turn
+- **THEN** the frontend retains that logical message and presents a
+  "Check again" or history-refresh affordance
+- **AND** it SHALL NOT offer Retry or issue a new ingestion request for that
+  `message_id`
+- **AND** `SESSION_CANCELLED` remains a confirmed terminal Stop outcome, while
+  `TURN_OUTCOME_UNKNOWN` suppresses automatic replay and surfaces the
+  uncertainty honestly
+
 ### Requirement: Conversation React Query Hooks
 
-TanStack Query hooks manage conversation data fetching and caching.
+TanStack Query hooks SHALL manage conversation data fetching and caching.
 
 #### Scenario: useConversations hook
 

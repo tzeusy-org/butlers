@@ -248,6 +248,28 @@ describe("QaOverviewPage -- dossier shell", () => {
     expect(html).toContain("What the staff caught and fixed");
   });
 
+  it("names a degraded case rail and exposes retry instead of an empty dossier", () => {
+    (useQaCases as AnyMock).mockReturnValue({
+      data: undefined, isLoading: false, isError: true, refetch: vi.fn(),
+    });
+    const html = renderPage();
+    expect(html).toContain('data-testid="qa-case-rail-degraded"');
+    expect(html).toContain("Case rail: unavailable");
+    expect(html).toContain("Retry");
+    expect(html).not.toContain("Nothing in the dossier.");
+  });
+
+  it("retries the degraded case rail", () => {
+    const refetch = vi.fn();
+    (useQaCases as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch });
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => { root.render(<QueryClientProvider client={new QueryClient()}><MemoryRouter><QaOverviewPage /></MemoryRouter></QueryClientProvider>); });
+    act(() => { (container.querySelector('[data-testid="qa-case-rail-degraded"] button') as HTMLButtonElement).click(); });
+    expect(refetch).toHaveBeenCalledOnce();
+    act(() => root.unmount()); container.remove();
+  });
+
   it("renders port, model, and patrol_interval_minutes in header caption", () => {
     (useQaCases as AnyMock).mockReturnValue({
       data: { data: [MOCK_CASE_1] },

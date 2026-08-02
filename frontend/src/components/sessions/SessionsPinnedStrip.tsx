@@ -37,6 +37,7 @@ import type { KeyboardEvent, ReactNode } from "react";
 
 import type { SessionSummary } from "@/api/types";
 import { ButlerMark } from "@/components/ui/ButlerMark";
+import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useSessionErrorExcerpts } from "@/hooks/use-sessions";
@@ -59,11 +60,13 @@ const PROMPT_MAX = 70;
 interface PinnedRowProps {
   session: SessionSummary;
   trailing: ReactNode;
+  /** Kept outside the clickable row so retry stays a separate native control. */
+  after?: ReactNode;
   selected: boolean;
   onClick?: () => void;
 }
 
-function PinnedRow({ session, trailing, selected, onClick }: PinnedRowProps) {
+function PinnedRow({ session, trailing, after, selected, onClick }: PinnedRowProps) {
   const interactive = Boolean(onClick);
 
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
@@ -111,6 +114,7 @@ function PinnedRow({ session, trailing, selected, onClick }: PinnedRowProps) {
         </span>
         <span className="ml-auto text-xs">{trailing}</span>
       </div>
+      {after && <div className="px-2 pb-1.5">{after}</div>}
     </li>
   );
 }
@@ -226,17 +230,61 @@ export function SessionsPinnedStrip({
           />
         ))}
         {recentFailures.map((session) => {
-          const error = errorsById.get(session.id);
+          const excerpt = errorsById.get(session.id) ?? { kind: "loading" as const };
+          const trailing = (() => {
+            if (excerpt.kind === "loading") {
+              return (
+                <span
+                  className="text-muted-foreground"
+                  data-testid="pinned-failure-excerpt"
+                  role="status"
+                  aria-live="polite"
+                >
+                  Loading error detail…
+                </span>
+              );
+            }
+            if (excerpt.kind === "error") {
+              return (
+                <span
+                  className="text-[var(--amber-text)]"
+                  data-testid="pinned-failure-excerpt"
+                  aria-hidden="true"
+                >
+                  Error detail temporarily unavailable.
+                </span>
+              );
+            }
+            return (
+              <span className="text-destructive" data-testid="pinned-failure-excerpt">
+                {excerpt.error ? truncate(excerpt.error, ERROR_EXCERPT_MAX) : "no error detail"}
+              </span>
+            );
+          })();
           return (
             <PinnedRow
               key={`failed-${session.id}`}
               session={session}
               selected={selectedId === session.id}
               onClick={onSessionClick ? () => onSessionClick(session) : undefined}
-              trailing={
-                <span className="text-destructive" data-testid="pinned-failure-excerpt">
-                  {error ? truncate(error, ERROR_EXCERPT_MAX) : "no error detail"}
-                </span>
+              trailing={trailing}
+              after={
+                excerpt.kind === "error" ? (
+                  <>
+                    <span className="sr-only" role="alert">
+                      Error detail temporarily unavailable. Retry error detail for {session.butler ?? "session"}.
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={excerpt.retry}
+                      aria-label={`Retry error detail for ${session.butler ?? "session"}`}
+                    >
+                      Retry error detail
+                    </Button>
+                  </>
+                ) : undefined
               }
             />
           );

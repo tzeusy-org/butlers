@@ -104,7 +104,7 @@ The `route_inbox` tracks lifecycle states:
 | `processed` | Trigger completed successfully |
 | `errored` | Trigger raised an exception |
 
-On startup, each butler scans for rows stuck in `accepted` or `processing` state (using a grace period to avoid racing the hot path) and re-dispatches them. This provides automatic crash recovery.
+On startup, each butler scans for rows stuck in `accepted` or `processing` state (using a grace period to avoid racing the hot path) and re-dispatches them. A `processing` worker renews its ownership lease before protected work and immediately before runtime creation; a displaced worker never terminally settles that row. Dashboard-originated rows linked to a durable message turn are the narrow exception: a reclaimed stale `processing` row becomes an unprovable/ambiguous turn and is not automatically replayed. Ordinary channels retain the normal fenced re-dispatch behavior.
 
 ## Interactive Channel Handling
 

@@ -36,6 +36,11 @@ _SEND_DISABLED_ERROR = (
     "to enable. WARNING: Sending via unofficial WhatsApp clients carries ban risk."
 )
 
+
+class _WhatsAppSendDisabledError(RuntimeError):
+    """Raised when outbound WhatsApp execution is disabled by runtime policy."""
+
+
 # Shared connector-owned bridge socket. The default matches the compose
 # ``wa_bridge_socket`` volume mount; ``WHATSAPP_BRIDGE_SOCKET`` overrides it (the
 # same env var the dashboard WhatsApp router reads — kept in lockstep so the two
@@ -142,9 +147,13 @@ class WhatsAppModule(Module):
             @mcp.tool()
             async def whatsapp_send_message(recipient: str, text: str) -> dict:
                 """Send a WhatsApp message to a chat by JID or phone number."""
-                if not module._config.send_enabled:
-                    return {"error": _SEND_DISABLED_ERROR}
-                return await module._send_message(recipient=recipient, text=text)
+                try:
+                    return await module._send_message_with_policy(
+                        recipient=recipient,
+                        text=text,
+                    )
+                except _WhatsAppSendDisabledError as exc:
+                    return {"error": str(exc)}
 
             @mcp.tool()
             async def whatsapp_reply_to_message(chat_jid: str, message_id: str, text: str) -> dict:
@@ -154,6 +163,12 @@ class WhatsAppModule(Module):
                 return await module._reply_to_message(
                     chat_jid=chat_jid, message_id=message_id, text=text
                 )
+
+    async def _send_message_with_policy(self, *, recipient: str, text: str) -> dict:
+        """Apply the runtime ban-risk gate before any WhatsApp send path."""
+        if not self._config.send_enabled:
+            raise _WhatsAppSendDisabledError(_SEND_DISABLED_ERROR)
+        return await self._send_message(recipient=recipient, text=text)
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None

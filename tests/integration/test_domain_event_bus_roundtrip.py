@@ -19,6 +19,9 @@ for those):
   re-dispatches or creates a second task; a conflicting deterministic task
   name fails closed as ``"conflict"`` on both the delivery ledger and the
   subscriber's own reconciliation.
+- Reconciliation-sweep mutual exclusion: overlapping sweep invocations do
+  not double-progress one retryable delivery toward its terminal attempt
+  limit.
 """
 
 from __future__ import annotations
@@ -698,6 +701,81 @@ async def test_sweep_retries_transient_failure_up_to_bound_then_permanent(
     assert result["failed_retry_candidates"] == 0
     _, final_attempt_count = await _delivery_status(pool, delivery_id)
     assert final_attempt_count == max_attempts
+
+
+async def test_overlapping_sweeps_do_not_double_progress_a_failed_delivery(
+    pool: asyncpg.Pool, monkeypatch
+) -> None:
+    """A busy sweep owns retry progression until it records its outcome.
+
+    The first route call pauses before ``mark_delivery_failed``.  While it is
+    paused, a second sweep must return as skipped instead of dispatching the
+    same pre-existing ``failed`` row and consuming a second retry attempt.
+    """
+    first_dispatch_started = asyncio.Event()
+    second_dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+    dispatch_calls = 0
+
+    async def _delayed_transient_route(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal dispatch_calls
+        dispatch_calls += 1
+        if dispatch_calls == 1:
+            first_dispatch_started.set()
+        else:
+            second_dispatch_started.set()
+        await release_dispatch.wait()
+        return {"error": "TimeoutError: simulated transient failure", "retryable": True}
+
+    _patch_switchboard_route(monkeypatch, pool, route_fn=_delayed_transient_route)
+    event_type = f"sweep.overlap.{uuid.uuid4().hex}"
+    _event_id, delivery_id = await _insert_delivery_row(
+        pool,
+        event_type=event_type,
+        source_butler="travel",
+        subscriber_butler="finance",
+        status="failed",
+        updated_at_ago=timedelta(minutes=30),
+        attempt_count=0,
+    )
+
+    first_sweep = asyncio.create_task(
+        run_domain_event_reconciliation_sweep(
+            pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
+        )
+    )
+    await asyncio.wait_for(first_dispatch_started.wait(), timeout=5)
+
+    second_sweep = asyncio.create_task(
+        run_domain_event_reconciliation_sweep(
+            pool, failed_retry_backoff=timedelta(seconds=0), max_attempts=5
+        )
+    )
+    second_dispatch_wait = asyncio.create_task(second_dispatch_started.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {second_sweep, second_dispatch_wait}, timeout=5, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert second_sweep in done, "second sweep dispatched the delivery while the first owned it"
+        second_result = second_sweep.result()
+        assert second_result["skipped_due_to_active_sweep"] is True
+    finally:
+        release_dispatch.set()
+        second_dispatch_wait.cancel()
+        await asyncio.gather(second_dispatch_wait, return_exceptions=True)
+        await asyncio.gather(first_sweep, second_sweep, return_exceptions=True)
+
+    first_result = first_sweep.result()
+    assert first_result["failed_retried"] == 1
+    assert dispatch_calls == 1
+    status, attempt_count = await _delivery_status(pool, delivery_id)
+    assert status == "failed"
+    assert attempt_count == 1
+    # This module-scoped migrated database is shared with the later permanent-
+    # route-error test. Remove the intentionally retryable fixture row after
+    # proving its single-attempt result so a later zero-backoff sweep cannot
+    # select it as unrelated work.
+    await pool.execute("DELETE FROM public.domain_event_deliveries WHERE id = $1", delivery_id)
 
 
 async def test_sweep_marks_permanent_route_error_failed_permanent_immediately(

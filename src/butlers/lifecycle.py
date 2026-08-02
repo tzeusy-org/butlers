@@ -474,10 +474,11 @@ async def run_startup(daemon: Any) -> None:
     if daemon._buffer is not None:
         await daemon._buffer.start()
 
-    # 16a. Recover unprocessed route_inbox rows (non-staffer butlers only)
-    # Rows that were accepted but never processed due to a crash are re-dispatched
-    # as a background task so that long-running LLM sessions don't block startup
-    # (and therefore don't prevent other butlers from starting in `butlers up`).
+    # 16a. Recover eligible route_inbox rows (non-staffer butlers only).
+    # Accepted work and stale processing leases are recovered in a background
+    # task so long-running LLM sessions do not block startup. Reclaimed
+    # dashboard processing turns reconcile their durable predecessor and
+    # suppress automatic replay when it cannot be proven terminal.
     # Staffers (switchboard, messenger) have their own durable routing mechanisms
     # and do not use route_inbox for crash recovery.
     if daemon.config.type != ButlerType.STAFFER and daemon.spawner is not None:

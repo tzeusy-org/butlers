@@ -42,6 +42,7 @@ def _make_pool() -> tuple[Any, Any]:
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
     conn.fetch = AsyncMock(return_value=[])
+    conn.fetchval = AsyncMock(return_value=uuid.uuid4())
 
     pool = MagicMock()
     pool.acquire = MagicMock(
@@ -103,9 +104,8 @@ async def test_scan_returns_accepted_and_processing_rows() -> None:
 
     # Verify the SQL query filters by both lifecycle states.
     sql_args = conn.fetch.call_args.args
-    states_arg = sql_args[1]  # second positional arg: the states list $1
-    assert STATE_ACCEPTED in states_arg, "scan must query 'accepted' rows"
-    assert STATE_PROCESSING in states_arg, "scan must query 'processing' rows"
+    assert sql_args[1] == STATE_ACCEPTED, "scan must query 'accepted' rows"
+    assert sql_args[2] == STATE_PROCESSING, "scan must query 'processing' rows"
 
 
 async def test_scan_returns_empty_when_no_stuck_rows() -> None:
@@ -135,7 +135,13 @@ async def test_recovery_sweep_dispatches_once_per_row() -> None:
 
     dispatched: list[uuid.UUID] = []
 
-    async def dispatch_fn(*, row_id: uuid.UUID, route_envelope: dict) -> None:
+    async def dispatch_fn(
+        *,
+        row_id: uuid.UUID,
+        route_envelope: dict,
+        processing_claim_id: uuid.UUID,
+        recovery_from_processing: bool,
+    ) -> None:
         dispatched.append(row_id)
 
     recovered = await route_inbox_recovery_sweep(pool, dispatch_fn=dispatch_fn, grace_s=0)
@@ -169,7 +175,13 @@ async def test_recovery_sweep_counts_only_successful_dispatches() -> None:
 
     call_count = 0
 
-    async def dispatch_fn_one_fail(*, row_id: uuid.UUID, route_envelope: dict) -> None:
+    async def dispatch_fn_one_fail(
+        *,
+        row_id: uuid.UUID,
+        route_envelope: dict,
+        processing_claim_id: uuid.UUID,
+        recovery_from_processing: bool,
+    ) -> None:
         nonlocal call_count
         call_count += 1
         if call_count == 2:
@@ -198,14 +210,26 @@ async def test_recovered_row_reaches_terminal_state() -> None:
     session_id = uuid.uuid4()
 
     conn.fetch = AsyncMock(return_value=[_stub_row(row_id)])
-    conn.execute = AsyncMock(return_value=None)
+    claim_id = uuid.uuid4()
+    conn.fetchval = AsyncMock(side_effect=[claim_id, row_id])
 
     terminal_reached = False
 
-    async def dispatch_fn(*, row_id: uuid.UUID, route_envelope: dict) -> None:
+    async def dispatch_fn(
+        *,
+        row_id: uuid.UUID,
+        route_envelope: dict,
+        processing_claim_id: uuid.UUID,
+        recovery_from_processing: bool,
+    ) -> None:
         nonlocal terminal_reached
         # Successful dispatch: mark the row as processed (terminal state).
-        await route_inbox_mark_processed(pool, row_id, session_id)
+        await route_inbox_mark_processed(
+            pool,
+            row_id,
+            session_id,
+            processing_claim_id=processing_claim_id,
+        )
         terminal_reached = True
 
     recovered = await route_inbox_recovery_sweep(pool, dispatch_fn=dispatch_fn, grace_s=0)
@@ -214,9 +238,9 @@ async def test_recovered_row_reaches_terminal_state() -> None:
     assert terminal_reached, "dispatch_fn must have been called and reached terminal logic"
 
     # mark_processed must have written the terminal state to the DB.
-    assert conn.execute.called, "mark_processed must issue a DB write"
+    assert conn.fetchval.called, "mark_processed must issue a DB write"
     # First positional argument to UPDATE must be STATE_PROCESSED.
-    assert conn.execute.call_args.args[1] == STATE_PROCESSED, (
+    assert conn.fetchval.call_args.args[1] == STATE_PROCESSED, (
         f"DB write must set lifecycle_state to {STATE_PROCESSED!r}, "
-        f"got {conn.execute.call_args.args[1]!r}"
+        f"got {conn.fetchval.call_args.args[1]!r}"
     )

@@ -44,6 +44,7 @@ async def park_pending_action(
     reversibility: str | None = None,
     origin_butler: str | None,
     approval_push_runtime: ApprovalPushRuntime | None,
+    deduplication_key: str | None = None,
 ) -> ApprovalPushOutcome | None:
     """Insert one ``status='pending'`` row and push it to the owner.
 
@@ -58,24 +59,49 @@ async def park_pending_action(
     enabled approval pushes). ``None`` means "no push was attempted", not
     "the push succeeded" -- callers that need to distinguish should inspect
     the returned outcome directly.
+
+    ``deduplication_key`` opts a producer into the durable active-action
+    uniqueness constraint. It is nullable so existing writers retain their
+    stored shape until they have a stable semantic key.
     """
-    await pool.execute(
-        "INSERT INTO pending_actions "
-        "(id, tool_name, tool_args, agent_summary, session_id, status, "
-        "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
-        "VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11)",
-        action_id,
-        tool_name,
-        tool_args,
-        agent_summary,
-        session_id,
-        requested_at,
-        expires_at,
-        why,
-        list(evidence) if evidence is not None else [],
-        blast_radius,
-        reversibility,
-    )
+    if deduplication_key is None:
+        await pool.execute(
+            "INSERT INTO pending_actions "
+            "(id, tool_name, tool_args, agent_summary, session_id, status, "
+            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
+            "VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11)",
+            action_id,
+            tool_name,
+            tool_args,
+            agent_summary,
+            session_id,
+            requested_at,
+            expires_at,
+            why,
+            list(evidence) if evidence is not None else [],
+            blast_radius,
+            reversibility,
+        )
+    else:
+        await pool.execute(
+            "INSERT INTO pending_actions "
+            "(id, tool_name, tool_args, agent_summary, session_id, status, "
+            "requested_at, expires_at, why, evidence, blast_radius, reversibility, "
+            "deduplication_key) "
+            "VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $12)",
+            action_id,
+            tool_name,
+            tool_args,
+            agent_summary,
+            session_id,
+            requested_at,
+            expires_at,
+            why,
+            list(evidence) if evidence is not None else [],
+            blast_radius,
+            reversibility,
+            deduplication_key,
+        )
 
     if approval_push_runtime is None or not origin_butler:
         return None

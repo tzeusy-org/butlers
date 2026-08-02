@@ -60,6 +60,8 @@ import {
 } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import {
+  isCompleteApprovalMetricsResponse,
+  pendingApprovalMetricSourcesDegraded,
   useApprovalMetrics,
   usePendingApprovalsFlat,
 } from "@/hooks/use-approvals";
@@ -80,6 +82,7 @@ import CostWidget from "@/components/costs/CostWidget";
 import TopSessionsTable from "@/components/costs/TopSessionsTable";
 
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import {
   AttentionList,
   type AttentionListItem,
@@ -184,7 +187,18 @@ export default function DashboardPage() {
   // churn on an unrelated DashboardPage render.
   const boardData = boardQuery.data?.data;
   const issuesData = issuesQuery.data?.data;
-  const approvalMetrics = approvalMetricsQuery.data?.data;
+  const approvalMetricsResponseComplete = isCompleteApprovalMetricsResponse(
+    approvalMetricsQuery.data,
+  );
+  const approvalMetricsMalformed =
+    approvalMetricsQuery.data !== undefined && !approvalMetricsResponseComplete;
+  const approvalMetricsUnavailable = approvalMetricsQuery.isError || approvalMetricsMalformed;
+  const approvalMetrics = approvalMetricsResponseComplete
+    ? approvalMetricsQuery.data?.data
+    : undefined;
+  const pendingApprovalMetricSources = pendingApprovalMetricSourcesDegraded(
+    approvalMetricsResponseComplete ? approvalMetricsQuery.data : undefined,
+  );
   const approvals = pendingApprovalsQuery.data?.data;
   const notificationStats = notificationStatsQuery.data?.data;
   const qaSummary = qaSummaryQuery.data?.data;
@@ -205,9 +219,10 @@ export default function DashboardPage() {
           butlersError: boardQuery.isError,
           issues: issuesQuery.isError ? [] : (issuesData ?? []),
           issuesError: issuesQuery.isError,
-          approvalMetrics: approvalMetricsQuery.isError
-            ? null
-            : approvalMetrics,
+          approvalMetrics: approvalMetricsUnavailable ? null : approvalMetrics,
+          approvalMetricsUnavailable,
+          approvalMetricsPendingActionsSourcesDegraded:
+            pendingApprovalMetricSources,
           approvals: pendingApprovalsQuery.isError ? null : approvals,
           notificationStats: notificationStatsQuery.isError
             ? null
@@ -234,7 +249,7 @@ export default function DashboardPage() {
     [
       approvals,
       approvalMetrics,
-      approvalMetricsQuery.isError,
+      approvalMetricsUnavailable,
       boardData,
       boardQuery.isError,
       fleetHalt.active,
@@ -251,6 +266,7 @@ export default function DashboardPage() {
       notificationUntil,
       overviewNowMs,
       pendingApprovalsQuery.isError,
+      pendingApprovalMetricSources,
       qaSummary,
       qaSummaryQuery.isError,
       stuckDelegations.isError,
@@ -500,11 +516,30 @@ export default function DashboardPage() {
             isLoading={boardQuery.isLoading}
             isError={model.butlersError}
             pendingApprovalsAvailable={
-              !approvalMetricsQuery.isError && approvalMetricsQuery.data != null
+              !approvalMetricsUnavailable &&
+              approvalMetricsResponseComplete &&
+              pendingApprovalMetricSources.length === 0
             }
+            sessionsAvailable={boardData?.aggregates?.sessions_source_error !== true}
             sessionsSince={sessionsSince}
             sessionsUntil={sessionsUntil}
           />
+          {approvalMetricsUnavailable ? (
+            <SourceDegradedNote
+              label="Pending approvals"
+              onRetry={() => void approvalMetricsQuery.refetch()}
+              testId="dashboard-pending-approvals-degraded"
+              className="mt-3"
+            />
+          ) : pendingApprovalMetricSources.length > 0 ? (
+            <SourceDegradedNote
+              label="Pending approvals"
+              detail={`${pendingApprovalMetricSources.join(", ")} unavailable. Count may be incomplete.`}
+              onRetry={() => void approvalMetricsQuery.refetch()}
+              testId="dashboard-pending-approvals-degraded"
+              className="mt-3"
+            />
+          ) : null}
         </div>
 
         {/* Right column: index */}

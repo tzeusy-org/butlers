@@ -35,6 +35,28 @@ from butlers.daemon import ButlerDaemon
 pytestmark = pytest.mark.unit
 
 
+@contextmanager
+def _registered_approval_hooks(pool: Any):
+    """Install the real approvals runtime for exactly one test pool."""
+    import butlers.core.approvals_hooks as approval_hooks
+    from butlers.modules.approvals.email_guard import (
+        check_email_recipient,
+        check_recipient,
+    )
+    from butlers.modules.approvals.park import park_pending_action
+
+    runtime = approval_hooks.register_approval_hooks(
+        pool,
+        email_guard=check_email_recipient,
+        recipient_guard=check_recipient,
+        park_pending_action=park_pending_action,
+    )
+    try:
+        yield
+    finally:
+        approval_hooks.unregister_approval_hooks(pool, runtime)
+
+
 @pytest.fixture
 def butler_dir(tmp_path: Path) -> Path:
     """Create a minimal butler directory for testing."""
@@ -401,9 +423,6 @@ class TestQuietHoursLedgerRecording:
         self, butler_dir: Path
     ) -> None:
         """An explicit owner recipient must deliver despite an active owner quiet window."""
-        import butlers.core.approvals_hooks as approval_hooks
-        from butlers.modules.approvals.email_guard import check_recipient
-
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -411,7 +430,7 @@ class TestQuietHoursLedgerRecording:
         owner_resolver = AsyncMock(return_value=MagicMock(roles=["owner"]))
 
         with (
-            patch.object(approval_hooks, "_recipient_guard_hook", new=check_recipient),
+            _registered_approval_hooks(mock_pool),
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=owner_resolver,
@@ -436,9 +455,6 @@ class TestQuietHoursLedgerRecording:
         self, butler_dir: Path
     ) -> None:
         """An explicit entity target must not be treated as an implicit owner default."""
-        import butlers.core.approvals_hooks as approval_hooks
-        from butlers.modules.approvals.email_guard import check_recipient
-
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -448,7 +464,7 @@ class TestQuietHoursLedgerRecording:
         owner_resolver = AsyncMock(return_value=MagicMock(roles=["owner"]))
 
         with (
-            patch.object(approval_hooks, "_recipient_guard_hook", new=check_recipient),
+            _registered_approval_hooks(mock_pool),
             patch.object(
                 daemon,
                 "_resolve_entity_channel_identifier",
@@ -512,9 +528,6 @@ class TestQuietHoursLedgerRecording:
         self, butler_dir: Path
     ) -> None:
         """A dossier error wins before quiet-hours or any approval side effect."""
-        import butlers.core.approvals_hooks as approval_hooks
-        from butlers.modules.approvals.email_guard import check_recipient
-
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -522,7 +535,7 @@ class TestQuietHoursLedgerRecording:
         match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
 
         with (
-            patch.object(approval_hooks, "_recipient_guard_hook", new=check_recipient),
+            _registered_approval_hooks(mock_pool),
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=AsyncMock(return_value=MagicMock(roles=["contact"])),

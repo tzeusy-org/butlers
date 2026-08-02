@@ -1,13 +1,13 @@
 """Real-Postgres regression: infra-state QA discovery views (bu-9r3hd.4).
 
-Exercises migration ``sw_024`` (``public.v_qa_connector_state`` /
+Exercises migrations ``sw_024`` / ``sw_028`` (``public.v_qa_connector_state`` /
 ``public.v_qa_butler_heartbeat``) against a fully migrated Postgres instance
 (testcontainers), not just the mocked-pool unit tests in
 ``tests/core/qa/test_infra_state.py``:
 
 - Both views exist and are queryable.
-- ``v_qa_connector_state`` surfaces a live ``connector_registry`` row and
-  excludes a soft-deleted / archived one.
+- ``v_qa_connector_state`` surfaces live and registered ``connector_registry``
+  rows while excluding soft-deleted, archived, and storage-only checkpoint rows.
 - ``v_qa_butler_heartbeat`` surfaces a ``butler_registry`` row with its
   ``liveness_ttl_seconds`` / ``quarantined_at`` columns intact.
 - Downgrade cleanly drops both views.
@@ -63,7 +63,7 @@ async def test_both_views_exist_and_are_queryable(pool: asyncpg.Pool) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_connector_view_surfaces_live_row_and_excludes_archived(
+async def test_connector_view_surfaces_live_row_and_excludes_non_liveness_rows(
     pool: asyncpg.Pool,
 ) -> None:
     now = datetime.now(UTC)
@@ -93,10 +93,62 @@ async def test_connector_view_surfaces_live_row_and_excludes_archived(
         now - timedelta(days=100),
         now - timedelta(days=40),
     )
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_registry
+            (connector_type, endpoint_identity, state, last_heartbeat_at,
+             first_seen_at, deleted_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        "owntracks",
+        "owner",
+        "error",
+        now - timedelta(days=90),
+        now - timedelta(days=100),
+        now - timedelta(days=40),
+    )
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_registry
+            (connector_type, endpoint_identity, checkpoint_cursor,
+             checkpoint_updated_at, first_seen_at)
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        "google_health",
+        "google_health:user:owner@example.com:account-id:hrv",
+        "cursor-value",
+        now - timedelta(minutes=5),
+        now - timedelta(days=5),
+    )
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_registry
+            (connector_type, endpoint_identity, instance_id, checkpoint_cursor,
+             checkpoint_updated_at, first_seen_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        "telegram_bot",
+        "owner",
+        "11111111-1111-1111-1111-111111111111",
+        "cursor-value",
+        now - timedelta(minutes=5),
+        now - timedelta(minutes=5),
+    )
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_registry
+            (connector_type, endpoint_identity, registered_via, first_seen_at)
+        VALUES ($1, $2, $3, $4)
+        """,
+        "webhook",
+        "owner",
+        "operator",
+        now - timedelta(minutes=5),
+    )
 
     rows = await pool.fetch("SELECT * FROM public.v_qa_connector_state ORDER BY connector_type")
 
-    assert [r["connector_type"] for r in rows] == ["gmail"]
+    assert [r["connector_type"] for r in rows] == ["gmail", "telegram_bot", "webhook"]
     row = rows[0]
     assert row["endpoint_identity"] == "owner@example.com"
     assert row["state"] == "error"

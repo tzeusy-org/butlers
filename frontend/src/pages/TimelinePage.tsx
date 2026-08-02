@@ -31,6 +31,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { LiveStatusBadge } from "@/components/ui/live-status-badge";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { DispatchLayout, DispatchHeader, DispatchSurface } from "@/components/ingestion/dispatch";
 import { NewEventsPill } from "@/components/timeline/NewEventsPill";
 import { TimelineLedger } from "@/components/timeline/TimelineLedger";
@@ -100,7 +101,11 @@ export default function TimelinePage() {
   const activeViewId = searchParams.get("view") ?? "all";
   const includeInternal = searchParams.get("internal") === "1";
 
-  const { data: butlersResponse } = useButlers();
+  const {
+    data: butlersResponse,
+    isError: isButlerFacetsError,
+    refetch: refetchButlerFacets,
+  } = useButlers();
   const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
 
   const filters = useMemo(
@@ -120,18 +125,25 @@ export default function TimelinePage() {
     refetch,
     hasMore,
     loadMore,
+    loadMoreError,
+    retryLoadMore,
     isLoadingMore,
     pinned,
     newCount,
     showNewEvents,
     degradedSources,
+    degradedButlers,
     heartbeatRollup,
     isLiveFeedDown,
   } = useTimelineLedger(filters);
 
   // Saved views — shared /api/timeline/saved-views backend (bu-vgj88),
   // already generic (consumed by the ingestion ledger before this page).
-  const { data: customViewsResp } = useTimelineSavedViews();
+  const {
+    data: customViewsResp,
+    isError: isSavedViewsError,
+    refetch: refetchSavedViews,
+  } = useTimelineSavedViews();
   const customViews = customViewsResp?.data ?? [];
   const createSavedView = useCreateTimelineSavedView();
   const deleteSavedView = useDeleteTimelineSavedView();
@@ -230,7 +242,16 @@ export default function TimelinePage() {
   // same freshness convention as the ingestion ledger's LiveStatusBadge.
   const latestReceivedAt = isLoading ? undefined : (events[0]?.timestamp ?? null);
 
-  const hasDegradedSource = degradedSources.length > 0;
+  const hasDegradedSource = degradedSources.length > 0 || degradedButlers.length > 0;
+  const degradedSourceDetail = [
+    degradedSources.length > 0
+      ? `Partial data: ${degradedSources.join(", ")} temporarily unavailable.`
+      : null,
+    degradedButlers.length > 0 ? `Session data from ${degradedButlers.join(", ")} is unavailable.` : null,
+    "This page may be missing some events from that source.",
+  ]
+    .filter(Boolean)
+    .join(" ");
   const isLiveHeadRefreshing = pinned && isFetching && !isLoading && !isError;
 
   // Hot-loop keyboard coverage (bu-ep4ks.12): this was the densest telemetry
@@ -295,13 +316,12 @@ export default function TimelinePage() {
         )}
 
         {hasDegradedSource && (
-          <p
-            className="font-mono text-[11px] text-[var(--amber-text)] border border-[var(--amber)]/30 bg-[var(--amber)]/5 rounded px-3 py-1.5"
-            data-testid="timeline-degraded-banner"
-          >
-            Partial data: {degradedSources.join(", ")} temporarily unavailable. This page may be
-            missing some events from that source.
-          </p>
+          <SourceDegradedNote
+            label="Timeline"
+            detail={degradedSourceDetail}
+            testId="timeline-degraded-banner"
+            className="font-mono text-[11px]"
+          />
         )}
 
         {heartbeatRollup.ticks > 0 && (
@@ -356,6 +376,25 @@ export default function TimelinePage() {
             <Button variant="ghost" size="sm" className="h-6 px-2" onClick={() => setSaveDialogOpen(true)}>
               + Save view
             </Button>
+            {isSavedViewsError && (
+              <div
+                className="flex items-center gap-2 text-xs text-[var(--amber-text)]"
+                data-testid="timeline-saved-views-unavailable"
+              >
+                <span role="status" aria-live="polite">
+                  Saved views are temporarily unavailable.
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => void refetchSavedViews()}
+                  aria-label="Retry saved views"
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* Source facets */}
@@ -383,9 +422,6 @@ export default function TimelinePage() {
           <div>
             <p className="text-xs font-medium text-muted-foreground mb-1.5">Butler</p>
             <div className="flex flex-wrap gap-1.5">
-              {butlerNames.length === 0 && (
-                <span className="text-xs text-muted-foreground italic">No butlers available</span>
-              )}
               {butlerNames.map((name) => (
                 <button key={name} type="button" onClick={() => toggleButler(name)}>
                   <Badge
@@ -399,6 +435,27 @@ export default function TimelinePage() {
                   </Badge>
                 </button>
               ))}
+              {isButlerFacetsError ? (
+                <div
+                  className="flex items-center gap-2 text-xs text-[var(--amber-text)]"
+                  data-testid="timeline-butler-facets-unavailable"
+                >
+                  <span role="status" aria-live="polite">
+                    Butler filters are temporarily unavailable.
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={() => void refetchButlerFacets()}
+                    aria-label="Retry butler filters"
+                  >
+                    Retry
+                  </Button>
+                </div>
+              ) : butlerNames.length === 0 ? (
+                <span className="text-xs text-muted-foreground italic">No butlers available</span>
+              ) : null}
             </div>
           </div>
 
@@ -429,8 +486,11 @@ export default function TimelinePage() {
             includeInternal={includeInternal}
             isError={isError}
             onRetry={refetch}
+            hasPartialData={hasDegradedSource}
             hasMore={hasMore}
             onLoadMore={loadMore}
+            loadMoreError={loadMoreError}
+            onRetryLoadMore={retryLoadMore}
             isLoadingMore={isLoadingMore}
           />
         </FetchingDim>

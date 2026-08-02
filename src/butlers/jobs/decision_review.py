@@ -376,12 +376,24 @@ def compute_decision_digest(
         if not path.is_file():
             return DecisionDigest(checked_at, False, "export_missing", (), (), None)
         mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except Exception as exc:  # noqa: BLE001 - degraded-mode contract: never raise
+        logger.warning("decision_review: failed to stat beads export: %s", exc, exc_info=True)
+        return DecisionDigest(checked_at, False, f"export_read_error:{exc}", (), (), None)
+
+    try:
         if checked_at - mtime > _STALE_EXPORT_AGE:
             return DecisionDigest(checked_at, False, "export_stale", (), (), mtime)
+    except Exception as exc:  # noqa: BLE001 - degraded-mode contract: never raise
+        logger.warning(
+            "decision_review: failed to assess beads export freshness: %s", exc, exc_info=True
+        )
+        return DecisionDigest(checked_at, False, f"export_read_error:{exc}", (), (), mtime)
+
+    try:
         issues = _load_issues(path)
     except Exception as exc:  # noqa: BLE001 - degraded-mode contract: never raise
         logger.warning("decision_review: failed to read beads export: %s", exc, exc_info=True)
-        return DecisionDigest(checked_at, False, f"export_read_error:{exc}", (), (), None)
+        return DecisionDigest(checked_at, False, f"export_read_error:{exc}", (), (), mtime)
 
     decisions: dict[str, DecisionBead] = {}
     for issue_id, issue in issues.items():

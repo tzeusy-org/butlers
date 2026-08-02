@@ -86,6 +86,61 @@ confidence. Weaker matches are proposed, never auto-applied.
 - **WHEN** a non-owner fact is contradicted by a newer fact of equal-or-higher confidence on the same `(entity, predicate, scope)`
 - **THEN** the stale fact MAY be auto-retracted and reported in the digest
 
+### Requirement: Entity dedup approval lifecycle
+
+The entity-dedup curation job SHALL preserve the approval lifecycle for each
+exact ordered `(source_entity_id, target_entity_id)` pair. It MUST never merge
+or retry a pair itself. Before proposing a new `memory_entity_merge` action,
+it MUST recognize both the canonical and legacy `entity_merge` tool names with
+status `pending`, `approved`, `rejected`, or `abandoned` for that same ordered pair. It MUST
+choose the canonical target deterministically by `(created_at, id) ASC` and
+park every new pair with the stable
+`relationship:entity-dedup:<source>:<target>` `deduplication_key`, so database
+uniqueness protects concurrent curation runs as well as sequential scans.
+Approval retention MUST retain rejected and abandoned ordered entity-merge
+decisions, including rollout-era null-key rows, so their decision does not
+expire into a new card.
+
+#### Scenario: Rejected pair is not proposed again
+
+- **WHEN** a matching ordered pair has a rejected entity-merge approval
+- **THEN** the curation job MUST not create another approval or owner insight
+- **AND** it MUST retain the rejected action as audit evidence
+
+#### Scenario: Approved but unexecuted pair stays one retry target
+
+- **WHEN** a matching ordered pair has an approved entity-merge approval whose
+  execution has not settled
+- **THEN** the curation job MUST not create a duplicate approval
+- **AND** it MUST not execute or retry the existing action; an operator retry
+  remains the only execution path
+
+#### Scenario: Abandoned pair is not proposed again
+
+- **WHEN** a matching ordered pair has an abandoned entity-merge approval
+- **THEN** the curation job MUST not create another approval or owner insight
+- **AND** it MUST retain the abandoned action as the owner's decision not to
+  recover that unexecuted merge
+
+#### Scenario: Expired pair may be reviewed again
+
+- **WHEN** a matching ordered pair has only expired entity-merge actions
+- **THEN** the curation job MAY surface a new approval because expiry is not an
+  owner decision
+
+#### Scenario: Concurrent scans surface one merge approval
+
+- **WHEN** two curation runs discover the same ordered entity pair at once
+- **THEN** the stable `deduplication_key` MUST permit only one active or
+  owner-decided action and only its successful insert may surface an owner
+  insight or push notification
+
+#### Scenario: Equal creation times choose a stable merge direction
+
+- **WHEN** duplicate entities have the same `created_at` timestamp
+- **THEN** the lower UUID in `(created_at, id) ASC` order MUST remain the
+  target consistently across scans
+
 ### Requirement: Auto-applied changes are reversible
 
 Auto-applied merges and retractions SHALL be reversible. Retractions MUST set

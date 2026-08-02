@@ -241,6 +241,8 @@ function MessageBubble({
 export interface StreamingState {
   /** Conversation ID that is currently streaming. */
   conversationId: string;
+  /** Immutable dashboard user-message ID for this exact cancellable turn. */
+  messageId: string;
   /** Content accumulated so far from SSE token events. */
   content: string;
   /** True while awaiting the first token (typing indicator phase). */
@@ -249,6 +251,8 @@ export interface StreamingState {
   interrupted: boolean;
   /** True while a POST .../cancel call for this stream is in flight. */
   cancelling?: boolean;
+  /** True after the create/send response proves the durable turn exists. */
+  stopReady?: boolean;
   /** True once the server confirmed the in-flight session was killed. */
   cancelled?: boolean;
   /** Set when a cancel attempt failed — surfaced honestly, never dropped. */
@@ -300,7 +304,7 @@ export function MessageThread({
     if (!userScrolledUp) {
       bottomRef.current?.scrollIntoView();
     }
-  }, [messages.length, streaming?.content, streaming?.dispatchReceipt?.routedButler, userScrolledUp]);
+  }, [messages.length, streaming?.cancelError, streaming?.cancelled, streaming?.content, streaming?.pending, userScrolledUp]);
 
   const isStreamingThisConversation =
     streaming !== null &&

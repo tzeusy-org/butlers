@@ -104,6 +104,58 @@ def test_finance_bu_rvz2o_schedules_have_registered_handlers(
     assert callable(_DETERMINISTIC_SCHEDULE_JOB_REGISTRY["finance"].get(job_name))
 
 
+def test_finance_simplefin_schedule_has_registered_handler() -> None:
+    """Finance's SimpleFIN bridge schedule resolves to its deterministic handler."""
+    import tomllib
+
+    from butlers.scheduled_jobs import (
+        _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
+        _resolve_deterministic_schedule_job_name,
+    )
+
+    toml_path = Path(__file__).resolve().parents[2] / "roster" / "finance" / "butler.toml"
+    with toml_path.open("rb") as fh:
+        config = tomllib.load(fh)
+
+    schedules = config.get("butler", {}).get("schedule", [])
+    simplefin = next(entry for entry in schedules if entry["name"] == "simplefin-sync")
+    job_name = simplefin["job_name"]
+
+    resolved = _resolve_deterministic_schedule_job_name(
+        butler_name="finance",
+        trigger_source="schedule:simplefin-sync",
+        job_name=job_name,
+    )
+
+    assert resolved == "simplefin_sync"
+    assert callable(_DETERMINISTIC_SCHEDULE_JOB_REGISTRY["finance"].get(job_name))
+
+
+@pytest.mark.asyncio
+async def test_finance_simplefin_handler_dispatches_roster_job(monkeypatch) -> None:
+    """The registry wrapper delegates directly to the Finance bridge entrypoint."""
+    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+    calls: dict[str, Any] = {}
+
+    async def run_simplefin_sync(pool: Any) -> dict[str, Any]:
+        calls["pool"] = pool
+        return {"status": "not_configured", "reason": "access_url_missing"}
+
+    monkeypatch.setattr(
+        "butlers.jobs._roster_loader.load_roster_jobs",
+        lambda name: SimpleNamespace(run_simplefin_sync=run_simplefin_sync),
+    )
+
+    pool = object()
+    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["finance"]["simplefin_sync"]
+
+    result = await handler(pool, {"ignored": True})
+
+    assert calls == {"pool": pool}
+    assert result == {"status": "not_configured", "reason": "access_url_missing"}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("job_name", "roster_attr"),

@@ -92,6 +92,7 @@ class TestPendingActionModel:
             ActionStatus.REJECTED,
             ActionStatus.EXPIRED,
             ActionStatus.EXECUTED,
+            ActionStatus.ABANDONED,
         }
         assert ActionStatus.PENDING.value == "pending"
 
@@ -279,7 +280,7 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with engine.connect() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
-        assert "approvals_011" in versions
+        assert "approvals_013" in versions
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
@@ -303,6 +304,32 @@ class TestApprovalsMigration:
                 ),
                 {"a": str(action_id), "e": "action_queued", "ac": "system:test", "re": "queued"},
             )
+            abandoned_action_id = uuid.uuid4()
+            conn.execute(
+                text(
+                    "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
+                    " VALUES (:id, :tn, :ta, :s, :r)"
+                ),
+                {
+                    "id": str(abandoned_action_id),
+                    "tn": "email_send",
+                    "ta": "{}",
+                    "s": "abandoned",
+                    "r": datetime.now(UTC),
+                },
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO approval_events (action_id, event_type, actor, reason)"
+                    " VALUES (:a, :e, :ac, :re)"
+                ),
+                {
+                    "a": str(abandoned_action_id),
+                    "e": "action_abandoned",
+                    "ac": "user:dashboard:rest-api",
+                    "re": "No longer needed",
+                },
+            )
             conn.commit()
 
         with pytest.raises(exc.DBAPIError):
@@ -318,6 +345,97 @@ class TestApprovalsMigration:
                     text("DELETE FROM approval_events WHERE action_id=:a"), {"a": str(action_id)}
                 )
                 conn.commit()
+        engine.dispose()
+
+    def test_deduplication_migration_converges_former_012_schema(self, postgres_container):
+        """A pre-merge semantic-key 012 reaches the current abandonment contract."""
+        from sqlalchemy import create_engine, exc, text
+
+        from alembic import command
+        from butlers.migrations import _build_alembic_config
+
+        db_name = _unique_db_name()
+        db_url = _create_db(postgres_container, db_name)
+        config = _build_alembic_config(db_url, chains=["approvals"])
+        command.upgrade(config, "approvals@approvals_011")
+
+        action_id = uuid.uuid4()
+        deduplication_key = "relationship:entity-dedup:legacy-source:legacy-target"
+        engine = create_engine(db_url)
+        with engine.begin() as conn:
+            # Simulate the former branch-only approvals_012 migration, whose
+            # revision id collided with the later abandonment migration.
+            conn.execute(text("ALTER TABLE pending_actions ADD COLUMN deduplication_key TEXT"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX ux_pending_actions_active_deduplication_key "
+                    "ON pending_actions (deduplication_key) "
+                    "WHERE deduplication_key IS NOT NULL "
+                    "AND status IN ('pending', 'approved', 'rejected')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO pending_actions "
+                    "(id, tool_name, tool_args, status, requested_at, deduplication_key) "
+                    "VALUES (:id, :tool_name, CAST(:tool_args AS jsonb), :status, :requested_at, "
+                    ":deduplication_key)"
+                ),
+                {
+                    "id": str(action_id),
+                    "tool_name": "memory_entity_merge",
+                    "tool_args": "{}",
+                    "status": "pending",
+                    "requested_at": datetime.now(UTC),
+                    "deduplication_key": deduplication_key,
+                },
+            )
+            conn.execute(text("UPDATE alembic_version SET version_num = 'approvals_012'"))
+
+        command.upgrade(config, "approvals@head")
+
+        with engine.begin() as conn:
+            versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
+            index_sql = conn.execute(
+                text(
+                    "SELECT indexdef FROM pg_indexes "
+                    "WHERE schemaname = 'public' "
+                    "AND indexname = 'ux_pending_actions_active_deduplication_key'"
+                )
+            ).scalar_one()
+            conn.execute(
+                text("UPDATE pending_actions SET status = 'abandoned' WHERE id = :id"),
+                {"id": str(action_id)},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO approval_events (action_id, event_type, actor, reason) "
+                    "VALUES (:action_id, 'action_abandoned', 'user:dashboard:rest-api', 'no retry')"
+                ),
+                {"action_id": str(action_id)},
+            )
+
+        assert versions == ["approvals_013"]
+        assert "abandoned" in index_sql
+
+        with pytest.raises(exc.IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO pending_actions "
+                        "(id, tool_name, tool_args, status, requested_at, deduplication_key) "
+                        "VALUES (:id, :tool_name, CAST(:tool_args AS jsonb), :status, "
+                        ":requested_at, :deduplication_key)"
+                    ),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "tool_name": "memory_entity_merge",
+                        "tool_args": "{}",
+                        "status": "pending",
+                        "requested_at": datetime.now(UTC),
+                        "deduplication_key": deduplication_key,
+                    },
+                )
         engine.dispose()
 
     def test_migration_updates_existing_approvals_001_pending_actions(self, postgres_container):
@@ -384,7 +502,7 @@ class TestApprovalsMigration:
 
         assert row["why"] is None
         assert row["evidence"] == "[]"
-        assert "approvals_011" in versions
+        assert "approvals_013" in versions
 
     def test_decision_dossier_migration_converts_legacy_evidence_and_enforces_enums(
         self, postgres_container
@@ -464,7 +582,7 @@ class TestApprovalsMigration:
         ]
         assert row["blast_radius"] is None
         assert row["reversibility"] is None
-        assert "approvals_011" in versions
+        assert "approvals_013" in versions
 
         with pytest.raises(exc.IntegrityError):
             with engine.begin() as conn:

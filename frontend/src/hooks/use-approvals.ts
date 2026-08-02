@@ -12,6 +12,7 @@ import {
 } from "@/api/index.ts";
 import type {
   ApprovalActionParams,
+  ApprovalMetricsResponse,
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
@@ -19,6 +20,57 @@ import type {
   AutonomySuggestionParams,
 } from "@/api/index.ts";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
+
+const NO_DEGRADED_SOURCES: string[] = [];
+const APPROVAL_METRICS_SOURCE_FIELDS = [
+  "pending_actions_sources_degraded",
+  "approval_rules_sources_degraded",
+  "sources_degraded",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The metrics client is a compile-time cast around an HTTP payload. Only a
+ * complete pending-actions envelope may authorize a zero-derived all-clear.
+ */
+export function isCompleteApprovalMetricsResponse(response: unknown): boolean {
+  if (!isRecord(response)) return false;
+
+  const data = response.data;
+  const meta = response.meta;
+  if (!isRecord(data) || !isRecord(meta)) return false;
+
+  const totalPending = data.total_pending;
+  if (typeof totalPending !== "number" || !Number.isSafeInteger(totalPending) || totalPending < 0) {
+    return false;
+  }
+
+  return APPROVAL_METRICS_SOURCE_FIELDS.every((field) => {
+    const value = meta[field];
+    return value === undefined || (Array.isArray(value) && value.every((item) => typeof item === "string"));
+  });
+}
+
+/**
+ * Sources omitted from the pending-actions aggregate. A missing key means the
+ * aggregate is complete; callers must still distinguish an absent response
+ * (loading/error) from a truthful empty metric.
+ */
+export function pendingApprovalMetricSourcesDegraded(
+  response: ApprovalMetricsResponse | undefined,
+): string[] {
+  return response?.meta?.pending_actions_sources_degraded ?? NO_DEGRADED_SOURCES;
+}
+
+/** Sources omitted from the independent active-rules aggregate. */
+export function approvalRuleMetricSourcesDegraded(
+  response: ApprovalMetricsResponse | undefined,
+): string[] {
+  return response?.meta?.approval_rules_sources_degraded ?? NO_DEGRADED_SOURCES;
+}
 
 // Query keys
 export const approvalKeys = {
@@ -48,7 +100,13 @@ export function useApprovalMetrics() {
   const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: approvalKeys.metrics(),
-    queryFn: () => getApprovalMetrics(),
+    queryFn: async () => {
+      const response = await getApprovalMetrics();
+      if (!isCompleteApprovalMetricsResponse(response)) {
+        throw new Error("Approval metrics response is incomplete");
+      }
+      return response;
+    },
     refetchInterval,
     staleTime: 30_000,
   });

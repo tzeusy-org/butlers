@@ -55,7 +55,12 @@ resolution site after `route_to_butler` tool calls are parsed
 
 The system SHALL periodically scan `routing_verdict_log` grouped by
 `(sender_key, source_channel)` and propose a new ingestion rule when evidence
-of consistent LLM agreement crosses a configurable threshold.
+of consistent LLM agreement crosses a configurable threshold. `sender_key` is
+the stable policy identity: only `source_channel='email'` treats a complete
+email address as the observed sender, while every non-email channel records the
+source endpoint identity intact. The suggested condition MUST use
+`sender_address` only for that email-channel/full-address case and
+`source_endpoint` for every opaque connector key so it can cover future intake.
 
 A sender/channel pair becomes promotion-eligible when: no `enabled` (and not
 soft-deleted) `ingestion_rules` row already covers it, no `pending_review`
@@ -91,6 +96,23 @@ qualify.
 - **THEN** a `switchboard.rule_promotion_suggestions` row MUST be created with
   `status='pending_review'`, `proposed_rule_type='sender_address'`,
   `proposed_action='route_to:finance'`, and `evidence_count=3`
+
+#### Scenario: Opaque connector identity promotes to an endpoint rule
+
+- **WHEN** `spotify:acct-1` has qualifying non-email LLM verdict evidence
+  for `route_to:lifestyle`
+- **THEN** its suggestion MUST have `proposed_rule_type='source_endpoint'`
+  and `proposed_condition={"endpoint_identity":"spotify:acct-1"}`
+- **AND** after confirmation, the enabled rule MUST cover the same endpoint so
+  later trigger runs do not create another suggestion
+
+#### Scenario: Endpoint identity containing an at-sign remains opaque
+
+- **WHEN** `google_calendar:user:owner@example.com` has qualifying non-email
+  LLM verdict evidence
+- **THEN** its suggestion MUST use `proposed_rule_type='source_endpoint'` and
+  the full `endpoint_identity`, rather than treating `owner@example.com` as a
+  `sender_address`
 
 #### Scenario: Single-burst evidence does not trigger promotion
 
@@ -131,7 +153,8 @@ The `switchboard.rule_promotion_suggestions` table MUST exist with columns:
 `id` (UUID PK), `suggestion_kind` (TEXT, one of `promotion`, `demotion` —
 discriminates the kind of suggestion independent of its lifecycle `status`),
 `sender_key` (TEXT, nullable), `source_channel` (TEXT, nullable),
-`proposed_rule_type` (TEXT, nullable, `sender_address` or `sender_domain`),
+`proposed_rule_type` (TEXT, nullable, `sender_address`, `sender_domain`, or
+`source_endpoint`),
 `proposed_condition` (JSONB, nullable), `proposed_action` (TEXT, nullable),
 `evidence_count` (INTEGER), `first_evidence_at` / `last_evidence_at`
 (TIMESTAMPTZ), `is_clearly_automated` (BOOLEAN, default FALSE), `status`
@@ -256,9 +279,9 @@ explicit confirm call.
 
 Applying a suggestion (auto or owner-confirmed) MUST be atomic and idempotent:
 minting the rule and transitioning the suggestion to `confirmed` happen in one
-transaction under a row lock, so a double-apply (concurrent auto-apply + confirm
-click) mints exactly one rule and the second attempt fails on the already-decided
-status rather than double-writing.
+transaction under a sender/channel identity lock followed by a row lock, so a
+double-apply (concurrent auto-apply + confirm click) mints exactly one rule and
+the second attempt fails on the already-decided status rather than double-writing.
 
 #### Scenario: Confirming a suggestion creates the rule
 
@@ -269,6 +292,15 @@ status rather than double-writing.
   `condition`/`action` copied from `proposed_condition`/`proposed_action`
 - **AND** the suggestion MUST transition to `status='confirmed'` with
   `decided_at` and `decided_by` set
+
+#### Scenario: Confirmation racing a trigger does not recreate a card
+
+- **WHEN** a confirmation and a promotion-trigger scan overlap for the same
+  sender/channel identity
+- **THEN** they MUST serialize on that identity, and the trigger MUST reload
+  enabled rules from its locked connection before proposing or bumping
+- **AND** once confirmation creates a covering rule, the trigger MUST not
+  create another `pending_review` suggestion for that identity
 
 #### Scenario: Automated skip/metadata_only auto-applies
 
@@ -302,6 +334,21 @@ conventional value `'promotion'` for rules minted through this flow.
 - **WHEN** a rule is created via suggestion confirmation
 - **THEN** the created `ingestion_rules` row MUST have `created_by='promotion'`
   and `promoted_from_suggestion_id` set to the originating suggestion's id
+
+#### Scenario: Legacy opaque promotion remains audit-preserving and effective
+
+- **WHEN** a historic promotion-created `sender_address` rule has an opaque,
+  value that is not a complete email address (including an endpoint containing
+  an email-shaped suffix) and non-null suggestion provenance
+- **THEN** runtime evaluation MUST treat it as an exact source-endpoint match
+  without rewriting the stored rule type, condition, suggestion, or provenance
+- **AND** a manually authored `sender_address` rule with the same opaque value
+  MUST remain email-only and must not receive this compatibility behavior
+- **AND** when multiple same-priority legacy promotion rows target the same
+  endpoint, only the newest confirmation is effective; a later exact
+  `source_endpoint` rule for that endpoint also supersedes older legacy rows
+  at the same priority. Older rows remain audit evidence and cannot win through
+  their earlier creation time
 
 #### Scenario: Manually-created rules are unaffected
 

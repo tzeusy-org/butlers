@@ -10,24 +10,29 @@ Each job handler:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import asyncpg
+import httpx
 
 from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
 from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
+from butlers.credential_store import CredentialStore
 from butlers.tools.finance.alerts import detect_price_changes
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import budget_status
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
 from butlers.tools.finance.reconciliation import reconcile_bills
+from butlers.tools.finance.transactions import _record_transaction
 from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
 logger = logging.getLogger(__name__)
@@ -47,6 +52,473 @@ async def _finance_scoped_connection(db_pool: asyncpg.Pool):
     async with db_pool.acquire() as conn:
         await conn.execute("SET search_path TO finance, public")
         yield conn
+
+
+# ---------------------------------------------------------------------------
+# SimpleFIN Bridge v2
+# ---------------------------------------------------------------------------
+
+_SIMPLEFIN_ACCESS_URL_KEY = "SIMPLEFIN_ACCESS_URL"
+_SIMPLEFIN_ADVISORY_LOCK_NAME = "finance:simplefin-sync"
+_SIMPLEFIN_INITIAL_LOOKBACK = timedelta(days=90)
+_SIMPLEFIN_RETRY_OVERLAP = timedelta(days=5)
+_SIMPLEFIN_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_SIMPLEFIN_FINANCE_AMOUNT_QUANTUM = Decimal("0.01")
+_SIMPLEFIN_FINANCE_AMOUNT_MAX = Decimal("999999999999.99")
+
+
+def _simplefin_accounts_request(access_url: str) -> tuple[str, httpx.BasicAuth] | None:
+    """Build a userinfo-free v2 endpoint and separate decoded Basic credentials."""
+    try:
+        parsed = urlsplit(access_url.strip())
+        username = parsed.username
+        password = parsed.password
+        # Access URLs carry HTTP Basic credentials.  Refusing a bare public URL
+        # makes an accidental, non-credential endpoint fail closed before HTTP.
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.hostname
+            or not username
+            or not password
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        # Accessing ``port`` validates malformed port text without retaining it.
+        port = parsed.port
+    except ValueError:
+        return None
+
+    hostname = parsed.hostname
+    if hostname is None:  # Defensive: the validation above already rejects this.
+        return None
+    # ``urlsplit().hostname`` removes IPv6 brackets, so put them back only when
+    # reconstructing the authority without userinfo.
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    authority = f"{host}:{port}" if port is not None else host
+    path = parsed.path.rstrip("/")
+    endpoint_path = f"{path}/accounts" if path else "/accounts"
+    endpoint = urlunsplit(("https", authority, endpoint_path, "", ""))
+    return endpoint, httpx.BasicAuth(unquote(username), unquote(password))
+
+
+def _simplefin_metadata(value: Any) -> dict[str, Any] | None:
+    """Normalize a JSONB account metadata value without exposing its contents."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+async def _resolve_simplefin_binding(
+    conn: asyncpg.Connection,
+) -> tuple[dict[str, Any] | None, str]:
+    """Return exactly one existing local provider binding, otherwise a safe reason."""
+    rows = await conn.fetch(
+        """
+        SELECT id, metadata, last_synced_at
+        FROM accounts
+        WHERE metadata -> 'provider' ->> 'name' = 'simplefin'
+        """
+    )
+    if not rows:
+        return None, "account_binding_missing"
+    if len(rows) != 1:
+        return None, "account_binding_ambiguous"
+
+    row = rows[0]
+    metadata = _simplefin_metadata(row["metadata"])
+    provider = metadata.get("provider") if metadata is not None else None
+    if not isinstance(provider, dict):
+        return None, "account_binding_invalid"
+
+    conn_id = provider.get("conn_id")
+    remote_account_id = provider.get("account_id")
+    if (
+        not isinstance(conn_id, str)
+        or not conn_id
+        or not isinstance(remote_account_id, str)
+        or not remote_account_id
+    ):
+        return None, "account_binding_invalid"
+
+    return {
+        "local_account_id": str(row["id"]),
+        "conn_id": conn_id,
+        "account_id": remote_account_id,
+        "last_synced_at": row["last_synced_at"],
+    }, ""
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize scheduler/test timestamps without relying on machine local time."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _fits_finance_transaction_amount(amount: Decimal) -> bool:
+    """Mirror the Finance ``NUMERIC(14,2)`` range before ledger writes begin."""
+    try:
+        stored_amount = amount.quantize(
+            _SIMPLEFIN_FINANCE_AMOUNT_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+    except InvalidOperation:
+        return False
+    return -_SIMPLEFIN_FINANCE_AMOUNT_MAX <= stored_amount <= _SIMPLEFIN_FINANCE_AMOUNT_MAX
+
+
+def _is_valid_simplefin_server_url(value: object) -> bool:
+    """Return whether a protocol-advertised SimpleFIN root is a safe HTTPS URL."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme.lower() == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and (port is None or 0 < port <= 65535)
+    )
+
+
+def _parse_simplefin_account_set(
+    payload: Any,
+    binding: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None, int, str | None]:
+    """Validate a complete one-account v2 response before any ledger write."""
+    if not isinstance(payload, dict):
+        return None, None, 0, "invalid_response"
+
+    errlist = payload.get("errlist")
+    if not isinstance(errlist, list) or any(not isinstance(item, dict) for item in errlist):
+        return None, None, 0, "invalid_response"
+    if errlist:
+        return None, None, 0, "upstream_incomplete"
+
+    connections = payload.get("connections")
+    if not isinstance(connections, list) or any(not isinstance(item, dict) for item in connections):
+        return None, None, 0, "invalid_response"
+    for connection in connections:
+        if (
+            not isinstance(connection.get("conn_id"), str)
+            or not connection["conn_id"]
+            or not isinstance(connection.get("name"), str)
+            or not connection["name"].strip()
+            or not isinstance(connection.get("org_id"), str)
+            or not connection["org_id"]
+            or not _is_valid_simplefin_server_url(connection.get("sfin_url"))
+        ):
+            return None, None, 0, "invalid_response"
+
+    accounts = payload.get("accounts")
+    if not isinstance(accounts, list) or len(accounts) != 1 or not isinstance(accounts[0], dict):
+        return None, None, 0, "invalid_response"
+
+    remote_account = accounts[0]
+    conn_id = remote_account.get("conn_id")
+    remote_account_id = remote_account.get("id")
+    account_name = remote_account.get("name")
+    if (
+        not isinstance(conn_id, str)
+        or not conn_id
+        or not isinstance(remote_account_id, str)
+        or not remote_account_id
+        or not isinstance(account_name, str)
+        or not account_name.strip()
+    ):
+        return None, None, 0, "invalid_response"
+    if binding is not None and (
+        conn_id != binding["conn_id"] or remote_account_id != binding["account_id"]
+    ):
+        return None, None, 0, "invalid_response"
+
+    matching_connections = [item for item in connections if item.get("conn_id") == conn_id]
+    if len(matching_connections) != 1:
+        return None, None, 0, "invalid_response"
+    connection_name = matching_connections[0].get("name")
+    if not isinstance(connection_name, str) or not connection_name.strip():
+        return None, None, 0, "invalid_response"
+
+    currency = remote_account.get("currency")
+    if not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency):
+        return None, None, 0, "invalid_response"
+    raw_balance = remote_account.get("balance")
+    balance_date = remote_account.get("balance-date")
+    if (
+        not isinstance(raw_balance, str)
+        or not raw_balance
+        or isinstance(balance_date, bool)
+        or not isinstance(balance_date, (int, float))
+    ):
+        return None, None, 0, "invalid_response"
+    try:
+        balance = Decimal(raw_balance)
+        datetime.fromtimestamp(float(balance_date), tz=UTC)
+    except (InvalidOperation, OverflowError, OSError, ValueError):
+        return None, None, 0, "invalid_response"
+    if not balance.is_finite():
+        return None, None, 0, "invalid_response"
+
+    raw_transactions = remote_account.get("transactions", [])
+    if raw_transactions is None:
+        raw_transactions = []
+    if not isinstance(raw_transactions, list):
+        return None, None, 0, "invalid_response"
+
+    settled: list[dict[str, Any]] = []
+    skipped_pending = 0
+    for raw_transaction in raw_transactions:
+        if not isinstance(raw_transaction, dict):
+            return None, None, 0, "invalid_response"
+
+        # Pending and unposted rows deliberately stay out of the v1 ledger.
+        if raw_transaction.get("pending") is True or raw_transaction.get("posted") is None:
+            skipped_pending += 1
+            continue
+        if raw_transaction.get("pending", False) is not False:
+            return None, None, 0, "invalid_response"
+
+        external_id = raw_transaction.get("id")
+        merchant = raw_transaction.get("description")
+        posted = raw_transaction.get("posted")
+        raw_amount = raw_transaction.get("amount")
+        if (
+            not isinstance(external_id, str)
+            or not external_id
+            or not isinstance(merchant, str)
+            or not merchant.strip()
+            or isinstance(posted, bool)
+            or not isinstance(posted, (int, float))
+            or isinstance(raw_amount, bool)
+            or raw_amount is None
+        ):
+            return None, None, 0, "invalid_response"
+
+        try:
+            posted_at = datetime.fromtimestamp(float(posted), tz=UTC)
+            amount = Decimal(str(raw_amount))
+        except (InvalidOperation, OverflowError, OSError, ValueError):
+            return None, None, 0, "invalid_response"
+        if not amount.is_finite() or not _fits_finance_transaction_amount(amount):
+            return None, None, 0, "invalid_response"
+
+        settled.append(
+            {
+                "external_id": external_id,
+                "merchant": merchant.strip(),
+                "posted_at": posted_at,
+                "amount": amount,
+                "currency": currency,
+            }
+        )
+
+    return (
+        {
+            "conn_id": conn_id,
+            "account_id": remote_account_id,
+            "account_name": account_name.strip(),
+            "institution": connection_name.strip(),
+            "currency": currency,
+        },
+        settled,
+        skipped_pending,
+        None,
+    )
+
+
+async def _create_simplefin_account(
+    conn: asyncpg.Connection,
+    remote: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the one exact provider-bound Finance account after validation."""
+    metadata = {
+        "provider": {
+            "name": "simplefin",
+            "conn_id": remote["conn_id"],
+            "account_id": remote["account_id"],
+        }
+    }
+    row = await conn.fetchrow(
+        """
+        INSERT INTO accounts (institution, type, name, currency, metadata)
+        VALUES ($1, 'other', $2, $3, $4::jsonb)
+        RETURNING id, last_synced_at
+        """,
+        remote["institution"],
+        remote["account_name"],
+        remote["currency"],
+        metadata,
+    )
+    if row is None:
+        raise RuntimeError("SimpleFIN account creation returned no row")
+    return {
+        "local_account_id": str(row["id"]),
+        "conn_id": remote["conn_id"],
+        "account_id": remote["account_id"],
+        "last_synced_at": row["last_synced_at"],
+    }
+
+
+async def run_simplefin_sync(
+    db_pool: asyncpg.Pool,
+    *,
+    credential_store: Any | None = None,
+    http_client: httpx.AsyncClient | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Synchronize one SimpleFIN account through Finance's ledger seam.
+
+    A first fully validated one-account response creates the exact local
+    provider binding; subsequent responses must match it. This deterministic
+    job intentionally has no connector, LLM, notification, or Switchboard
+    dependency. It returns a small fixed status vocabulary so secret-bearing
+    URLs and upstream response details cannot escape operators.
+    """
+    resolver = credential_store or CredentialStore(db_pool)
+    try:
+        access_url = await resolver.resolve(_SIMPLEFIN_ACCESS_URL_KEY, env_fallback=False)
+    except asyncpg.PostgresError:
+        return {"status": "degraded", "reason": "credential_unavailable"}
+
+    if access_url is None or access_url == "":
+        return {"status": "not_configured", "reason": "access_url_missing"}
+    if not isinstance(access_url, str) or not (
+        accounts_request := _simplefin_accounts_request(access_url)
+    ):
+        return {"status": "not_configured", "reason": "access_url_invalid"}
+    accounts_url, accounts_auth = accounts_request
+
+    effective_now = _as_utc(now or datetime.now(UTC))
+    try:
+        async with db_pool.acquire() as lock_conn:
+            locked = await lock_conn.fetchval(
+                "SELECT pg_try_advisory_lock(hashtext($1))",
+                _SIMPLEFIN_ADVISORY_LOCK_NAME,
+            )
+            if not locked:
+                return {"status": "skipped", "reason": "already_running"}
+
+            try:
+                binding, binding_reason = await _resolve_simplefin_binding(lock_conn)
+                account_created = False
+                if binding is None and binding_reason != "account_binding_missing":
+                    return {"status": "not_configured", "reason": binding_reason}
+
+                last_synced_at = binding["last_synced_at"] if binding is not None else None
+                if last_synced_at is None:
+                    start_at = effective_now - _SIMPLEFIN_INITIAL_LOOKBACK
+                elif isinstance(last_synced_at, datetime):
+                    start_at = _as_utc(last_synced_at) - _SIMPLEFIN_RETRY_OVERLAP
+                else:
+                    return {"status": "degraded", "reason": "account_freshness_invalid"}
+
+                owns_client = http_client is None
+                client = http_client or httpx.AsyncClient(timeout=_SIMPLEFIN_TIMEOUT)
+                try:
+                    response = await client.get(
+                        accounts_url,
+                        auth=accounts_auth,
+                        params={
+                            "version": "2",
+                            "start-date": str(int(start_at.timestamp())),
+                            "end-date": str(int(effective_now.timestamp())),
+                        },
+                    )
+                except httpx.TimeoutException:
+                    return {"status": "degraded", "reason": "upstream_unavailable"}
+                except httpx.HTTPError:
+                    return {"status": "degraded", "reason": "upstream_unavailable"}
+                finally:
+                    if owns_client:
+                        await client.aclose()
+
+                if response.status_code == 403:
+                    return {"status": "degraded", "reason": "upstream_auth_failed"}
+                if not 200 <= response.status_code < 300:
+                    return {"status": "degraded", "reason": "upstream_unavailable"}
+
+                try:
+                    payload = response.json()
+                except ValueError:
+                    return {"status": "degraded", "reason": "invalid_response"}
+
+                remote, settled, skipped_pending, parse_reason = _parse_simplefin_account_set(
+                    payload,
+                    binding,
+                )
+                if remote is None or settled is None:
+                    return {"status": "degraded", "reason": parse_reason or "invalid_response"}
+
+                recorded = 0
+                provenance = {
+                    "provider": {
+                        "name": "simplefin",
+                        "conn_id": remote["conn_id"],
+                        "account_id": remote["account_id"],
+                    }
+                }
+                try:
+                    if binding is None:
+                        binding = await _create_simplefin_account(lock_conn, remote)
+                        account_created = True
+                    for transaction in settled:
+                        result = await _record_transaction(
+                            db_pool,
+                            posted_at=transaction["posted_at"],
+                            merchant=transaction["merchant"],
+                            amount=transaction["amount"],
+                            currency=transaction["currency"],
+                            category="uncategorized",
+                            account_id=binding["local_account_id"],
+                            metadata=provenance,
+                            external_id=transaction["external_id"],
+                            source="aggregator",
+                            connection=lock_conn,
+                            include_insert_status=True,
+                        )
+                        if result.get("_inserted") is True:
+                            recorded += 1
+                    await lock_conn.execute(
+                        "UPDATE accounts SET last_synced_at = $2 WHERE id = $1::uuid",
+                        binding["local_account_id"],
+                        effective_now,
+                    )
+                except (asyncpg.PostgresError, RuntimeError, ValueError, TypeError):
+                    return {"status": "degraded", "reason": "recording_failed"}
+
+                result = {
+                    "status": "ok",
+                    "recorded": recorded,
+                    "skipped_pending": skipped_pending,
+                }
+                if account_created:
+                    result["account_created"] = True
+                return result
+            finally:
+                try:
+                    await lock_conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext($1))",
+                        _SIMPLEFIN_ADVISORY_LOCK_NAME,
+                    )
+                except asyncpg.PostgresError:
+                    # Connection release still clears the session lock.  Do not
+                    # turn an otherwise sanitized result into a raw database error.
+                    pass
+    except asyncpg.PostgresError:
+        return {"status": "degraded", "reason": "lock_unavailable"}
 
 
 # ---------------------------------------------------------------------------

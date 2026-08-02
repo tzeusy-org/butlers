@@ -115,7 +115,11 @@ rejected.
 
 **Durability**: On acceptance, the target butler inserts the envelope into
 `route_inbox` before returning `{"status": "accepted"}`. Processing happens
-asynchronously. Crash recovery re-dispatches `accepted`-state rows on startup.
+asynchronously under a fenced processing-claim lease. Startup recovery can
+claim and re-dispatch ordinary accepted work (and recoverable stale work), but
+an already-processing dashboard turn first reconciles its durable predecessor.
+If that predecessor is not provably terminal, recovery marks the route row for
+operator attention and does not automatically replay a second runtime.
 
 ---
 

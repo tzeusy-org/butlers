@@ -188,59 +188,136 @@ async def execute_approved_action(
     lock = await _get_execution_lock(action_id)
 
     async with lock:
-        existing_row = await pool.fetchrow(
-            "SELECT status, execution_result FROM pending_actions WHERE id = $1",
-            action_id,
-        )
-        if existing_row is None:
-            return ExecutionResult(success=False, error=f"Action not found: {action_id}")
-
-        existing_status = existing_row["status"]
-        if existing_status == ActionStatus.EXECUTED.value:
-            replay = _parse_execution_result(existing_row.get("execution_result"))
-            if replay is not None:
-                logger.debug("Replay executed result for action %s (%s)", action_id, tool_name)
-                return replay
-            return ExecutionResult(
-                success=False,
-                error=f"Action {action_id} already executed without a replayable result",
-            )
-
-        if existing_status != ActionStatus.APPROVED.value:
-            return ExecutionResult(
-                success=False,
-                error=f"Action {action_id} is not executable from status '{existing_status}'",
-            )
-
+        # Hold a database row lock from the eligibility check through the tool
+        # invocation and terminal write.  The process-local lock protects one
+        # daemon; this lock also makes Retry and dashboard-only Abandon mutually
+        # exclusive across daemon processes.  In particular, Abandon's CAS
+        # update waits here instead of marking the row terminal while a handler
+        # is already allowed to perform its side effect.
+        failed_execution: ExecutionResult | None = None
         now = datetime.now(UTC)
-
-        # 1. Call the tool function. A failed invocation must remain retryable
-        # in `approved` with no execution_result: writing `executed` would
-        # falsely claim an irreversible action completed.
         try:
-            raw_result = tool_fn(**tool_args)
-            if inspect.isawaitable(raw_result):
-                raw_result = await raw_result
-            # MCP tool contracts use an error dict for an unsuccessful
-            # operation. Treat it exactly like an exception so a handler that
-            # reports its own failure cannot be recorded as `executed`.
-            if isinstance(raw_result, dict):
-                if raw_result.get("error"):
-                    raise RuntimeError(str(raw_result["error"]))
-                if raw_result.get("success") is False:
-                    raise RuntimeError("tool reported unsuccessful execution")
+            async with _approval_write_transaction(pool) as write_target:
+                existing_row = await write_target.fetchrow(
+                    "SELECT status, execution_result FROM pending_actions WHERE id = $1 FOR UPDATE",
+                    action_id,
+                )
+                if existing_row is None:
+                    return ExecutionResult(success=False, error=f"Action not found: {action_id}")
+
+                existing_status = existing_row["status"]
+                if existing_status == ActionStatus.EXECUTED.value:
+                    replay = _parse_execution_result(existing_row.get("execution_result"))
+                    if replay is not None:
+                        logger.debug(
+                            "Replay executed result for action %s (%s)", action_id, tool_name
+                        )
+                        return replay
+                    return ExecutionResult(
+                        success=False,
+                        error=f"Action {action_id} already executed without a replayable result",
+                    )
+
+                if existing_status != ActionStatus.APPROVED.value:
+                    return ExecutionResult(
+                        success=False,
+                        error=(
+                            f"Action {action_id} is not executable from status '{existing_status}'"
+                        ),
+                    )
+
+                try:
+                    raw_result = tool_fn(**tool_args)
+                    if inspect.isawaitable(raw_result):
+                        raw_result = await raw_result
+                    # MCP tool contracts use an error dict for an unsuccessful
+                    # operation. Treat it exactly like an exception so a handler that
+                    # reports its own failure cannot be recorded as `executed`.
+                    if isinstance(raw_result, dict):
+                        if raw_result.get("error"):
+                            raise RuntimeError(str(raw_result["error"]))
+                        if raw_result.get("success") is False:
+                            raise RuntimeError("tool reported unsuccessful execution")
+                except Exception as exc:
+                    failed_execution = ExecutionResult(
+                        success=False,
+                        error=str(exc),
+                        executed_at=now,
+                    )
+                    logger.error(
+                        "Tool execution failed for action %s (%s): %s",
+                        action_id,
+                        tool_name,
+                        exc,
+                    )
+                else:
+                    # Normalise the successful result and persist the result,
+                    # terminal status, immutable audit event, and auto-rule use
+                    # count atomically before releasing the row lock.
+                    result_dict = (
+                        raw_result if isinstance(raw_result, dict) else {"value": raw_result}
+                    )
+                    execution_result = ExecutionResult(
+                        success=True, result=result_dict, executed_at=now
+                    )
+                    safe_execution_result = json.loads(
+                        json.dumps(execution_result.to_dict(), default=str)
+                    )
+                    transition_result = await write_target.execute(
+                        "UPDATE pending_actions "
+                        "SET status = $1, execution_result = $2, decided_at = $3 "
+                        "WHERE id = $4 AND status = $5",
+                        ActionStatus.EXECUTED.value,
+                        safe_execution_result,
+                        now,
+                        action_id,
+                        ActionStatus.APPROVED.value,
+                    )
+                    transitioned_to_executed = transition_result is None or str(
+                        transition_result
+                    ).endswith(" 1")
+                    if not transitioned_to_executed:
+                        return ExecutionResult(
+                            success=False,
+                            error=(
+                                f"Action {action_id} was no longer approved while "
+                                "persisting execution"
+                            ),
+                            executed_at=now,
+                        )
+
+                    await record_approval_event(
+                        write_target,
+                        ApprovalEventType.ACTION_EXECUTION_SUCCEEDED,
+                        actor="system:executor",
+                        action_id=action_id,
+                        rule_id=approval_rule_id,
+                        metadata={"tool_name": tool_name},
+                        occurred_at=now,
+                    )
+
+                    if approval_rule_id is not None:
+                        await write_target.execute(
+                            "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
+                            approval_rule_id,
+                        )
         except Exception as exc:
-            execution_result = ExecutionResult(
-                success=False,
-                error=str(exc),
-                executed_at=now,
-            )
             logger.error(
-                "Tool execution failed for action %s (%s): %s",
+                "Could not persist successful execution for action %s (%s): %s",
                 action_id,
                 tool_name,
                 exc,
             )
+            return ExecutionResult(
+                success=False,
+                error=f"Could not persist execution outcome: {exc}",
+                executed_at=now,
+            )
+
+        if failed_execution is not None:
+            # A failed handler remains retryable. Record its audit event after
+            # releasing the database row lock; a failed audit must not turn a
+            # known handler failure into a different terminal outcome.
             try:
                 async with _approval_write_transaction(pool) as write_target:
                     await record_approval_event(
@@ -249,9 +326,9 @@ async def execute_approved_action(
                         actor="system:executor",
                         action_id=action_id,
                         rule_id=approval_rule_id,
-                        reason=execution_result.error,
+                        reason=failed_execution.error,
                         metadata={"tool_name": tool_name},
-                        occurred_at=now,
+                        occurred_at=failed_execution.executed_at,
                     )
             except Exception:  # noqa: BLE001 -- failure audit cannot change queue state
                 logger.warning(
@@ -275,74 +352,14 @@ async def execute_approved_action(
                             pool=pool,
                             action=PendingAction.from_row(action_row),
                             rule_id=approval_rule_id,
-                            error_details=execution_result.error or "unknown error",
+                            error_details=failed_execution.error or "unknown error",
                         )
                 except Exception:  # noqa: BLE001 -- demotion is best-effort
                     logger.exception(
                         "Demotion suggestion hook failed for action %s; action remains approved",
                         action_id,
                     )
-            return execution_result
-
-        # 2. Normalise the successful result and persist the result, terminal
-        # status, immutable audit event, and auto-rule use count as one database
-        # transaction where the runtime can provide one. The call is only
-        # reported successful after this durable transition commits.
-        result_dict = raw_result if isinstance(raw_result, dict) else {"value": raw_result}
-        execution_result = ExecutionResult(success=True, result=result_dict, executed_at=now)
-        safe_execution_result = json.loads(json.dumps(execution_result.to_dict(), default=str))
-
-        try:
-            async with _approval_write_transaction(pool) as write_target:
-                transition_result = await write_target.execute(
-                    "UPDATE pending_actions "
-                    "SET status = $1, execution_result = $2, decided_at = $3 "
-                    "WHERE id = $4 AND status = $5",
-                    ActionStatus.EXECUTED.value,
-                    safe_execution_result,
-                    now,
-                    action_id,
-                    ActionStatus.APPROVED.value,
-                )
-                transitioned_to_executed = transition_result is None or str(
-                    transition_result
-                ).endswith(" 1")
-                if not transitioned_to_executed:
-                    return ExecutionResult(
-                        success=False,
-                        error=(
-                            f"Action {action_id} was no longer approved while persisting execution"
-                        ),
-                        executed_at=now,
-                    )
-
-                await record_approval_event(
-                    write_target,
-                    ApprovalEventType.ACTION_EXECUTION_SUCCEEDED,
-                    actor="system:executor",
-                    action_id=action_id,
-                    rule_id=approval_rule_id,
-                    metadata={"tool_name": tool_name},
-                    occurred_at=now,
-                )
-
-                if approval_rule_id is not None:
-                    await write_target.execute(
-                        "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
-                        approval_rule_id,
-                    )
-        except Exception as exc:
-            logger.error(
-                "Could not persist successful execution for action %s (%s): %s",
-                action_id,
-                tool_name,
-                exc,
-            )
-            return ExecutionResult(
-                success=False,
-                error=f"Could not persist execution outcome: {exc}",
-                executed_at=now,
-            )
+            return failed_execution
 
     logger.info(
         "Executed action %s (%s) success=True rule=%s",

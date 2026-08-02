@@ -48,21 +48,24 @@ vi.mock("@/api/client.ts", () => ({
 
 const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
-const cancelConversationTurnMock = vi.fn();
+const cancelConversationMessageTurnMock = vi.fn();
 vi.mock("@/api/index.ts", () => ({
   createConversation: (...args: unknown[]) => createConversationMock(...args),
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
-  cancelConversationTurn: (...args: unknown[]) => cancelConversationTurnMock(...args),
+  cancelConversationMessageTurn: (...args: unknown[]) =>
+    cancelConversationMessageTurnMock(...args),
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
 // bypassing real stream parsing entirely.
 let scriptedEvents: Array<{ event: string; data: unknown }> = [];
+let activeSseEventHandler: ((event: { event: string; data: unknown }) => void) | null = null;
 vi.mock("./sse-utils.ts", () => ({
   consumeSseStream: async (
     _response: Response,
     onEvent: (event: { event: string; data: unknown }) => void,
   ) => {
+    activeSseEventHandler = onEvent;
     for (const evt of scriptedEvents) onEvent(evt);
   },
 }));
@@ -249,6 +252,7 @@ function renderWidget(initialPath = "/") {
   const utils = render(buildWidgetTree(queryClient, initialPath));
   return {
     ...utils,
+    queryClient,
     /** Force a re-render (e.g. after changing a mocked hook's return value). */
     rerenderWidget: (path: string = initialPath) => utils.rerender(buildWidgetTree(queryClient, path)),
   };
@@ -260,6 +264,7 @@ beforeEach(() => {
   // import time, leaving it returning undefined on every render.
   vi.clearAllMocks();
   scriptedEvents = [];
+  activeSseEventHandler = null;
   mockHooksWithConversations();
   // useChatUnreadBadge's watermark is a real (unmocked) module-scope store —
   // reset it + localStorage so badge state never leaks across tests.
@@ -781,6 +786,62 @@ describe("FloatingChatWidget — send-error classification", () => {
     ) as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/sessions/session-abc-123");
   });
+
+  it("does not offer retry when TURN_OUTCOME_UNKNOWN prevents a safe replay", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      {
+        event: "error",
+        data: {
+          code: "TURN_OUTCOME_UNKNOWN",
+          message: "This request may still have completed.",
+        },
+      },
+      { event: "done", data: {} },
+    ];
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "report a bug" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    const banner = screen.getByTestId("chat-widget-ambiguous-banner");
+    expect(banner.textContent).toContain("may still have completed");
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByTestId("chat-widget-timeout-session-link")).toBeNull();
+  });
+
+  it("offers check again, not retry, while INGEST_IN_PROGRESS owns the same turn", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      {
+        event: "error",
+        data: {
+          code: "INGEST_IN_PROGRESS",
+          message: "This message is already being submitted.",
+        },
+      },
+      { event: "done", data: {} },
+    ];
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "report a bug" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    const banner = screen.getByTestId("chat-widget-pending-banner");
+    expect(banner.textContent).toContain("already being submitted");
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -791,15 +852,20 @@ describe("FloatingChatWidget — Stop button", () => {
   /** Drive the widget into an active mid-stream state (Stop button visible,
    * a real conversation id known) by scripting a token event with no
    * trailing `done` — the awaited send call resolves while still "open". */
-  async function sendAndEnterStreamingState() {
+  async function sendAndEnterStreamingState({
+    conversationCreated = true,
+    token = true,
+  }: { conversationCreated?: boolean; token?: boolean } = {}) {
     mockHooksEmpty();
     createConversationMock.mockResolvedValue({ ok: true } as Response);
     scriptedEvents = [
-      { event: "conversation_created", data: { conversation_id: "conv-stop-1", title: "New" } },
-      { event: "token", data: { content: "partial response" } },
+      ...(conversationCreated
+        ? [{ event: "conversation_created", data: { conversation_id: "conv-stop-1", title: "New" } }]
+        : []),
+      ...(token ? [{ event: "token", data: { content: "partial response" } }] : []),
     ];
 
-    renderWidget();
+    const view = renderWidget();
     fireEvent.click(screen.getByTestId("floating-chat-trigger"));
     const input = screen.getByPlaceholderText("Type a message...");
     fireEvent.change(input, { target: { value: "hello" } });
@@ -808,11 +874,52 @@ describe("FloatingChatWidget — Stop button", () => {
     });
 
     expect(screen.getByTestId("chat-stop-button")).toBeDefined();
+    return view;
   }
+
+  it("does not send Stop until the create response proves the durable turn exists", async () => {
+    mockHooksEmpty();
+    let resolveCreate!: (response: Response) => void;
+    createConversationMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+      target: { value: "hello" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+      await Promise.resolve();
+    });
+
+    const stopButton = screen.getByTestId("chat-stop-button") as HTMLButtonElement;
+    expect(stopButton.disabled).toBe(true);
+    fireEvent.click(stopButton);
+    expect(cancelConversationMessageTurnMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveCreate({ ok: true } as Response);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect((screen.getByTestId("chat-stop-button") as HTMLButtonElement).disabled).toBe(false));
+
+    cancelConversationMessageTurnMock.mockResolvedValue({
+      cancelled: true,
+      already_finished: false,
+      message: null,
+    });
+    fireEvent.click(screen.getByTestId("chat-stop-button"));
+    await waitFor(() => expect(cancelConversationMessageTurnMock).toHaveBeenCalledOnce());
+  });
 
   it("kills the session and renders the confirmed cancellation, never claiming success beforehand", async () => {
     await sendAndEnterStreamingState();
-    cancelConversationTurnMock.mockResolvedValue({
+    cancelConversationMessageTurnMock.mockResolvedValue({
       cancelled: true,
       already_finished: false,
       session_id: "sess-1",
@@ -823,15 +930,136 @@ describe("FloatingChatWidget — Stop button", () => {
       fireEvent.click(screen.getByTestId("chat-stop-button"));
     });
 
-    expect(cancelConversationTurnMock).toHaveBeenCalledWith("switchboard", "conv-stop-1");
+    const messageId = (createConversationMock.mock.calls[0][1] as { message_id: string }).message_id;
+    expect(cancelConversationMessageTurnMock).toHaveBeenCalledWith("switchboard", messageId);
     await waitFor(() => {
       expect(screen.getByText("Cancelled by owner")).toBeDefined();
     });
+    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+  });
+
+  it("uses the immutable message id and visibly confirms Stop before new-conversation SSE starts", async () => {
+    const { queryClient } = await sendAndEnterStreamingState({
+      conversationCreated: false,
+      token: false,
+    });
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    cancelConversationMessageTurnMock.mockResolvedValue({
+      cancelled: true,
+      already_finished: false,
+      conversation_id: "conv-stop-1",
+      session_id: null,
+      message: null,
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+    });
+
+    const messageId = (createConversationMock.mock.calls[0][1] as { message_id: string }).message_id;
+    expect(cancelConversationMessageTurnMock).toHaveBeenCalledWith("switchboard", messageId);
+    expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["conversation-messages", "switchboard", "conv-stop-1"],
+    });
+    expect(useConversationMessages).toHaveBeenLastCalledWith("switchboard", "conv-stop-1");
+  });
+
+  it("accepts a terminal server cancellation after Stop was still settling", async () => {
+    await sendAndEnterStreamingState();
+    cancelConversationMessageTurnMock.mockResolvedValue({
+      cancelled: false,
+      already_finished: false,
+      session_id: null,
+      message: "Waiting for the in-flight ingress to settle.",
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+    });
+    expect(screen.getByText("Waiting for the in-flight ingress to settle.")).toBeDefined();
+
+    await act(async () => {
+      activeSseEventHandler?.({
+        event: "error",
+        data: { code: "SESSION_CANCELLED", message: "This turn was stopped before routing." },
+      });
+    });
+
+    expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(screen.queryByText("Waiting for the in-flight ingress to settle.")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+  });
+
+  it("keeps an SSE-confirmed Stop visible when its POST later says already finished", async () => {
+    await sendAndEnterStreamingState();
+    let resolveCancel!: (result: { cancelled: boolean; already_finished: boolean }) => void;
+    cancelConversationMessageTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("chat-stop-button"));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      activeSseEventHandler?.({
+        event: "error",
+        data: { code: "SESSION_CANCELLED", message: "This turn was stopped before routing." },
+      });
+    });
+    expect(screen.getByText("Cancelled by owner")).toBeDefined();
+
+    await act(async () => {
+      resolveCancel({ cancelled: false, already_finished: true });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Cancelled by owner")).toBeDefined();
+    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+  });
+
+  it("ignores a late Stop result after the owner starts a different turn", async () => {
+    await sendAndEnterStreamingState();
+    let resolveCancel!: (result: { cancelled: boolean; already_finished: boolean }) => void;
+    cancelConversationMessageTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
+    );
+
+    fireEvent.click(screen.getByTestId("chat-stop-button"));
+    expect((screen.getByTestId("chat-stop-button") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    fireEvent.click(screen.getByTestId("chat-widget-new-button"));
+
+    scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-stop-2", title: "New" } },
+      { event: "token", data: { content: "second turn" } },
+    ];
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "second" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+    expect(screen.getByText("second turn")).toBeDefined();
+
+    await act(async () => {
+      resolveCancel({ cancelled: true, already_finished: false });
+    });
+
+    expect(screen.getByText("second turn")).toBeDefined();
+    expect(screen.queryByText("Cancelled by owner")).toBeNull();
+    expect(screen.getByTestId("chat-stop-button")).toBeDefined();
   });
 
   it("surfaces a failed cancel honestly instead of rendering calm", async () => {
     await sendAndEnterStreamingState();
-    cancelConversationTurnMock.mockResolvedValue({
+    cancelConversationMessageTurnMock.mockResolvedValue({
       cancelled: false,
       already_finished: false,
       session_id: "sess-1",
@@ -852,10 +1080,15 @@ describe("FloatingChatWidget — Stop button", () => {
   });
 
   it("quietly stops watching without a false 'stopped' claim when the turn already finished", async () => {
-    await sendAndEnterStreamingState();
-    cancelConversationTurnMock.mockResolvedValue({
+    const { queryClient } = await sendAndEnterStreamingState({
+      conversationCreated: false,
+      token: false,
+    });
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    cancelConversationMessageTurnMock.mockResolvedValue({
       cancelled: false,
       already_finished: true,
+      conversation_id: "conv-finished-1",
       session_id: null,
       message: null,
     });
@@ -866,5 +1099,12 @@ describe("FloatingChatWidget — Stop button", () => {
 
     expect(screen.queryByText("Cancelled by owner")).toBeNull();
     expect(screen.queryByTestId("chat-stop-button")).toBeNull();
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["conversations", "switchboard"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["conversation-messages", "switchboard", "conv-finished-1"],
+    });
+    expect(useConversationMessages).toHaveBeenLastCalledWith("switchboard", "conv-finished-1");
   });
 });

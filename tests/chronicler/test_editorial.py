@@ -509,6 +509,22 @@ async def test_source_health_items_link_to_connectors_tab() -> None:
     assert items[0].action_href == "/ingestion?tab=connectors"
 
 
+@pytest.mark.asyncio
+async def test_source_health_does_not_hide_owned_postgres_failure() -> None:
+    """Only an explicitly optional missing relation can be non-degraded.
+
+    A real query failure must reach the briefing availability classifier rather
+    than silently returning an empty source-health list.
+    """
+
+    class _FailingSourceHealthConn(_FetchConn):
+        async def fetch(self, *args: object) -> list[_FakeRow]:
+            raise editorial.asyncpg.PostgresError("connection lost")
+
+    with pytest.raises(editorial.asyncpg.PostgresError):
+        await _fetch_source_health_items(_FetchPool(_FailingSourceHealthConn()))
+
+
 # ── Date-scoped source health + earliest_date (bu archive nav) ─────────────
 
 
@@ -549,6 +565,18 @@ async def test_fetch_earliest_covered_date_returns_min_local_date() -> None:
 async def test_fetch_earliest_covered_date_is_none_when_empty() -> None:
     conn = _ValConn(fetchval_result=None)
     assert await _fetch_earliest_covered_date(_FetchPool(conn), "UTC") is None
+
+
+@pytest.mark.asyncio
+async def test_coverage_floor_does_not_hide_owned_postgres_failure() -> None:
+    """A database outage is distinct from an empty coverage witness table."""
+
+    class _FailingCoverageConn(_ValConn):
+        async def fetchval(self, *args: object) -> object:
+            raise editorial.asyncpg.PostgresError("connection lost")
+
+    with pytest.raises(editorial.asyncpg.PostgresError):
+        await _fetch_earliest_covered_date(_FetchPool(_FailingCoverageConn()), "UTC")
 
 
 @pytest.mark.asyncio
@@ -669,6 +697,96 @@ async def test_compose_unavailable_on_owned_query_failure(monkeypatch) -> None:
 
     assert payload.state_class == "unavailable"
     assert payload.covered_and_available is False
+    availability = {item.subquery: item.state for item in payload.subquery_availability}
+    assert availability["coverage_floor"] == "unavailable"
+    assert payload.attention_items == [
+        AttentionItem(
+            kind="source_error",
+            severity="high",
+            title="Archive coverage unavailable",
+            detail="Chronicler could not read archive coverage.",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_compose_degrades_when_a_content_query_fails(monkeypatch) -> None:
+    """A failed owned content read cannot masquerade as an unavailable archive.
+
+    Coverage succeeded, so the response must retain that truthful boundary,
+    name the failed source, bypass cached prose, and expose a retryable high
+    attention item instead of returning a calm or generic archive state.
+    """
+
+    async def _fake_earliest(pool: object, tz_name: str) -> date:
+        return date(2026, 5, 1)
+
+    async def _fake_covered(pool: object, local_date: date, tz_name: str) -> bool:
+        return True
+
+    async def _raise_episodes(*_args: object) -> list[_FakeRow]:
+        raise editorial.asyncpg.PostgresError("connection lost")
+
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _fake_earliest)
+    monkeypatch.setattr(editorial, "_is_local_day_covered", _fake_covered)
+    monkeypatch.setattr(editorial, "_fetch_window_episodes", _raise_episodes)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    payload = await editorial.compose_briefing_payload(pool, date(2026, 5, 6), "UTC", now=now)
+
+    assert payload.state_class == "degraded"
+    assert payload.covered_and_available is False
+    assert payload.earliest_date == "2026-05-01"
+    availability = {item.subquery: item.state for item in payload.subquery_availability}
+    assert availability["episodes"] == "unavailable"
+    assert (
+        AttentionItem(
+            kind="source_error",
+            severity="high",
+            title="Episodes unavailable",
+            detail="Chronicler could not read episodes.",
+        )
+        in payload.attention_items
+    )
+    # The recent-days index independently reads a wider episode window, so a
+    # shared database outage is honestly named in both affected subqueries.
+    assert any(
+        item.kind == "source_error" and item.severity == "high" for item in payload.attention_items
+    )
+
+
+@pytest.mark.asyncio
+async def test_compose_keeps_optional_source_health_absence_non_degraded(monkeypatch) -> None:
+    """A fresh install can lack optional source-state tables without faking failure.
+
+    The core day reads still compose normally. The response records that the
+    optional source-state query was not requested rather than reporting a
+    high source error or downgrading an otherwise covered day.
+    """
+
+    async def _fake_earliest(pool: object, tz_name: str) -> date:
+        return date(2026, 5, 1)
+
+    async def _fake_covered(pool: object, local_date: date, tz_name: str) -> bool:
+        return True
+
+    async def _missing_source_health(*_args: object, **_kwargs: object) -> list[AttentionItem]:
+        raise editorial.asyncpg.UndefinedTableError("source_adapter_state")
+
+    monkeypatch.setattr(editorial, "_fetch_earliest_covered_date", _fake_earliest)
+    monkeypatch.setattr(editorial, "_is_local_day_covered", _fake_covered)
+    monkeypatch.setattr(editorial, "_fetch_source_health_items", _missing_source_health)
+    pool = _FetchPool(_FetchConn())
+    now = datetime(2026, 5, 9, 12, 0, tzinfo=UTC)
+
+    payload = await editorial.compose_briefing_payload(pool, date(2026, 5, 8), "UTC", now=now)
+
+    assert payload.state_class == "quiet"
+    assert payload.covered_and_available is True
+    availability = {item.subquery: item.state for item in payload.subquery_availability}
+    assert availability["source_health"] == "not_requested"
+    assert all(item.kind != "source_error" for item in payload.attention_items)
 
 
 @pytest.mark.asyncio

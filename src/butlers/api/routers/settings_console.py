@@ -39,6 +39,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.deps import (
     ButlerConnectionInfo,
     MCPClientManager,
@@ -238,33 +239,52 @@ async def _get_spend_mtd(
         )
 
 
-async def _count_open_approvals(db: DatabaseManager | None) -> tuple[int, AttentionItem | None]:
+async def _count_open_approvals(
+    db: DatabaseManager | None,
+) -> tuple[int | None, AttentionItem | None]:
     """Count pending (open) approval actions across all pools.
 
     Returns (count, None) on success.  Never raises.
     """
     if db is None:
-        return 0, None
+        return None, AttentionItem(
+            id="subsystem_error:approvals",
+            tone="amber",
+            kind="subsystem_error",
+            text="Could not reach the approvals subsystem.",
+            action_route="/approvals",
+        )
     try:
         from butlers.api.routers.approvals import _find_all_approvals_pools
 
+        tracker = DegradedSources(logger)
         pools = await asyncio.wait_for(
-            _find_all_approvals_pools(db),
+            _find_all_approvals_pools(db, tracker=tracker),
             timeout=_QUERY_TIMEOUT_S,
         )
+        if tracker.failed:
+            raise RuntimeError("approval pool discovery degraded")
         total = 0
         for pool in pools:
             try:
-                count = await pool.fetchval(
-                    "SELECT COUNT(*) FROM pending_actions WHERE status = 'pending'"
+                count = await asyncio.wait_for(
+                    pool.fetchval("SELECT COUNT(*) FROM pending_actions WHERE status = 'pending'"),
+                    timeout=_QUERY_TIMEOUT_S,
                 )
                 total += count or 0
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("console: approval-pool aggregation failed: %s", exc)
+                return None, AttentionItem(
+                    id="subsystem_error:approvals",
+                    tone="amber",
+                    kind="subsystem_error",
+                    text="Could not reach the approvals subsystem.",
+                    action_route="/approvals",
+                )
         return total, None
     except Exception as exc:
         logger.warning("console: open-approvals aggregation failed: %s", exc)
-        return 0, AttentionItem(
+        return None, AttentionItem(
             id="subsystem_error:approvals",
             tone="amber",
             kind="subsystem_error",
@@ -273,13 +293,25 @@ async def _count_open_approvals(db: DatabaseManager | None) -> tuple[int, Attent
         )
 
 
-async def _count_models(db: DatabaseManager | None) -> tuple[int, int, AttentionItem | None]:
+async def _count_models(
+    db: DatabaseManager | None,
+) -> tuple[int | None, int | None, AttentionItem | None]:
     """Return (verified_count, total_count, optional_attention_item).
 
     Never raises.
     """
     if db is None:
-        return 0, 0, None
+        return (
+            None,
+            None,
+            AttentionItem(
+                id="subsystem_error:models",
+                tone="amber",
+                kind="subsystem_error",
+                text="Could not read the model catalog.",
+                action_route="/settings/models",
+            ),
+        )
     try:
         pool = db.pool("switchboard")
         total = await asyncio.wait_for(
@@ -297,8 +329,8 @@ async def _count_models(db: DatabaseManager | None) -> tuple[int, int, Attention
     except Exception as exc:
         logger.warning("console: model-count aggregation failed: %s", exc)
         return (
-            0,
-            0,
+            None,
+            None,
             AttentionItem(
                 id="subsystem_error:models",
                 tone="amber",
@@ -458,7 +490,7 @@ async def _build_console_payload(
     amber_items: list[AttentionItem] = []
 
     # Open approvals → red
-    if open_approvals > 0:
+    if open_approvals is not None and open_approvals > 0:
         red_items.append(
             AttentionItem(
                 id="open_approvals",

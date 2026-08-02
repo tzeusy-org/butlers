@@ -127,25 +127,32 @@ class _FakePool:
 
 
 @pytest.fixture(autouse=True)
-def _register_real_park_pending_action_hook():
-    """Register the real park_pending_action hook against this test's FakePool.
-
-    run_email_identity_enrichment now routes its PENDING insert through
-    butlers.core.approvals_hooks.park_pending_action (bu-g27ib), which no-ops
-    with a warning unless the approvals module's on_startup registered a real
-    implementation. These tests call the job function directly (no daemon
-    startup), so register the real implementation here -- mirroring
-    modules.approvals.module.on_startup -- and restore whatever was
-    registered before so this doesn't leak to other tests in the same xdist
-    worker process.
-    """
+def _register_real_approval_hooks(monkeypatch: pytest.MonkeyPatch):
+    """Register real pool-scoped hooks for each FakePool created by a test."""
     import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.email_guard import (
+        check_email_recipient,
+        check_recipient,
+    )
     from butlers.modules.approvals.park import park_pending_action as _real_park
 
-    orig = _hooks._park_pending_action_hook
-    _hooks._park_pending_action_hook = _real_park
+    original_init = _FakePool.__init__
+    registrations = []
+
+    def _init_with_approval_hooks(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        runtime = _hooks.register_approval_hooks(
+            self,
+            email_guard=check_email_recipient,
+            recipient_guard=check_recipient,
+            park_pending_action=_real_park,
+        )
+        registrations.append((self, runtime))
+
+    monkeypatch.setattr(_FakePool, "__init__", _init_with_approval_hooks)
     yield
-    _hooks._park_pending_action_hook = orig
+    for pool, runtime in reversed(registrations):
+        _hooks.unregister_approval_hooks(pool, runtime)
 
 
 @pytest.fixture(autouse=True)

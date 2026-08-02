@@ -13,7 +13,7 @@ POST /api/ingestion/connectors/{type}/{identity}/run-now    — resume a paused 
 POST /api/ingestion/connectors/{type}/{identity}/archive    — soft-archive an id (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/unarchive  — restore an archived id (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/disconnect — Approvals-gated; soft-delete (§4.4)
-POST /api/ingestion/connectors/{type}/{identity}/rotate-token — Approvals-gated; masked (§4.5)
+POST /api/ingestion/connectors/{type}/{identity}/rotate-token — rejects if unreplayable (§4.5)
 POST /api/ingestion/connectors/{type}/{identity}/reauth      — BLOCKED HTTP 503 (§4.6)
 GET  /api/ingestion/connectors/available                     — enumerable connector profiles
 GET  /api/ingestion/connectors/{type}/{identity}/events      — recent events [bu-5ywn2]
@@ -41,7 +41,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -50,6 +50,10 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.routers.audit import append as _audit_append
+from butlers.modules.approvals.command_contracts import (
+    CONNECTOR_DISCONNECT_COMMAND,
+    CONNECTOR_ROTATE_TOKEN_PRODUCER,
+)
 from butlers.modules.approvals.park import park_pending_action
 
 logger = logging.getLogger(__name__)
@@ -1232,22 +1236,6 @@ async def _set_archived(
 #: Path to the connector-oauth-scope-surface spec (blocking reauth)
 _OAUTH_SCOPE_SURFACE_SPEC = "connector-oauth-scope-surface"
 
-#: Known token/credential pattern prefixes used by the masking test
-_SENSITIVE_FIELD_NAMES = frozenset(
-    {
-        "token",
-        "credential",
-        "secret",
-        "password",
-        "api_key",
-        "access_token",
-        "refresh_token",
-        "oauth_token",
-        "new_token",
-        "new_credential",
-    }
-)
-
 
 @router.post(
     "/{connector_type}/{endpoint_identity}/disconnect",
@@ -1308,7 +1296,12 @@ async def disconnect_connector(
     action_id = uuid.uuid4()
     now = datetime.now(UTC)
     target = f"{connector_type}/{endpoint_identity}"
-    tool_args = {"connector_type": connector_type, "endpoint_identity": endpoint_identity}
+    tool_args = CONNECTOR_DISCONNECT_COMMAND.materialize(
+        {
+            "connector_type": connector_type,
+            "endpoint_identity": endpoint_identity,
+        }
+    )
     # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
     # asyncpg's registered jsonb codec already serializes once; pre-serializing
     # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
@@ -1325,7 +1318,7 @@ async def disconnect_connector(
         await park_pending_action(
             pool,
             action_id=action_id,
-            tool_name="connector_disconnect",
+            tool_name=CONNECTOR_DISCONNECT_COMMAND.name,
             tool_args=safe_tool_args,
             agent_summary=f"Disconnect connector '{target}' (soft-delete)",
             requested_at=now,
@@ -1391,32 +1384,22 @@ async def disconnect_connector(
 
 @router.post(
     "/{connector_type}/{endpoint_identity}/rotate-token",
-    response_model=ApiResponse[dict],
-    status_code=202,
+    response_model=None,
+    status_code=409,
 )
 async def rotate_connector_token(
     connector_type: str,
     endpoint_identity: str,
     request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[dict]:
-    """Rotate a connector's credential — Approvals-gated; ``is_sensitive=True`` masking (§4.5).
+) -> NoReturn:
+    """Reject token rotation until it has a safe replayable command.
 
-    Submits a pending approval action for the rotate-token operation.  The
-    new credential MUST NOT appear in the response, request log, or audit log.
-    ``is_sensitive=True`` masking is applied throughout.
-
-    The response body contains ONLY ``{success: true, rotated_at: <iso8601>}``
-    upon successful submission — no credential value appears anywhere.
-
-    Returns HTTP 202 on success.
-    Returns HTTP 404 if the connector is not found.
-    Returns HTTP 503 if the connector registry or approvals subsystem is unavailable.
-
-    Credential masking guarantee:
-    - Request body fields carrying the new credential are marked ``is_sensitive=True``
-    - Audit log entry text contains NO credential value
-    - Response body contains ONLY ``{success, rotated_at}``
+    The endpoint intentionally does not persist credential material in a
+    pending action. It also has no durable credential reference or deterministic
+    provider operation to invoke later, so parking the request would let an
+    owner approve a command that cannot execute. Record a safe audit failure
+    and reject before the pending-actions boundary instead.
     """
     pool = _pool(db)
 
@@ -1443,90 +1426,45 @@ async def rotate_connector_token(
             detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
         )
 
-    action_id = uuid.uuid4()
-    now = datetime.now(UTC)
-    rotated_at = now.isoformat()
     target = f"{connector_type}/{endpoint_identity}"
 
-    # Sensitive tool_args: credential fields are intentionally OMITTED from the
-    # pending_action record and all log lines — is_sensitive=True masking contract.
-    # Only non-sensitive metadata goes into tool_args.
-    tool_args = {
-        "connector_type": connector_type,
-        "endpoint_identity": endpoint_identity,
-        "is_sensitive": True,
-        # NOTE: no token/credential field here — credential is never logged
-    }
-    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
-    # asyncpg's registered jsonb codec already serializes once; pre-serializing
-    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
-    safe_tool_args = json.loads(json.dumps(tool_args, default=str))
-
-    # 72-hour expiry for lifecycle approval actions
-    expires_at = now + timedelta(hours=72)
-
-    try:
-        # park_pending_action is the single choke point for PENDING inserts:
-        # it writes the row AND attempts the owner-facing push in one call
-        # (bu-mda0r). This dashboard-API context has no daemon-cached
-        # runtime, so a fresh one is built per request.
-        await park_pending_action(
-            pool,
-            action_id=action_id,
-            tool_name="connector_rotate_token",
-            tool_args=safe_tool_args,
-            agent_summary=(
-                f"Rotate credential for connector '{target}' [SENSITIVE — credential redacted]"
-            ),
-            requested_at=now,
-            expires_at=expires_at,
-            origin_butler=_SWITCHBOARD_BUTLER,
-            approval_push_runtime=_build_dashboard_approval_push_runtime(db),
-        )
-    except Exception:
-        logger.warning(
-            "rotate-token: failed to insert pending_action for %s/%s",
-            connector_type,
-            endpoint_identity,
-            exc_info=True,
-        )
-        raise HTTPException(status_code=503, detail="Approvals subsystem is not available")
-
-    # Audit entry — credential value MUST NOT appear in any field
+    # Audit the refusal itself. If this cannot be persisted, do not turn the
+    # missing audit signal into a deceptively normal client failure.
     try:
         client_host = getattr(request.client, "host", None) if request.client else None
         await _audit_append(
             pool,
             actor="dashboard",
-            action="connector.rotate_token",
+            action="connector.rotate_token.unreplayable",
             target=target,
             note=(
-                f"Credential rotation submitted for connector '{target}' "
-                f"(action_id={action_id}) [SENSITIVE — credential omitted from log]"
+                f"Token rotation rejected for connector '{target}': "
+                "no safe replayable command is available; no pending action was created"
             ),
             ip=client_host,
+            result="error",
+            error="safe replayable command unavailable",
         )
     except Exception:
-        logger.warning(
-            "rotate-token: failed to append audit_log for %s/%s",
+        logger.error(
+            "rotate-token: failed to append unreplayable-command audit for %s/%s",
             connector_type,
             endpoint_identity,
             exc_info=True,
         )
+        raise HTTPException(
+            status_code=503,
+            detail="Token rotation is unavailable because its refusal audit could not be recorded",
+        )
 
-    logger.info(
-        "rotate-token: submitted for connector %s/%s (action_id=%s) [credential redacted]",
+    logger.warning(
+        "rotate-token: rejected unreplayable request for connector %s/%s",
         connector_type,
         endpoint_identity,
-        action_id,
     )
-
-    # Response MUST contain ONLY {success, rotated_at} — no credential, no action_id in data
-    return ApiResponse[dict](
-        data={
-            "success": True,
-            "rotated_at": rotated_at,
-        }
+    raise HTTPException(
+        status_code=409,
+        detail=CONNECTOR_ROTATE_TOKEN_PRODUCER.rejection_reason,
     )
 
 

@@ -300,6 +300,20 @@ async def test_proposed_rule_type_check_constraint_rejects_bogus_value(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_proposed_rule_type_check_accepts_source_endpoint(pool: asyncpg.Pool) -> None:
+    """The latest schema can persist an exact opaque connector identity proposal."""
+    await pool.execute(
+        """
+        INSERT INTO rule_promotion_suggestions
+            (suggestion_kind, sender_key, source_channel, proposed_rule_type,
+             proposed_condition, proposed_action)
+        VALUES ('promotion', 'spotify:acct-1', 'music', 'source_endpoint',
+                '{"endpoint_identity": "spotify:acct-1"}'::jsonb, 'route_to:lifestyle')
+        """
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_promotion_row_missing_fields(
     pool: asyncpg.Pool,
 ) -> None:
@@ -703,3 +717,54 @@ def test_downgrade_drops_table_indexes_and_ingestion_rules_column(
         ).fetchall()
     engine.dispose()
     assert len(rows) == 0
+
+
+def test_source_endpoint_rows_block_data_losing_downgrade_to_sw_028(
+    postgres_container,
+) -> None:
+    """The source-endpoint migration must refuse to erase a live suggestion."""
+    from butlers.migrations import _build_alembic_config
+
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+    )
+    suggestion_id = uuid.uuid4()
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO switchboard.rule_promotion_suggestions
+                        (id, suggestion_kind, sender_key, source_channel,
+                         proposed_rule_type, proposed_condition, proposed_action,
+                         evidence_count, first_evidence_at, last_evidence_at, status)
+                    VALUES
+                        (:id, 'promotion', 'spotify:acct-1', 'music',
+                         'source_endpoint', '{"endpoint_identity":"spotify:acct-1"}'::jsonb,
+                         'route_to:lifestyle', 3, now() - interval '2 days', now(),
+                         'pending_review')
+                    """
+                ),
+                {"id": suggestion_id},
+            )
+
+        config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
+        with pytest.raises(Exception):
+            command.downgrade(config, "switchboard@sw_028")
+
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT proposed_rule_type FROM switchboard.rule_promotion_suggestions "
+                    "WHERE id = :id"
+                ),
+                {"id": suggestion_id},
+            ).one()
+    finally:
+        engine.dispose()
+
+    assert row[0] == "source_endpoint"

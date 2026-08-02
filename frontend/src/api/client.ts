@@ -12,8 +12,9 @@ import type {
   ApprovalDeferRequest,
   ApprovalDenyRequest,
   ApprovalDetail,
+  ApprovalAbandonRequest,
   ApprovalGatedTool,
-  ApprovalMetrics,
+  ApprovalMetricsResponse,
   ApprovalRule,
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
@@ -190,8 +191,8 @@ import type {
   IngestionWindowRollup,
   IngestionWindowRollupParams,
   IngestionRule,
-  RulePromotionSurface,
-  RulePromotionStats,
+  RulePromotionSurfaceResponse,
+  RulePromotionStatsResponse,
   RulePromotionDismissRequest,
   IngestionRuleCreate,
   IngestionRuleUpdate,
@@ -1354,7 +1355,7 @@ export function searchAll(query: string, limit?: number): Promise<ApiResponse<Se
 // ---------------------------------------------------------------------------
 
 /** Fetch the unified timeline with cursor-based pagination. */
-export function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
+export async function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.before) sp.set("before", params.before);
@@ -1362,7 +1363,17 @@ export function getTimeline(params?: TimelineParams): Promise<TimelineResponse> 
   params?.butler?.forEach((b) => sp.append("butler", b));
   params?.event_type?.forEach((t) => sp.append("event_type", t));
   const qs = sp.toString();
-  return apiFetch<TimelineResponse>(qs ? `/timeline?${qs}` : "/timeline");
+  const response = await apiFetch<TimelineResponse>(qs ? `/timeline?${qs}` : "/timeline");
+  // The backend field is additive. Normalize an older rolling-deploy response
+  // so Timeline consumers can distinguish an intentionally empty name list
+  // from an omitted field without weakening generic degraded_sources handling.
+  return {
+    ...response,
+    meta: {
+      ...response.meta,
+      degraded_butlers: response.meta.degraded_butlers ?? [],
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3402,8 +3413,8 @@ export function revokeApprovalRule(ruleId: string): Promise<ApiResponse<Approval
   );
 }
 
-export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
-  return apiFetch<ApiResponse<ApprovalMetrics>>("/approvals/metrics");
+export function getApprovalMetrics(): Promise<ApprovalMetricsResponse> {
+  return apiFetch<ApprovalMetricsResponse>("/approvals/metrics");
 }
 
 // ---------------------------------------------------------------------------
@@ -3455,6 +3466,20 @@ export function retryApproval(
   return apiFetch<ApiResponse<ApprovalAction>>(
     `/approvals/${encodeURIComponent(actionId)}/retry`,
     { method: "POST" },
+  );
+}
+
+export function abandonApproval(
+  actionId: string,
+  request: ApprovalAbandonRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/${encodeURIComponent(actionId)}/abandon`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
   );
 }
 
@@ -3563,13 +3588,13 @@ export function dismissAutonomySuggestion(
 // Rule-promotion approvals surface (bu-o62bc, bead 4)
 // ---------------------------------------------------------------------------
 
-export function getRulePromotionSuggestions(): Promise<ApiResponse<RulePromotionSurface>> {
-  return apiFetch<ApiResponse<RulePromotionSurface>>("/switchboard/rule-promotion-suggestions");
+export function getRulePromotionSuggestions(): Promise<RulePromotionSurfaceResponse> {
+  return apiFetch<RulePromotionSurfaceResponse>("/switchboard/rule-promotion-suggestions");
 }
 
 /** Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6). */
-export function getRulePromotionStats(): Promise<ApiResponse<RulePromotionStats>> {
-  return apiFetch<ApiResponse<RulePromotionStats>>("/switchboard/rule-promotion-stats");
+export function getRulePromotionStats(): Promise<RulePromotionStatsResponse> {
+  return apiFetch<RulePromotionStatsResponse>("/switchboard/rule-promotion-stats");
 }
 
 export function confirmRulePromotionSuggestion(
@@ -5132,17 +5157,18 @@ export function sendMessage(
 }
 
 /**
- * POST /api/butlers/{name}/conversations/{id}/cancel — the chat "Stop"
- * button (bu-ep4ks.2). Always resolves to a 200 with a structured
- * cancelled/already_finished/message body — never throws for a benign
- * "nothing to cancel" outcome, only for a genuine transport failure.
+ * POST /api/butlers/{name}/conversation-turns/{messageId}/cancel — cancel
+ * one immutable dashboard user turn across classifier and routed runtimes.
+ * Unlike the legacy conversation-scoped endpoint, this remains precise while
+ * a Switchboard handoff is still in flight and even before SSE has delivered
+ * a newly-created conversation id.
  */
-export function cancelConversationTurn(
+export function cancelConversationMessageTurn(
   butlerName: string,
-  conversationId: string,
+  messageId: string,
 ): Promise<ConversationCancelResponse> {
   return apiFetch<ConversationCancelResponse>(
-    `/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/cancel`,
+    `/butlers/${encodeURIComponent(butlerName)}/conversation-turns/${encodeURIComponent(messageId)}/cancel`,
     { method: "POST" },
   );
 }
@@ -5588,16 +5614,14 @@ export function getChroniclerCorrectionPrompts(
 }
 
 /**
- * Fetch the day-close cache entry for a window.
- * Returns fresh prose or a stale marker. 404 if no cache entry exists.
+ * Fetch the day-close cache entry for one local date.
+ * Returns fresh prose, a stale marker, or an invalid-without-prose marker.
+ * 404 if no cache entry exists.
  */
 export function getChroniclerDayClose(
   params: ChroniclerDayCloseParams,
 ): Promise<ChroniclerDayCloseResponse> {
-  const sp = new URLSearchParams({
-    window_start: params.window_start,
-    window_end: params.window_end,
-  });
+  const sp = new URLSearchParams({ date: params.date });
   return apiFetch(`/chronicler/aggregate/day-close?${sp.toString()}`);
 }
 

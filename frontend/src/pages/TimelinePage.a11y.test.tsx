@@ -63,11 +63,14 @@ function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
     refetch: vi.fn(),
     hasMore: false,
     loadMore: vi.fn(),
+    loadMoreError: false,
+    retryLoadMore: vi.fn(),
     isLoadingMore: false,
     pinned: true,
     newCount: 0,
     showNewEvents: vi.fn(),
     degradedSources: [],
+    degradedButlers: [],
     heartbeatRollup: { ticks: 0, butlers: 0, failed: 0 },
     isLiveFeedDown: false,
     ...partial,
@@ -139,6 +142,30 @@ describe("a11y (real page): Timeline empty state", () => {
 describe("a11y (real page): Timeline populated state", () => {
   it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
     await checkA11y({ events: [makeEvent()] });
+  });
+});
+
+describe("a11y (real page): Timeline partial-source recovery states", () => {
+  it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
+    vi.mocked(useButlers).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useButlers>);
+    vi.mocked(useTimelineSavedViews).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useTimelineSavedViews>);
+
+    await checkA11y({
+      events: [makeEvent()],
+      degradedSources: ["sessions"],
+      degradedButlers: ["home"],
+      hasMore: true,
+      loadMoreError: true,
+      retryLoadMore: vi.fn(),
+    });
   });
 });
 

@@ -106,6 +106,68 @@ Removes old log files and prunes empty directories under `logs/`.
 Optional environment variable:
 - `RETENTION_DAYS` (default: `3`)
 
+## merge_pr_exact_base.py
+
+Performs the final REST squash merge for a reviewed pull request without
+silently accepting a target-branch retarget or base-branch advance. GitHub's
+REST merge endpoint can condition only on the pull request head SHA; it cannot
+atomically require the reviewed target ref or base SHA. This helper therefore:
+
+1. confirms the currently open PR still has the final reviewed head, target
+   branch name, and live target-branch SHA,
+2. keeps the supported head-SHA pin on the REST squash request, and
+3. re-reads the merged PR's retained target branch name through GraphQL, and
+4. verifies that the resulting squash commit has exactly the reviewed base as
+   its sole parent and the same immutable result tree as the reviewed head.
+
+It is the sole final merge route, not a substitute for terminal hosted CI,
+independent review, or resolved review threads. Every hosted check must be
+terminal green before invoking it; branch-protection required-check settings do
+not relax that gate. Do not use bare REST merge requests, `gh pr merge`, or
+automatic merge. Capture `headRefOid`, `baseRefName`, and the *live target
+branch tip* from the same final revalidation. Do not use a PR's `baseRefOid` as
+the expected base: it can remain stale while the target branch has advanced.
+
+```bash
+HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
+BASE_REF=$(gh pr view "$PR" --json baseRefName --jq .baseRefName)
+BASE_SHA=$(gh api "repos/Tzeusy/butlers/git/ref/heads/$BASE_REF" --jq .object.sha)
+```
+
+Then pass all three exact values to the helper:
+
+```bash
+python3 scripts/merge_pr_exact_base.py \
+  --pr "$PR" \
+  --expected-head "$HEAD_SHA" \
+  --expected-base-ref "$BASE_REF" \
+  --expected-base "$BASE_SHA"
+```
+
+Only `merged-exact-base` (exit `0`) permits the coordinator to close the source
+Bead. A `premerge-head-drift`, `premerge-base-ref-drift`, or
+`premerge-base-drift` result sends no merge request; rebase onto current
+`origin/main`, then repeat the full exact-head review and CI gates.
+`postmerge-base-drift` means GitHub merged the SHA-pinned head on a newer base
+during the unavoidable API race: leave the source Bead open and record/run the
+required post-merge race audit instead of treating it as exact-current-base
+evidence. `postmerge-base-ref-drift` means the post-merge GraphQL lookup either
+could not verify the retained target ref or found a different ref name. It is
+also exit `4` and blocks closure even if the squash commit's sole parent still
+matches the reviewed base SHA.
+`postmerge-patch-drift` is likewise exit `4`: it means the helper could not
+obtain immutable commit-tree evidence for both commits, or their result trees
+differed. With the verified sole parent equal to the reviewed base, matching
+tree IDs are an authoritative proof that the landed squash has the reviewed
+net patch, including binary, rename, and empty changes. The JSON audit records
+`expected_patch_tree_sha`, `landed_patch_tree_sha`, and
+`patch_identity_matches`; no nonmatching or unavailable evidence permits
+source-Bead closure.
+`postmerge-unexpected-squash-parent-shape` is also exit `4`: GitHub has already
+merged the PR, but the result did not have exactly one parent. Its audit retains
+the parent evidence; leave the source Bead open and run the documented
+post-merge audit/investigation rather than treating it as exact-base evidence.
+
 ## fix_beads_dependency_timestamps.py
 
 Detects and fixes dependency records with zero timestamps (`created_at="0001-01-01T00:00:00Z"`) in `.beads/issues.jsonl`.

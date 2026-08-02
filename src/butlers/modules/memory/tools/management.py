@@ -58,6 +58,49 @@ async def memory_forget(
     return {"forgotten": result}
 
 
+async def memory_reclassify(
+    pool: Pool,
+    memory_type: str,
+    memory_id: str,
+    permanence_target: str,
+) -> dict[str, Any]:
+    """Reclassify one active memory without changing its content or identity.
+
+    Relationship's episodic-predicate curation parks this exact command for
+    owner approval.  The action deliberately permits only facts: other memory
+    kinds have different retention semantics and require their own explicit
+    replay contract.
+    """
+    if memory_type != "fact":
+        raise ValueError("memory_reclassify only supports memory_type='fact'")
+    if permanence_target != "volatile":
+        raise ValueError("memory_reclassify only supports permanence_target='volatile'")
+
+    fact_id = uuid.UUID(memory_id)
+    decay_rate = _storage.validate_permanence(permanence_target)
+    row = await pool.fetchrow(
+        """
+        UPDATE facts
+        SET permanence = $2, decay_rate = $3
+        WHERE id = $1 AND validity = 'active'
+        RETURNING id, permanence, decay_rate
+        """,
+        fact_id,
+        permanence_target,
+        decay_rate,
+    )
+    if row is None:
+        raise ValueError(f"Active fact {fact_id} no longer exists; it was not reclassified")
+
+    return {
+        "success": True,
+        "memory_type": memory_type,
+        "memory_id": str(row["id"]),
+        "permanence": str(row["permanence"]),
+        "decay_rate": float(row["decay_rate"]),
+    }
+
+
 async def memory_stats(
     pool: Pool,
     *,

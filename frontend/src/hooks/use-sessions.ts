@@ -19,6 +19,19 @@ interface SessionQueryOptions {
 }
 
 /**
+ * The state of the bounded detail query behind one pinned failed session.
+ *
+ * A missing excerpt is not enough information to say the session has no
+ * error detail: the query may still be loading, or it may have failed. Keep
+ * those states explicit so the pinned strip can preserve the useful summary
+ * row while honestly naming and retrying an unavailable detail read.
+ */
+export type SessionErrorExcerptState =
+  | { kind: "loading" }
+  | { kind: "error"; retry: () => void }
+  | { kind: "loaded"; error: string | null };
+
+/**
  * refetchInterval for a single session-detail query: POLL_RUNNING_SESSION_MS
  * (the primary update path) while the session hasn't reached a terminal
  * state, `false` once it has — see POLL_RUNNING_SESSION_MS's doc comment in
@@ -176,10 +189,16 @@ export function useSessionErrorExcerpts(sessions: SessionSummary[]) {
     })),
   });
 
-  const errorsById = new Map<string, string | null>();
+  const errorsById = new Map<string, SessionErrorExcerptState>();
   sessions.forEach((s, i) => {
-    const detail = results[i]?.data?.data;
-    errorsById.set(s.id, detail?.error ?? null);
+    const result = results[i];
+    if (!result || result.isPending) {
+      errorsById.set(s.id, { kind: "loading" });
+    } else if (result.isError) {
+      errorsById.set(s.id, { kind: "error", retry: () => void result.refetch() });
+    } else {
+      errorsById.set(s.id, { kind: "loaded", error: result.data?.data.error ?? null });
+    }
   });
   return errorsById;
 }

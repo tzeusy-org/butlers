@@ -11,7 +11,7 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_GO_MINIMUM = "1.25.0"
-UTIL_VERSION = "v0.9.6"
+UTIL_VERSION = "v0.9.12-0.20260717235539-f9ffa7eca58d"
 BUILDER_GO_VERSION = "1.25.11"
 BUILDER_DIGEST = "bbb255b0e131db500cf0520adc97441d2260cf629c7fa7e39e025ddf53995a24"
 

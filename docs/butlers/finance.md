@@ -23,9 +23,10 @@ The Finance Butler does not offer investment advice, initiate payments, file tax
 
 ## Schedule
 
-All scheduled tasks are deterministic `dispatch_mode="job"` handlers (no LLM prompt) that propose
-insight candidates through the Switchboard insight broker rather than notifying directly; delivery
-is subject to the owner's insight verbosity/budget/quiet-hours settings.
+Finance's intelligence schedules are deterministic `dispatch_mode="job"` handlers (no LLM prompt)
+that propose insight candidates through the Switchboard insight broker rather than notifying directly;
+delivery is subject to the owner's insight verbosity/budget/quiet-hours settings. The SimpleFIN bridge
+is a separate deterministic ledger-sync job and does not use the broker.
 
 | Task | Cron | Description |
 |------|------|-------------|
@@ -33,6 +34,7 @@ is subject to the owner's insight verbosity/budget/quiet-hours settings.
 | `bill-reconciliation-sweep` | `15 21 * * 0` | Runs `reconcile_bills()` (auto-settle matched bills), then surfaces auto-settled bills, ambiguous matches, and untracked recurring patterns as candidates. |
 | `anomaly-insight-scan` | `0 21 * * *` | Per-transaction anomaly detection (amount outliers, new merchants, category velocity spikes), capped at 10 candidates/run. |
 | `monthly-finance-digest` | `0 9 1 * *` | Consolidated monthly candidate: prior-month total spend, top 3 categories, budget status, and subscription audit summary. |
+| `simplefin-sync` | `17 4 * * *` | Bounded, one-account SimpleFIN v2 ledger synchronization; it never sends a notification or starts an LLM session. |
 
 ## Tools
 
@@ -62,6 +64,40 @@ is subject to the owner's insight verbosity/budget/quiet-hours settings.
 **Proactive Pattern Detection.** When logging a transaction, the butler checks whether it matches a pattern suggesting an untracked subscription (same merchant, similar amount, recurring interval) and offers to create a subscription record.
 
 **Switchboard Classification Signals.** Switchboard routes messages to Finance based on sender-domain signals (chase.com, paypal.com, amazon.com, stripe.com, etc.), subject-line signals ("Your receipt", "Payment confirmed", "Statement ready"), and body content cues (currency amounts near merchant/payee language, due-date language, recurrence language).
+
+## SimpleFIN Bridge v1
+
+The daily `simplefin-sync` job remains a no-op until an owner stores the claimed
+Access URL through the dashboard:
+
+1. Open `/secrets`, choose **Add credential**, then **System secret**.
+2. Enter key `SIMPLEFIN_ACCESS_URL`, paste the claimed Access URL as the value,
+   leave category as `general`, and set target to `finance`.
+3. Save the credential. Do not place the value in source control,
+   configuration files, tickets, logs, shell commands, or chat.
+
+The job resolves that Finance-local credential from the database only, with no
+environment fallback. On the first successful request, it requires exactly one
+remote account, validates the complete response, and creates one Finance
+account using the remote connection/account labels, currency, and exact
+non-secret `conn_id` plus `account_id` provider binding. It never guesses an
+existing account from a display name. Later runs require that exact binding and
+refuse ambiguous or malformed local bindings before HTTP.
+
+Each daily run records only settled, posted transactions, carries
+`source = "aggregator"` and limited provider provenance, and advances account
+freshness only after a complete successful run. Missing credentials make no
+request; revoked, timed-out, incomplete, or malformed upstream responses make
+no transaction write and return only a sanitized degraded result. A successful
+first run returns `account_created = true`; replayed provider IDs do not increase
+the `recorded` count.
+
+This v1 boundary is intentionally narrow: one automatically registered account,
+first-run history limited to 90 days, a five-day retry overlap, no
+pagination/cursors, balance storage, pending lifecycle, multi-account sync,
+remote mutation, or deletion. To roll back, disable or remove the
+`simplefin-sync` schedule and remove the Finance credential; existing imported
+ledger rows and the provider-bound account remain available for audit.
 
 ## Persistence
 
@@ -109,7 +145,8 @@ psql -h localhost -U butlers -d butlers -c \
 # 4. Verify scheduled tasks are seeded from butler.toml
 psql -h localhost -U butlers -d butlers -c \
   "SELECT name, cron, source, enabled FROM finance.scheduled_tasks ORDER BY name;"
-# Expected: anomaly-insight-scan, bill-reconciliation-sweep, insight-scan, monthly-finance-digest
+# Expected: anomaly-insight-scan, bill-reconciliation-sweep, insight-scan, monthly-finance-digest,
+# simplefin-sync
 # all present with source='toml' and enabled=true
 
 # 5. Confirm source_message_id deduplication is indexed for email provenance

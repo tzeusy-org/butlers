@@ -176,7 +176,7 @@ Schedule execution semantics (dashboard-facing):
 
 - `GET /api/calendar/workspace` -> `ApiResponse<CalendarWorkspaceReadResponse>`
 - `GET /api/calendar/workspace/meta` -> `ApiResponse<CalendarWorkspaceMetaResponse>`
-- `POST /api/calendar/workspace/sync` -> `ApiResponse<CalendarWorkspaceSyncResponse>`
+- `POST /api/calendar/workspace/sync` -> `202 Accepted` + `ApiResponse<CalendarWorkspaceSyncResponse>`
 - `POST /api/calendar/workspace/user-events` -> `ApiResponse<CalendarWorkspaceMutationResponse>`
 - `POST /api/calendar/workspace/butler-events` -> `ApiResponse<CalendarWorkspaceMutationResponse>`
 
@@ -206,7 +206,11 @@ Meta response requirements:
 Sync response requirements:
 
 - Supports global refresh (`{"all": true}`) and source-targeted refresh (`source_key` or `source_id`).
-- Returns per-target trigger outcomes in `data.targets`.
+- Is an acknowledgement, not provider completion: returns `202 Accepted` only after each selected CalendarModule has accepted or rejected its durable action-log command.
+- Returns outer `data.request_id`, plus per-target `request_id`, `status`, `coalesced`, `detail`, and `error` fields in `data.targets`.
+- Global refresh selects one enabled, core-capable canonical owner per duplicate provider `source_key`, then sends at most one owner-wide queued command (without `calendar_id`) to that owner. It never fan-outs one request per replicated schema row.
+- A source-targeted request with an explicit `source_id` or `butler` preserves that physical target; a source-key-only request resolves its canonical owner.
+- `full=true` is queued cursor-recovery intent. A `queued` acknowledgement must not be rendered as completed/recovered; eventual state is observed through source freshness and action/audit telemetry.
 
 Mutation endpoint requirements:
 
@@ -223,7 +227,7 @@ Operational sync and telemetry guidance:
 
 - Frontend clients should treat `projection_freshness` and `source_freshness.sync_state`/`staleness_ms` as the canonical sync health indicators for UX state.
 - `request_id` is the correlation key for idempotent replay and audit/action-log tracing across API, MCP tool calls, and projection reconciliation.
-- `POST /api/calendar/workspace/sync` target statuses (`status`, `detail`, `error`) are the contract surface for operator-visible sync telemetry.
+- `POST /api/calendar/workspace/sync` target statuses (`queued`, `completed`, `failed`), correlation, coalescing, detail, and error are the contract surface for operator-visible dispatch telemetry; they are not proof of provider completion.
 
 ## Butler State Contract
 
@@ -373,14 +377,23 @@ Response model shapes:
 - `GET /api/memory/facts/{factId}` -> `ApiResponse<Fact>`
 - `GET /api/memory/rules` -> `PaginatedResponse<MemoryRule>`
 - `GET /api/memory/rules/{ruleId}` -> `ApiResponse<MemoryRule>`
+- Facts and rules with a source episode carry
+  `source_episode_status: available | expired | unresolved | null`; only
+  `available` permits a live episode navigation affordance.
+- `GET /api/memory/links/{memoryType}/{memoryId}?direction=incoming|outgoing|both`
+  -> `ApiResponse<MemoryLink[]>`; each episode endpoint carries its matching
+  `source_episode_status` or `target_episode_status` in the same vocabulary,
+  while non-episode endpoints are `null`.
 - `GET /api/memory/activity` -> `ApiResponse<MemoryActivity[]>`
 
 ## Approvals Domain Contract
 
+- `GET /api/approvals` and `GET /api/approvals/history` -> `ApiResponse<ApprovalSummary[]>`; summaries carry a nullable, redacted `execution_result`, and Retry is eligible only for `status = approved` with `execution_result = null`
 - `GET /api/approvals/actions` -> `PaginatedResponse<ApprovalAction>`
 - `GET /api/approvals/actions/{actionId}` -> `ApiResponse<ApprovalAction>`
 - `POST /api/approvals/actions/{actionId}/approve` -> `ApiResponse<ApprovalAction>`
 - `POST /api/approvals/actions/{actionId}/reject` -> `ApiResponse<ApprovalAction>`
+- `POST /api/approvals/{actionId}/abandon` -> `ApiResponse<ApprovalAction>`; dashboard-only, body `{ reason: string }`, valid only for `approved` actions with `execution_result = null`
 - `POST /api/approvals/actions/expire-stale` -> `ApiResponse<{ expired_count: number, expired_ids: string[] }>`
 - `GET /api/approvals/actions/executed` -> `PaginatedResponse<ApprovalAction>`
 
@@ -398,7 +411,7 @@ Required query support:
 - `/api/approvals/actions`:
   - `offset`
   - `limit`
-  - `status` (`pending|approved|rejected|expired|executed`)
+  - `status` (`pending|approved|rejected|expired|executed|abandoned`)
   - `tool_name`
   - `since`
   - `until`

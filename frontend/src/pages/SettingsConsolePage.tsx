@@ -27,6 +27,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
+import type { ApprovalMetricsResponse } from "@/api/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Eyebrow } from "@/components/ui/Eyebrow";
@@ -39,6 +40,10 @@ import {
   type ConsoleData,
   type HeaderCounts,
 } from "@/hooks/use-settings-console-live";
+import {
+  isCompleteApprovalMetricsResponse,
+  pendingApprovalMetricSourcesDegraded,
+} from "@/hooks/use-approvals";
 import {
   useRegisterCommands,
   type PaletteCommand,
@@ -66,6 +71,7 @@ interface ModelStats {
 
 interface ApprovalMetricsSummary {
   pending: number;
+  pendingActionsSourcesDegraded: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -96,11 +102,16 @@ function fetchModelStats(): Promise<ModelStats> {
 }
 
 function fetchApprovalMetrics(): Promise<ApprovalMetricsSummary> {
-  return apiFetch<{ data: { total_pending?: number } }>(
-    "/approvals/metrics",
-  ).then((res) => ({
-    pending: res.data?.total_pending ?? 0,
-  }));
+  return apiFetch<ApprovalMetricsResponse>("/approvals/metrics").then((response) => {
+    if (!isCompleteApprovalMetricsResponse(response)) {
+      throw new Error("Approval metrics response is incomplete");
+    }
+
+    return {
+      pending: response.data.total_pending,
+      pendingActionsSourcesDegraded: pendingApprovalMetricSourcesDegraded(response),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +486,8 @@ function ApprovalsPanel({
   });
 
   const pending = data?.pending ?? 0;
+  const pendingActionsSourcesDegraded =
+    data?.pendingActionsSourcesDegraded ?? [];
 
   return (
     <PanelShell
@@ -497,6 +510,17 @@ function ApprovalsPanel({
             Retry →
           </InlineActionLink>
         </p>
+      ) : pendingActionsSourcesDegraded.length > 0 ? (
+        // Stop propagation so Retry does not trigger PanelShell navigation.
+        // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- not itself interactive; onClick only swallows bubbling from the nested native Retry button.
+        <div onClick={(event) => event.stopPropagation()}>
+          <SourceDegradedNote
+            label="Pending approvals"
+            detail={`${pendingActionsSourcesDegraded.join(", ")} unavailable. Count may be incomplete.`}
+            onRetry={() => void refetch()}
+            testId="settings-console-approvals-degraded"
+          />
+        </div>
       ) : (
         <div className="flex items-baseline gap-2">
           <span

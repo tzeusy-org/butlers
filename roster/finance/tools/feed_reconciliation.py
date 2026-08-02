@@ -10,13 +10,19 @@ Reuses the merchant-fuzzy matcher from ``roster/finance/tools/reconciliation.py`
 (the bill<->payment reconciliation engine) rather than reimplementing token
 normalization -- one merchant-similarity definition for the whole butler.
 
-Degraded-mode honesty (CLAUDE.md "Degraded-Mode Response Envelope"): no
-aggregator connector ships in this change (SimpleFIN Bridge is bu-8bnn9
-slice 2, deferred -- the owner must provision a token first). Until then,
-every account's ``last_synced_at`` is NULL, so ``account_feed_freshness()``
-honestly reports every account as ``degraded=True, reason="never_synced"``
-and ``reconcile_feed_vs_email()`` reports ``configured=False`` rather than a
-fabricated "all clear" from an empty aggregator set.
+The optional SimpleFIN Bridge can write aggregator transactions and update an
+account's ``last_synced_at`` after the owner supplies its credentials and a
+sync succeeds. ``reconcile_feed_vs_email()`` derives ``configured`` from
+persisted completed feed-sync evidence, not from a current credential or
+configuration.
+
+Degraded-mode honesty (CLAUDE.md "Degraded-Mode Response Envelope"): before
+any successful aggregator sync, ``reconcile_feed_vs_email()`` reports
+``configured=False`` rather than a fabricated "all clear" from an empty
+aggregator set. That indicator does not report whether a credential or
+configuration is currently present. Accounts without a completed sync remain
+``degraded=True, reason="never_synced"``; successfully synced accounts are
+then classified as fresh or stale individually.
 """
 
 from __future__ import annotations
@@ -74,10 +80,11 @@ async def reconcile_feed_vs_email(
     Returns
     -------
     dict
-        ``configured``: whether any account has ever completed an aggregator
-        sync (``accounts.last_synced_at IS NOT NULL``). ``False`` means the
-        empty ``matched``/``unmatched_feed`` lists reflect "no aggregator
-        connector wired up yet", not "everything reconciled".
+        ``configured``: whether any account has persisted completed feed-sync
+        evidence (``accounts.last_synced_at IS NOT NULL``). ``False`` means the
+        empty ``matched``/``unmatched_feed`` lists reflect no completed feed
+        sync, not "everything reconciled"; it does not report whether an
+        optional SimpleFIN credential or configuration is currently present.
         ``matched``: list of ``{feed, email}`` pairs.
         ``unmatched_feed``: aggregator transactions with no matching email
         receipt -- e.g. a merchant that does not send email receipts.

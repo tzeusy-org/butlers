@@ -74,7 +74,7 @@ For each routing target, the Switchboard dispatches via the `route.execute` entr
 3. A background task picks up the accepted request, transitions it to `processing`, and dispatches through the spawner.
 4. On completion, the inbox row is marked `processed` (with session_id) or `errored` (with error message).
 
-This durable inbox pattern ensures crash recovery — on startup, each butler scans for `accepted` or `processing` rows and re-dispatches them.
+This durable inbox pattern ensures crash recovery — on startup, each butler scans for `accepted` or `processing` rows and re-dispatches them under an opaque processing-claim lease. The worker verifies that lease before protected work and immediately before runtime creation, and a displaced worker cannot terminally settle the row. Dashboard-originated rows linked to a durable message turn are deliberately narrower: recovery marks an unprovable stale predecessor ambiguous rather than automatically replaying it; ordinary channels keep normal fenced re-dispatch.
 
 Response collection follows the `route_response.v1` envelope contract. The Switchboard consumes responses from each downstream butler, matching them by `request_id`. Terminal states are:
 

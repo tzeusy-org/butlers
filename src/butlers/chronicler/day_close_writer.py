@@ -89,7 +89,8 @@ def _coerce_zone(tz: str | ZoneInfo | None) -> ZoneInfo:
 def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
     """Extract source_ref strings from chronicler list tool-call results.
 
-    Scans the tool_calls list (from SpawnerResult) for calls to
+    Scans canonical runtime captures (``name``) and legacy fixtures
+    (``tool``) for calls to
     ``chronicler_day_close_bundle``, ``chronicler_list_episodes``, or
     ``chronicler_list_events`` and pulls ``source_ref`` values from their
     results.  Deduplicates while preserving order.
@@ -101,7 +102,7 @@ def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
     for call in tool_calls:
         if not isinstance(call, dict):
             continue
-        tool_name: str = call.get("tool", "") or ""
+        tool_name: str = call.get("name") or call.get("tool") or ""
         if tool_name not in {
             "chronicler_day_close_bundle",
             "chronicler_list_episodes",
@@ -140,30 +141,63 @@ def _extract_provenance_refs(tool_calls: list[dict[str, Any]]) -> list[str]:
 def _extract_date_label(tool_calls: list[dict[str, Any]]) -> str | None:
     """Extract the structured date_label the day-close prompt bound to.
 
-    Per ``roster/chronicler/AGENTS.md``, the day-close prompt MUST call
-    ``chronicler_day_close_bundle(date_label=...)`` before narrating. The
-    bundle result echoes the requested date back verbatim as ``"date"``
-    (``bundle_assembler.assemble_day_close_bundle``), so recovering it here
-    needs no new tool call and no LLM invocation — only the first bundle
-    call's result is used, matching the once-per-day-close bundle call
-    convention.
-
-    Returns ``None`` when no ``chronicler_day_close_bundle`` call is present
-    (candidate then fails admission as an unbound date_label).
+    A canonical executed capture contains ``name``, ``input``, ``outcome``,
+    and ``result``. Exactly one successful bundle call is required, and its
+    input ``date_label`` must match the echoed result ``date``. Missing,
+    failed, malformed, or ambiguous captures fail closed as an unbound date.
+    Legacy ``tool``/``result`` fixtures remain supported only when no canonical
+    bundle capture exists.
     """
-    for call in tool_calls:
-        if not isinstance(call, dict):
-            continue
-        if (call.get("tool") or "") != "chronicler_day_close_bundle":
-            continue
+    canonical_calls = [
+        call
+        for call in tool_calls
+        if isinstance(call, dict) and call.get("name") == "chronicler_day_close_bundle"
+    ]
+    if canonical_calls:
+        if len(canonical_calls) != 1:
+            return None
+        call = canonical_calls[0]
+        input_raw = call.get("input")
         result_raw = call.get("result")
         if isinstance(result_raw, str):
             try:
                 result_raw = json.loads(result_raw)
             except (json.JSONDecodeError, TypeError):
-                continue
-        if not isinstance(result_raw, dict):
-            continue
+                return None
+        if (
+            call.get("outcome") != "success"
+            or not isinstance(input_raw, dict)
+            or not isinstance(result_raw, dict)
+        ):
+            return None
+        input_date = input_raw.get("date_label")
+        result_date = result_raw.get("date")
+        if (
+            isinstance(input_date, str)
+            and input_date
+            and isinstance(result_date, str)
+            and input_date == result_date
+        ):
+            return input_date
+        return None
+
+    # Legacy fixtures predate executed tool-call capture. Keep their narrow
+    # ``tool``/``result`` shape compatible while runtime captures use the
+    # validated canonical form above.
+    legacy_calls = [
+        call
+        for call in tool_calls
+        if isinstance(call, dict) and call.get("tool") == "chronicler_day_close_bundle"
+    ]
+    if len(legacy_calls) != 1:
+        return None
+    result_raw = legacy_calls[0].get("result")
+    if isinstance(result_raw, str):
+        try:
+            result_raw = json.loads(result_raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if isinstance(result_raw, dict):
         date_val = result_raw.get("date")
         if isinstance(date_val, str) and date_val:
             return date_val
@@ -281,51 +315,70 @@ async def write_day_close_cache(
     )
 
     try:
-        if invalid_reason is not None:
-            existing = await pool.fetchrow(
-                "SELECT invalid_reason FROM tier2_cache"
-                " WHERE cache_key = $1 AND superseded_at IS NULL",
-                cache_key,
-            )
-            if existing is not None and existing["invalid_reason"] is None:
-                # An admissible row already renders for this date; an invalid
-                # candidate SHALL NOT replace it (design.md decision 2).
-                logger.warning(
-                    "day_close_writer: rejected invalid candidate for %s (%s), "
-                    "existing admissible cache row preserved",
-                    cache_key,
-                    invalid_reason,
-                )
-                return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
-            # No existing admissible row: persist the invalid candidate for
-            # audit/recovery. The reader never returns its prose.
-            await upsert_tier2_cache(
-                pool,
-                cache_key=cache_key,
-                start_at=start_at,
-                end_at=end_at,
-                prose=prose,
-                provenance_refs=provenance_refs,
-                date_label=date_label,
-                invalid_reason=invalid_reason,
-            )
-            logger.warning(
-                "day_close_writer: contained invalid candidate for %s (%s)",
-                cache_key,
-                invalid_reason,
-            )
-            return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Serialize the existing-row check and all writes for this
+                # cache key. Otherwise an invalid candidate can inspect an
+                # absent/invalid row, a concurrent valid writer can commit,
+                # and the stale invalid path can overwrite that valid prose.
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cache_key)
 
-        await upsert_tier2_cache(
-            pool,
-            cache_key=cache_key,
-            start_at=start_at,
-            end_at=end_at,
-            prose=prose,
-            provenance_refs=provenance_refs,
-            date_label=date_label,
-            invalid_reason=None,
-        )
+                if invalid_reason is not None:
+                    existing = await conn.fetchrow(
+                        "SELECT prose, date_label, invalid_reason FROM tier2_cache"
+                        " WHERE cache_key = $1 AND superseded_at IS NULL",
+                        cache_key,
+                    )
+                    existing_is_admissible = (
+                        existing is not None
+                        and existing.get("invalid_reason") is None
+                        and classify_day_close_candidate(
+                            existing.get("prose"),
+                            date_label=existing.get("date_label"),
+                            expected_date_iso=day_date.isoformat(),
+                        )
+                        is None
+                    )
+                    if existing_is_admissible:
+                        # An admissible row already renders for this date; an
+                        # invalid candidate SHALL NOT replace it (design.md
+                        # decision 2).
+                        logger.warning(
+                            "day_close_writer: rejected invalid candidate for %s (%s), "
+                            "existing admissible cache row preserved",
+                            cache_key,
+                            invalid_reason,
+                        )
+                        return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+                    # No existing admissible row: persist the invalid candidate
+                    # for audit/recovery. The reader never returns its prose.
+                    await upsert_tier2_cache(
+                        conn,
+                        cache_key=cache_key,
+                        start_at=start_at,
+                        end_at=end_at,
+                        prose=prose,
+                        provenance_refs=provenance_refs,
+                        date_label=date_label,
+                        invalid_reason=invalid_reason,
+                    )
+                    logger.warning(
+                        "day_close_writer: contained invalid candidate for %s (%s)",
+                        cache_key,
+                        invalid_reason,
+                    )
+                    return DayCloseCacheWriteOutcome(invalid_reason=invalid_reason)
+
+                await upsert_tier2_cache(
+                    conn,
+                    cache_key=cache_key,
+                    start_at=start_at,
+                    end_at=end_at,
+                    prose=prose,
+                    provenance_refs=provenance_refs,
+                    date_label=date_label,
+                    invalid_reason=None,
+                )
         logger.info(
             "day_close_writer: wrote tier2_cache[%s] (%d provenance refs)",
             cache_key,

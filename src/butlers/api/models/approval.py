@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class TargetContact(BaseModel):
@@ -160,8 +160,21 @@ class ApprovalDetail(BaseModel):
     )
 
 
+class ApprovalAbandonRequest(BaseModel):
+    """Explicit accountable reason for dashboard-only stalled-action abandonment."""
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def require_non_blank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value.strip()
+
+
 class ApprovalSummary(BaseModel):
-    """Compact approval item for the flat-list GET /api/approvals endpoint."""
+    """Compact approval item for the flat-list and history endpoints."""
 
     id: str
     butler: str
@@ -170,6 +183,7 @@ class ApprovalSummary(BaseModel):
     created_at: datetime
     expires_at: datetime | None = None
     why: str | None = None
+    execution_result: dict[str, Any] | None = None
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
@@ -275,7 +289,13 @@ class RuleConstraintSuggestion(BaseModel):
 
 
 class ApprovalMetrics(BaseModel):
-    """Aggregate metrics for the approvals dashboard."""
+    """Aggregate metrics for the approvals dashboard.
+
+    ``ApiResponse.meta`` carries availability per independently aggregated
+    family: ``pending_actions_sources_degraded`` and
+    ``approval_rules_sources_degraded``. A zero in either metric is truthful
+    only when its matching metadata key is absent.
+    """
 
     total_pending: int = 0
     total_approved_today: int = 0

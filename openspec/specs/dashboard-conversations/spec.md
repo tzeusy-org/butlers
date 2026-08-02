@@ -37,13 +37,13 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
 
 ### Requirement: Message Data Model
 
-The `public.dashboard_messages` table stores individual messages within a conversation, including both user inputs and assistant responses with full attribution.
+The `public.dashboard_messages` table SHALL store individual messages within a conversation, including both user inputs and assistant responses with full attribution.
 
 #### Scenario: Message table schema
 
 - **WHEN** the migration creates the `public.dashboard_messages` table
 - **THEN** the table SHALL contain the following columns:
-  - `id` (UUID, primary key) — server-generated UUID7 by default, or a client-generated UUID when a dashboard submission needs a stable retry identity
+  - `id` (UUID, primary key) — immutable dashboard user-turn identity; dashboard UI generates it before submission and reuses it for retry and Stop, while server generation remains legacy API compatibility only
   - `conversation_id` (UUID, NOT NULL, FK to `public.dashboard_conversations.id` ON DELETE CASCADE) — parent conversation
   - `role` (TEXT, NOT NULL) — one of `user`, `assistant`
   - `content` (TEXT, NOT NULL) — message text (markdown for assistant responses)
@@ -90,13 +90,13 @@ The dashboard API SHALL provide an endpoint to list conversations for a butler w
 
 ### Requirement: Conversation Creation
 
-Starting a new conversation creates a conversation record and sends the first user message through the Switchboard ingestion pipeline.
+Starting a new conversation SHALL create a conversation record and send the first user message through the Switchboard ingestion pipeline.
 
 #### Scenario: Create conversation with first message
 
 - **WHEN** `POST /api/butlers/{name}/conversations` is called with `{ "message": "Hello butler" }` and an optional `page_context`
 - **THEN** a new conversation row is inserted in `public.dashboard_conversations` with `butler_name = {name}`, `status = 'active'`, and a default title
-- **AND** a user message row is inserted in `public.dashboard_messages` **before** Switchboard submission is attempted; a client MAY provide its UUID as `message_id`, and MUST reuse that UUID when retrying the same submission
+- **AND** a user message row is inserted in `public.dashboard_messages` **before** Switchboard submission is attempted; the dashboard UI MUST provide one immutable UUID as `message_id` and reuse it for every retry and Stop of that user turn (API callers that omit it are compatibility-only and cannot offer pre-SSE Stop)
 - **AND** the message is submitted to the Switchboard's `ingest` MCP tool as an `ingest.v1` envelope with `source.channel = "dashboard"`, `source.provider = "internal"`, `source.endpoint_identity = "dashboard:web:{conversation_id}"`
 - **AND** the response is streamed back via SSE on the same request (see SSE Streaming requirement)
 - **AND** the response includes the `conversation_id` in the initial SSE event
@@ -115,7 +115,7 @@ Starting a new conversation creates a conversation record and sends the first us
 
 ### Requirement: Continue Conversation
 
-Sending a follow-up message in an existing conversation preserves the thread context.
+Sending a follow-up message in an existing conversation SHALL preserve the thread context.
 
 #### Scenario: Send follow-up message
 
@@ -137,9 +137,67 @@ Sending a follow-up message in an existing conversation preserves the thread con
 - **WHEN** `POST /api/butlers/{name}/conversations/{conversation_id}/messages` is called but the conversation belongs to a different butler
 - **THEN** a 404 response with `code: "CONVERSATION_NOT_FOUND"` is returned
 
+### Requirement: Durable Dashboard Turn Control
+
+Each dashboard UI user message SHALL have one durable control record keyed by
+its immutable `message_id`. It makes Stop and retry behavior truthful across
+the API, Switchboard, target butler, and route-inbox recovery boundaries.
+
+#### Scenario: Open the durable turn before external ingress
+
+- **WHEN** the dashboard API persists a dashboard UI user message
+- **THEN** it opens or loads that message's durable turn before it returns its
+  SSE response or calls external `ingest.v1`
+- **AND** the same `message_id` is used as `event.external_event_id`
+- **AND** Stop can address that turn even before a newly-created conversation
+  has delivered `conversation_id` over SSE
+
+#### Scenario: Only one caller may cross the ingress boundary
+
+- **WHEN** one or more callers submit the same `message_id`
+- **THEN** exactly one caller whose durable ingress claim is `dispatch` MAY
+  invoke `ingest.v1`
+- **AND** a caller that observes `accepted` SHALL observe the original request
+  and SHALL NOT invoke `ingest.v1` again
+- **AND** a caller that observes `pending` or `cancelling` SHALL receive SSE
+  `error {code: "INGEST_IN_PROGRESS"}` followed by `done`, retain the same
+  logical message, and SHALL NOT offer automatic replay
+- **AND** a caller that observes `cancelled` SHALL receive `SESSION_CANCELLED`
+  followed by `done`
+- **AND** a caller that observes `ambiguous` SHALL receive
+  `TURN_OUTCOME_UNKNOWN` followed by `done` and SHALL NOT automatically replay
+  the turn
+- **AND** a durable `retryable_error` permits a later retry with the same
+  immutable `message_id`; a deterministic rejected submission remains a
+  rejection rather than a new logical message
+
+#### Scenario: Message-scoped Stop is canonical
+
+- **WHEN** the dashboard calls `POST
+  /api/butlers/{name}/conversation-turns/{message_id}/cancel`
+- **THEN** the API returns the raw typed `ConversationCancelResponse` with
+  HTTP 200 and exactly one truthful domain outcome: `cancelled`,
+  `already_finished`, or unconfirmed cancellation described by `message`
+- **AND** `{name}` retains the established butler-route namespace, while
+  `message_id` is the exact durable control key and not a second target selector
+- **AND** `POST /api/butlers/{name}/conversations/{conversation_id}/cancel`
+  is compatibility-only; dashboard UI clients SHALL NOT use it as their normal
+  Stop path
+
+#### Scenario: Dashboard route recovery never infers a safe replay
+
+- **WHEN** a recovery worker claims a stale `processing` `route_inbox` row
+  sourced from a durable dashboard turn
+- **THEN** it SHALL reconcile the predecessor as unprovable and mark the turn
+  ambiguous rather than automatically replaying it
+- **AND** it MAY still address any exact, durably registered predecessor
+  session with Stop
+- **AND** ordinary non-dashboard route recovery retains its normal replay
+  behavior subject to its route-inbox ownership lease
+
 ### Requirement: Conversation Lifecycle Management
 
-Operators can archive, unarchive, and rename conversations.
+The dashboard API SHALL allow operators to archive, unarchive, and rename conversations.
 
 #### Scenario: Archive conversation
 
@@ -163,7 +221,7 @@ Operators can archive, unarchive, and rename conversations.
 
 ### Requirement: Conversation Messages List
 
-Retrieve the full message history for a conversation.
+The dashboard API SHALL retrieve the full message history for a conversation.
 
 #### Scenario: List messages
 
@@ -178,7 +236,7 @@ Retrieve the full message history for a conversation.
 
 ### Requirement: Conversation Search
 
-Search across conversation history for a butler.
+The dashboard API SHALL search across conversation history for a butler.
 
 #### Scenario: Search conversations by content
 
@@ -229,6 +287,27 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 - **THEN** an `event: error` with `data: {"code": "INGEST_REJECTED", "message": "..."}` is sent, followed by `event: done`
 - **AND** this is a deterministic rejection distinct from `SWITCHBOARD_UNAVAILABLE`: retrying the identical envelope will fail the same way
 
+#### Scenario: A durable turn is still being observed or settled
+
+- **WHEN** a same-message submission sees a durable `pending` or `cancelling`
+  ingress state
+- **THEN** the API emits `event: error` with
+  `data: {"code": "INGEST_IN_PROGRESS", "message": "..."}`, followed by
+  `event: done`
+- **AND** the client treats it as an observer/check-again state, not a
+  retryable send failure
+
+#### Scenario: A durable Stop or uncertain recovery becomes terminal on SSE
+
+- **WHEN** the durable turn records confirmed cancellation
+- **THEN** the API emits `event: error` with
+  `data: {"code": "SESSION_CANCELLED", "message": "..."}`, followed by
+  `event: done`
+- **WHEN** route recovery cannot prove the prior dashboard runtime stopped
+- **THEN** the API emits `event: error` with
+  `data: {"code": "TURN_OUTCOME_UNKNOWN", "message": "..."}`, followed by
+  `event: done` and no automatic replay
+
 #### Scenario: SSE keepalive during processing
 
 - **WHEN** the butler session is processing but no tokens have been emitted for 15 seconds
@@ -246,7 +325,7 @@ Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through 
   - `source.channel`: `"dashboard"`
   - `source.provider`: `"internal"`
   - `source.endpoint_identity`: `"dashboard:web:{conversation_id}"`
-  - `event.external_event_id`: `"{message_id}"`, where `message_id` is client-generated for a new user message and reused for a retry of that message
+  - `event.external_event_id`: `"{message_id}"`, where dashboard UI provides one immutable client-generated ID for a new user message and reuses it for retry and Stop
   - `event.external_thread_id`: `"{conversation_id}"`
   - `event.observed_at`: current timestamp
   - `sender.identity`: `"dashboard:operator"`
@@ -287,7 +366,7 @@ Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through 
 
 ### Requirement: Conversation Summary Queries
 
-Provide conversation-count summary statistics.
+The dashboard API SHALL provide conversation-count summary statistics.
 
 #### Scenario: Conversation summary per butler
 
@@ -296,7 +375,7 @@ Provide conversation-count summary statistics.
 
 ### Requirement: Conversation Pydantic Response Models
 
-API response models for conversation endpoints.
+Conversation endpoint API response models SHALL provide typed response shapes.
 
 #### Scenario: ConversationSummary model
 

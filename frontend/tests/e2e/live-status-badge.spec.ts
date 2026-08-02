@@ -47,6 +47,24 @@ const BADGE_LIVE = "[data-testid='live-status-badge-live']";
 const BADGE_IDLE = "[data-testid='live-status-badge-idle']";
 const BADGE_DOWN = "[data-testid='live-status-badge-down']";
 
+/**
+ * The global Sidebar reads approvals metrics on both badge routes. Its
+ * availability metadata is part of the response contract, so a generic list
+ * catch-all cannot safely stand in for this healthy, empty metric.
+ */
+async function mockHealthyApprovalMetrics(page: Page) {
+  await page.route("**/api/approvals/metrics", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { total_pending: 0 },
+        meta: {},
+      }),
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // /ingestion (IngestionTimelinePage) — badge driven by the events head poll
 // ---------------------------------------------------------------------------
@@ -67,6 +85,8 @@ async function mockIngestion(page: Page, events: unknown[] | 500) {
       body: JSON.stringify({ data: [] }),
     });
   });
+
+  await mockHealthyApprovalMetrics(page);
 
   // Per-event sub-resources — more specific than the events list, registered
   // before it (the star glob does not cross a slash, so /events?... below
@@ -179,6 +199,8 @@ async function mockTimeline(page: Page, events: unknown[] | 500) {
       body: JSON.stringify({ data: [] }),
     });
   });
+
+  await mockHealthyApprovalMetrics(page);
 
   await page.route("**/api/timeline*", (route) => {
     if (events === 500) {

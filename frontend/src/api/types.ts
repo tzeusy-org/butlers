@@ -609,6 +609,12 @@ export interface TimelineMeta {
    * degraded-mode convention — see CLAUDE.md — applied per-source).
    */
   degraded_sources: string[];
+  /**
+   * Additive names of session fan-out pools that failed for this request.
+   * Kept optional for rolling deploys against an older Timeline API; readers
+   * must preserve the generic degraded_sources state either way.
+   */
+  degraded_butlers?: string[];
 }
 
 /** Response shape from GET /api/timeline. */
@@ -1585,7 +1591,7 @@ export interface CalendarWorkspaceSyncRequest {
   full?: boolean;
 }
 
-/** One sync trigger attempt result. */
+/** One durable sync-command acknowledgement/result. */
 export interface CalendarWorkspaceSyncTarget {
   butler_name: string;
   source_key: string | null;
@@ -1593,8 +1599,12 @@ export interface CalendarWorkspaceSyncTarget {
   status: string;
   detail: string | null;
   error: string | null;
-  /** Whether a full re-sync (cursor recovery) ran for this target. */
+  /** False for a queued acknowledgement; observe action/freshness telemetry for completion. */
   recovery: boolean;
+  /** Correlation id of the durable action-log command. */
+  request_id: string | null;
+  /** True when this acknowledgement joined an existing queued command. */
+  coalesced: boolean;
 }
 
 /** Response payload for POST /api/calendar/workspace/sync. */
@@ -1602,6 +1612,8 @@ export interface CalendarWorkspaceSyncResponse {
   scope: "all" | "source";
   requested_source_key: string | null;
   requested_source_id: string | null;
+  /** Correlation id generated for this dashboard/API request. */
+  request_id: string;
   /** Echoes whether the request asked for a full recovery sync. */
   full: boolean;
   targets: CalendarWorkspaceSyncTarget[];
@@ -2705,6 +2717,9 @@ export interface Episode {
   metadata: Record<string, unknown>;
 }
 
+/** Availability of a durable reference to an episode source. */
+export type EpisodeSourceStatus = "available" | "expired" | "unresolved";
+
 /** A consolidated fact from the mid-term memory tier. */
 export interface Fact {
   id: string;
@@ -2717,6 +2732,8 @@ export interface Fact {
   permanence: string;
   source_butler: string | null;
   source_episode_id: string | null;
+  /** Whether a source episode is still available, expired, or cannot be resolved. */
+  source_episode_status?: EpisodeSourceStatus | null;
   session_id: string | null;
   supersedes_id: string | null;
   /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
@@ -2749,6 +2766,8 @@ export interface MemoryRule {
   success_count: number;
   harmful_count: number;
   source_episode_id: string | null;
+  /** Whether a source episode is still available, expired, or cannot be resolved. */
+  source_episode_status?: EpisodeSourceStatus | null;
   source_butler: string | null;
   created_at: string;
   last_applied_at: string | null;
@@ -3152,6 +3171,8 @@ export interface ApprovalSummary {
   created_at: string;
   expires_at?: string | null;
   why?: string | null;
+  /** Durable execution evidence used to distinguish eligible stalled rows. */
+  execution_result?: Record<string, unknown> | null;
   blast_radius?: ApprovalBlastRadius | null;
   reversibility?: ApprovalReversibility | null;
   /**
@@ -3249,6 +3270,10 @@ export interface ApprovalDetail {
   push_failed?: boolean;
 }
 
+export interface ApprovalAbandonRequest {
+  reason: string;
+}
+
 /** Quiet-hours policy singleton. */
 export interface ApprovalsPolicy {
   quiet_start_hour?: number | null;
@@ -3316,6 +3341,21 @@ export interface ApprovalMetrics {
    * treat null as a false all-clear.
    */
   callback_secret_configured?: boolean | null;
+}
+
+/** Availability metadata for the independently aggregated approvals metric families. */
+export interface ApprovalMetricsMeta extends ApiMeta {
+  /** Configured sources whose pending-actions aggregate could not be read. */
+  pending_actions_sources_degraded?: string[];
+  /** Configured sources whose active-rules aggregate could not be read. */
+  approval_rules_sources_degraded?: string[];
+  /** De-duplicated union of every degraded approvals-metrics source. */
+  sources_degraded?: string[];
+}
+
+/** GET /api/approvals/metrics response with per-family availability. */
+export interface ApprovalMetricsResponse extends ApiResponse<ApprovalMetrics> {
+  meta: ApprovalMetricsMeta;
 }
 
 export interface ApprovalActionParams {
@@ -4442,6 +4482,7 @@ export interface IngestionRuleUpdate {
 export interface IngestionRuleTestEnvelope {
   sender_address?: string;
   source_channel?: string;
+  source_endpoint_identity?: string;
   headers?: Record<string, string>;
   mime_parts?: string[];
   raw_key?: string;
@@ -5173,7 +5214,10 @@ export interface PageContext {
 /** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
   message: string;
-  /** Client-generated UUID reused if this message submission is retried. */
+  /**
+   * Immutable client-generated UUID. Dashboard UI reuses it for retries and
+   * pre-SSE Stop; omission is legacy API compatibility only.
+   */
   message_id?: string;
   title?: string;
   /** See `PageContext` — unpopulated seam for bu-p6ey8.4. */
@@ -5183,17 +5227,23 @@ export interface CreateConversationRequest {
 /** Request body for POST /api/butlers/{name}/conversations/{id}/messages. */
 export interface SendMessageRequest {
   message: string;
-  /** Client-generated UUID reused if this message submission is retried. */
+  /**
+   * Immutable client-generated UUID. Dashboard UI reuses it for retries and
+   * pre-SSE Stop; omission is legacy API compatibility only.
+   */
   message_id?: string;
   /** See `PageContext` — unpopulated seam for bu-p6ey8.4. */
   page_context?: PageContext;
 }
 
 /**
- * Response from POST /api/butlers/{name}/conversations/{id}/cancel (the
- * chat "Stop" button, bu-ep4ks.2). Always HTTP 200 -- mirrors the backend's
- * `ConversationCancelResponse`. Exactly one of three honest outcomes:
- *   - `cancelled: true` -- an in-flight session was actually killed.
+ * Raw response from the canonical message-scoped dashboard-turn Stop endpoint
+ * (`.../conversation-turns/{message_id}/cancel`). Always HTTP 200 -- mirrors
+ * the backend's `ConversationCancelResponse`. Exactly one of
+ * three honest outcomes:
+ *   - `cancelled: true` -- the control plane either blocked every future
+ *     runtime before invocation or every already-invoking runtime confirmed
+ *     it had stopped.
  *   - `cancelled: false, already_finished: true` -- nothing was running;
  *     benign no-op, never rendered as a failure.
  *   - `cancelled: false, already_finished: false` -- cancellation was
@@ -5203,6 +5253,8 @@ export interface SendMessageRequest {
 export interface ConversationCancelResponse {
   cancelled: boolean;
   already_finished: boolean;
+  /** Persisted thread identity, including a just-created conversation. */
+  conversation_id?: string | null;
   session_id?: string | null;
   message?: string | null;
 }
@@ -5227,10 +5279,19 @@ export interface ConversationSseEvent {
  * `src/butlers/api/routers/conversations.py` module docstring for the
  * authoritative contract). `code` distinguishes a retryable connectivity
  * failure from a graceful reply timeout (which carries `session_id` for an
- * "inspect session" link) from a deterministic rejection.
+ * "inspect session" link), an in-progress durable handoff that needs Check
+ * again rather than Retry, a terminal unknown outcome that cannot be retried,
+ * or a deterministic rejection.
  */
 export interface ConversationSseErrorData {
-  code?: "SWITCHBOARD_UNAVAILABLE" | "INGEST_REJECTED" | "SWITCHBOARD_ERROR" | "SESSION_TIMEOUT";
+  code?:
+    | "SWITCHBOARD_UNAVAILABLE"
+    | "INGEST_REJECTED"
+    | "SWITCHBOARD_ERROR"
+    | "INGEST_IN_PROGRESS"
+    | "SESSION_TIMEOUT"
+    | "SESSION_CANCELLED"
+    | "TURN_OUTCOME_UNKNOWN";
   message?: string;
   session_id?: string | null;
 }
@@ -6334,10 +6395,9 @@ export interface ChroniclerEpisode {
 
 /**
  * Fresh day-close cache response: prose + provenance refs.
- * Returned when cache_built_at >= all invalidating events in the window.
+ * Returned when cache_built_at >= all invalidating events for the requested date.
  */
 export interface ChroniclerDayCloseFreshResponse {
-  stale: false;
   prose: string;
   provenance_refs: string[];
   cache_built_at: string;
@@ -6345,7 +6405,7 @@ export interface ChroniclerDayCloseFreshResponse {
 
 /**
  * Stale day-close cache response: cache exists but has been invalidated.
- * Returned when any episode/point_event/override in the window changed after cache_built_at.
+ * Returned when any episode/point_event/override for the requested date changed after cache_built_at.
  */
 export interface ChroniclerDayCloseStaleResponse {
   stale: true;
@@ -6353,17 +6413,23 @@ export interface ChroniclerDayCloseStaleResponse {
   last_invalidating_event_at: string;
 }
 
-/** Union of fresh and stale day-close responses. */
+/** Invalid day-close cache response: no renderable prose is returned. */
+export interface ChroniclerDayCloseInvalidResponse {
+  invalid: true;
+  invalid_reason: "inadmissible_prose" | "date_mismatch";
+  cache_built_at: string;
+}
+
+/** Union of fresh, stale, and invalid day-close responses. */
 export type ChroniclerDayCloseResponse =
   | ChroniclerDayCloseFreshResponse
-  | ChroniclerDayCloseStaleResponse;
+  | ChroniclerDayCloseStaleResponse
+  | ChroniclerDayCloseInvalidResponse;
 
 /** Query parameters for GET /api/chronicler/aggregate/day-close. */
 export interface ChroniclerDayCloseParams {
-  /** ISO-8601 date string (YYYY-MM-DD) or datetime for the window start. */
-  window_start: string;
-  /** ISO-8601 date string (YYYY-MM-DD) or datetime for the window end. */
-  window_end: string;
+  /** Local calendar date in YYYY-MM-DD form. */
+  date: string;
 }
 
 /** A single Chronicler point event (corrected view). */
@@ -7142,6 +7208,16 @@ export interface ChroniclesRecentDay {
   episode_count: number;
 }
 
+export type ChroniclesSubqueryAvailabilityState = "available" | "unavailable" | "not_requested";
+
+/** Availability of an owned Chronicles briefing read.
+ * `unavailable` is a failed source; `not_requested` is intentionally skipped
+ * or optional during cold boot, never a calm empty result. */
+export interface ChroniclesSubqueryAvailability {
+  subquery: string;
+  state: ChroniclesSubqueryAvailabilityState;
+}
+
 export interface ChroniclesBriefing {
   date: string;
   /** `no_data`/`unavailable`/`degraded` are non-content states: this day's
@@ -7154,6 +7230,12 @@ export interface ChroniclesBriefing {
   kpi: ChroniclesKpi;
   attention_items: ChroniclesAttentionItem[];
   recent_days: ChroniclesRecentDay[];
+  /**
+   * Stable per-subquery availability ledger for honest degraded rendering.
+   * Optional for rolling deploys against a backend that predates this
+   * additive response field; consumers should treat absence as an empty list.
+   */
+  subquery_availability?: ChroniclesSubqueryAvailability[];
   /** Earliest chronicled day (owner tz, YYYY-MM-DD), or null when no data.
    * Bounds backward archive navigation. */
   earliest_date?: string | null;
@@ -9128,6 +9210,15 @@ export interface RulePromotionSurface {
   auto_applied: RulePromotionAutoApplied[];
 }
 
+/** Fan-out availability metadata for the rule-promotion suggestion surface. */
+export interface RulePromotionSurfaceMeta extends ApiMeta {
+  sources_degraded?: string[];
+}
+
+export interface RulePromotionSurfaceResponse extends ApiResponse<RulePromotionSurface> {
+  meta: RulePromotionSurfaceMeta;
+}
+
 /** Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6). */
 export interface RulePromotionStats {
   suggestions_pending: number;
@@ -9139,6 +9230,15 @@ export interface RulePromotionStats {
   llm_sessions_avoided_estimate: number;
   demotion_pending: number;
   promoted_rule_spot_checks: number;
+}
+
+/** Fan-out availability metadata for rule-promotion aggregate metrics. */
+export interface RulePromotionStatsMeta extends ApiMeta {
+  sources_degraded?: string[];
+}
+
+export interface RulePromotionStatsResponse extends ApiResponse<RulePromotionStats> {
+  meta: RulePromotionStatsMeta;
 }
 
 /** Body for dismissing a pending rule-promotion suggestion. */

@@ -898,6 +898,18 @@ async def _run_finance_monthly_finance_digest_job(
     return await mod.run_monthly_finance_digest(pool)
 
 
+async def _run_finance_simplefin_sync_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Finance's one-account SimpleFIN bridge (deterministic, zero LLM)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_simplefin_sync(pool)
+
+
 async def _run_relationship_briefing_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1842,6 +1854,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "bill_reconciliation_sweep": _run_finance_bill_reconciliation_sweep_job,
             "anomaly_insight_scan": _run_finance_anomaly_insight_scan_job,
             "monthly_finance_digest": _run_finance_monthly_finance_digest_job,
+            "simplefin_sync": _run_finance_simplefin_sync_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "relationship": {

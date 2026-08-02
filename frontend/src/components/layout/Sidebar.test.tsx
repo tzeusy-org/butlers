@@ -895,6 +895,35 @@ describe("Sidebar", () => {
     });
   });
 
+  describe("Approvals badge availability", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: { data: [], meta: {} },
+      });
+    });
+
+    it.each([
+      ["rail", () => render()],
+      ["expanded desktop", () => renderExpanded()],
+      ["mobile", () => renderMobile()],
+    ])("renders an accessible amber unavailable Approvals marker in %s", (_variant, renderSidebar) => {
+      vi.mocked(useBadgeCounts).mockReturnValue({
+        "approvals-pending": { kind: "unavailable" },
+      });
+
+      renderSidebar();
+
+      const approvalsLink = container.querySelector('a[href="/approvals"]');
+      expect(approvalsLink).toBeTruthy();
+      const marker = approvalsLink?.querySelector(
+        '[aria-label="Pending approvals unavailable"]',
+      );
+      expect(marker).toBeTruthy();
+      expect(marker?.getAttribute("style")).toContain("background-color: var(--amber)");
+      expect(approvalsLink?.textContent).not.toContain("0");
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Relationships nav removal
   // -------------------------------------------------------------------------

@@ -593,6 +593,11 @@ services:
     command: []
     ports:
       - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
+    # All Butler MCP listeners use 41100-41111, which overlaps Linux's
+    # default ephemeral range. Exclude it from outbound source-port selection
+    # so a database connection cannot race a later listener bind at startup.
+    sysctls:
+      net.ipv4.ip_local_reserved_ports: "41100-41111"
     # Allow bubblewrap (bwrap) sandbox inside the container — Codex CLI uses
     # bwrap for command isolation, which requires user-namespace creation.
     # Docker's default AppArmor profile blocks this; unconfined lifts that
@@ -739,6 +744,9 @@ services:
     profiles: [hotreload]
     entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers up"]
     command: []
+    # Keep the same MCP port reservation as the baked daemon service above.
+    sysctls:
+      net.ipv4.ip_local_reserved_ports: "41100-41111"
     security_opt:
       - apparmor:unconfined
     environment:

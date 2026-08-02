@@ -22,17 +22,18 @@ direct-to-``unfixable`` shortcut is reimplemented here.
 
 Four checks, one discovery source
 ----------------------------------
-1. **connector-offline** — reads ``public.v_qa_connector_state`` (core
-   migration ``sw_024``, a sanctioned RFC 0010 view over
+1. **connector-offline** — reads ``public.v_qa_connector_state`` (Switchboard
+   migrations ``sw_024`` / ``sw_028``, a sanctioned RFC 0010 view over
    ``switchboard.connector_registry``). Reuses
    ``butlers.api.models.connector.derive_liveness`` — the SAME
    online/stale/offline definition the dashboard's own connector list already
    uses — rather than inventing a second threshold that could quietly
    disagree with it. A ``state='paused'`` connector (a deliberate operator
-   action via the pause endpoint) and an archived/soft-deleted identity
-   (already excluded by the view itself) are never flagged. A connector with
-   no heartbeat yet gets a 15-minute grace window from ``first_seen_at`` so a
-   registration moments ago never fires on the very next patrol tick.
+   action via the pause endpoint), an archived/soft-deleted identity, and a
+   storage-only row with a checkpoint but no process instance or heartbeat
+   (already excluded by the view itself) are never flagged. A connector
+   registration with no heartbeat yet gets a 15-minute grace window from
+   ``first_seen_at`` so it never fires on the very next patrol tick.
 2. **heartbeat-stale** — reads ``public.v_qa_butler_heartbeat`` (same
    migration, over ``switchboard.butler_registry``). Recomputes staleness
    independently from ``last_seen_at`` + the per-butler

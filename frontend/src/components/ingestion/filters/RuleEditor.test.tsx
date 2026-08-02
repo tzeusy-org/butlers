@@ -275,6 +275,70 @@ describe('RuleEditor — runtime-valid verdict vocabulary (bu-4rt0h)', () => {
     expect(arg.id).toBe('rule-001')
     expect(arg.body.action).toBe('route_to:finance')
   })
+
+  it('offers source endpoint as an exact-match global rule condition', () => {
+    act(() => {
+      root.render(
+        <RuleEditor mode="create" onClose={() => {}} />,
+      )
+    })
+
+    const typeSelect = container.querySelector(
+      '[data-testid="rule-editor-type"]',
+    ) as HTMLSelectElement
+    const optionValues = Array.from(typeSelect.options).map((option) => option.value)
+    expect(optionValues).toContain('source_endpoint')
+
+    act(() => setInputValue(typeSelect, 'source_endpoint'))
+    expect(
+      container.querySelector('[data-testid="rule-editor-condition-source-endpoint"]'),
+    ).not.toBeNull()
+  })
+
+  it('submits a source endpoint condition as the exact global rule payload', async () => {
+    act(() => {
+      root.render(
+        <RuleEditor mode="create" onClose={() => {}} />,
+      )
+    })
+
+    const typeSelect = container.querySelector(
+      '[data-testid="rule-editor-type"]',
+    ) as HTMLSelectElement
+    act(() => setInputValue(typeSelect, 'source_endpoint'))
+
+    const endpoint = container.querySelector(
+      '[data-testid="rule-editor-condition-source-endpoint"]',
+    ) as HTMLInputElement
+    act(() => setInputValue(endpoint, 'Spotify:acct-1'))
+
+    const actionSelect = container.querySelector(
+      '[data-testid="rule-editor-action"]',
+    ) as HTMLSelectElement
+    act(() => setInputValue(actionSelect, 'route_to'))
+    const target = container.querySelector(
+      '[data-testid="rule-editor-route-target"]',
+    ) as HTMLInputElement
+    act(() => setInputValue(target, 'lifestyle'))
+
+    await act(async () => {
+      ;(
+        container.querySelector('[data-testid="rule-editor-save"]') as HTMLButtonElement
+      ).click()
+    })
+
+    expect(mockCreateMutateAsync).toHaveBeenCalledTimes(1)
+    const body = (mockCreateMutateAsync.mock.calls[0] as unknown[])[0] as Record<
+      string,
+      unknown
+    >
+    expect(body).toMatchObject({
+      scope: 'global',
+      rule_type: 'source_endpoint',
+      condition: { endpoint_identity: 'spotify:acct-1' },
+      action: 'route_to:lifestyle',
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -324,6 +388,11 @@ describe('RuleEditor DSL test panel — sends full envelope shape (bu-95ido)', (
     expect(
       container.querySelector('[data-testid="rule-editor-test-raw-key"]'),
       'raw_key field missing from DSL panel',
+    ).not.toBeNull()
+
+    expect(
+      container.querySelector('[data-testid="rule-editor-test-source-endpoint"]'),
+      'source_endpoint_identity field missing from DSL panel',
     ).not.toBeNull()
   })
 
@@ -422,6 +491,9 @@ describe('RuleEditor DSL test panel — sends full envelope shape (bu-95ido)', (
     const channelInput = container.querySelector(
       '[data-testid="rule-editor-test-channel"]',
     ) as HTMLInputElement
+    const sourceEndpointInput = container.querySelector(
+      '[data-testid="rule-editor-test-source-endpoint"]',
+    ) as HTMLInputElement
     const headersTextarea = container.querySelector(
       '[data-testid="rule-editor-test-headers"]',
     ) as HTMLTextAreaElement
@@ -441,6 +513,9 @@ describe('RuleEditor DSL test panel — sends full envelope shape (bu-95ido)', (
 
       inputSetter?.call(channelInput, 'gmail')
       channelInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      inputSetter?.call(sourceEndpointInput, 'spotify:acct-1')
+      sourceEndpointInput.dispatchEvent(new Event('change', { bubbles: true }))
 
       textareaSetter?.call(headersTextarea, 'X-Custom: yes')
       headersTextarea.dispatchEvent(new Event('change', { bubbles: true }))
@@ -464,6 +539,7 @@ describe('RuleEditor DSL test panel — sends full envelope shape (bu-95ido)', (
     }
     expect(call.envelope.sender_address).toBe('alerts@example.com')
     expect(call.envelope.source_channel).toBe('gmail')
+    expect(call.envelope.source_endpoint_identity).toBe('spotify:acct-1')
     expect(call.envelope.headers).toEqual({ 'X-Custom': 'yes' })
     expect(call.envelope.mime_parts).toEqual(['text/calendar'])
     expect(call.envelope.raw_key).toBe('uid-xyz')

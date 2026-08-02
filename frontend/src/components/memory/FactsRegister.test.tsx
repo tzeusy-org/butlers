@@ -255,7 +255,11 @@ describe("FactsRegister — the ledger", () => {
 
   it("renders the provenance glyph only when source_episode_id is set", () => {
     setFacts([
-      makeFact({ id: "with-src", source_episode_id: "ep-12345678abc" }),
+      makeFact({
+        id: "with-src",
+        source_episode_id: "ep-12345678abc",
+        source_episode_status: "available",
+      }),
       makeFact({ id: "no-src", source_episode_id: null }),
     ]);
     mounted = renderRegister();
@@ -267,6 +271,32 @@ describe("FactsRegister — the ledger", () => {
     const noSrc = rows[1];
     expect(withSrc.textContent).toContain("↳");
     expect(noSrc.textContent).not.toContain("↳");
+  });
+
+  it("labels an expired source without presenting it as a live episode", () => {
+    setFacts([
+      makeFact({
+        source_episode_id: "ep-expired",
+        source_episode_status: "expired",
+      }),
+    ]);
+    mounted = renderRegister();
+    const glyph = mounted.container.querySelector('[title="Source expired"]');
+    expect(glyph).not.toBeNull();
+    expect(mounted.container.querySelector('[title^="from episode"]')).toBeNull();
+  });
+
+  it("labels an unresolved source without presenting it as a live episode", () => {
+    setFacts([
+      makeFact({
+        source_episode_id: "ep-unresolved",
+        source_episode_status: "unresolved",
+      }),
+    ]);
+    mounted = renderRegister();
+    const glyph = mounted.container.querySelector('[title="Source unresolved"]');
+    expect(glyph).not.toBeNull();
+    expect(mounted.container.querySelector('[title^="from episode"]')).toBeNull();
   });
 
   it("shows the offset pagination footer as `1–50 of N`", () => {

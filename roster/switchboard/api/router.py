@@ -3405,6 +3405,7 @@ async def test_ingestion_rule(
     envelope = IngestionEnvelope(
         sender_address=body.envelope.sender_address,
         source_channel=body.envelope.source_channel,
+        source_endpoint_identity=body.envelope.source_endpoint_identity,
         headers=body.envelope.headers,
         mime_parts=body.envelope.mime_parts,
         raw_key=body.envelope.raw_key,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -324,7 +325,10 @@ async def test_updated_fact_uses_persisted_target_identity(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_target_is_sanitized_and_later_updates_continue(monkeypatch) -> None:
+async def test_missing_target_is_sanitized_and_later_updates_continue(
+    monkeypatch,
+    caplog,
+) -> None:
     missing_id = uuid.uuid4()
     valid_id = uuid.uuid4()
     entity_id = uuid.uuid4()
@@ -363,16 +367,78 @@ async def test_missing_target_is_sanitized_and_later_updates_continue(monkeypatc
         ],
     )
 
-    result = await consolidation_executor.execute_consolidation(
-        pool=pool,
-        embedding_engine=object(),
-        parsed=parsed,
-        source_episode_ids=[],
-        butler_name="travel",
-        tenant_id="shared",
-    )
+    with caplog.at_level(logging.WARNING, logger=consolidation_executor.__name__):
+        result = await consolidation_executor.execute_consolidation(
+            pool=pool,
+            embedding_engine=object(),
+            parsed=parsed,
+            source_episode_ids=[],
+            butler_name="travel",
+            tenant_id="shared",
+        )
 
     assert result["facts_updated"] == 1
     assert result["errors"] == [f"Failed to update fact ({missing_id})"]
     store_fact_mock.assert_awaited_once()
     assert store_fact_mock.await_args.kwargs["expected_supersedes_id"] == valid_id
+    assert [record.levelno for record in caplog.records] == [logging.WARNING]
+    assert "Skipping non-live property fact update" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_post_lookup_stale_target_warns_but_unexpected_store_error_is_error(
+    monkeypatch,
+    caplog,
+) -> None:
+    stale_id = uuid.uuid4()
+    unexpected_id = uuid.uuid4()
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {
+        "subject": "persisted subject",
+        "predicate": "persisted_predicate",
+        "entity_id": uuid.uuid4(),
+        "scope": "travel",
+    }
+    pool.fetchval.return_value = False
+    store_fact_mock = AsyncMock(
+        side_effect=[
+            consolidation_executor.StaleSupersessionTargetError(
+                f"expected supersession target {stale_id!r} is no longer current"
+            ),
+            RuntimeError("unexpected storage failure"),
+        ],
+    )
+
+    monkeypatch.setattr(consolidation_executor, "store_fact", store_fact_mock)
+    monkeypatch.setattr(
+        consolidation_executor,
+        "_lookup_episode_ttl_days",
+        AsyncMock(return_value=7),
+    )
+
+    parsed = ConsolidationResult(
+        updated_facts=[
+            UpdatedFact(target_id=str(stale_id), content="stale"),
+            UpdatedFact(target_id=str(unexpected_id), content="unexpected"),
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger=consolidation_executor.__name__):
+        result = await consolidation_executor.execute_consolidation(
+            pool=pool,
+            embedding_engine=object(),
+            parsed=parsed,
+            source_episode_ids=[],
+            butler_name="travel",
+            tenant_id="shared",
+        )
+
+    assert result["facts_updated"] == 0
+    assert result["errors"] == [
+        f"Failed to update fact ({stale_id})",
+        f"Failed to update fact ({unexpected_id})",
+    ]
+    assert store_fact_mock.await_count == 2
+    assert [record.levelno for record in caplog.records] == [logging.WARNING, logging.ERROR]
+    assert f"Skipping stale property fact update {stale_id}" in caplog.text
+    assert f"Failed to update fact ({unexpected_id})" in caplog.text

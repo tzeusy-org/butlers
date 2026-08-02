@@ -41,7 +41,41 @@ const TIMEOUT_MS = 10_000;
  * checked). Register the catch-all FIRST so that specific routes registered
  * afterwards take precedence over it.
  */
-async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...args: infer P) => unknown ? P[0] : never) {
+async function mockIngestionApis(
+  page: Parameters<typeof test>[1] extends (...args: infer P) => unknown ? P[0] : never,
+  events = [
+    // Multi-session event: exercises DispatchTicksCell's populated
+    // path (two ticks + trailing count), not just the em-dash
+    // empty-state (bu-lvu81).
+    makeIngestionEventSummary({
+      id: "aabbccdd-0000-0000-0000-000000000001",
+      received_at: "2026-05-17T14:05:00Z",
+      source_channel: "email",
+      source_sender_identity: "alice@example.com",
+      status: "ingested",
+      session_count: 2,
+      sessions: [
+        makeIngestionSession({ butler_name: "general", duration_ms: 4_200 }),
+        makeIngestionSession({ butler_name: "relationship", duration_ms: 1_800 }),
+      ],
+    }),
+    // Errored event: no sessions ever fired, so the dispatch-ticks
+    // cell should render its muted em-dash empty state.
+    makeIngestionEventSummary({
+      id: "aabbccdd-0000-0000-0000-000000000002",
+      received_at: "2026-05-17T15:05:00Z",
+      source_channel: "telegram",
+      source_sender_identity: "bob@example.com",
+      status: "error",
+      error_detail: "timeout",
+      cost_usd: null,
+      tokens_in: null,
+      tokens_out: null,
+      session_count: 0,
+      sessions: [],
+    }),
+  ],
+) {
   // Catch-all FIRST (lowest priority in LIFO matching) — absorbs sidebar
   // requests for /api/butlers, /api/spend, etc. that are not explicitly mocked.
   await page.route("**/api/**", (route) => {
@@ -49,6 +83,20 @@ async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...ar
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ data: [] }),
+    });
+  });
+
+  // GET /api/approvals/metrics → healthy, complete sidebar badge metric.
+  // The Sidebar mounts on this route too, and metric availability lives in
+  // `meta`; the generic catch-all deliberately cannot stand in for it.
+  await page.route("**/api/approvals/metrics", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { total_pending: 0 },
+        meta: {},
+      }),
     });
   });
 
@@ -119,38 +167,7 @@ async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...ar
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        data: [
-          // Multi-session event: exercises DispatchTicksCell's populated
-          // path (two ticks + trailing count), not just the em-dash
-          // empty-state (bu-lvu81).
-          makeIngestionEventSummary({
-            id: "aabbccdd-0000-0000-0000-000000000001",
-            received_at: "2026-05-17T14:05:00Z",
-            source_channel: "email",
-            source_sender_identity: "alice@example.com",
-            status: "ingested",
-            session_count: 2,
-            sessions: [
-              makeIngestionSession({ butler_name: "general", duration_ms: 4_200 }),
-              makeIngestionSession({ butler_name: "relationship", duration_ms: 1_800 }),
-            ],
-          }),
-          // Errored event: no sessions ever fired, so the dispatch-ticks
-          // cell should render its muted em-dash empty state.
-          makeIngestionEventSummary({
-            id: "aabbccdd-0000-0000-0000-000000000002",
-            received_at: "2026-05-17T15:05:00Z",
-            source_channel: "telegram",
-            source_sender_identity: "bob@example.com",
-            status: "error",
-            error_detail: "timeout",
-            cost_usd: null,
-            tokens_in: null,
-            tokens_out: null,
-            session_count: 0,
-            sessions: [],
-          }),
-        ],
+        data: events,
         meta: { next_cursor: null, has_more: false },
       }),
     });
@@ -236,6 +253,57 @@ test.describe("ingestion Timeline ledger and drawer", () => {
     await expect(page.locator("[data-testid='event-drawer']")).toBeVisible({
       timeout: TIMEOUT_MS,
     });
+  });
+
+  test("drawer: a deep selection stays inside the shell scroll context", async ({ page }) => {
+    const deepEvents = Array.from({ length: 40 }, (_, index) =>
+      makeIngestionEventSummary({
+        id: `aabbccdd-0000-0000-0000-${String(index + 10).padStart(12, "0")}`,
+        received_at: `2026-05-17T14:${String(59 - index).padStart(2, "0")}:00Z`,
+        source_sender_identity: `sender-${index}@example.com`,
+      }),
+    );
+    await mockIngestionApis(page, deepEvents);
+
+    await page.goto("/ingestion", { waitUntil: "networkidle" });
+    const deepRow = page.locator("[data-testid='ledger-row-trigger']").nth(deepEvents.length - 1);
+    await deepRow.scrollIntoViewIfNeeded();
+    await expect(deepRow).toBeVisible({ timeout: TIMEOUT_MS });
+
+    const initialScroll = await page.evaluate(() => ({
+      outer: window.scrollY,
+      inner: document.querySelector<HTMLElement>("#main-content")?.scrollTop ?? 0,
+    }));
+    expect(initialScroll.outer).toBe(0);
+    expect(initialScroll.inner).toBeGreaterThan(0);
+
+    await deepRow.click();
+    const drawer = page.locator("[data-testid='event-drawer']");
+    await expect(drawer).toBeVisible({ timeout: TIMEOUT_MS });
+    await expect(drawer.locator("h2.sr-only")).toBeFocused();
+
+    const geometry = await page.evaluate(() => {
+      const main = document.querySelector<HTMLElement>("#main-content");
+      const root = document.querySelector<HTMLElement>("#root");
+      const heading = document.querySelector<HTMLElement>("[data-testid='event-drawer'] h2.sr-only");
+      const mainRect = main?.getBoundingClientRect();
+      return {
+        outerScroll: window.scrollY,
+        documentHeight: document.documentElement.scrollHeight,
+        viewportHeight: window.innerHeight,
+        rootTop: root?.getBoundingClientRect().top ?? null,
+        mainTop: mainRect?.top ?? null,
+        mainBottom: mainRect?.bottom ?? null,
+        headingTop: heading?.getBoundingClientRect().top ?? null,
+        headingBottom: heading?.getBoundingClientRect().bottom ?? null,
+      };
+    });
+
+    expect(geometry.outerScroll).toBe(0);
+    expect(geometry.documentHeight).toBeLessThanOrEqual(geometry.viewportHeight + 1);
+    expect(geometry.rootTop).toBe(0);
+    expect(geometry.headingTop).toBeGreaterThanOrEqual(geometry.mainTop!);
+    expect(geometry.headingBottom).toBeLessThanOrEqual(geometry.mainBottom!);
   });
 
   test("drawer close: removes ?event from URL", async ({ page }) => {

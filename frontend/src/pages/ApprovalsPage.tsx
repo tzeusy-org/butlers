@@ -42,6 +42,7 @@ import {
   getApprovalsFlat,
   getApprovalsHistory,
   getApprovalsPolicy,
+  abandonApproval,
   retryApproval,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
@@ -50,6 +51,8 @@ import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
 import {
+  approvalRuleMetricSourcesDegraded,
+  pendingApprovalMetricSourcesDegraded,
   useApprovalMetrics,
   useAutonomySuggestions,
   useConfirmAutonomySuggestion,
@@ -146,6 +149,8 @@ function statusColor(status: string): string {
       return "";
     case "rejected":
       return "text-[var(--red-text)]";
+    case "abandoned":
+      return "text-muted-foreground";
     case "expired":
       return "text-muted-foreground";
     default:
@@ -805,6 +810,7 @@ function Dossier({
                   <dd className="mt-1 flex flex-wrap items-center gap-3 text-sm text-foreground">
                     <span>Approved, awaiting dispatch.</span>
                     <RetryDispatchButton actionId={detail.id} />
+                    <AbandonAction actionId={detail.id} />
                   </dd>
                 </div>
               )}
@@ -1264,6 +1270,57 @@ function RetryDispatchButton({ actionId }: { actionId: string }) {
   );
 }
 
+function AbandonAction({ actionId }: { actionId: string }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const abandonMut = useMutation({
+    mutationFn: () => abandonApproval(actionId, { reason }),
+    onSuccess: () => {
+      toast.success("Abandoned");
+      setOpen(false);
+      setReason("");
+      qc.invalidateQueries({ queryKey: Q.history() });
+      qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+      qc.invalidateQueries({ queryKey: Q.detail(actionId) });
+    },
+    onError: (e: Error) => toast.error(`Abandon failed: ${e.message}`),
+  });
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="shrink-0 py-0.5 px-2 rounded text-[10px] font-mono uppercase tracking-wide border border-[var(--red)]/50 text-[var(--red-text)] hover:border-[var(--red)] transition-colors"
+      >
+        Abandon
+      </button>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-2">
+      <input
+        aria-label="Abandon reason"
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder="Reason required"
+        className="w-48 rounded border border-border bg-background px-2 py-1 text-xs"
+      />
+      <button
+        disabled={!reason.trim() || abandonMut.isPending}
+        onClick={() => abandonMut.mutate()}
+        className="py-0.5 px-2 rounded text-[10px] font-mono uppercase tracking-wide border border-[var(--red)]/50 text-[var(--red-text)] disabled:opacity-50"
+      >
+        {abandonMut.isPending ? "abandoning…" : "Confirm"}
+      </button>
+      <button onClick={() => setOpen(false)} className="text-xs text-muted-foreground hover:underline">
+        Cancel
+      </button>
+    </span>
+  );
+}
+
 function HistorySection() {
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: Q.history(),
@@ -1318,9 +1375,9 @@ function HistorySection() {
             >
               {item.tool_name.replace(/_/g, " ")}
             </Link>
-            {/* "approved" in History = approved-but-un-run (dispatch silently
-                failed). Offer a retry; "executed" rows ran successfully. */}
-            {item.status === "approved" && (
+            {/* Only the exact approved/null-result state is retryable. An
+                abandoned row is terminal and intentionally read-only. */}
+            {item.status === "approved" && item.execution_result == null && (
               <RetryDispatchButton actionId={item.id} />
             )}
             <span className="font-mono text-xs text-muted-foreground shrink-0">
@@ -1349,7 +1406,7 @@ function HistorySection() {
 // ---------------------------------------------------------------------------
 
 function AutonomySuggestionsSection() {
-  const { data } = useAutonomySuggestions({ status: "pending" });
+  const { data, isError, refetch } = useAutonomySuggestions({ status: "pending" });
   const confirmMut = useConfirmAutonomySuggestion();
   const dismissMut = useDismissAutonomySuggestion();
 
@@ -1365,36 +1422,45 @@ function AutonomySuggestionsSection() {
     pendingIds.add(dismissMut.variables.suggestionId);
   }
 
-  if (suggestions.length === 0) return null;
+  if (suggestions.length === 0 && !isError) return null;
 
   return (
     <div className="px-6 pt-4 pb-2 border-b border-border shrink-0">
-      <AutonomySuggestionsBanner
-        suggestions={suggestions}
-        pendingIds={pendingIds}
-        onConfirm={(id) =>
-          confirmMut.mutate(id, {
-            onSuccess: () => toast.success("Standing rule created"),
-            onError: (e: Error) => toast.error(`Confirm failed: ${e.message}`),
-          })
-        }
-        onDismiss={(id) =>
-          dismissMut.mutate(
-            { suggestionId: id },
-            {
-              onSuccess: () => toast.success("Suggestion dismissed"),
-              onError: (e: Error) =>
-                toast.error(`Dismiss failed: ${e.message}`),
-            },
-          )
-        }
-      />
+      {isError && (
+        <SourceDegradedNote
+          label="Autonomy suggestions"
+          onRetry={() => void refetch()}
+          testId="autonomy-suggestions-unavailable"
+        />
+      )}
+      {suggestions.length > 0 && (
+        <AutonomySuggestionsBanner
+          suggestions={suggestions}
+          pendingIds={pendingIds}
+          onConfirm={(id) =>
+            confirmMut.mutate(id, {
+              onSuccess: () => toast.success("Standing rule created"),
+              onError: (e: Error) => toast.error(`Confirm failed: ${e.message}`),
+            })
+          }
+          onDismiss={(id) =>
+            dismissMut.mutate(
+              { suggestionId: id },
+              {
+                onSuccess: () => toast.success("Suggestion dismissed"),
+                onError: (e: Error) =>
+                  toast.error(`Dismiss failed: ${e.message}`),
+              },
+            )
+          }
+        />
+      )}
     </div>
   );
 }
 
 function RulePromotionSection() {
-  const { data } = useRulePromotions();
+  const { data, isError, refetch } = useRulePromotions();
   const confirmMut = useConfirmRulePromotion();
   const dismissMut = useDismissRulePromotion();
   const enabledMut = useSetRulePromotionRuleEnabled();
@@ -1413,39 +1479,48 @@ function RulePromotionSection() {
     pendingIds.add(enabledMut.variables.suggestionId);
   }
 
-  if (pending.length === 0 && autoApplied.length === 0) return null;
+  if (pending.length === 0 && autoApplied.length === 0 && !isError) return null;
 
   return (
     <div className="px-6 pt-4 pb-2 border-b border-border shrink-0">
-      <RulePromotionBanner
-        pending={pending}
-        autoApplied={autoApplied}
-        pendingIds={pendingIds}
-        onConfirm={(id) =>
-          confirmMut.mutate(id, {
-            onSuccess: () => toast.success("Routing rule created"),
-            onError: (e: Error) => toast.error(`Confirm failed: ${e.message}`),
-          })
-        }
-        onDismiss={(id) =>
-          dismissMut.mutate(
-            { suggestionId: id },
-            {
-              onSuccess: () => toast.success("Suggestion dismissed"),
-              onError: (e: Error) => toast.error(`Dismiss failed: ${e.message}`),
-            },
-          )
-        }
-        onSetEnabled={(id, enabled) =>
-          enabledMut.mutate(
-            { suggestionId: id, enabled },
-            {
-              onSuccess: () => toast.success(enabled ? "Rule re-enabled" : "Rule disabled"),
-              onError: (e: Error) => toast.error(`Update failed: ${e.message}`),
-            },
-          )
-        }
-      />
+      {isError && (
+        <SourceDegradedNote
+          label="Rule promotion suggestions"
+          onRetry={() => void refetch()}
+          testId="rule-promotion-suggestions-unavailable"
+        />
+      )}
+      {(pending.length > 0 || autoApplied.length > 0) && (
+        <RulePromotionBanner
+          pending={pending}
+          autoApplied={autoApplied}
+          pendingIds={pendingIds}
+          onConfirm={(id) =>
+            confirmMut.mutate(id, {
+              onSuccess: () => toast.success("Routing rule created"),
+              onError: (e: Error) => toast.error(`Confirm failed: ${e.message}`),
+            })
+          }
+          onDismiss={(id) =>
+            dismissMut.mutate(
+              { suggestionId: id },
+              {
+                onSuccess: () => toast.success("Suggestion dismissed"),
+                onError: (e: Error) => toast.error(`Dismiss failed: ${e.message}`),
+              },
+            )
+          }
+          onSetEnabled={(id, enabled) =>
+            enabledMut.mutate(
+              { suggestionId: id, enabled },
+              {
+                onSuccess: () => toast.success(enabled ? "Rule re-enabled" : "Rule disabled"),
+                onError: (e: Error) => toast.error(`Update failed: ${e.message}`),
+              },
+            )
+          }
+        />
+      )}
     </div>
   );
 }
@@ -1456,26 +1531,40 @@ function RulePromotionSection() {
  * (so a failed query surfaces instead of the section silently vanishing).
  */
 function RulePromotionStatsSection() {
-  const { data, refetch } = useRulePromotionStats();
+  const { data, isError, refetch } = useRulePromotionStats();
   const stats = data?.data;
-  const degraded = (data?.meta?.sources_degraded as string[] | undefined) ?? [];
+  const degraded = data?.meta?.sources_degraded ?? [];
 
-  if (!stats) return null;
+  if (!stats && !isError) return null;
 
   const hasActivity =
-    stats.promoted_rules_active > 0 ||
-    // Keep historical savings visible even after the rules were disabled.
-    stats.promoted_rule_matches > 0 ||
-    stats.suggestions_pending > 0 ||
-    stats.suggestions_confirmed > 0 ||
-    stats.suggestions_dismissed > 0 ||
-    stats.suggestions_superseded > 0 ||
-    stats.demotion_pending > 0;
-  if (!hasActivity && degraded.length === 0) return null;
+    stats !== undefined &&
+    (stats.promoted_rules_active > 0 ||
+      // Keep historical savings visible even after the rules were disabled.
+      stats.promoted_rule_matches > 0 ||
+      stats.suggestions_pending > 0 ||
+      stats.suggestions_confirmed > 0 ||
+      stats.suggestions_dismissed > 0 ||
+      stats.suggestions_superseded > 0 ||
+      stats.demotion_pending > 0);
+  if (!hasActivity && degraded.length === 0 && !isError) return null;
 
   return (
     <div className="px-6 pt-4 pb-2 border-b border-border shrink-0">
-      <RulePromotionStatsTile stats={stats} degraded={degraded} onRetry={() => refetch()} />
+      {isError && (
+        <SourceDegradedNote
+          label="Rule promotion metrics"
+          onRetry={() => void refetch()}
+          testId="rule-promotion-stats-unavailable"
+        />
+      )}
+      {stats && (hasActivity || degraded.length > 0) && (
+        <RulePromotionStatsTile
+          stats={stats}
+          degraded={degraded}
+          onRetry={() => void refetch()}
+        />
+      )}
     </div>
   );
 }
@@ -1530,8 +1619,14 @@ export default function ApprovalsPage() {
   // means undetermined (e.g. no approvals pool answered) and must not read
   // as either a false all-clear or a hard error; only render the note on a
   // genuine false.
-  const { data: metricsData } = useApprovalMetrics();
+  const {
+    data: metricsData,
+    isError: metricsIsError,
+    refetch: refetchMetrics,
+  } = useApprovalMetrics();
   const callbackSecretConfigured = metricsData?.data?.callback_secret_configured;
+  const pendingMetricSourcesDegraded = pendingApprovalMetricSourcesDegraded(metricsData);
+  const ruleMetricSourcesDegraded = approvalRuleMetricSourcesDegraded(metricsData);
 
   // `pending` may still carry stale cached rows from before a failed refetch
   // (react-query keeps the last good `data` around). QueryBoundary below
@@ -1796,6 +1891,39 @@ export default function ApprovalsPage() {
           historySourcesDegraded={historySourcesDegraded}
         />
       </div>
+
+      {(metricsIsError ||
+        pendingMetricSourcesDegraded.length > 0 ||
+        ruleMetricSourcesDegraded.length > 0) && (
+        <div className="px-6 py-3 border-b border-border shrink-0 space-y-2">
+          {metricsIsError ? (
+            <SourceDegradedNote
+              label="Approval metrics"
+              onRetry={() => void refetchMetrics()}
+              testId="approvals-metrics-unavailable"
+            />
+          ) : (
+            <>
+              {pendingMetricSourcesDegraded.length > 0 && (
+                <SourceDegradedNote
+                  label="Pending approval metrics"
+                  detail={`${pendingMetricSourcesDegraded.join(", ")} unavailable. Count may be incomplete.`}
+                  onRetry={() => void refetchMetrics()}
+                  testId="approvals-pending-metrics-degraded"
+                />
+              )}
+              {ruleMetricSourcesDegraded.length > 0 && (
+                <SourceDegradedNote
+                  label="Active approval rules"
+                  detail={`${ruleMetricSourcesDegraded.join(", ")} unavailable. Count may be incomplete.`}
+                  onRetry={() => void refetchMetrics()}
+                  testId="approvals-rules-metrics-degraded"
+                />
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Callback secret degraded note (bu-p5sg6) -- only a genuine false
           renders this; undetermined (null) stays silent rather than

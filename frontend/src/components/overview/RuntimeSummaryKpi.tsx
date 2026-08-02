@@ -11,6 +11,8 @@ interface RuntimeSummaryKpiProps {
    */
   isError?: boolean;
   pendingApprovalsAvailable?: boolean;
+  /** False when the board's sessions aggregate is a partial sum. */
+  sessionsAvailable?: boolean;
   /**
    * Closed 24-hour window backing the Sessions door (bu-27dxl.8.3) — the
    * SAME captured `since`/`until` instant the caller derived once for its
@@ -34,6 +36,7 @@ export function RuntimeSummaryKpi({
   isLoading = false,
   isError = false,
   pendingApprovalsAvailable = true,
+  sessionsAvailable = true,
   sessionsSince,
   sessionsUntil,
 }: RuntimeSummaryKpiProps) {
@@ -42,6 +45,7 @@ export function RuntimeSummaryKpi({
   // Dashes never carry a door -- only a genuine (possibly zero) value does.
   const unavailable = isLoading || isError;
   const approvalsUnavailable = isLoading || !pendingApprovalsAvailable;
+  const sessionsUnavailable = unavailable || !sessionsAvailable;
   const cells: React.ComponentProps<typeof KpiStrip>["cells"] = [
     {
       eyebrow: "Total butlers",
@@ -61,12 +65,14 @@ export function RuntimeSummaryKpi({
     },
     {
       eyebrow: "Sessions · 24h",
-      value: unavailable ? "—" : kpis.sessions24h,
-      href: unavailable ? undefined : sessionsHref(sessionsSince, sessionsUntil),
+      value: sessionsUnavailable ? "—" : kpis.sessions24h,
+      unavailable: sessionsUnavailable,
+      href: sessionsUnavailable ? undefined : sessionsHref(sessionsSince, sessionsUntil),
     },
     {
       eyebrow: "Pending approvals",
       value: approvalsUnavailable ? "—" : kpis.pendingApprovals,
+      unavailable: approvalsUnavailable,
       href: approvalsUnavailable ? undefined : "/approvals",
     },
   ];

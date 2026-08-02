@@ -89,6 +89,22 @@ class TestSourceChannelContainsDashboard:
         )
         assert meta.channel == "dashboard"
 
+    def test_dashboard_message_id_is_strictly_typed_route_metadata(self) -> None:
+        """The route handoff carries its immutable dashboard turn identity."""
+        from butlers.tools.switchboard.routing.contracts import RouteSourceMetadataV1
+
+        message_id = uuid.uuid4()
+        metadata = RouteSourceMetadataV1.model_validate(
+            {
+                "channel": "dashboard",
+                "identity": "dashboard:butler:switchboard",
+                "tool_name": "ingest.v1",
+                "dashboard_message_id": str(message_id),
+            }
+        )
+
+        assert metadata.dashboard_message_id == message_id
+
 
 # ---------------------------------------------------------------------------
 # Task 1.2 — _ALLOWED_PROVIDERS_BY_CHANNEL maps 'dashboard' → {'internal'}

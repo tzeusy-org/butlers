@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from fastmcp import Client
@@ -185,18 +186,27 @@ def _set_dashboard_routing_context(
     *,
     conversation_id: str = "c1c1c1c1-0000-7000-8000-000000000001",
     page_context: dict[str, Any] | None = None,
+    dashboard_message_id: str | None = None,
 ) -> None:
     from butlers.core.routing_context import _routing_ctx_var
 
+    source_metadata: dict[str, Any] = {
+        "channel": "dashboard",
+        "identity": "dashboard:operator",
+    }
+    dashboard_context: dict[str, Any] = {
+        "conversation_id": conversation_id,
+        "page_context": page_context,
+    }
+    if dashboard_message_id is not None:
+        source_metadata["dashboard_message_id"] = dashboard_message_id
+        dashboard_context["message_id"] = dashboard_message_id
     _routing_ctx_var.set(
         {
-            "source_metadata": {"channel": "dashboard", "identity": "dashboard:operator"},
+            "source_metadata": source_metadata,
             "request_context": None,
             "request_id": "unknown",
-            "dashboard_context": {
-                "conversation_id": conversation_id,
-                "page_context": page_context,
-            },
+            "dashboard_context": dashboard_context,
         }
     )
 
@@ -205,6 +215,25 @@ def _clear_routing_context() -> None:
     from butlers.core.routing_context import _routing_ctx_var
 
     _routing_ctx_var.set(None)
+
+
+def _turn_result(outcome: str):
+    """Build the small control result shape needed by lane-tool tests."""
+    from butlers.core.dashboard_turns import DashboardTurnResult
+
+    return DashboardTurnResult(
+        outcome=outcome,
+        message_id=UUID("d1d1d1d1-0000-7000-8000-000000000001"),
+        conversation_id=UUID("c1c1c1c1-0000-7000-8000-000000000001"),
+        request_id=UUID("019c8812-fb0f-77f3-88b9-5763c1336b27"),
+        target_butler=None,
+        target_kind=None,
+        route_inbox_id=None,
+        cancel_requested_at=None,
+        cancel_confirmed_at=None,
+        terminal_state=None,
+        terminal_at=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +382,73 @@ async def test_route_to_butler_stamping_failure_does_not_fail_the_call(
     assert result["status"] == "accepted"
 
 
+async def test_route_to_butler_propagates_turn_id_and_obeys_a_prior_stop(
+    tmp_path: Path,
+) -> None:
+    """The target envelope carries the immutable ID; a stopped turn never dispatches."""
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    captured: dict[str, Any] = {}
+
+    async def _capture(*_args, **kwargs):
+        captured.update(kwargs["args"])
+        return {"result": {"status": "accepted"}}
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir,
+        patches,
+        mock_route=AsyncMock(side_effect=_capture),
+    )
+    fn = tools["route_to_butler"]
+    message_id = "d1d1d1d1-0000-7000-8000-000000000001"
+
+    with patch(
+        "butlers.core.dashboard_turns.dispatch_status",
+        new_callable=AsyncMock,
+        return_value=_turn_result("active"),
+    ):
+        _set_dashboard_routing_context(dashboard_message_id=message_id)
+        try:
+            result = await fn(butler="relationship", prompt="Alice is my sister")
+        finally:
+            _clear_routing_context()
+
+    assert result["status"] == "accepted"
+    envelope = parse_route_envelope(
+        {key: value for key, value in captured.items() if key != "__switchboard_route_context"}
+    )
+    assert str(envelope.source_metadata.dashboard_message_id) == message_id
+
+    blocked_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+    patches2 = _patch_infra()
+    (tmp_path / "blocked").mkdir()
+    _, blocked_tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path / "blocked"),
+        patches2,
+        mock_route=blocked_route,
+    )
+    with patch(
+        "butlers.core.dashboard_turns.dispatch_status",
+        new_callable=AsyncMock,
+        return_value=_turn_result("cancelled"),
+    ):
+        _set_dashboard_routing_context(dashboard_message_id=message_id)
+        try:
+            blocked = await blocked_tools["route_to_butler"](
+                butler="relationship",
+                prompt="Alice is my sister",
+            )
+        finally:
+            _clear_routing_context()
+
+    assert blocked == {
+        "status": "cancelled",
+        "butler": "relationship",
+        "cancelled": True,
+    }
+    blocked_route.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # file_bug_report — QA relay + conversation_reply ack
 # ---------------------------------------------------------------------------
@@ -396,6 +492,60 @@ async def test_file_bug_report_relays_to_qa_and_replies_with_case_reference(
 
     fake_reply.assert_awaited_once()
     assert result["case_reference"] in fake_reply.await_args.kwargs["message"]
+
+
+async def test_file_bug_report_claims_turn_before_qa_relay_and_honors_stop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A dashboard bug report has one durable pre-relay commit point."""
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"accepted": True}})
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    fn = tools["file_bug_report"]
+    fake_reply = AsyncMock(return_value={"id": "msg-1"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_reply)
+    claim = AsyncMock(return_value=_turn_result("claimed"))
+    terminal = AsyncMock(return_value=_turn_result("finished"))
+
+    with (
+        patch("butlers.core.dashboard_turns.claim_bug_report", claim),
+        patch("butlers.core.dashboard_turns.mark_terminal", terminal),
+    ):
+        _set_dashboard_routing_context(dashboard_message_id="d1d1d1d1-0000-7000-8000-000000000001")
+        try:
+            result = await fn(summary="The dashboard is blank")
+        finally:
+            _clear_routing_context()
+
+    assert result["status"] == "ok"
+    assert result["filed"] is True
+    claim.assert_awaited_once()
+    assert claim.await_args.kwargs["message_id"] == UUID("d1d1d1d1-0000-7000-8000-000000000001")
+    mock_route.assert_awaited_once()
+    terminal.assert_awaited_once()
+    assert terminal.await_args.kwargs["state"] == "completed"
+
+    stopped_route = AsyncMock()
+    patches2 = _patch_infra()
+    (tmp_path / "stopped").mkdir()
+    _, stopped_tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path / "stopped"),
+        patches2,
+        mock_route=stopped_route,
+    )
+    stopped_claim = AsyncMock(return_value=_turn_result("cancelled"))
+    with patch("butlers.core.dashboard_turns.claim_bug_report", stopped_claim):
+        _set_dashboard_routing_context(dashboard_message_id="d1d1d1d1-0000-7000-8000-000000000001")
+        try:
+            stopped = await stopped_tools["file_bug_report"](summary="The dashboard is blank")
+        finally:
+            _clear_routing_context()
+
+    assert stopped == {"status": "cancelled", "filed": False, "cancelled": True}
+    stopped_route.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

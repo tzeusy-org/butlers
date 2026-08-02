@@ -20,6 +20,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -110,6 +111,23 @@ async def test_list_decisions_flags_unavailable_when_export_missing(app, tmp_pat
     assert body["meta"]["unavailable_reason"] == "export_missing"
     # bu-hmdqz.6: no file was ever stat'd, so there is no known age to report.
     assert body["meta"].get("export_as_of") is None
+
+
+async def test_list_decisions_preserves_export_as_of_when_export_is_unparseable(app, tmp_path):
+    export = tmp_path / "issues.export.jsonl"
+    export.write_text("{not valid json\n")
+    export_mtime = _NOW.timestamp()
+    os.utime(export, (export_mtime, export_mtime))
+
+    resp = await _get_decisions(app, export)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["decisions_available"] is False
+    assert body["meta"]["unavailable_reason"].startswith("export_read_error:")
+    export_as_of = datetime.fromisoformat(body["meta"]["export_as_of"].replace("Z", "+00:00"))
+    assert export_as_of == _NOW
 
 
 async def test_list_decisions_genuine_zero_is_available(app, tmp_path):

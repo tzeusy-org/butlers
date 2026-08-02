@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
@@ -85,6 +85,7 @@ def _app_with_mock_db(
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
 
     if has_approvals_tables:
 
@@ -263,6 +264,135 @@ async def test_no_approvals_tables_returns_empty(app):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/approvals/metrics -- per-family degraded source contract
+# ---------------------------------------------------------------------------
+
+
+def _app_with_partial_metrics_source(app, *, failed_family: str):
+    """Build two configured approvals sources with one family-specific failure.
+
+    Both pools genuinely expose both tables. ``general`` always answers; ``home``
+    fails only the selected metrics family after successful catalog discovery.
+    That distinguishes a failed configured source from a legitimately absent
+    table and proves the other family remains usable.
+    """
+
+    def _conn_for(name: str):
+        conn = AsyncMock()
+
+        async def _fetchval(sql, *args):
+            if "to_regclass" in sql:
+                return True
+            if name == "home" and failed_family == "pending_actions" and "pending_actions" in sql:
+                raise RuntimeError("home pending_actions unavailable")
+            if name == "home" and failed_family == "approval_rules" and "approval_rules" in sql:
+                raise RuntimeError("home approval_rules unavailable")
+            if "approval_rules" in sql:
+                return 3 if name == "general" else 4
+            if "status = 'pending'" in sql:
+                return 2 if name == "general" else 5
+            return 0
+
+        conn.fetchval = AsyncMock(side_effect=_fetchval)
+        conn.fetchrow = AsyncMock(return_value={"avg_latency": None, "cnt": 0})
+        return conn
+
+    class _Acquire:
+        def __init__(self, conn):
+            self._conn = conn
+
+        async def __aenter__(self):
+            return self._conn
+
+        async def __aexit__(self, *args):
+            return False
+
+    pools = {}
+    for name in ("general", "home"):
+        pool = AsyncMock()
+        pool.acquire = MagicMock(return_value=_Acquire(_conn_for(name)))
+        pools[name] = pool
+
+    db_mgr = MagicMock(spec=DatabaseManager)
+    db_mgr.butler_names = ["general", "home"]
+    db_mgr.pool = MagicMock(side_effect=lambda name: pools[name])
+    app.dependency_overrides[_get_db_manager] = lambda: db_mgr
+    return app
+
+
+async def test_metrics_names_partial_pending_action_sources_without_zeroing_healthy_data(app):
+    app = _app_with_partial_metrics_source(app, failed_family="pending_actions")
+
+    with patch(
+        "butlers.api.routers.approvals._callback_secret_configured",
+        new=AsyncMock(return_value=None),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/approvals/metrics")
+
+    assert response.status_code == 200
+    body = response.json()
+    # The healthy pending-actions pool remains diagnostically useful, but its
+    # value is not a complete fleet count once home has dropped out.
+    assert body["data"]["total_pending"] == 2
+    assert body["data"]["active_rules_count"] == 7
+    assert body["meta"]["pending_actions_sources_degraded"] == ["home"]
+    assert body["meta"]["sources_degraded"] == ["home"]
+    assert "approval_rules_sources_degraded" not in body["meta"]
+
+
+async def test_metrics_keeps_pending_counts_usable_when_only_rule_sources_fail(app):
+    app = _app_with_partial_metrics_source(app, failed_family="approval_rules")
+
+    with patch(
+        "butlers.api.routers.approvals._callback_secret_configured",
+        new=AsyncMock(return_value=None),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/approvals/metrics")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["total_pending"] == 7
+    # The healthy rule-pool contribution remains present, but cannot be read
+    # as an exhaustive active-rule total.
+    assert body["data"]["active_rules_count"] == 3
+    assert body["meta"]["approval_rules_sources_degraded"] == ["home"]
+    assert body["meta"]["sources_degraded"] == ["home"]
+    assert "pending_actions_sources_degraded" not in body["meta"]
+
+
+async def test_metrics_keeps_a_configured_but_empty_source_as_a_truthful_zero(app):
+    """A healthy empty table is distinct from a dropped configured source."""
+    app, _ = _app_with_mock_db(
+        app,
+        fetchval_return=0,
+        fetchrow_return={"avg_latency": None, "cnt": 0},
+    )
+
+    with patch(
+        "butlers.api.routers.approvals._callback_secret_configured",
+        new=AsyncMock(return_value=None),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/approvals/metrics")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["total_pending"] == 0
+    assert body["data"]["active_rules_count"] == 0
+    assert "pending_actions_sources_degraded" not in body["meta"]
+    assert "approval_rules_sources_degraded" not in body["meta"]
+    assert "sources_degraded" not in body["meta"]
+
+
+# ---------------------------------------------------------------------------
 # GET /api/approvals (flat) and /api/approvals/history --
 # sources_degraded contract (bu-qvnce.1)
 # ---------------------------------------------------------------------------
@@ -369,6 +499,26 @@ async def test_list_approvals_history_reports_sources_degraded_on_pool_failure(a
     body = resp.json()
     assert len(body["data"]) == 1
     assert body["meta"]["sources_degraded"] == ["home"]
+
+
+async def test_history_summary_exposes_a_redacted_execution_result_for_retry_eligibility(app):
+    """History needs the durable null/non-null discriminator used by its Retry control."""
+    row = {
+        **_make_action(tool_name="notify", status="approved"),
+        "execution_result": {"success": False, "error": "private handler diagnostic"},
+    }
+    app = _app_with_one_healthy_one_raising_butler(app, healthy_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/history")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"][0]["execution_result"] == {
+        "success": False,
+        "error": "***REDACTED***",
+    }
 
 
 async def test_list_approvals_flat_no_sources_degraded_when_all_pools_healthy(app):
@@ -1405,8 +1555,8 @@ async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
     mock_db.butler_names = ["general"]
     mock_db.pool = MagicMock(return_value=mock_pool)
 
-    # No reachable butlers — get_client raises so _dispatch_approved_action
-    # exhausts its targets and returns None (action stays 'approved').
+    # No reachable butlers — dispatch classifies the attempt as unreachable
+    # and the action stays 'approved'.
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
     mock_mcp.get_client = AsyncMock(side_effect=RuntimeError("no daemon"))
@@ -1705,6 +1855,22 @@ async def test_detail_returns_typed_decision_dossier_fields(app):
     assert detail["blast_radius"] == "contact"
     assert detail["reversibility"] == "compensable"
     assert detail["evidence"] == row["evidence"]
+
+
+async def test_detail_preserves_failed_push_delivery_state(app):
+    """The dossier keeps failed-push truth instead of silently dropping it."""
+    row = {**_make_pending_row(), "push_outcome": "failed"}
+    app, _ = _app_with_mock_db(app, fetchrow_return=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{row['id']}")
+
+    assert resp.status_code == 200
+    detail = resp.json()["data"]
+    assert detail["push_outcome"] == "failed"
+    assert detail["push_failed"] is True
 
 
 async def test_detail_includes_originating_session_id(app):
@@ -2116,10 +2282,17 @@ async def test_resolve_referenced_entities_fails_open_on_db_error():
 
 
 # ---------------------------------------------------------------------------
-# Re-gate guard: _dispatch_approved_action must not record success when the
-# tool re-enters the approval gate and returns {status: pending_approval}.
+# Re-gate guard: dispatch must not record success when the tool re-enters the
+# approval gate and returns {status: pending_approval}.
 # Regression test for bu-km0y2.
 # ---------------------------------------------------------------------------
+
+
+def test_approvals_router_has_no_legacy_dispatch_result_wrapper():
+    """Approval dispatch exposes one structured internal result contract."""
+    import butlers.api.routers.approvals as approvals_router
+
+    assert not hasattr(approvals_router, "_dispatch_approved_action")
 
 
 def _build_dispatch_mocks(
@@ -2131,7 +2304,7 @@ def _build_dispatch_mocks(
     mcp_is_error: bool = False,
     mark_executed_return: dict | None = None,
 ):
-    """Build the minimal mocks needed to exercise _dispatch_approved_action."""
+    """Build the minimal mocks needed to exercise structured approval dispatch."""
     from butlers.api.db import DatabaseManager
     from butlers.api.deps import MCPClientManager
 
@@ -2152,10 +2325,12 @@ def _build_dispatch_mocks(
     mock_mcp.butler_names = ["messenger"]
     mock_mcp.get_client = AsyncMock(return_value=mock_client)
 
-    # DB pool — mark_executed is patched at the module level in callers
+    # DB pool — notify now uses the shared executor, so the fixture must model
+    # its pre-delivery row lock and transaction rather than only mark_executed.
     mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchrow = AsyncMock(return_value={"status": "approved", "execution_result": None})
     mock_conn.execute = AsyncMock()
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
 
     class _MockAcquire:
         async def __aenter__(self):
@@ -2164,8 +2339,13 @@ def _build_dispatch_mocks(
         async def __aexit__(self, *a):
             pass
 
-    mock_pool = AsyncMock()
-    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    class _MockPool:
+        """Executor-compatible pool double without AsyncMock child attributes."""
+
+        def acquire(self):
+            return _MockAcquire()
+
+    mock_pool = _MockPool()
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["messenger"]
@@ -2190,7 +2370,7 @@ def _build_dispatch_mocks(
     return mock_mcp, mock_db, mock_pool, executed_result
 
 
-async def test_dispatch_approved_action_executes_via_butler_tool():
+async def test_dispatch_approved_action_outcome_executes_via_butler_tool():
     """Fix (bu-1q9wh): a gated tool is executed via the owning butler's un-gated
     ``dispatch_approved_action`` tool — NOT by re-calling the gated tool by name.
 
@@ -2202,7 +2382,7 @@ async def test_dispatch_approved_action_executes_via_butler_tool():
     """
     import json
 
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     executed_payload = {
@@ -2229,7 +2409,7 @@ async def test_dispatch_approved_action_executes_via_butler_tool():
         mcp_is_error=False,
     )
 
-    result = await _dispatch_approved_action(
+    outcome = await _dispatch_approved_action_outcome(
         mock_mcp,
         mock_db,
         mock_pool,
@@ -2246,18 +2426,19 @@ async def test_dispatch_approved_action_executes_via_butler_tool():
         f"Must invoke the un-gated executor, not {call.args[0]!r}"
     )
     assert call.args[1] == {"action_id": str(action_id)}
-    assert result is not None
-    assert result["status"] == "executed"
+    assert outcome.kind == "executed"
+    assert outcome.action is not None
+    assert outcome.action["status"] == "executed"
 
 
-async def test_dispatch_approved_action_butler_error_returns_none():
+async def test_dispatch_approved_action_outcome_classifies_butler_error():
     """When the owning butler cannot execute the action (error dict), and no other
-    butler can either, the dispatcher returns None so the action stays 'approved'
+    butler can either, dispatch reports rejection so the action stays 'approved'
     for retry rather than being falsely marked dispatched.
     """
     import json
 
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     err_payload = json.dumps({"error": "No tool executor wired on this butler"})
@@ -2270,7 +2451,7 @@ async def test_dispatch_approved_action_butler_error_returns_none():
         mcp_is_error=False,
     )
 
-    result = await _dispatch_approved_action(
+    outcome = await _dispatch_approved_action_outcome(
         mock_mcp,
         mock_db,
         mock_pool,
@@ -2280,7 +2461,8 @@ async def test_dispatch_approved_action_butler_error_returns_none():
         "messenger",
     )
 
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
 
 
 def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
@@ -2296,11 +2478,102 @@ def _mcp_result(text: str | None, *, is_error: bool = False) -> MagicMock:
     return result
 
 
-async def test_dispatch_approved_action_never_falls_back_to_another_butler():
+async def test_abandon_requires_reason_and_returns_terminal_action(app):
+    action = _make_action(status="approved")
+    _app_with_mock_db(app, fetchrow_return=action)
+
+    with patch(
+        "butlers.api.routers.approvals.approvals_ops.abandon_approved_action",
+        new=AsyncMock(return_value={**action, "id": str(action["id"]), "status": "abandoned"}),
+    ) as abandon:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            blank = await client.post(
+                f"/api/approvals/{action['id']}/abandon", json={"reason": " "}
+            )
+            response = await client.post(
+                f"/api/approvals/{action['id']}/abandon", json={"reason": "No longer needed"}
+            )
+
+    assert blank.status_code == 422
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["status"] == "abandoned"
+    assert abandon.await_args.kwargs["reason"] == "No longer needed"
+
+
+@pytest.mark.parametrize(
+    "route_template",
+    ("/api/approvals/actions/{action_id}/retry", "/api/approvals/{action_id}/retry"),
+)
+async def test_retry_reports_unreachable_owner_truthfully(app, route_template: str):
+    action = _make_action(status="approved")
+    _app_with_mock_db(app, fetchrow_return=action)
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.get_client = AsyncMock(side_effect=RuntimeError("connection refused"))
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(route_template.format(action_id=action["id"]))
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "No reachable butler to dispatch action"
+    assert action["status"] == "approved"
+    assert action["execution_result"] is None
+
+
+@pytest.mark.parametrize(
+    "route_template",
+    ("/api/approvals/actions/{action_id}/retry", "/api/approvals/{action_id}/retry"),
+)
+async def test_retry_reports_reachable_executor_rejection_truthfully(app, route_template: str):
+    import json
+
+    action = _make_action(status="approved")
+    _app_with_mock_db(app, fetchrow_return=action)
+    client = MagicMock()
+    client.call_tool = AsyncMock(
+        return_value=_mcp_result(
+            json.dumps(
+                {
+                    "error": (
+                        "token=super-secret recipient=chatterbox97@gmail.com "
+                        "body=private-message "
+                        "email_reply_to_thread() got an unexpected "
+                        "keyword argument 'intent'"
+                    )
+                }
+            )
+        )
+    )
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.get_client = AsyncMock(return_value=client)
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as api_client:
+        response = await api_client.post(route_template.format(action_id=action["id"]))
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "executor rejected" in detail.lower()
+    assert "unexpected keyword argument" in detail
+    assert "No reachable butler" not in detail
+    assert "super-secret" not in detail
+    assert "chatterbox97@gmail.com" not in detail
+    assert "private-message" not in detail
+    assert action["status"] == "approved"
+    assert action["execution_result"] is None
+
+
+async def test_dispatch_approved_action_outcome_never_falls_back_to_another_butler():
     """An action stays in its owning schema when that butler declines it."""
     import json
 
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     executed_payload = {
@@ -2331,7 +2604,7 @@ async def test_dispatch_approved_action_never_falls_back_to_another_butler():
     mock_mcp.butler_names = ["messenger", "general"]
     mock_mcp.get_client = AsyncMock(side_effect=lambda name: clients[name])
 
-    result = await _dispatch_approved_action(
+    outcome = await _dispatch_approved_action_outcome(
         mock_mcp,
         MagicMock(),
         MagicMock(),
@@ -2341,18 +2614,17 @@ async def test_dispatch_approved_action_never_falls_back_to_another_butler():
         "messenger",
     )
 
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
     # The API must not use a different butler's executor as a generic fallback:
     # it would cross the approval row's schema/MCP ownership boundary.
     assert [c.args[0] for c in mock_mcp.get_client.await_args_list] == ["messenger"]
     general_client.call_tool.assert_not_awaited()
 
 
-async def test_dispatch_approved_action_mcp_error_returns_none():
-    """An MCP-level error from the butler's tool is a failed dispatch (returns None),
-    leaving the action 'approved' for retry.
-    """
-    from butlers.api.routers.approvals import _dispatch_approved_action
+async def test_dispatch_approved_action_outcome_classifies_mcp_error():
+    """An MCP-level tool error is a rejection that leaves the action retryable."""
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     mock_client = MagicMock()
@@ -2361,7 +2633,7 @@ async def test_dispatch_approved_action_mcp_error_returns_none():
     mock_mcp.butler_names = ["messenger"]
     mock_mcp.get_client = AsyncMock(return_value=mock_client)
 
-    result = await _dispatch_approved_action(
+    outcome = await _dispatch_approved_action_outcome(
         mock_mcp,
         MagicMock(),
         MagicMock(),
@@ -2371,7 +2643,8 @@ async def test_dispatch_approved_action_mcp_error_returns_none():
         "messenger",
     )
 
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
 
 
 def test_first_json_block_handles_json_text_and_empty():
@@ -2383,7 +2656,7 @@ def test_first_json_block_handles_json_text_and_empty():
     assert _first_json_block(_mcp_result("oops")) == {"value": "oops"}
 
 
-async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_action_id(
+async def test_dispatch_approved_action_outcome_re_gate_guard_uses_pending_action_id(
     caplog: pytest.LogCaptureFixture,
 ):
     """Re-gate guard: notify email-guard path keys the phantom id as pending_action_id.
@@ -2399,7 +2672,7 @@ async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_
     from unittest.mock import patch
 
     import butlers.modules.approvals.operations as approvals_ops
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     phantom_action_id = uuid4()
@@ -2446,7 +2719,7 @@ async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_
         }
 
     with patch.object(approvals_ops, "mark_executed", side_effect=_capture):
-        result = await _dispatch_approved_action(
+        outcome = await _dispatch_approved_action_outcome(
             mock_mcp,
             mock_db,
             mock_pool,
@@ -2457,7 +2730,8 @@ async def test_dispatch_approved_action_re_gate_notify_email_guard_uses_pending_
 
     # The failed delivery must leave the action retryable rather than writing a
     # false terminal result. The log retains the useful phantom-id diagnosis.
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
     assert captured == {}
     assert str(phantom_action_id) in caplog.text
     assert "phantom pending_action=<unknown>" not in caplog.text
@@ -2469,7 +2743,7 @@ async def test_dispatch_approved_notify_error_payload_stays_retryable():
     from unittest.mock import patch
 
     import butlers.modules.approvals.operations as approvals_ops
-    from butlers.api.routers.approvals import _dispatch_approved_action
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
 
     action_id = uuid4()
     mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
@@ -2481,7 +2755,7 @@ async def test_dispatch_approved_notify_error_payload_stays_retryable():
     )
 
     with patch.object(approvals_ops, "mark_executed", new_callable=AsyncMock) as mark_executed:
-        result = await _dispatch_approved_action(
+        outcome = await _dispatch_approved_action_outcome(
             mock_mcp,
             mock_db,
             mock_pool,
@@ -2490,5 +2764,6 @@ async def test_dispatch_approved_notify_error_payload_stays_retryable():
             {"channel": "email", "message": "Hello", "recipient": "owner@example.com"},
         )
 
-    assert result is None
+    assert outcome.kind == "rejected"
+    assert outcome.action is None
     mark_executed.assert_not_awaited()

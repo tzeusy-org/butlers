@@ -36,10 +36,14 @@ vi.mock("@/hooks/use-spend", () => ({
   useDailySpend: vi.fn(),
 }));
 vi.mock("@/hooks/use-issues", () => ({ useIssues: vi.fn() }));
-vi.mock("@/hooks/use-approvals", () => ({
-  useApprovalMetrics: vi.fn(),
-  usePendingApprovalsFlat: vi.fn(),
-}));
+vi.mock("@/hooks/use-approvals", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-approvals")>();
+  return {
+    ...actual,
+    useApprovalMetrics: vi.fn(),
+    usePendingApprovalsFlat: vi.fn(),
+  };
+});
 vi.mock("@/hooks/use-approval-decisions.ts", () => ({
   useApprovalDecisionMutations: vi.fn(),
   UNDO_WINDOW_MS: 5_000,
@@ -152,6 +156,35 @@ function defaultBoardRows(): BoardRow[] {
       cadence_status: "overdue",
     }),
   ];
+}
+
+/**
+ * Quiet fixture for source-error regressions: every source other than the
+ * approval-metrics query stays healthy and empty, so an attention sentinel is
+ * the only thing that can prevent the false all-clear fallback.
+ */
+function setNoOtherAttentionItems() {
+  setDefaultData();
+  vi.mocked(useButlersBoard).mockReturnValue({
+    data: {
+      data: {
+        rows: [
+          boardRow({
+            name: "general",
+            activity: "running",
+            active_session_count: 1,
+          }),
+          boardRow({ name: "health", activity: "idle" }),
+        ],
+        aggregates: {},
+        generated_at: "2026-05-14T12:00:00.000Z",
+      },
+      meta: {},
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
 }
 
 /** A briefing for a given state_class. */
@@ -654,6 +687,33 @@ describe("DashboardPage -- RuntimeSummaryKpi", () => {
     expect(html).toContain("Sessions");
   });
 
+  it("honors a degraded Sessions board source without disabling the other KPI doors", () => {
+    vi.mocked(useButlersBoard).mockReturnValue({
+      data: {
+        data: {
+          rows: defaultBoardRows(),
+          aggregates: { sessions_source_error: true },
+          generated_at: "2026-05-14T12:00:00.000Z",
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    const html = renderPage();
+    const stripStart = html.indexOf('<section aria-label="System runtime summary">');
+    const stripEnd = html.indexOf("</section>", stripStart);
+    const kpiStrip = html.slice(stripStart, stripEnd);
+
+    expect(kpiStrip).toContain('class="sr-only"> unavailable</span>');
+    expect(kpiStrip).toContain('href="/butlers"');
+    expect(kpiStrip).toContain('href="/approvals"');
+    expect(kpiStrip).not.toContain('href="/sessions');
+  });
+
   it("renders Pending approvals KPI cell", () => {
     const html = renderPage();
     expect(html).toContain("Pending approvals");
@@ -986,6 +1046,148 @@ describe("DashboardPage -- OperationsNowList", () => {
     expect(html).toContain("2 pending approvals");
     expect(html).toContain('href="/approvals"');
   });
+
+  it("renders a named unavailable pending-approvals KPI instead of a partial zero", () => {
+    vi.mocked(useApprovalMetrics).mockReturnValue({
+      data: {
+        data: { total_pending: 0 },
+        meta: {
+          pending_actions_sources_degraded: ["home"],
+          sources_degraded: ["home"],
+        },
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    const html = renderPage();
+    const kpiStart = html.indexOf('aria-label="System runtime summary"');
+    const kpiEnd = html.indexOf('aria-label="Operations and now"');
+    const kpi = html.slice(kpiStart, kpiEnd);
+
+    expect(html).toContain('data-testid="dashboard-pending-approvals-degraded"');
+    expect(html).toContain("Pending approvals: home unavailable. Count may be incomplete.");
+    expect(kpi).toContain("Pending approvals");
+    expect(kpi).toContain("—");
+    expect(kpi).not.toContain('href="/approvals"');
+  });
+
+  it("renders a generic retryable pending-approvals state when metrics query fails", () => {
+    const refetch = vi.fn();
+    vi.mocked(useApprovalMetrics).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("approval metrics unavailable"),
+      refetch,
+    } as AnyMock);
+
+    const html = renderPage();
+    const kpiStart = html.indexOf('aria-label="System runtime summary"');
+    const kpiEnd = html.indexOf('aria-label="Operations and now"');
+    const kpi = html.slice(kpiStart, kpiEnd);
+
+    expect(html).toContain('data-testid="dashboard-pending-approvals-degraded"');
+    expect(html).toContain("Pending approvals: unavailable");
+    expect(kpi).toContain("—");
+    expect(kpi).not.toContain('href="/approvals"');
+
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const queryClient = new QueryClient();
+    document.body.appendChild(container);
+    try {
+      act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter>
+              <DashboardPage />
+            </MemoryRouter>
+          </QueryClientProvider>,
+        );
+      });
+
+      const retry = Array.from(
+        container.querySelectorAll('[data-testid="dashboard-pending-approvals-degraded"] button'),
+      ).find((button) => button.textContent?.trim() === "Retry");
+      expect(retry).toBeDefined();
+
+      act(() => {
+        retry?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(refetch).toHaveBeenCalledOnce();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it.each([
+    [
+      "a query failure",
+      {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        error: new Error("approval metrics unavailable"),
+        refetch: vi.fn(),
+      },
+    ],
+    [
+      "a malformed 200 response",
+      {
+        data: { data: { total_pending: "0" }, meta: {} },
+        isLoading: false,
+        isError: false,
+        error: null,
+        refetch: vi.fn(),
+      },
+    ],
+  ])(
+    "does not render a false all-clear with no other attention items after %s",
+    (_caseName, approvalMetricsResult) => {
+      setNoOtherAttentionItems();
+      vi.mocked(useApprovalMetrics).mockReturnValue(approvalMetricsResult as AnyMock);
+
+      const html = renderPage();
+
+      expect(html).toContain("Pending approvals unavailable");
+      expect(html).toContain('role="alert"');
+      expect(html).not.toContain("Nothing waiting.");
+    },
+  );
+
+  it.each([
+    ["missing meta", { data: { total_pending: 0 } }],
+    ["missing data", { meta: {} }],
+    ["missing total_pending", { data: {}, meta: {} }],
+    ["a non-numeric total_pending", { data: { total_pending: "0" }, meta: {} }],
+    ["a negative total_pending", { data: { total_pending: -1 }, meta: {} }],
+  ])(
+    "renders %s approval metrics as a generic retryable unavailable state",
+    (_caseName, response) => {
+      vi.mocked(useApprovalMetrics).mockReturnValue({
+        data: response,
+        isLoading: false,
+        isError: false,
+        error: null,
+        refetch: vi.fn(),
+      } as AnyMock);
+
+      const html = renderPage();
+      const kpiStart = html.indexOf('aria-label="System runtime summary"');
+      const kpiEnd = html.indexOf('aria-label="Operations and now"');
+      const kpi = html.slice(kpiStart, kpiEnd);
+
+      expect(html).toContain('data-testid="dashboard-pending-approvals-degraded"');
+      expect(html).toContain("Pending approvals: unavailable");
+      expect(html).toContain(">Retry<");
+      expect(kpi).toContain("—");
+      expect(kpi).not.toContain('href="/approvals"');
+    },
+  );
 
   it("renders failed notification row when notifications have failures", () => {
     vi.mocked(useNotificationStats).mockReturnValue({

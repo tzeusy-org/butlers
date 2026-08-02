@@ -1,6 +1,9 @@
 /**
  * KpiStrip -- 4-cell hairline-divided KPI grid.
  *
+ * It reflows to two columns below the `sm` breakpoint so unavailable labels
+ * remain accessible without forcing horizontal scroll at a 320px viewport.
+ *
  * Each cell stacks:
  *   mono eyebrow   10px, --font-mono, --muted-foreground, uppercase, 0.14em letter-spacing
  *   mega number    32px, --font-sans, weight 500, tracking -0.03em, .tnum
@@ -30,6 +33,8 @@ interface KpiCell {
   deltaTone?: "muted" | "amber";
   /** Optional `title` tooltip for the cell, e.g. the reading's data source. */
   title?: string;
+  /** Adds an assistive-technology qualifier to a visually dashed value. */
+  unavailable?: boolean;
   /**
    * When present, the whole cell becomes a navigable door to this route
    * (bu-27dxl.8.3). Omit whenever the cell's value is unavailable
@@ -53,10 +58,7 @@ interface KpiStripProps {
 export function KpiStrip({ cells }: KpiStripProps) {
   return (
     <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(4, 1fr)",
-      }}
+      className="grid grid-cols-2 sm:grid-cols-4"
       role="group"
       aria-label="Key performance indicators"
     >
@@ -87,6 +89,7 @@ export function KpiStrip({ cells }: KpiStripProps) {
               }}
             >
               {cell.value}
+              {cell.unavailable && <span className="sr-only"> unavailable</span>}
             </p>
             {/* Delta */}
             {cell.delta !== undefined && (

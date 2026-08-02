@@ -64,6 +64,16 @@ _MOCK_BUTLERS = [
 ]
 
 
+def _dashboard_tool_args(**overrides: Any) -> dict[str, Any]:
+    """Build a dashboard ingress shape with its mandatory immutable turn id."""
+    args: dict[str, Any] = {
+        "source_channel": "dashboard",
+        "dashboard_message_id": "d1d1d1d1-0000-7000-8000-000000000001",
+    }
+    args.update(overrides)
+    return args
+
+
 # ---------------------------------------------------------------------------
 # RoutingResult
 # ---------------------------------------------------------------------------
@@ -134,6 +144,144 @@ class TestBuildRoutingPrompt:
 
 
 class TestMessagePipelineProcess:
+    @patch.object(
+        MessagePipeline,
+        "_load_dashboard_context",
+        new_callable=AsyncMock,
+        return_value={
+            "conversation_id": "c1c1c1c1-0000-7000-8000-000000000001",
+            "message_id": "d1d1d1d1-0000-7000-8000-000000000001",
+            "page_context": None,
+        },
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_dashboard_dispatch_carries_immutable_turn_id(
+        self, _mock_load, _mock_dashboard_context
+    ):
+        """Dashboard classification must register against its user-message turn.
+
+        The Stop control protocol keys all cross-process work by the immutable
+        ``dashboard_messages.id`` rather than a conversation or sender id.
+        """
+        captured_kwargs: dict[str, Any] = {}
+
+        async def mock_dispatch(**kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeSpawnerResult(
+                output="Routed to health.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health", "prompt": "Track headache"},
+                        "result": {"status": "accepted", "butler": "health"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        result = await pipeline.process(
+            "I have a headache",
+            tool_args={
+                "source": "dashboard",
+                "source_channel": "dashboard",
+                "source_identity": "dashboard:operator",
+                "source_tool": "ingest",
+                "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+                "dashboard_message_id": "d1d1d1d1-0000-7000-8000-000000000001",
+            },
+            message_inbox_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+        )
+
+        assert result.acked_targets == ["health"]
+        assert str(captured_kwargs["dashboard_turn_id"]) == ("d1d1d1d1-0000-7000-8000-000000000001")
+
+    @patch.object(
+        MessagePipeline,
+        "_load_dashboard_context",
+        new_callable=AsyncMock,
+        return_value={
+            "conversation_id": "c1c1c1c1-0000-7000-8000-000000000001",
+            "message_id": "d1d1d1d1-0000-7000-8000-000000000001",
+            "page_context": None,
+        },
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_dashboard_dispatch_recovers_immutable_turn_id_from_inbox(
+        self, _mock_load, mock_dashboard_context
+    ):
+        """Direct pipeline callers may omit transport-only dashboard metadata."""
+        captured_kwargs: dict[str, Any] = {}
+
+        async def mock_dispatch(**kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeSpawnerResult(
+                output="Routed to health.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health", "prompt": "Track headache"},
+                        "result": {"status": "accepted", "butler": "health"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        result = await pipeline.process(
+            "I have a headache",
+            tool_args={
+                "source": "dashboard",
+                "source_channel": "dashboard",
+                "source_identity": "dashboard:operator",
+                "source_tool": "ingest",
+                "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+            },
+            message_inbox_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+        )
+
+        assert result.acked_targets == ["health"]
+        assert str(captured_kwargs["dashboard_turn_id"]) == "d1d1d1d1-0000-7000-8000-000000000001"
+        mock_dashboard_context.assert_awaited_once_with("019c8812-fb0f-77f3-88b9-5763c1336b27")
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_dashboard_dispatch_fails_closed_without_a_valid_turn_id(self, _mock_load):
+        """A dashboard-originated runtime must never bypass Stop control."""
+        dispatch = AsyncMock()
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=dispatch, source_butler="switchboard"
+        )
+
+        result = await pipeline.process(
+            "I have a headache",
+            tool_args={
+                "source": "dashboard",
+                "source_channel": "dashboard",
+                "source_identity": "dashboard:operator",
+                "source_tool": "ingest",
+                "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+                "dashboard_message_id": "not-a-uuid",
+            },
+        )
+
+        assert result.target_butler == "dashboard_control_error"
+        assert result.classification_error is not None
+        dispatch.assert_not_awaited()
+
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
         new_callable=AsyncMock,
@@ -319,12 +467,13 @@ class TestMessagePipelineRoutingVerdictLog:
                 "some finance email",
                 tool_args={
                     "source_channel": "email",
-                    "source_identity": "billing@chase.com",
+                    "source_identity": "gmail:acct-1",
                     "request_context": {
                         "triage_decision": "route_to",
                         "triage_target": "finance",
                         "triage_rule_id": "11111111-1111-1111-1111-111111111111",
                         "triage_rule_type": "sender_domain",
+                        "source_sender_identity": "billing@chase.com",
                     },
                 },
                 message_inbox_id="00000000-0000-0000-0000-000000000002",
@@ -340,6 +489,48 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["verdict_action"] == "route_to"
         assert kwargs["verdict_target"] == "finance"
         assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
+
+    async def test_non_email_route_records_the_wire_endpoint_identity(self):
+        """Opaque endpoints must remain identical to policy-rule keys."""
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                new_callable=AsyncMock,
+                return_value={"status": "ok"},
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+        ):
+            await pipeline.process(
+                "Listening summary",
+                tool_args={
+                    "source_channel": "spotify_user_client",
+                    # The connector's ingest.v1 wire identity, used by
+                    # source_endpoint policy rules.
+                    "source_identity": "spotify:acct-1",
+                    # Internal request context may namespace it further;
+                    # promotion evidence deliberately keeps the wire key.
+                    "source_endpoint_identity": "spotify_user_client:spotify:acct-1",
+                    "request_context": {
+                        "triage_decision": "route_to",
+                        "triage_target": "lifestyle",
+                        "triage_rule_type": "source_endpoint",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000010",
+            )
+
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["sender_identity"] == "spotify:acct-1"
+        assert kwargs["source_channel"] == "spotify_user_client"
 
     async def test_pinned_target_bypass_records_pinned_verdict_with_no_rule_id(self):
         pipeline = MessagePipeline(
@@ -361,14 +552,13 @@ class TestMessagePipelineRoutingVerdictLog:
         ):
             await pipeline.process(
                 "dashboard message",
-                tool_args={
-                    "source_channel": "dashboard",
-                    "request_context": {
+                tool_args=_dashboard_tool_args(
+                    request_context={
                         "triage_decision": "route_to",
                         "triage_target": "general",
                         "triage_rule_type": "pinned_target",
                     },
-                },
+                ),
                 message_inbox_id="00000000-0000-0000-0000-000000000003",
             )
 
@@ -520,7 +710,11 @@ class TestMessagePipelineRoutingVerdictLog:
         ) as mock_record:
             result = await pipeline.process(
                 "I have a headache",
-                tool_args={"source_identity": "someone@example.com"},
+                tool_args={
+                    "source_channel": "email",
+                    "source_identity": "gmail:acct-1",
+                    "request_context": {"source_sender_identity": "billing@chase.com"},
+                },
                 message_inbox_id="00000000-0000-0000-0000-000000000007",
             )
 
@@ -528,7 +722,8 @@ class TestMessagePipelineRoutingVerdictLog:
         mock_record.assert_awaited_once()
         kwargs = mock_record.await_args.kwargs
         assert kwargs["ingestion_event_id"] == "00000000-0000-0000-0000-000000000007"
-        assert kwargs["sender_identity"] == "someone@example.com"
+        assert kwargs["sender_identity"] == "billing@chase.com"
+        assert kwargs["source_channel"] == "email"
         assert kwargs["verdict_source"] == "llm"
         assert kwargs["verdict_action"] == "route_to"
         assert kwargs["verdict_target"] == "health"
@@ -1332,7 +1527,7 @@ class TestMessagePipelineProcessDashboardLanes:
 
         result = await pipeline.process(
             "Alice's birthday is actually March 3rd",
-            tool_args={"source_channel": "dashboard"},
+            tool_args=_dashboard_tool_args(),
             message_inbox_id="00000000-0000-0000-0000-000000000002",
         )
 
@@ -1365,7 +1560,7 @@ class TestMessagePipelineProcessDashboardLanes:
 
         result = await pipeline.process(
             "The concentration chart is empty for child-of",
-            tool_args={"source_channel": "dashboard"},
+            tool_args=_dashboard_tool_args(),
             message_inbox_id="00000000-0000-0000-0000-000000000003",
         )
 
@@ -1417,7 +1612,7 @@ class TestMessagePipelineProcessDashboardLanes:
         with caplog.at_level("WARNING"):
             result = await pipeline.process(
                 "Actually this chart is broken",
-                tool_args={"source_channel": "dashboard"},
+                tool_args=_dashboard_tool_args(),
                 message_inbox_id="00000000-0000-0000-0000-000000000004",
             )
 
@@ -1485,7 +1680,7 @@ class TestMessagePipelineProcessDashboardLanes:
         with caplog.at_level("WARNING"):
             result = await pipeline.process(
                 "This is a bug",
-                tool_args={"source_channel": "dashboard"},
+                tool_args=_dashboard_tool_args(),
                 message_inbox_id="00000000-0000-0000-0000-000000000005",
             )
 
@@ -1540,7 +1735,7 @@ class TestMessagePipelineProcessDashboardLanes:
 
         result = await pipeline.process(
             "asdkfjaslkdfj",
-            tool_args={"source_channel": "dashboard"},
+            tool_args=_dashboard_tool_args(),
             message_inbox_id="00000000-0000-0000-0000-000000000004",
         )
 
@@ -1598,7 +1793,7 @@ class TestMessagePipelineProcessDashboardLanes:
 
         result = await pipeline.process(
             "something that will blow up classification",
-            tool_args={"source_channel": "dashboard"},
+            tool_args=_dashboard_tool_args(),
             message_inbox_id="00000000-0000-0000-0000-000000000005",
         )
 
@@ -1668,7 +1863,7 @@ class TestMessagePipelineProcessDashboardLanes:
 
         result = await pipeline.process(
             "Log $50 expense",
-            tool_args={"source_channel": "dashboard"},
+            tool_args=_dashboard_tool_args(),
             message_inbox_id="00000000-0000-0000-0000-000000000006",
         )
 
@@ -1711,7 +1906,7 @@ class TestMessagePipelineProcessDashboardLanes:
 
         result = await pipeline.process(
             "Log $50 expense",
-            tool_args={"source_channel": "dashboard"},
+            tool_args=_dashboard_tool_args(),
             message_inbox_id="00000000-0000-0000-0000-000000000007",
         )
 

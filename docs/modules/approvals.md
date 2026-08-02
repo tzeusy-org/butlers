@@ -98,11 +98,17 @@ Valid status transitions:
 
 ```
 pending -> approved | rejected | expired
-approved -> executed
-rejected, expired, executed -> (terminal)
+approved -> executed | abandoned
+rejected, expired, executed, abandoned -> (terminal)
 ```
 
-All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry or reject it; an already-executed replay returns the stored result without re-running the tool.
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it; an already-executed replay returns the stored result without re-running the tool.
+
+`abandoned` is a terminal, dashboard-only recovery outcome for an action that was
+previously approved but intentionally left unexecuted. It requires a non-blank
+reason and appends an immutable `action_abandoned` event in the same transaction.
+There is no MCP, Telegram callback, automatic, bulk, or scheduled abandonment
+path.
 
 ## Risk Tiers
 
@@ -112,7 +118,7 @@ Tools and actions are classified into risk tiers: `low`, `medium`, `high`, `crit
 
 The module owns tables in the hosting butler's schema (Alembic branch: `approvals`):
 
-- `pending_actions` -- durable queue and audit log for gated invocations
+- `pending_actions` -- durable queue and audit log for gated invocations. Ordinary terminal actions are retained for 90 days; rejected or abandoned ordered `memory_entity_merge` / legacy `entity_merge` actions remain as durable owner decisions so curation cannot reopen the same pair.
 - `approval_rules` -- standing rules for auto-approval. Its optional `created_from` action ID is historical provenance, so a retained rule does not block deletion of its terminal source action after that action's 90-day window.
 - `approval_events` -- append-only immutable audit log. Its `action_id` and `rule_id` are historical provenance, so deleting a terminal action after its 90-day window or an inactive rule after its 180-day window neither mutates nor deletes the event; events retain their separate 365-day audit window. New non-null action and rule references are still validated when an event is written.
 

@@ -37,7 +37,22 @@ TERMINAL_ACTION_STATUSES = [
     ActionStatus.REJECTED.value,
     ActionStatus.EXPIRED.value,
     ActionStatus.EXECUTED.value,
+    ActionStatus.ABANDONED.value,
 ]
+
+# A rejected or abandoned entity-merge pair is an enduring owner decision, not
+# merely disposable queue history.  Curation consults the action row to avoid
+# proposing the same ordered pair again, including rollout-era `entity_merge`
+# rows that predate semantic keys. A retained row must encode two distinct,
+# lower-case UUIDs, exactly as curation writes and later queries them. Keep this
+# scope deliberately narrow: completed merges tombstone their source, expired
+# proposals may resurface, and unrelated terminal approvals continue to use the
+# normal retention policy.
+_DURABLE_ENTITY_MERGE_TOOL_NAMES = ("memory_entity_merge", "entity_merge")
+_DURABLE_ENTITY_MERGE_DECISION_STATUSES = (
+    ActionStatus.REJECTED.value,
+    ActionStatus.ABANDONED.value,
+)
 
 
 @dataclass
@@ -65,9 +80,11 @@ async def cleanup_old_actions(
 ) -> dict[str, int]:
     """Delete or archive pending actions older than the retention window.
 
-    Only terminal statuses (rejected, expired, executed) are eligible for
-    cleanup. Pending and approved actions remain until explicitly resolved;
-    approved actions are retryable until execution succeeds.
+    Only terminal statuses (rejected, expired, executed, abandoned) are eligible for
+    cleanup. Rejected or abandoned ordered entity-merge pairs are exempt so their
+    owner decision continues to suppress identical curation proposals. Pending and
+    approved actions remain until explicitly resolved; approved actions are retryable
+    until execution succeeds.
 
     Parameters
     ----------
@@ -92,12 +109,25 @@ async def cleanup_old_actions(
         WHERE status = ANY($1::text[])
           AND decided_at IS NOT NULL
           AND decided_at < $2
+          AND NOT COALESCE(
+              tool_name = ANY($3::text[])
+              AND status = ANY($4::text[])
+              AND jsonb_typeof(tool_args) = 'object'
+              AND (tool_args ->> 'source_entity_id') ~
+                  '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              AND (tool_args ->> 'target_entity_id') ~
+                  '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              AND (tool_args ->> 'source_entity_id') <> (tool_args ->> 'target_entity_id'),
+              FALSE
+          )
         GROUP BY status
     """
     rows = await pool.fetch(
         count_query,
         TERMINAL_ACTION_STATUSES,
         cutoff,
+        _DURABLE_ENTITY_MERGE_TOOL_NAMES,
+        _DURABLE_ENTITY_MERGE_DECISION_STATUSES,
     )
 
     counts = {row["status"]: row["count"] for row in rows}
@@ -128,11 +158,24 @@ async def cleanup_old_actions(
         WHERE status = ANY($1::text[])
           AND decided_at IS NOT NULL
           AND decided_at < $2
+          AND NOT COALESCE(
+              tool_name = ANY($3::text[])
+              AND status = ANY($4::text[])
+              AND jsonb_typeof(tool_args) = 'object'
+              AND (tool_args ->> 'source_entity_id') ~
+                  '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              AND (tool_args ->> 'target_entity_id') ~
+                  '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              AND (tool_args ->> 'source_entity_id') <> (tool_args ->> 'target_entity_id'),
+              FALSE
+          )
     """
     await pool.execute(
         delete_query,
         TERMINAL_ACTION_STATUSES,
         cutoff,
+        _DURABLE_ENTITY_MERGE_TOOL_NAMES,
+        _DURABLE_ENTITY_MERGE_DECISION_STATUSES,
     )
 
     logger.info("Deleted %d old pending actions", total)
