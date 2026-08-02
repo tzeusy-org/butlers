@@ -43,6 +43,7 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 import { reauthorizeUserCredential, ApiError } from "@/api/client.ts"
 import { startSpotifyOAuth } from "@/api/index.ts"
+import type { SpotifyOAuthStartResponse } from "@/api/types.ts"
 const mockReauth = vi.mocked(reauthorizeUserCredential)
 const mockSpotifyStart = vi.mocked(startSpotifyOAuth)
 
@@ -301,7 +302,10 @@ describe("PageUser: re-authorize button (expired credential)", () => {
     // the connector's, and the provider URL it returns is absolute (no API base
     // to resolve against).
     const authUrl = "https://accounts.spotify.com/authorize?client_id=abc&code_challenge=xyz"
-    mockSpotifyStart.mockResolvedValue({ authorization_url: authUrl })
+    mockSpotifyStart.mockResolvedValue({
+      authorization_url: authUrl,
+      state: "opaque-csrf-state",
+    } satisfies SpotifyOAuthStartResponse)
 
     const locationDescriptor = Object.getOwnPropertyDescriptor(window, "location")
     const hrefSetter = vi.fn()

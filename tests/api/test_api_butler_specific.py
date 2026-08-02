@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -193,14 +194,16 @@ class TestSpotifyAPI:
         app.dependency_overrides[_spotify_get_db] = lambda: db
         return app
 
-    async def test_oauth_start_returns_authorization_url(self):
+    async def test_oauth_start_returns_response_state_in_authorization_url(self):
         app = self._make_app()
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.post("/api/connectors/spotify/oauth/start")
         assert resp.status_code == 200
-        assert "authorization_url" in resp.json()
+        body = resp.json()
+        assert set(body) == {"authorization_url", "state"}
+        assert parse_qs(urlparse(body["authorization_url"]).query)["state"] == [body["state"]]
 
     # ------------------------------------------------------------------
     # Contract conformance (bu-fm0w7): BE responses must match the spec /
