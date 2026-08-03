@@ -143,6 +143,7 @@ describe("ContactPeoplePicker", () => {
     expect(degraded.textContent).toContain("unavailable");
     // Never a silently-empty selectable list.
     expect(screen.queryByTestId("people-search-result")).toBeNull();
+    expect(screen.queryByTestId("people-search-empty")).toBeNull();
   });
 
 });

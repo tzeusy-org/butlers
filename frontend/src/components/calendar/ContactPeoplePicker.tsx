@@ -59,6 +59,7 @@ export function ContactPeoplePicker({
 
   // Never offer an already-linked person as a match.
   const results: ContactSearchResult[] = useMemo(
+    // eslint-disable-next-line no-restricted-syntax -- search.isError renders SourceDegradedNote/retry before empty state.
     () => (search.data?.results ?? []).filter((r) => !selectedIds.has(r.entity_id)),
     [search.data, selectedIds],
   );
