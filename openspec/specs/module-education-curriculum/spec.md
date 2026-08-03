@@ -8,7 +8,7 @@ Defines the curriculum planning system for the education butler: LLM-driven topi
 
 ### Requirement: Topic decomposition into concept graph
 
-Curriculum planning is split into two layers:
+Curriculum planning SHALL be split into two layers:
 
 1. LLM orchestration layer (butler session level). An ephemeral LLM session, spawned by the curriculum-planning skill prompt, decomposes the given topic into a set of concept nodes and prerequisite edges. The session MUST output structured JSON representing nodes (each with `label`, `description`, and `effort_minutes`) and edges (each specifying a `parent` → `child` prerequisite relationship), and MUST persist this graph by calling `mind_map_create()`, `mind_map_node_create()`, and `mind_map_edge_create()` tool calls. The skill prompt MUST require the LLM to produce a root node representing the topic itself, with all other nodes reachable from it via directed prerequisite edges.
 
