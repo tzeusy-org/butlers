@@ -6,7 +6,7 @@ Defines what a "staffer" is as an architectural primitive — the infrastructure
 ## Requirements
 
 ### Requirement: Staffer as Architectural Primitive
-A staffer is a long-lived MCP server daemon sharing the same core engine as a butler (FastMCP, modules, ephemeral LLM sessions, scheduler, state store) but distinguished by its permissions model and connectivity topology. Staffers serve the ecosystem rather than the user directly. The staffer type is declared in `butler.toml` and governs routing exclusion, briefing exclusion, and cross-butler connectivity.
+A staffer SHALL be a long-lived MCP server daemon sharing the same core engine as a butler (FastMCP, modules, ephemeral LLM sessions, scheduler, state store) but distinguished by its permissions model and connectivity topology. Staffers serve the ecosystem rather than the user directly. The staffer type is declared in `butler.toml` and governs routing exclusion, briefing exclusion, and cross-butler connectivity.
 
 #### Scenario: Staffer identity contract
 - **WHEN** a staffer daemon starts
@@ -65,7 +65,7 @@ Staffers SHALL NOT participate in the daily briefing contribution system. They d
 - **AND** staffer-typed agents SHALL be excluded from the collection loop
 
 ### Requirement: Cross-Butler Permissions Model
-Staffers MAY declare cross-butler access permissions that specify which other agents they may connect to or act on behalf of. This formalizes the implicit cross-butler connectivity that switchboard and messenger already exercise.
+Staffers MAY declare cross-butler access permissions that SHALL specify which other agents they may connect to or act on behalf of. This formalizes the implicit cross-butler connectivity that switchboard and messenger already exercise.
 
 #### Scenario: Permissions declared in butler.toml
 - **WHEN** a staffer's `butler.toml` contains a `[butler.permissions]` section
@@ -88,7 +88,7 @@ Staffers MAY declare cross-butler access permissions that specify which other ag
 - **AND** the butler communicates with other agents exclusively through switchboard routing (non-negotiable rule #3)
 
 ### Requirement: Infrastructure Contract (Staffer Manifesto)
-Staffers use `MANIFESTO.md` with infrastructure-contract framing rather than user-relationship framing. The file retains the same name and location for roster convention consistency.
+Staffers SHALL use `MANIFESTO.md` with infrastructure-contract framing rather than user-relationship framing. The file retains the same name and location for roster convention consistency.
 
 #### Scenario: Infrastructure contract content structure
 - **WHEN** a staffer's `MANIFESTO.md` is authored
