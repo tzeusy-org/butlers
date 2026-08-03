@@ -138,8 +138,9 @@ function setupLoading() {
 
 function setupError(message = "Network error") {
   vi.mocked(useApprovalActions).mockReturnValue({
-    data: undefined,
+    data: { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } },
     isLoading: false,
+    isError: true,
     error: new Error(message),
   } as unknown as ReturnType<typeof useApprovalActions>)
 }

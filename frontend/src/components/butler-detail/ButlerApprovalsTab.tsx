@@ -136,6 +136,7 @@ export default function ButlerApprovalsTab({ butlerName }: ButlerApprovalsTabPro
   // compatibility; actual server-side scoping is tracked in a follow-up bead.
   const { data, isLoading, error } = useApprovalActions({ status: "pending", butler: butlerName })
 
+  // eslint-disable-next-line no-restricted-syntax -- the error branch returns before the empty state can render.
   const actions = data?.data ?? []
   const meta = data?.meta
 

@@ -1,7 +1,6 @@
 {
   "src/components/approvals/autonomy-panel.tsx": 1,
   "src/components/butler-detail/ButlerActivityTab.tsx": 3,
-  "src/components/butler-detail/ButlerApprovalsTab.tsx": 1,
   "src/components/butler-detail/ButlerChroniclerTimelinesTab.tsx": 3,
   "src/components/butler-detail/ButlerDelegationsPanel.tsx": 4,
   "src/components/butler-detail/ButlerDomainEventsPanel.tsx": 4,
