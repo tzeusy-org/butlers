@@ -135,6 +135,8 @@ The checkpoint SHALL advance only after successful batch submission.
 
 ### Requirement: Configuration Environment Variables
 
+The connector SHALL recognize the following environment variables:
+
 #### Scenario: New environment variables
 - **WHEN** the connector starts
 - **THEN** the following environment variables are recognized:
