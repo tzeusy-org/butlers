@@ -30,7 +30,7 @@
 // ---------------------------------------------------------------------------
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { MemoryRouter } from "react-router"
 
 // ---------------------------------------------------------------------------
@@ -625,6 +625,103 @@ describe("Scenario G: truthful schedule header facts", () => {
 
     expect(facts.overdue).toBeNull()
     expect(facts.next).toMatchObject({ id: "a-next", name: "Shared next" })
+  })
+})
+
+describe("Scenario H: schedule query state truthfulness", () => {
+  const NOW = new Date("2026-07-20T12:00:00.000Z")
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("H1: keeps loading distinct from a healthy schedule-free result", () => {
+    vi.mocked(useSchedules).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      refetch: NO_OP_REFETCH,
+    } as unknown as ReturnType<typeof useSchedules>)
+
+    renderHeader()
+
+    expect(screen.getByTestId("schedule-loading").textContent).toContain("loading")
+    expect(screen.getByTestId("butler-header-facts").textContent).not.toContain("next --")
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+
+  it("H2: renders a named accessible schedule-unavailable alert for an initial error", () => {
+    const refetch = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(useSchedules).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch,
+    } as unknown as ReturnType<typeof useSchedules>)
+
+    renderHeader()
+
+    const alert = screen.getByTestId("schedule-unavailable")
+    expect(alert.getAttribute("role")).toBe("alert")
+    expect(alert.textContent).toContain("Schedule: unavailable")
+    expect(screen.getByTestId("butler-header-facts").textContent).not.toContain("next --")
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("H3: keeps cached schedule facts and names a refresh error once", () => {
+    const refetch = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(useSchedules).mockReturnValue({
+      data: {
+        data: [
+          makeSchedule({
+            id: "overdue",
+            name: "Morning review",
+            next_run_at: "2026-07-20T09:00:00.000Z",
+          }),
+          makeSchedule({
+            id: "next",
+            name: "Afternoon review",
+            next_run_at: "2026-07-20T13:00:00.000Z",
+          }),
+        ],
+      },
+      isLoading: false,
+      isError: true,
+      refetch,
+    } as unknown as ReturnType<typeof useSchedules>)
+
+    renderHeader()
+
+    expect(screen.getByRole("link", {
+      name: "Overdue Morning review, 3h ago. Open schedules.",
+    })).toBeDefined()
+    expect(screen.getByTestId("butler-header-facts").textContent).toContain("next in 1h")
+    const alert = screen.getByTestId("schedule-refresh-degraded")
+    expect(alert.getAttribute("role")).toBe("alert")
+    expect(alert.textContent).toContain("showing last known schedule")
+    expect(screen.getAllByRole("alert")).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("H4: retains the healthy no-schedule fallback", () => {
+    mockSchedules([])
+
+    renderHeader()
+
+    expect(screen.getByTestId("butler-header-facts").textContent).toContain("next --")
+    expect(screen.queryByTestId("schedule-loading")).toBeNull()
+    expect(screen.queryByTestId("schedule-unavailable")).toBeNull()
+    expect(screen.queryByTestId("schedule-refresh-degraded")).toBeNull()
+    expect(screen.queryByRole("alert")).toBeNull()
   })
 })
 

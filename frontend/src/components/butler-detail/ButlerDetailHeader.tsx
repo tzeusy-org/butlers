@@ -26,6 +26,7 @@ import type { ReactNode } from "react"
 import { Link } from "react-router"
 
 import { ButlerMark } from "@/components/ui/ButlerMark"
+import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time, formatRelativeCompact } from "@/components/ui/time"
 import { useButler } from "@/hooks/use-butlers"
@@ -90,7 +91,12 @@ function activityToneClass(activity: string): string {
 export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps) {
   const { rows, aggregates } = useButlerStatusBoard()
   const { data: butlerResponse } = useButler(butler)
-  const { data: schedulesResponse } = useSchedules(butler)
+  const {
+    data: schedulesResponse,
+    isLoading: schedulesLoading,
+    isError: schedulesError,
+    refetch: refetchSchedules,
+  } = useSchedules(butler)
   const { data: spendResponse } = useSpendSummary("today")
   const nowMs = useTickingNow(60_000)
 
@@ -107,7 +113,12 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
   // earliest future fire, and today's spend. The sources are already fetched
   // elsewhere on this page (status board heartbeat, schedules, spend summary).
   const lastRunISO = activeRow?.lastRunISO ?? null
-  const scheduleFacts = getScheduleHeaderFacts(schedulesResponse?.data ?? [], nowMs)
+  const schedules = schedulesResponse?.data
+  const hasSchedulesResponse = schedulesResponse !== undefined
+  const scheduleFacts = getScheduleHeaderFacts(schedules ?? [], nowMs)
+  const scheduleUnavailable = schedulesError && !hasSchedulesResponse
+  const scheduleLoading = schedulesLoading && !hasSchedulesResponse && !scheduleUnavailable
+  const scheduleRefreshDegraded = schedulesError && hasSchedulesResponse
   const spendSourceError = spendResponse?.data?.source_error === true
   const costToday = spendSourceError ? null : (spendResponse?.data?.by_butler?.[butler] ?? null)
 
@@ -190,11 +201,36 @@ export function ButlerDetailHeader({ butler, actions }: ButlerDetailHeaderProps)
                 </Link>
               </>
             ) : null}
-            {" · next "}
-            {scheduleFacts.next ? <Time value={scheduleFacts.next.nextRunAt} mode="relative-compact" /> : "--"}
+            {!scheduleUnavailable ? (
+              <>
+                {" · next "}
+                {scheduleLoading ? (
+                  <span data-testid="schedule-loading">loading</span>
+                ) : scheduleFacts.next ? (
+                  <Time value={scheduleFacts.next.nextRunAt} mode="relative-compact" />
+                ) : "--"}
+              </>
+            ) : null}
             {" · "}
             {spendSourceError ? "spend unavailable" : `${formatCurrency(costToday)} today`}
           </span>
+          {scheduleUnavailable ? (
+            <SourceDegradedNote
+              label="Schedule"
+              detail="unavailable"
+              onRetry={() => void refetchSchedules()}
+              className="basis-full"
+              testId="schedule-unavailable"
+            />
+          ) : scheduleRefreshDegraded ? (
+            <SourceDegradedNote
+              label="Schedule"
+              detail="refresh failed; showing last known schedule"
+              onRetry={() => void refetchSchedules()}
+              className="basis-full"
+              testId="schedule-refresh-degraded"
+            />
+          ) : null}
         </div>
         <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
           <h1 className="text-2xl font-semibold tracking-tight capitalize">{titleize(butler)}</h1>
