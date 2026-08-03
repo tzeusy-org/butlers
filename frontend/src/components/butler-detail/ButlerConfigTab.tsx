@@ -470,6 +470,7 @@ export default function ButlerConfigTab({ butlerName }: ButlerConfigTabProps) {
   }
 
   const butler = butlerResponse?.data;
+  // eslint-disable-next-line no-restricted-syntax -- modulesError is checked before both panel empty-state renderers.
   const modules = modulesResponse?.data ?? [];
   const config = configResponse?.data;
 
