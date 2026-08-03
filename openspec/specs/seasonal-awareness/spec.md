@@ -6,7 +6,7 @@ Provides contextual awareness of recurring annual periods (tax season, holidays,
 ## Requirements
 
 ### Requirement: Seasonal Period Definition
-Seasonal periods are stored in a `seasonal_periods` table with fields: `id` (UUID), `name` (unique per butler), `period_type` (enum: `annual`, `academic`, `fiscal`, `custom`), `start_month` (integer 1-12), `start_day` (integer 1-31), `end_month` (integer 1-12), `end_day` (integer 1-31), `timezone` (string, default from butler config), `metadata` (JSONB, optional -- custom attributes like priority modifiers or context hints), `butler_name`, `enabled` (boolean, default true).
+Seasonal periods SHALL be stored in a `seasonal_periods` table with fields: `id` (UUID), `name` (unique per butler), `period_type` (enum: `annual`, `academic`, `fiscal`, `custom`), `start_month` (integer 1-12), `start_day` (integer 1-31), `end_month` (integer 1-12), `end_day` (integer 1-31), `timezone` (string, default from butler config), `metadata` (JSONB, optional -- custom attributes like priority modifiers or context hints), `butler_name`, `enabled` (boolean, default true).
 
 #### Scenario: Create annual seasonal period
 - **WHEN** `seasonal_period_create(name="tax-season", period_type="annual", start_month=1, start_day=1, end_month=4, end_day=15, metadata={context_hint: "Tax filing season. Prioritize financial document organization and tax-related reminders."})` is called
