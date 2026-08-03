@@ -30,7 +30,7 @@ The Discord connector ingests Discord message events into the butler ecosystem f
 ## Requirements
 
 ### Requirement: [AS-BUILT] Shipped Bot-Token Gateway Connector
-The currently-shipped Discord connector authenticates with a Discord bot token and ingests events over the Discord Gateway. This is the as-built behavior reflected in `src/butlers/connectors/discord_user.py`, and it is the spec's described-current state for Discord.
+The currently-shipped Discord connector SHALL authenticate with a Discord bot token and ingest events over the Discord Gateway. This is the as-built behavior reflected in `src/butlers/connectors/discord_user.py`, and it is the spec's described-current state for Discord.
 
 #### Scenario: Bot-token Gateway authentication (current)
 - **WHEN** the shipped Discord connector starts
@@ -50,7 +50,7 @@ The currently-shipped Discord connector authenticates with a Discord bot token a
 - **AND** it maintains a durable per-channel checkpoint for idempotent replay on restart
 
 ### Requirement: [TARGET-STATE] Discord Connector Scope
-Draft v2 connector layer for user-account-context Discord ingestion, distinct from the shipped bot-token Gateway connector above.
+The draft v2 connector layer SHALL cover user-account-context Discord ingestion and remain distinct from the shipped bot-token Gateway connector above.
 
 #### Scenario: Target v2 scope
 - **WHEN** the Discord user connector is implemented
