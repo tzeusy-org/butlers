@@ -9,12 +9,13 @@
 //   - Time-bucket boundary: sessions exactly on the window boundary are included;
 //     sessions outside are excluded
 //   - Loading state renders skeleton
-//   - Error state renders error element
+//   - Query errors preserve cached data and expose a retryable degraded alert
 //   - Recharts BarChart renders when data is present
 // ---------------------------------------------------------------------------
 
 import * as React from "react"
-import { describe, expect, it, vi, beforeEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { renderToStaticMarkup } from "react-dom/server"
 
 // ---------------------------------------------------------------------------
@@ -98,6 +99,8 @@ beforeEach(() => {
   vi.resetAllMocks()
 })
 
+afterEach(cleanup)
+
 // ---------------------------------------------------------------------------
 // Loading state
 // ---------------------------------------------------------------------------
@@ -127,19 +130,102 @@ describe("SessionStripeChart — loading state", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Error state
+// Query error state
 // ---------------------------------------------------------------------------
 
-describe("SessionStripeChart — error state", () => {
-  it("renders error element on fetch failure", () => {
+describe("SessionStripeChart — query error state", () => {
+  it("renders a retryable alert instead of a calm empty window on an initial query error", () => {
+    const refetch = vi.fn()
     mockUseQuery.mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
-    } as ReturnType<typeof useQuery>)
+      refetch,
+    } as unknown as ReturnType<typeof useQuery>)
 
-    const html = renderChart({ butlers: [] })
-    expect(html).toContain("session-stripe-error")
+    render(<SessionStripeChart butlers={[]} />)
+
+    expect(screen.getByTestId("session-stripe-error").getAttribute("role")).toBe("alert")
+    expect(screen.queryByTestId("session-stripe-empty")).toBeNull()
+    expect(screen.queryByText("No sessions in the selected window.")).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("keeps cached sessions visible and names a failed background refresh", () => {
+    const refetch = vi.fn()
+    mockUseQuery.mockReturnValue({
+      data: {
+        data: [{ id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" }],
+        meta: { total: 1, offset: 0, limit: 2000, has_more: false },
+      },
+      isLoading: false,
+      isError: true,
+      refetch,
+    } as unknown as ReturnType<typeof useQuery>)
+
+    render(<SessionStripeChart butlers={[makeButler("home")]} />)
+
+    expect(screen.getByTestId("session-stripe-chart")).toBeTruthy()
+    expect(screen.getByTestId("recharts-bar-chart")).toBeTruthy()
+    expect(screen.getByTestId("session-stripe-refresh-degraded").getAttribute("role")).toBe(
+      "alert",
+    )
+    expect(screen.getByRole("alert").textContent).toContain("showing last known session activity")
+    expect(screen.getAllByRole("alert")).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("keeps a cached zero degraded and retryable after a background error", () => {
+    const refetch = vi.fn()
+    mockUseQuery.mockReturnValue({
+      data: { data: [], meta: { total: 0, offset: 0, limit: 2000, has_more: false } },
+      isLoading: false,
+      isError: true,
+      refetch,
+    } as unknown as ReturnType<typeof useQuery>)
+
+    render(<SessionStripeChart butlers={[]} />)
+
+    expect(screen.getByTestId("session-stripe-refresh-degraded").getAttribute("role")).toBe(
+      "alert",
+    )
+    expect(screen.getByRole("alert").textContent).toContain("last known result was empty")
+    expect(screen.queryByTestId("session-stripe-empty")).toBeNull()
+    expect(screen.queryByText("No sessions in the selected window.")).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(refetch).toHaveBeenCalledOnce()
+  })
+
+  it("combines a refresh error and partial fan-out into one degraded note", () => {
+    const refetch = vi.fn()
+    mockUseQuery.mockReturnValue({
+      data: {
+        data: [{ id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" }],
+        meta: {
+          total: 1,
+          offset: 0,
+          limit: 2000,
+          has_more: false,
+          sources_degraded: ["atlas"],
+        },
+      },
+      isLoading: false,
+      isError: true,
+      refetch,
+    } as unknown as ReturnType<typeof useQuery>)
+
+    render(<SessionStripeChart butlers={[makeButler("home")]} />)
+
+    expect(screen.getByRole("alert").textContent).toContain("atlas")
+    expect(screen.getAllByRole("alert")).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(refetch).toHaveBeenCalledOnce()
   })
 })
 
@@ -148,7 +234,7 @@ describe("SessionStripeChart — error state", () => {
 // ---------------------------------------------------------------------------
 
 describe("SessionStripeChart — empty data state", () => {
-  it("renders the empty-state element when sessions is empty", () => {
+  it("keeps the calm empty window for a healthy complete zero response", () => {
     mockUseQuery.mockReturnValue({
       data: { data: [], meta: { total: 0, offset: 0, limit: 2000, has_more: false } },
       isLoading: false,
@@ -157,6 +243,9 @@ describe("SessionStripeChart — empty data state", () => {
 
     const html = renderChart({ butlers: [] })
     expect(html).toContain("session-stripe-empty")
+    expect(html).toContain("No sessions in the selected window.")
+    expect(html).not.toContain('role="alert"')
+    expect(html).not.toContain(">Retry<")
   })
 
   it("does NOT render the chart when sessions is empty", () => {

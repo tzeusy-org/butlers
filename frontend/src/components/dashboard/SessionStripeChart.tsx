@@ -111,22 +111,37 @@ export function SessionStripeChart({
   // own useBusAwarePollInterval default (a reconciliation sweep, not the
   // primary update path). The manual auto-refresh toggle that used to gate
   // this (bu-u4s65) retired with AutoRefreshToggle (bu-01r64.3).
-  const { data, isLoading, isError } = useSessionStripeData(windowHours, undefined, filterParams)
+  const { data, isLoading, isError, refetch } = useSessionStripeData(
+    windowHours,
+    undefined,
+    filterParams,
+  )
 
-  const sessions = useMemo(() => data?.data ?? [], [data])
+  const sessions = data?.data
+  const hasCachedResponse = data !== undefined
+  const hasSessions = Boolean(sessions?.length)
 
   // Butler pools dropped from this window's list fan-out (KeysetMeta.sources_degraded,
   // bu-hmdqz.12): the chart then undercounts, so name the missing pool(s) above
   // the bars AND gate the "No sessions in the selected window" empty state — a
   // degraded zero must not read as a real quiet window.
   const sourcesDegraded = data?.meta?.sources_degraded ?? []
+  const degradedDetails = [
+    sourcesDegraded.length > 0 ? `partial: ${sourcesDegraded.join(", ")} unreachable` : null,
+    isError && hasCachedResponse
+      ? hasSessions
+        ? "refresh failed; showing last known session activity"
+        : "refresh failed; last known result was empty"
+      : null,
+  ].filter((detail): detail is string => detail !== null)
   const degradedNote =
-    sourcesDegraded.length > 0 ? (
+    degradedDetails.length > 0 ? (
       <SourceDegradedNote
         label="Session activity"
-        detail={`partial: ${sourcesDegraded.join(", ")} unreachable`}
+        detail={degradedDetails.join("; ")}
+        onRetry={isError ? () => void refetch() : undefined}
         className="mb-2"
-        testId="session-stripe-degraded"
+        testId={isError ? "session-stripe-refresh-degraded" : "session-stripe-degraded"}
       />
     ) : null
 
@@ -136,10 +151,10 @@ export function SessionStripeChart({
   const { unit, rows, orderedNames } = useMemo(() => {
     const w = currentWindow(windowHours, filterParams)
     const u = bucketUnit(w.from, w.to)
-    const r = pivotSessionsIntoRows(sessions, w.from, w.to, u)
+    const r = pivotSessionsIntoRows(sessions ?? [], w.from, w.to, u)
 
     const present = new Set<string>()
-    for (const s of sessions) {
+    for (const s of sessions ?? []) {
       if (s.butler) present.add(s.butler)
     }
     const knownSet = new Set(butlers.map((b) => b.name))
@@ -150,22 +165,25 @@ export function SessionStripeChart({
     return { unit: u, rows: r, orderedNames: ordered }
   }, [sessions, windowHours, butlers, filterParams])
 
-  if (isLoading) {
+  if (isLoading && !hasCachedResponse) {
     return <ChartSkeleton height="h-[200px]" testId="session-stripe-skeleton" />
   }
 
-  if (isError) {
+  if (isError && !hasCachedResponse) {
     return (
-      <div
-        className="flex h-[200px] items-center justify-center text-sm text-muted-foreground"
-        data-testid="session-stripe-error"
-      >
-        Failed to load session data.
+      <div className="flex h-[200px] items-center">
+        <SourceDegradedNote
+          label="Session activity"
+          detail="unavailable"
+          onRetry={() => void refetch()}
+          className="w-full"
+          testId="session-stripe-error"
+        />
       </div>
     )
   }
 
-  if (sessions.length === 0) {
+  if (!hasSessions) {
     // A degraded zero must not read as a real quiet window: name the dropped
     // pool(s) instead of the calm empty copy (bu-hmdqz.12).
     if (degradedNote) {
@@ -189,7 +207,7 @@ export function SessionStripeChart({
           className="mb-1 text-xs text-muted-foreground"
           data-testid="session-stripe-truncated-warning"
         >
-          Showing the most recent {sessions.length.toLocaleString()} sessions. Some may be
+          Showing the most recent {sessions!.length.toLocaleString()} sessions. Some may be
           omitted; narrow the window.
         </p>
       )}
