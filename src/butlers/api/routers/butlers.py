@@ -482,14 +482,14 @@ def _cron_cadence_seconds(crons: list[str], *, now: datetime) -> float | None:
 
 
 def _cadence_label(cadence_seconds: float | None) -> str | None:
-    """Bucket a cadence interval into a human-facing label."""
+    """Return a named label only for an exact canonical cadence interval."""
     if cadence_seconds is None:
         return None
-    if cadence_seconds <= 3600 * 2:
+    if cadence_seconds == 3600:
         return "hourly"
-    if cadence_seconds <= 3600 * 24 * 1.5:
+    if cadence_seconds == 3600 * 24:
         return "daily"
-    if cadence_seconds <= 3600 * 24 * 9:
+    if cadence_seconds == 3600 * 24 * 7:
         return "weekly"
     return "custom"
 

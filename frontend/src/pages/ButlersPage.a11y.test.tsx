@@ -126,6 +126,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     sessionsSourceError: false,
     sourcesPartiallyDegraded: false,
     ...overrides,
+    unknown: overrides.unknown ?? 0,
   };
 }
 

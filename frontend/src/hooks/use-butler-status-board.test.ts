@@ -343,6 +343,20 @@ describe("aggregates passthrough", () => {
     expect(aggregates.eligibilityUnavailable).toBe(2)
   })
 
+  it("computes unknown from canonical activity rather than registry eligibility", () => {
+    mockQuerySuccess(
+      makeBoardResponse([
+        makeRow({ name: "unknown-but-active", activity: "unknown", eligibility: "active" }),
+        makeRow({ name: "available-but-idle", activity: "idle", eligibility: "unavailable" }),
+        makeRow({ name: "unknown-and-unavailable", activity: "unknown", eligibility: "unavailable" }),
+      ]),
+    )
+
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.unknown).toBe(2)
+    expect(aggregates.eligibilityUnavailable).toBe(2)
+  })
+
   it("returns zeroed aggregates and avgLoadPct=null before data has loaded", () => {
     mockUseQuery.mockReturnValue({
       data: undefined,

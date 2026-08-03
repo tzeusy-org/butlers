@@ -95,6 +95,8 @@ export interface StatusBoardAggregates {
   quarantined: number
   /** Butlers silent longer than their own cron cadence expects. */
   overdue: number
+  /** Butlers whose canonical server-derived liveness verdict is "unknown". */
+  unknown: number
   totalSessions24h: number
   totalSpendToday: number
   /** Mean loadPct across rows that have a known load; null when no row has a known load. */
@@ -222,6 +224,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
   const aggregates = useMemo<StatusBoardAggregates>(() => {
     const agg = boardQuery.data?.data.aggregates
     const eligibilityUnavailable = rows.filter((r) => r.eligibility === "unavailable").length
+    const unknown = rows.filter((r) => r.activity === "unknown").length
     const hasPerEntryErrors = agg?.has_per_entry_errors ?? false
 
     return {
@@ -232,6 +235,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
       offline: agg?.offline ?? 0,
       quarantined: agg?.quarantined ?? 0,
       overdue: agg?.overdue ?? 0,
+      unknown,
       totalSessions24h: agg?.total_sessions_24h ?? 0,
       totalSpendToday: agg?.total_spend_today ?? 0,
       avgLoadPct: agg?.avg_load_pct ?? null,

@@ -223,6 +223,7 @@ function setupDefaultMocks({
       offline: 0,
       quarantined: 0,
       overdue: 0,
+      unknown: 0,
       totalSessions24h: sessions24h,
       totalSpendToday: costSummary24h?.total_cost_usd ?? 0,
       avgLoadPct: null,

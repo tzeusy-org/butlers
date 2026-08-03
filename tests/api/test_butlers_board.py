@@ -15,7 +15,7 @@ import pytest
 
 from butlers.api.deps import ButlerConnectionInfo, get_pricing
 from butlers.api.pricing import ModelPricing, PricingConfig
-from butlers.api.routers.butlers import _get_db_manager
+from butlers.api.routers.butlers import _cadence_label, _get_db_manager
 
 from .conftest import make_mock_mcp_manager, make_test_app
 
@@ -201,6 +201,24 @@ async def _get_board(app):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("cadence_seconds", "expected"),
+    [
+        (None, None),
+        (60 * 60, "hourly"),
+        (24 * 60 * 60, "daily"),
+        (7 * 24 * 60 * 60, "weekly"),
+        (2 * 60 * 60, "custom"),
+        (15 * 60, "custom"),
+    ],
+)
+def test_cadence_label_uses_only_exact_canonical_intervals(
+    cadence_seconds: float | None, expected: str | None
+) -> None:
+    """Named cadence labels must not turn a two-hour or quarter-hour schedule into hourly."""
+    assert _cadence_label(cadence_seconds) == expected
+
+
 async def test_board_happy_path_running_row_has_all_fields():
     now = _now()
     configs = [ButlerConnectionInfo(name="finance", port=41105)]
@@ -231,7 +249,7 @@ async def test_board_happy_path_running_row_has_all_fields():
     assert row["load_pct"] == 67  # round(2/3 * 100)
     assert row["active_session_count"] == 2
     assert row["hourly_total"] == 24
-    assert row["cadence_label"] == "hourly"
+    assert row["cadence_label"] == "custom"
     assert row["cadence_status"] == "on_schedule"
     assert row["cost_today"] and row["cost_today"] > 0
     assert payload["aggregates"]["active"] == 1

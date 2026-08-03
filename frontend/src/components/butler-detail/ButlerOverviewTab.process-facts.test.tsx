@@ -152,6 +152,7 @@ function setButlerState(butler: ButlerDetail | null, opts: Partial<UseButlerResu
       offline: 0,
       quarantined: 0,
       overdue: 0,
+      unknown: 0,
       totalSessions24h: butler?.sessions_24h ?? 0,
       totalSpendToday: 0,
       avgLoadPct: null,

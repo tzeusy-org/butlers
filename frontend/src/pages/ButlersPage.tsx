@@ -86,9 +86,10 @@ export default function ButlersPage() {
 
   const { isLoading, isError, error, refetch } = aggregates;
   const hasRows = rows.length > 0;
+  const hasInitialLoadError = isError && !hasRows;
 
   // Full-page error only when there is no cached data to show.
-  const pageError = isError && !hasRows ? error : null;
+  const pageError = hasInitialLoadError ? error : null;
 
   // Stale-data banner: last refetch errored but cached rows are still visible.
   // We key off `error != null && hasRows` rather than `isError && hasRows`
@@ -224,14 +225,18 @@ export default function ButlersPage() {
       title="Butlers"
       loading={isLoading}
       error={pageError}
-      onRetry={pageError != null ? () => void refetch() : undefined}
+      onRetry={hasInitialLoadError ? () => void refetch() : undefined}
       empty={
         !isError && !hasRows && !isLoading
           ? { title: "No butlers found", description: "Check daemon status and try again." }
           : null
       }
-      header={<BoardHeader aggregates={aggregates} refreshIntervalMs={REFRESH_INTERVAL_MS} />}
-      footer={<BoardFooter aggregates={aggregates} />}
+      header={
+        hasInitialLoadError
+          ? undefined
+          : <BoardHeader aggregates={aggregates} refreshIntervalMs={REFRESH_INTERVAL_MS} />
+      }
+      footer={hasInitialLoadError ? undefined : <BoardFooter aggregates={aggregates} />}
     >
       {/* Needs-you triage strip — leads with every butler that needs the owner
           (offline, quarantined, or overdue against its own cron cadence),

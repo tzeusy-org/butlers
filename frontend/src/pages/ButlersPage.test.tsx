@@ -52,6 +52,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     offline: 0,
     quarantined: 0,
     overdue: 0,
+    unknown: 0,
     totalSessions24h: 0,
     totalSpendToday: 0,
     avgLoadPct: null,
@@ -169,6 +170,8 @@ describe("ButlersPage — full-page error", () => {
     expect(html).toContain("Something went wrong");
     expect(html).toContain("network offline");
     expect(html).toContain("Retry");
+    expect(html).not.toContain("The staff, at a glance");
+    expect(html).not.toContain("Sessions");
   });
 });
 
@@ -200,6 +203,8 @@ describe("ButlersPage — stale-fetch banner", () => {
     expect(html).toContain("Showing last known butler status");
     expect(html).toContain("timed out");
     expect(html).toContain("general");
+    expect(html).toContain("The staff, at a glance");
+    expect(html).toContain("Sessions");
   });
 
   it("does not show stale banner when no error", () => {
@@ -292,21 +297,22 @@ describe("ButlersPage — grid render", () => {
 // ---------------------------------------------------------------------------
 
 describe("ButlersPage — BoardHeader healthy/total pill", () => {
-  it("reflects healthy and total counts from aggregates (offline reduces healthy)", () => {
-    // healthy = total - offline - quarantined
-    // 3 total, 1 offline, 0 quarantined → 2 healthy
+  it("excludes overdue and canonical unknown rows from the healthy total", () => {
+    // healthy = total - offline - quarantined - overdue - unknown
+    // 4 total, 1 overdue, 1 unknown → 2 healthy
     const rows = [
       makeRow({ name: "a" }),
       makeRow({ name: "b" }),
-      makeRow({ name: "c", activity: "offline", cellTone: "red", status: "down" }),
+      makeRow({ name: "c", activity: "overdue", cellTone: "amber" }),
+      makeRow({ name: "d", activity: "unknown", cellTone: "neutral" }),
     ];
     setHookState(
       rows,
-      makeAggregates({ total: 3, butlerCount: 3, offline: 1 }),
+      makeAggregates({ total: 4, butlerCount: 4, overdue: 1, unknown: 1 }),
     );
     const html = renderPage();
     // BoardHeader renders "healthy/total reporting"
-    expect(html).toContain("2/3 reporting");
+    expect(html).toContain("2/4 reporting");
   });
 });
 

@@ -30,11 +30,17 @@ export interface BoardHeaderProps {
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the "healthy" count: rows that are online and not quarantined.
- * healthy = total - offline - quarantined
+ * Compute the healthy count from the canonical activity verdicts.
+ * healthy = total - offline - quarantined - overdue - unknown
  */
 function healthyCount(aggregates: StatusBoardAggregates): number {
-  return aggregates.total - aggregates.offline - aggregates.quarantined
+  return (
+    aggregates.total
+    - aggregates.offline
+    - aggregates.quarantined
+    - aggregates.overdue
+    - aggregates.unknown
+  )
 }
 
 /**

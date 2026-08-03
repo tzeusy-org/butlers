@@ -34,6 +34,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     offline: 1,
     quarantined: 0,
     overdue: 0,
+    unknown: 0,
     totalSessions24h: 42,
     totalSpendToday: 1.23,
     avgLoadPct: 50,

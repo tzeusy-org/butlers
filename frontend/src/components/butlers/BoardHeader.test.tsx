@@ -33,6 +33,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     offline: 0,
     quarantined: 0,
     overdue: 0,
+    unknown: 0,
     totalSessions24h: 42,
     totalSpendToday: 1.23,
     avgLoadPct: 50,
@@ -123,6 +124,23 @@ describe("BoardHeader", () => {
       const html = render(makeAggregates({ total: 14, offline: 2, quarantined: 0 }))
       // healthy = 14 - 2 = 12
       expect(html).toContain("12/14 reporting")
+    })
+
+    it("excludes overdue and canonical unknown activity from healthy, not registry availability", () => {
+      const html = render(
+        makeAggregates({
+          total: 10,
+          offline: 1,
+          quarantined: 1,
+          overdue: 2,
+          unknown: 3,
+          eligibilityUnavailable: 7,
+        }),
+      )
+      // healthy = 10 - offline(1) - quarantined(1) - overdue(2) - unknown(3) = 3.
+      // Registry availability is a separate diagnostic, not a liveness verdict.
+      expect(html).toContain("3/10 reporting")
+      expect(html).toContain("bg-[var(--amber)]")
     })
 
     it("uses green dot class when all butlers healthy (healthy === total)", () => {

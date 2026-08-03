@@ -61,15 +61,18 @@ Implementation source constraints:
 
 #### Scenario: Header strip
 
-- **WHEN** the butler list page loads
+- **WHEN** the butler list page is not showing an initial request failure with
+  no cached board rows
 - **THEN** a header strip SHALL be displayed containing:
   - An eyebrow label (e.g., "Fleet status")
   - An `h1` reading "The staff, at a glance" styled `text-2xl font-bold tracking-tight`
   - A healthy/total pill (count of healthy butlers over total registered count,
-    where healthy = total minus offline and quarantined counts,
-    derived from `StatusBoardAggregates`)
+    where healthy = total minus `offline`, `quarantined`, `overdue`, and
+    activity-derived `unknown` counts, derived from `StatusBoardAggregates`)
   - A clock and date display rendered via `<Time mode="clock-24h-mono">` that
     updates every minute (aligned to minute boundaries via a 60-second interval)
+- **AND** the `unknown` count SHALL be derived from canonical `BoardRow.activity`
+  values, not from registry eligibility availability
 
 #### Scenario: Unified cell grid sorted by activity
 
@@ -157,6 +160,18 @@ band composition addendum and visually in each cell's `ButlerMark` component.
   be used. These verbs imply butler-specific semantic knowledge not carried by
   the board row, and are explicitly rejected.
 
+#### Scenario: Canonical cadence labels
+
+- **WHEN** the board derives a human-facing cadence label from a butler's
+  shortest enabled cron interval
+- **THEN** exactly one hour, one day, and seven days SHALL be labeled `hourly`,
+  `daily`, and `weekly` respectively
+- **AND** any other positive interval, including two hours, SHALL be labeled
+  `custom`
+- **AND** a butler with no enabled schedule SHALL retain a null cadence label
+- **AND** the raw `cadence_seconds` and cadence-overdue calculation SHALL remain
+  authoritative and unchanged
+
 #### Scenario: Load percentage
 
 - **WHEN** the KPI quartet's load field is rendered
@@ -187,7 +202,8 @@ band composition addendum and visually in each cell's `ButlerMark` component.
 
 #### Scenario: Footer KPI band
 
-- **WHEN** the butler list page renders
+- **WHEN** the butler list page is not showing an initial request failure with
+  no cached board rows
 - **THEN** a footer KPI band SHALL be displayed below the cell grid containing:
   - Active butler count (with emerald status-tone dot, shown only when count > 0)
   - Offline butler count (with red status-tone dot, shown only when count > 0)
@@ -215,6 +231,14 @@ band composition addendum and visually in each cell's `ButlerMark` component.
 - **THEN** the stale butler cells SHALL remain visible in the grid
 - **AND** an error banner SHALL be displayed explaining that the shown data is from
   the last successful fetch
+- **AND** the header strip and footer KPI band SHALL remain visible with the cached
+  board context
+
+#### Scenario: Initial request failure does not fabricate board context
+
+- **WHEN** the initial butler list request fails and no cached board rows exist
+- **THEN** the Page error surface and retry control SHALL render
+- **AND** the header strip and footer KPI band SHALL NOT render around the error
 
 #### Scenario: Empty state
 

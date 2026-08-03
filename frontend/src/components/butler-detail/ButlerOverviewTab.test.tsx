@@ -201,6 +201,7 @@ beforeEach(() => {
       offline: 0,
       quarantined: 0,
       overdue: 0,
+      unknown: 0,
       totalSessions24h: 7,
       totalSpendToday: 1.23,
       avgLoadPct: null,
