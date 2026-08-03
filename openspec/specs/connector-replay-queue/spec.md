@@ -6,7 +6,7 @@ Defines the replay mechanism for filtered and errored connector events. Replay i
 ## Requirements
 
 ### Requirement: Replay via Status Transition
-Replay is modeled as a status transition on `connectors.filtered_events`, not a separate queue table. The dashboard marks events for replay by updating their status; connectors drain pending replays on each poll cycle.
+Replay SHALL be modeled as a status transition on `connectors.filtered_events`, not a separate queue table. The dashboard marks events for replay by updating their status; connectors drain pending replays on each poll cycle.
 
 #### Scenario: Replay request from dashboard
 - **WHEN** an operator requests replay for a filtered or errored event via the API
@@ -47,7 +47,7 @@ Replay is modeled as a status transition on `connectors.filtered_events`, not a 
 - **AND** the replay status SHALL transition to `replay_complete` (harmless no-op)
 
 ### Requirement: Replay API Endpoint
-A REST endpoint allows the dashboard to request replay for a specific filtered event.
+A REST endpoint SHALL allow the dashboard to request replay for a specific filtered event.
 
 #### Scenario: POST replay request
 - **WHEN** `POST /api/ingestion/events/{id}/replay` is called with a valid filtered_events UUID
