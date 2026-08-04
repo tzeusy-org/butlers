@@ -16,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,10 +32,13 @@ pytestmark = pytest.mark.unit
 
 
 def _make_row(roles: list[str]) -> MagicMock:
+    # entity_id must be a real UUID: resolution runs through the canonical
+    # resolver, which discards a row whose entity_id will not parse (a row
+    # that cannot identify anyone is not a match).
     row = MagicMock()
     row.__getitem__ = MagicMock(
         side_effect=lambda k: {
-            "entity_id": None,
+            "entity_id": uuid.uuid4(),
             "name": "Test",
             "roles": roles,
         }[k]
@@ -189,9 +193,16 @@ async def test_whatsapp_has_handle_hit_skips_phone_fallback() -> None:
 
 
 async def test_non_whatsapp_channel_never_triggers_phone_fallback() -> None:
-    """The phone fallback is whatsapp_jid-only: a telegram miss stays one query."""
-    pool = _make_seq_pool([None])
+    """The phone fallback is whatsapp_jid-only.
+
+    A telegram miss still retries the canonical ``telegram:<bare>`` prefix
+    (handles are stored prefixed, so skipping it under-weighted every bare
+    chat id), but it must never issue a ``has-phone`` query.
+    """
+    pool = _make_seq_pool([None, None, None])
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("telegram", "999")
     assert weight == WeightTier().unknown
-    assert pool.fetchrow.call_count == 1
+    predicates = [c.args[1] for c in pool.fetchrow.call_args_list]
+    assert "has-phone" not in predicates
+    assert predicates == ["has-handle"] * len(predicates)
