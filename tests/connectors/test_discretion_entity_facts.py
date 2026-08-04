@@ -203,6 +203,11 @@ async def test_non_whatsapp_channel_never_triggers_phone_fallback() -> None:
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("telegram", "999")
     assert weight == WeightTier().unknown
-    predicates = [c.args[1] for c in pool.fetchrow.call_args_list]
-    assert "has-phone" not in predicates
-    assert predicates == ["has-handle"] * len(predicates)
+    calls = pool.fetchrow.call_args_list
+    # Pin the actual regression: the resolver must retry the canonical
+    # "telegram:999" prefix (2 calls), never a has-phone query.
+    assert len(calls) == 2, "expected the bare-value candidate then the telegram: prefix retry"
+    predicates = [c.args[1] for c in calls]
+    assert predicates == ["has-handle", "has-handle"]
+    objects = [c.args[2] for c in calls]
+    assert objects == ["999", "telegram:999"]

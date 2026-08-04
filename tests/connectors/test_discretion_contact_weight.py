@@ -118,7 +118,8 @@ class TestPhoneFormattingFallback:
 
         assert weight == WeightTier().known
 
-    async def test_handle_triple_takes_precedence(self) -> None:
+    async def test_telegram_prefix_fallback_resolves(self) -> None:
+        """The pre-fix bespoke resolver never tried the telegram: prefix."""
         pool = _pool_matching("has-handle", "telegram:123", roles=["family"])
         resolver = ContactWeightResolver(pool)
 
