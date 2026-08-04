@@ -1516,12 +1516,12 @@ class WhatsAppUserClientConnector:
                         weight_fail_open=_WHATSAPP_DISCRETION_WEIGHT_FAIL_OPEN,
                     )
 
-                # Resolve sender weight from last event in batch
-                _last = buffered_events[-1] if buffered_events else {}
-                sender_jid = _last.get("sender_jid") or _last.get("from_jid") or ""
-                sender_weight = 1.0
-                if self._weight_resolver and sender_jid:
-                    sender_weight = await self._weight_resolver.resolve("whatsapp_jid", sender_jid)
+                # Weigh the batch by its participants (normalised identities
+                # from the envelope), not the raw JID of whoever spoke last.
+                sender_weight = await self._resolve_batch_weight(
+                    envelope["sender"].get("participants") or {},
+                    envelope["sender"].get("owner_sender_id"),
+                )
 
                 d_result = await self._discretion_evaluators[chat_jid].evaluate(
                     normalized_text, weight=sender_weight
@@ -1683,6 +1683,48 @@ class WhatsAppUserClientConnector:
         unmapped = len(missing) - len(rows)
         if unmapped:
             logger.debug("%d LID sender(s) have no phone mapping", unmapped)
+
+    async def _resolve_batch_weight(
+        self,
+        participants: dict[str, str],
+        owner_sender_id: str | None = None,
+    ) -> float:
+        """Return the discretion weight for a flushed batch.
+
+        Weighs the batch by its **highest**-weighted non-owner participant
+        rather than whoever happened to send the last message. A batch is a
+        slice of a conversation, so one stranger posting into a family thread
+        must not drag the whole flush down to ``unknown`` — where a discretion
+        LLM failure would discard it outright.
+
+        The owner is excluded deliberately. They participate in every chat they
+        speak in, and owner weight is ``1.0`` — at or above ``weight_bypass``,
+        which skips the LLM entirely. Including them would make every thread
+        the owner has ever replied in bypass discretion unconditionally, which
+        is a dispatch-cost decision disguised as an identity lookup. The
+        question this weight answers is "how much do I care about the people on
+        the other side", so it is scored over them.
+
+        The identities passed here are the normalised ones from
+        :meth:`_extract_participants` (device ordinal stripped, ``@lid``
+        translated to a phone JID). Resolving the raw bridge JID instead is
+        what made every WhatsApp sender weigh ``unknown``.
+
+        Returns ``1.0`` when there is nobody to weigh, so an unresolvable or
+        owner-only batch biases toward forwarding rather than silent
+        suppression.
+        """
+        if self._weight_resolver is None or not participants:
+            return 1.0
+
+        others = [i for i in participants if i != owner_sender_id]
+        if not others:
+            return 1.0
+
+        weights = [
+            await self._weight_resolver.resolve("whatsapp_jid", identity) for identity in others
+        ]
+        return max(weights)
 
     def _extract_participants(
         self, buffered_events: list[dict[str, Any]]

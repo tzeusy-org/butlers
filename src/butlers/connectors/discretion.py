@@ -24,11 +24,7 @@ from prometheus_client import Counter
 
 from butlers.core.attention_ledger import record_attention_event
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
-from butlers.identity import (
-    _CHANNEL_TYPE_TO_PREDICATE,
-    _extract_whatsapp_jid_phone,
-    _resolve_entity_by_triple,
-)
+from butlers.identity import resolve_contact_by_channel
 
 logger = logging.getLogger(__name__)
 
@@ -270,30 +266,28 @@ class ContactWeightResolver:
         return weight
 
     async def _query(self, channel_type: str, channel_value: str) -> float:
-        """Look up contact roles from relationship.entity_facts (bu-hjo3i).
+        """Resolve the sender's entity and map its roles to a weight tier.
 
-        Resolves the sender's entity via the triple store using the canonical
-        predicate for the given channel type, then reads roles from
-        public.entities.  Falls back to ``tiers.unknown`` on DB error or when
-        no matching triple is found.
+        Delegates to :func:`identity.resolve_contact_by_channel`, the canonical
+        resolver, rather than reimplementing a subset of its candidate chain.
+        A bespoke partial copy used to live here and silently under-weighted
+        real contacts in two ways, both of which sent family-tier senders to
+        ``unknown`` (0.3) — below ``weight_fail_open``, so an LLM failure
+        discarded their messages outright:
 
-        WhatsApp phone-fallback (bu-jns8k): a WhatsApp contact known only via a
-        ``has-phone`` fact (e.g. a Google Contacts import) has no
-        ``has-handle=<JID>`` triple, so the direct handle lookup misses and the
-        sender would weigh ``unknown`` forever. Mirroring
-        ``identity.resolve_contact_by_channel``'s cross-reference, extract the
-        E.164 phone from the individual JID and retry against ``has-phone``.
-        Group JIDs and non-phone JIDs yield ``None`` from the extractor, so no
-        phone candidate is fabricated for them. Senders that DO have a
-        ``has-handle`` triple never reach the fallback — their weight is
-        unchanged.
+        - Telegram handles are stored canonically as ``telegram:<bare>`` while
+          senders arrive bare, and the prefix candidate was never tried.
+        - WhatsApp JIDs cross-reference ``has-phone``, but the comparison was
+          exact equality against numbers that keep their source formatting
+          (``"+65 9815 0802"``), so nearly every contact missed. The canonical
+          resolver compares on digits and tolerates a device ordinal.
+
+        Falls back to ``tiers.unknown`` when nothing resolves; the resolver is
+        fail-open by contract and returns ``None`` rather than raising on a DB
+        error, which lands on the same default.
         """
-        predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
-        if predicate is None:
-            return self._tiers.unknown
-
         try:
-            row = await _resolve_entity_by_triple(self._pool, predicate, channel_value)
+            contact = await resolve_contact_by_channel(self._pool, channel_type, channel_value)
         except Exception:  # noqa: BLE001
             logger.debug(
                 "ContactWeightResolver DB error for %s:%s — defaulting unknown",
@@ -302,18 +296,10 @@ class ContactWeightResolver:
             )
             return self._tiers.unknown
 
-        if row is None and channel_type == "whatsapp_jid":
-            phone = _extract_whatsapp_jid_phone(channel_value)
-            if phone is not None:
-                # _resolve_entity_by_triple is best-effort (returns None on any
-                # DB error, never raises), so no try/except is needed here — a
-                # miss or error simply leaves row=None → the unknown default below.
-                row = await _resolve_entity_by_triple(self._pool, "has-phone", phone)
-
-        if row is None:
+        if contact is None:
             return self._tiers.unknown
 
-        roles = set(row["roles"])
+        roles = set(contact.roles or ())
         if "owner" in roles:
             return self._tiers.owner
         if roles & _INNER_CIRCLE_ROLES:
