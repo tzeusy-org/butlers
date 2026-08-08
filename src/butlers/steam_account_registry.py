@@ -344,6 +344,7 @@ async def create_steam_account(
                     """
                     UPDATE public.steam_accounts
                     SET status = 'active',
+                        revoked_at = NULL,
                         display_name = $2,
                         profile_url = $3,
                         avatar_url = $4

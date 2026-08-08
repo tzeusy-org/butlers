@@ -289,6 +289,29 @@ class TestCreateSteamAccount:
             else:
                 assert not any("entity_info" in c for c in execute_calls)
 
+    async def test_reactivation_clears_revoked_at(self) -> None:
+        conn = _FakeConn()
+        pool = _make_pool(conn)
+        revoked = MagicMock()
+        revoked.__getitem__ = MagicMock(
+            side_effect=lambda key: {
+                "id": _ACCOUNT_ID,
+                "entity_id": _ENTITY_ID,
+                "status": "revoked",
+            }[key]
+        )
+        conn.fetchrow = AsyncMock(side_effect=[revoked, _make_account_row(status="active")])
+
+        await create_steam_account(pool, steam_id=_STEAM_ID)
+
+        reactivation_sql = next(
+            call[0][0]
+            for call in conn.fetchrow.call_args_list
+            if "UPDATE public.steam_accounts" in call[0][0]
+        )
+        assert "status = 'active'" in reactivation_sql
+        assert "revoked_at = NULL" in reactivation_sql
+
     async def test_api_key_metadata_and_jsonb_codec(self) -> None:
         """API key persists to entity_info; metadata round-trips and binds as a dict.
 
