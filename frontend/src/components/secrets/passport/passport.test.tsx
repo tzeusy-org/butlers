@@ -1251,9 +1251,39 @@ describe("SteamDrawer: connect / list / disconnect accounts", () => {
     expect(html).toContain("connect account");
   });
 
+  it("masks the Steam API key entry field", () => {
+    const { container, getByRole, unmount } = renderInDomRouter(<SteamDrawerContent />);
+
+    try {
+      fireEvent.click(getByRole("button", { name: /^connect account$/i }));
+
+      const apiKeyInput = container.querySelector<HTMLInputElement>('[data-steam-api-key-input="true"]');
+      expect(apiKeyInput).not.toBeNull();
+      expect(apiKeyInput!.type).toBe("password");
+    } finally {
+      unmount();
+    }
+  });
+
   it("renders disconnect action for connected account", () => {
     const html = renderInRouter(<SteamDrawerContent />);
     expect(html).toContain("disconnect");
+  });
+
+  it("states that soft disconnect stops syncing and retains reconnectable credentials", () => {
+    const { getByRole, getByText, unmount } = renderInDomRouter(<SteamDrawerContent />);
+
+    try {
+      fireEvent.click(getByRole("button", { name: /^disconnect$/i }));
+
+      expect(
+        getByText(
+          "Disconnect TestUser? Syncing stops. This account and its stored API key are retained for reconnection.",
+        ),
+      ).toBeTruthy();
+    } finally {
+      unmount();
+    }
   });
 
   it("renders dismiss button in standalone mode", () => {

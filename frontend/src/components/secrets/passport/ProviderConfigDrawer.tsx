@@ -827,7 +827,7 @@ export function SteamDrawerContent() {
                   data-steam-disconnect-confirm={account.id}
                 >
                   <Mono size={11} color="var(--red)">
-                    Disconnect {account.display_name ?? account.steam_id}? Removes stored API key and SteamID.
+                    Disconnect {account.display_name ?? account.steam_id}? Syncing stops. This account and its stored API key are retained for reconnection.
                   </Mono>
                   {disconnectMutation.error && (
                     <Mono size={11} color="var(--red)">
@@ -872,7 +872,7 @@ export function SteamDrawerContent() {
           <div className="flex flex-col gap-1">
             <Mono size={9} upper tracking="0.12em" color="var(--dim)">api key</Mono>
             <input
-              type="text"
+              type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="Steam Web API key"
