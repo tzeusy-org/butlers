@@ -241,6 +241,7 @@ export default function ButlerMemoryTab({ butlerName }: ButlerMemoryTabProps) {
   const totalRules = memoryStats?.total_rules ?? 0;
   const rulesToday = memoryStats?.rules_24h ?? 0;
 
+  // eslint-disable-next-line no-restricted-syntax -- RecentWritesPanelBody receives recentWritesError and its error branch precedes the empty state.
   const episodes = recentWritesResponse?.data ?? [];
 
   return (

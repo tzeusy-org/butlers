@@ -440,7 +440,7 @@ describe("ButlerMemoryTab", () => {
       } as unknown as ReturnType<typeof useButlerMemoryStats>);
 
       vi.mocked(useMemoryRecentWrites).mockReturnValue({
-        data: undefined,
+        data: { data: [], meta: { total: 0, offset: 0, limit: 10, has_more: false } },
         isLoading: false,
         isError: true,
       } as unknown as ReturnType<typeof useMemoryRecentWrites>);
@@ -451,6 +451,7 @@ describe("ButlerMemoryTab", () => {
         el.textContent?.includes("Could not load recent writes"),
       );
       expect(hasWritesError).toBe(true);
+      expect(screen.queryByTestId("empty-state-line")).toBeNull();
     });
   });
 
