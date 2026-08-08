@@ -6,7 +6,7 @@ The General butler (port 41101) is the flexible catch-all assistant for freeform
 ## Requirements
 
 ### Requirement: General Butler Identity and Runtime
-The general butler handles ad-hoc user requests without specialist schema assumptions.
+The general butler SHALL handle ad-hoc user requests without specialist schema assumptions.
 
 #### Scenario: Identity and port
 - **WHEN** the general butler is running
@@ -19,14 +19,14 @@ The general butler handles ad-hoc user requests without specialist schema assump
 - **THEN** it loads modules: `general` (the custom module that registers the collection and item management tools), `calendar` (Google provider, suggest conflicts policy), `contacts` (Google provider, sync enabled, 15-minute interval, 6-day full sync), `memory`, and `steam` (lifestyle gaming-activity capture available to the catch-all butler)
 
 ### Requirement: General Butler Tool Surface
-The general butler provides collection and item management tools for organizing freeform data.
+The general butler SHALL provide collection and item management tools for organizing freeform data.
 
 #### Scenario: Tool inventory
 - **WHEN** a runtime instance is spawned for the general butler
 - **THEN** it has access to: `collection_create`, `collection_list`, `collection_delete`, `item_create`, `item_get`, `item_update`, `item_delete`, `item_search`, `collection_export`, and calendar tools
 
 ### Requirement: General Butler Schedules
-The general butler runs memory maintenance, briefing aggregation, and a daily end-of-day preparation prompt that incorporates cross-butler data.
+The general butler SHALL run memory maintenance, briefing aggregation, and a daily end-of-day preparation prompt that incorporates cross-butler data.
 
 #### Scenario: Scheduled task inventory
 - **WHEN** the general butler daemon is running
@@ -43,14 +43,14 @@ The general butler runs memory maintenance, briefing aggregation, and a daily en
 - **THEN** the briefing degrades gracefully to calendar-only format (current behavior preserved)
 
 ### Requirement: General Butler Skills
-The general butler has a data organization skill plus shared skills.
+The general butler SHALL have a data organization skill plus shared skills.
 
 #### Scenario: Skill inventory
 - **WHEN** the general butler operates
 - **THEN** it has access to `data-organizer` (collection and entity organization patterns, JSONB query patterns, data hygiene) plus shared skills `butler-memory` and `butler-notifications`
 
 ### Requirement: General Memory Taxonomy
-The general butler uses a flexible memory taxonomy for broad knowledge capture.
+The general butler SHALL use a flexible memory taxonomy for broad knowledge capture.
 
 #### Scenario: Memory classification
 - **WHEN** the general butler extracts facts
