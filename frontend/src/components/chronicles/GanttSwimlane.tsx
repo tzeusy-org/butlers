@@ -17,7 +17,7 @@
 import { lazy, Suspense } from "react"
 
 import { Skeleton } from "@/components/ui/skeleton"
-import { Button } from "@/components/ui/button"
+import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { useChroniclesEpisodes } from "@/hooks/use-chronicles"
 import type { ChroniclerEpisodesParams } from "@/api/types"
 
@@ -48,26 +48,6 @@ function GanttLoadingSkeleton() {
           <Skeleton className="h-5 flex-1 rounded-md" />
         </div>
       ))}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Error fallback
-// ---------------------------------------------------------------------------
-
-function GanttErrorFallback({ onRetry }: { onRetry?: () => void }) {
-  return (
-    <div
-      className="flex flex-col items-center justify-center rounded-md border border-dashed py-12 gap-3 text-sm text-muted-foreground"
-      data-testid="gantt-error"
-    >
-      <p>Failed to load timeline data.</p>
-      {onRetry && (
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          Try again
-        </Button>
-      )}
     </div>
   )
 }
@@ -113,25 +93,42 @@ export function GanttSwimlane({ windowStart, windowEnd, refetchInterval, onEpiso
 
   const { data, isLoading, isError, refetch } = useChroniclesEpisodes(params, { refetchInterval })
 
-  const episodes = data?.data ?? []
+  const episodes = data?.data
+  const retry = () => {
+    void refetch()
+  }
 
-  if (isLoading && episodes.length === 0) {
+  if (isLoading && episodes === undefined) {
     return <GanttLoadingSkeleton />
   }
 
-  if (isError) {
-    return <GanttErrorFallback onRetry={() => { void refetch() }} />
+  if (isError && episodes === undefined) {
+    return <SourceDegradedNote label="Gantt timeline" detail="unavailable" onRetry={retry} />
+  }
+
+  if (episodes === undefined) {
+    return <GanttLoadingSkeleton />
   }
 
   return (
-    <Suspense fallback={<GanttLoadingSkeleton />}>
-      <GanttSwimlaneInner
-        episodes={episodes}
-        windowStart={windowStart}
-        windowEnd={windowEnd}
-        onEpisodeClick={onEpisodeClick}
-        cursorMs={cursorMs}
-      />
-    </Suspense>
+    <>
+      {isError ? (
+        <SourceDegradedNote
+          className="mb-3"
+          label="Gantt timeline"
+          detail="unavailable; showing last loaded data"
+          onRetry={retry}
+        />
+      ) : null}
+      <Suspense fallback={<GanttLoadingSkeleton />}>
+        <GanttSwimlaneInner
+          episodes={episodes}
+          windowStart={windowStart}
+          windowEnd={windowEnd}
+          onEpisodeClick={onEpisodeClick}
+          cursorMs={cursorMs}
+        />
+      </Suspense>
+    </>
   )
 }

@@ -1704,9 +1704,8 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/components/chronicles/GanttSwimlane.tsx`
 
-- Failed to load timeline data.
-- Try again
 - Loading Gantt chart
+- Gantt timeline
 
 ## `frontend/src/components/chronicles/GanttSwimlaneInner.tsx`
 
@@ -3377,4 +3376,4 @@ Do **not** edit manually. Regenerate (no args) with:
 - Preset windows
 
 ---
-*Total strings: 2553*
+*Total strings: 2552*
