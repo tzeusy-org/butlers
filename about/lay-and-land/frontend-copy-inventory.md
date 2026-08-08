@@ -6,6 +6,7 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/pages/ApprovalsPage.tsx`
 
+- Owner not notified · push failed
 - Undo
 - loading…
 - failed to load dossier
@@ -14,13 +15,23 @@ Do **not** edit manually. Regenerate (no args) with:
 - Referenced Entities
 - Hours to defer (1–168)
 - originating session
+- Decision provenance
+- Decided by
+- Decided at
+- Decision outcome
+- Denial reason
+- Execution outcome
+- Approved, awaiting dispatch.
 - Why
 - No rationale provided.
+- Decision impact
+- Blast radius
+- Reversibility
 - Evidence
 - Proposed Action
 - Target Contact
-- Quiet Hours Policy
-- Suppress approval paging during these hours
+- Owner Attention Policy
+- Suppress routine owner attention during these hours
 - Edit
 - No policy configured yet.
 - Start:
@@ -30,6 +41,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - End hour (0–23)
 - Timezone (IANA)
 - Cancel
+- Abandon
 - History (last 30)
 - No decided approvals yet.
 - system · approvals
@@ -39,7 +51,16 @@ Do **not** edit manually. Regenerate (no args) with:
 - Deny reason (optional)
 - None
 - UTC
+- Abandon reason
+- Reason required
+- Autonomy suggestions
+- Rule promotion suggestions
+- Rule promotion metrics
 - Approvals queue
+- Approval metrics
+- Pending approval metrics
+- Active approval rules
+- Approval pushes
 
 ## `frontend/src/pages/AuditLogPage.tsx`
 
@@ -47,6 +68,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Actor
 - Action
 - From
+- To
 - Noise
 - Clear filters
 - Previous
@@ -141,6 +163,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - All statuses
 - Type
 - All types
+- · unavailable
 - · none
 - Calendar
 - All calendars
@@ -218,10 +241,11 @@ Do **not** edit manually. Regenerate (no args) with:
 
 - Chronicles
 - Retrospective view of lived past time reconstructed from butler evidence.
-- Previous day
 - Next day
 - The day-close summary may be out of date.
 - Day-close summary may be out of date
+- Coverage or availability for this day could not be affirmed.
+- Coverage or availability for this day could not be affirmed
 
 ## `frontend/src/pages/ConditionsPage.tsx`
 
@@ -236,16 +260,22 @@ Do **not** edit manually. Regenerate (no args) with:
 
 - Overview
 - Briefing
+- Pending approvals
 - Operations and now
 - Cost
 
 ## `frontend/src/pages/DecisionsPage.tsx`
 
 - Created:
+- Due:
+- Options
+- Default:
+- Read-only context: this digest cannot apply a default or close a decision.
 - system · decisions
 - Decisions
 - loading…
 - No decisions waiting.
+- Decision options
 - Open decisions
 
 ## `frontend/src/pages/EducationPage.tsx`
@@ -265,23 +295,10 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/pages/EntityDetailPage.tsx`
 
-- Telegram user session
-- Connected
-- API ID
-- API Hash
-- Session String
-- Loading existing credentials...
-- Phone Number
-- Cancel
-- Using existing API credentials. Enter your phone number to receive a verification code.
-- A verification code has been sent to your Telegram app. Enter it below.
-- Verification Code
-- Two-factor authentication is enabled. Enter your 2FA password.
-- 2FA Password
-- Done
 - Linked contact
 - Unlink
 - No contacts found.
+- Cancel
 - No linked contact.
 - Link contact
 - Profile
@@ -312,6 +329,9 @@ Do **not** edit manually. Regenerate (no args) with:
 - Secrets → User
 - . Switch identity there to view this entity's credentials.
 - Forget
+- This entity was merged. Opening its surviving record.
+- Merge metadata inconsistency
+- The merged-into target is invalid. This entity was not redirected.
 - Shares identifiers with another entity. This may be a duplicate.
 - Review merge
 - (m)
@@ -325,6 +345,8 @@ Do **not** edit manually. Regenerate (no args) with:
 - Forget this entity?
 - Search contacts...
 - Contact search
+- Unlink this contact from the entity?
+- The contact record itself is unaffected: you can relink it at any time.
 - Lives in
 - Works at
 - Family
@@ -347,6 +369,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Staleness
 - Forget this entity
 - Forget this entity: irreversible hard delete
+- Merged entity
 - Remove alias
 - New alias...
 - Remove role
@@ -363,7 +386,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Data freshness
 - Health briefing
 - Vitals
-- Health attention index
+- Health indexes
 
 ## `frontend/src/pages/IngestionConnectorsPage.tsx`
 
@@ -372,6 +395,10 @@ Do **not** edit manually. Regenerate (no args) with:
 ## `frontend/src/pages/IngestionFiltersPage.tsx`
 
 - metrics unavailable
+- active backlog · current
+- backlog unavailable
+- pipeline metrics
+- active backlog
 - Five gates between arriving and acting. Rules at each gate decide whether the system stores, drops, tiers, routes, or replays.
 
 ## `frontend/src/pages/IngestionTimelinePage.tsx`
@@ -413,8 +440,8 @@ Do **not** edit manually. Regenerate (no args) with:
 - Butler
 - Channel
 - Status
-- Since
-- Until
+- Since (local time)
+- Until (local time)
 - Clear filters
 - Failed to load notifications. Please try refreshing the page.
 - Previous
@@ -422,6 +449,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Notifications
 - Monitor notification delivery across all butlers.
 - Filter by butler...
+- Every failed notification is marked read at once. This cannot be undone.
 
 ## `frontend/src/pages/QaInvestigationDetailPage.tsx`
 
@@ -436,14 +464,17 @@ Do **not** edit manually. Regenerate (no args) with:
 - What the staff caught and fixed
 - Recent patrols
 - Loading cases…
-- Couldn't reach the staffer.
 - Nothing in the dossier.
+- Couldn't reach the staffer.
 - Loading…
 - Select a case to inspect the dossier.
 - Filter by severity
 - Time range
 - Filter by state
 - Force patrol
+- Trigger an immediate QA patrol cycle now?
+- Runs a new patrol cycle outside the normal schedule.
+- Case rail
 
 ## `frontend/src/pages/QaPatrolDetailPage.tsx`
 
@@ -497,10 +528,8 @@ Do **not** edit manually. Regenerate (no args) with:
 - Review →
 - Retry →
 - MTD
-- Manage access policies, webhook integrations, and export or wipe controls.
 - system · console
 - Settings
-- System configuration, model catalog, spend controls, and access management.
 - Could not load console status.
 - Current time
 - Active Butlers
@@ -513,6 +542,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Monthly cost tracking and forecast.
 - Approvals
 - Pending actions awaiting your decision.
+- Pending approvals
 - Permissions
 - Butler × permission matrix, webhooks, and data ops.
 - Secrets
@@ -539,6 +569,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Register a new entry in the shared model catalog.
 - BLOCKED
 - never verified
+- score: n/a
 - Test →
 - Edit →
 - Delete →
@@ -608,15 +639,16 @@ Do **not** edit manually. Regenerate (no args) with:
 - Permissions &amp; data
 - Failed to load matrix.
 - Why are you changing this permission?
+- Audit reel
+- Export scope
 - permission.set, data.export
+- Webhooks
 - Test webhook
 - Delete webhook
 - Permissions matrix
 - Flip cells to grant or revoke per-butler permissions. A reason is required for every change and is recorded in the audit log.
-- Audit reel
 - Last 15 privileged-action entries: permission changes, data operations, and webhook events. Heartbeat and routine traffic excluded.
 - Data operations
-- Webhooks
 - Outbound webhook registrations. Events are signed with HMAC-SHA256.
 
 ## `frontend/src/pages/SpendPage.tsx`
@@ -665,7 +697,6 @@ Do **not** edit manually. Regenerate (no args) with:
 - Matches dispatches where
 - Create rule
 - Routing Rules
-- Evaluated top-to-bottom; first match wins. Drag rows to reorder.
 - + Add rule
 - Monthly ceiling reached
 - denied today.
@@ -682,7 +713,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Days in Month
 - Spend forecast chart
 - Spend breakdown
-- Purpose breakdown
+- Historical attribution
 - Top sessions
 - Schedule costs
 - Butler condition
@@ -699,6 +730,8 @@ Do **not** edit manually. Regenerate (no args) with:
 - Projected spend exceeds the monthly ceiling
 - Spend forecast
 - Forecast actuals
+- Monthly ceiling
+- Forecast attribution
 
 ## `frontend/src/pages/SymptomsPage.tsx`
 
@@ -714,15 +747,26 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/pages/TimelinePage.tsx`
 
+- Scoped to trace
+- Clear trace filter
 - + Save view
+- Saved views are temporarily unavailable.
+- Retry
 - Source
 - Butler
+- Butler filters are temporarily unavailable.
 - No butlers available
+- Lens
+- Internal
 - Save current view
 - Saves the active source and butler filters as a named preset.
 - Cancel
 - Save
 - Sessions, notifications, and errors across every butler: the fleet's single chronicle.
+- Trace scope
+- Timeline
+- Retry saved views
+- Retry butler filters
 - View name
 
 ## `frontend/src/pages/calendar/QuickAddBar.tsx`
@@ -749,12 +793,26 @@ Do **not** edit manually. Regenerate (no args) with:
 - Something went wrong
 - Try again
 
+## `frontend/src/components/approvals/approval-teaching-digest.tsx`
+
+- Approved.
+- Always allow this shape?
+- Checking the proposed scope…
+- Create a standing rule for
+- Proposed scope
+- Could not prepare a standing rule. No rule was created.
+- Always allow this shape
+- Back
+- Keep asking
+- Teach this approval
+
 ## `frontend/src/components/approvals/attention-ledger-panel.tsx`
 
 - Attention Ledger
 - loading…
 - No egress activity recorded in this window.
 - Attention ledger: unavailable
+- Attention ledger outcome comparison
 - Source
 - Delivered
 - Coalesced
@@ -771,12 +829,15 @@ Do **not** edit manually. Regenerate (no args) with:
 - What the fleet may do unsupervised
 - + Rule
 - loading…
-- No standing rules. Every action requires manual approval.
+- No approval-gated tools are configured.
+- Approval-gate baseline
 
 ## `frontend/src/components/approvals/autonomy-suggestions-banner.tsx`
 
 - Fast
+- Review approval
 - Promote to standing rule
+- This scope pins only the shown arguments; omitted arguments may vary.
 - Confirm rule
 - Dismiss
 - Review Standing Rule
@@ -897,6 +958,12 @@ Do **not** edit manually. Regenerate (no args) with:
 - AGENTS.md
 - MANIFESTO.md
 
+## `frontend/src/components/butler-detail/ButlerDelegationsPanel.tsx`
+
+- delegated out
+- delegated in
+- Delegations
+
 ## `frontend/src/components/butler-detail/ButlerDetailActions.tsx`
 
 - Logs
@@ -905,7 +972,16 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/components/butler-detail/ButlerDetailHeader.tsx`
 
-- new Date(current).getTime()
+- Schedule
+
+## `frontend/src/components/butler-detail/ButlerDomainEventsPanel.tsx`
+
+- no standing subscriptions
+- no recent deliveries
+- recent deliveries
+- Subscriptions
+- Deliveries
+- domain events
 
 ## `frontend/src/components/butler-detail/ButlerEducationReviewsTab.tsx`
 
@@ -948,6 +1024,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Active subscriptions
 - Next bill
 - Top category · 30d
+- This overlays the selected transactions' facts. It does not modify the original transaction records.
 
 ## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
 
@@ -1175,11 +1252,11 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/components/butler-detail/ButlerOverviewTab.tsx`
 
+- Promise
 - Could not load recent events.
 - no recent events
 - Could not load approvals.
 - no items pending review
-- 24-hour activity
 - awaiting your action
 
 ## `frontend/src/components/butler-detail/ButlerQaInvestigationsTab.tsx`
@@ -1260,6 +1337,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Clear filter
 - Previous
 - Next
+- Session history
 
 ## `frontend/src/components/butler-detail/ButlerSkillsTab.tsx`
 
@@ -1273,11 +1351,15 @@ Do **not** edit manually. Regenerate (no args) with:
 ## `frontend/src/components/butler-detail/ButlerSpendTab.tsx`
 
 - Could not load spend trend.
+- Spend trend omitted while price coverage is incomplete.
 - No spend data for this period.
 - Could not load model breakdown.
+- Model costs omitted while price coverage is incomplete.
 - No model usage data available.
 - Daily spend trend
 - Model breakdown
+- Spend source unavailable
+- Spend coverage incomplete
 - Spend today
 - Spend 30d
 - Cost / session · 30d
@@ -1333,6 +1415,18 @@ Do **not** edit manually. Regenerate (no args) with:
 - Sleep sessions · 7d
 - Daily summaries · 7d
 
+## `frontend/src/components/butler-detail/HomeAtmosphereLocationPanel.tsx`
+
+- The atmosphere feed is stale. Saved coordinates remain available.
+- Latitude
+- Longitude
+- Saving home location...
+- Home location saved. The next scheduled refresh will pick up this change.
+- Loading saved home location...
+- Retry
+- The saved location may be out of date.
+- Atmosphere location
+
 ## `frontend/src/components/butler-detail/RuntimeConfigCard.tsx`
 
 - Runtime Config
@@ -1366,12 +1460,10 @@ Do **not** edit manually. Regenerate (no args) with:
 - Butlers, status board
 - The staff, at a glance
 
-## `frontend/src/components/butlers/NeedsYouStrip.tsx`
-
-- Needs your attention
-
 ## `frontend/src/components/butlers/StatusBoardCell.tsx`
 
+- (never a real
+- , not nested inside the outer
 - 24H ACTIVITY
 - past 24 h
 - open →
@@ -1467,6 +1559,10 @@ Do **not** edit manually. Regenerate (no args) with:
 - Loading…
 - No relationship tier
 
+## `frontend/src/components/chat/ChatPanel.tsx`
+
+- conversation history
+
 ## `frontend/src/components/chat/ConversationList.tsx`
 
 - New
@@ -1475,6 +1571,10 @@ Do **not** edit manually. Regenerate (no args) with:
 - Search...
 - Clear search
 - No conversations yet.
+
+## `frontend/src/components/chat/ConversationReadError.tsx`
+
+- Try again
 
 ## `frontend/src/components/chat/FloatingChatWidget.tsx`
 
@@ -1486,15 +1586,16 @@ Do **not** edit manually. Regenerate (no args) with:
 - Back
 - Close chat
 - Close
+- conversation history
 
 ## `frontend/src/components/chat/MessageInput.tsx`
 
 - Type a message...
-- Stop generation
 - Send message
 
 ## `frontend/src/components/chat/MessageThread.tsx`
 
+- Cancelled by owner
 - Interrupted
 - View lineage
 - No messages yet. Start the conversation below.
@@ -1541,6 +1642,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - No activity recorded for this window.
 - Planned
 - Lived
+- Day ribbon
 - Planned calendar blocks (intent)
 - Lived activity blocks
 
@@ -1648,6 +1750,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - : has recent error
 - : no recent data
 - Adapter planned; not yet implemented
+- Source state
 - Source adapter state
 
 ## `frontend/src/components/chronicles/StreakCallouts.tsx`
@@ -1701,6 +1804,8 @@ Do **not** edit manually. Regenerate (no args) with:
 - View all
 - 7-day trend unavailable
 - 7-day trend
+- Cost summary
+- Cost source unavailable
 
 ## `frontend/src/components/costs/TopSessionsTable.tsx`
 
@@ -1711,11 +1816,11 @@ Do **not** edit manually. Regenerate (no args) with:
 - Tokens
 - Cost
 - Time
+- Top sessions
 
 ## `frontend/src/components/dashboard/SessionStripeChart.tsx`
 
 - Total
-- Failed to load session data.
 - No sessions in the selected window.
 - Session activity
 
@@ -1739,22 +1844,25 @@ Do **not** edit manually. Regenerate (no args) with:
 - Mastery Trend
 - Analytics will appear after the butler computes its first daily snapshot
 - Mastery Trend (30 days)
+- Mastery trend
 
 ## `frontend/src/components/education/MindMapGraph.tsx`
 
 - Concept Map
 - Loading...
 - This curriculum has no concepts yet. The butler is still building it.
+- Concept map
 
 ## `frontend/src/components/education/NodeDetailPanel.tsx`
 
-- Click a node to view details
 - Mastery
 - Ease Factor
 - Repetitions
 - Effort
 - Next Review
 - Quiz History
+- Node detail panel
+- Close node details
 
 ## `frontend/src/components/education/QuizHistoryList.tsx`
 
@@ -1778,6 +1886,7 @@ Do **not** edit manually. Regenerate (no args) with:
 ## `frontend/src/components/education/StrugglingNodesCard.tsx`
 
 - Struggling Concepts
+- Struggling concepts
 
 ## `frontend/src/components/general/EntityBrowser.tsx`
 
@@ -1812,6 +1921,10 @@ Do **not** edit manually. Regenerate (no args) with:
 - Previous
 - Next
 
+## `frontend/src/components/health/HealthLedgerIndex.tsx`
+
+- Health ledger
+
 ## `frontend/src/components/health/MealForm.tsx`
 
 - Type
@@ -1842,19 +1955,26 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/components/health/MeasurementChart.tsx`
 
+- No chartable measurement types are available.
+- That chart link has invalid type or date filters.
 - From
 - To
 - Clear
 - Date
 - Value
 - Notes
+- Loading measurement chart types
+- Measurement chart types
 - Measurement type
 - Measurement trend
 
 ## `frontend/src/components/health/MeasurementForm.tsx`
 
 - Type
+- This type comes from its source and cannot be changed here.
 - Measured (optional)
+- Value (JSON)
+- Keep this as a JSON object so every value supplied by the source is retained.
 - Notes (optional)
 - Cancel
 - e.g. 120
@@ -1866,13 +1986,16 @@ Do **not** edit manually. Regenerate (no args) with:
 - Edit
 - Delete
 - Cancel
+- Loading measurement types…
 - From
 - To
 - Clear
 - Log measurement
+- That reading-log link has invalid type or date filters.
 - Previous
 - Next
 - Filter by type
+- Measurement types
 
 ## `frontend/src/components/health/MedicationForm.tsx`
 
@@ -1995,7 +2118,9 @@ Do **not** edit manually. Regenerate (no args) with:
 - Copy selected event IDs to clipboard
 - Remove the email/replay-unsafe events from the selection
 - Connectors requiring attention
+- hour histogram
 - Filter window aggregate counts
+- window rollup
 - View name…
 
 ## `frontend/src/components/ingestion/connectors/ArchiveCandidatesList.tsx`
@@ -2007,6 +2132,7 @@ Do **not** edit manually. Regenerate (no args) with:
 
 - archived · superseded
 - history →
+- Unarchive failed. The identity is still archived. Try again.
 
 ## `frontend/src/components/ingestion/connectors/AttentionStrip.tsx`
 
@@ -2017,15 +2143,20 @@ Do **not** edit manually. Regenerate (no args) with:
 - ← ingestion / connectors
 - throughput · 24h
 - ingested per hour · filtered overlay
+- Loading 24h throughput…
 - lifetime counters
 - pause poll
 - run now
 - recent events
 - view all
+- Loading recent events…
 - No recent events.
+- Loading incidents…
 - No incidents recorded.
 - routing rules
+- Loading routing rules…
 - No routing rules reference this connector.
+- 24h statistics
 - 24h throughput
 - last checkpoint
 
@@ -2039,19 +2170,14 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/components/ingestion/connectors/ConnectorsRoster.tsx`
 
+- Loading available connector catalog…
 - No connectors registered.
 - + add connector
+- available connector catalog
+- connector roster
 - 24h activity
 - device liveness
-
-## `frontend/src/components/ingestion/connectors/DormantList.tsx`
-
-- available · not connected
-- connect →
-
-## `frontend/src/components/ingestion/connectors/ReauthCallout.tsx`
-
-- set primary account
+- OwnTracks cadence
 
 ## `frontend/src/components/ingestion/connectors/ScopeList.tsx`
 
@@ -2064,22 +2190,34 @@ Do **not** edit manually. Regenerate (no args) with:
 - max age (days)
 - channel · defaults
 - fallback policy per connector
-- Channel defaults unavailable. Check connectivity and reload.
 - No channel defaults configured.
 - e.g. 30
+- Channel defaults
 
 ## `frontend/src/components/ingestion/filters/FiltersPipeline.tsx`
 
+- backlog unavailable · execution counts could not be checked
+- execution backlog · current ledger
+- Work awaiting resolution after the execute gate.
+- unresolved failures
+- replay pending
+- reviewed write-offs
 - add rule
 - route_to:&lt;butler&gt;
 - + add rule
 - open DSL
+- execution backlog
+
+## `frontend/src/components/ingestion/filters/GateSection.tsx`
+
+- loading…
 
 ## `frontend/src/components/ingestion/filters/PipelineGateDiagram.tsx`
 
-- metrics unavailable · counts are zero
+- Loading pipeline metrics…
 - Estimated: no per-gate measurement available from this endpoint
 - Proportional pipeline funnel
+- pipeline metrics
 
 ## `frontend/src/components/ingestion/filters/PrioritySendersBlock.tsx`
 
@@ -2106,6 +2244,8 @@ Do **not** edit manually. Regenerate (no args) with:
 - e.g. noreply.example.com
 - email address
 - e.g. alerts@example.com
+- source endpoint
+- e.g. spotify:acct-1
 - header name
 - e.g. List-Unsubscribe
 - mime type
@@ -2116,6 +2256,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - sender address
 - alerts@example.com
 - source channel
+- spotify:acct-1
 - mime parts (comma-separated)
 - text/calendar, image/png
 - raw key (optional)
@@ -2180,11 +2321,12 @@ Do **not** edit manually. Regenerate (no args) with:
 - Select a result to preview.
 - Top relations
 - No relations.
+- Command menu
+- Search entities, pages, butlers, and actions, then choose a result.
 - ESC
 - Search failed. Try again in a moment.
 - Searching…
 - inner circle
-- Command Menu
 - Search entities, pages, butlers, actions…
 - Sessions & state
 - Entities
@@ -2193,9 +2335,14 @@ Do **not** edit manually. Regenerate (no args) with:
 
 - &larr;
 - Butlers
+- Ctrl K
 - Open command menu
 - Cmd/Ctrl+K
 - Toggle dark mode
+
+## `frontend/src/components/layout/RouteSuspense.tsx`
+
+- Loading page
 
 ## `frontend/src/components/layout/Shell.tsx`
 
@@ -2207,6 +2354,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Butlers
 - Expand sidebar
 - Today&apos;s spend
+- Spend source unavailable
 - Collapse sidebar
 - Main navigation
 
@@ -2265,6 +2413,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - catalog live
 - memory stats
 - Memory stats
+- Expired retention
 - Catalog drift
 
 ## `frontend/src/components/memory/MemorySearch.tsx`
@@ -2286,6 +2435,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Sent
 - Failed
 - Retried
+- Escalated
 - Pending
 - Status
 - Butler
@@ -2324,6 +2474,7 @@ Do **not** edit manually. Regenerate (no args) with:
 
 ## `frontend/src/components/overview/OperationsNowList.tsx`
 
+- Internal
 - Nothing scheduled.
 - Operations now
 
@@ -2525,6 +2676,8 @@ Do **not** edit manually. Regenerate (no args) with:
 ## `frontend/src/components/relationship/MergeCompareDialog.tsx`
 
 - Review merge
+- Cancel
+- Confirm merge
 - Identity facts
 - Narrative facts
 - Shared evidence
@@ -2541,7 +2694,6 @@ Do **not** edit manually. Regenerate (no args) with:
 - These are stored on your owner entity; sensitive values are secured.
 - Telegram API ID
 - From my.telegram.org, used for user-client (MTProto) connections.
-- Telegram API hash
 - Home Assistant URL
 - Home Assistant token
 - Owner contact facts
@@ -2570,6 +2722,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Entities
 - The life graph, centered on you. Click a mark to hop; the trail keeps the way back.
 - Life graph plex
+- Organizations, places & things
 
 ## `frontend/src/components/relationship/PracticalDrawer.tsx`
 
@@ -2591,6 +2744,28 @@ Do **not** edit manually. Regenerate (no args) with:
 ## `frontend/src/components/relationship/SubpageTabs.tsx`
 
 - Entity views
+
+## `frontend/src/components/relationship/TelegramSessionSetup.tsx`
+
+- Account-wide ingestion scope
+- I acknowledge the account-wide Telegram ingestion scope described above.
+- Telegram user session
+- Session status unavailable.
+- Retry status
+- Account-wide ingestion is disabled until you review and acknowledge its scope.
+- Loading existing credentials...
+- Telegram API ID
+- Telegram API hash
+- Telegram phone number
+- Cancel
+- Using existing API credentials. Enter your phone number to receive a verification code.
+- A verification code was sent to your Telegram app. Enter it below.
+- Verification code
+- Two-factor authentication is enabled. Enter your 2FA password.
+- Two-factor password
+- Done
+- Telegram session ready
+- Telegram credential status
 
 ## `frontend/src/components/schedules/ScheduleForm.tsx`
 
@@ -2675,6 +2850,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - Disconnect WhatsApp? Removes pairing and all stored credentials.
 - Home Assistant
 - paste long-lived access token
+- Telegram
 - OwnTracks
 - Steam Web API key
 - Steam
@@ -2758,6 +2934,7 @@ Do **not** edit manually. Regenerate (no args) with:
 - new user credential
 - connect the provider directly: the same dance the reauthorize CTA uses.
 - set up Home Assistant
+- set up Telegram
 - advanced: paste raw credential
 - pasted tokens bypass account and scope tracking. Prefer the guided connect above when available.
 - this type has a guided connect above. Only paste here if that path doesn't work.
@@ -2781,6 +2958,7 @@ Do **not** edit manually. Regenerate (no args) with:
 
 - Session detail unavailable
 - Session detail
+- Loading full session record…
 - Loading session information...
 
 ## `frontend/src/components/sessions/SessionDossier.tsx`
@@ -2839,12 +3017,16 @@ Do **not** edit manually. Regenerate (no args) with:
 
 - &limit=
 - Pinned
+- Loading error detail…
+- Error detail temporarily unavailable.
+- Retry error detail
 - Pinned sessions
 - Running sessions
 - Recent failures
 
 ## `frontend/src/components/sessions/StatusBadge.tsx`
 
+- Cancelled
 - Failed
 
 ## `frontend/src/components/sessions/ToolCallTimeline.tsx`
@@ -2904,10 +3086,10 @@ Do **not** edit manually. Regenerate (no args) with:
 - Last Seen
 - No butlers registered in the switchboard.
 - Butlers appear here when they connect to the switchboard.
+- Switchboard registry
 
 ## `frontend/src/components/switchboard/RoutingLogTable.tsx`
 
-- Clear filters
 - Timestamp
 - Source
 - Target
@@ -2915,12 +3097,14 @@ Do **not** edit manually. Regenerate (no args) with:
 - Status
 - Duration
 - Error
+- Clear filters
 - Previous
 - Next
 - No routing log entries found.
 - Entries appear as inter-butler requests pass through the switchboard.
 - Source butler...
 - Target butler...
+- Routing log
 
 ## `frontend/src/components/system/BackupTile.tsx`
 
@@ -2967,9 +3151,10 @@ Do **not** edit manually. Regenerate (no args) with:
 - up to date with origin/main
 - Commits-behind-origin/main check unavailable.
 - serving:
+- source:
+- serving mode:
 - migration head:
 - head unknown
-- Deployed
 
 ## `frontend/src/components/system/DriftTile.tsx`
 
@@ -3013,10 +3198,17 @@ Do **not** edit manually. Regenerate (no args) with:
 - Infra credentials
 - DB role enforcement
 
-## `frontend/src/components/system/SystemVerdictBanner.tsx`
+## `frontend/src/components/system/StandingConditionsTile.tsx`
 
-- Loading instance verdict
-- Instance problems
+- Standing Conditions
+- Infrastructure outages and owner-facing concerns tracked by the reliability ledger
+- Resolved
+- Detected
+- No standing conditions recorded.
+- Standing conditions
+- Infrastructure conditions
+- Owner conditions
+- QA dispatch suppression counts
 
 ## `frontend/src/components/system/UptimeTile.tsx`
 
@@ -3048,11 +3240,19 @@ Do **not** edit manually. Regenerate (no args) with:
 - Event
 - Clear link
 - Retry
+- Older timeline events are temporarily unavailable.
+- Retry older events
 - View session
 - No events found.
 - Events appear as butlers process sessions and deliver notifications.
+- Timeline data is partially unavailable.
+- No events were returned by reachable sources, so this is not a complete empty result.
+- No owner activity in this window.
+- Enable Internal activity to inspect scheduled maintenance runs.
 - Could not load the timeline.
 - The event stream failed to load. This is not the same as having no activity.
+- Owner activity is partially unavailable.
+- Only scheduled maintenance runs were returned by reachable sources. One or more Timeline sources are unavailable, so this is not a complete owner-activity result. Enable Internal activity to inspect the maintenance runs.
 
 ## `frontend/src/components/topology/TopologyGraph.tsx`
 
@@ -3124,6 +3324,10 @@ Do **not** edit manually. Regenerate (no args) with:
 
 - Close
 
+## `frontend/src/components/ui/inline-action-link.tsx`
+
+- (props: T): Omit
+
 ## `frontend/src/components/ui/list-triage-footer.tsx`
 
 - Keyboard shortcuts for this list
@@ -3173,4 +3377,4 @@ Do **not** edit manually. Regenerate (no args) with:
 - Preset windows
 
 ---
-*Total strings: 2372*
+*Total strings: 2553*
