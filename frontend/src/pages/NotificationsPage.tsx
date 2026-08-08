@@ -220,6 +220,7 @@ export default function NotificationsPage() {
   const escalate = escalateMutation.mutate;
 
   const notifications = useMemo(
+    // eslint-disable-next-line no-restricted-syntax -- notificationsError is checked before NotificationFeed's empty and source-unavailable renderers.
     () => notificationsResponse?.data ?? [],
     [notificationsResponse],
   );

@@ -225,6 +225,29 @@ describe("NotificationsPage", () => {
     expect(html).toContain("No notifications found");
   });
 
+  it("renders the query error before a cached empty notifications response", () => {
+    // A failed refetch can retain the previous empty envelope. That cache is
+    // not proof that the source is currently healthy or empty.
+    setStatsState({ data: undefined });
+    setNotificationsState({
+      data: {
+        data: [],
+        meta: {},
+      } as unknown as NonNullable<UseNotificationsResult["data"]>,
+      isError: true,
+    });
+
+    const html = renderPage();
+
+    expect(html).toContain(
+      "Failed to load notifications. Please try refreshing the page.",
+    );
+    expect(html).not.toContain("No notifications found");
+    expect(html).not.toContain(
+      'data-testid="notification-feed-source-unavailable"',
+    );
+  });
+
   it("wires source_available=false into a named degraded feed state, not the empty state (bu-jad4j.2)", () => {
     // The Switchboard notifications source is unreachable: stats em-dashes its
     // tiles and the feed names the degraded source rather than claiming a clear
