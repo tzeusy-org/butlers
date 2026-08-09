@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -24,13 +24,18 @@ import pytest
 from butlers.connectors.spotify import (
     ListeningSession,
     ListeningSessionTracker,
+    SpokenSession,
+    SpokenSessionTracker,
     SpotifyConnector,
     SpotifyConnectorConfig,
     _classify_source_api_error,
     build_context_start_envelope,
     build_listening_digest_envelope,
     build_session_summary_envelope,
+    build_spoken_session_envelope,
+    normalize_spoken_item,
     persist_session_summary,
+    persist_spoken_session,
 )
 
 _ENDPOINT = "spotify_user_client:spotify:user123"
@@ -120,6 +125,20 @@ def test_context_start_passes_parse_ingest_envelope(context_start_env: dict[str,
         pytest.fail(f"parse_ingest_envelope raised ValidationError: {exc}")
 
 
+@pytest.mark.asyncio
+async def test_connector_current_playback_requests_episode_items() -> None:
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._spotify_get = AsyncMock(return_value={"is_playing": True, "item": {"id": "e"}})
+
+    await connector._get_currently_playing()
+
+    assert connector._spotify_get.await_args.kwargs["params"] == {
+        "additional_types": "track,episode"
+    }
+
+
 def test_session_summary_schema_version() -> None:
     session = ListeningSession(
         started_at=_NOW,
@@ -135,6 +154,73 @@ def test_session_summary_schema_version() -> None:
     )
     assert env["schema_version"] == "ingest.v1"
     assert env["control"]["ingestion_tier"] == "full"
+
+
+@pytest.mark.parametrize(
+    ("parent", "expected_kind"),
+    [
+        ({"show": {"id": "show-1", "name": "The Daily", "uri": "spotify:show:show-1"}}, "podcast"),
+        (
+            {
+                "audiobook": {
+                    "id": "book-1",
+                    "name": "The Odyssey",
+                    "uri": "spotify:audiobook:book-1",
+                }
+            },
+            "audiobook",
+        ),
+        ({}, "unknown_episode"),
+    ],
+)
+def test_normalize_spoken_item_classifies_parent_without_guessing(
+    parent: dict[str, Any], expected_kind: str
+) -> None:
+    item = normalize_spoken_item(
+        {
+            "type": "episode",
+            "id": "episode-1",
+            "name": "Chapter 1",
+            "uri": "spotify:episode:episode-1",
+            "duration_ms": 600_000,
+            **parent,
+        }
+    )
+
+    assert item is not None
+    assert item.content_kind == expected_kind
+    assert item.episode_id == "episode-1"
+
+
+def test_spoken_session_envelope_is_metadata_only_and_contains_no_raw_payload() -> None:
+    item = normalize_spoken_item(
+        {
+            "type": "episode",
+            "id": "episode-1",
+            "name": "Chapter 1",
+            "uri": "spotify:episode:episode-1",
+            "duration_ms": 600_000,
+            "show": {"id": "show-1", "name": "The Daily", "uri": "spotify:show:show-1"},
+        }
+    )
+    assert item is not None
+    session = SpokenSession(item=item, started_at=_NOW, last_activity_at=_NOW)
+
+    envelope = build_spoken_session_envelope(
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+        observed_at=_OBSERVED,
+    )
+
+    start_ms = int(_NOW.timestamp() * 1000)
+    assert envelope["event"]["external_event_id"] == f"spotify:spoken:{start_ms}:episode-1"
+    assert envelope["payload"]["raw"] is None
+    assert envelope["control"]["ingestion_tier"] == "metadata"
+    assert envelope["control"]["idempotency_key"] == (
+        f"spotify:spotify_user_client:spotify:user123:spoken:{start_ms}:episode-1"
+    )
+    assert "transcript" not in envelope["payload"]["normalized_text"].lower()
 
 
 def test_context_start_prefers_explicit_context_name_from_raw_payload() -> None:
@@ -490,6 +576,63 @@ def test_new_session_after_full_drain(tracker: ListeningSessionTracker) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Spoken-session state machine — episode playback stays separate from music.
+# ---------------------------------------------------------------------------
+
+
+def _spoken_item(episode_id: str = "episode-1", *, content_kind: str = "podcast") -> Any:
+    parent = (
+        {"show": {"id": "show-1", "name": "The Daily", "uri": "spotify:show:show-1"}}
+        if content_kind == "podcast"
+        else {
+            "audiobook": {"id": "book-1", "name": "The Odyssey", "uri": "spotify:audiobook:book-1"}
+        }
+    )
+    return normalize_spoken_item(
+        {
+            "type": "episode",
+            "id": episode_id,
+            "name": f"Episode {episode_id}",
+            "uri": f"spotify:episode:{episode_id}",
+            "duration_ms": 600_000,
+            **parent,
+        }
+    )
+
+
+def test_spoken_tracker_repeat_switch_pause_and_replay_boundaries() -> None:
+    tracker = SpokenSessionTracker(idle_timeout_s=60)
+    first = _spoken_item("episode-1")
+    second = _spoken_item("episode-2", content_kind="audiobook")
+    assert first is not None
+    assert second is not None
+
+    events, closed = tracker.process_playback(first, now=_NOW)
+    assert events == ["spoken_session"]
+    assert closed == []
+
+    events, closed = tracker.process_playback(first, now=_NOW + timedelta(minutes=1))
+    assert events == []
+    assert closed == []
+
+    events, closed = tracker.process_playback(second, now=_NOW + timedelta(minutes=2))
+    assert events == ["spoken_session"]
+    assert len(closed) == 1
+    assert closed[0].item.episode_id == "episode-1"
+
+    assert tracker.process_no_playback(now=_NOW + timedelta(minutes=3)) == []
+    closed = tracker.process_no_playback(now=_NOW + timedelta(minutes=5))
+    assert len(closed) == 1
+    assert closed[0].item.episode_id == "episode-2"
+
+    events, closed = tracker.process_playback(first, now=_NOW + timedelta(minutes=6))
+    assert events == ["spoken_session"]
+    assert closed == []
+    assert tracker.current_session is not None
+    assert tracker.current_session.started_at == _NOW + timedelta(minutes=6)
+
+
+# ---------------------------------------------------------------------------
 # Durable evidence persistence — persist_session_summary
 # ---------------------------------------------------------------------------
 
@@ -606,6 +749,170 @@ async def test_persist_session_summary_idempotency_key_deterministic() -> None:
     key1 = pool1.fetchval.call_args.args[1]
     key2 = pool2.fetchval.call_args.args[1]
     assert key1 == key2
+
+
+@pytest.mark.asyncio
+async def test_persist_spoken_session_upserts_bounded_metadata_without_raw_payload() -> None:
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value="spoken-uuid")
+    item = _spoken_item()
+    assert item is not None
+    session = SpokenSession(
+        item=item, started_at=_NOW, last_activity_at=_NOW + timedelta(minutes=2)
+    )
+
+    assert await persist_spoken_session(
+        pool,
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+    )
+
+    query = pool.fetchval.call_args.args[0]
+    args = pool.fetchval.call_args.args[1:]
+    assert "connectors.spotify_spoken_sessions" in query
+    assert "ON CONFLICT" in query
+    assert "raw_payload" not in query
+    assert args[0] == (
+        f"spotify:spotify_user_client:spotify:user123:spoken:{int(_NOW.timestamp() * 1000)}:episode-1"
+    )
+    metadata = args[-1]
+    assert metadata == {"duration_ms": 600_000}
+    assert "transcript" not in metadata
+
+
+@pytest.mark.asyncio
+async def test_spoken_evidence_failure_does_not_block_passive_submission() -> None:
+    from unittest.mock import patch
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._cursor_pool = AsyncMock()
+    connector._submit_envelope = AsyncMock()
+    item = {
+        "type": "episode",
+        "id": "episode-1",
+        "name": "Chapter 1",
+        "uri": "spotify:episode:episode-1",
+        "duration_ms": 600_000,
+        "show": {"id": "show-1", "name": "The Daily", "uri": "spotify:show:show-1"},
+    }
+
+    with patch(
+        "butlers.connectors.spotify.persist_spoken_session", new_callable=AsyncMock
+    ) as persist:
+        persist.side_effect = RuntimeError("DB unavailable")
+        await connector._handle_spoken_playback(
+            {"timestamp": 1711447200000, "item": item}, item, _NOW, _OBSERVED
+        )
+
+    connector._submit_envelope.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_active_spoken_playback_keeps_active_poll_cadence() -> None:
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp", poll_active_s=60)
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._submit_envelope = AsyncMock()
+    connector._current_poll_interval_s = 300
+    item = {
+        "type": "episode",
+        "id": "episode-1",
+        "name": "Chapter 1",
+        "show": {"id": "show-1", "name": "The Daily"},
+    }
+
+    await connector._handle_spoken_playback({"item": item}, item, _NOW, _OBSERVED)
+
+    assert connector._current_poll_interval_s == 60
+
+
+@pytest.mark.asyncio
+async def test_poll_cycle_track_after_spoken_closes_then_resumed_episode_opens_new_session() -> (
+    None
+):
+    """A track is an item switch, never the temporary no-playback drain boundary."""
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._cursor_pool = AsyncMock()
+    connector._submit_envelope = AsyncMock()
+    connector._poll_recently_played = AsyncMock()
+    connector._last_gap_fill_poll_at = float("inf")
+
+    episode = {
+        "type": "episode",
+        "id": "episode-1",
+        "name": "Chapter 1",
+        "uri": "spotify:episode:episode-1",
+        "duration_ms": 600_000,
+        "show": {"id": "show-1", "name": "The Daily", "uri": "spotify:show:show-1"},
+    }
+    track = {
+        "type": "track",
+        "id": "track-1",
+        "name": "Song 1",
+        "duration_ms": 180_000,
+        "album": {"name": "Album 1"},
+        "artists": [{"name": "Artist 1"}],
+    }
+    connector._get_currently_playing = AsyncMock(
+        side_effect=[
+            {"is_playing": True, "item": episode, "timestamp": int(_NOW.timestamp() * 1000)},
+            {
+                "is_playing": True,
+                "item": track,
+                "timestamp": int((_NOW + timedelta(minutes=1)).timestamp() * 1000),
+            },
+            {
+                "is_playing": True,
+                "item": episode,
+                "timestamp": int((_NOW + timedelta(minutes=2)).timestamp() * 1000),
+            },
+        ]
+    )
+
+    with (
+        patch("butlers.connectors.spotify.datetime") as mocked_datetime,
+        patch(
+            "butlers.connectors.spotify.persist_spoken_session", new_callable=AsyncMock
+        ) as persist_spoken,
+    ):
+        mocked_datetime.now.side_effect = [
+            _NOW,
+            _NOW + timedelta(minutes=1),
+            _NOW + timedelta(minutes=2),
+        ]
+        await connector._execute_poll_cycle()
+        await connector._execute_poll_cycle()
+        await connector._execute_poll_cycle()
+
+    persisted_sessions = [call.kwargs["session"] for call in persist_spoken.await_args_list]
+    assert [session.started_at for session in persisted_sessions] == [
+        _NOW,
+        _NOW,
+        _NOW + timedelta(minutes=2),
+    ]
+    assert persisted_sessions[1].ended_at == _NOW + timedelta(minutes=1)
+    assert persisted_sessions[2].ended_at is None
+
+    spoken_envelopes = [
+        call.args[0]
+        for call in connector._submit_envelope.await_args_list
+        if call.args[0]["event"]["external_event_id"].startswith("spotify:spoken:")
+    ]
+    assert [envelope["event"]["external_event_id"] for envelope in spoken_envelopes] == [
+        f"spotify:spoken:{int(_NOW.timestamp() * 1000)}:episode-1",
+        f"spotify:spoken:{int((_NOW + timedelta(minutes=2)).timestamp() * 1000)}:episode-1",
+    ]
 
 
 @pytest.mark.asyncio

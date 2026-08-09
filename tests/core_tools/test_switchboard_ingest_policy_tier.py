@@ -13,6 +13,7 @@ that the absence of a tier falls back to the default.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -37,7 +38,7 @@ class _FakeEvaluator:
         return None
 
 
-def _register_and_grab_ingest(monkeypatch, buffer):
+def _register_and_grab_ingest(monkeypatch, buffer, *, triage_decision: str | None = None):
     """Register switchboard tools with a fake buffer and capture ``ingest``."""
 
     # The ingest tool calls ingest_v1(pool, envelope, ...) — stub it to return a
@@ -45,12 +46,13 @@ def _register_and_grab_ingest(monkeypatch, buffer):
     request_id = uuid.uuid4()
 
     async def _fake_ingest_v1(_pool, _envelope, **_kwargs):
-        return SimpleNamespace(
+        from butlers.tools.switchboard.ingestion.ingest import IngestAcceptedResponse
+
+        return IngestAcceptedResponse(
             duplicate=False,
             request_id=request_id,
-            triage_decision=None,
+            triage_decision=triage_decision,
             triage_target=None,
-            model_dump=lambda mode="json": {"status": "accepted"},
         )
 
     import butlers.ingestion_policy as _ip_mod
@@ -102,6 +104,34 @@ def _envelope_kwargs(policy_tier: str | None):
     }
 
 
+def _spoken_envelope_kwargs() -> dict:
+    from butlers.connectors.spotify import (
+        SpokenSession,
+        build_spoken_session_envelope,
+        normalize_spoken_item,
+    )
+
+    item = normalize_spoken_item(
+        {
+            "type": "episode",
+            "id": "episode-1",
+            "name": "Chapter 1",
+            "show": {"id": "show-1", "name": "The Daily"},
+        }
+    )
+    assert item is not None
+    return build_spoken_session_envelope(
+        endpoint_identity="spotify:spotify_user_client:spotify:user123",
+        spotify_user_id="user123",
+        session=SpokenSession(
+            item=item,
+            started_at=datetime(2026, 8, 9, tzinfo=UTC),
+            last_activity_at=datetime(2026, 8, 9, tzinfo=UTC),
+        ),
+        observed_at="2026-08-09T00:00:00+00:00",
+    )
+
+
 async def test_high_priority_tier_reaches_enqueue(monkeypatch):
     buffer = _FakeBuffer()
     ingest, _request_id = _register_and_grab_ingest(monkeypatch, buffer)
@@ -132,6 +162,25 @@ async def test_no_control_falls_back_to_default(monkeypatch):
 
     assert len(buffer.enqueue_calls) == 1
     assert buffer.enqueue_calls[0]["policy_tier"] == "default"
+
+
+async def test_spoken_metadata_only_triage_reaches_durable_buffer(monkeypatch):
+    """The core ingest handoff preserves pre-resolved spoken capture-only triage."""
+    buffer = _FakeBuffer()
+    ingest, _request_id = _register_and_grab_ingest(
+        monkeypatch, buffer, triage_decision="metadata_only"
+    )
+    envelope = _spoken_envelope_kwargs()
+
+    response = await ingest(**envelope)
+
+    assert response["triage_decision"] == "metadata_only"
+    assert len(buffer.enqueue_calls) == 1
+    queued = buffer.enqueue_calls[0]
+    assert queued["triage_decision"] == "metadata_only"
+    assert queued["message_text"] == envelope["payload"]["normalized_text"]
+    assert queued["source"] == envelope["source"]
+    assert queued["event"] == envelope["event"]
 
 
 if __name__ == "__main__":  # pragma: no cover

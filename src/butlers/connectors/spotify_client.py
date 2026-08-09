@@ -651,7 +651,7 @@ class SpotifyClient:
         """
         data = await self._get(
             "/me/player/currently-playing",
-            params={"additional_types": "track"},
+            params={"additional_types": "track,episode"},
         )
         # `_get` returns None for HTTP 204 (no content). Additionally, Spotify may
         # return HTTP 200 with `item` set to null (e.g., private session or ads).

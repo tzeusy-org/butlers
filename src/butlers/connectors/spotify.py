@@ -87,6 +87,7 @@ _CONNECTOR_CHANNEL = "spotify_user_client"
 
 # Durable evidence table for Chronicler projection (RFC 0014 §D9).
 _SESSION_EVIDENCE_TABLE = "connectors.spotify_listening_sessions"
+_SPOKEN_SESSION_EVIDENCE_TABLE = "connectors.spotify_spoken_sessions"
 _CONNECTOR_PROVIDER = "spotify"
 
 # Spotify API URLs
@@ -421,6 +422,153 @@ class ListeningSessionTracker:
                 self._state = "idle"
 
         return closed_sessions
+
+
+# ---------------------------------------------------------------------------
+# Spoken-session state machine
+# ---------------------------------------------------------------------------
+
+SpokenContentKind = Literal["podcast", "audiobook", "unknown_episode"]
+
+
+@dataclass(frozen=True)
+class SpokenItem:
+    """Allowlisted spoken metadata derived from one Spotify episode item."""
+
+    episode_id: str
+    episode_name: str
+    episode_uri: str | None
+    content_kind: SpokenContentKind
+    parent_id: str | None
+    parent_name: str | None
+    parent_uri: str | None
+    duration_ms: int | None
+
+
+def normalize_spoken_item(item: dict[str, Any]) -> SpokenItem | None:
+    """Normalize an episode item without retaining its raw Spotify payload."""
+    if item.get("type") != "episode":
+        return None
+
+    episode_id = str(item.get("id") or "").strip()
+    if not episode_id:
+        return None
+
+    parent: dict[str, Any] = {}
+    content_kind: SpokenContentKind = "unknown_episode"
+    for key, kind in (("show", "podcast"), ("audiobook", "audiobook")):
+        candidate = item.get(key)
+        if isinstance(candidate, dict):
+            parent = candidate
+            content_kind = kind
+            break
+
+    duration_ms_raw = item.get("duration_ms")
+    duration_ms = (
+        duration_ms_raw if isinstance(duration_ms_raw, int) and duration_ms_raw >= 0 else None
+    )
+    return SpokenItem(
+        episode_id=episode_id,
+        episode_name=str(item.get("name") or "Unknown episode").strip() or "Unknown episode",
+        episode_uri=_clean_context_name(item.get("uri")),
+        content_kind=content_kind,
+        parent_id=_clean_context_name(parent.get("id")),
+        parent_name=_clean_context_name(parent.get("name")),
+        parent_uri=_clean_context_name(parent.get("uri")),
+        duration_ms=duration_ms,
+    )
+
+
+@dataclass
+class SpokenSession:
+    """One contiguous playback span for one podcast episode or audiobook chapter."""
+
+    item: SpokenItem
+    started_at: datetime
+    last_activity_at: datetime
+    drain_started_at: datetime | None = None
+    ended_at: datetime | None = None
+
+    @property
+    def duration_seconds(self) -> int:
+        end = self.ended_at or self.drain_started_at or self.last_activity_at
+        return max(0, int((end - self.started_at).total_seconds()))
+
+
+class SpokenSessionTracker:
+    """Track spoken playback independently from music listening sessions."""
+
+    def __init__(self, idle_timeout_s: int = _DEFAULT_SESSION_IDLE_TIMEOUT_S) -> None:
+        self._idle_timeout_s = idle_timeout_s
+        self._state: SessionState = "idle"
+        self._session: SpokenSession | None = None
+
+    @property
+    def current_session(self) -> SpokenSession | None:
+        return self._session
+
+    def process_playback(
+        self, item: SpokenItem, *, now: datetime | None = None
+    ) -> tuple[list[str], list[SpokenSession]]:
+        """Open, extend, or switch the active spoken item deterministically."""
+        now = now or datetime.now(UTC)
+        closed: list[SpokenSession] = []
+
+        if self._state == "idle":
+            self._session = SpokenSession(item=item, started_at=now, last_activity_at=now)
+            self._state = "active"
+            return ["spoken_session"], closed
+
+        assert self._session is not None
+        if self._state == "draining":
+            if self._session.item.episode_id == item.episode_id:
+                self._session.drain_started_at = None
+                self._session.last_activity_at = now
+                self._state = "active"
+                return [], closed
+            self._session.ended_at = self._session.drain_started_at or now
+            closed.append(self._session)
+        elif self._session.item.episode_id == item.episode_id:
+            self._session.last_activity_at = now
+            return [], closed
+        else:
+            self._session.ended_at = now
+            closed.append(self._session)
+
+        self._session = SpokenSession(item=item, started_at=now, last_activity_at=now)
+        self._state = "active"
+        return ["spoken_session"], closed
+
+    def process_no_playback(self, *, now: datetime | None = None) -> list[SpokenSession]:
+        """Advance a spoken session through the established idle drain boundary."""
+        now = now or datetime.now(UTC)
+        if self._state == "idle":
+            return []
+        assert self._session is not None
+        if self._state == "active":
+            self._session.drain_started_at = now
+            self._state = "draining"
+            return []
+        drain_start = self._session.drain_started_at or now
+        if (now - drain_start).total_seconds() < self._idle_timeout_s:
+            return []
+        self._session.ended_at = drain_start
+        closed = self._session
+        self._session = None
+        self._state = "idle"
+        return [closed]
+
+    def close_for_item_switch(self, *, now: datetime | None = None) -> list[SpokenSession]:
+        """Close immediately when Spotify reports a different active item type."""
+        now = now or datetime.now(UTC)
+        if self._state == "idle":
+            return []
+        assert self._session is not None
+        self._session.ended_at = now
+        closed = self._session
+        self._session = None
+        self._state = "idle"
+        return [closed]
 
 
 # ---------------------------------------------------------------------------
@@ -781,6 +929,48 @@ def build_session_summary_envelope(
     }
 
 
+def _spoken_session_key(endpoint_identity: str, session: SpokenSession) -> str:
+    start_ms = int(session.started_at.timestamp() * 1000)
+    return f"spotify:{endpoint_identity}:spoken:{start_ms}:{session.item.episode_id}"
+
+
+def build_spoken_session_envelope(
+    *,
+    endpoint_identity: str,
+    spotify_user_id: str,
+    session: SpokenSession,
+    observed_at: str,
+) -> dict[str, Any]:
+    """Build the deliberately metadata-only passive spoken-session envelope."""
+    item = session.item
+    parent_label = item.parent_name or item.content_kind.replace("_", " ")
+    normalized_text = f"Listening to {item.content_kind.replace('_', ' ')}: {item.episode_name}"
+    if parent_label:
+        normalized_text += f" from {parent_label}"
+    key = _spoken_session_key(endpoint_identity, session)
+    start_ms = int(session.started_at.timestamp() * 1000)
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": _CONNECTOR_CHANNEL,
+            "provider": _CONNECTOR_PROVIDER,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": f"spotify:spoken:{start_ms}:{item.episode_id}",
+            "external_thread_id": item.parent_uri,
+            "observed_at": observed_at,
+        },
+        "sender": {"identity": spotify_user_id},
+        "payload": {"raw": None, "normalized_text": normalized_text},
+        "control": {
+            "idempotency_key": key,
+            "policy_tier": "default",
+            "ingestion_tier": "metadata",
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Durable session evidence persistence (Chronicler read surface, RFC 0014)
 # ---------------------------------------------------------------------------
@@ -863,6 +1053,49 @@ async def persist_session_summary(
     return result is not None
 
 
+async def persist_spoken_session(
+    pool: asyncpg.Pool,
+    *,
+    endpoint_identity: str,
+    spotify_user_id: str,
+    session: SpokenSession,
+) -> bool:
+    """Upsert bounded, connector-owned spoken evidence without raw payloads."""
+    item = session.item
+    result = await pool.fetchval(
+        f"""
+        INSERT INTO {_SPOKEN_SESSION_EVIDENCE_TABLE} (
+            idempotency_key, endpoint_identity, spotify_user_id, content_kind,
+            episode_id, episode_name, episode_uri, parent_id, parent_name,
+            parent_uri, started_at, ended_at, duration_seconds, metadata
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+        )
+        ON CONFLICT (idempotency_key) DO UPDATE SET
+            ended_at = EXCLUDED.ended_at,
+            duration_seconds = EXCLUDED.duration_seconds,
+            metadata = EXCLUDED.metadata,
+            recorded_at = now()
+        RETURNING id
+        """,
+        _spoken_session_key(endpoint_identity, session),
+        endpoint_identity,
+        spotify_user_id,
+        item.content_kind,
+        item.episode_id,
+        item.episode_name,
+        item.episode_uri,
+        item.parent_id,
+        item.parent_name,
+        item.parent_uri,
+        session.started_at,
+        session.ended_at or session.drain_started_at or session.last_activity_at,
+        session.duration_seconds,
+        {"duration_ms": item.duration_ms} if item.duration_ms is not None else {},
+    )
+    return result is not None
+
+
 # ---------------------------------------------------------------------------
 # Main connector class
 # ---------------------------------------------------------------------------
@@ -913,6 +1146,9 @@ class SpotifyConnector:
         self._session_tracker = ListeningSessionTracker(
             idle_timeout_s=config.session_idle_timeout_s,
             digest_interval_s=config.digest_interval_s,
+        )
+        self._spoken_session_tracker = SpokenSessionTracker(
+            idle_timeout_s=config.session_idle_timeout_s,
         )
 
         # Auth error state
@@ -1440,6 +1676,7 @@ class SpotifyConnector:
         try:
             data = await self._spotify_get(
                 "/me/player/currently-playing",
+                params={"additional_types": "track,episode"},
                 api_method="currently_playing",
             )
             # 204 returns {}; also check is_playing
@@ -1631,14 +1868,21 @@ class SpotifyConnector:
         if currently_playing:
             item = currently_playing.get("item")
             is_playing_flag = currently_playing.get("is_playing", False)
-            # Ignore podcasts (type == "episode") — track only
             item_type = item.get("type", "") if item else ""
             if item and is_playing_flag and item_type == "track":
                 is_playing = True
                 await self._handle_active_playback(currently_playing, item, now, observed_at)
+                await self._close_spoken_for_active_track(now)
+            elif item and is_playing_flag and item_type == "episode":
+                spoken_item = normalize_spoken_item(item)
+                if spoken_item is not None:
+                    is_playing = True
+                    await self._handle_spoken_playback(currently_playing, item, now, observed_at)
+                    await self._advance_music_for_no_playback(now, observed_at)
 
         if not is_playing:
             await self._handle_no_playback(now, observed_at)
+            await self._close_spoken_for_no_playback(now)
 
         # --- Gap-fill via recently-played ---
         # Throttle gap-fill to gap_fill_idle_interval_s (default 3 hrs) so
@@ -1750,14 +1994,72 @@ class SpotifyConnector:
                 self._config.poll_idle_s,
             )
 
-        closed_sessions = self._session_tracker.process_no_playback(now=now)
-        for closed in closed_sessions:
-            await self._emit_session_summary(closed, observed_at)
+        await self._advance_music_for_no_playback(now, observed_at)
 
         if self._endpoint_identity:
             spotify_polls_total.labels(
                 endpoint_identity=self._endpoint_identity, status="idle"
             ).inc()
+
+    async def _advance_music_for_no_playback(self, now: datetime, observed_at: str) -> None:
+        """Close music state without changing the active Spotify polling cadence."""
+        closed_sessions = self._session_tracker.process_no_playback(now=now)
+        for closed in closed_sessions:
+            await self._emit_session_summary(closed, observed_at)
+
+    async def _close_spoken_for_no_playback(self, now: datetime) -> None:
+        """Advance spoken state only while Spotify reports no active playback."""
+        for session in self._spoken_session_tracker.process_no_playback(now=now):
+            await self._persist_spoken_session(session)
+
+    async def _close_spoken_for_active_track(self, now: datetime) -> None:
+        """Persist and close spoken state at the explicit episode-to-track boundary."""
+        for session in self._spoken_session_tracker.close_for_item_switch(now=now):
+            await self._persist_spoken_session(session)
+
+    async def _handle_spoken_playback(
+        self,
+        payload: dict[str, Any],
+        item_payload: dict[str, Any],
+        now: datetime,
+        observed_at: str,
+    ) -> None:
+        """Capture an episode without touching the music session tracker."""
+        item = normalize_spoken_item(item_payload)
+        if item is None:
+            return
+        self._current_poll_interval_s = self._config.poll_active_s
+        events, closed_sessions = self._spoken_session_tracker.process_playback(item, now=now)
+        for closed in closed_sessions:
+            await self._persist_spoken_session(closed)
+
+        session = self._spoken_session_tracker.current_session
+        if session is None:
+            return
+        if "spoken_session" in events:
+            await self._submit_envelope(
+                build_spoken_session_envelope(
+                    endpoint_identity=self._endpoint_identity,
+                    spotify_user_id=self._spotify_user_id,
+                    session=session,
+                    observed_at=observed_at,
+                )
+            )
+        await self._persist_spoken_session(session)
+
+    async def _persist_spoken_session(self, session: SpokenSession) -> None:
+        """Persist spoken evidence best-effort so ingest remains replayable on failure."""
+        if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
+            return
+        try:
+            await persist_spoken_session(
+                self._cursor_pool,
+                endpoint_identity=self._endpoint_identity,
+                spotify_user_id=self._spotify_user_id,
+                session=session,
+            )
+        except Exception as exc:
+            logger.warning("SpotifyConnector: spoken evidence persist failed (non-fatal): %s", exc)
 
     async def _poll_recently_played(self, now: datetime, observed_at: str) -> None:
         """Poll recently-played for gap-filling using the stored cursor.

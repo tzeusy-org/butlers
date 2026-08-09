@@ -112,3 +112,20 @@ async def test_token_refresh_invalid_grant_remains_auth_error() -> None:
         await client.get_me()
 
     store.store.assert_not_awaited()
+
+
+async def test_current_playback_requests_track_and_episode_types() -> None:
+    store = _credential_store()
+    http_client = AsyncMock(spec=httpx.AsyncClient)
+    http_client.request = AsyncMock(
+        return_value=_response(
+            200,
+            {"is_playing": True, "item": {"type": "episode", "id": "episode-1"}},
+        )
+    )
+    client = SpotifyClient(credential_store=store, http_client=http_client)
+    await client.open()
+
+    await client.get_currently_playing()
+
+    assert http_client.request.await_args.kwargs["params"] == {"additional_types": "track,episode"}

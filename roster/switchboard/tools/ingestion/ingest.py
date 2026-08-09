@@ -478,18 +478,15 @@ def _make_ingestion_envelope(
         raw_key = str(source.get("endpoint_identity") or "")
     elif source_channel in ("discord",):
         raw_key = str(source.get("endpoint_identity") or "")
-    elif source_channel == "gaming":
+    elif source_channel in ("gaming", "spotify_user_client"):
         # The ingest.v1 wire contract's `event` section is `extra="forbid"`
         # (IngestEventV1), so connectors cannot submit a distinct event-type
         # field over the wire (see steam.py::_to_wire_envelope). Gaming
         # connectors instead encode the event type as a stable prefix of
         # `external_event_id` (e.g. "steam:status:...", "steam:play:...",
-        # "steam:achievement:...", "steam:purchase:...", "steam:friend:...").
-        # Surface it here as raw_key so a `substring` rule can match a
-        # specific gaming event type (e.g. Steam presence/status_change)
-        # without silently over-matching every event on the channel — a
-        # bare `source_channel` rule would skip play/achievement/purchase/
-        # friend events too, which must stay routable.
+        # "spotify:spoken:...", "spotify:ctx:..."). Surface it here as
+        # raw_key so a `substring` rule can match one event family without
+        # silently over-matching the channel's other event types.
         raw_key = str(event.get("external_event_id") or "")
 
     return IngestionEnvelope(
