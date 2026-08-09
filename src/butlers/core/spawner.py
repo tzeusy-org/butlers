@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import os
 import sys
 import time
@@ -85,7 +84,7 @@ from butlers.core.model_routing import (
 from butlers.core.permissions import SPAWN_PERMISSION, check_permission
 from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
-from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
@@ -218,34 +217,6 @@ def _runtime_timeout_guard_s(timeout_s: float) -> float:
         ),
     )
     return timeout_s + grace_s
-
-
-def _runtime_timeout_overhead_s(runtime: RuntimeAdapter) -> float:
-    """Return a safe adapter-declared allowance outside model execution time.
-
-    Runtime adapters receive the configured ``timeout`` directly and remain
-    responsible for bounding their provider process to it.  This small
-    allowance is solely for explicitly-declared, bounded setup/teardown work
-    such as credential-authority reconciliation.  Invalid declarations fail
-    closed to the existing guard rather than allowing an unbounded wait.
-    """
-    try:
-        allowance_s = float(runtime.session_timeout_overhead_s)
-    except (AttributeError, TypeError, ValueError):
-        logger.warning(
-            "Runtime adapter supplied an invalid session-timeout overhead; ignoring it "
-            "(runtime=%s)",
-            type(runtime).__name__,
-        )
-        return 0.0
-    if not math.isfinite(allowance_s) or allowance_s < 0:
-        logger.warning(
-            "Runtime adapter supplied an invalid session-timeout overhead; ignoring it "
-            "(runtime=%s)",
-            type(runtime).__name__,
-        )
-        return 0.0
-    return allowance_s
 
 
 def _get_global_semaphore() -> asyncio.Semaphore:
@@ -2160,7 +2131,7 @@ class Spawner:
                         # must not cause a healthy near-deadline provider
                         # process to be cancelled by this outer safety guard.
                         outer_timeout_s = _runtime_timeout_guard_s(float(timeout_s))
-                        outer_timeout_s += _runtime_timeout_overhead_s(runtime)
+                        outer_timeout_s += validated_session_timeout_overhead_s(runtime)
                         done, _pending = await asyncio.wait(
                             {invoke_task},
                             timeout=outer_timeout_s,

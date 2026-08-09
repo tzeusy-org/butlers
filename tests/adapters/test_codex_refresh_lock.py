@@ -337,13 +337,20 @@ async def test_run_codex_pre_warm_swallows_nonzero_exit(tmp_path: Path) -> None:
 
 
 async def test_run_codex_pre_warm_swallows_timeout(tmp_path: Path) -> None:
-    """Pre-warm does not raise when the subprocess times out."""
+    """A timed-out live status child is killed and reaped without raising."""
     codex_dir = tmp_path / ".codex"
     codex_dir.mkdir()
 
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-    mock_proc.returncode = 0
+    reaped = asyncio.Event()
+    mock_proc = MagicMock()
+    mock_proc.communicate = MagicMock(return_value=object())
+    mock_proc.returncode = None
+    mock_proc.kill = MagicMock()
+
+    async def _wait() -> None:
+        reaped.set()
+
+    mock_proc.wait = AsyncMock(side_effect=_wait)
 
     with (
         patch(_EXEC, return_value=mock_proc),
@@ -353,6 +360,10 @@ async def test_run_codex_pre_warm_swallows_timeout(tmp_path: Path) -> None:
         ),
     ):
         await run_codex_pre_warm(codex_dir, "/usr/bin/codex")  # must not raise
+
+    await asyncio.wait_for(reaped.wait(), timeout=0.2)
+    mock_proc.kill.assert_called_once()
+    mock_proc.wait.assert_awaited_once()
 
 
 async def test_run_codex_pre_warm_reaps_status_process_when_cancelled(tmp_path: Path) -> None:
@@ -590,43 +601,44 @@ async def test_invoke_bounds_refresh_lock_wait_outside_provider_execution_timeou
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Slow-path flock contention spends only the declared auth allowance."""
-    import fcntl
-
     codex_dir = tmp_path / ".codex"
     _stale_auth_json(codex_dir)
     monkeypatch.setenv("HOME", str(tmp_path))
     prewarm_key = str(codex_dir)
     CodexAdapter._prewarm_done.add(prewarm_key)
-    lock_path = codex_dir / "butlers.refresh.lock"
-    other_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
-    fcntl.flock(other_fd, fcntl.LOCK_EX)
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    wait_budgets: list[float | None] = []
 
-    try:
-        with (
-            patch(
-                "butlers.core.runtimes.codex._CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS",
-                0.01,
-            ),
-            patch.object(
-                adapter,
-                "_run_codex_subprocess",
-                AsyncMock(return_value=("ok", [], None)),
-            ) as spawn,
-        ):
-            result, _, _ = await adapter.invoke(
-                prompt="test",
-                system_prompt="",
-                mcp_servers={},
-                env={},
-                timeout=1,
-            )
-    finally:
-        fcntl.flock(other_fd, fcntl.LOCK_UN)
-        os.close(other_fd)
+    @contextlib.asynccontextmanager
+    async def _capture_lock(*_args: object, wait_timeout_s: float | None = None):
+        wait_budgets.append(wait_timeout_s)
+        yield
+
+    with (
+        patch(
+            "butlers.core.runtimes.codex._CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS",
+            0.01,
+        ),
+        patch("butlers.core.runtimes.codex._codex_refresh_lock", _capture_lock),
+        patch.object(
+            adapter,
+            "_run_codex_subprocess",
+            AsyncMock(return_value=("ok", [], None)),
+        ) as spawn,
+    ):
+        result, _, _ = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            timeout=1,
+        )
 
     assert result == "ok"
     assert spawn.call_args.args[3] == 1
+    assert len(wait_budgets) == 1
+    assert wait_budgets[0] is not None
+    assert 0 < wait_budgets[0] <= 0.01
 
 
 async def test_invoke_startup_prewarm_skipped_on_second_call(
@@ -870,13 +882,7 @@ async def test_adapter_speculative_prewarm_reconciles_before_login_status(
 async def test_concurrent_invoke_serialised_on_slow_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two concurrent invoke() calls in the same process on the slow path must
-    be serialised: the second call's subprocess must start only after the first
-    finishes (not before).
-
-    We assert this by recording (start, end) timestamps for each subprocess
-    invocation and checking that the intervals do not overlap.
-    """
+    """The refresh lock stays held until the first slow-path subprocess exits."""
     codex_dir = tmp_path / ".codex"
     _stale_auth_json(codex_dir)
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -887,42 +893,63 @@ async def test_concurrent_invoke_serialised_on_slow_path(
     adapter1 = CodexAdapter(codex_binary="/usr/bin/codex")
     adapter2 = CodexAdapter(codex_binary="/usr/bin/codex")
 
-    # Each subprocess call takes 50ms.
-    spawn_intervals: list[tuple[float, float]] = []
+    lock = asyncio.Lock()
+    first_communicating = asyncio.Event()
+    release_first = asyncio.Event()
+    second_waiting_for_lock = asyncio.Event()
+    second_spawned = asyncio.Event()
+    spawn_count = 0
+
+    @contextlib.asynccontextmanager
+    async def _serializing_lock(*_args: object, **_kwargs: object):
+        if lock.locked():
+            second_waiting_for_lock.set()
+        async with lock:
+            yield
 
     async def _fake_create_subprocess(*args, **kwargs):
-        start = time.monotonic()
-        mock_proc = AsyncMock()
+        nonlocal spawn_count
+        spawn_count += 1
+        invocation_number = spawn_count
+        mock_proc = MagicMock()
 
-        async def _communicate(_: bytes | None = None) -> tuple[bytes, bytes]:
-            await asyncio.sleep(0.05)  # 50ms "work"
+        async def _communicate(*_args: object, **_kwargs: object) -> tuple[bytes, bytes]:
+            if invocation_number == 1:
+                first_communicating.set()
+                await release_first.wait()
+            else:
+                second_spawned.set()
             return _make_ok_proc_bytes(), b""
 
         mock_proc.communicate = _communicate
         mock_proc.returncode = 0
         mock_proc.pid = os.getpid()
-        end = time.monotonic()
-        spawn_intervals.append((start, end))
         return mock_proc
 
-    with patch(_EXEC, side_effect=_fake_create_subprocess):
-        await asyncio.gather(
-            adapter1.invoke(prompt="a", system_prompt="", mcp_servers={}, env={}),
-            adapter2.invoke(prompt="b", system_prompt="", mcp_servers={}, env={}),
+    with (
+        patch(_EXEC, side_effect=_fake_create_subprocess),
+        patch("butlers.core.runtimes.codex._codex_refresh_lock", _serializing_lock),
+    ):
+        first_task = asyncio.create_task(
+            adapter1.invoke(prompt="a", system_prompt="", mcp_servers={}, env={})
         )
+        second_task: asyncio.Task[object] | None = None
+        try:
+            await asyncio.wait_for(first_communicating.wait(), timeout=0.2)
+            second_task = asyncio.create_task(
+                adapter2.invoke(prompt="b", system_prompt="", mcp_servers={}, env={})
+            )
+            await asyncio.wait_for(second_waiting_for_lock.wait(), timeout=0.2)
+            assert not second_spawned.is_set()
+        finally:
+            release_first.set()
+            await asyncio.gather(
+                first_task,
+                *(() if second_task is None else (second_task,)),
+                return_exceptions=True,
+            )
 
-    assert len(spawn_intervals) == 2, f"Expected 2 spawns, got {len(spawn_intervals)}"
-
-    # The subprocess calls (not just the spawns) must be serialised.
-    # Because the lock is held for the entire _run_codex_subprocess call,
-    # the second call's start must be >= the first call's end (or vice-versa).
-    (s1, e1), (s2, e2) = sorted(spawn_intervals)
-    overlap = min(e1, e2) - max(s1, s2)
-    # Allow 20ms slop for scheduling jitter
-    assert overlap <= 0.02, (
-        f"Concurrent slow-path invocations overlapped by {overlap * 1000:.1f}ms — "
-        "cross-process lock is not serialising refreshes"
-    )
+    assert second_spawned.is_set()
 
 
 # ---------------------------------------------------------------------------

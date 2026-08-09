@@ -324,8 +324,9 @@ class TestStep8c2CliTokenRestore:
         results = await restore_tokens(store)
         assert all(v is False for v in results.values())
 
+    @pytest.mark.parametrize("invalid_authority", ["not-json", "", "{}", "[]", '[{"x": 1}]'])
     async def test_restore_tokens_rejects_invalid_codex_document_without_clobbering_file(
-        self, tmp_path: Path
+        self, tmp_path: Path, invalid_authority: str
     ) -> None:
         """A malformed shared row must not turn a valid local auth file into a fleet outage."""
         from dataclasses import replace
@@ -339,7 +340,7 @@ class TestStep8c2CliTokenRestore:
         codex = replace(PROVIDERS["codex"], token_path=token_path)
         store = AsyncMock()
         store.shared_pool = None
-        store.load = AsyncMock(return_value="not-json")
+        store.load = AsyncMock(return_value=invalid_authority)
 
         with patch("butlers.cli_auth.persistence.PROVIDERS", {"codex": codex}):
             results = await restore_tokens(store)

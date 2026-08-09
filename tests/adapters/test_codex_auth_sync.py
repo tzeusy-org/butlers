@@ -734,14 +734,15 @@ async def test_reconcile_codex_auth_corrects_matching_file_mode(tmp_path: Path) 
     assert stat.S_IMODE(auth.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("invalid_authority", ["not-json", "", "{}", "[]", '[{"x": 1}]'])
 async def test_reconcile_codex_auth_leaves_invalid_database_value_out_of_file(
-    tmp_path: Path,
+    tmp_path: Path, invalid_authority: str
 ) -> None:
     """A malformed shared row cannot replace a working local auth document."""
     auth = tmp_path / ".codex" / "auth.json"
     _write_auth(auth, {"access_token": "working-token"})
     store = _mock_store(shared=True)
-    store.load_shared = AsyncMock(return_value="not-json")
+    store.load_shared = AsyncMock(return_value=invalid_authority)
 
     result = await reconcile_codex_auth(auth, store, butler_name="qa")
 

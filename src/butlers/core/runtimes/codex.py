@@ -1658,8 +1658,8 @@ class CodexAdapter(RuntimeAdapter):
         valuable as a refresh optimization, but it must not take time away
         from the catalog provider execution timeout. A cancellation here
         leaves the normal slow-path subprocess runnable; the prewarm helper
-        reaps any child process before the timeout is converted to this safe
-        best-effort result.
+        kills any child process and schedules detached reaping before the
+        timeout is converted to this safe best-effort result.
         """
         timeout_s = auth_sync_budget.next_timeout_s()
         if timeout_s <= 0:

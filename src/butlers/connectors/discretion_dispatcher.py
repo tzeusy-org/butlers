@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import os
 import time
 import uuid
@@ -71,7 +70,11 @@ from butlers.core.model_routing import (
     record_token_usage,
     resolve_model_with_effective_tier,
 )
-from butlers.core.runtimes.base import RuntimeAdapter, create_adapter
+from butlers.core.runtimes.base import (
+    RuntimeAdapter,
+    create_adapter,
+    validated_session_timeout_overhead_s,
+)
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -123,22 +126,6 @@ def _minimal_env() -> dict[str, str]:
         if value:
             env[var] = value
     return env
-
-
-def _adapter_timeout_overhead_s(adapter: RuntimeAdapter) -> float:
-    """Return a finite adapter setup/teardown allowance, or zero safely.
-
-    Direct dispatcher calls retain ``session_timeout_s`` as the provider
-    execution budget. Credential-aware adapters can expose a small bounded
-    amount of work immediately before/after that execution which must not
-    consume the configured model time. This defensive reader keeps a custom
-    adapter's malformed declaration from widening the call unboundedly.
-    """
-    declared = getattr(adapter, "session_timeout_overhead_s", 0.0)
-    if isinstance(declared, bool) or not isinstance(declared, (int, float)):
-        return 0.0
-    allowance_s = float(declared)
-    return allowance_s if math.isfinite(allowance_s) and allowance_s >= 0 else 0.0
 
 
 class DiscretionDispatcher:
@@ -452,7 +439,9 @@ class DiscretionDispatcher:
 
             async with self._semaphore:
                 try:
-                    outer_timeout_s = session_timeout_s + _adapter_timeout_overhead_s(adapter)
+                    outer_timeout_s = session_timeout_s + validated_session_timeout_overhead_s(
+                        adapter
+                    )
                     result = await asyncio.wait_for(_invoke(), timeout=outer_timeout_s)
                 except Exception as exc:  # noqa: BLE001 — classified below
                     attempt_exc = exc
