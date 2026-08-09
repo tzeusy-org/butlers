@@ -105,7 +105,6 @@ Do **not** edit manually. Regenerate (no args) with:
 - Finances
 - Devices
 - Taste
-- Conversations
 - Investigations
 - Contacts
 - Trips
@@ -1192,30 +1191,6 @@ Do **not** edit manually. Regenerate (no args) with:
 - Entities
 - Rules
 - recent writes
-
-## `frontend/src/components/butler-detail/ButlerMessengerConversationsTab.tsx`
-
-- Could not load delivery stats.
-- half open
-- Could not load circuit status.
-- Circuit state is DB-derived (not live in-memory state).
-- No channel activity in the last 15 min.
-- Could not load dead letters.
-- No dead letters.
-- Could not load queue depth.
-- By channel
-- Queue empty.
-- By priority
-- No priority data.
-- Some data failed to load. Displayed values may be incomplete.
-- Active channels
-- Recent failures
-- Delivery pipeline
-- Deliveries (24h)
-- Success rate
-- Dead letters
-- Avg latency
-- Queue depth
 
 ## `frontend/src/components/butler-detail/ButlerModelOverridesTab.tsx`
 
@@ -3376,4 +3351,4 @@ Do **not** edit manually. Regenerate (no args) with:
 - Preset windows
 
 ---
-*Total strings: 2552*
+*Total strings: 2530*

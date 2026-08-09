@@ -19,7 +19,7 @@
  * Each patch targets the SAME query keys the corresponding data hooks
  * already use (see use-approvals.ts / ApprovalsPage.tsx, use-spend.ts,
  * use-sessions.ts, use-issues.ts, use-butler-status-board.ts,
- * use-messenger.ts, use-ingestion-events.ts) — this is invalidation, not a
+ * use-ingestion-events.ts) — this is invalidation, not a
  * blanket refetch of the whole app.
  */
 
@@ -136,9 +136,9 @@ const sessionPatch: CachePatch = (qc, event) => {
 };
 
 /**
- * notification — a notify() delivery attempt; refreshes the messenger health
- * surfaces and the fleet chronicle's timeline (notification is one of its
- * event sources — see sessionPatch's comment above), PLUS the notifications
+ * notification — a notify() delivery attempt; refreshes the fleet chronicle's
+ * timeline (notification is one of its event sources — see sessionPatch's
+ * comment above), PLUS the notifications
  * feed itself (bu-qvnce.14 slice 5 fix): ["notifications"] / ["butler-
  * notifications"] (use-notifications.ts's list hooks) and
  * ["notification-stats"] (aggregate counts) were never invalidated here --
@@ -147,8 +147,6 @@ const sessionPatch: CachePatch = (qc, event) => {
  * event-cache-registry.coverage.test.ts for the regression test.
  */
 const notificationPatch: CachePatch = (qc) => {
-  qc.invalidateQueries({ queryKey: ["messenger-delivery-stats"] });
-  qc.invalidateQueries({ queryKey: ["messenger-queue-depth"] });
   qc.invalidateQueries({ queryKey: ["timeline"] });
   qc.invalidateQueries({ queryKey: ["notifications"] });
   qc.invalidateQueries({ queryKey: ["butler-notifications"] });

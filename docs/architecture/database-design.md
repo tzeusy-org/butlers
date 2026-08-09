@@ -10,6 +10,11 @@
 
 Butlers uses a single PostgreSQL database with per-butler schema isolation. Each butler operates within its own schema, with access to the `public` schema for cross-butler data (contacts, model catalog, credentials) and the `public` schema as a fallback. This design provides strong data boundaries between butlers while allowing shared identity and configuration data through a controlled surface.
 
+Messenger intentionally has no schema-local delivery tracking, queue, retry, or
+receipt tables. Its native channel adapters perform direct egress after the
+Switchboard and approval boundaries; live outcomes remain on those boundaries,
+not in a fabricated Messenger database subsystem.
+
 ## Schema Isolation Model
 
 ### Per-Butler Schemas

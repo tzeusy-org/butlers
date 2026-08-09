@@ -37,6 +37,13 @@ CORE_TABLES = {
     "deferred_notifications",
 }
 
+RETIRED_MESSENGER_TRACKING_TABLES = {
+    "delivery_requests",
+    "delivery_attempts",
+    "delivery_receipts",
+    "delivery_dead_letter",
+}
+
 CHAIN_TABLES: dict[str, set[str]] = {
     "core": CORE_TABLES,
     "finance": {"accounts", "bills", "subscriptions", "transactions"},
@@ -49,12 +56,10 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "research",
         "symptoms",
     },
-    "messenger": {
-        "delivery_requests",
-        "delivery_attempts",
-        "delivery_receipts",
-        "delivery_dead_letter",
-    },
+    # msg_003 retires the unwired delivery-tracking tables. Messenger now has
+    # only the shared core tables; delivery outcomes stay in live adapter and
+    # Switchboard/approval paths rather than a private tracking schema.
+    "messenger": set(),
     "relationship": {
         "addresses",
         # contact_info moved to shared public schema (core_115 dropped per-schema)
@@ -283,6 +288,13 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
         "Schema/table migration matrix verification failed. "
         "Each schema must contain all expected core + enabled module tables.\n"
         + "\n".join(diagnostics)
+    )
+
+    messenger_tables = actual_by_schema.get("messenger", set())
+    retired_messenger_tables = RETIRED_MESSENGER_TRACKING_TABLES & messenger_tables
+    assert retired_messenger_tables == set(), (
+        "Messenger migration chain must retire unwired delivery tracking tables; "
+        f"found={sorted(retired_messenger_tables)}"
     )
 
     # Chronicler memory isolation (bu-93y4rt / bu-w6jca): the chronicler routes

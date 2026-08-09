@@ -17,7 +17,7 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 - **Outbound delivery ownership:** Execute all user-channel sends and replies. No other agent may call channel egress tools directly.
 - **Channel tool surface:** Own and expose `telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`, `whatsapp_send_message`, `whatsapp_reply_to_message`. This is enforced as a configuration/policy requirement: non-messenger agents must not enable, register, or ship these outbound channel egress tools.
 - **Delivery validation:** Validate `notify.v1` payloads before any side effect. Reject invalid or missing targeting fields with no delivery attempt.
-- **Outcome reporting:** Return deterministic status and error payloads with delivery identifiers when available.
+- **Outcome reporting:** Return deterministic adapter outcome and error payloads.
 - **Lineage preservation:** Retain `origin_butler` and `request_context` in all responses for audit trail.
 
 ## Non-Responsibilities
@@ -47,7 +47,7 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 | Telegram channel unavailable | `telegram_send_message` returns `target_unavailable` | Caller retries via `notify()` after backoff; Messenger does not self-retry |
 | Email SMTP failure | `email_send_message` returns `target_unavailable` or `timeout` | Caller retries; Messenger returns deterministic error class |
 | Auth failure (bot token/password) | All sends fail with `internal_error` | Operator rotates credentials via dashboard secrets UI; Messenger picks up on next session |
-| Rate limiting | Channel API returns rate-limit error | Returns `overload_rejected`; caller applies exponential backoff |
+| Rate limiting | Channel API returns rate-limit error | Return the provider outcome; caller recovery remains authoritative |
 | Messenger unreachable | `notify()` from domain butlers times out | Escalate; domain butler delivery halts until Messenger restores |
 | Payload validation failure | Missing or malformed `notify.v1` fields | Returns `validation_error` with no side effect; safe to retry after fixing payload |
 

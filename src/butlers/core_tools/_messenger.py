@@ -2,15 +2,7 @@
 
 Registered unconditionally (no _core_tool group) but only when butler_name == 'messenger'.
 
-Tools:
-- delivery_preferences_set
-- delivery_preferences_get
-- deferred_notifications_list
-- deferred_notification_cancel
-- messenger_delivery_status  (tool name: messenger_delivery_status)
-- messenger_delivery_search  (tool name: messenger_delivery_search)
-- messenger_delivery_attempts (tool name: messenger_delivery_attempts)
-- messenger_delivery_trace   (tool name: messenger_delivery_trace)
+Tools: delivery preferences, deferred notifications, and scheduling preferences.
 """
 
 from __future__ import annotations
@@ -18,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
 
 
@@ -28,7 +19,6 @@ def register_messenger_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -
     Covers delivery preferences, deferred notifications, and delivery ops.
     """
     daemon = ctx.daemon
-    pool = ctx.pool
     butler_name = ctx.butler_name
     is_messenger = ctx.is_messenger
 
@@ -265,73 +255,3 @@ def register_messenger_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -
                     ),
                 }
             return {"status": "ok", "preferences": prefs}
-
-    # Messenger-specific operational domain tools
-    if butler_name == "messenger":
-        from butlers.tools.messenger import (
-            messenger_delivery_attempts,
-            messenger_delivery_search,
-            messenger_delivery_status,
-            messenger_delivery_trace,
-        )
-
-        @mcp.tool()
-        @tool_span("messenger_delivery_status", butler_name=butler_name)
-        async def _messenger_delivery_status(delivery_id: str) -> dict:
-            """Get the current status of a delivery request.
-
-            Returns the current terminal or in-flight status of a single
-            delivery, including the latest attempt outcome and provider
-            delivery ID when available.
-            """
-            return await messenger_delivery_status(pool, delivery_id)
-
-        @mcp.tool()
-        @tool_span("messenger_delivery_search", butler_name=butler_name)
-        async def _messenger_delivery_search(
-            origin_butler: str | None = None,
-            channel: str | None = None,
-            intent: str | None = None,
-            status: str | None = None,
-            since: str | None = None,
-            until: str | None = None,
-            limit: int = 50,
-        ) -> dict:
-            """Search delivery history with filters.
-
-            Returns paginated delivery summaries sorted by recency (newest
-            first). Supports filtering by origin butler, channel, intent,
-            status, and time range.
-            """
-            return await messenger_delivery_search(
-                pool,
-                origin_butler=origin_butler,
-                channel=channel,
-                intent=intent,
-                status=status,
-                since=since,
-                until=until,
-                limit=limit,
-            )
-
-        @mcp.tool()
-        @tool_span("messenger_delivery_attempts", butler_name=butler_name)
-        async def _messenger_delivery_attempts(delivery_id: str) -> dict:
-            """Get the full attempt history for a delivery.
-
-            Returns the full attempt log for a delivery: timestamps,
-            outcomes, latencies, error classes, retryability. Essential
-            for diagnosing flaky provider behavior.
-            """
-            return await messenger_delivery_attempts(pool, delivery_id)
-
-        @mcp.tool()
-        @tool_span("messenger_delivery_trace", butler_name=butler_name)
-        async def _messenger_delivery_trace(request_id: str) -> dict:
-            """Reconstruct full lineage for a request.
-
-            Traces from the originating butler's notify.v1 envelope through
-            Switchboard routing, Messenger admission, validation, target
-            resolution, provider attempts, and terminal outcome.
-            """
-            return await messenger_delivery_trace(pool, request_id)

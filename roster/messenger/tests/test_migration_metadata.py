@@ -71,6 +71,8 @@ def test_migration_files_exist():
     migration_dir = _messenger_migration_dir()
     expected_files = [
         "001_messenger_tables.py",
+        "002_delivery_requests_priority.py",
+        "003_retire_unwired_delivery_tracking.py",
     ]
 
     for filename in expected_files:

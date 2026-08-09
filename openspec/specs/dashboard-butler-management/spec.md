@@ -426,7 +426,6 @@ sole page body content inside `<Page archetype="status-board">`.
 | `general` | Collections |
 | `home` | Devices |
 | `lifestyle` | Taste |
-| `messenger` | Conversations |
 | `qa` | Investigations |
 | `relationship` | Contacts |
 | `travel` | Trips |
@@ -1464,7 +1463,6 @@ explicitly absent: it carries no resident bespoke tab (Rule 9).
 | health      | Measurements      | Health butler leads with measurement tracking; the existing "Health" label is generic and collides with the butler name ("Measurements" is the primary tracking surface). |
 | home        | Devices           | Device orchestration and monitoring is the bespoke surface: "Monitor device health." |
 | lifestyle   | Taste             | Manifesto central concept: "Taste is autobiography"; the butler is the keeper of your taste. |
-| messenger   | Conversations     | Delivery health surface showing per-conversation send/receive outcomes; NOT a user-facing chat UI. |
 | qa          | Investigations    | Primary operator surface: active and historical investigation dispatch records. |
 | relationship| Contacts          | Contact management is the primary bespoke surface: "A living database of the people in your life." |
 | travel      | Trips             | Trip-centric organization: "See your complete trip timeline" is the core value proposition. |
@@ -1490,13 +1488,13 @@ Switchboard is absent from this table because it carries no resident bespoke tab
 - **AND** the only tabs beyond the base set are the existing operator-oriented
   tabs: Routing Log and Registry
 
-#### Scenario: New butlers (general, lifestyle, messenger, qa) include bespoke tabs
+#### Scenario: New butlers (general, lifestyle, qa) include bespoke tabs
 
-- **WHEN** any of `general`, `lifestyle`, `messenger`, or `qa` is viewed
+- **WHEN** any of `general`, `lifestyle`, or `qa` is viewed
 - **THEN** the bespoke tab SHALL appear at position 8 in resident mode
   (immediately after Memory, before any operator-only tabs)
 - **AND** the labels SHALL be exactly: `Collections` (general), `Taste`
-  (lifestyle), `Conversations` (messenger), `Investigations` (qa)
+  (lifestyle), `Investigations` (qa)
 - **AND** the health butler bespoke tab SHALL be relabeled from `Health` to
   `Measurements` to match the registry
 

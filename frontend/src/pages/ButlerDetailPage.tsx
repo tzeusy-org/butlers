@@ -82,11 +82,6 @@ const ButlerQaInvestigationsTab = lazy(
   () => import("@/components/butler-detail/ButlerQaInvestigationsTab.tsx"),
 );
 
-// Messenger butler tabs (lazy)
-const ButlerMessengerConversationsTab = lazy(
-  () => import("@/components/butler-detail/ButlerMessengerConversationsTab.tsx"),
-);
-
 // General butler tabs (lazy)
 const ButlerGeneralCollectionsTab = lazy(
   () => import("@/components/butler-detail/ButlerGeneralCollectionsTab.tsx"),
@@ -191,7 +186,6 @@ export default function ButlerDetailPage() {
   const showFinancesTab = name === "finance";
   const showDevicesTab = name === "home";
   const showTasteTab = name === "lifestyle";
-  const showConversationsTab = name === "messenger";
   const showInvestigationsTab = name === "qa";
   const showContactsTab = name === "relationship";
   const showTripsTab = name === "travel";
@@ -277,9 +271,6 @@ export default function ButlerDetailPage() {
             {showFinancesTab && <DetailTabTrigger value="finances">Finances</DetailTabTrigger>}
             {showDevicesTab && <DetailTabTrigger value="devices">Devices</DetailTabTrigger>}
             {showTasteTab && <DetailTabTrigger value="taste">Taste</DetailTabTrigger>}
-            {showConversationsTab && (
-              <DetailTabTrigger value="conversations">Conversations</DetailTabTrigger>
-            )}
             {showInvestigationsTab && (
               <DetailTabTrigger value="investigations">Investigations</DetailTabTrigger>
             )}
@@ -393,13 +384,6 @@ export default function ButlerDetailPage() {
             </TabsContent>
           )}
 
-          {showConversationsTab && (
-            <TabsContent value="conversations">
-              <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
-                <ButlerMessengerConversationsTab />
-              </Suspense>
-            </TabsContent>
-          )}
 
           {showInvestigationsTab && (
             <TabsContent value="investigations">

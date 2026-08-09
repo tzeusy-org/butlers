@@ -117,13 +117,11 @@ describe("EVENT_CACHE_REGISTRY", () => {
     );
   });
 
-  it("notification: invalidates messenger delivery stats, queue depth, the timeline, and the notifications feed itself", () => {
+  it("notification: invalidates the timeline and notifications feed", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "notification", ts: 1, data: {} });
     expect(keys(invalidateQueries)).toEqual(
       expect.arrayContaining([
-        ["messenger-delivery-stats"],
-        ["messenger-queue-depth"],
         ["timeline"],
         ["notifications"],
         ["butler-notifications"],

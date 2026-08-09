@@ -95,8 +95,6 @@ risk_tier = "medium"
 [modules.approvals.gated_tools.whatsapp_reply_to_message]
 risk_tier = "medium"
 
-[modules.messenger]
-
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true
 # [modules.google_drive]

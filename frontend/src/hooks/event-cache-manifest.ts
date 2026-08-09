@@ -67,8 +67,6 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "notification", queryKey: ["notifications"], source: "use-notifications.ts (useNotifications)" },
   { eventType: "notification", queryKey: ["notification-stats"], source: "use-notifications.ts (useNotificationStats)" },
   { eventType: "notification", queryKey: ["butler-notifications"], source: "use-notifications.ts (useButlerNotifications)" },
-  { eventType: "notification", queryKey: ["messenger-delivery-stats"], source: "use-messenger.ts (useMessengerDeliveryStats)" },
-  { eventType: "notification", queryKey: ["messenger-queue-depth"], source: "use-messenger.ts (useMessengerQueueDepth)" },
   { eventType: "notification", queryKey: ["timeline"], source: "use-timeline.ts (useTimeline, notification is a timeline source)" },
 
   // issue
