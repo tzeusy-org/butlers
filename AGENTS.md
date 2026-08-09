@@ -1177,6 +1177,10 @@ migrate.
 ### Notifications API startup degradation contract
 - `src/butlers/api/routers/notifications.py` must treat a missing switchboard `notifications` table the same as an unavailable switchboard pool: `GET /api/notifications` and `GET /api/butlers/{name}/notifications` return an empty paginated payload, and `GET /api/notifications/stats` returns zeroed stats instead of bubbling a 500 before switchboard migrations have run.
 
+### Group-size discretion bypass: participant_count-alone is not a safe gate
+- `DiscretionEvaluator.evaluate()` (`src/butlers/connectors/discretion.py`) supports a `group_size_bypass_max`/`participant_count`/`chat_type` bypass so small groups skip LLM filtering. Any bypass keyed on `participant_count` must also gate on `chat_type in {"group", "supergroup"}` (an allow-list) — DMs conventionally report `participant_count=2` (RFC 0013 Dunbar-eligibility bookkeeping) and Telegram genuinely resolves participant counts for broadcast `"channel"` chats too, so a plain `participant_count <= threshold` check silently bypasses discretion for every DM and small channel. A `!= "private"` deny-list is not enough — use the allow-list.
+- `whatsapp-bridge`'s Go event handler dispatches whatsmeow events serially on one goroutine — never make a blocking network call (e.g. `client.GetGroupInfo`) synchronously inside a message handler; it stalls delivery of every subsequent WhatsApp event, not just the affected chat. `internal/events.GroupInfoCache` is the pattern: return the best cached value immediately, refresh in a background goroutine (deduplicated per JID), negative-cache failures briefly. `whatsapp-bridge/` has no Go CI job (no build/vet/test/gofmt check) — verify Go changes locally (`go build && go vet && go test -race && gofmt -l .`) since CI won't. See PRs #3697, #3701.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 ## Beads Issue Tracker
 
