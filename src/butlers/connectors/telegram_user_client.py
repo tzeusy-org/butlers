@@ -37,6 +37,8 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - TELEGRAM_USER_DISCRETION_WINDOW_SECONDS (optional, default 300): discretion context window age cap
 - TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS (optional, default 1.0): weight threshold to skip LLM
 - TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN (optional, default 0.5): weight threshold for fail-open
+- TELEGRAM_USER_DISCRETION_GROUP_SIZE_BYPASS_MAX (optional, default 20): groups at or under this
+  participant count skip the discretion LLM entirely and always FORWARD
 
 Security requirements:
 - Never commit credentials or session artifacts to version control
@@ -55,6 +57,7 @@ import logging
 import os
 import socket
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -205,6 +208,11 @@ class TelegramUserClientConnectorConfig:
     discretion_window_seconds: float = 300.0
     discretion_weight_bypass: float = 1.0
     discretion_weight_fail_open: float = 0.5
+    discretion_group_size_bypass_max: int = 20
+    """Chats at or under this participant count skip the discretion LLM entirely
+    and always FORWARD. Distinct from max_interaction_group_size below (which
+    gates Dunbar interaction_eligible for large groups) despite the same
+    default — this threshold is about small groups, that one about large ones."""
 
     # Address-mention keywords for passive→interactive promotion
     address_keywords: frozenset[str] = field(default_factory=lambda: _DEFAULT_ADDRESS_KEYWORDS)
@@ -254,6 +262,9 @@ class TelegramUserClientConnectorConfig:
         discretion_window_seconds = _float("TELEGRAM_USER_DISCRETION_WINDOW_SECONDS", 300.0)
         discretion_weight_bypass = _float("TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS", 1.0)
         discretion_weight_fail_open = _float("TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN", 0.5)
+        discretion_group_size_bypass_max = _int(
+            "TELEGRAM_USER_DISCRETION_GROUP_SIZE_BYPASS_MAX", 20
+        )
         health_port = _int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT)
         # Address keywords (comma-separated, case-insensitive)
         _raw_keywords = os.environ.get("CONNECTOR_ADDRESS_KEYWORDS", "").strip()
@@ -284,6 +295,7 @@ class TelegramUserClientConnectorConfig:
             discretion_window_seconds=discretion_window_seconds,
             discretion_weight_bypass=discretion_weight_bypass,
             discretion_weight_fail_open=discretion_weight_fail_open,
+            discretion_group_size_bypass_max=discretion_group_size_bypass_max,
             address_keywords=address_keywords,
             max_interaction_group_size=max_interaction_group_size,
         )
@@ -972,9 +984,20 @@ class TelegramUserClientConnector:
                         window_seconds=self._config.discretion_window_seconds,
                         weight_bypass=self._config.discretion_weight_bypass,
                         weight_fail_open=self._config.discretion_weight_fail_open,
+                        group_size_bypass_max=self._config.discretion_group_size_bypass_max,
                     )
+                # Weigh the batch by its actual new-message senders, not a fixed
+                # 1.0 — a hardcoded owner-equivalent weight always satisfied
+                # weight_bypass, so discretion never ran on this path at all
+                # (see _resolve_batch_weight's docstring for the full story).
+                _new_sender_ids = {self._extract_sender_identity(m) for m in buffered_messages}
+                sender_weight = await self._resolve_batch_weight(
+                    _new_sender_ids, self._extract_owner_sender_id()
+                )
                 d_result = await self._discretion_evaluators[chat_id].evaluate(
-                    normalized_text, weight=1.0
+                    normalized_text,
+                    weight=sender_weight,
+                    participant_count=_participant_count if _participant_count > 0 else None,
                 )
                 if d_result.verdict == "IGNORE":
                     logger.debug(
@@ -1331,14 +1354,26 @@ class TelegramUserClientConnector:
                             window_seconds=self._config.discretion_window_seconds,
                             weight_bypass=self._config.discretion_weight_bypass,
                             weight_fail_open=self._config.discretion_weight_fail_open,
+                            group_size_bypass_max=self._config.discretion_group_size_bypass_max,
                         )
                     # Resolve sender weight from contact roles.
                     sender_id = self._extract_sender_identity(message)
                     sender_weight = 1.0
                     if self._weight_resolver and sender_id != "unknown":
                         sender_weight = await self._weight_resolver.resolve("telegram", sender_id)
+                    # Participant count for the group-size bypass (RFC 0013 gating
+                    # already resolves+caches this downstream in
+                    # _normalize_to_ingest_v1; fetching it here too is a cache hit
+                    # after the first message in a chat, not a second network call).
+                    _live_participant_count = await self._get_participant_count(
+                        chat_id_str, message
+                    )
                     d_result = await self._discretion_evaluators[chat_id_str].evaluate(
-                        msg_text, weight=sender_weight
+                        msg_text,
+                        weight=sender_weight,
+                        participant_count=(
+                            _live_participant_count if _live_participant_count > 0 else None
+                        ),
                     )
                     if d_result.verdict == "IGNORE":
                         logger.debug(
@@ -1524,6 +1559,43 @@ class TelegramUserClientConnector:
         if part.isdigit():
             return part
         return None
+
+    async def _resolve_batch_weight(
+        self,
+        sender_ids: Iterable[str],
+        owner_sender_id: str | None = None,
+    ) -> float:
+        """Return the discretion weight for a flushed batch.
+
+        Weighs the batch by its **highest**-weighted non-owner sender among
+        the messages that were actually just flushed, rather than a fixed
+        ``1.0``. The fixed value always satisfied ``weight_bypass`` (default
+        1.0), so discretion never ran at all on this path — every batch,
+        family-sized or hundreds-strong, always FORWARDed regardless of
+        content, and the group-size bypass added alongside this method could
+        never be reached either (weight-bypass always fired first). Real
+        weight resolution restores both: genuine LLM filtering for senders
+        below the bypass threshold, and a reachable group-size bypass.
+
+        The owner is excluded deliberately — see
+        ``WhatsAppUserClientConnector._resolve_batch_weight`` for the
+        identical rationale (owner weight is always ``1.0``, which would
+        make every thread the owner has spoken in bypass unconditionally,
+        collapsing a dispatch-cost decision into an identity lookup).
+
+        Returns ``1.0`` when there is nobody to weigh (no resolver, no
+        senders, or owner-only), biasing toward forwarding rather than
+        silent suppression.
+        """
+        if self._weight_resolver is None:
+            return 1.0
+
+        others = [i for i in sender_ids if i != owner_sender_id]
+        if not others:
+            return 1.0
+
+        weights = [await self._weight_resolver.resolve("telegram", identity) for identity in others]
+        return max(weights)
 
     @staticmethod
     def _extract_preview(message: Any) -> str | None:

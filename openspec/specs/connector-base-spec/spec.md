@@ -486,7 +486,7 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 
 #### Scenario: Discretion configuration
 - **WHEN** a connector uses the discretion layer
-- **THEN** the `DiscretionEvaluator` accepts configuration for: `window_size` (default: 10), `window_seconds` (default: 300), `weight_bypass` (default: 1.0), `weight_fail_open` (default: 0.5), and `system_prompt`
+- **THEN** the `DiscretionEvaluator` accepts configuration for: `window_size` (default: 10), `window_seconds` (default: 300), `weight_bypass` (default: 1.0), `weight_fail_open` (default: 0.5), `group_size_bypass_max` (default: `None`, disabled), and `system_prompt`
 - **AND** model selection is handled entirely by the model catalog
 
 #### Scenario: Fail-open by default
@@ -503,6 +503,25 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 - **WHEN** a connector records a discretion IGNORE to `connectors.filtered_events`
 - **THEN** it increments a low-cardinality `discretion_ignore_total{channel, kind}` Prometheus counter, where `kind` is the `classify_ignore_kind` result (`llm_verdict` for a genuine model-judged noise drop vs a fail-closed default such as `failover_exhausted`)
 - **AND** this makes per-channel over-filtering — and specifically the split between genuine noise and fabricated infra drops — observable per channel without re-sampling private payloads or a schema change
+
+### Requirement: Group-Size Discretion Bypass
+The discretion layer SHALL support a participant-count-based bypass, independent of sender weight, so that small/family-sized group chats are not subject to LLM content filtering while large/mass-membership groups remain filtered for token-cost control.
+
+The default discretion system prompt instructs the LLM to IGNORE "background conversation... group banter". For a small group (e.g. immediate/extended family, a close-friends chat), that banter is exactly the low-content-but-frequent signal passive interaction sync needs to see for Dunbar tier scoring — filtering it on content grounds silently starves Dunbar scoring for those chats. For a mass group (potentially hundreds of members), the same per-flush LLM call is a real, unbounded token cost that content-based filtering is worth paying to control. Group size is the discriminator between the two cases, not message content.
+
+#### Scenario: Group-size bypass
+- **WHEN** `participant_count` is known (non-`None`) and `<= group_size_bypass_max` (a threshold configured at construction; `None` means the bypass is disabled)
+- **THEN** the discretion LLM is skipped entirely and the message always FORWARDs, regardless of sender weight
+- **AND** the message is still appended to the context window for future evaluations
+
+#### Scenario: Unknown participant count never bypasses
+- **WHEN** `participant_count` is `None` (unknown), even with a `group_size_bypass_max` threshold configured
+- **THEN** the group-size bypass does NOT apply and normal weight/LLM evaluation proceeds
+- **AND** this is deliberate fail-safe behaviour: a connector that cannot yet resolve real group sizes (e.g. WhatsApp groups before RFC 0013 D5 group-info fetching) must never have every unsized group silently bypass filtering, which would defeat the token-cost control the threshold exists for
+
+#### Scenario: Group-size bypass composes with existing bypasses
+- **WHEN** a message qualifies for the channel bypass (`DISCRETION_BYPASS_CHANNELS`) or the weight bypass (`weight >= weight_bypass`)
+- **THEN** that bypass takes effect and is reported as the result reason (`"channel-bypass"` or `"weight-bypass"`) — the group-size bypass is evaluated only after those checks, and reports `"group-size-bypass"` when it is the deciding factor
 
 ### Requirement: Discretion Failover-Exhausted Suppression Ledger Recording
 When a discretion evaluation is forced to the weight-default IGNORE verdict because the `DiscretionDispatcher`'s same-tier model failover exhausted (a degraded, fabricated suppression rather than a model-judged decision), the evaluator SHALL record one durable row to `public.attention_ledger` with `source="discretion"` and `outcome="suppressed"`, so that a message the owner would otherwise have received but was silently dropped by pipeline degradation is observable on the fleet's honesty surface instead of only via an ERROR log and the `discretion_evaluations_total` metric.

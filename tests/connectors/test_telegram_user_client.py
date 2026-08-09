@@ -740,3 +740,214 @@ async def test_error_status_retains_full_raw_payload(
     kwargs = connector._filtered_event_buffer.record.call_args.kwargs
     assert kwargs["status"] == "error"
     assert kwargs["full_payload"]["payload"]["raw"] == {"id": 9, "message": "hi"}
+
+
+# ---------------------------------------------------------------------------
+# Group-size discretion bypass wiring (live single-message path)
+#
+# Small/family-sized groups must skip the discretion LLM entirely and always
+# submit, independent of content — the discretion system prompt otherwise
+# instructs the LLM to IGNORE "group banter", which starves passive
+# interaction sync of exactly the low-content chatter Dunbar scoring needs
+# for small groups. Large groups must keep full LLM-gated filtering so token
+# cost stays bounded on high-volume/mass-membership chats.
+# ---------------------------------------------------------------------------
+
+
+async def test_live_path_small_group_bypasses_discretion(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A message in a group at/under the threshold FORWARDs without an LLM call."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    # Force sender weight below weight_bypass (1.0) so only the group-size
+    # bypass (not the pre-existing weight bypass) can explain a skipped LLM call.
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_id = "700"
+    connector._participant_count_cache[chat_id] = (8, time.monotonic())
+
+    connector._normalize_to_ingest_v1 = AsyncMock(  # type: ignore[method-assign]
+        return_value={"schema_version": "ingest.v1"}
+    )
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    msg = _make_message(msg_id=10, chat_id=int(chat_id), sender_id=999, text="lol nice")
+    await connector._process_message(msg)
+
+    dispatcher.call.assert_not_called()
+    connector._submit_to_ingest.assert_awaited_once()
+    connector._filtered_event_buffer.record.assert_not_called()
+
+
+async def test_live_path_large_group_still_runs_discretion(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A message in a group over the threshold still calls the LLM and honours IGNORE."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_id = "701"
+    connector._participant_count_cache[chat_id] = (300, time.monotonic())
+
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    msg = _make_message(msg_id=11, chat_id=int(chat_id), sender_id=999, text="ambient chatter")
+    await connector._process_message(msg)
+
+    dispatcher.call.assert_awaited_once()
+    connector._submit_to_ingest.assert_not_called()
+    connector._filtered_event_buffer.record.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_batch_weight
+#
+# The batch-flush path used to hardcode weight=1.0, which always satisfied
+# weight_bypass (default 1.0) — discretion never ran on that path at all,
+# and the group-size bypass added alongside it could never be reached
+# either. _resolve_batch_weight restores real per-batch weight resolution,
+# mirroring WhatsAppUserClientConnector's identical method.
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_batch_weight_no_resolver_returns_one(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """No weight resolver configured (no DB pool) → defaults to 1.0."""
+    assert connector._weight_resolver is None
+
+    weight = await connector._resolve_batch_weight({"111", "222"}, owner_sender_id=None)
+
+    assert weight == 1.0
+
+
+async def test_resolve_batch_weight_excludes_owner(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """The owner's sender ID must not be weighed — only the other side."""
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.3)
+
+    await connector._resolve_batch_weight({"999", "111"}, owner_sender_id="999")
+
+    connector._weight_resolver.resolve.assert_awaited_once_with("telegram", "111")
+
+
+async def test_resolve_batch_weight_owner_only_returns_one_without_resolving(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A batch where only the owner spoke has nobody left to weigh → 1.0."""
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.3)
+
+    weight = await connector._resolve_batch_weight({"999"}, owner_sender_id="999")
+
+    assert weight == 1.0
+    connector._weight_resolver.resolve.assert_not_called()
+
+
+async def test_resolve_batch_weight_takes_max_across_senders(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A batch with a mix of senders is weighed by the highest, not the last."""
+    connector._weight_resolver = AsyncMock()
+    weights = {"111": 0.3, "222": 0.9}
+    connector._weight_resolver.resolve = AsyncMock(side_effect=lambda _type, sid: weights[sid])
+
+    weight = await connector._resolve_batch_weight({"111", "222"}, owner_sender_id=None)
+
+    assert weight == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Group-size discretion bypass wiring (batch-flush path)
+#
+# Mirrors the live-path tests above, but through _flush_chat_buffer — the
+# primary/dominant ingestion path for this connector.
+# ---------------------------------------------------------------------------
+
+
+async def _prime_flush_buffer(
+    connector: TelegramUserClientConnector, chat_id: str, msg: MagicMock
+) -> None:
+    """Populate the chat buffer and stub out the Telethon-backed history fetch."""
+    from butlers.connectors.telegram_user_client import ChatBuffer
+
+    connector._chat_buffers[chat_id] = ChatBuffer(messages=[msg])
+    connector._fetch_conversation_history = AsyncMock(return_value=[msg])  # type: ignore[method-assign]
+    connector._resolve_reply_tos = AsyncMock(return_value=[msg])  # type: ignore[method-assign]
+
+
+async def test_batch_flush_small_group_bypasses_discretion(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A batch flush in a group at/under the threshold FORWARDs without an LLM call."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_id = "710"
+    connector._participant_count_cache[chat_id] = (8, time.monotonic())
+    msg = _make_message(msg_id=20, chat_id=int(chat_id), sender_id=111, text="lol nice")
+    await _prime_flush_buffer(connector, chat_id, msg)
+
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+    connector._save_checkpoint = AsyncMock()  # type: ignore[method-assign]
+
+    await connector._flush_chat_buffer(chat_id)
+
+    dispatcher.call.assert_not_called()
+    connector._submit_to_ingest.assert_awaited_once()
+    connector._record_batch_filtered_event.assert_not_called()
+
+
+async def test_batch_flush_large_group_still_runs_discretion(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A batch flush in a group over the threshold still calls the LLM."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_id = "711"
+    connector._participant_count_cache[chat_id] = (300, time.monotonic())
+    msg = _make_message(msg_id=21, chat_id=int(chat_id), sender_id=111, text="ambient chatter")
+    await _prime_flush_buffer(connector, chat_id, msg)
+
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    await connector._flush_chat_buffer(chat_id)
+
+    dispatcher.call.assert_awaited_once()
+    connector._submit_to_ingest.assert_not_called()
+    connector._record_batch_filtered_event.assert_called_once()

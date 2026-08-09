@@ -498,6 +498,7 @@ class DiscretionEvaluator:
         window_seconds: float = _DEFAULT_WINDOW_SECONDS,
         weight_bypass: float = _DEFAULT_WEIGHT_BYPASS,
         weight_fail_open: float = _DEFAULT_WEIGHT_FAIL_OPEN,
+        group_size_bypass_max: int | None = None,
         system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
         ledger_pool: asyncpg.Pool | None = None,
     ) -> None:
@@ -505,6 +506,7 @@ class DiscretionEvaluator:
         self._dispatcher = dispatcher
         self._weight_bypass = weight_bypass
         self._weight_fail_open = weight_fail_open
+        self._group_size_bypass_max = group_size_bypass_max
         self._system_prompt = system_prompt
         self._window = ContextWindow(
             max_size=window_size,
@@ -532,6 +534,7 @@ class DiscretionEvaluator:
         timestamp: float | None = None,
         weight: float = 1.0,
         channel: str | None = None,
+        participant_count: int | None = None,
     ) -> DiscretionResult:
         """Evaluate a new message against the sliding context window.
 
@@ -557,6 +560,18 @@ class DiscretionEvaluator:
                 ``None`` (the default) means "no channel-level bypass" and
                 preserves full discretion evaluation for all callers that do
                 not supply a channel.
+            participant_count: Number of participants in the originating
+                chat, when known.  When ``<= group_size_bypass_max`` (set at
+                construction; ``None`` means disabled), the LLM is skipped
+                entirely and the message always FORWARDs — small/family-sized
+                groups should not have their content filtered by the
+                system prompt's "IGNORE ... group banter" instruction, since
+                that low-content-but-frequent chatter is exactly the signal
+                passive interaction sync needs for Dunbar scoring. ``None``
+                (unknown count) NEVER bypasses, even with a threshold
+                configured — large groups routinely report an unknown count,
+                and treating "unknown" as "small" would defeat the token-cost
+                control the threshold exists for.
 
         Returns:
             :class:`DiscretionResult` — always succeeds.
@@ -598,6 +613,25 @@ class DiscretionEvaluator:
             return DiscretionResult(
                 verdict="FORWARD",
                 reason="weight-bypass",
+                is_fail_open=False,
+            )
+
+        # Group-size bypass: small/family-sized groups skip the LLM entirely,
+        # independent of sender weight. Deliberately fails safe on unknown
+        # counts — see the `participant_count` docstring above.
+        if (
+            participant_count is not None
+            and self._group_size_bypass_max is not None
+            and participant_count <= self._group_size_bypass_max
+        ):
+            discretion_evaluations_total.labels(
+                source=self._source,
+                verdict="FORWARD",
+                outcome="bypass",
+            ).inc()
+            return DiscretionResult(
+                verdict="FORWARD",
+                reason="group-size-bypass",
                 is_fail_open=False,
             )
 

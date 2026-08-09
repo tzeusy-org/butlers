@@ -182,6 +182,13 @@ The Telegram user client connector SHALL use the shared discretion layer (`butle
 - **AND** the weight maps sender roles to tiers: owner=1.0 (bypass LLM), family/close-friends=0.9, known contact=0.7, unknown sender=0.3
 - **AND** if the weight resolver has no DB access or the sender ID is unknown, weight defaults to 1.0
 
+#### Scenario: Batch-flush weight resolution
+- **WHEN** a batch is flushed (`_flush_chat_buffer`)
+- **THEN** the connector resolves a single representative weight via `_resolve_batch_weight`, taking the **highest** weight among the batch's actual new-message senders (`_extract_sender_identity` per buffered message), excluding the owner
+- **AND** the owner is excluded so that a thread the owner has ever spoken in does not unconditionally weight-bypass every batch regardless of who else is present
+- **AND** when there is nobody to weigh (no resolver, no non-owner senders, or an owner-only batch), the weight defaults to 1.0, biasing toward forwarding rather than silent suppression
+- **AND** this mirrors `WhatsAppUserClientConnector._resolve_batch_weight` — a fixed weight on this path would make every batch always satisfy `weight_bypass` regardless of content, silently disabling both LLM filtering and the group-size bypass below for every flush
+
 #### Scenario: Discretion IGNORE handling
 - **WHEN** the discretion layer returns `IGNORE`
 - **THEN** the message is recorded in `FilteredEventBuffer` with `filter_reason="discretion:IGNORE"` and not submitted to Switchboard
@@ -190,7 +197,13 @@ The Telegram user client connector SHALL use the shared discretion layer (`butle
 #### Scenario: Discretion model selection
 - **WHEN** the connector starts
 - **THEN** the discretion model is resolved from the shared model catalog at the `discretion` complexity tier (managed via the Settings UI at `/butlers/settings`)
-- **AND** window/weight configuration (`window_size`, `window_seconds`, `weight_bypass`, `weight_fail_open`) is passed directly to the `DiscretionEvaluator` constructor
+- **AND** window/weight configuration (`window_size`, `window_seconds`, `weight_bypass`, `weight_fail_open`, `discretion_group_size_bypass_max`) is passed directly to the `DiscretionEvaluator` constructor
+
+#### Scenario: Group-size discretion bypass
+- **WHEN** a chat's participant count (resolved via `_get_participant_count`, cached with a 1-hour TTL) is known and `<= discretion_group_size_bypass_max` (env `TELEGRAM_USER_DISCRETION_GROUP_SIZE_BYPASS_MAX`, default 20)
+- **THEN** the discretion LLM is skipped entirely for that message/batch and it always FORWARDs, independent of sender weight
+- **AND** this applies on both the batch-flush path (`_flush_chat_buffer`) and the live single-message path (`_process_message`)
+- **AND** an unknown participant count (0, normalized to `None`) never triggers the bypass — chats over the threshold, or whose size cannot yet be resolved, keep full LLM-gated filtering
 
 ### Requirement: Loopback Health Endpoint
 The Telegram user client connector SHALL expose its operational health without
