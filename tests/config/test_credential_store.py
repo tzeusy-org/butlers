@@ -81,6 +81,121 @@ async def test_store_validates_and_upserts(caplog: pytest.LogCaptureFixture) -> 
     assert not any("SUPER_SECRET_XYZ" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize(
+    "expected_value,execute_return,expected_sql_fragment",
+    [
+        ("old-value", "UPDATE 1", "UPDATE butler_secrets"),
+        (None, "INSERT 0 1", "INSERT INTO butler_secrets"),
+    ],
+    ids=["existing-matches", "missing-row"],
+)
+async def test_store_shared_if_unchanged_uses_authoritative_compare_and_set(
+    expected_value: str | None,
+    execute_return: str,
+    expected_sql_fragment: str,
+) -> None:
+    """Conditional shared writes prevent a stale runtime from overwriting a dashboard refresh."""
+    local_pool = _make_pool()
+    shared_pool = _make_pool(execute_return=execute_return)
+    store = CredentialStore(local_pool, fallback_pools=[shared_pool])
+
+    stored = await store.store_shared_if_unchanged(
+        "cli-auth/codex",
+        "new-value",
+        expected_value=expected_value,
+        category="cli-auth",
+    )
+
+    assert stored is True
+    shared_sql, *shared_args = shared_pool._conn.execute.call_args[0]
+    assert expected_sql_fragment in shared_sql
+    assert shared_args[0] == "cli-auth/codex"
+    assert shared_args[1] == "new-value"
+    local_pool._conn.execute.assert_not_awaited()
+
+
+async def test_store_shared_if_unchanged_reports_compare_and_set_conflict() -> None:
+    """A zero-row conditional update leaves the newer shared credential untouched."""
+    shared_pool = _make_pool(execute_return="UPDATE 0")
+    store = CredentialStore(_make_pool(), fallback_pools=[shared_pool])
+
+    stored = await store.store_shared_if_unchanged(
+        "cli-auth/codex",
+        "stale-runtime-value",
+        expected_value="old-value",
+        category="cli-auth",
+    )
+
+    assert stored is False
+
+
+async def test_dashboard_value_replacement_clears_prior_runtime_health_atomically() -> None:
+    """A health-first A update cannot make a later dashboard B look tested.
+
+    The dashboard replacement and health reset share one ``ON CONFLICT``
+    statement, so row-lock ordering cannot let A's old failure/success state
+    survive once ``secret_value`` becomes B.
+    """
+    shared_pool = _make_pool(execute_return="INSERT 0 1")
+    store = CredentialStore(_make_pool(), fallback_pools=[shared_pool])
+
+    await store.store_shared("cli-auth/codex", "dashboard-B", category="cli-auth")
+
+    sql, *_ = shared_pool._conn.execute.call_args[0]
+    assert "last_test_ok = CASE" in sql
+    assert "last_verified = CASE" in sql
+    assert "last_test_code = CASE" in sql
+    assert "last_test_message = CASE" in sql
+    assert "IS DISTINCT FROM EXCLUDED.secret_value" in sql
+
+
+async def test_runtime_rotation_value_replacement_clears_prior_health_atomically() -> None:
+    """A successful A→C rotation does not carry A's health onto C.
+
+    The invocation deliberately withholds its A-scoped health result after a
+    rotation, so the conditional value write itself must reset the old health
+    columns for C.
+    """
+    shared_pool = _make_pool(execute_return="UPDATE 1")
+    store = CredentialStore(_make_pool(), fallback_pools=[shared_pool])
+
+    stored = await store.store_shared_if_unchanged(
+        "cli-auth/codex",
+        "rotation-C",
+        expected_value="launch-A",
+        category="cli-auth",
+    )
+
+    assert stored is True
+    sql, *_ = shared_pool._conn.execute.call_args[0]
+    assert "last_test_ok = CASE" in sql
+    assert "last_verified = CASE" in sql
+    assert "last_test_code = CASE" in sql
+    assert "last_test_message = CASE" in sql
+    assert "IS DISTINCT FROM $2" in sql
+
+
+async def test_record_test_result_if_unchanged_uses_shared_authority_and_value_fence() -> None:
+    """A stale runtime health result cannot update a dashboard-replaced token."""
+    local_pool = _make_pool()
+    shared_pool = _make_pool(execute_return="UPDATE 0")
+    store = CredentialStore(local_pool, fallback_pools=[shared_pool])
+
+    recorded = await store.record_test_result_if_unchanged(
+        "cli-auth/codex",
+        ok=False,
+        message="old refresh failed",
+        expected_value="old-token",
+        use_shared_authority=True,
+    )
+
+    assert recorded is False
+    sql, *args = shared_pool._conn.execute.call_args[0]
+    assert "secret_value = $4" in sql
+    assert args == [False, "old refresh failed", "cli-auth/codex", "old-token"]
+    local_pool._conn.execute.assert_not_awaited()
+
+
 async def test_load_has_delete() -> None:
     """load/has/delete return correct values based on row presence."""
     row = _make_row(secret_value="tok_abc123")

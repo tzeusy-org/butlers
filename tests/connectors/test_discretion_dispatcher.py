@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -47,6 +48,44 @@ def _make_adapter(result_text: str = "FORWARD", usage: dict | None = None) -> Ma
         )
     )
     return adapter
+
+
+def test_explicit_credential_authority_is_forwarded_to_runtime_adapter() -> None:
+    """A connector can make its public credential authority explicit.
+
+    The dispatcher must not construct a store from an arbitrary schema-local
+    model pool, because that would let a local Codex row shadow dashboard auth.
+    """
+    pool = MagicMock()
+    credential_store = MagicMock()
+    adapter = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool, credential_store=credential_store)
+
+    with patch(f"{_MODULE}.create_adapter", return_value=adapter) as create:
+        assert dispatcher._get_or_create_adapter("codex") is adapter
+
+    create.assert_called_once_with(
+        "codex",
+        provider_config=None,
+        butler_name="__discretion__",
+        credential_store=credential_store,
+    )
+
+
+def test_schema_local_dispatcher_does_not_guess_a_credential_authority() -> None:
+    """A bare dispatcher preserves no-store behavior rather than shadowing public auth."""
+    pool = MagicMock()
+    adapter = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+
+    with patch(f"{_MODULE}.create_adapter", return_value=adapter) as create:
+        dispatcher._get_or_create_adapter("codex")
+
+    create.assert_called_once_with(
+        "codex",
+        provider_config=None,
+        butler_name="__discretion__",
+    )
 
 
 async def test_call_with_identity_records_per_connector_butler_name() -> None:
@@ -96,6 +135,43 @@ async def test_call_without_identity_falls_back_to_constructor_butler_name() -> 
     _, kwargs = mock_record.call_args
     assert kwargs["butler_name"] == "__discretion__"
     assert kwargs["purpose"] == "discretion"
+
+
+async def test_call_keeps_declared_adapter_setup_allowance_outside_model_timeout() -> None:
+    """A credential-aware direct call preserves its provider execution budget."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+    adapter = _make_adapter()
+    adapter.session_timeout_overhead_s = 0.05
+    catalog = (
+        "api",
+        "claude-haiku-4-5-20251001",
+        [],
+        uuid.uuid4(),
+        0.01,
+        "specialty",
+    )
+
+    async def _near_deadline_invoke(**kwargs):
+        assert kwargs["timeout"] == 0.01
+        await asyncio.sleep(0.02)
+        return "FORWARD", [], {"input_tokens": 5, "output_tokens": 2}
+
+    adapter.invoke.side_effect = _near_deadline_invoke
+
+    with (
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=catalog),
+        ),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        result = await dispatcher.call("hi")
+
+    assert result == "FORWARD"
 
 
 async def test_call_with_explicit_butler_name_and_no_identity_uses_butler_name() -> None:

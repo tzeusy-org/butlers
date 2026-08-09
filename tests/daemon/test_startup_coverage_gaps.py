@@ -279,6 +279,7 @@ class TestStep8c2CliTokenRestore:
         from butlers.cli_auth.persistence import restore_tokens
 
         store = AsyncMock()
+        store.shared_pool = None
         store.load = AsyncMock(return_value=None)  # No stored tokens
 
         results = await restore_tokens(store)
@@ -309,17 +310,42 @@ class TestStep8c2CliTokenRestore:
         assert results == {"test-write": True}
         assert token_path.exists()
         assert token_path.read_text() == token_content
+        assert token_path.stat().st_mode & 0o777 == 0o600
 
     async def test_restore_tokens_non_fatal_on_store_load_failure(self) -> None:
         """restore_tokens returns False per provider when store.load raises; no propagation."""
         from butlers.cli_auth.persistence import restore_tokens
 
         store = AsyncMock()
+        store.shared_pool = None
         store.load = AsyncMock(side_effect=RuntimeError("DB gone"))
 
         # Must not raise
         results = await restore_tokens(store)
         assert all(v is False for v in results.values())
+
+    async def test_restore_tokens_rejects_invalid_codex_document_without_clobbering_file(
+        self, tmp_path: Path
+    ) -> None:
+        """A malformed shared row must not turn a valid local auth file into a fleet outage."""
+        from dataclasses import replace
+
+        from butlers.cli_auth.persistence import restore_tokens
+        from butlers.cli_auth.registry import PROVIDERS
+
+        token_path = tmp_path / ".codex" / "auth.json"
+        token_path.parent.mkdir(parents=True)
+        token_path.write_text('{"access_token":"working"}', encoding="utf-8")
+        codex = replace(PROVIDERS["codex"], token_path=token_path)
+        store = AsyncMock()
+        store.shared_pool = None
+        store.load = AsyncMock(return_value="not-json")
+
+        with patch("butlers.cli_auth.persistence.PROVIDERS", {"codex": codex}):
+            results = await restore_tokens(store)
+
+        assert results == {"codex": False}
+        assert token_path.read_text(encoding="utf-8") == '{"access_token":"working"}'
 
     async def test_restore_tokens_logs_restored_count(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

@@ -375,6 +375,18 @@ class CredentialStore:
                     description  = EXCLUDED.description,
                     is_sensitive = EXCLUDED.is_sensitive,
                     expires_at   = EXCLUDED.expires_at,
+                    last_test_ok = CASE
+                        WHEN {_TABLE}.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE {_TABLE}.last_test_ok END,
+                    last_verified = CASE
+                        WHEN {_TABLE}.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE {_TABLE}.last_verified END,
+                    last_test_code = CASE
+                        WHEN {_TABLE}.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE {_TABLE}.last_test_code END,
+                    last_test_message = CASE
+                        WHEN {_TABLE}.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE {_TABLE}.last_test_message END,
                     updated_at   = now()
                 """,
                 key,
@@ -433,6 +445,18 @@ class CredentialStore:
                     category     = EXCLUDED.category,
                     description  = EXCLUDED.description,
                     is_sensitive = EXCLUDED.is_sensitive,
+                    last_test_ok = CASE
+                        WHEN {_TABLE}.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE {_TABLE}.last_test_ok END,
+                    last_verified = CASE
+                        WHEN {_TABLE}.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE {_TABLE}.last_verified END,
+                    last_test_code = CASE
+                        WHEN {_TABLE}.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE {_TABLE}.last_test_code END,
+                    last_test_message = CASE
+                        WHEN {_TABLE}.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE {_TABLE}.last_test_message END,
                     updated_at   = now()
                 """,
                 key,
@@ -448,6 +472,93 @@ class CredentialStore:
             is_sensitive,
         )
         return True
+
+    async def store_shared_if_unchanged(
+        self,
+        key: str,
+        value: str,
+        *,
+        expected_value: str | None,
+        category: str = "general",
+        description: str | None = None,
+        is_sensitive: bool = True,
+    ) -> bool:
+        """Conditionally persist a value in the shared credential authority.
+
+        The update succeeds only when the row still contains
+        ``expected_value``.  Passing ``None`` creates the row only when it is
+        absent.  This optimistic-concurrency primitive is intended for a
+        runtime that captured a credential before launching a subprocess: an
+        operator refresh that lands meanwhile wins over the runtime's later
+        rotation write.
+
+        When this store has no shared fallback pool (the flat deployment
+        topology), its local pool is the authority and is used instead.
+        Raw credential values are intentionally never logged.
+        """
+        pool = self.shared_pool or self.pool
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            raise ValueError("key must be a non-empty string")
+        if not value:
+            raise ValueError("value must be a non-empty string")
+
+        async with pool.acquire() as conn:
+            if expected_value is None:
+                status = await conn.execute(
+                    f"""
+                    INSERT INTO {_TABLE}
+                        (secret_key, secret_value, category, description, is_sensitive)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (secret_key) DO NOTHING
+                    """,
+                    key,
+                    value,
+                    category,
+                    description,
+                    is_sensitive,
+                )
+            else:
+                status = await conn.execute(
+                    f"""
+                    UPDATE {_TABLE}
+                    SET secret_value = $2,
+                        category = $3,
+                        description = $4,
+                        is_sensitive = $5,
+                        last_test_ok = CASE
+                            WHEN {_TABLE}.secret_value IS DISTINCT FROM $2
+                            THEN NULL ELSE {_TABLE}.last_test_ok END,
+                        last_verified = CASE
+                            WHEN {_TABLE}.secret_value IS DISTINCT FROM $2
+                            THEN NULL ELSE {_TABLE}.last_verified END,
+                        last_test_code = CASE
+                            WHEN {_TABLE}.secret_value IS DISTINCT FROM $2
+                            THEN NULL ELSE {_TABLE}.last_test_code END,
+                        last_test_message = CASE
+                            WHEN {_TABLE}.secret_value IS DISTINCT FROM $2
+                            THEN NULL ELSE {_TABLE}.last_test_message END,
+                        updated_at = now()
+                    WHERE secret_key = $1
+                      AND secret_value = $6
+                    """,
+                    key,
+                    value,
+                    category,
+                    description,
+                    is_sensitive,
+                    expected_value,
+                )
+
+        stored = status.endswith(" 1")
+        logger.debug(
+            "Conditional shared secret write: key=%r category=%r stored=%r",
+            key,
+            category,
+            stored,
+        )
+        return stored
 
     async def record_test_result(
         self,
@@ -491,6 +602,85 @@ class CredentialStore:
             key,
             ok,
         )
+
+    async def record_test_result_if_unchanged(
+        self,
+        key: str,
+        ok: bool,
+        message: str | None = None,
+        *,
+        expected_value: str,
+        use_shared_authority: bool = False,
+    ) -> bool:
+        """Record health only while the credential value still matches.
+
+        Runtime probes can complete after an operator has replaced a token. A
+        fenced update prevents that old probe from marking the replacement
+        credential failing (or healthy).  ``use_shared_authority`` selects the
+        shared fallback when present; this is required for shared CLI identity
+        credentials such as ``cli-auth/codex`` in schema-isolated daemons.
+
+        Returns whether the guarded update matched a current credential row.
+        Raw credential values are never logged.
+        """
+        if not expected_value:
+            return False
+
+        pool = (
+            self.shared_pool if use_shared_authority and self.shared_pool is not None else self.pool
+        )
+        async with pool.acquire() as conn:
+            recorded = await self.record_test_result_if_unchanged_on_connection(
+                conn,
+                key,
+                ok,
+                message,
+                expected_value=expected_value,
+            )
+        logger.debug(
+            "Conditional credential test result: key=%r ok=%r recorded=%r",
+            key,
+            ok,
+            recorded,
+        )
+        return recorded
+
+    async def record_test_result_if_unchanged_on_connection(
+        self,
+        conn: Any,
+        key: str,
+        ok: bool,
+        message: str | None = None,
+        *,
+        expected_value: str,
+    ) -> bool:
+        """Run a value-fenced health update using an acquired connection.
+
+        This is the transaction-aware counterpart to
+        :meth:`record_test_result_if_unchanged`.  Callers that must persist a
+        probe log and audit record with the same credential version can keep
+        the row lock and all three writes in one transaction.  The caller is
+        responsible for acquiring a connection from the authoritative pool.
+        """
+        if not expected_value:
+            return False
+
+        truncated = message[:512] if message else None
+        status = await conn.execute(
+            f"""
+            UPDATE {_TABLE}
+            SET last_test_ok      = $1,
+                last_verified     = now(),
+                last_test_message = $2
+            WHERE secret_key = $3
+              AND secret_value = $4
+            """,
+            ok,
+            truncated,
+            key,
+            expected_value,
+        )
+        return status.endswith(" 1")
 
     # ------------------------------------------------------------------
     # Read operations

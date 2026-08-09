@@ -1683,7 +1683,11 @@ async def _fetch_cli_secrets(
                 last_test_ok=last_test_ok,
                 last_test_code=row["last_test_code"],
                 last_test_message=row["last_test_message"],
-                test=probe_map.get(row["secret_key"]),
+                # Probe history is append-only, while the cache columns are
+                # reset atomically whenever credential bytes change.  Do not
+                # let a historical probe of the replaced token masquerade as
+                # the current credential's last test.
+                test=(probe_map.get(row["secret_key"]) if last_test_ok is not None else None),
             )
         )
 
@@ -2319,7 +2323,10 @@ async def _fetch_single_cli_secret(
         last_verified=row["last_verified"],
     )
     fp = _fingerprint(value)
-    test = await _fetch_probe_log(pool, "cli", credential_id)
+    # ``secret_probe_log`` retains history across rotations.  The test-state
+    # cache is the credential-version fence: a token replacement resets it,
+    # so a prior probe must not be surfaced as the new token's result.
+    test = await _fetch_probe_log(pool, "cli", credential_id) if last_test_ok is not None else None
 
     return CliRuntimeDetail(
         id=row["secret_key"],
@@ -5577,7 +5584,6 @@ async def _write_cli_audit(
             "Failed to write CLI credential audit: action=%s id=%s",
             action,
             credential_id,
-            exc_info=True,
         )
 
 
@@ -5742,6 +5748,18 @@ async def rotate_cli_credential(
             ON CONFLICT (secret_key) DO UPDATE
                 SET secret_value = EXCLUDED.secret_value,
                     category = EXCLUDED.category,
+                    last_test_ok = CASE
+                        WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE butler_secrets.last_test_ok END,
+                    last_verified = CASE
+                        WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE butler_secrets.last_verified END,
+                    last_test_code = CASE
+                        WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE butler_secrets.last_test_code END,
+                    last_test_message = CASE
+                        WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                        THEN NULL ELSE butler_secrets.last_test_message END,
                     updated_at = EXCLUDED.updated_at
             """,
             credential_id,
@@ -5749,7 +5767,9 @@ async def rotate_cli_credential(
             category,
         )
     except Exception as exc:
-        logger.warning("rotate_cli_credential: persist failed for id=%s: %s", credential_id, exc)
+        # The value is a raw credential bind parameter.  Driver/proxy
+        # exceptions are not trusted to redact their diagnostic context.
+        logger.warning("rotate_cli_credential: persist failed for id=%s", credential_id)
         raise HTTPException(status_code=503, detail="CLI credential rotation failed") from exc
 
     # Compute fingerprint of the persisted value.

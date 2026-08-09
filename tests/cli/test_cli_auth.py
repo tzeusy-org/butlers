@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -192,6 +193,54 @@ async def test_session_timeout(tmp_path):
     await asyncio.sleep(2)
 
     assert session.state == "expired"
+
+
+async def test_codex_dashboard_success_reconciles_final_prewarm_auth(tmp_path: Path) -> None:
+    """A dashboard prewarm finalizes against its captured authority snapshot."""
+    from butlers.api.routers.cli_auth import _build_on_success
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+    from butlers.core.runtimes.codex import CodexAdapter
+
+    provider = replace(PROVIDERS["codex"], token_path=tmp_path / ".codex" / "auth.json")
+    store = MagicMock()
+    callbacks: list[str] = []
+
+    async def _persist(*_args, **_kwargs) -> bool:
+        callbacks.append("persist")
+        return True
+
+    async def _reconcile(*_args, **_kwargs) -> CodexAuthSyncResult:
+        callbacks.append("reconcile")
+        return CodexAuthSyncResult(expected_store_value='{"access_token":"fresh"}')
+
+    async def _finalize(*_args, expected_store_value, **_kwargs) -> CodexAuthSyncResult:
+        assert expected_store_value == '{"access_token":"fresh"}'
+        callbacks.append("finalize")
+        return CodexAuthSyncResult(expected_store_value=expected_store_value)
+
+    async def _prewarm(*_args, **_kwargs) -> None:
+        callbacks.append("prewarm")
+
+    CodexAdapter._prewarm_done.discard(str(provider.token_path.parent))
+    with (
+        patch("butlers.api.routers.cli_auth._make_credential_store", return_value=store),
+        patch("butlers.api.routers.cli_auth.persist_token", side_effect=_persist),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth", side_effect=_reconcile
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.finalize_codex_auth_rotation",
+            side_effect=_finalize,
+        ),
+        patch("butlers.core.runtimes.codex._resolve_canonical_home", return_value=tmp_path),
+        patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_prewarm),
+        patch("shutil.which", return_value="/usr/bin/codex"),
+    ):
+        on_success = _build_on_success(MagicMock())
+        assert on_success is not None
+        await on_success(provider)
+
+    assert callbacks == ["persist", "reconcile", "prewarm", "finalize"]
 
 
 # ---------------------------------------------------------------------------
@@ -420,10 +469,16 @@ class _RecordingPool:
 
     def __init__(self):
         self.execute_calls: list[tuple[str, tuple]] = []
+        self.events: list[str] = []
+        self.after_transaction = None
 
     async def execute(self, sql, *args):
         self.execute_calls.append((sql, args))
-        return "OK"
+        if "UPDATE butler_secrets" in sql:
+            self.events.append("health")
+        elif "secret_probe_log" in sql:
+            self.events.append("probe-log")
+        return "UPDATE 1" if "UPDATE butler_secrets" in sql else "INSERT 0 1"
 
     def acquire(self):
         from contextlib import asynccontextmanager
@@ -434,6 +489,18 @@ class _RecordingPool:
         async def _cm():
             conn = MagicMock()
             conn.execute = pool.execute
+
+            @asynccontextmanager
+            async def _transaction():
+                pool.events.append("transaction-enter")
+                try:
+                    yield
+                finally:
+                    pool.events.append("transaction-exit")
+                    if pool.after_transaction is not None:
+                        await pool.after_transaction()
+
+            conn.transaction = _transaction
             yield conn
 
         return _cm()
@@ -462,6 +529,7 @@ async def test_test_endpoint_persists_successful_probe(monkeypatch):
     audit_calls: list[dict] = []
 
     async def _fake_audit(p, *, action, credential_id, note=None):
+        pool.events.append("audit")
         audit_calls.append({"action": action, "credential_id": credential_id, "note": note})
 
     import butlers.api.routers.secrets_v2 as _secrets_v2
@@ -473,9 +541,18 @@ async def test_test_endpoint_persists_successful_probe(monkeypatch):
         state=AuthHealthState.authenticated,
         detail="Logged in using ChatGPT",
     )
-    with patch(
-        "butlers.api.routers.cli_auth.probe_provider",
-        AsyncMock(return_value=healthy),
+    with (
+        patch(
+            "butlers.api.routers.cli_auth.probe_provider",
+            AsyncMock(return_value=healthy),
+        ),
+        patch(
+            "butlers.api.routers.cli_auth._prepare_codex_test_authority",
+            AsyncMock(return_value=("authority-A", Path("/tmp/codex-auth.json"))),
+        ),
+        patch(
+            "butlers.api.routers.cli_auth._codex_test_authority_still_matches", return_value=True
+        ),
     ):
         resp = await test_api_key("codex", db_manager=db_manager)
 
@@ -490,7 +567,7 @@ async def test_test_endpoint_persists_successful_probe(monkeypatch):
 
     cache_calls = [c for c in pool.execute_calls if "last_test_ok" in c[0]]
     assert len(cache_calls) == 1
-    assert cache_calls[0][1] == (True, None, "cli-auth/codex")
+    assert cache_calls[0][1] == (True, None, "cli-auth/codex", "authority-A")
 
     assert audit_calls == [
         {
@@ -498,6 +575,65 @@ async def test_test_endpoint_persists_successful_probe(monkeypatch):
             "credential_id": "cli-auth/codex",
             "note": "Probe ok: Logged in using ChatGPT",
         }
+    ]
+    assert pool.events == [
+        "transaction-enter",
+        "health",
+        "probe-log",
+        "audit",
+        "transaction-exit",
+    ]
+
+
+async def test_test_endpoint_finishes_codex_history_before_dashboard_replacement(monkeypatch):
+    """A replacement cannot split a Codex health/log/audit outcome.
+
+    The replacement is modelled as waiting on the credential-row transaction:
+    it may run only after the fenced health update, probe log, and audit have
+    all finished.  Its value write then resets that completed prior health
+    state, so no old failure can become a newer result for the replacement.
+    """
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    db_manager, pool = _make_persisting_db_manager()
+
+    async def _dashboard_replacement() -> None:
+        pool.events.append("dashboard-B")
+
+    pool.after_transaction = _dashboard_replacement
+
+    async def _fake_audit(_connection, *, action, credential_id, note=None):
+        pool.events.append("audit")
+
+    import butlers.api.routers.secrets_v2 as _secrets_v2
+
+    monkeypatch.setattr(_secrets_v2, "_write_cli_audit", _fake_audit)
+    healthy = AuthHealthResult(
+        provider="codex",
+        state=AuthHealthState.authenticated,
+        detail="Logged in using ChatGPT",
+    )
+    with (
+        patch("butlers.api.routers.cli_auth.probe_provider", AsyncMock(return_value=healthy)),
+        patch(
+            "butlers.api.routers.cli_auth._prepare_codex_test_authority",
+            AsyncMock(return_value=("authority-A", Path("/tmp/codex-auth.json"))),
+        ),
+        patch(
+            "butlers.api.routers.cli_auth._codex_test_authority_still_matches", return_value=True
+        ),
+    ):
+        response = await test_api_key("codex", db_manager=db_manager)
+
+    assert response.success is True
+    assert pool.events == [
+        "transaction-enter",
+        "health",
+        "probe-log",
+        "audit",
+        "transaction-exit",
+        "dashboard-B",
     ]
 
 
@@ -511,6 +647,7 @@ async def test_test_endpoint_persists_failed_probe(monkeypatch):
     audit_calls: list[dict] = []
 
     async def _fake_audit(p, *, action, credential_id, note=None):
+        pool.events.append("audit")
         audit_calls.append({"action": action, "credential_id": credential_id, "note": note})
 
     import butlers.api.routers.secrets_v2 as _secrets_v2
@@ -522,9 +659,18 @@ async def test_test_endpoint_persists_failed_probe(monkeypatch):
         state=AuthHealthState.not_authenticated,
         detail="OpenAI rejected the stored token (401) — re-login required.",
     )
-    with patch(
-        "butlers.api.routers.cli_auth.probe_provider",
-        AsyncMock(return_value=revoked),
+    with (
+        patch(
+            "butlers.api.routers.cli_auth.probe_provider",
+            AsyncMock(return_value=revoked),
+        ),
+        patch(
+            "butlers.api.routers.cli_auth._prepare_codex_test_authority",
+            AsyncMock(return_value=("authority-A", Path("/tmp/codex-auth.json"))),
+        ),
+        patch(
+            "butlers.api.routers.cli_auth._codex_test_authority_still_matches", return_value=True
+        ),
     ):
         resp = await test_api_key("codex", db_manager=db_manager)
 
@@ -536,14 +682,212 @@ async def test_test_endpoint_persists_failed_probe(monkeypatch):
 
     cache_calls = [c for c in pool.execute_calls if "last_test_ok" in c[0]]
     assert len(cache_calls) == 1
-    ok, message, key = cache_calls[0][1]
+    ok, message, key, expected_value = cache_calls[0][1]
     assert ok is False
     assert "re-login required" in message
     assert key == "cli-auth/codex"
+    assert expected_value == "authority-A"
 
     assert len(audit_calls) == 1
     assert audit_calls[0]["action"] == "failed"
     assert "re-login required" in audit_calls[0]["note"]
+
+
+async def test_test_endpoint_reconciles_codex_auth_before_fencing_probe_result(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A stale canonical file is replaced before a Codex probe consumes it.
+
+    The probe starts with local A while the dashboard has persisted B.  The
+    test endpoint reconciles the actual auth file to B first, then carries B
+    into the conditional health update.  ``False`` simulates a later dashboard
+    refresh winning while the probe is in flight.
+    """
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+    events: list[str] = []
+    auth_path = tmp_path / ".codex" / "auth.json"
+    auth_path.parent.mkdir()
+    auth_path.write_text('{"refresh_token":"local-A"}', encoding="utf-8")
+    authority_b = '{"refresh_token":"dashboard-B"}'
+    provider = replace(PROVIDERS["codex"], token_path=auth_path)
+    store = MagicMock()
+    store.pool = MagicMock()
+    store.pool.execute = AsyncMock()
+
+    async def _reconcile(
+        token_path: Path, passed_store, *, butler_name: str
+    ) -> CodexAuthSyncResult:
+        assert token_path == auth_path
+        assert passed_store is store
+        assert butler_name == "dashboard"
+        events.append("reconcile")
+        token_path.write_text(authority_b, encoding="utf-8")
+        return CodexAuthSyncResult(expected_store_value=authority_b)
+
+    async def _probe(probed_provider, *_args, **_kwargs) -> AuthHealthResult:
+        assert probed_provider.token_path is not None
+        assert probed_provider.token_path.read_text(encoding="utf-8") == authority_b
+        events.append("probe")
+        return AuthHealthResult(
+            provider="codex",
+            state=AuthHealthState.not_authenticated,
+            detail="old token rejected",
+        )
+
+    async def _record(*_args, **_kwargs) -> bool:
+        events.append("fenced-write")
+        return False
+
+    import butlers.api.routers.cli_auth as _cli_auth
+
+    monkeypatch.setattr(_cli_auth, "_persist_codex_test_outcome_if_current", _record)
+    audit = AsyncMock()
+
+    import butlers.api.routers.secrets_v2 as _secrets_v2
+
+    monkeypatch.setattr(_secrets_v2, "_write_cli_audit", audit)
+    monkeypatch.setitem(PROVIDERS, "codex", provider)
+    with (
+        patch("butlers.api.routers.cli_auth._make_credential_store", return_value=store),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            side_effect=_reconcile,
+        ),
+        patch("butlers.api.routers.cli_auth.probe_provider", side_effect=_probe),
+    ):
+        response = await test_api_key("codex", db_manager=MagicMock())
+
+    assert response.success is False
+    assert events == ["reconcile", "probe", "fenced-write"]
+    store.pool.execute.assert_not_awaited()
+    audit.assert_not_awaited()
+
+
+async def test_test_endpoint_finalizes_codex_status_probe_rotation_without_health(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A status probe durably finalizes B->B-prime but withholds its result."""
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+    auth_path = tmp_path / ".codex" / "auth.json"
+    auth_path.parent.mkdir()
+    authority_b = '{"refresh_token":"dashboard-B"}'
+    rotated_c = '{"refresh_token":"rotation-C"}'
+    provider = replace(PROVIDERS["codex"], token_path=auth_path)
+    store = MagicMock()
+    store.pool = MagicMock()
+    store.pool.execute = AsyncMock()
+    events: list[str] = []
+
+    async def _reconcile(token_path: Path, *_args, **_kwargs) -> CodexAuthSyncResult:
+        events.append("reconcile")
+        token_path.write_text(authority_b, encoding="utf-8")
+        return CodexAuthSyncResult(expected_store_value=authority_b)
+
+    async def _probe(*_args, **_kwargs) -> AuthHealthResult:
+        events.append("probe")
+        auth_path.write_text(rotated_c, encoding="utf-8")
+        return AuthHealthResult(
+            provider="codex",
+            state=AuthHealthState.authenticated,
+            detail="Logged in using ChatGPT",
+        )
+
+    async def _finalize(
+        token_path: Path,
+        passed_store,
+        *,
+        expected_store_value: str,
+        authority_known: bool,
+        butler_name: str,
+    ) -> CodexAuthSyncResult:
+        assert token_path == auth_path
+        assert passed_store is store
+        assert expected_store_value == authority_b
+        assert authority_known is True
+        assert butler_name == "dashboard"
+        events.append("finalize")
+        return CodexAuthSyncResult(expected_store_value=rotated_c)
+
+    monkeypatch.setitem(PROVIDERS, "codex", provider)
+    with (
+        patch("butlers.api.routers.cli_auth._make_credential_store", return_value=store),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            side_effect=_reconcile,
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.finalize_codex_auth_rotation",
+            side_effect=_finalize,
+        ),
+        patch("butlers.api.routers.cli_auth.probe_provider", side_effect=_probe),
+    ):
+        response = await test_api_key("codex", db_manager=MagicMock())
+
+    assert response.success is True
+    assert events == ["reconcile", "probe", "finalize"]
+    store.pool.execute.assert_not_awaited()
+
+
+async def test_test_endpoint_probe_rotation_cannot_overwrite_newer_dashboard_authority(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A concurrent B->C Passport replacement wins a probe's B->prime CAS."""
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+    auth_path = tmp_path / ".codex" / "auth.json"
+    auth_path.parent.mkdir()
+    authority_b = '{"refresh_token":"dashboard-B"}'
+    authority_c = '{"refresh_token":"dashboard-C"}'
+    provider = replace(PROVIDERS["codex"], token_path=auth_path)
+    store = MagicMock()
+    store.shared_pool = MagicMock()
+    store.store_shared_if_unchanged = AsyncMock(return_value=False)
+    store.load_shared = AsyncMock(return_value=authority_c)
+    store.pool = MagicMock()
+    store.pool.execute = AsyncMock()
+
+    async def _reconcile(token_path: Path, *_args, **_kwargs) -> CodexAuthSyncResult:
+        token_path.write_text(authority_b, encoding="utf-8")
+        return CodexAuthSyncResult(expected_store_value=authority_b)
+
+    async def _probe(*_args, **_kwargs) -> AuthHealthResult:
+        # The probe itself sees a local successor while an owner refresh has
+        # already committed C to shared authority.
+        auth_path.write_text('{"refresh_token":"probe-B-prime"}', encoding="utf-8")
+        return AuthHealthResult(
+            provider="codex",
+            state=AuthHealthState.authenticated,
+            detail="Logged in using ChatGPT",
+        )
+
+    monkeypatch.setitem(PROVIDERS, "codex", provider)
+    with (
+        patch("butlers.api.routers.cli_auth._make_credential_store", return_value=store),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            side_effect=_reconcile,
+        ),
+        patch("butlers.api.routers.cli_auth.probe_provider", side_effect=_probe),
+    ):
+        response = await test_api_key("codex", db_manager=MagicMock())
+
+    assert response.success is True
+    store.store_shared_if_unchanged.assert_awaited_once()
+    _, kwargs = store.store_shared_if_unchanged.call_args
+    assert kwargs["expected_value"] == authority_b
+    assert auth_path.read_text(encoding="utf-8") == authority_c
+    store.pool.execute.assert_not_awaited()
 
 
 async def test_test_endpoint_persistence_failure_does_not_mask_result():
@@ -562,11 +906,58 @@ async def test_test_endpoint_persistence_failure_does_not_mask_result():
         state=AuthHealthState.authenticated,
         detail="Logged in using ChatGPT",
     )
-    with patch(
-        "butlers.api.routers.cli_auth.probe_provider",
-        AsyncMock(return_value=healthy),
+    with (
+        patch(
+            "butlers.api.routers.cli_auth.probe_provider",
+            AsyncMock(return_value=healthy),
+        ),
+        patch(
+            "butlers.api.routers.cli_auth._prepare_codex_test_authority",
+            AsyncMock(return_value=("authority-A", Path("/tmp/codex-auth.json"))),
+        ),
+        patch(
+            "butlers.api.routers.cli_auth._codex_test_authority_still_matches", return_value=True
+        ),
     ):
         resp = await test_api_key("codex", db_manager=db_manager)
 
     assert resp.success is True
     assert resp.detail == "Logged in using ChatGPT"
+
+
+async def test_test_endpoint_does_not_log_codex_authority_on_persistence_failure(
+    monkeypatch,
+    caplog,
+) -> None:
+    """A credential-bearing persistence exception is reduced to safe context."""
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    sentinel = "raw-codex-authority-must-not-reach-logs"
+    healthy = AuthHealthResult(
+        provider="codex",
+        state=AuthHealthState.authenticated,
+        detail="Logged in using ChatGPT",
+    )
+
+    async def _raise_with_authority(*_args, **_kwargs) -> bool:
+        raise RuntimeError(sentinel)
+
+    import butlers.api.routers.cli_auth as _cli_auth
+
+    monkeypatch.setattr(_cli_auth, "_persist_codex_test_outcome_if_current", _raise_with_authority)
+    with (
+        patch("butlers.api.routers.cli_auth.probe_provider", AsyncMock(return_value=healthy)),
+        patch(
+            "butlers.api.routers.cli_auth._prepare_codex_test_authority",
+            AsyncMock(return_value=(sentinel, Path("/tmp/codex-auth.json"))),
+        ),
+        patch(
+            "butlers.api.routers.cli_auth._codex_test_authority_still_matches", return_value=True
+        ),
+        caplog.at_level("WARNING"),
+    ):
+        response = await test_api_key("codex", db_manager=_make_persisting_db_manager()[0])
+
+    assert response.success is True
+    assert sentinel not in caplog.text

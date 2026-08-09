@@ -254,6 +254,37 @@ def test_rotate_cli_persists_user_supplied_value_verbatim():
     assert _persisted_secret_value(shared_pool) == supplied
 
 
+def test_rotate_cli_value_replacement_clears_prior_health_atomically():
+    """A Passport refresh cannot leave the old token's status on the new one.
+
+    A runtime health writer can acquire the row lock just before this endpoint
+    updates the value.  The rotation UPSERT itself therefore resets every
+    value-scoped health field when the credential bytes change.
+    """
+    cli_row = _make_cli_row(key="cli-auth/codex", value="old-auth-document")
+    mock_db = _make_db(cli_row=cli_row)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    response = client.post(
+        "/api/secrets/cli/cli-auth/codex/rotate",
+        json={"value": "new-auth-document"},
+    )
+
+    assert response.status_code == 200
+    persist_call = next(
+        call
+        for call in shared_pool.execute.await_args_list
+        if "INSERT INTO butler_secrets" in call.args[0]
+    )
+    persisted_sql = " ".join(persist_call.args[0].split())
+    assert "last_test_ok = CASE" in persisted_sql
+    assert "last_verified = CASE" in persisted_sql
+    assert "last_test_code = CASE" in persisted_sql
+    assert "last_test_message = CASE" in persisted_sql
+    assert "IS DISTINCT FROM EXCLUDED.secret_value" in persisted_sql
+
+
 def test_rotate_cli_fingerprint_matches_user_supplied_value():
     """Fingerprint is sha256[:8] of the SUPPLIED value, confirming it was kept."""
     cli_row = _make_cli_row(key="cli-token-abc123")
@@ -402,6 +433,20 @@ def test_rotate_cli_auto_generate_still_allowed_for_bare_self_issued_id():
     new_value = resp.json()["data"]["value"]
     assert new_value
     assert new_value != "old_generic_value"
+
+
+def test_rotate_cli_persistence_error_does_not_log_owner_supplied_value(caplog):
+    """A driver failure cannot reflect the pasted CLI credential into logs."""
+    supplied = "owner-supplied-cli-credential-must-not-reach-logs"
+    cli_row = _make_cli_row(key="cli-auth/codex", value="previous-value")
+    mock_db = _make_db(cli_row=cli_row, execute_ok=False)
+    client = _build_app(mock_db)
+
+    with caplog.at_level("WARNING"):
+        response = client.post("/api/secrets/cli/cli-auth/codex/rotate", json={"value": supplied})
+
+    assert response.status_code == 503
+    assert supplied not in caplog.text
 
 
 def test_rotate_cli_get_does_not_return_raw_value_after_rotate():

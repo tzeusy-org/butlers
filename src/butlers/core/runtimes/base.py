@@ -35,6 +35,18 @@ class RuntimeAdapter(abc.ABC):
     supports_resume: bool = False
 
     @property
+    def session_timeout_overhead_s(self) -> float:
+        """Return bounded setup/teardown time outside the execution budget.
+
+        ``timeout`` passed to :meth:`invoke` remains the maximum time for the
+        provider runtime itself.  Adapters with bounded best-effort work that
+        must happen immediately before or after that runtime can declare its
+        worst-case allowance here, so the Spawner's outer cancellation guard
+        does not turn a successful provider execution into a session timeout.
+        """
+        return 0.0
+
+    @property
     @abc.abstractmethod
     def binary_name(self) -> str:
         """Return the name of the CLI binary this adapter requires.

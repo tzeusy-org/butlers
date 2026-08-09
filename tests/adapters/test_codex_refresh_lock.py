@@ -20,7 +20,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -230,6 +230,76 @@ async def test_refresh_lock_timeout_proceeds_unlocked(tmp_path: Path, caplog) ->
         os.close(other_fd)
 
 
+async def test_refresh_lock_budget_does_not_queue_on_default_executor(
+    tmp_path: Path,
+) -> None:
+    """A saturated executor cannot extend a nonblocking flock wait budget."""
+    import fcntl
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    lock_path = codex_dir / "butlers.refresh.lock"
+    other_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    fcntl.flock(other_fd, fcntl.LOCK_EX)
+
+    loop = asyncio.get_running_loop()
+
+    def _queued_executor_work(*_args: object, **_kwargs: object) -> asyncio.Future[object]:
+        """Model a default executor whose work cannot start within the budget."""
+        return loop.create_future()
+
+    try:
+        with patch.object(
+            loop,
+            "run_in_executor",
+            side_effect=_queued_executor_work,
+        ) as run_in_executor:
+
+            async def _acquire() -> None:
+                async with _codex_refresh_lock(codex_dir, wait_timeout_s=0.01):
+                    pass
+
+            await asyncio.wait_for(_acquire(), timeout=0.5)
+    finally:
+        fcntl.flock(other_fd, fcntl.LOCK_UN)
+        os.close(other_fd)
+
+    run_in_executor.assert_not_called()
+
+
+async def test_refresh_lock_clamps_retry_sleep_to_operation_budget(tmp_path: Path) -> None:
+    """A sub-second caller budget is not extended by the normal retry interval."""
+    import fcntl
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    lock_path = codex_dir / "butlers.refresh.lock"
+    other_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    fcntl.flock(other_fd, fcntl.LOCK_EX)
+    sleep_delays: list[float] = []
+
+    async def _record_sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    try:
+        # deadline setup, first remaining-time calculation, then expiry after
+        # the clamped retry. This avoids scheduler timing in the assertion.
+        with (
+            patch(
+                "butlers.core.runtimes.codex.time.monotonic",
+                side_effect=(100.0, 100.0, 100.01),
+            ),
+            patch("butlers.core.runtimes.codex.asyncio.sleep", side_effect=_record_sleep),
+        ):
+            async with _codex_refresh_lock(codex_dir, wait_timeout_s=0.01):
+                pass
+    finally:
+        fcntl.flock(other_fd, fcntl.LOCK_UN)
+        os.close(other_fd)
+
+    assert sleep_delays == [pytest.approx(0.01)]
+
+
 # ---------------------------------------------------------------------------
 # run_codex_pre_warm
 # ---------------------------------------------------------------------------
@@ -285,6 +355,78 @@ async def test_run_codex_pre_warm_swallows_timeout(tmp_path: Path) -> None:
         await run_codex_pre_warm(codex_dir, "/usr/bin/codex")  # must not raise
 
 
+async def test_run_codex_pre_warm_reaps_status_process_when_cancelled(tmp_path: Path) -> None:
+    """An outer auth-budget cancellation cannot leave `login status` alive."""
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    proc = MagicMock()
+    proc.returncode = None
+    proc.kill = MagicMock()
+    proc.wait = AsyncMock()
+
+    async def _communicate() -> tuple[bytes, bytes]:
+        entered.set()
+        await never.wait()
+        raise AssertionError("unreachable")
+
+    proc.communicate = AsyncMock(side_effect=_communicate)
+    with patch(_EXEC, return_value=proc):
+        task = asyncio.create_task(run_codex_pre_warm(codex_dir, "/usr/bin/codex"))
+        await asyncio.wait_for(entered.wait(), timeout=0.2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    proc.kill.assert_called_once()
+    proc.wait.assert_awaited_once()
+
+
+async def test_run_codex_pre_warm_cancellation_does_not_wait_for_hung_reap(
+    tmp_path: Path,
+) -> None:
+    """A stuck process wait is detached rather than extending the auth budget."""
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    entered = asyncio.Event()
+    reap_started = asyncio.Event()
+    release_reaper = asyncio.Event()
+    never = asyncio.Event()
+    proc = MagicMock()
+    proc.returncode = None
+    proc.kill = MagicMock()
+
+    async def _communicate() -> tuple[bytes, bytes]:
+        entered.set()
+        await never.wait()
+        raise AssertionError("unreachable")
+
+    async def _hung_wait() -> None:
+        reap_started.set()
+        await release_reaper.wait()
+
+    proc.communicate = AsyncMock(side_effect=_communicate)
+    proc.wait = AsyncMock(side_effect=_hung_wait)
+    with patch(_EXEC, return_value=proc):
+        task = asyncio.create_task(run_codex_pre_warm(codex_dir, "/usr/bin/codex"))
+        await asyncio.wait_for(entered.wait(), timeout=0.2)
+        task.cancel()
+        # One event-loop turn is enough for the cancellation handler to kill
+        # the child, detach its hung reaper, and re-raise. An implementation
+        # that awaits ``proc.wait()`` remains pending here.
+        await asyncio.sleep(0)
+        assert task.done()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(reap_started.wait(), timeout=0.2)
+        release_reaper.set()
+        await asyncio.sleep(0)
+
+    proc.kill.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # CodexAdapter.invoke() — fast / slow path selection
 # ---------------------------------------------------------------------------
@@ -310,8 +452,8 @@ async def test_invoke_fast_path_skips_lock(tmp_path: Path, monkeypatch: pytest.M
     original_lock = _codex_refresh_lock
 
     @contextlib.asynccontextmanager
-    async def _spy_lock(path: Path):  # type: ignore[return]
-        async with original_lock(path):
+    async def _spy_lock(path: Path, **kwargs):  # type: ignore[return]
+        async with original_lock(path, **kwargs):
             lock_entered.append(True)
             yield
 
@@ -345,8 +487,8 @@ async def test_invoke_slow_path_acquires_lock(
     original_lock = _codex_refresh_lock
 
     @contextlib.asynccontextmanager
-    async def _spy_lock(path: Path):  # type: ignore[return]
-        async with original_lock(path):
+    async def _spy_lock(path: Path, **kwargs):  # type: ignore[return]
+        async with original_lock(path, **kwargs):
             lock_entered.append(True)
             yield
 
@@ -389,6 +531,102 @@ async def test_invoke_startup_prewarm_runs_on_first_call(
 
     assert len(prewarm_calls) == 1, "Pre-warm should run exactly once on first stale invoke"
     assert prewarm_calls[0][1] == "/usr/bin/codex"
+
+
+async def test_invoke_bounds_on_path_prewarm_outside_provider_execution_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung status warmup cannot take time from the eventual Codex spawn."""
+    codex_dir = tmp_path / ".codex"
+    _stale_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prewarm_key = str(codex_dir)
+    CodexAdapter._prewarm_done.discard(prewarm_key)
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    never = asyncio.Event()
+    prewarm_cancelled = False
+
+    async def _hung_prewarm(*_args, **_kwargs) -> None:
+        nonlocal prewarm_cancelled
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            prewarm_cancelled = True
+            raise
+
+    with (
+        patch(
+            "butlers.core.runtimes.codex._CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS",
+            0.01,
+        ),
+        patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_hung_prewarm),
+        patch.object(
+            adapter,
+            "_run_codex_subprocess",
+            AsyncMock(return_value=("ok", [], None)),
+        ) as spawn,
+    ):
+        result, _, _ = await asyncio.wait_for(
+            adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+                timeout=1,
+            ),
+            timeout=0.5,
+        )
+
+    assert result == "ok"
+    assert spawn.call_args.args[3] == 1
+    assert prewarm_cancelled
+    assert prewarm_key not in CodexAdapter._prewarm_done
+
+
+async def test_invoke_bounds_refresh_lock_wait_outside_provider_execution_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slow-path flock contention spends only the declared auth allowance."""
+    import fcntl
+
+    codex_dir = tmp_path / ".codex"
+    _stale_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prewarm_key = str(codex_dir)
+    CodexAdapter._prewarm_done.add(prewarm_key)
+    lock_path = codex_dir / "butlers.refresh.lock"
+    other_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    fcntl.flock(other_fd, fcntl.LOCK_EX)
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    try:
+        with (
+            patch(
+                "butlers.core.runtimes.codex._CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS",
+                0.01,
+            ),
+            patch.object(
+                adapter,
+                "_run_codex_subprocess",
+                AsyncMock(return_value=("ok", [], None)),
+            ) as spawn,
+        ):
+            result, _, _ = await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+                timeout=1,
+            )
+    finally:
+        fcntl.flock(other_fd, fcntl.LOCK_UN)
+        os.close(other_fd)
+
+    assert result == "ok"
+    assert spawn.call_args.args[3] == 1
 
 
 async def test_invoke_startup_prewarm_skipped_on_second_call(
@@ -596,6 +834,32 @@ async def test_adapter_speculative_prewarm_delegates_to_helper(
         await adapter.speculative_prewarm()
 
     assert prewarm_calls == [(str(codex_dir), "/opt/codex/codex")]
+
+
+async def test_adapter_speculative_prewarm_reconciles_before_login_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Speculative prewarm cannot run against a stale daemon-local auth file."""
+    codex_dir = tmp_path / ".codex"
+    _stale_auth_json(codex_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prewarm_key = str(codex_dir)
+    CodexAdapter._prewarm_done.discard(prewarm_key)
+    stored = json.dumps({"expires_at": time.time() - 10, "access_token": "dashboard-token"})
+    store = MagicMock()
+    store.shared_pool = MagicMock()
+    store.load_shared = AsyncMock(return_value=stored)
+    store.store_shared_if_unchanged = AsyncMock(return_value=True)
+
+    async def _assert_prewarm_input(codex_dir_arg: Path, binary: str) -> None:
+        assert binary == "/opt/codex/codex"
+        assert (codex_dir_arg / "auth.json").read_text(encoding="utf-8") == stored
+
+    adapter = CodexAdapter(codex_binary="/opt/codex/codex", credential_store=store)
+    with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_assert_prewarm_input):
+        await adapter.speculative_prewarm()
+
+    store.load_shared.assert_awaited()
 
 
 # ---------------------------------------------------------------------------

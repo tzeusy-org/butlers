@@ -500,7 +500,7 @@ def test_cli_credential_stale_successful_probe_is_warn():
 
 def test_cli_credential_hit_with_probe():
     """Hit case: test field populated from probe_log."""
-    row = _make_cli_row(key="cli-probed")
+    row = _make_cli_row(key="cli-probed", last_test_ok=True)
     probe = _make_probe_row(ok=True, code=200)
     mock_db = _make_db_manager_for_per_credential(cli_row=row, probe_row=probe)
     client = _build_app(mock_db)
@@ -509,6 +509,18 @@ def test_cli_credential_hit_with_probe():
     data = resp.json()["data"]
     assert data["test"] is not None
     assert data["test"]["ok"] is True
+
+
+def test_cli_credential_hides_prior_probe_after_credential_replacement():
+    """A health-reset replacement token has no inherited probe result."""
+    row = _make_cli_row(key="cli-auth/codex", last_test_ok=None)
+    probe = _make_probe_row(ok=False, message="old token rejected")
+    mock_db = _make_db_manager_for_per_credential(cli_row=row, probe_row=probe)
+
+    response = _build_app(mock_db).get("/api/secrets/cli/cli-auth/codex")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["test"] is None
 
 
 def test_cli_credential_no_raw_value_in_response():
