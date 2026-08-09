@@ -998,6 +998,7 @@ class TelegramUserClientConnector:
                     normalized_text,
                     weight=sender_weight,
                     participant_count=_participant_count if _participant_count > 0 else None,
+                    chat_type=_chat_type,
                 )
                 if d_result.verdict == "IGNORE":
                     logger.debug(
@@ -1368,12 +1369,14 @@ class TelegramUserClientConnector:
                     _live_participant_count = await self._get_participant_count(
                         chat_id_str, message
                     )
+                    _live_chat_type = self._derive_chat_type(getattr(message, "chat", None))
                     d_result = await self._discretion_evaluators[chat_id_str].evaluate(
                         msg_text,
                         weight=sender_weight,
                         participant_count=(
                             _live_participant_count if _live_participant_count > 0 else None
                         ),
+                        chat_type=_live_chat_type,
                     )
                     if d_result.verdict == "IGNORE":
                         logger.debug(

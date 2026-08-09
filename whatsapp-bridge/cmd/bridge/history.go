@@ -42,7 +42,13 @@ func mapHistorySyncMessages(
 			if err != nil {
 				continue
 			}
-			if event := bridgeEvents.MapMessage(message); event != nil {
+			// participantCount=0 (unknown): history-sync backfill runs before
+			// a live client event loop is available to resolve group sizes,
+			// and is a bounded startup replay window, not the ongoing live
+			// flow the group-size discretion bypass targets. Backfilled
+			// messages fall through to normal LLM-gated discretion, same as
+			// before this change — not a regression, just out of scope here.
+			if event := bridgeEvents.MapMessage(message, 0); event != nil {
 				mapped = append(mapped, event)
 			}
 		}

@@ -200,10 +200,12 @@ The Telegram user client connector SHALL use the shared discretion layer (`butle
 - **AND** window/weight configuration (`window_size`, `window_seconds`, `weight_bypass`, `weight_fail_open`, `discretion_group_size_bypass_max`) is passed directly to the `DiscretionEvaluator` constructor
 
 #### Scenario: Group-size discretion bypass
-- **WHEN** a chat's participant count (resolved via `_get_participant_count`, cached with a 1-hour TTL) is known and `<= discretion_group_size_bypass_max` (env `TELEGRAM_USER_DISCRETION_GROUP_SIZE_BYPASS_MAX`, default 20)
+- **WHEN** a chat's participant count (resolved via `_get_participant_count`, cached with a 1-hour TTL) is known and `<= discretion_group_size_bypass_max` (env `TELEGRAM_USER_DISCRETION_GROUP_SIZE_BYPASS_MAX`, default 20), AND `_derive_chat_type` reports a value in the allow-list `{"group", "supergroup"}`
 - **THEN** the discretion LLM is skipped entirely for that message/batch and it always FORWARDs, independent of sender weight
 - **AND** this applies on both the batch-flush path (`_flush_chat_buffer`) and the live single-message path (`_process_message`)
 - **AND** an unknown participant count (0, normalized to `None`) never triggers the bypass — chats over the threshold, or whose size cannot yet be resolved, keep full LLM-gated filtering
+- **AND** a DM (`chat_type == "private"`) never triggers the bypass, even though DMs conventionally report `participant_count=2` — a 1:1 conversation is not "small group banter", and without this guard every DM would silently skip discretion regardless of sender trust
+- **AND** a broadcast channel (`chat_type == "channel"`) never triggers the bypass either, even a small niche one under the threshold — Telegram's `_get_participant_count` genuinely queries `participants_count` for channels too, and a low subscriber count doesn't make one-to-many announcement content into organic group chatter
 
 ### Requirement: Loopback Health Endpoint
 The Telegram user client connector SHALL expose its operational health without

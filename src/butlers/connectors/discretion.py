@@ -44,6 +44,13 @@ _INNER_CIRCLE_ROLES: frozenset[str] = frozenset({"family", "close-friends"})
 # directly by the owner via the web interface; they must never be filtered.
 DISCRETION_BYPASS_CHANNELS: frozenset[str] = frozenset({"dashboard"})
 
+# chat_type values eligible for the group-size bypass (see evaluate()'s
+# chat_type docstring). Deliberately an allow-list, not a "!= private"
+# deny-list: a small broadcast/newsletter "channel" is one-to-many
+# announcement content, not organic group chatter, and must not silently
+# skip discretion just because its subscriber count happens to be low.
+_GROUP_SIZE_BYPASS_CHAT_TYPES: frozenset[str] = frozenset({"group", "supergroup"})
+
 # ``origin_butler`` stamped on the attention-ledger row written when a discretion
 # evaluation is suppressed by same-tier failover exhaustion (bu-5go3y). Discretion
 # runs inside connectors, not a butler daemon, so there is no butler identity to
@@ -535,6 +542,7 @@ class DiscretionEvaluator:
         weight: float = 1.0,
         channel: str | None = None,
         participant_count: int | None = None,
+        chat_type: str | None = None,
     ) -> DiscretionResult:
         """Evaluate a new message against the sliding context window.
 
@@ -562,7 +570,8 @@ class DiscretionEvaluator:
                 not supply a channel.
             participant_count: Number of participants in the originating
                 chat, when known.  When ``<= group_size_bypass_max`` (set at
-                construction; ``None`` means disabled), the LLM is skipped
+                construction; ``None`` means disabled) AND ``chat_type``
+                indicates an actual group (see below), the LLM is skipped
                 entirely and the message always FORWARDs — small/family-sized
                 groups should not have their content filtered by the
                 system prompt's "IGNORE ... group banter" instruction, since
@@ -572,6 +581,26 @@ class DiscretionEvaluator:
                 configured — large groups routinely report an unknown count,
                 and treating "unknown" as "small" would defeat the token-cost
                 control the threshold exists for.
+            chat_type: The originating chat's type (e.g. ``"private"``,
+                ``"group"``, ``"supergroup"``, ``"channel"``), when known.
+                The group-size bypass requires
+                ``chat_type in _GROUP_SIZE_BYPASS_CHAT_TYPES`` (currently
+                ``{"group", "supergroup"}`` — an allow-list, not a
+                ``!= "private"`` deny-list). Two real chat types must never
+                bypass regardless of a small participant_count:
+
+                - ``"private"`` (1:1 DM): conventionally reports
+                  ``participant_count=2`` for unrelated Dunbar-eligibility
+                  bookkeeping, which is not "small group banter".
+                - ``"channel"`` (broadcast/newsletter, WhatsApp or Telegram):
+                  a small niche broadcast channel can genuinely have a low
+                  subscriber count, but it's one-to-many announcement
+                  content, not organic group chatter — the same class of
+                  mismatch as the DM case, just for a different chat shape.
+
+                Without this guard every DM or small broadcast channel would
+                silently skip discretion regardless of sender trust, which
+                was never the intent of this bypass.
 
         Returns:
             :class:`DiscretionResult` — always succeeds.
@@ -618,11 +647,13 @@ class DiscretionEvaluator:
 
         # Group-size bypass: small/family-sized groups skip the LLM entirely,
         # independent of sender weight. Deliberately fails safe on unknown
-        # counts — see the `participant_count` docstring above.
+        # counts, and on anything that isn't actually a group (chat_type
+        # guard) — see the `participant_count`/`chat_type` docstrings above.
         if (
             participant_count is not None
             and self._group_size_bypass_max is not None
             and participant_count <= self._group_size_bypass_max
+            and chat_type in _GROUP_SIZE_BYPASS_CHAT_TYPES
         ):
             discretion_evaluations_total.labels(
                 source=self._source,

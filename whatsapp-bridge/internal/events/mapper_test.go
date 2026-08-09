@@ -34,7 +34,7 @@ func TestMapMessage_TextConversation(t *testing.T) {
 		Message: &waE2E.Message{Conversation: proto.String("Hello, World!")},
 	}
 
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
@@ -64,7 +64,7 @@ func TestMapMessage_ExtendedText(t *testing.T) {
 		},
 	}
 
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
@@ -88,7 +88,7 @@ func TestMapMessage_Image(t *testing.T) {
 		},
 	}
 
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
@@ -124,7 +124,7 @@ func TestMapMessage_VoiceNote(t *testing.T) {
 		},
 	}
 
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
@@ -146,7 +146,7 @@ func TestMapMessage_Audio_NotPTT(t *testing.T) {
 		},
 	}
 
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
@@ -170,7 +170,7 @@ func TestMapMessage_Reaction(t *testing.T) {
 		},
 	}
 
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
@@ -195,7 +195,7 @@ func TestMapMessage_NilMessage(t *testing.T) {
 		Info:    makeInfo("nil1", "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
 		Message: nil,
 	}
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be != nil {
 		t.Errorf("expected nil for nil Message, got %+v", be)
 	}
@@ -206,7 +206,7 @@ func TestMapMessage_EmptyMessage_ReturnsNil(t *testing.T) {
 		Info:    makeInfo("empty1", "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
 		Message: &waE2E.Message{},
 	}
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be != nil {
 		t.Errorf("expected nil for empty Message, got type=%q", be.Type)
 	}
@@ -217,7 +217,7 @@ func TestMapMessage_TimestampIsUnixEpoch(t *testing.T) {
 		Info:    makeInfo("ts1", "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
 		Message: &waE2E.Message{Conversation: proto.String("hello")},
 	}
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
@@ -269,7 +269,7 @@ func TestMapMessage_Document(t *testing.T) {
 		},
 	}
 
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
@@ -298,11 +298,83 @@ func TestMapMessage_MessageDeletion(t *testing.T) {
 		},
 	}
 
-	be := events.MapMessage(evt)
+	be := events.MapMessage(evt, 0)
 	if be == nil {
 		t.Fatal("expected non-nil BridgeEvent")
 	}
 	if be.Type != "message_deleted" {
 		t.Errorf("Type: got %q want %q", be.Type, "message_deleted")
+	}
+}
+
+func TestMapMessage_ParticipantCountThreadsThrough(t *testing.T) {
+	evt := &waEvents.Message{
+		Info:    makeInfo("grp1", "123456-group@g.us", "9876543210@s.whatsapp.net"),
+		Message: &waE2E.Message{Conversation: proto.String("hello group")},
+	}
+
+	be := events.MapMessage(evt, 8)
+	if be == nil {
+		t.Fatal("expected non-nil BridgeEvent")
+	}
+	if be.ParticipantCount != 8 {
+		t.Errorf("ParticipantCount: got %d want 8", be.ParticipantCount)
+	}
+}
+
+func TestMapMessage_ZeroParticipantCountOmittedFromJSON(t *testing.T) {
+	// 0 means "unknown" by convention (DMs, channels, unresolved groups) and
+	// must be OMITTED from the wire payload, not serialized as a literal 0 —
+	// the Python connector's _extract_wa_participant_count treats a present
+	// key as an authoritative count, so a serialized 0 would be misread as
+	// "this chat genuinely has zero participants" rather than "unknown".
+	evt := &waEvents.Message{
+		Info:    makeInfo("dm1", "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
+		Message: &waE2E.Message{Conversation: proto.String("hello dm")},
+	}
+
+	be := events.MapMessage(evt, 0)
+	if be == nil {
+		t.Fatal("expected non-nil BridgeEvent")
+	}
+
+	encoded, err := json.Marshal(be)
+	if err != nil {
+		t.Fatalf("marshal BridgeEvent: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatalf("unmarshal encoded BridgeEvent: %v", err)
+	}
+	if _, present := raw["participant_count"]; present {
+		t.Errorf("expected participant_count to be omitted when 0, got %v", raw["participant_count"])
+	}
+}
+
+func TestMapMessage_NonZeroParticipantCountPresentInJSON(t *testing.T) {
+	evt := &waEvents.Message{
+		Info:    makeInfo("grp2", "123456-group@g.us", "9876543210@s.whatsapp.net"),
+		Message: &waE2E.Message{Conversation: proto.String("hello group")},
+	}
+
+	be := events.MapMessage(evt, 12)
+	if be == nil {
+		t.Fatal("expected non-nil BridgeEvent")
+	}
+
+	encoded, err := json.Marshal(be)
+	if err != nil {
+		t.Fatalf("marshal BridgeEvent: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatalf("unmarshal encoded BridgeEvent: %v", err)
+	}
+	got, present := raw["participant_count"]
+	if !present {
+		t.Fatal("expected participant_count to be present when non-zero")
+	}
+	if got != float64(12) {
+		t.Errorf("participant_count: got %v want 12", got)
 	}
 }

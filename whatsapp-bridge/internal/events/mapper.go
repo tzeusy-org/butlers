@@ -13,18 +13,27 @@ import (
 
 // BridgeEvent is the JSON structure emitted on the SSE stream.
 type BridgeEvent struct {
-	Type        string          `json:"type"`
-	MessageID   string          `json:"message_id"`
-	ChatJID     string          `json:"chat_jid"`
-	SenderJID   string          `json:"sender_jid"`
-	Timestamp   int64           `json:"timestamp"`
-	Content     json.RawMessage `json:"content"`
-	Raw         json.RawMessage `json:"raw,omitempty"`
+	Type      string          `json:"type"`
+	MessageID string          `json:"message_id"`
+	ChatJID   string          `json:"chat_jid"`
+	SenderJID string          `json:"sender_jid"`
+	Timestamp int64           `json:"timestamp"`
+	Content   json.RawMessage `json:"content"`
+	Raw       json.RawMessage `json:"raw,omitempty"`
+	// ParticipantCount is the group's live member count, when known (0 means
+	// unknown — omitted from the wire payload via omitempty). Populated by
+	// the caller for group messages via a cached whatsmeow GetGroupInfo
+	// lookup; MapMessage itself never fetches it. The Python connector's
+	// _extract_wa_participant_count already reads this exact top-level field
+	// ("future bridge support" in its docstring) — this is that future.
+	ParticipantCount int `json:"participant_count,omitempty"`
 }
 
 // MapMessage maps a whatsmeow *events.Message to a BridgeEvent.
-// Returns nil if the message should be ignored.
-func MapMessage(evt *waEvents.Message) *BridgeEvent {
+// Returns nil if the message should be ignored. participantCount is the
+// group's member count when known (0 for DMs, channels, or when the count
+// could not be resolved) — see BridgeEvent.ParticipantCount.
+func MapMessage(evt *waEvents.Message, participantCount int) *BridgeEvent {
 	msg := evt.Message
 	if msg == nil {
 		return nil
@@ -32,10 +41,11 @@ func MapMessage(evt *waEvents.Message) *BridgeEvent {
 
 	info := evt.Info
 	be := &BridgeEvent{
-		MessageID: info.ID,
-		ChatJID:   info.Chat.String(),
-		SenderJID: info.Sender.String(),
-		Timestamp: info.Timestamp.Unix(),
+		MessageID:        info.ID,
+		ChatJID:          info.Chat.String(),
+		SenderJID:        info.Sender.String(),
+		Timestamp:        info.Timestamp.Unix(),
+		ParticipantCount: participantCount,
 	}
 
 	// Determine type and content from the message.
@@ -167,9 +177,9 @@ func extractTypeAndContent(msg *waE2E.Message, info waTypes.MessageInfo) (string
 			options = append(options, o.GetOptionName())
 		}
 		c, _ := json.Marshal(map[string]any{
-			"question":       poll.GetName(),
-			"options":        options,
-			"select_max":     poll.GetSelectableOptionsCount(),
+			"question":   poll.GetName(),
+			"options":    options,
+			"select_max": poll.GetSelectableOptionsCount(),
 		})
 		return "poll", c
 	}

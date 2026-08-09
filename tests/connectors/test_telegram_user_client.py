@@ -780,6 +780,9 @@ async def test_live_path_small_group_bypasses_discretion(
     connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
 
     msg = _make_message(msg_id=10, chat_id=int(chat_id), sender_id=999, text="lol nice")
+    group_entity = MagicMock()
+    group_entity.__class__.__name__ = "Chat"
+    msg.chat = group_entity
     await connector._process_message(msg)
 
     dispatcher.call.assert_not_called()
@@ -910,6 +913,9 @@ async def test_batch_flush_small_group_bypasses_discretion(
     chat_id = "710"
     connector._participant_count_cache[chat_id] = (8, time.monotonic())
     msg = _make_message(msg_id=20, chat_id=int(chat_id), sender_id=111, text="lol nice")
+    group_entity = MagicMock()
+    group_entity.__class__.__name__ = "Chat"
+    msg.chat = group_entity
     await _prime_flush_buffer(connector, chat_id, msg)
 
     connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
@@ -922,6 +928,45 @@ async def test_batch_flush_small_group_bypasses_discretion(
     dispatcher.call.assert_not_called()
     connector._submit_to_ingest.assert_awaited_once()
     connector._record_batch_filtered_event.assert_not_called()
+
+
+async def test_batch_flush_dm_never_bypasses_via_group_size(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A DM flush must NOT bypass via group-size, even though DMs conventionally
+    report participant_count=2 (within the default threshold of 20).
+
+    Regression coverage for the batch-flush path specifically — the dominant
+    ingestion path, and the one the group-size bypass's own hardcoded-weight
+    lesson (see _resolve_batch_weight's docstring) warns is easy to leave
+    untested when only the live path gets a wiring test.
+    """
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_id = "712"
+    connector._participant_count_cache[chat_id] = (2, time.monotonic())  # DM convention
+    msg = _make_message(msg_id=22, chat_id=int(chat_id), sender_id=111, text="ambient chatter")
+    # msg.chat left as the default MagicMock — _derive_chat_type falls back to
+    # "private" for any unrecognized type, matching a real DM's User entity.
+    await _prime_flush_buffer(connector, chat_id, msg)
+
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+    connector._save_checkpoint = AsyncMock()  # type: ignore[method-assign]
+
+    await connector._flush_chat_buffer(chat_id)
+
+    dispatcher.call.assert_awaited_once()
+    connector._submit_to_ingest.assert_not_called()
+    connector._record_batch_filtered_event.assert_called_once()
 
 
 async def test_batch_flush_large_group_still_runs_discretion(
@@ -951,3 +996,40 @@ async def test_batch_flush_large_group_still_runs_discretion(
     dispatcher.call.assert_awaited_once()
     connector._submit_to_ingest.assert_not_called()
     connector._record_batch_filtered_event.assert_called_once()
+
+
+async def test_live_path_dm_never_bypasses_via_group_size(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A DM must NOT bypass via group-size, even though DMs conventionally
+    report participant_count=2 (within the default threshold of 20).
+
+    Regression coverage: this exact gap (private chats defaulting to
+    participant_count=2 and silently satisfying the group-size bypass
+    regardless of sender trust) was caught by a real integration test
+    failure on the WhatsApp equivalent before the chat_type guard existed.
+    """
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_id = "702"
+    connector._participant_count_cache[chat_id] = (2, time.monotonic())  # DM convention
+
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    msg = _make_message(msg_id=12, chat_id=int(chat_id), sender_id=999, text="ambient chatter")
+    # msg.chat left as the default MagicMock — _derive_chat_type falls back to
+    # "private" for any unrecognized type, matching a real DM's User entity.
+    await connector._process_message(msg)
+
+    dispatcher.call.assert_awaited_once()
+    connector._submit_to_ingest.assert_not_called()
+    connector._filtered_event_buffer.record.assert_called_once()

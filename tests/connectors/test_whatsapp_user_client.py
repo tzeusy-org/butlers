@@ -23,6 +23,7 @@ import pytest
 
 from butlers.connectors.whatsapp_user_client import (
     _SSE_PAIRING_WAIT_TIMEOUT_S,
+    ChatBuffer,
     WhatsAppUserClientConnector,
     WhatsAppUserClientConnectorConfig,
     _derive_wa_chat_type,
@@ -320,6 +321,196 @@ def test_group_with_no_participant_count_in_event_defaults_eligible(
     # participant_count is None (bridge didn't report it for groups)
     assert env["sender"]["participant_count"] is None
     assert env["control"]["interaction_eligible"] is True
+
+
+# ---------------------------------------------------------------------------
+# Group-size discretion bypass wiring (batch-flush path)
+#
+# Now that the Go bridge resolves real group participant counts (RFC 0013
+# D5, GetGroupInfo-backed), small/family-sized WhatsApp groups should skip
+# the discretion LLM entirely and always FORWARD — mirroring the Telegram
+# wiring. Mass groups (participant_count over the threshold, or the still-
+# common case where the bridge hasn't resolved a count yet) must keep full
+# LLM-gated filtering.
+# ---------------------------------------------------------------------------
+
+
+def _allow_decision() -> SimpleNamespace:
+    return SimpleNamespace(allowed=True, action="pass_through", reason="", matched_rule_type=None)
+
+
+def _wa_chat_buffer(chat_jid: str, events: list[dict[str, Any]]) -> ChatBuffer:
+    return ChatBuffer(messages=events, chat_jid=chat_jid)
+
+
+async def test_flush_chat_buffer_small_group_bypasses_discretion(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """A batch flush in a group at/under the threshold FORWARDs without an LLM call."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_jid = "family-8@g.us"
+    connector._chat_buffers[chat_jid] = _wa_chat_buffer(
+        chat_jid,
+        [
+            {
+                "message_id": "m1",
+                "chat_jid": chat_jid,
+                "sender_jid": "111@s.whatsapp.net",
+                "timestamp": 1711447200,
+                "type": "text",
+                "text": "lol nice one",
+                "participant_count": 8,
+            }
+        ],
+    )
+
+    connector._refresh_lid_map = AsyncMock()  # type: ignore[method-assign]
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+    connector._save_checkpoint = AsyncMock()  # type: ignore[method-assign]
+
+    await connector._flush_chat_buffer(chat_jid)
+
+    dispatcher.call.assert_not_called()
+    connector._submit_to_ingest.assert_awaited_once()
+    connector._record_batch_filtered_event.assert_not_called()
+
+
+async def test_flush_chat_buffer_large_group_still_runs_discretion(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """A batch flush in a group over the threshold still calls the LLM."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_jid = "mass-300@g.us"
+    connector._chat_buffers[chat_jid] = _wa_chat_buffer(
+        chat_jid,
+        [
+            {
+                "message_id": "m2",
+                "chat_jid": chat_jid,
+                "sender_jid": "222@s.whatsapp.net",
+                "timestamp": 1711447200,
+                "type": "text",
+                "text": "ambient chatter",
+                "participant_count": 300,
+            }
+        ],
+    )
+
+    connector._refresh_lid_map = AsyncMock()  # type: ignore[method-assign]
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    await connector._flush_chat_buffer(chat_jid)
+
+    dispatcher.call.assert_awaited_once()
+    connector._submit_to_ingest.assert_not_called()
+    connector._record_batch_filtered_event.assert_called_once()
+
+
+async def test_flush_chat_buffer_unknown_participant_count_still_runs_discretion(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """A group whose participant_count the bridge hasn't resolved (still the common
+    case pre-cache-warm) must NOT bypass — the fail-safe direction matters most here,
+    since an unresolved count is far more common than a resolved one in practice."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_jid = "unresolved@g.us"
+    connector._chat_buffers[chat_jid] = _wa_chat_buffer(
+        chat_jid,
+        [
+            {
+                "message_id": "m3",
+                "chat_jid": chat_jid,
+                "sender_jid": "333@s.whatsapp.net",
+                "timestamp": 1711447200,
+                "type": "text",
+                "text": "banter",
+                # no participant_count key — the bridge hasn't resolved it yet
+            }
+        ],
+    )
+
+    connector._refresh_lid_map = AsyncMock()  # type: ignore[method-assign]
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    await connector._flush_chat_buffer(chat_jid)
+
+    dispatcher.call.assert_awaited_once()
+    connector._submit_to_ingest.assert_not_called()
+    connector._record_batch_filtered_event.assert_called_once()
+
+
+async def test_flush_chat_buffer_dm_never_bypasses_discretion(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """A DM flush must NOT bypass via group-size, even though DMs fall back to
+    participant_count=2 (within the default threshold of 20) — a 1:1 chat is
+    not "small group banter" and sender trust must still gate discretion.
+    """
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+
+    dispatcher = AsyncMock()
+    dispatcher.call = AsyncMock(return_value="IGNORE")
+    connector._discretion_dispatcher = dispatcher
+    connector._weight_resolver = AsyncMock()
+    connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+
+    chat_jid = "15551234@s.whatsapp.net"
+    connector._chat_buffers[chat_jid] = _wa_chat_buffer(
+        chat_jid,
+        [
+            {
+                "message_id": "m4",
+                "chat_jid": chat_jid,
+                "sender_jid": "15559876@s.whatsapp.net",
+                "timestamp": 1711447200,
+                "type": "text",
+                "text": "ambient chatter",
+                # no participant_count key — DMs fall back to 2 via chat_type
+            }
+        ],
+    )
+
+    connector._refresh_lid_map = AsyncMock()  # type: ignore[method-assign]
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    await connector._flush_chat_buffer(chat_jid)
+
+    dispatcher.call.assert_awaited_once()
+    connector._submit_to_ingest.assert_not_called()
+    connector._record_batch_filtered_event.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -510,14 +510,27 @@ The discretion layer SHALL support a participant-count-based bypass, independent
 The default discretion system prompt instructs the LLM to IGNORE "background conversation... group banter". For a small group (e.g. immediate/extended family, a close-friends chat), that banter is exactly the low-content-but-frequent signal passive interaction sync needs to see for Dunbar tier scoring — filtering it on content grounds silently starves Dunbar scoring for those chats. For a mass group (potentially hundreds of members), the same per-flush LLM call is a real, unbounded token cost that content-based filtering is worth paying to control. Group size is the discriminator between the two cases, not message content.
 
 #### Scenario: Group-size bypass
-- **WHEN** `participant_count` is known (non-`None`) and `<= group_size_bypass_max` (a threshold configured at construction; `None` means the bypass is disabled)
+- **WHEN** `participant_count` is known (non-`None`) and `<= group_size_bypass_max` (a threshold configured at construction; `None` means the bypass is disabled), AND `chat_type` is in the allow-list `{"group", "supergroup"}`
 - **THEN** the discretion LLM is skipped entirely and the message always FORWARDs, regardless of sender weight
 - **AND** the message is still appended to the context window for future evaluations
 
 #### Scenario: Unknown participant count never bypasses
 - **WHEN** `participant_count` is `None` (unknown), even with a `group_size_bypass_max` threshold configured
 - **THEN** the group-size bypass does NOT apply and normal weight/LLM evaluation proceeds
-- **AND** this is deliberate fail-safe behaviour: a connector that cannot yet resolve real group sizes (e.g. WhatsApp groups before RFC 0013 D5 group-info fetching) must never have every unsized group silently bypass filtering, which would defeat the token-cost control the threshold exists for
+- **AND** this is deliberate fail-safe behaviour: a connector that cannot yet resolve a group's real size (e.g. before its participant-count cache is warm, or a WhatsApp history-sync backfill message — see below) must never have every unsized group silently bypass filtering, which would defeat the token-cost control the threshold exists for
+
+#### Scenario: A non-group chat_type never bypasses, regardless of participant_count
+- **WHEN** `chat_type` is `"private"` (a 1:1 DM), `"channel"` (a broadcast/newsletter channel), or omitted (`None`) — i.e. not in the `{"group", "supergroup"}` allow-list — even if `participant_count` is within the threshold
+- **THEN** the group-size bypass does NOT apply and normal weight/LLM evaluation proceeds
+- **AND** this is deliberately an allow-list, not a `!= "private"` deny-list: a DM conventionally reports `participant_count=2` for unrelated Dunbar-eligibility bookkeeping (a DM is always interaction-eligible), and a small niche broadcast channel can genuinely have a low subscriber count while still being one-to-many announcement content, not organic group chatter — both are the same class of mismatch (a small `participant_count` that doesn't mean "small group banter"), and without this guard every DM or small channel would silently skip discretion regardless of sender trust
+
+#### Scenario: WhatsApp group participant count via whatsmeow (RFC 0013 D3)
+- **WHEN** the whatsapp-bridge Go process receives a message event where `Info.IsGroup` is true
+- **THEN** it resolves the group's live participant count via `whatsmeow.Client.GetGroupInfo`, cached per chat JID for 1 hour on success (`internal/events.GroupInfoCache`) so an active group does not trigger a network round trip to WhatsApp's servers on every message
+- **AND** the resolved count is emitted as a top-level `participant_count` field on the `BridgeEvent` (omitted from the JSON payload when 0/unknown, via `omitempty`) — the same top-level field the Python connector's `_extract_wa_participant_count` already anticipated ("future bridge support")
+- **AND** the cache lookup never blocks message delivery: whatsmeow dispatches events serially on one goroutine, so a synchronous fetch would stall every subsequent WhatsApp event, not just this group's. A cache miss or expired entry returns the best available value immediately (the stale count if one exists, else 0/unknown) and refreshes in a background goroutine, deduplicated per JID so a burst of messages in one group triggers at most one in-flight fetch
+- **AND** a `GetGroupInfo` failure is negative-cached for a short, fixed TTL (independent of the success TTL) so a persistently-broken group (e.g. the bot was removed) doesn't spawn a fetch goroutine on every message, while a real recovery is still picked up promptly rather than staying wedged at "unknown" for the full success TTL
+- **AND** DMs, channels, and history-sync backfill messages (a bounded startup replay window, processed before a live client event loop is available) are NOT resolved and pass `participantCount=0` — they fall through to the non-group `chat_type` handling already documented above, not a regression from prior behaviour
 
 #### Scenario: Group-size bypass composes with existing bypasses
 - **WHEN** a message qualifies for the channel bypass (`DISCRETION_BYPASS_CHANNELS`) or the weight bypass (`weight >= weight_bypass`)

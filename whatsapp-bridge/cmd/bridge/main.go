@@ -124,6 +124,13 @@ func runBridge(args []string) {
 	client := whatsmeow.NewClient(deviceStore, waLog.Stdout("whatsmeow", "INFO", false))
 	client.EnableAutoReconnect = true
 
+	// Group participant-count cache (RFC 0013 D5): resolves real group sizes
+	// via GetGroupInfo, cached for an hour so an active group doesn't trigger
+	// a network round trip to WhatsApp's servers on every message. Used to
+	// populate BridgeEvent.ParticipantCount for group messages only — DMs and
+	// channels stay at 0/unknown, matching the connector's existing fallback.
+	groupInfoCache := bridgeEvents.NewGroupInfoCache(&whatsmeowGroupInfoFetcher{client: client}, time.Hour)
+
 	// Prepare API server.
 	srv := api.NewServer(socketPath, cancel)
 
@@ -233,7 +240,11 @@ func runBridge(args []string) {
 			srv.NotifyPaired(phone)
 
 		case *waEvents.Message:
-			be := bridgeEvents.MapMessage(evt)
+			participantCount := 0
+			if evt.Info.IsGroup {
+				participantCount = groupInfoCache.ParticipantCount(evt.Info.Chat)
+			}
+			be := bridgeEvents.MapMessage(evt, participantCount)
 			if be != nil {
 				srv.PublishEvent(be)
 			}
@@ -457,6 +468,21 @@ func runStatus(args []string) {
 // ------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------
+
+// whatsmeowGroupInfoFetcher adapts *whatsmeow.Client to bridgeEvents.GroupInfoFetcher.
+type whatsmeowGroupInfoFetcher struct {
+	client *whatsmeow.Client
+}
+
+func (f *whatsmeowGroupInfoFetcher) ParticipantCount(jid types.JID) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info, err := f.client.GetGroupInfo(ctx, jid)
+	if err != nil {
+		return 0, err
+	}
+	return info.ParticipantCount, nil
+}
 
 func parseSocketPath(addr string) string {
 	switch {

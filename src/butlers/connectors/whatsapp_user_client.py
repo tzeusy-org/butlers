@@ -270,6 +270,12 @@ class WhatsAppUserClientConnectorConfig:
     max_interaction_group_size: int = 20
     """Chats with more participants than this threshold have interaction_eligible=False."""
 
+    discretion_group_size_bypass_max: int = 20
+    """Chats at or under this participant count skip the discretion LLM entirely
+    and always FORWARD. Distinct from max_interaction_group_size above (which
+    gates Dunbar interaction_eligible for large groups) despite the same
+    default — this threshold is about small groups, that one about large ones."""
+
     @classmethod
     def from_env(cls) -> WhatsAppUserClientConnectorConfig:
         """Load non-credential configuration from environment variables.
@@ -314,6 +320,9 @@ class WhatsAppUserClientConnectorConfig:
         _raw_max_group = os.environ.get("WA_MAX_INTERACTION_GROUP_SIZE", "").strip()
         max_interaction_group_size = int(_raw_max_group) if _raw_max_group else 20
 
+        _raw_bypass_max = os.environ.get("WA_DISCRETION_GROUP_SIZE_BYPASS_MAX", "").strip()
+        discretion_group_size_bypass_max = int(_raw_bypass_max) if _raw_bypass_max else 20
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -329,6 +338,7 @@ class WhatsAppUserClientConnectorConfig:
             invalidated_session_threshold_s=invalidated_session_threshold_s,
             address_keywords=address_keywords,
             max_interaction_group_size=max_interaction_group_size,
+            discretion_group_size_bypass_max=discretion_group_size_bypass_max,
         )
 
 
@@ -456,13 +466,16 @@ def _derive_wa_chat_type(chat_jid: str) -> str:
 def _extract_wa_participant_count(event: dict[str, Any]) -> int | None:
     """Extract participant count from a WhatsApp bridge event, if present.
 
-    The Go bridge currently does not emit participant_count in standard events.
-    This function reads it from optional metadata fields that may be added in
-    future bridge versions, or from explicit group_metadata payloads.
+    The Go bridge resolves this via a whatsmeow GetGroupInfo lookup (cached
+    per chat JID, 1-hour TTL — see internal/events.GroupInfoCache) for group
+    message events, and emits it as a top-level field. DMs, channels, and
+    history-sync backfill messages do not carry it (0/unknown, omitted from
+    the wire payload).
 
     Returns None when not available (caller should fall back to JID-based heuristic).
     """
-    # Check top-level participant_count field (future bridge support)
+    # Check top-level participant_count field (populated by the Go bridge for
+    # live group message events; absent for DMs/channels/backfill).
     raw_count = event.get("participant_count")
     if raw_count is not None:
         try:
@@ -1514,6 +1527,7 @@ class WhatsAppUserClientConnector:
                         # Fail OPEN on a discretion infra failure for this
                         # primary personal channel — see the constant's rationale.
                         weight_fail_open=_WHATSAPP_DISCRETION_WEIGHT_FAIL_OPEN,
+                        group_size_bypass_max=self._config.discretion_group_size_bypass_max,
                     )
 
                 # Weigh the batch by its participants (normalised identities
@@ -1524,7 +1538,10 @@ class WhatsAppUserClientConnector:
                 )
 
                 d_result = await self._discretion_evaluators[chat_jid].evaluate(
-                    normalized_text, weight=sender_weight
+                    normalized_text,
+                    weight=sender_weight,
+                    participant_count=envelope["sender"].get("participant_count"),
+                    chat_type=envelope["sender"].get("chat_type"),
                 )
                 if d_result.verdict == "IGNORE":
                     ignore_kind = classify_ignore_kind(d_result)
