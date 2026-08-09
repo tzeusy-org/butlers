@@ -6,11 +6,67 @@ Provides cron-driven task dispatch for butlers, supporting TOML-configured and r
 ## Requirements
 
 ### Requirement: Cron Evaluation and next_run_at Computation
-All cron expressions SHALL use 5-field format (minute hour day month day-of-week) evaluated in UTC. The `croniter` library validates and computes next occurrences. The `timezone` field is informational for projection/display only and MUST NOT affect cron evaluation.
+
+All cron expressions SHALL use 5-field format (minute hour day month day-of-week).
+During daemon startup synchronization, `sync_schedules()` SHALL calculate
+`next_run_at` for a new or changed TOML schedule using the startup-resolved
+owner general timezone. Startup synchronization does not read the stored per-row
+`timezone` value, and an otherwise unchanged TOML row retains its existing
+`next_run_at` even if the owner timezone has changed.
+
+During `tick()` evaluation, cron fields SHALL use an effective timezone: the
+scheduler loop's resolved owner general timezone is the default; a stored
+`timezone` of `UTC`, `NULL`, or empty is a default sentinel that follows that
+default; and a non-UTC `timezone` is an explicit per-schedule override.
+If the owner default or effective timezone is invalid, the scheduler SHALL fall
+back to UTC. The `croniter` library validates and computes the next occurrence
+in the applicable timezone; the scheduler SHALL convert the occurrence to UTC
+for `next_run_at` and then apply deterministic staggering as specified below.
 
 #### Scenario: Valid cron expression
-- **WHEN** a schedule is created with a valid 5-field cron expression
-- **THEN** `croniter.is_valid(cron)` passes and `next_run_at` is computed as the next UTC occurrence
+- **WHEN** `sync_schedules()` creates or updates a TOML schedule with a valid
+  5-field cron expression
+- **THEN** `croniter.is_valid(cron)` passes and `next_run_at` is computed from
+  the next occurrence in the startup-resolved owner-general timezone, converted to UTC,
+  and subject to deterministic staggering
+- **AND WHEN** `tick()` computes a subsequent `next_run_at`
+- **THEN** it uses that stored row's effective timezone, converted to UTC and
+  subject to deterministic staggering
+
+#### Scenario: Startup synchronization uses the owner default
+- **WHEN** a daemon creates or updates a TOML schedule during
+  `sync_schedules()`
+- **THEN** the cron fields SHALL be interpreted in the startup-resolved
+  owner-general timezone
+- **AND** startup synchronization SHALL NOT inspect a retained per-row
+  `timezone` override when computing that row's replacement `next_run_at`
+- **AND** if the owner timezone cannot be resolved, the cron fields SHALL be
+  interpreted in UTC
+
+#### Scenario: Unchanged TOML rows retain their prior startup computation
+- **WHEN** a TOML schedule's synced fields are unchanged on a later daemon
+  startup, including after an owner timezone change
+- **THEN** `sync_schedules()` SHALL leave that row's existing `next_run_at`
+  unchanged
+
+#### Scenario: Tick-time default schedule timezone follows the owner
+- **WHEN** `tick()` evaluates a schedule whose stored `timezone` is `UTC`,
+  `NULL`, or empty
+- **THEN** the cron fields SHALL be interpreted in the scheduler loop's
+  resolved owner-general timezone
+- **AND** if that timezone cannot be resolved, they SHALL be interpreted in UTC
+
+#### Scenario: A running scheduler loop retains its resolved owner default
+- **WHEN** the owner general timezone changes while a scheduler loop is running
+- **THEN** subsequent `tick()` calls in that loop SHALL continue using the
+  owner-general default resolved when the loop started
+- **AND** the changed owner timezone SHALL take effect after the next daemon
+  restart starts a new scheduler loop
+
+#### Scenario: Explicit schedule timezone overrides the owner default
+- **WHEN** `tick()` evaluates a schedule with a non-UTC stored `timezone`
+- **THEN** the cron fields SHALL be interpreted in that timezone rather than the
+  owner's configured general timezone
 
 #### Scenario: Invalid cron expression
 - **WHEN** a schedule is created or updated with an invalid cron expression

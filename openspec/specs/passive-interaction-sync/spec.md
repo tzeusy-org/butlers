@@ -187,13 +187,42 @@ on every run.
 
 ### Requirement: Schedule configuration
 
-#### Scenario: Default schedule
+The relationship butler's TOML `interaction_sync` entry SHALL use
+`30 6 * * *` as a 06:30 cron baseline. When `sync_schedules()` creates or
+updates that TOML entry, it SHALL calculate `next_run_at` in the startup-resolved
+owner-general timezone, falling back to UTC when that timezone
+cannot be resolved. The scheduler SHALL apply its deterministic staggering to
+that baseline, so dispatch may occur up to 15 minutes later.
 
-- **WHEN** the relationship butler starts
-- **THEN** the `interaction_sync` job SHALL be registered with cron
-  `30 6 * * *` (daily at 06:30 UTC) and `dispatch_mode = "job"`
+The TOML entry does not define a per-row timezone override. At tick time, a
+stored `UTC`, `NULL`, or empty sentinel follows the same loop-resolved owner
+default, while a retained non-UTC per-row value is handled as that row's
+explicit override. An unchanged synced row retains its existing `next_run_at`;
+an owner timezone change alone does not cause startup synchronization to
+recompute it.
+
+#### Scenario: Default schedule startup synchronization
+
+- **WHEN** the relationship butler starts and `sync_schedules()` creates or
+  updates the `interaction_sync` entry
+- **THEN** the job SHALL use cron `30 6 * * *` (a daily 06:30 baseline in the
+  startup-resolved owner-general timezone, with UTC fallback and
+  deterministic scheduler staggering of up to 15 minutes) and
+  `dispatch_mode = "job"`
+
+#### Scenario: Unchanged schedule is not recalculated for an owner timezone change
+
+- **WHEN** the relationship butler starts with an unchanged
+  `interaction_sync` TOML entry after the owner timezone changes
+- **THEN** startup synchronization SHALL retain the row's existing
+  `next_run_at` rather than recalculating it solely for that timezone change
 
 ### Requirement: Job return stats
+
+The `interaction_sync` job SHALL return the stats described below. Because
+messages with `interaction_eligible = 'false'` are filtered before grouping and
+stats aggregation, the retained `skipped_ineligible` compatibility field SHALL
+be zero and does not count those filtered rows.
 
 #### Scenario: Return value
 
@@ -205,7 +234,8 @@ on every run.
   - `logged` (int) — interaction facts created (incoming + outgoing combined)
   - `skipped_unresolved` (int) — senders or attendees not found in `relationship.entity_facts`
   - `skipped_owner` (int) — owner's own sender or attendee entries excluded
-  - `skipped_ineligible` (int) — messages excluded by `interaction_eligible = 'false'` flag
+  - `skipped_ineligible` (int) — always zero; ineligible messages are filtered
+    before stats aggregation
   - `skipped_group_too_large` (int) — chat groups exceeding the 20-participant gate
   - `calendar_events_scanned` (int)
   - `errors` (int) — checkpoint I/O failures and other non-fatal errors
