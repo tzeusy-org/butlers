@@ -8,6 +8,8 @@ plus a registry/factory function that maps runtime type strings
 from __future__ import annotations
 
 import abc
+import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,8 @@ from typing import Any
 # boots into the same default adapter. Per-session overrides come from
 # ``public.model_catalog`` at spawn time — not from ``butler.toml``.
 DEFAULT_RUNTIME_TYPE = "codex"
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeAdapter(abc.ABC):
@@ -33,6 +37,18 @@ class RuntimeAdapter(abc.ABC):
     #: ``resume_session_id`` -- adapters that don't support it do not accept
     #: the parameter at all, rather than silently ignoring it.
     supports_resume: bool = False
+
+    @property
+    def session_timeout_overhead_s(self) -> float:
+        """Return bounded setup/teardown time outside the execution budget.
+
+        ``timeout`` passed to :meth:`invoke` remains the maximum time for the
+        provider runtime itself.  Adapters with bounded best-effort work that
+        must happen immediately before or after that runtime can declare its
+        worst-case allowance here, so the Spawner's outer cancellation guard
+        does not turn a successful provider execution into a session timeout.
+        """
+        return 0.0
 
     @property
     @abc.abstractmethod
@@ -213,6 +229,37 @@ class RuntimeAdapter(abc.ABC):
         prewarm failure must never fail, delay, or alter a real dispatch.
         """
         return None
+
+
+def validated_session_timeout_overhead_s(runtime: RuntimeAdapter) -> float:
+    """Return a finite non-negative runtime setup/teardown allowance.
+
+    Both normal Spawner sessions and direct discretion calls use this one
+    adapter declaration to extend only their outer safety guard.  A malformed
+    custom adapter must therefore fail closed identically in both paths.
+    """
+    try:
+        declared = runtime.session_timeout_overhead_s
+    except (AttributeError, TypeError, ValueError):
+        declared = None
+
+    if isinstance(declared, bool) or not isinstance(declared, (int, float)):
+        logger.warning(
+            "Runtime adapter supplied an invalid session-timeout overhead; ignoring it "
+            "(runtime=%s)",
+            type(runtime).__name__,
+        )
+        return 0.0
+
+    allowance_s = float(declared)
+    if not math.isfinite(allowance_s) or allowance_s < 0:
+        logger.warning(
+            "Runtime adapter supplied an invalid session-timeout overhead; ignoring it "
+            "(runtime=%s)",
+            type(runtime).__name__,
+        )
+        return 0.0
+    return allowance_s
 
 
 # ---------------------------------------------------------------------------

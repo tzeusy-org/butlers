@@ -25,6 +25,7 @@ from typing import Any
 
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity, resolve_model
+from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,9 @@ async def parse_quick_add(
         pool,
         butler_name=effective_butler,
         complexity_tier=Complexity.CHEAP,
+        # The API router supplies DatabaseManager.credential_shared_pool(),
+        # so it is safe and necessary to make the Codex authority explicit.
+        credential_store=CredentialStore(pool),
     )
     try:
         raw = (

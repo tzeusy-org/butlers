@@ -31,6 +31,7 @@ import pwd
 import re
 import shutil
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -39,6 +40,7 @@ from butlers.core.mcp_urls import prefer_ipv4_loopback_url
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
 if TYPE_CHECKING:
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
     from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,14 @@ _CODEX_TOKEN_EXPIRY_BUFFER_SECONDS = 60
 # process holds the lock unexpectedly long.
 _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS = 30
 
+# Canonical-auth propagation is deliberately outside the session execution
+# budget.  This is the *total* allowance for all reconciliation/finalization
+# work in one ``invoke``.  It includes local task-lock queueing as well as the
+# bounded store calls inside _codex_auth_sync.  Codex declares the same
+# allowance to Spawner, which extends only its outer safety guard; the Codex
+# subprocess still receives the configured session timeout unchanged.
+_CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS = 2.5
+
 # Emit a structured info message when waiting for the lock takes longer than this.
 _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS = 5
 
@@ -82,6 +92,42 @@ _BENIGN_STDERR_LINES = frozenset(
     }
 )
 _BENIGN_STDERR_PREFIXES = ("WARNING: proceeding, even though we could not update PATH:",)
+
+
+@dataclass
+class _CodexAuthSyncBudget:
+    """One bounded credential-synchronization allowance per invocation."""
+
+    remaining_s: float = field(
+        default_factory=lambda: _CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS,
+    )
+
+    def next_timeout_s(self) -> float:
+        """Return the remaining bounded wait available to one sync operation."""
+        return max(0.0, min(self.remaining_s, _CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS))
+
+    def consume(self, elapsed_s: float) -> None:
+        """Charge only authority-synchronization time to this budget."""
+        self.remaining_s = max(0.0, self.remaining_s - max(0.0, elapsed_s))
+
+
+@dataclass
+class _CodexAuthInvocation:
+    """Auth state carried across all subprocess attempts in one ``invoke``.
+
+    The snapshot is updated immediately before each spawn.  It is intentionally
+    excluded from repr because it contains raw credential bytes used only for
+    the later compare-and-set boundary.
+    """
+
+    spawn_authority_snapshot: str | None = field(default=None, repr=False)
+    authority_known: bool = False
+    completed: bool = False
+    health_result: tuple[bool, str | None] | None = None
+    auth_sync_budget: _CodexAuthSyncBudget = field(
+        default_factory=_CodexAuthSyncBudget,
+        repr=False,
+    )
 
 
 class MCPToolDiscoveryError(RuntimeError):
@@ -522,12 +568,20 @@ def _token_needs_refresh(codex_dir: Path) -> bool:
 
 
 @contextlib.asynccontextmanager
-async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
+async def _codex_refresh_lock(
+    codex_dir: Path,
+    *,
+    wait_timeout_s: float | None = None,
+):  # type: ignore[return]
     """Async context manager that acquires a cross-process POSIX flock.
 
-    Tries ``fcntl.flock(LOCK_EX | LOCK_NB)`` in a thread pool executor so the
-    event loop is not blocked.  Retries for up to
-    ``_CODEX_REFRESH_LOCK_TIMEOUT_SECONDS`` seconds with 0.25s intervals.
+    Calls ``fcntl.flock(LOCK_EX | LOCK_NB)`` directly: the nonblocking flag
+    means the syscall immediately acquires or raises ``BlockingIOError`` and
+    therefore cannot stall the event loop. Keeping it off the default executor
+    also makes the explicit wait budget authoritative under executor pressure.
+    Retries for up to
+    ``_CODEX_REFRESH_LOCK_TIMEOUT_SECONDS`` seconds (or a smaller explicit
+    operation budget) with 0.25s intervals.
 
     If the lock cannot be acquired within the timeout the manager logs a
     structured info message and yields anyway (the caller proceeds unlocked) so
@@ -554,15 +608,15 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
 
     acquired = False
     try:
-        loop = asyncio.get_running_loop()
-        deadline = time.monotonic() + _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS
+        max_wait_s = _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS
+        if wait_timeout_s is not None:
+            max_wait_s = max(0.0, min(max_wait_s, wait_timeout_s))
+        deadline = time.monotonic() + max_wait_s
         warned_contention = False
 
         while True:
             try:
-                await loop.run_in_executor(
-                    None, lambda: fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                )
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
                 break
             except BlockingIOError:
@@ -571,16 +625,15 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 logger.info(
-                    "codex_refresh_lock: lock held >%ds by another process — proceeding "
+                    "codex_refresh_lock: lock held >%.1fs by another process — proceeding "
                     "unlocked to avoid deadlock (lock_path=%s)",
-                    _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS,
+                    max_wait_s,
                     lock_path,
                 )
                 break
 
             if not warned_contention and (
-                _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS - remaining
-                >= _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS
+                max_wait_s - remaining >= _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS
             ):
                 warned_contention = True
                 logger.info(
@@ -590,7 +643,7 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
                     lock_path,
                 )
 
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(min(0.25, remaining))
 
         yield
 
@@ -600,6 +653,27 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
         with contextlib.suppress(OSError):
             os.close(lock_fd)
+
+
+async def _drain_terminated_prewarm_process(proc: asyncio.subprocess.Process) -> None:
+    """Reap a killed status process away from the invocation critical path."""
+    try:
+        await proc.wait()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("codex pre-warm: detached process reaper failed")
+
+
+def _terminate_prewarm_process(proc: asyncio.subprocess.Process) -> None:
+    """Kill a prewarm child and detach reaping so cancellation stays bounded."""
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    # Never await this from the auth-budget path: an OS/process-wrapper bug in
+    # ``wait`` must not turn best-effort prewarm cleanup into a session timeout.
+    asyncio.create_task(_drain_terminated_prewarm_process(proc))
 
 
 async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
@@ -612,9 +686,12 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
     - On first ``CodexAdapter.invoke()`` per process (startup pre-warm).
     - After a successful CLI auth flow for the ``codex`` provider.
 
-    The call is best-effort: any exception is logged and swallowed so the
-    caller's control flow is never disrupted.
+    Ordinary failures are best-effort: they are logged and swallowed so the
+    caller's control flow is never disrupted. Cancellation is deliberately
+    re-raised after killing and detaching a child-process reaper so an
+    invocation-wide bounded auth budget can stop this optional warmup safely.
     """
+    proc: asyncio.subprocess.Process | None = None
     try:
         async with _codex_refresh_lock(codex_dir):
             proc = await asyncio.create_subprocess_exec(
@@ -628,8 +705,7 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
             try:
                 _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
             except TimeoutError:
-                proc.kill()
-                await proc.wait()
+                _terminate_prewarm_process(proc)
                 logger.warning("codex pre-warm: login status timed out after 30s")
                 return
             if proc.returncode != 0:
@@ -641,6 +717,14 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
                 )
             else:
                 logger.debug("codex pre-warm: login status OK")
+    except asyncio.CancelledError:
+        # An invocation-wide auth budget may cancel this best-effort warmup.
+        # ``communicate`` cancellation does not guarantee the child is gone,
+        # so kill it and detach reaping before yielding cancellation back to
+        # the caller. Awaiting ``wait`` here could exceed the same budget.
+        if proc is not None and proc.returncode is None:
+            _terminate_prewarm_process(proc)
+        raise
     except Exception:
         logger.warning("codex pre-warm: unexpected error", exc_info=True)
 
@@ -1431,11 +1515,185 @@ class CodexAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "codex"
 
+    @property
+    def session_timeout_overhead_s(self) -> float:
+        """Reserve bounded auth synchronization outside Codex execution time."""
+        return _CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS
+
     def _get_binary(self) -> str:
         """Get the codex binary path, auto-detecting if needed."""
         if self._codex_binary is not None:
             return self._codex_binary
         return _find_codex_binary()
+
+    async def _reconcile_canonical_auth(
+        self,
+        token_path: Path | None,
+        *,
+        auth_sync_budget: _CodexAuthSyncBudget | None = None,
+    ) -> CodexAuthSyncResult:
+        """Best-effort reconcile of the real auth file before it is consumed.
+
+        The returned credential snapshot is deliberately opaque to callers: it
+        is passed straight to post-subprocess compare-and-set persistence so a
+        session launched on an old credential cannot overwrite a dashboard
+        refresh that lands while it runs.
+        """
+        from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+        if token_path is None or self._credential_store is None:
+            return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+
+        timeout_s = (
+            auth_sync_budget.next_timeout_s()
+            if auth_sync_budget is not None
+            else _CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS
+        )
+        if timeout_s <= 0:
+            logger.warning(
+                "codex: canonical auth reconciliation skipped after its bounded allowance "
+                "was exhausted (butler=%s path=%s)",
+                self._butler_name,
+                token_path,
+            )
+            return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+
+        started = time.monotonic()
+        try:
+            from butlers.core.runtimes._codex_auth_sync import reconcile_codex_auth
+
+            result = await asyncio.wait_for(
+                reconcile_codex_auth(
+                    token_path,
+                    self._credential_store,
+                    butler_name=self._butler_name,
+                ),
+                timeout=timeout_s,
+            )
+            return result
+        except Exception:
+            # Auth propagation is intentionally best-effort.  Never include
+            # exception detail here: credential-store errors can embed secrets.
+            logger.warning(
+                "codex: canonical auth reconciliation failed; continuing with local auth "
+                "(butler=%s path=%s)",
+                self._butler_name,
+                token_path,
+            )
+            return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+        finally:
+            if auth_sync_budget is not None:
+                auth_sync_budget.consume(time.monotonic() - started)
+
+    async def _finalize_canonical_auth(
+        self,
+        token_path: Path | None,
+        *,
+        expected_store_value: str | None,
+        authority_known: bool,
+        auth_sync_budget: _CodexAuthSyncBudget | None = None,
+    ) -> CodexAuthSyncResult:
+        """Finalize one auth-mutating operation against its launch snapshot.
+
+        Unlike generic preflight reconciliation, this path never derives its
+        compare-and-set expectation from mutable process cache state.  That
+        prevents an older prewarm or session from replacing a newer dashboard
+        refresh that completed while the operation was running.
+        """
+        from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+        if token_path is None or self._credential_store is None:
+            return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+
+        timeout_s = (
+            auth_sync_budget.next_timeout_s()
+            if auth_sync_budget is not None
+            else _CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS
+        )
+        if timeout_s <= 0:
+            logger.warning(
+                "codex: canonical auth finalization skipped after its bounded allowance "
+                "was exhausted (butler=%s path=%s)",
+                self._butler_name,
+                token_path,
+            )
+            return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+
+        started = time.monotonic()
+        try:
+            from butlers.core.runtimes._codex_auth_sync import finalize_codex_auth_rotation
+
+            result = await asyncio.wait_for(
+                finalize_codex_auth_rotation(
+                    token_path,
+                    self._credential_store,
+                    expected_store_value=expected_store_value,
+                    authority_known=authority_known,
+                    butler_name=self._butler_name,
+                ),
+                timeout=timeout_s,
+            )
+            return result
+        except Exception:
+            logger.warning(
+                "codex: canonical auth finalization failed; preserving local auth "
+                "(butler=%s path=%s)",
+                self._butler_name,
+                token_path,
+            )
+            return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+        finally:
+            if auth_sync_budget is not None:
+                auth_sync_budget.consume(time.monotonic() - started)
+
+    async def _run_prewarm_with_auth_sync_budget(
+        self,
+        codex_dir: Path,
+        binary: str,
+        auth_sync_budget: _CodexAuthSyncBudget,
+    ) -> bool:
+        """Run on-path prewarm only within this invocation's auth allowance.
+
+        ``codex login status`` may wait on the refresh lock or network. It is
+        valuable as a refresh optimization, but it must not take time away
+        from the catalog provider execution timeout. A cancellation here
+        leaves the normal slow-path subprocess runnable; the prewarm helper
+        kills any child process and schedules detached reaping before the
+        timeout is converted to this safe best-effort result.
+        """
+        timeout_s = auth_sync_budget.next_timeout_s()
+        if timeout_s <= 0:
+            logger.warning(
+                "codex invoke: skipped startup pre-warm after auth synchronization "
+                "allowance was exhausted (butler=%s)",
+                self._butler_name,
+            )
+            return False
+
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(
+                run_codex_pre_warm(codex_dir, binary),
+                timeout=timeout_s,
+            )
+            return True
+        except TimeoutError:
+            logger.warning(
+                "codex invoke: startup pre-warm exceeded bounded auth synchronization "
+                "allowance (butler=%s)",
+                self._butler_name,
+            )
+            return False
+        except Exception:
+            # A pre-warm is an optimization. Keep a locally-authenticated
+            # provider invocation runnable even when it fails unexpectedly.
+            logger.warning(
+                "codex invoke: startup pre-warm failed; continuing with normal spawn (butler=%s)",
+                self._butler_name,
+            )
+            return False
+        finally:
+            auth_sync_budget.consume(time.monotonic() - started)
 
     async def speculative_prewarm(self) -> None:
         """Fire-and-forget token pre-warm, called OFF the ``invoke()`` critical path.
@@ -1444,7 +1702,25 @@ class CodexAdapter(RuntimeAdapter):
         ``_maybe_speculative_codex_prewarm`` for the exact idempotent condition shared
         with ``invoke()``'s own on-path pre-warm check.
         """
-        await _maybe_speculative_codex_prewarm(self._get_binary())
+        real_home = _resolve_canonical_home(os.environ.get("HOME", ""))
+        token_path = (real_home / ".codex" / "auth.json") if real_home else None
+        auth_sync_budget = _CodexAuthSyncBudget()
+        authority_snapshot = await self._reconcile_canonical_auth(
+            token_path,
+            auth_sync_budget=auth_sync_budget,
+        )
+        try:
+            await _maybe_speculative_codex_prewarm(self._get_binary())
+        finally:
+            # ``codex login status`` can itself rotate auth.  Finalize using
+            # the snapshot captured before it began, so a newer dashboard
+            # refresh wins rather than a mutable process-wide baseline.
+            await self._finalize_canonical_auth(
+                token_path,
+                expected_store_value=authority_snapshot.expected_store_value,
+                authority_known=authority_snapshot.authority_known,
+                auth_sync_budget=auth_sync_budget,
+            )
 
     @staticmethod
     def _compose_exec_prompt(prompt: str, system_prompt: str) -> str:
@@ -1536,6 +1812,12 @@ class CodexAdapter(RuntimeAdapter):
         # Resolve the canonical home directory early so we can check token
         # expiry and run the pre-warm before creating the isolated tempdir.
         real_home = _resolve_canonical_home(os.environ.get("HOME", ""))
+        auth_token_path: Path | None = (real_home / ".codex" / "auth.json") if real_home else None
+        auth_sync_budget = _CodexAuthSyncBudget()
+        auth_authority_snapshot = await self._reconcile_canonical_auth(
+            auth_token_path,
+            auth_sync_budget=auth_sync_budget,
+        )
 
         # --- Cross-process refresh-token serialisation -----------------------
         # When the on-disk auth.json exists but the access_token is near expiry
@@ -1562,8 +1844,22 @@ class CodexAdapter(RuntimeAdapter):
             # First invoke() for this process on a token that looks stale:
             # run a pre-warm to refresh the token before the actual spawn.
             logger.debug("codex invoke: running startup pre-warm (prewarm_key=%s)", _prewarm_key)
-            await run_codex_pre_warm(real_codex_dir, binary)
-            CodexAdapter._prewarm_done.add(_prewarm_key)
+            prewarm_completed = await self._run_prewarm_with_auth_sync_budget(
+                real_codex_dir,
+                binary,
+                auth_sync_budget,
+            )
+            if prewarm_completed:
+                CodexAdapter._prewarm_done.add(_prewarm_key)
+            # A successful pre-warm may have rotated the auth document.  Bind
+            # the durable update to the snapshot captured before that pre-warm
+            # so an operator refresh that won in the meantime remains current.
+            auth_authority_snapshot = await self._finalize_canonical_auth(
+                auth_token_path,
+                expected_store_value=auth_authority_snapshot.expected_store_value,
+                authority_known=auth_authority_snapshot.authority_known,
+                auth_sync_budget=auth_sync_budget,
+            )
             # Re-evaluate — the pre-warm may have refreshed the token.
             _needs_refresh = _auth_json_present and _token_needs_refresh(real_codex_dir)
         # ---------------------------------------------------------------------
@@ -1620,11 +1916,8 @@ class CodexAdapter(RuntimeAdapter):
         # Sanitise command for logging — drop the final prompt arg which can be huge
         cmd_for_log = " ".join(cmd[:-1]) + " --  ..."
 
-        # Resolve the canonical auth.json path for rotation detection.
-        # This is the symlink *target* — the real file that the Codex CLI writes to.
-        auth_token_path: Path | None = (real_home / ".codex" / "auth.json") if real_home else None
-
         subprocess_attempt_count = 0
+        auth_invocation = _CodexAuthInvocation(auth_sync_budget=auth_sync_budget)
 
         async def _run_once() -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
             nonlocal subprocess_attempt_count
@@ -1638,6 +1931,7 @@ class CodexAdapter(RuntimeAdapter):
                 mcp_servers,
                 prompt_input,
                 token_path=auth_token_path,
+                auth_invocation=auth_invocation,
             )
 
         # Slow-path serialisation: when the token is near expiry (or unknown),
@@ -1651,8 +1945,37 @@ class CodexAdapter(RuntimeAdapter):
         ]:
             """Invoke Codex once, holding the cross-process lock on slow path."""
             if _slow_path:
-                async with _codex_refresh_lock(real_codex_dir):  # type: ignore[arg-type]
-                    result = await _run_once()
+                # Waiting for the refresh lock is credential synchronization,
+                # not provider execution. Spend only this invocation's
+                # remaining allowance before entering the lock; once inside,
+                # retain the lock across the actual provider subprocess as
+                # required by refresh-token serialization.
+                lock_wait_s = auth_invocation.auth_sync_budget.next_timeout_s()
+                if lock_wait_s <= 0:
+                    logger.warning(
+                        "codex invoke: skipped refresh-lock wait after auth synchronization "
+                        "allowance was exhausted (butler=%s)",
+                        self._butler_name,
+                    )
+                    return await _run_once()
+
+                lock_wait_started = time.monotonic()
+                lock_wait_charged = False
+                try:
+                    async with _codex_refresh_lock(
+                        real_codex_dir,  # type: ignore[arg-type]
+                        wait_timeout_s=lock_wait_s,
+                    ):
+                        auth_invocation.auth_sync_budget.consume(
+                            time.monotonic() - lock_wait_started
+                        )
+                        lock_wait_charged = True
+                        result = await _run_once()
+                finally:
+                    if not lock_wait_charged:
+                        auth_invocation.auth_sync_budget.consume(
+                            time.monotonic() - lock_wait_started
+                        )
                 # Token is now fresh; mark pre-warm done for this process.
                 if _prewarm_key:
                     CodexAdapter._prewarm_done.add(_prewarm_key)
@@ -1837,6 +2160,33 @@ class CodexAdapter(RuntimeAdapter):
 
             return result_text, tool_calls, usage
         finally:
+            if auth_invocation.completed:
+                final_authority_snapshot = await self._finalize_canonical_auth(
+                    auth_token_path,
+                    expected_store_value=auth_invocation.spawn_authority_snapshot,
+                    authority_known=auth_invocation.authority_known,
+                    auth_sync_budget=auth_invocation.auth_sync_budget,
+                )
+                # A health result describes the credential with which the
+                # subprocess started.  If finalization observed a rotation or
+                # a newer dashboard refresh, do not attach that old result to
+                # the new authority.  The fenced writer additionally protects
+                # against a refresh that races after this comparison.
+                if (
+                    auth_invocation.health_result is not None
+                    and auth_invocation.authority_known
+                    and final_authority_snapshot.authority_known
+                    and auth_invocation.spawn_authority_snapshot is not None
+                    and final_authority_snapshot.expected_store_value
+                    == auth_invocation.spawn_authority_snapshot
+                ):
+                    health_ok, health_message = auth_invocation.health_result
+                    self._schedule_record_test_result(
+                        "cli-auth/codex",
+                        ok=health_ok,
+                        message=health_message,
+                        expected_store_value=final_authority_snapshot.expected_store_value,
+                    )
             await _cleanup_isolated_home_tempdir(tmp_dir_obj, tmp_dir)
 
     async def _run_codex_subprocess(
@@ -1850,17 +2200,32 @@ class CodexAdapter(RuntimeAdapter):
         prompt_input: str,
         *,
         token_path: Path | None = None,
+        auth_invocation: _CodexAuthInvocation | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Run the Codex CLI subprocess and parse its output.
 
-        When *token_path* is provided and the adapter was constructed with a
-        *credential_store*, a fire-and-forget task is scheduled after the
-        subprocess exits (success or non-zero) to detect auth.json rotation
-        and persist updated tokens to the credential store.  The task is not
-        scheduled on ``TimeoutError`` (process was killed mid-flight).
+        The canonical auth is revalidated immediately before the subprocess is
+        created.  The caller finalizes the completed operation once all of its
+        internal retries are known, avoiding one fire-and-forget persistence
+        task per attempt.
         """
         proc = None
         try:
+            if auth_invocation is not None:
+                # This is the spawn linearization point.  Earlier preflight
+                # reconciliation permits expiry inspection and pre-warm, but a
+                # dashboard refresh can land during that work.  Capture a new
+                # authority snapshot immediately before the CLI consumes the
+                # canonical auth symlink.
+                authority_snapshot = await self._reconcile_canonical_auth(
+                    token_path,
+                    auth_sync_budget=auth_invocation.auth_sync_budget,
+                )
+                auth_invocation.spawn_authority_snapshot = authority_snapshot.expected_store_value
+                auth_invocation.authority_known = authority_snapshot.authority_known
+                auth_invocation.completed = False
+                auth_invocation.health_result = None
+
             # Feed the prompt through stdin using the "-" sentinel so Codex
             # does not treat inherited daemon pipes as "additional input".
             proc = await asyncio.create_subprocess_exec(
@@ -1880,6 +2245,9 @@ class CodexAdapter(RuntimeAdapter):
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
 
+            if auth_invocation is not None:
+                auth_invocation.completed = True
+
             if stderr:
                 logger.debug("Codex stderr: %s", stderr[:500])
 
@@ -1892,10 +2260,6 @@ class CodexAdapter(RuntimeAdapter):
                 "stderr": stderr,
                 "runtime_type": "codex",
             }
-
-            # Schedule auth sync regardless of exit code — the Codex CLI may
-            # rotate auth.json before a failure manifests.
-            self._schedule_auth_sync(token_path)
 
             if returncode != 0:
                 recovered = _recover_completed_nonzero_exit(stdout, stderr)
@@ -1926,19 +2290,18 @@ class CodexAdapter(RuntimeAdapter):
                 log("Codex CLI exited with code %d: %s", returncode, error_detail)
                 if _looks_like_auth_refresh_failure(error_detail):
                     # An auth-refresh failure means the stored refresh token is dead.
-                    # Write last_test_ok=false → state 'failing' (not 'expired' —
-                    # expires_at means token expiry; a dead refresh token is a distinct
-                    # failure mode that must not corrupt the expiry column).
-                    self._schedule_record_test_result(
-                        "cli-auth/codex", ok=False, message=error_detail[:512]
-                    )
+                    # The invoke-level finalizer later fences this outcome
+                    # against the exact credential used by this process.  A
+                    # dashboard replacement must never inherit an old
+                    # refresh-token failure banner.
+                    if auth_invocation is not None:
+                        auth_invocation.health_result = (False, error_detail[:512])
                 raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")
 
-            # Clear any prior auth-failure test state on a successful spawn.
-            # Decoupled from _schedule_auth_sync / check_and_persist_rotation, which
-            # only fire when auth.json has rotated — a non-rotating success would
-            # never clear a stale last_test_ok=false → the banner would stick red.
-            self._schedule_record_test_result("cli-auth/codex", ok=True)
+            # Clear a prior auth-failure banner only after invoke-level
+            # finalization confirms this same credential is still authority.
+            if auth_invocation is not None:
+                auth_invocation.health_result = (True, None)
             return _parse_codex_output(stdout, stderr, returncode)
 
         except TimeoutError:
@@ -1979,41 +2342,19 @@ class CodexAdapter(RuntimeAdapter):
                 await proc.wait()
             raise
 
-    def _schedule_auth_sync(self, token_path: Path | None) -> None:
-        """Fire-and-forget: schedule auth.json rotation detection and persist.
-
-        No-op when *token_path* is ``None`` or no credential store is wired.
-        Exceptions from the background task are logged with context; they never
-        propagate back to the caller.
-        """
-        if token_path is None or self._credential_store is None:
-            return
-
-        from butlers.core.runtimes._codex_auth_sync import check_and_persist_rotation
-
-        asyncio.create_task(
-            check_and_persist_rotation(
-                token_path,
-                self._credential_store,
-                butler_name=self._butler_name,
-            )
-        )
-
     def _schedule_record_test_result(
         self,
         key: str,
         ok: bool,
         message: str | None = None,
+        *,
+        expected_store_value: str | None = None,
     ) -> None:
-        """Fire-and-forget: write last_test_ok + last_verified to the credential store.
+        """Fire-and-forget a credential health update with a Codex CAS fence.
 
         No-op when no credential store is wired.  Exceptions are logged with
         butler + key context and never propagate to the caller.
 
-        # Concurrent spawns across butlers write to the same shared credential
-        # row (last_test_ok, last_verified). Last-writer-wins on the boolean;
-        # a stale false racing a true clear could momentarily flip the banner
-        # back to failing. This is a known, non-blocking race.
         """
         if self._credential_store is None:
             return
@@ -2023,14 +2364,22 @@ class CodexAdapter(RuntimeAdapter):
 
         async def _run() -> None:
             try:
-                await store.record_test_result(key, ok, message)
+                if key == "cli-auth/codex" and expected_store_value is not None:
+                    await store.record_test_result_if_unchanged(
+                        key,
+                        ok,
+                        message,
+                        expected_value=expected_store_value,
+                        use_shared_authority=True,
+                    )
+                else:
+                    await store.record_test_result(key, ok, message)
             except Exception:
                 logger.warning(
                     "codex: failed to record test result for butler=%r key=%r ok=%r",
                     butler_name,
                     key,
                     ok,
-                    exc_info=True,
                 )
 
         asyncio.create_task(_run())

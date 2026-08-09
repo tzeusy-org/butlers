@@ -2789,6 +2789,45 @@ async def test_fetch_cli_secrets_includes_real_issued_and_expires():
     assert results[0].expires == expires_at
 
 
+async def test_fetch_cli_secrets_hides_probe_history_after_credential_replacement():
+    """A prior probe cannot be displayed for a health-reset replacement token."""
+    row = _make_row(
+        secret_key="cli-auth/codex",
+        secret_value="replacement-token",
+        category="cli-auth",
+        description="Codex",
+        created_at=_NOW,
+        updated_at=_NOW,
+        expires_at=None,
+        last_verified=None,
+        last_test_ok=None,
+        last_test_code=None,
+        last_test_message=None,
+    )
+    stale_probe = _make_row(
+        credential_key="cli-auth/codex",
+        ok=False,
+        code=None,
+        message="old refresh token rejected",
+        recorded_at=_NOW - timedelta(seconds=1),
+        latency_ms=20,
+    )
+    pool = AsyncMock()
+
+    async def _fetch(sql, *_args):
+        if "secret_probe_log" in sql:
+            return [stale_probe]
+        return [row]
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
+
+    results = await _fetch_cli_secrets(pool)
+
+    assert len(results) == 1
+    assert results[0].last_test_ok is None
+    assert results[0].test is None
+
+
 async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
     """UserSecret.issued/scopes_required/scopes_granted/audit are real, not fabricated.
 

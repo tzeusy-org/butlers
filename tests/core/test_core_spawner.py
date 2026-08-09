@@ -671,6 +671,34 @@ class TestSpawnerInvocation:
         assert result.success is True
         assert captured["timeout"] == 1800
 
+    async def test_declared_adapter_setup_allowance_is_outside_runtime_timeout(
+        self, tmp_path: Path
+    ):
+        """A bounded setup/finalizer allowance cannot cancel provider execution early.
+
+        The adapter still receives the model's original timeout.  Patching the
+        ordinary guard to a deliberately tiny value makes this assert the
+        Spawner seam rather than relying on its normal one-second cleanup
+        grace.
+        """
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        class AuthSyncAllowanceAdapter(MockAdapter):
+            @property
+            def session_timeout_overhead_s(self) -> float:
+                return 0.05
+
+        adapter = AuthSyncAllowanceAdapter(result_text="ok", delay=0.02, capture=True)
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        with patch("butlers.core.spawner._runtime_timeout_guard_s", return_value=0.01):
+            result = await spawner.trigger("hello", "tick", timeout_override=1)
+
+        assert result.success is True
+        assert adapter.calls[0]["timeout"] == 1
+
     async def test_adapter_timeout_error_is_not_masked_by_spawner_guard(self, tmp_path: Path):
         """Adapters own timeout cleanup and diagnostics; the spawner guard is only
         a backstop for runtimes that do not return after their timeout."""

@@ -84,7 +84,7 @@ from butlers.core.model_routing import (
 from butlers.core.permissions import SPAWN_PERMISSION, check_permission
 from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
-from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
@@ -2125,9 +2125,16 @@ class Spawner:
                         self._invoke_tasks_by_session[runtime_session_id] = invoke_task
                         self._pending_invoke_sessions.discard(runtime_session_id)
                     try:
+                        # ``timeout_s`` remains the model/runtime execution
+                        # budget forwarded to the adapter.  Some adapters have
+                        # a separately bounded credential/setup phase that
+                        # must not cause a healthy near-deadline provider
+                        # process to be cancelled by this outer safety guard.
+                        outer_timeout_s = _runtime_timeout_guard_s(float(timeout_s))
+                        outer_timeout_s += validated_session_timeout_overhead_s(runtime)
                         done, _pending = await asyncio.wait(
                             {invoke_task},
-                            timeout=_runtime_timeout_guard_s(float(timeout_s)),
+                            timeout=outer_timeout_s,
                         )
                         if not done:
                             invoke_task.cancel()

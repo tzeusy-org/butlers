@@ -64,7 +64,7 @@ async def _post(app, payload: dict) -> httpx.Response:
 
 
 async def test_parse_quick_add_returns_draft_and_never_writes(app):
-    app, _, mock_mgr = _build_app(app)
+    app, mock_db, mock_mgr = _build_app(app)
 
     dispatcher = MagicMock()
     dispatcher.call = AsyncMock(
@@ -84,7 +84,7 @@ async def test_parse_quick_add_returns_draft_and_never_writes(app):
         patch(
             "butlers.api.calendar.quick_add.DiscretionDispatcher",
             return_value=dispatcher,
-        ),
+        ) as dispatcher_cls,
     ):
         resp = await _post(
             app,
@@ -102,6 +102,8 @@ async def test_parse_quick_add_returns_draft_and_never_writes(app):
     assert data["reason"] is None
     # No-write guarantee: the parse path never reached the MCP surface.
     mock_mgr.get_client.assert_not_called()
+    _, dispatcher_kwargs = dispatcher_cls.call_args
+    assert dispatcher_kwargs["credential_store"].pool is mock_db.credential_shared_pool.return_value
 
 
 # ---------------------------------------------------------------------------

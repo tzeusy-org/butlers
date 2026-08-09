@@ -18,9 +18,9 @@ Design notes
   handled by :func:`~butlers.core.runtimes.base.create_adapter`.
 - Model resolution is performed on every call so catalog updates take effect
   without restarting the dispatcher.
-- ``asyncio.wait_for`` enforces the per-call wall-clock timeout; the inner
-  adapter invocation may also have its own timeout, but the outer guard is
-  the authoritative limit.
+- ``asyncio.wait_for`` enforces the per-call wall-clock timeout. The model
+  execution timeout is passed unchanged to the adapter; an adapter may declare
+  a bounded setup/finalizer allowance that is added only to this outer guard.
 - ``mcp_servers={}``, ``max_turns=1``, and a minimal env (PATH, HOME) are
   always passed to the adapter — discretion calls are single-turn with no
   tool access.
@@ -70,7 +70,12 @@ from butlers.core.model_routing import (
     record_token_usage,
     resolve_model_with_effective_tier,
 )
-from butlers.core.runtimes.base import RuntimeAdapter, create_adapter
+from butlers.core.runtimes.base import (
+    RuntimeAdapter,
+    create_adapter,
+    validated_session_timeout_overhead_s,
+)
+from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -139,11 +144,16 @@ class DiscretionDispatcher:
         Maximum number of concurrent adapter invocations.  Enforced via an
         ``asyncio.Semaphore``.
     timeout_s:
-        Per-call wall-clock timeout in seconds.  Passed to
-        ``asyncio.wait_for``.
+        Per-call provider execution timeout in seconds. It is passed unchanged
+        to the adapter; the outer guard also includes a bounded,
+        adapter-declared setup/finalizer allowance when applicable.
     complexity_tier:
         Catalog complexity tier used for model resolution. Defaults to the
         discretion tier for existing connector discretion callers.
+    credential_store:
+        Optional credential authority used by runtime adapters.  Callers with
+        a schema-local model pool must provide the shared/public authority
+        explicitly; the dispatcher never guesses that a local pool is shared.
     """
 
     def __init__(
@@ -154,8 +164,10 @@ class DiscretionDispatcher:
         max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         complexity_tier: Complexity = Complexity.SPECIALTY,
+        credential_store: CredentialStore | None = None,
     ) -> None:
         self._pool = pool
+        self._credential_store = credential_store
         self._butler_name = butler_name
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._timeout_s = timeout_s
@@ -200,10 +212,13 @@ class DiscretionDispatcher:
             if self._adapter_cache_key.get(runtime_type, "") == cfg_str:
                 return self._adapter_cache[runtime_type]
 
+        constructor_kwargs: dict[str, Any] = {"butler_name": self._butler_name}
+        if self._credential_store is not None:
+            constructor_kwargs["credential_store"] = self._credential_store
         adapter = create_adapter(
             runtime_type,
             provider_config=provider_config,
-            butler_name=self._butler_name,
+            **constructor_kwargs,
         )
         self._adapter_cache[runtime_type] = adapter
         self._adapter_cache_key[runtime_type] = cfg_str
@@ -424,7 +439,10 @@ class DiscretionDispatcher:
 
             async with self._semaphore:
                 try:
-                    result = await asyncio.wait_for(_invoke(), timeout=session_timeout_s)
+                    outer_timeout_s = session_timeout_s + validated_session_timeout_overhead_s(
+                        adapter
+                    )
+                    result = await asyncio.wait_for(_invoke(), timeout=outer_timeout_s)
                 except Exception as exc:  # noqa: BLE001 — classified below
                     attempt_exc = exc
                 finally:
