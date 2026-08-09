@@ -341,6 +341,8 @@ async def test_run_codex_pre_warm_swallows_timeout(tmp_path: Path) -> None:
     codex_dir = tmp_path / ".codex"
     codex_dir.mkdir()
 
+    reap_started = asyncio.Event()
+    release_reaper = asyncio.Event()
     reaped = asyncio.Event()
     mock_proc = MagicMock()
     mock_proc.communicate = MagicMock(return_value=object())
@@ -348,9 +350,12 @@ async def test_run_codex_pre_warm_swallows_timeout(tmp_path: Path) -> None:
     mock_proc.kill = MagicMock()
 
     async def _wait() -> None:
+        reap_started.set()
+        await release_reaper.wait()
         reaped.set()
 
     mock_proc.wait = AsyncMock(side_effect=_wait)
+    await_event = asyncio.wait_for
 
     with (
         patch(_EXEC, return_value=mock_proc),
@@ -359,9 +364,13 @@ async def test_run_codex_pre_warm_swallows_timeout(tmp_path: Path) -> None:
             side_effect=TimeoutError,
         ),
     ):
-        await run_codex_pre_warm(codex_dir, "/usr/bin/codex")  # must not raise
+        task = asyncio.create_task(run_codex_pre_warm(codex_dir, "/usr/bin/codex"))
+        await await_event(reap_started.wait(), timeout=0.2)
+        assert task.done()
+        await task
 
-    await asyncio.wait_for(reaped.wait(), timeout=0.2)
+    release_reaper.set()
+    await await_event(reaped.wait(), timeout=0.2)
     mock_proc.kill.assert_called_once()
     mock_proc.wait.assert_awaited_once()
 
