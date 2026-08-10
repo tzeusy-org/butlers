@@ -141,6 +141,11 @@ function invalidateRetryApprovalReads(qc: ReturnType<typeof useQueryClient>, act
   qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
   qc.invalidateQueries({ queryKey: Q.history() });
   qc.invalidateQueries({ queryKey: Q.detail(actionId) });
+  // An unlisted (including 101st+) Stalled dossier is authorized only by its
+  // isolated verifier, never its ordinary detail cache. Invalidate every
+  // generation for this id so a successful retry cannot leave an old
+  // approved/null verifier payload exposing Retry until the flat rail settles.
+  qc.invalidateQueries({ queryKey: ["approvals", "stalled-route-verification", actionId] });
   qc.invalidateQueries({ queryKey: ["approvals", "metrics"] });
 }
 
@@ -475,6 +480,7 @@ function RailItem({
 function Dossier({
   actionId,
   verifiedDetail,
+  allowAbandon,
   onApprove,
   onDeny,
   onDefer,
@@ -491,6 +497,8 @@ function Dossier({
    * action after the verifier has established the current eligibility.
    */
   verifiedDetail?: ApprovalDetail;
+  /** Stalled is a Retry-only lane; waiting/history keeps the existing abandon flow. */
+  allowAbandon: boolean;
   onApprove: () => void;
   onDeny: (reason?: string) => void;
   onDefer: (hours: number) => void;
@@ -846,7 +854,7 @@ function Dossier({
                   <dd className="mt-1 flex flex-wrap items-center gap-3 text-sm text-foreground">
                     <span>Approved, awaiting dispatch.</span>
                     <RetryDispatchButton actionId={detail.id} />
-                    <AbandonAction actionId={detail.id} />
+                    {allowAbandon && <AbandonAction actionId={detail.id} />}
                   </dd>
                 </div>
               )}
@@ -2196,6 +2204,7 @@ export default function ApprovalsPage() {
             key={dossierSelected}
             actionId={dossierSelected}
             verifiedDetail={verifiedStalledRouteDetail}
+            allowAbandon={activeLane !== "stalled"}
             onApprove={() => approve(dossierSelected)}
             onDeny={(reason) => denyMut.mutate({ id: dossierSelected, reason })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}

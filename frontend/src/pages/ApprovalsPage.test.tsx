@@ -2332,6 +2332,90 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     expect(findButton(container, "Approve")).toBeUndefined();
     expect(findButton(container, "Deny")).toBeUndefined();
     expect(findButton(container, "Defer")).toBeUndefined();
+    // The Stalled lane exposes only its established Retry action. Abandon is
+    // deliberately a waiting/history workflow, not a second stalled action.
+    expect(findButton(container, "Abandon")).toBeUndefined();
+  });
+
+  it("revalidates a direct 101st stalled dossier after successful Retry before retaining Retry", async () => {
+    const actionId = "stalled-101-retry";
+    const firstHundred = Array.from({ length: 100 }, (_, index) => ({
+      ...makeSummary(`stalled-${index + 1}`, "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    }));
+    const flatRefresh = deferred<{
+      data: typeof firstHundred;
+      meta: Record<string, never>;
+    }>();
+    const verifierRefresh = deferred<{
+      data: ReturnType<typeof makeStalledDetailData>;
+      meta: Record<string, never>;
+    }>();
+    let detailCalls = 0;
+    vi.mocked(getApprovalsFlat)
+      .mockReturnValueOnce(makeApiResponse(firstHundred) as AnyMock)
+      .mockReturnValueOnce(flatRefresh.promise as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => {
+        detailCalls += 1;
+        if (detailCalls === 1) {
+          return makeApiResponse(makeStalledDetailData(id)) as AnyMock;
+        }
+        if (detailCalls === 2) {
+          return verifierRefresh.promise as AnyMock;
+        }
+        return makeApiResponse(
+          makeStalledDetailData(id, { execution_result: { dispatched: true } }),
+        ) as AnyMock;
+      }) as AnyMock,
+    );
+    vi.mocked(retryApproval).mockReturnValue(
+      makeApiResponse({
+        id: actionId,
+        butler: "general",
+        tool_name: "stalled_action",
+        tool_args: {},
+        status: "executed",
+        requested_at: "2026-05-17T10:00:00Z",
+        dispatched: true,
+      }) as AnyMock,
+    );
+    const invalidateQueries = vi.spyOn(qc, "invalidateQueries");
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Retry dispatch")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    // Keep the stale flat response pending. The verifier must independently
+    // refetch now, rather than letting its old approved/null payload retain
+    // Retry until the rail happens to settle again.
+    await flushUntil(() => detailCalls >= 2);
+    expect(invalidateQueries.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([["approvals", "stalled-route-verification", actionId]]),
+    );
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verifierRefresh.resolve({
+        data: makeStalledDetailData(actionId, { execution_result: { dispatched: true } }),
+        meta: {},
+      });
+      await flush();
+    });
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      flatRefresh.resolve({ data: firstHundred, meta: {} });
+      await flush();
+    });
   });
 
   it("does not trust an ordinary cached dossier while the unlisted Stalled verifier is pending", async () => {
@@ -2411,6 +2495,39 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     expect(container.textContent).not.toContain("Cached stale retry");
     expect(container.textContent).not.toContain("Fresh completed detail");
     expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
+  it("suppresses an unlisted stalled dossier when fresh verification omits execution_result", async () => {
+    const actionId = "stalled-cache-missing-result";
+    const freshMissingResult = {
+      data: makeStalledDetailData(actionId, { title: "Fresh missing result" }),
+      meta: {},
+    };
+    Reflect.deleteProperty(freshMissingResult.data, "execution_result");
+    const verification = deferred<typeof freshMissingResult>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale retry" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+    expect(container.textContent).not.toContain("Cached stale retry");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verification.resolve(freshMissingResult);
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("Cached stale retry");
+    expect(container.textContent).not.toContain("Fresh missing result");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Abandon")).toBeUndefined();
   });
 
   it("suppresses an unlisted stalled dossier when fresh verification fails", async () => {

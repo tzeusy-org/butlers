@@ -63,8 +63,9 @@ would target rows that are no longer pending decisions.
 
 The retry mutation waits for the server response, then invalidates the flat
 prefix (covering waiting and stalled variants), history, the selected dossier,
-and approval metrics. It never removes a row locally or invalidates on an
-error; the server remains authoritative about whether dispatch ran.
+every isolated Stalled direct-link verifier generation for that id, and approval
+metrics. It never removes a row locally or invalidates on an error; the server
+remains authoritative about whether dispatch ran.
 
 Alternative: optimistically remove the row or invalidate before completion.
 Rejected because dispatch can fail and an approved/null-result row must remain

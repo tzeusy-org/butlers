@@ -69,8 +69,9 @@ an unknown/missing execution result. The Retry control SHALL remain pending
 without locally removing the row while its server request is in flight.
 
 After a successful server response, the dashboard SHALL invalidate all flat
-approval query variants, the affected approval dossier, approval history, and
-approval metrics so the count, lane, history, and dossier reconcile from
+approval query variants, the affected approval dossier, every isolated Stalled
+direct-link verifier generation for that id, approval history, and approval
+metrics so the count, lane, history, and dossier reconcile from
 server-authoritative data. It SHALL not optimistically remove the row or
 invalidate those views when the retry request fails.
 
@@ -88,7 +89,8 @@ invalidate those views when the retry request fails.
   successful response
 - **THEN** the UI reports whether dispatch ran from that response
 - **AND** it invalidates the waiting and stalled flat views, history, the
-  affected dossier, and metrics after that completion.
+  affected dossier, any isolated Stalled direct-link verifier for that id, and
+  metrics after that completion.
 
 #### Scenario: Failed retry leaves the server-authoritative row visible
 
