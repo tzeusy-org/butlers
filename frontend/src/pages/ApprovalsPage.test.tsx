@@ -131,6 +131,7 @@ import {
   createApprovalRuleFromAction,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
+import { applyFleetEvent } from "@/hooks/event-cache-registry";
 import { toast } from "sonner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2337,6 +2338,54 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     expect(findButton(container, "Abandon")).toBeUndefined();
   });
 
+  it("does not expose cached pending decision controls while a listed Stalled dossier refetches", async () => {
+    const actionId = "listed-stalled-cache-pending";
+    const listedStalled = {
+      ...makeSummary(actionId, "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    };
+    const detailRefresh = deferred<{
+      data: ReturnType<typeof makeStalledDetailData>;
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([listedStalled]) as AnyMock);
+    // An ordinary dossier prefetch can retain a pending payload while React
+    // Query starts its required fresh detail read. The Stalled lane must never
+    // reuse its decision controls during that window.
+    qc.setQueryDefaults(["approvals", "detail", actionId], { gcTime: Infinity });
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, {
+        title: "Cached pending ordinary dossier",
+        status: "pending",
+      }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(detailRefresh.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+
+    expect(container.textContent).toContain("Cached pending ordinary dossier");
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      detailRefresh.resolve({ data: makeStalledDetailData(actionId), meta: {} });
+      await flush();
+    });
+
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+    expect(findButton(container, "Retry dispatch")).toBeDefined();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+  });
+
   it("revalidates a direct 101st stalled dossier after successful Retry before retaining Retry", async () => {
     const actionId = "stalled-101-retry";
     const firstHundred = Array.from({ length: 100 }, (_, index) => ({
@@ -2416,6 +2465,71 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
       flatRefresh.resolve({ data: firstHundred, meta: {} });
       await flush();
     });
+  });
+
+  it("clears a 101st stalled Retry during an approval event's deferred flat refresh", async () => {
+    const actionId = "stalled-101-fleet-event";
+    const firstHundred = Array.from({ length: 100 }, (_, index) => ({
+      ...makeSummary(`stalled-${index + 1}`, "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    }));
+    const flatRefresh = deferred<{
+      data: typeof firstHundred;
+      meta: Record<string, never>;
+    }>();
+    const verifierRefresh = deferred<{
+      data: ReturnType<typeof makeStalledDetailData>;
+      meta: Record<string, never>;
+    }>();
+    let detailCalls = 0;
+    vi.mocked(getApprovalsFlat)
+      .mockReturnValueOnce(makeApiResponse(firstHundred) as AnyMock)
+      .mockReturnValueOnce(flatRefresh.promise as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => {
+        detailCalls += 1;
+        if (detailCalls === 1) {
+          return makeApiResponse(makeStalledDetailData(id)) as AnyMock;
+        }
+        if (detailCalls === 2) {
+          return verifierRefresh.promise as AnyMock;
+        }
+        return makeApiResponse(
+          makeStalledDetailData(id, { execution_result: { dispatched: true } }),
+        ) as AnyMock;
+      }) as AnyMock,
+    );
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      applyFleetEvent(qc, {
+        type: "approval",
+        ts: 101,
+        data: { kind: "executed", approval_id: actionId },
+      });
+      await flush();
+    });
+
+    // The flat rail is intentionally held stale. The fleet event must still
+    // revalidate the direct verifier so its previous approved/null payload
+    // cannot retain Retry in the event-to-flat window.
+    await flushUntil(() => detailCalls >= 2);
+    expect(detailCalls).toBe(2);
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verifierRefresh.resolve({
+        data: makeStalledDetailData(actionId, { execution_result: { dispatched: true } }),
+        meta: {},
+      });
+      flatRefresh.resolve({ data: firstHundred, meta: {} });
+      await flush();
+    });
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
   });
 
   it("does not trust an ordinary cached dossier while the unlisted Stalled verifier is pending", async () => {

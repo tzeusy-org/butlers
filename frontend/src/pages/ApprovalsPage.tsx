@@ -481,6 +481,7 @@ function Dossier({
   actionId,
   verifiedDetail,
   allowAbandon,
+  allowPendingDecisionControls,
   onApprove,
   onDeny,
   onDefer,
@@ -499,6 +500,8 @@ function Dossier({
   verifiedDetail?: ApprovalDetail;
   /** Stalled is a Retry-only lane; waiting/history keeps the existing abandon flow. */
   allowAbandon: boolean;
+  /** A Stalled flat row must never reopen ordinary pending decision controls. */
+  allowPendingDecisionControls: boolean;
   onApprove: () => void;
   onDeny: (reason?: string) => void;
   onDefer: (hours: number) => void;
@@ -552,6 +555,7 @@ function Dossier({
   }
 
   const isPending = detail.status === "pending";
+  const showPendingDecisionControls = isPending && allowPendingDecisionControls;
   const canRetryDispatch =
     detail.status === "approved" && detail.execution_result === null;
   // A keyboard-triage decision for THIS exact approval is scheduled but not
@@ -569,7 +573,7 @@ function Dossier({
           over the top-right corner without reserving flow space (the body is
           not pushed down). Stays pinned on scroll; the wrapper is click-through
           (pointer-events-none) so content beneath stays interactive. */}
-      {isPending && (
+      {showPendingDecisionControls && (
         <div className="sticky top-0 z-20 h-0 pointer-events-none">
           <div className="absolute right-0 top-0 flex flex-col items-end gap-2">
             {isScheduled ? (
@@ -724,7 +728,7 @@ function Dossier({
       <div className="space-y-6">
         {/* Title — right padding (when pending) keeps the headline clear of the
           floating decision cluster that overlays the top-right corner. */}
-        <div className={isPending ? "pr-56" : undefined}>
+        <div className={showPendingDecisionControls ? "pr-56" : undefined}>
           <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
             {detail.butler} · {fmtTs(detail.created_at)}
             {detail.session_id && (
@@ -2205,6 +2209,7 @@ export default function ApprovalsPage() {
             actionId={dossierSelected}
             verifiedDetail={verifiedStalledRouteDetail}
             allowAbandon={activeLane !== "stalled"}
+            allowPendingDecisionControls={activeLane !== "stalled"}
             onApprove={() => approve(dossierSelected)}
             onDeny={(reason) => denyMut.mutate({ id: dossierSelected, reason })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}

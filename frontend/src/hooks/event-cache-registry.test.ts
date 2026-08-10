@@ -38,7 +38,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
     );
   });
 
-  it("approval: invalidates flat, history, and detail(approval_id) when present", () => {
+  it("approval: invalidates flat, history, detail, and stalled verifier families when approval_id is present", () => {
     const { qc, invalidateQueries } = makeQc();
     const event: FleetEvent = {
       type: "approval",
@@ -52,6 +52,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["approvals", "history"],
         ["approvals", "metrics"],
         ["approvals", "detail", "abc-1"],
+        ["approvals", "stalled-route-verification", "abc-1"],
       ]),
     );
   });

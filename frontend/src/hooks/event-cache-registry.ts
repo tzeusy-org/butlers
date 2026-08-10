@@ -48,7 +48,8 @@ function asString(value: unknown): string | undefined {
 
 /**
  * approval — mirrors the invalidation useApprovalsStream already performs
- * (ApprovalsPage.tsx's ["approvals", "flat" | "history" | "detail"] keys),
+ * (ApprovalsPage.tsx's ["approvals", "flat" | "history" | "detail" |
+ * "stalled-route-verification"] keys),
  * plus ["approvals", "metrics"] (use-approvals.ts's useApprovalMetrics) since
  * every state-transition kind (created/approved/rejected/executed/expired)
  * also changes the aggregate counts that endpoint serves.
@@ -60,6 +61,9 @@ const approvalPatch: CachePatch = (qc, event) => {
   const approvalId = asString(event.data.approval_id);
   if (approvalId) {
     qc.invalidateQueries({ queryKey: ["approvals", "detail", approvalId] });
+    qc.invalidateQueries({
+      queryKey: ["approvals", "stalled-route-verification", approvalId],
+    });
   }
 };
 
