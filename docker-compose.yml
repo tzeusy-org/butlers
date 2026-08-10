@@ -215,6 +215,34 @@ services:
     networks: [db]
     restart: unless-stopped
 
+  # The sole holder of the recovery-only database credential. It has no HTTP
+  # listener and deliberately does not inherit x-postgres-env: dashboard-api,
+  # butlers, and connectors remain unable to create the scratch database.
+  restore-drill-executor:
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
+    command: []
+    environment:
+      RESTORE_DRILL_EXECUTOR_DB_HOST: ${POSTGRES_HOST:?Set POSTGRES_HOST in .env.dev or .env.prod}
+      RESTORE_DRILL_EXECUTOR_DB_PORT: ${POSTGRES_PORT:-5432}
+      RESTORE_DRILL_EXECUTOR_SSLMODE: ${POSTGRES_SSLMODE:-}
+      RESTORE_DRILL_EXECUTOR_APPLICATION_DB: ${POSTGRES_DB:-butlers}
+      RESTORE_DRILL_EXECUTOR_MAINTENANCE_DB: ${RESTORE_DRILL_EXECUTOR_MAINTENANCE_DB:-postgres}
+      RESTORE_DRILL_EXECUTOR_BACKUP_DIR: /backups
+      RESTORE_DRILL_EXECUTOR_INTERVAL_S: ${RESTORE_DRILL_EXECUTOR_INTERVAL_S:-604800}
+      RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S: ${RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S:-3600}
+    volumes:
+      - butlers_backups:/backups:ro
+    secrets:
+      - source: restore_drill_executor_password
+        target: restore_drill_executor_password
+        mode: 0400
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    networks: [db]
+    restart: unless-stopped
+
   dashboard-api:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     ports:
@@ -852,6 +880,12 @@ volumes:
   runtime_gemini:
   wa_bridge_socket:
   butlers_backups:
+
+secrets:
+  # A host path is configuration, not the secret value. The private file is
+  # provisioned outside git and mounted only by restore-drill-executor.
+  restore_drill_executor_password:
+    file: "${RESTORE_DRILL_EXECUTOR_PASSWORD_FILE:?Set RESTORE_DRILL_EXECUTOR_PASSWORD_FILE to the private secret file}"
 
 # ── Networks ────────────────────────────────────────────────────────────
 

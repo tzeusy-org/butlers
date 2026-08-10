@@ -137,10 +137,6 @@ from butlers.db import (
     has_insecure_infra_defaults,
     is_grafana_anon_outside_dev,
 )
-from butlers.jobs.backup_health import (
-    DEFAULT_RESTORE_DRILL_INTERVAL_S,
-    run_restore_drill_loop,
-)
 from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
     run_calendar_sync_deadman_loop,
@@ -175,7 +171,6 @@ _SECRETS_STALENESS_SCAN_INTERVAL_ENV = "SECRETS_STALENESS_SCAN_INTERVAL_S"
 _MIGRATION_DRIFT_CHECK_INTERVAL_ENV = "MIGRATION_DRIFT_CHECK_INTERVAL_S"
 _EXTERNAL_DEADMAN_CHECK_INTERVAL_ENV = "EXTERNAL_DEADMAN_CHECK_INTERVAL_S"
 _CALENDAR_SYNC_DEADMAN_CHECK_INTERVAL_ENV = "CALENDAR_SYNC_DEADMAN_CHECK_INTERVAL_S"
-_RESTORE_DRILL_INTERVAL_ENV = "RESTORE_DRILL_INTERVAL_S"
 
 
 def _resolve_positive_float_env(env_var: str, default: float) -> float:
@@ -258,7 +253,6 @@ async def lifespan(app: FastAPI):
     calendar_deadman_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
-    restore_drill_task: asyncio.Task | None = None
     model_verify_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
@@ -486,32 +480,6 @@ async def lifespan(app: FastAPI):
                 EXTERNAL_DEADMAN_URL_ENV,
             )
 
-        # Weekly backup restore drill (bu-9r3hd.5): actually restores the most
-        # recent backup into a scratch database and verifies it, rather than
-        # trusting a hardcoded "success". See butlers.jobs.backup_health for
-        # the full design rationale (why a restore drill can't run inline
-        # with GET /api/system/backups). That endpoint's artifact-integrity
-        # check (gzip decompression) IS computed live per request; only the
-        # expensive, state-mutating restore attempt lives in this loop.
-        try:
-            restore_drill_interval_s = _resolve_positive_float_env(
-                _RESTORE_DRILL_INTERVAL_ENV, DEFAULT_RESTORE_DRILL_INTERVAL_S
-            )
-            restore_drill_task = _track_background_task(
-                supervise_lifespan_loop(
-                    "restore_drill",
-                    lambda: run_restore_drill_loop(
-                        get_db_manager(), interval_s=restore_drill_interval_s
-                    ),
-                )
-            )
-        except Exception:
-            logger.warning(
-                "Failed to start backup restore-drill loop; GET /api/system/backups "
-                "will report restore_drill.result='pending' indefinitely",
-                exc_info=True,
-            )
-
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
 
@@ -555,10 +523,6 @@ async def lifespan(app: FastAPI):
         external_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await external_deadman_task
-    if restore_drill_task is not None:
-        restore_drill_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await restore_drill_task
     await shutdown_db_manager()
     await shutdown_dependencies()
 

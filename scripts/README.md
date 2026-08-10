@@ -53,6 +53,17 @@ The script is idempotent — safe to re-run on an already-provisioned database.
   created by the connecting user; re-run the bootstrap only when the managed
   schema/role surface itself changes.
 
+## provision_restore_drill_executor.sh
+
+The managed one-shot provisioner enables the distinct
+`restore_drill_executor` login after `init-db.sql` has reserved it and the
+restore-drill migration has installed its constrained persistence functions.
+It reads the executor password only from the private path named by
+`RESTORE_DRILL_EXECUTOR_PASSWORD_FILE`; do not pass that value through shared
+database environment variables or tracked configuration. See
+[`docs/operations/backup-restore.md`](../docs/operations/backup-restore.md)
+for the deployment boundary and rollback rules.
+
 ## dev.sh
 
 Bootstraps the full local Butlers development stack in `tmux` (dashboard, frontend, connectors, backend, OAuth gate, and postgres preflight).

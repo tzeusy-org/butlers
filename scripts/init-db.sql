@@ -104,6 +104,7 @@ DECLARE
         'butler_travel_rw',
         'connector_writer'
     ];
+    _restore_drill_executor_role TEXT := 'restore_drill_executor';
     _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
     _db_name TEXT := current_database();
     _schema TEXT;
@@ -116,6 +117,11 @@ BEGIN
             'Migration/runtime user "%" does not exist. Create it first or set PGOPTIONS="-c butlers.connecting_user=<existing role>".',
             _migration_user;
     END IF;
+
+    -- The migration/connecting user is shared by migrations and normal
+    -- dashboard/runtime processes. It must never inherit the recovery-only
+    -- database-creation capability.
+    EXECUTE format('ALTER ROLE %I NOCREATEDB', _migration_user);
 
     -- Ensure the migration/runtime user can connect and create objects in the
     -- schemas it manages. Tables/functions created later remain owned by that
@@ -135,10 +141,62 @@ BEGIN
     -- direct logins.
     FOREACH _role IN ARRAY _all_runtime_roles LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _role) THEN
-            EXECUTE format('CREATE ROLE %I LOGIN', _role);
+            EXECUTE format('CREATE ROLE %I LOGIN NOCREATEDB', _role);
             RAISE NOTICE 'Created role "%"', _role;
         END IF;
+        EXECUTE format('ALTER ROLE %I NOCREATEDB', _role);
     END LOOP;
+
+    -- Reserve a distinct executor role without making it a normal runtime
+    -- login. The one-shot managed provisioner is the only path that enables
+    -- LOGIN + CREATEDB and supplies its file-backed password.
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _restore_drill_executor_role) THEN
+        EXECUTE format(
+            'CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+            _restore_drill_executor_role
+        );
+        RAISE NOTICE 'Reserved isolated restore-drill executor role "%"', _restore_drill_executor_role;
+    END IF;
+    -- Preserve the provisioner's LOGIN/CREATEDB attributes on re-runs while
+    -- continuously repairing the remaining least-privilege attributes.
+    EXECUTE format(
+        'ALTER ROLE %I NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION',
+        _restore_drill_executor_role
+    );
+
+    -- No normal role may assume the executor or vice versa. The second revoke
+    -- direction prevents a compromised executor from inheriting ordinary
+    -- application privileges through a role membership.
+    EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_role, _migration_user);
+    EXECUTE format('REVOKE %I FROM %I', _migration_user, _restore_drill_executor_role);
+    FOREACH _role IN ARRAY _all_runtime_roles LOOP
+        EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_role, _role);
+        EXECUTE format('REVOKE %I FROM %I', _role, _restore_drill_executor_role);
+    END LOOP;
+
+    -- The executor may connect and resolve its two security-definer functions,
+    -- but receives no direct public-schema DML, function, sequence, or CREATE
+    -- privilege. The exact function grants are re-applied below when their
+    -- migration has run, making bootstrap safe in either ordering.
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', _db_name, _restore_drill_executor_role);
+    EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM %I', _db_name, _restore_drill_executor_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA public FROM %I', _restore_drill_executor_role);
+    EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', _restore_drill_executor_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM %I', _restore_drill_executor_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM %I', _restore_drill_executor_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM %I', _restore_drill_executor_role);
+    IF to_regprocedure('public.restore_drill_executor_is_due(integer)') IS NOT NULL THEN
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.restore_drill_executor_is_due(integer) TO %I',
+            _restore_drill_executor_role
+        );
+    END IF;
+    IF to_regprocedure('public.record_restore_drill_executor_result(text,text,text,integer)') IS NOT NULL THEN
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.record_restore_drill_executor_result(text,text,text,integer) TO %I',
+            _restore_drill_executor_role
+        );
+    END IF;
 
     -- Allow the migration/runtime user to SET ROLE into each runtime role.
     -- On PostgreSQL 16+, bare membership is not sufficient if the membership
