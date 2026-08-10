@@ -83,6 +83,35 @@ source "$ENV_FILE"
 set +a
 echo "Database: ${BUTLERS_MODE} (${POSTGRES_HOST}:${POSTGRES_PORT:-5432})"
 
+# The restore-drill executor has a distinct, default-deny bridge. Resolve its
+# endpoint on the host before Compose creates the container so the executor
+# never needs DNS or any non-PostgreSQL egress. An explicit IPv4 override is
+# available for deployments that do not want to derive it from POSTGRES_HOST.
+_restore_drill_is_ipv4() {
+  local ip="$1" octet
+  local -a octets
+  IFS='.' read -r -a octets <<< "$ip"
+  [ "${#octets[@]}" -eq 4 ] || return 1
+  for octet in "${octets[@]}"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    ((10#$octet <= 255)) || return 1
+  done
+}
+
+_restore_drill_source_host="${RESTORE_DRILL_EXECUTOR_DB_HOST:-${POSTGRES_HOST:?Set POSTGRES_HOST in ${ENV_FILE}}}"
+if _restore_drill_is_ipv4 "$_restore_drill_source_host"; then
+  RESTORE_DRILL_EXECUTOR_DB_HOST="$_restore_drill_source_host"
+else
+  RESTORE_DRILL_EXECUTOR_DB_HOST="$(getent ahostsv4 "$_restore_drill_source_host" | awk 'NR == 1 {print $1}')"
+  if ! _restore_drill_is_ipv4 "$RESTORE_DRILL_EXECUTOR_DB_HOST"; then
+    echo "ERROR: Could not resolve a PostgreSQL IPv4 endpoint for restore-drill executor: $_restore_drill_source_host" >&2
+    exit 1
+  fi
+fi
+RESTORE_DRILL_EXECUTOR_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT:-${POSTGRES_PORT:-5432}}"
+export RESTORE_DRILL_EXECUTOR_DB_HOST RESTORE_DRILL_EXECUTOR_DB_PORT
+echo "Restore-drill endpoint: ${RESTORE_DRILL_EXECUTOR_DB_HOST}:${RESTORE_DRILL_EXECUTOR_DB_PORT} (default-deny bridge)"
+
 # ── Mode-dependent configuration ────────────────────────────────────────
 # Prod and dev use different URL prefixes, host ports, and project names
 # so both can run simultaneously on the same machine.
@@ -410,6 +439,21 @@ fi
 # ── Swap: stop old containers, start new ones ─────────────────────────
 # --remove-orphans clears containers from renamed/removed services.
 "${CMD[@]}" down --remove-orphans 2>/dev/null || true
+
+# Create the executor and its dedicated network without starting it. The
+# default-deny PostgreSQL-only policy must exist before the privileged
+# credentialed process receives a network namespace.
+"${CMD[@]}" create restore-drill-executor
+if ! sudo -n true 2>/dev/null; then
+  echo "ERROR: restore-drill executor remains stopped because its required firewall cannot be applied without passwordless sudo." >&2
+  echo "  Configure passwordless sudo for ${SCRIPT_DIR}/restore-drill-firewall.sh, then rerun scripts/compose.sh." >&2
+  exit 1
+fi
+sudo RESTORE_DRILL_EXECUTOR_DB_HOST="${RESTORE_DRILL_EXECUTOR_DB_HOST}" \
+  RESTORE_DRILL_EXECUTOR_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT}" \
+  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" \
+  "${SCRIPT_DIR}/restore-drill-firewall.sh"
+
 "${CMD[@]}" up -d "${SCALE_ARGS[@]}"
 
 # ── Apply egress firewall (blocks private subnet access from containers) ─

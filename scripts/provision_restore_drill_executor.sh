@@ -20,12 +20,29 @@ if [[ ! -s "$RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" ]]; then
     exit 2
 fi
 
-# The psql variable is populated inside psql from the file. It is quoted as a
-# SQL literal by :'<name>', never supplied as a command-line argument or
-# copied into an environment variable.
-psql -X -v ON_ERROR_STOP=1 <<SQL
-\set restore_drill_executor_password \`cat "$RESTORE_DRILL_EXECUTOR_PASSWORD_FILE"\`
-ALTER ROLE restore_drill_executor LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION;
-SELECT format('ALTER ROLE restore_drill_executor PASSWORD %L', :'restore_drill_executor_password') \gexec
-\unset restore_drill_executor_password
-SQL
+# psql meta-commands parse newlines, so a line terminator can turn a password
+# file into extra input. Passwords are single-line deployment secrets; reject
+# CR/LF before invoking any database client.
+if LC_ALL=C grep -q $'\r' "$RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" \
+    || [[ "$(wc -l < "$RESTORE_DRILL_EXECUTOR_PASSWORD_FILE")" -ne 0 ]]; then
+    printf '%s\n' 'restore-drill executor password file must contain exactly one single line' >&2
+    exit 2
+fi
+
+# Base64 is restricted to psql-safe token characters. Feed that encoded token
+# through stdin and let psql quote it with :'<name>' before decoding, rather
+# than expanding the raw secret into a psql heredoc or process argument.
+restore_drill_executor_password_b64="$(
+    base64 < "$RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" | tr -d '\n'
+)"
+trap 'unset restore_drill_executor_password_b64' EXIT
+
+{
+    printf '\\set restore_drill_executor_password_b64 %s\n' "$restore_drill_executor_password_b64"
+    printf '%s\n' 'ALTER ROLE restore_drill_executor LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION;'
+    printf '%s\n' "SELECT format("
+    printf '%s\n' "    'ALTER ROLE restore_drill_executor PASSWORD %L',"
+    printf '%s\n' "    convert_from(decode(:'restore_drill_executor_password_b64', 'base64'), 'UTF8')"
+    printf '%s\n' ') \gexec'
+    printf '%s\n' '\unset restore_drill_executor_password_b64'
+} | psql -X -v ON_ERROR_STOP=1

@@ -218,13 +218,16 @@ services:
   # The sole holder of the recovery-only database credential. It has no HTTP
   # listener and deliberately does not inherit x-postgres-env: dashboard-api,
   # butlers, and connectors remain unable to create the scratch database.
+  # scripts/compose.sh resolves the purpose-specific endpoint to IPv4 and
+  # applies the bridge's PostgreSQL-only default-deny firewall before starting
+  # this service. Do not start this service through bare `docker compose up`.
   restore-drill-executor:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
     command: []
     environment:
-      RESTORE_DRILL_EXECUTOR_DB_HOST: ${POSTGRES_HOST:?Set POSTGRES_HOST in .env.dev or .env.prod}
-      RESTORE_DRILL_EXECUTOR_DB_PORT: ${POSTGRES_PORT:-5432}
+      RESTORE_DRILL_EXECUTOR_DB_HOST: ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run scripts/compose.sh or set the resolved PostgreSQL IPv4 endpoint}
+      RESTORE_DRILL_EXECUTOR_DB_PORT: ${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}
       RESTORE_DRILL_EXECUTOR_SSLMODE: ${POSTGRES_SSLMODE:-}
       RESTORE_DRILL_EXECUTOR_APPLICATION_DB: ${POSTGRES_DB:-butlers}
       RESTORE_DRILL_EXECUTOR_MAINTENANCE_DB: ${RESTORE_DRILL_EXECUTOR_MAINTENANCE_DB:-postgres}
@@ -240,7 +243,7 @@ services:
     depends_on:
       migrations:
         condition: service_completed_successfully
-    networks: [db]
+    networks: [restore_drill_db]
     restart: unless-stopped
 
   dashboard-api:
@@ -905,3 +908,9 @@ networks:
     # Services on this network can reach the internet (for LLM APIs, OAuth, etc.).
     # Private subnets blocked by scripts/egress-firewall.sh.
     driver: bridge
+  # A dedicated bridge is required because the application `db` network is
+  # intentionally non-internal for remote PostgreSQL. IPv6 is disabled so the
+  # host's IPv4-only PostgreSQL allowlist remains a complete default deny.
+  restore_drill_db:
+    driver: bridge
+    enable_ipv6: false

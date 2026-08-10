@@ -73,14 +73,18 @@ schedule state, result persistence, and truthful attention provenance.
 This is deliberately a privileged *runtime* boundary, not a bootstrap-only
 claim: compromise of the executor can create scratch databases and read the
 backup artifact required for recovery proof. The containment is explicit: the
-executor is the sole service with that credential, joins only the `db` network,
-mounts backups read-only, has no listener, Docker socket, `backend`, `frontend`,
-or `egress` membership, and runs no LLM session. The dashboard, butlers, and
-connectors remain `NOCREATEDB`; their shared credential is tested as unable to
-create a scratch database. Granting `CREATEDB` to that shared user is rejected
-because `SET ROLE` cannot constrain its subprocesses. Ad hoc `ALTER ROLE` or a
-manually pre-created scratch database are rejected because they turn a recovery
-proof into an untracked live mutation.
+executor is the sole service with that credential, joins only the dedicated
+`restore_drill_db` bridge, and a host policy default-denies all traffic from
+that bridge except TCP to its configured PostgreSQL endpoint and port. The
+bridge is intentionally not Docker `internal` because PostgreSQL is externally
+hosted; the launcher installs the default-deny policy before starting the
+executor. It mounts backups read-only, has no listener, Docker socket,
+`backend`, `frontend`, or `egress` membership, and runs no LLM session. The
+dashboard, butlers, and connectors remain `NOCREATEDB`; their shared credential
+is tested as unable to create a scratch database. Granting `CREATEDB` to that
+shared user is rejected because `SET ROLE` cannot constrain its subprocesses.
+Ad hoc `ALTER ROLE` or a manually pre-created scratch database are rejected
+because they turn a recovery proof into an untracked live mutation.
 
 ### 2. The scratch database has an explicit, single-executor lifecycle
 

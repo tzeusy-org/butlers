@@ -14,9 +14,11 @@
   maintenance database explicitly.
 - [ ] 1.3 Add a dedicated deterministic restore-drill executor/service and move
   scheduling plus CLI subprocess launch out of dashboard-api. Its compose
-  definition has only the `db` network, a read-only backup mount, no listener,
-  Docker socket, `backend`, `frontend`, or `egress` membership, and a private
-  secret-file mount. It MUST NOT inherit `x-postgres-env`, receive
+  definition has only a dedicated restore-drill database bridge whose
+  project-scoped host policy default-denies outbound traffic except the
+  configured PostgreSQL endpoint and port, a read-only backup mount, no
+  listener, Docker socket, `backend`, `frontend`, or `egress` membership, and a
+  private secret-file mount. It MUST NOT inherit `x-postgres-env`, receive
   `POSTGRES_USER`/`POSTGRES_PASSWORD`/`DATABASE_URL`, or expose the executor
   credential to dashboard-api; dashboard-api only reads recorded results.
 - [ ] 1.4 Add configuration, bootstrap, compose, and role-boundary tests that

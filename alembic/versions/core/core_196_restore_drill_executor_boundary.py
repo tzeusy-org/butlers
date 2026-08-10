@@ -1,13 +1,14 @@
-"""Install the restore-drill executor's narrow persistence boundary.
+"""Install the restore-drill executor's exclusive persistence boundary.
 
 Revision ID: core_196
 Revises: core_195
 Create Date: 2026-08-10 00:00:00.000000
 
-The isolated executor may create and remove only its fixed scratch database at
-the server level. It receives no direct audit-table privilege: these two
-fixed-search-path security-definer functions are its entire live application
-database interface.
+The recovery executor may create and remove only its fixed scratch database at
+the server level. Its live application-database access is limited to two
+fixed-search-path SECURITY DEFINER functions in an executor-only schema.
+Their NOLOGIN owner is intentionally unavailable to the shared migration and
+dashboard credential, so object ownership cannot bypass EXECUTE ACLs.
 """
 
 from __future__ import annotations
@@ -20,12 +21,64 @@ branch_labels = None
 depends_on = None
 
 _EXECUTOR_ROLE = "restore_drill_executor"
+_OWNER_ROLE = "restore_drill_executor_owner"
+_EXECUTOR_SCHEMA = "restore_drill_executor"
+_ADMIN_FINALIZER = "restore_drill_executor_admin.finalize_interface"
 
 
 def upgrade() -> None:
+    # ``init-db.sql`` is the normal privileged prerequisite. The superuser-only
+    # fallback keeps fresh test databases migration-faithful without granting a
+    # shared runtime login the ability to assume the dedicated owner role.
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.restore_drill_executor_is_due(
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_executor'
+            ) THEN
+                IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+                    RAISE EXCEPTION
+                        'run scripts/init-db.sql as the managed privileged bootstrap '
+                        'before core_196';
+                END IF;
+                CREATE ROLE restore_drill_executor
+                    NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_executor_owner'
+            ) THEN
+                IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+                    RAISE EXCEPTION
+                        'run scripts/init-db.sql as the managed privileged bootstrap '
+                        'before core_196';
+                END IF;
+                CREATE ROLE restore_drill_executor_owner
+                    NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_namespace WHERE nspname = 'restore_drill_executor'
+            ) THEN
+                IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+                    RAISE EXCEPTION
+                        'run scripts/init-db.sql as the managed privileged bootstrap '
+                        'before core_196';
+                END IF;
+                CREATE SCHEMA IF NOT EXISTS restore_drill_executor
+                    AUTHORIZATION restore_drill_executor_owner;
+            END IF;
+            IF NOT has_schema_privilege(current_user, 'restore_drill_executor', 'CREATE') THEN
+                RAISE EXCEPTION
+                    'restore-drill migration staging privilege is absent; '
+                    'run scripts/init-db.sql first';
+            END IF;
+        END;
+        $$;
+        """
+    )
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION restore_drill_executor.is_due(
             p_interval_seconds INTEGER
         )
         RETURNS BOOLEAN
@@ -55,7 +108,7 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION public.record_restore_drill_executor_result(
+        CREATE OR REPLACE FUNCTION restore_drill_executor.record_result(
             p_backup_name TEXT,
             p_result TEXT,
             p_detail TEXT,
@@ -109,22 +162,37 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        REVOKE ALL ON FUNCTION public.restore_drill_executor_is_due(INTEGER) FROM PUBLIC;
-        REVOKE ALL ON FUNCTION public.record_restore_drill_executor_result(
-            TEXT, TEXT, TEXT, INTEGER
-        ) FROM PUBLIC;
-        """
-    )
-    op.execute(
-        f"""
         DO $$
         BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_EXECUTOR_ROLE}') THEN
-                GRANT EXECUTE ON FUNCTION public.restore_drill_executor_is_due(INTEGER)
-                    TO {_EXECUTOR_ROLE};
-                GRANT EXECUTE ON FUNCTION public.record_restore_drill_executor_result(
-                    TEXT, TEXT, TEXT, INTEGER
-                ) TO {_EXECUTOR_ROLE};
+            IF to_regprocedure('restore_drill_executor_admin.finalize_interface()') IS NOT NULL THEN
+                PERFORM restore_drill_executor_admin.finalize_interface();
+            ELSIF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+                EXECUTE 'GRANT USAGE ON SCHEMA public TO restore_drill_executor_owner';
+                EXECUTE 'GRANT SELECT, INSERT ON TABLE public.audit_log '
+                    || 'TO restore_drill_executor_owner';
+                EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.audit_log_id_seq '
+                    || 'TO restore_drill_executor_owner';
+                EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(INTEGER) '
+                    || 'OWNER TO restore_drill_executor_owner';
+                EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result('
+                    || 'TEXT, TEXT, TEXT, INTEGER) OWNER TO restore_drill_executor_owner';
+                EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM PUBLIC';
+                EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor '
+                    || 'FROM restore_drill_executor';
+                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA '
+                    || 'restore_drill_executor FROM PUBLIC';
+                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA '
+                    || 'restore_drill_executor FROM restore_drill_executor';
+                EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor '
+                    || 'TO restore_drill_executor';
+                EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.is_due(INTEGER) '
+                    || 'TO restore_drill_executor';
+                EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.record_result('
+                    || 'TEXT, TEXT, TEXT, INTEGER) TO restore_drill_executor';
+            ELSE
+                RAISE EXCEPTION
+                    'restore-drill ownership finalizer is unavailable; '
+                    'run scripts/init-db.sql first';
             END IF;
         END;
         $$;
@@ -133,26 +201,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # The normal migration login deliberately cannot drop objects owned by the
+    # isolated NOLOGIN role. Production rollback therefore remains a managed
+    # privileged-bootstrap operation; direct superuser test databases can still
+    # exercise the reversible SQL shape.
     op.execute(
-        f"""
+        """
         DO $$
         BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_EXECUTOR_ROLE}') THEN
-                REVOKE ALL ON FUNCTION public.restore_drill_executor_is_due(INTEGER)
-                    FROM {_EXECUTOR_ROLE};
-                REVOKE ALL ON FUNCTION public.record_restore_drill_executor_result(
-                    TEXT, TEXT, TEXT, INTEGER
-                ) FROM {_EXECUTOR_ROLE};
+            IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+                RAISE EXCEPTION
+                    'core_196 downgrade requires the managed privileged bootstrap owner';
             END IF;
+            REVOKE ALL ON FUNCTION restore_drill_executor.is_due(INTEGER)
+                FROM restore_drill_executor;
+            REVOKE ALL ON FUNCTION restore_drill_executor.record_result(
+                TEXT, TEXT, TEXT, INTEGER
+            ) FROM restore_drill_executor;
+            DROP FUNCTION IF EXISTS restore_drill_executor.record_result(
+                TEXT, TEXT, TEXT, INTEGER
+            );
+            DROP FUNCTION IF EXISTS restore_drill_executor.is_due(INTEGER);
         END;
         $$;
-        """
-    )
-    op.execute(
-        """
-        DROP FUNCTION IF EXISTS public.record_restore_drill_executor_result(
-            TEXT, TEXT, TEXT, INTEGER
-        );
-        DROP FUNCTION IF EXISTS public.restore_drill_executor_is_due(INTEGER);
         """
     )

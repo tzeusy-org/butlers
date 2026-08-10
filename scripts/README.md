@@ -64,6 +64,16 @@ database environment variables or tracked configuration. See
 [`docs/operations/backup-restore.md`](../docs/operations/backup-restore.md)
 for the deployment boundary and rollback rules.
 
+## restore-drill-firewall.sh
+
+`restore-drill-firewall.sh` enforces the executor's dedicated
+`restore_drill_db` bridge as default-deny: it permits only TCP to the resolved
+PostgreSQL IPv4 endpoint and port, then drops all other outbound traffic from
+that bridge. `scripts/compose.sh` creates the executor without starting it,
+installs the policy with passwordless `sudo`, and only then starts the stack;
+it fails closed when that policy cannot be installed. Do not start
+`restore-drill-executor` through a bare `docker compose up` command.
+
 ## dev.sh
 
 Bootstraps the full local Butlers development stack in `tmux` (dashboard, frontend, connectors, backend, OAuth gate, and postgres preflight).

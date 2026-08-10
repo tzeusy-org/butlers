@@ -38,8 +38,10 @@ Scope: v1-mandatory
 
 #### Scenario: Executor deployment boundary stays narrow
 - **WHEN** the restore-drill executor is deployed
-- **THEN** it joins only the `db` network, has a read-only backup mount and no
-  listener, Docker socket, `backend`, `frontend`, or `egress` access
+- **THEN** it joins only a dedicated restore-drill bridge whose outbound policy
+  default-denies every destination except the configured PostgreSQL endpoint
+  and port, has a read-only backup mount and no listener, Docker socket,
+  `backend`, `frontend`, or `egress` access
 - **AND** it receives its credential only through the private file-secret mount,
   not the shared `POSTGRES_*`/`DATABASE_URL` environment used by dashboard-api
 - **AND** dashboard-api reads durable results but does not schedule or execute

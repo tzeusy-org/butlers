@@ -41,8 +41,10 @@ Scope: v1-mandatory
   purpose-specific endpoint configuration
 - **AND** the executor does not inherit shared `POSTGRES_*`/`DATABASE_URL`
   configuration and has no general live-schema grants
-- **AND** it joins only the `db` network, mounts backup artifacts read-only, and
-  has no listener, Docker socket, `backend`, `frontend`, or `egress` access
+- **AND** it joins only a dedicated restore-drill bridge whose outbound policy
+  default-denies every destination except the configured PostgreSQL endpoint
+  and port, mounts backup artifacts read-only, and has no listener, Docker
+  socket, `backend`, `frontend`, or `egress` access
 
 #### Scenario: Privilege repair requires the managed bootstrap path
 - **WHEN** an operator encounters a restore-drill `CREATEDB` prerequisite failure

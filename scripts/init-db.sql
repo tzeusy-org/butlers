@@ -105,6 +105,8 @@ DECLARE
         'connector_writer'
     ];
     _restore_drill_executor_role TEXT := 'restore_drill_executor';
+    _restore_drill_executor_owner_role TEXT := 'restore_drill_executor_owner';
+    _restore_drill_executor_schema TEXT := 'restore_drill_executor';
     _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
     _db_name TEXT := current_database();
     _schema TEXT;
@@ -164,39 +166,60 @@ BEGIN
         _restore_drill_executor_role
     );
 
+    -- A distinct NOLOGIN owner holds the SECURITY DEFINER functions. The
+    -- executor can call the narrow interface but cannot alter it, while the
+    -- shared migration/dashboard login does not retain owner bypasses.
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _restore_drill_executor_owner_role) THEN
+        EXECUTE format(
+            'CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+            _restore_drill_executor_owner_role
+        );
+        RAISE NOTICE 'Created restore-drill interface owner "%"', _restore_drill_executor_owner_role;
+    END IF;
+    EXECUTE format(
+        'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+        _restore_drill_executor_owner_role
+    );
+    EXECUTE format(
+        'CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I',
+        _restore_drill_executor_schema,
+        _restore_drill_executor_owner_role
+    );
+    EXECUTE format(
+        'ALTER SCHEMA %I OWNER TO %I',
+        _restore_drill_executor_schema,
+        _restore_drill_executor_owner_role
+    );
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM PUBLIC', _restore_drill_executor_schema);
+
     -- No normal role may assume the executor or vice versa. The second revoke
     -- direction prevents a compromised executor from inheriting ordinary
     -- application privileges through a role membership.
     EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_role, _migration_user);
     EXECUTE format('REVOKE %I FROM %I', _migration_user, _restore_drill_executor_role);
+    EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_owner_role, _migration_user);
+    EXECUTE format('REVOKE %I FROM %I', _migration_user, _restore_drill_executor_owner_role);
     FOREACH _role IN ARRAY _all_runtime_roles LOOP
         EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_role, _role);
         EXECUTE format('REVOKE %I FROM %I', _role, _restore_drill_executor_role);
+        EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_owner_role, _role);
+        EXECUTE format('REVOKE %I FROM %I', _role, _restore_drill_executor_owner_role);
     END LOOP;
 
-    -- The executor may connect and resolve its two security-definer functions,
-    -- but receives no direct public-schema DML, function, sequence, or CREATE
-    -- privilege. The exact function grants are re-applied below when their
-    -- migration has run, making bootstrap safe in either ordering.
+    -- The executor may connect but receives no general public-schema access.
+    -- The post-migration fixed ownership finalizer grants only its dedicated
+    -- schema USAGE and the two exact functions.
     EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', _db_name, _restore_drill_executor_role);
     EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM %I', _db_name, _restore_drill_executor_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA public FROM %I', _restore_drill_executor_role);
-    EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', _restore_drill_executor_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM %I', _restore_drill_executor_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM %I', _restore_drill_executor_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM %I', _restore_drill_executor_role);
-    IF to_regprocedure('public.restore_drill_executor_is_due(integer)') IS NOT NULL THEN
-        EXECUTE format(
-            'GRANT EXECUTE ON FUNCTION public.restore_drill_executor_is_due(integer) TO %I',
-            _restore_drill_executor_role
-        );
-    END IF;
-    IF to_regprocedure('public.record_restore_drill_executor_result(text,text,text,integer)') IS NOT NULL THEN
-        EXECUTE format(
-            'GRANT EXECUTE ON FUNCTION public.record_restore_drill_executor_result(text,text,text,integer) TO %I',
-            _restore_drill_executor_role
-        );
-    END IF;
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', _restore_drill_executor_schema, _restore_drill_executor_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', _restore_drill_executor_schema, _migration_user);
+    FOREACH _role IN ARRAY _all_runtime_roles LOOP
+        EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', _restore_drill_executor_schema, _role);
+    END LOOP;
 
     -- Allow the migration/runtime user to SET ROLE into each runtime role.
     -- On PostgreSQL 16+, bare membership is not sufficient if the membership
@@ -465,4 +488,96 @@ BEGIN
 
     RAISE NOTICE 'Bootstrap complete for database "%" (migration/runtime user "%")', _db_name, _migration_user;
 END
+$$;
+
+-- ── Restore-drill interface ownership handoff ──────────────────────────────
+--
+-- Alembic normally runs as the same NOCREATEDB login used by dashboard-api.
+-- It may create the versioned function definitions, but cannot remain their
+-- owner: object ownership bypasses EXECUTE ACLs. This bootstrap-owned, fixed
+-- handoff transfers only the two known functions to a NOLOGIN role, then
+-- removes the temporary migration grants in the same migration transaction.
+
+CREATE SCHEMA IF NOT EXISTS restore_drill_executor_admin;
+REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor_admin FROM PUBLIC;
+
+CREATE TABLE IF NOT EXISTS restore_drill_executor_admin.bootstrap_configuration (
+    singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+    migration_role NAME NOT NULL
+);
+REVOKE ALL PRIVILEGES ON TABLE restore_drill_executor_admin.bootstrap_configuration FROM PUBLIC;
+
+INSERT INTO restore_drill_executor_admin.bootstrap_configuration (singleton, migration_role)
+VALUES (
+    true,
+    COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+)
+ON CONFLICT (singleton) DO UPDATE SET migration_role = EXCLUDED.migration_role;
+
+CREATE OR REPLACE FUNCTION restore_drill_executor_admin.finalize_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    v_migration_role NAME;
+BEGIN
+    SELECT migration_role
+    INTO v_migration_role
+    FROM restore_drill_executor_admin.bootstrap_configuration
+    WHERE singleton;
+
+    IF v_migration_role IS NULL THEN
+        RAISE EXCEPTION 'restore-drill bootstrap configuration is missing';
+    END IF;
+    IF to_regprocedure('restore_drill_executor.is_due(integer)') IS NULL
+       OR to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NULL THEN
+        RAISE EXCEPTION 'restore-drill interface functions must exist before ownership finalization';
+    END IF;
+
+    EXECUTE 'GRANT USAGE ON SCHEMA public TO restore_drill_executor_owner';
+    EXECUTE 'GRANT SELECT, INSERT ON TABLE public.audit_log TO restore_drill_executor_owner';
+    EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.audit_log_id_seq TO restore_drill_executor_owner';
+
+    EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(integer) OWNER TO restore_drill_executor_owner';
+    EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result(text, text, text, integer) OWNER TO restore_drill_executor_owner';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM restore_drill_executor';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA restore_drill_executor FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA restore_drill_executor FROM restore_drill_executor';
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM %I', v_migration_role);
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA restore_drill_executor FROM %I',
+        v_migration_role
+    );
+    EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor TO restore_drill_executor';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.is_due(integer) TO restore_drill_executor';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.record_result(text, text, text, integer) TO restore_drill_executor';
+    EXECUTE format(
+        'REVOKE EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() FROM %I',
+        v_migration_role
+    );
+    EXECUTE format('REVOKE USAGE ON SCHEMA restore_drill_executor_admin FROM %I', v_migration_role);
+END;
+$$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION restore_drill_executor_admin.finalize_interface() FROM PUBLIC;
+
+DO $$
+DECLARE
+    _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
+BEGIN
+    IF to_regprocedure('restore_drill_executor.is_due(integer)') IS NOT NULL
+       AND to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NOT NULL THEN
+        PERFORM restore_drill_executor_admin.finalize_interface();
+    ELSE
+        EXECUTE format('GRANT USAGE, CREATE ON SCHEMA restore_drill_executor TO %I', _migration_user);
+        EXECUTE format('GRANT USAGE ON SCHEMA restore_drill_executor_admin TO %I', _migration_user);
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() TO %I',
+            _migration_user
+        );
+    END IF;
+END;
 $$;

@@ -74,6 +74,14 @@ container. The bootstrap procedure creates or repairs the distinct login with
 `LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION` and maintains
 the normal-role `NOCREATEDB` boundary.
 
+The ownership handoff is also deliberate: the two constrained persistence
+functions live in the `restore_drill_executor` schema and are owned by a
+separate `restore_drill_executor_owner` `NOLOGIN` role. The normal migration
+and dashboard login has neither schema usage nor function execution after the
+migration finishes; it cannot bypass the executor interface through object
+ownership. The privileged bootstrap is the only role boundary allowed to set
+up that handoff.
+
 Do not bypass that managed procedure. In particular, do not issue ad hoc
 database-role changes, manually pre-create the scratch database, pass a shared
 application credential to client tools, or make a live application database
@@ -83,7 +91,16 @@ mutation to force a drill through.
 
 The Compose service is deliberately narrow:
 
-- It joins only the `db` network and exposes no listener or host port.
+- It joins only the dedicated `restore_drill_db` bridge and exposes no
+  listener or host port. That bridge is not marked Docker `internal` because
+  PostgreSQL is externally hosted; instead
+  `scripts/restore-drill-firewall.sh` installs a project-scoped host firewall
+  chain that allows only TCP to the resolved PostgreSQL IPv4 endpoint and port
+  and drops every other outbound packet. IPv6 is disabled on this bridge.
+- `scripts/compose.sh` creates the executor without starting it, installs that
+  default-deny policy, and only then starts the Compose stack. Start this
+  service through that launcher, not a bare `docker compose up`; the launcher
+  fails closed if it cannot apply the required firewall policy.
 - It mounts `butlers_backups` read-only and has no Docker socket, `backend`,
   `frontend`, or `egress` network membership.
 - It does not inherit `x-postgres-env` and receives no `POSTGRES_USER`,

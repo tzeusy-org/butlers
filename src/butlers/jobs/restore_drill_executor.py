@@ -77,7 +77,7 @@ class PostgresRestoreDrillPersistence:
     async def is_due(self, interval_s: int) -> bool:
         async with self._pool.acquire() as connection:
             value = await connection.fetchval(
-                "SELECT public.restore_drill_executor_is_due($1)", interval_s
+                "SELECT restore_drill_executor.is_due($1)", interval_s
             )
         return bool(value)
 
@@ -87,7 +87,7 @@ class PostgresRestoreDrillPersistence:
         async with self._pool.acquire() as connection:
             value = await connection.fetchval(
                 """
-                SELECT public.record_restore_drill_executor_result($1, $2, $3, $4)
+                SELECT restore_drill_executor.record_result($1, $2, $3, $4)
                 """,
                 backup_name,
                 result,
