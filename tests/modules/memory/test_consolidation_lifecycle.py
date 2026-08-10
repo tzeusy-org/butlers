@@ -8,8 +8,10 @@ protect a retrying worker from a concurrent scheduler invocation.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import asyncpg
 import pytest
@@ -64,9 +66,121 @@ CREATE TABLE memory_events (
 """
 
 
+_ARTIFACT_SCHEMA_SQL = """
+CREATE TABLE memory_policies (
+    retention_class TEXT PRIMARY KEY,
+    ttl_days INTEGER NOT NULL
+);
+
+INSERT INTO memory_policies (retention_class, ttl_days)
+VALUES ('transient', 7);
+
+CREATE TABLE facts (
+    id UUID PRIMARY KEY,
+    subject TEXT NOT NULL DEFAULT '',
+    predicate TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    permanence TEXT NOT NULL DEFAULT 'standard',
+    entity_id UUID,
+    valid_at TIMESTAMPTZ,
+    validity TEXT NOT NULL DEFAULT 'active',
+    source_butler TEXT NOT NULL DEFAULT 'memory',
+    tenant_id TEXT NOT NULL DEFAULT 'shared',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_confirmed_at TIMESTAMPTZ
+);
+
+CREATE TABLE rules (
+    id UUID PRIMARY KEY,
+    content TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    search_vector TSVECTOR NOT NULL,
+    scope TEXT NOT NULL,
+    maturity TEXT NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
+    decay_rate DOUBLE PRECISION NOT NULL,
+    effectiveness_score DOUBLE PRECISION NOT NULL,
+    applied_count INTEGER NOT NULL,
+    success_count INTEGER NOT NULL,
+    harmful_count INTEGER NOT NULL,
+    source_episode_id UUID,
+    source_butler TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    tags JSONB NOT NULL,
+    metadata JSONB NOT NULL,
+    tenant_id TEXT NOT NULL,
+    request_id TEXT,
+    retention_class TEXT NOT NULL,
+    sensitivity TEXT NOT NULL,
+    embedding_model_version TEXT NOT NULL
+);
+
+CREATE TABLE memory_links (
+    source_type TEXT NOT NULL,
+    source_id UUID NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id UUID NOT NULL,
+    relation TEXT NOT NULL,
+    UNIQUE (source_type, source_id, target_type, target_id)
+);
+"""
+
+
 async def _install_lifecycle_schema(pool) -> None:
     await pool.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
     await pool.execute(_LIFECYCLE_SCHEMA_SQL)
+
+
+async def _install_artifact_schema(pool) -> None:
+    await pool.execute(_ARTIFACT_SCHEMA_SQL)
+
+
+class _StaticEmbeddingEngine:
+    model_name = "consolidation-lifecycle-test"
+
+    def embed(self, _text: str) -> list[float]:
+        return [0.0]
+
+
+class _CompletedThenReplacedSpawner:
+    """Complete a runtime, then let a real second claimant replace its lease."""
+
+    def __init__(self, pool, episode_id: uuid.UUID, confirmation_id: uuid.UUID) -> None:
+        self._pool = pool
+        self._episode_id = episode_id
+        self._confirmation_id = confirmation_id
+        self.replacement_stats: dict | None = None
+
+    async def trigger(self, *, prompt: str, trigger_source: str) -> SimpleNamespace:
+        assert prompt
+        assert trigger_source == "schedule:consolidation"
+
+        completed_runtime = SimpleNamespace(
+            success=True,
+            output=json.dumps(
+                {
+                    "new_rules": [
+                        {
+                            "content": "Persist only while the episode claim remains current.",
+                            "evidence_episode_ids": [str(self._episode_id)],
+                        }
+                    ],
+                    "confirmations": [str(self._confirmation_id)],
+                }
+            ),
+        )
+
+        await self._pool.execute(
+            "UPDATE episodes SET leased_until = now() - interval '1 second' WHERE id = $1",
+            self._episode_id,
+        )
+        self.replacement_stats = await run_consolidation(
+            pool=self._pool,
+            embedding_engine=_StaticEmbeddingEngine(),
+            cc_spawner=None,
+            batch_size=1,
+        )
+        return completed_runtime
 
 
 async def _insert_episode(
@@ -462,3 +576,42 @@ async def test_success_transition_is_fenced_and_clears_retry_lifecycle_state(
             "event_type": "episode_consolidated",
             "payload": {"outcome": "consolidated"},
         }
+
+
+async def test_replaced_claim_cannot_persist_artifacts_or_terminal_lifecycle(
+    provisioned_postgres_pool,
+) -> None:
+    """A completed runtime loses every write when a later claimant owns its episodes."""
+    async with provisioned_postgres_pool(max_pool_size=3) as pool:
+        await _install_lifecycle_schema(pool)
+        await _install_artifact_schema(pool)
+        episode_id = await _insert_episode(pool)
+        confirmation_id = uuid.uuid4()
+        await pool.execute("INSERT INTO facts (id) VALUES ($1)", confirmation_id)
+        spawner = _CompletedThenReplacedSpawner(pool, episode_id, confirmation_id)
+
+        displaced = await run_consolidation(
+            pool=pool,
+            embedding_engine=_StaticEmbeddingEngine(),
+            cc_spawner=spawner,
+            batch_size=1,
+        )
+
+        assert spawner.replacement_stats is not None
+        assert spawner.replacement_stats["episodes_processed"] == 1
+        assert displaced["episodes_consolidated"] == 0
+        assert displaced["groups_consolidated"] == 0
+        assert await pool.fetchval("SELECT count(*) FROM rules") == 0
+        assert await pool.fetchval("SELECT count(*) FROM memory_links") == 0
+        assert await pool.fetchval("SELECT count(*) FROM memory_events") == 0
+        assert (
+            await pool.fetchval(
+                "SELECT last_confirmed_at FROM facts WHERE id = $1", confirmation_id
+            )
+        ) is None
+
+        episode = await _episode_lifecycle(pool, episode_id)
+        assert episode["consolidation_status"] == "pending"
+        assert episode["consolidated"] is False
+        assert episode["leased_by"] is not None
+        assert episode["leased_until"] > datetime.now(UTC)

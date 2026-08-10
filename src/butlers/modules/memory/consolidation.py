@@ -365,6 +365,7 @@ async def run_consolidation(
                     enable_shared_catalog=enable_shared_catalog,
                     source_schema=source_schema,
                     claim_token=worker,
+                    lease_duration_seconds=LEASE_DURATION_SECONDS,
                 )
 
                 # A lease can expire while the runtime is executing. Do not

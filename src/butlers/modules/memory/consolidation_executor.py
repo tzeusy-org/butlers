@@ -80,6 +80,64 @@ class _ConnectionBackedPool:
         return getattr(self._connection, name)
 
 
+def _lost_claim_result() -> dict[str, Any]:
+    """Return the no-side-effect result used when a claimant lost its fence."""
+    return {
+        "facts_created": 0,
+        "facts_updated": 0,
+        "rules_created": 0,
+        "confirmations_made": 0,
+        "episodes_consolidated": 0,
+        "episode_ttl_days": 0,
+        "errors": ["Consolidation lease was lost before episodes could be finalized"],
+    }
+
+
+async def _lock_and_renew_claim_for_persistence(
+    connection: Any,
+    *,
+    source_episode_ids: list[uuid.UUID],
+    claim_token: str,
+    lease_duration_seconds: int,
+) -> bool:
+    """Fence every derived write behind the current claimant's locked lease.
+
+    The row locks are intentionally held by the caller's outer transaction for
+    the full artifact, confirmation, and terminal-event boundary.  A scheduler
+    whose lease timestamp expires while that transaction is open sees those rows
+    through ``FOR UPDATE SKIP LOCKED`` and cannot replace the claimant before the
+    terminal transition commits.
+    """
+    claimed = await connection.fetch(
+        """
+        SELECT id
+        FROM episodes
+        WHERE id = ANY($1::uuid[])
+          AND leased_by = $2
+          AND leased_until > now()
+          AND consolidation_status IN ('pending', 'failed')
+        FOR UPDATE
+        """,
+        source_episode_ids,
+        claim_token,
+    )
+    if len(claimed) != len(source_episode_ids):
+        return False
+
+    await connection.execute(
+        """
+        UPDATE episodes
+        SET leased_until = now() + ($3 * interval '1 second')
+        WHERE id = ANY($1::uuid[])
+          AND leased_by = $2
+        """,
+        source_episode_ids,
+        claim_token,
+        lease_duration_seconds,
+    )
+    return True
+
+
 def _validate_artifact_evidence(
     *,
     artifact_kind: str,
@@ -204,6 +262,9 @@ async def execute_consolidation(
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
     claim_token: str | None = None,
+    lease_duration_seconds: int = 300,
+    _claim_persistence_fenced: bool = False,
+    _episode_ttl_days: int | None = None,
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
 
@@ -242,13 +303,53 @@ async def execute_consolidation(
             Required (by ``store_fact``/``store_rule``'s own gate) when
             ``enable_shared_catalog=True``; ignored otherwise.
         claim_token: Opaque lease owner from ``run_consolidation``. When set,
-            terminal persistence is fenced to that still-active claim and the
-            state transition plus lifecycle event are committed atomically.
+            every derived artifact, confirmation, terminal state change, and
+            lifecycle event is fenced to that still-active claim in one outer
+            transaction.
+        lease_duration_seconds: Lease duration used to renew a valid claim
+            immediately before protected persistence begins.
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
         confirmations_made, episodes_consolidated, episode_ttl_days, errors
     """
+    # Runtime execution happens outside a transaction, but persistence cannot:
+    # a replacement claimant must win before any derived write becomes visible.
+    # Lock and renew every source row first, then recurse through the existing
+    # executor using a connection-backed pool so all nested storage transactions
+    # remain under this outer row-lock fence through the terminal event.
+    if claim_token is not None and source_episode_ids and not _claim_persistence_fenced:
+        # The TTL helper deliberately tolerates a pre-migration absent policy
+        # table. Resolve it before opening the protected transaction so that
+        # fallback cannot leave PostgreSQL's outer transaction aborted.
+        episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                if not await _lock_and_renew_claim_for_persistence(
+                    connection,
+                    source_episode_ids=source_episode_ids,
+                    claim_token=claim_token,
+                    lease_duration_seconds=lease_duration_seconds,
+                ):
+                    return _lost_claim_result()
+                return await execute_consolidation(
+                    pool=_ConnectionBackedPool(connection),
+                    embedding_engine=embedding_engine,
+                    parsed=parsed,
+                    source_episode_ids=source_episode_ids,
+                    butler_name=butler_name,
+                    scope=scope,
+                    retention_class=retention_class,
+                    tenant_id=tenant_id,
+                    request_id=request_id,
+                    enable_shared_catalog=enable_shared_catalog,
+                    source_schema=source_schema,
+                    claim_token=claim_token,
+                    lease_duration_seconds=lease_duration_seconds,
+                    _claim_persistence_fenced=True,
+                    _episode_ttl_days=episode_ttl_days,
+                )
+
     effective_scope = scope if scope is not None else butler_name
     errors: list[str] = []
     facts_created = 0
@@ -272,7 +373,11 @@ async def execute_consolidation(
         source_schema = await pool.fetchval("SELECT current_schema()")
 
     # Resolve episode TTL from memory_policies for the given retention_class.
-    episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
+    episode_ttl_days = (
+        _episode_ttl_days
+        if _episode_ttl_days is not None
+        else await _lookup_episode_ttl_days(pool, retention_class)
+    )
 
     # --- New facts ---
     for fact_index, fact in enumerate(parsed.new_facts):
@@ -527,7 +632,7 @@ async def execute_consolidation(
                                 FROM episodes
                                 WHERE id = ANY($1::uuid[])
                                   AND leased_by = $2
-                                  AND leased_until > now()
+                                  AND ($4::boolean OR leased_until > now())
                                   AND consolidation_status IN ('pending', 'failed')
                                 FOR UPDATE
                             ), transitioned AS (
@@ -562,6 +667,7 @@ async def execute_consolidation(
                             source_episode_ids,
                             claim_token,
                             tenant_id,
+                            _claim_persistence_fenced,
                         )
                 if len(transitioned) == len(source_episode_ids):
                     episodes_consolidated = len(transitioned)
