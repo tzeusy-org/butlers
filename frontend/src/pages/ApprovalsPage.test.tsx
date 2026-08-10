@@ -161,6 +161,16 @@ function makeApiResponse<T>(data: T) {
   return Promise.resolve({ data, meta: {} });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 // Degraded fan-out: same envelope, but meta names the butler pools that were
 // dropped from the response (approvals `meta.sources_degraded`; bu-jad4j.4).
 function makeDegradedResponse<T>(data: T, sourcesDegraded: string[]) {
@@ -602,6 +612,43 @@ describe("ApprovalsPage — load-more", () => {
 
     // Verify that getApprovalsFlat was called with the bumped limit.
     expect(getApprovalsFlat).toHaveBeenCalledWith("waiting", 200);
+  });
+
+  it("keeps current-lane rows visible while same-lane pagination is loading", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, i) => makeSummary(`page-${i}`));
+    const expandedPage = Array.from({ length: 200 }, (_, i) => makeSummary(`page-${i}`));
+    const expandedRequest = deferred<{
+      data: typeof expandedPage;
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((_: "waiting" | "stalled", limit: number) =>
+        limit === 100 ? makeApiResponse(firstPage) : expandedRequest.promise) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Load more") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Load more")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush(1);
+    });
+
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-approval-id="page-0"]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      expandedRequest.resolve({ data: expandedPage, meta: {} });
+      await flush();
+    });
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="rail-item"][data-approval-id="page-199"]') !==
+        null,
+    );
   });
 });
 
@@ -1343,6 +1390,42 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(findButton(container, "Abandon")).toBeUndefined();
   });
 
+  it("does not render dossier Retry when an approved action omits execution_result", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("missing-dossier-result")]) as AnyMock,
+    );
+    const detailWithoutResult = {
+      id: "missing-dossier-result",
+      title: "Send Email (general)",
+      butler: "general",
+      created_at: "2026-05-17T10:00:00Z",
+      expires_at: null,
+      why: "The owner approved this.",
+      evidence: [],
+      proposed_action: {
+        tool_name: "send_email",
+        tool_args: {},
+        agent_summary: null,
+      },
+      status: "approved",
+      decided_by: "human:owner",
+      decided_at: "2026-05-17T10:05:00Z",
+      denial_reason: null,
+      target_contact: null,
+    };
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse(detailWithoutResult) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-decision-outcome"]') !== null,
+    );
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Abandon")).toBeUndefined();
+  });
+
   it("denies in a single click — no 'Confirm Deny' step (optimistic)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("d1")]) as AnyMock,
@@ -1513,6 +1596,69 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
         ["approvals", "flat"],
         ["approvals", "history"],
         ["approvals", "detail", "h-approved"],
+        ["approvals", "metrics"],
+      ]),
+    );
+  });
+
+  it("keeps a retrying row visible and defers invalidation until Retry settles", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([makeHistoryItem("h-retrying", "approved")]) as AnyMock,
+    );
+    const retry = deferred<{
+      data: {
+        id: string;
+        butler: string;
+        tool_name: string;
+        tool_args: Record<string, never>;
+        status: string;
+        requested_at: string;
+        dispatched: boolean;
+      };
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(retryApproval).mockReturnValue(retry.promise as AnyMock);
+    const invalidateQueries = vi.spyOn(qc, "invalidateQueries");
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Retry dispatch")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush(1);
+    });
+
+    const retryingButton = findButton(container, "retrying…");
+    expect(retryingButton).toBeDefined();
+    expect(retryingButton?.disabled).toBe(true);
+    expect(retryingButton?.getAttribute("aria-busy")).toBe("true");
+    expect(container.querySelector('[data-testid="history-row-link"]')).not.toBeNull();
+    expect(invalidateQueries).not.toHaveBeenCalled();
+
+    await act(async () => {
+      retry.resolve({
+        data: {
+          id: "h-retrying",
+          butler: "general",
+          tool_name: "send_email",
+          tool_args: {},
+          status: "executed",
+          requested_at: "2026-05-17T10:00:00Z",
+          dispatched: true,
+        },
+        meta: {},
+      });
+      await flush();
+    });
+
+    expect(toast.success).toHaveBeenCalledWith("Dispatched");
+    expect(invalidateQueries.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([
+        ["approvals", "flat"],
+        ["approvals", "history"],
+        ["approvals", "detail", "h-retrying"],
         ["approvals", "metrics"],
       ]),
     );
@@ -2152,6 +2298,101 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     expect(toast).not.toHaveBeenCalled();
     expect(approveApproval).not.toHaveBeenCalled();
     expect(container.querySelector('[data-pending-verb="approve"]')).toBeNull();
+  });
+
+  it("does not retain Waiting rows or decision controls while Stalled is loading", async () => {
+    const waiting = makeSummary("waiting-transition", "waiting_sensitive_action");
+    const stalled = {
+      ...makeSummary("stalled-transition", "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    };
+    const stalledRequest = deferred<{
+      data: (typeof stalled)[];
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        state === "stalled"
+          ? stalledRequest.promise
+          : makeApiResponse([waiting])) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("waiting-transition") as AnyMock,
+    );
+
+    renderPage("/approvals");
+    await flushUntil(() => findButton(container, "Approve") !== undefined);
+    expect(container.textContent).toContain("waiting sensitive action");
+
+    await act(async () => {
+      container
+        .querySelector<HTMLAnchorElement>('a[href="/approvals?state=stalled"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await flush(1);
+    });
+
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-approval-id="waiting-transition"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("waiting sensitive action");
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+    expect(container.textContent).toContain("loading…");
+
+    await act(async () => {
+      stalledRequest.resolve({ data: [stalled], meta: {} });
+      await flush();
+    });
+
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="rail-item"][data-approval-id="stalled-transition"]') !==
+        null,
+    );
+    expect(container.textContent).toContain("stalled action");
+    expect(findButton(container, "Approve")).toBeUndefined();
+  });
+
+  it("shows the Stalled query error instead of retained Waiting data when the lane fetch fails", async () => {
+    const waiting = makeSummary("waiting-transition-error", "waiting_sensitive_action");
+    const stalledRequest = deferred<never>();
+    // Query consumes the rejection; keep a test-side handler too so the
+    // deferred error cannot briefly register as unhandled before React does.
+    void stalledRequest.promise.catch(() => undefined);
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        state === "stalled"
+          ? stalledRequest.promise
+          : makeApiResponse([waiting])) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("waiting-transition-error") as AnyMock,
+    );
+
+    renderPage("/approvals");
+    await flushUntil(() => findButton(container, "Approve") !== undefined);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLAnchorElement>('a[href="/approvals?state=stalled"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await flush(1);
+      stalledRequest.reject(new Error("stalled lane unavailable"));
+      await flush();
+    });
+
+    await flushUntil(
+      () =>
+        container.textContent?.includes("Couldn't reach the stalled approvals lane.") ?? false,
+    );
+    expect(container.textContent).toContain("Couldn't reach the stalled approvals lane.");
+    expect(container.textContent).not.toContain("waiting sensitive action");
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-approval-id="waiting-transition-error"]'),
+    ).toBeNull();
+    expect(findButton(container, "Approve")).toBeUndefined();
   });
 });
 

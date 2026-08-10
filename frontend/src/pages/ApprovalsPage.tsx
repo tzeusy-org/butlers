@@ -1617,9 +1617,12 @@ export default function ApprovalsPage() {
     queryKey: Q.flat(activeLane, pendingLimit),
     queryFn: () => getApprovalsFlat(activeLane, pendingLimit),
     refetchInterval: POLL_BUS_RECONCILE_MS,
-    // Keep previous data visible while the expanded list is fetching to
-    // prevent layout shifts when the limit is bumped (v5: keepPreviousData).
-    placeholderData: (prev) => prev,
+    // Keep prior rows while pagination expands within the same lane, but
+    // never relabel a Waiting result as Stalled (or vice versa) while the
+    // new lane is loading. Without this query-key guard, the old dossier and
+    // its decision controls remain actionable under the wrong lane heading.
+    placeholderData: (prev, previousQuery) =>
+      previousQuery?.queryKey[2] === activeLane ? prev : undefined,
   });
 
   // Same queryKey as HistorySection's own useQuery below -- react-query
