@@ -623,9 +623,13 @@ async def test_terminal_event_failure_rolls_back_fenced_artifacts_and_confirmati
     async with provisioned_postgres_pool() as pool:
         await _install_lifecycle_schema(pool)
         await _install_artifact_schema(pool)
+        # Keep the original five-minute fence observably distinct from the
+        # executor's 300-second renewal. A future-only assertion would allow a
+        # leaked/committed renewal to masquerade as a complete rollback.
+        original_lease = datetime.now(UTC) + timedelta(minutes=5, microseconds=123456)
         episode_id = await _insert_episode(
             pool,
-            leased_until=datetime.now(UTC) + timedelta(minutes=5),
+            leased_until=original_lease,
             leased_by="claim-a",
         )
         confirmation_id = uuid.uuid4()
@@ -694,7 +698,7 @@ async def test_terminal_event_failure_rolls_back_fenced_artifacts_and_confirmati
         assert row["consolidated"] is False
         assert row["consolidation_attempts"] == 0
         assert row["leased_by"] == "claim-a"
-        assert row["leased_until"] > datetime.now(UTC)
+        assert row["leased_until"] == original_lease
 
 
 async def test_replaced_claim_cannot_persist_artifacts_or_terminal_lifecycle(
