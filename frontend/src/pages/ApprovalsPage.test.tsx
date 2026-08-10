@@ -2284,9 +2284,14 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     ]);
   });
 
-  it("opens a valid stalled direct dossier beyond the current flat page", async () => {
-    const outOfWindowId = "stalled-out-of-window";
-    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+  it("opens a valid 101st stalled direct dossier after the bounded rail settles", async () => {
+    const outOfWindowId = "stalled-101";
+    const firstHundred = Array.from({ length: 100 }, (_, index) => ({
+      ...makeSummary(`stalled-${index + 1}`, "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    }));
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse(firstHundred) as AnyMock);
 
     renderPage(`/approvals/${outOfWindowId}?state=stalled`);
     await flushUntil(
@@ -2295,6 +2300,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     );
     await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
 
+    expect(getApprovalsFlat).toHaveBeenCalledWith("stalled", 100);
     expect(getApprovalDetail).toHaveBeenCalledWith(outOfWindowId);
     expect(container.textContent).toContain("Approved, awaiting dispatch.");
     expect(findButton(container, "Approve")).toBeUndefined();
