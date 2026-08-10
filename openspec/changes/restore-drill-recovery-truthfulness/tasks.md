@@ -17,11 +17,15 @@
   definition has only a dedicated restore-drill database bridge whose
   project-scoped host policy default-denies forwarded and bridge-to-host traffic
   except the configured PostgreSQL endpoint and port; supported
-  `scripts/compose.sh` and `butlers deploy` paths must stop/create the executor,
+  `scripts/compose.sh` and `butlers deploy` paths must treat stop/down failure
+  as terminal before they create the executor,
   invoke only a fixed root-owned firewall wrapper with validated literal
   arguments, install that policy before startup, and disable executor
   auto-restart while retaining a DNS `verify-full` TLS identity separately from
-  the resolved IPv4 firewall endpoint and a loopback-only DNS upstream; add a
+  the resolved IPv4 firewall endpoint and a loopback-only DNS upstream; mount
+  a dedicated noncredential CA root read-only for `verify-ca`/`verify-full`
+  (fail closed when it is missing or invalid, without requiring it for
+  `require`); add a
   read-only backup mount, no
   listener, Docker socket, `backend`, `frontend`, or `egress` membership, and a
   private secret-file mount. It MUST NOT inherit `x-postgres-env`, receive

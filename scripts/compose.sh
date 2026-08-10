@@ -455,7 +455,10 @@ fi
 
 # ── Swap: stop old containers, start new ones ─────────────────────────
 # --remove-orphans clears containers from renamed/removed services.
-"${CMD[@]}" down --remove-orphans 2>/dev/null || true
+if ! "${CMD[@]}" down --remove-orphans; then
+  echo "ERROR: restore-drill executor remains stopped because the prior Compose stack could not be stopped." >&2
+  exit 1
+fi
 
 # Create the executor and its dedicated network without starting it. The
 # default-deny PostgreSQL-only policy must exist before the privileged

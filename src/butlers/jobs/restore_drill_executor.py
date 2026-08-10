@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,7 @@ DEFAULT_RESTORE_DRILL_INTERVAL_S = 7 * 24 * 3600
 DEFAULT_RESTORE_DRILL_CHECK_INTERVAL_S = 3600
 _DEFAULT_PASSWORD_FILE = Path("/run/secrets/restore_drill_executor_password")
 _VALID_SSL_MODES = {"disable", "prefer", "allow", "require", "verify-ca", "verify-full"}
+_VERIFYING_SSL_MODES = {"verify-ca", "verify-full"}
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class RestoreDrillExecutorConfig:
     drill_interval_s: int
     check_interval_s: int
     sslmode: str | None = None
+    sslrootcert_file: Path | None = None
 
     def cli_db_params(self) -> dict[str, str | int]:
         """Return the dedicated parameters passed to PostgreSQL client tools."""
@@ -137,6 +140,34 @@ def _read_sslmode() -> str | None:
     return value
 
 
+def _read_sslrootcert_file(sslmode: str | None) -> Path | None:
+    """Validate the executor-only CA root before a verification-mode connection.
+
+    ``require`` deliberately needs no CA root: it asks PostgreSQL for TLS but
+    does not claim certificate verification.  Both verification modes instead
+    fail before startup if their read-only, noncredential root file is absent
+    or malformed.
+    """
+    if sslmode not in _VERIFYING_SSL_MODES:
+        return None
+    raw_path = os.environ.get("RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE", "").strip()
+    if not raw_path:
+        raise ValueError(
+            "RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE CA root file is required "
+            "for verification modes"
+        )
+    path = Path(raw_path)
+    try:
+        if not path.is_file():
+            raise OSError("not a regular file")
+        # Parse the PEM now rather than letting an asyncpg/libpq connection
+        # attempt report a path-dependent error after the executor starts.
+        ssl.create_default_context(cafile=str(path))
+    except (OSError, ssl.SSLError) as exc:
+        raise ValueError("restore-drill executor CA root file is invalid") from exc
+    return path
+
+
 def load_restore_drill_executor_config() -> RestoreDrillExecutorConfig:
     """Load only ``RESTORE_DRILL_EXECUTOR_*`` configuration and its secret file."""
     password_file = Path(
@@ -148,6 +179,7 @@ def load_restore_drill_executor_config() -> RestoreDrillExecutorConfig:
     user = os.environ.get("RESTORE_DRILL_EXECUTOR_USER", "restore_drill_executor").strip()
     if not host or not application_db or not maintenance_db or not user:
         raise ValueError("restore-drill executor endpoint configuration must not be empty")
+    sslmode = _read_sslmode()
     return RestoreDrillExecutorConfig(
         host=host,
         port=_read_positive_int("RESTORE_DRILL_EXECUTOR_DB_PORT", 5432),
@@ -162,7 +194,8 @@ def load_restore_drill_executor_config() -> RestoreDrillExecutorConfig:
         check_interval_s=_read_positive_int(
             "RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S", DEFAULT_RESTORE_DRILL_CHECK_INTERVAL_S
         ),
-        sslmode=_read_sslmode(),
+        sslmode=sslmode,
+        sslrootcert_file=_read_sslrootcert_file(sslmode),
     )
 
 
@@ -171,7 +204,39 @@ def _psql_env(config: RestoreDrillExecutorConfig) -> dict[str, str]:
     env = {"PGPASSWORD": config.password}
     if config.sslmode is not None:
         env["PGSSLMODE"] = config.sslmode
+    if config.sslrootcert_file is not None:
+        env["PGSSLROOTCERT"] = str(config.sslrootcert_file)
     return env
+
+
+def _asyncpg_ssl_context(config: RestoreDrillExecutorConfig) -> ssl.SSLContext | str | None:
+    """Build the explicit asyncpg TLS setting for the isolated endpoint.
+
+    A custom context is needed for verification modes because the CA root is
+    an executor-specific read-only mount, not ambient PostgreSQL configuration.
+    ``verify-full`` deliberately retains the DNS connection hostname passed to
+    asyncpg, so TLS checks that name even when Compose maps it to the separate
+    IPv4 firewall endpoint.
+    """
+    if config.sslmode is None:
+        return None
+    if config.sslmode == "require":
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
+    if config.sslmode not in _VERIFYING_SSL_MODES:
+        return config.sslmode
+
+    if config.sslrootcert_file is None:
+        raise ValueError("restore-drill executor CA root file is required for verification modes")
+    try:
+        context = ssl.create_default_context(cafile=str(config.sslrootcert_file))
+    except (OSError, ssl.SSLError) as exc:
+        raise ValueError("restore-drill executor CA root file is invalid") from exc
+    context.check_hostname = config.sslmode == "verify-full"
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
 
 
 async def run_restore_drill_executor_tick(
@@ -181,7 +246,14 @@ async def run_restore_drill_executor_tick(
     runner: Callable[..., RestoreDrillResult] = _run_restore_drill_sync,
 ) -> dict[str, object]:
     """Run one due restore attempt, keeping the dashboard out of the lifecycle."""
-    if not await persistence.is_due(config.drill_interval_s):
+    try:
+        due = await persistence.is_due(config.drill_interval_s)
+    except Exception:
+        # Database exception text can include a DSN, SQL, or a server-provided
+        # detail. Keep this fixed stage diagnostic out of the audit/API path.
+        logger.warning("restore drill executor due check failed")
+        return {"skipped": True, "reason": "due check unavailable"}
+    if not due:
         return {"skipped": True, "reason": "not due"}
 
     backup_path = latest_backup_path(config.backup_dir)
@@ -205,7 +277,7 @@ async def run_restore_drill_executor_tick(
             table_count=result.table_count,
         )
     except Exception:
-        logger.warning("restore drill executor could not persist its result", exc_info=True)
+        logger.warning("restore drill executor result persistence failed")
         return {"ok": result.ok, "recorded": False, "backup_file": backup_path.name}
 
     return {"ok": result.ok, "recorded": True, "backup_file": backup_path.name}
@@ -222,8 +294,9 @@ async def run_restore_drill_executor_loop(config: RestoreDrillExecutorConfig) ->
         "min_size": 1,
         "max_size": 1,
     }
-    if config.sslmode is not None:
-        pool_kwargs["ssl"] = config.sslmode
+    ssl_context = _asyncpg_ssl_context(config)
+    if ssl_context is not None:
+        pool_kwargs["ssl"] = ssl_context
     pool = await asyncpg.create_pool(**pool_kwargs)
     persistence = PostgresRestoreDrillPersistence(pool)
     try:
@@ -238,7 +311,7 @@ async def run_restore_drill_executor_loop(config: RestoreDrillExecutorConfig) ->
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("restore-drill executor tick failed")
+                logger.warning("restore drill executor tick failed")
             await asyncio.sleep(config.check_interval_s)
     finally:
         await pool.close()

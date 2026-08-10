@@ -75,6 +75,21 @@ LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the dis
 `LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION` and maintains
 the normal-role `NOCREATEDB` boundary.
 
+When the executor uses `RESTORE_DRILL_EXECUTOR_SSLMODE=verify-ca` or
+`verify-full`, configure a separate, noncredential CA-root source file as
+well:
+
+```dotenv
+RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE=/secure/managed/path/postgresql-ca-root.pem
+```
+
+Compose mounts that file read-only at
+`/run/configs/restore_drill_executor_ca.pem`; it is not a password secret and
+is visible only to the executor. Both `psql`/`createdb`/`dropdb` and asyncpg
+use that same mounted root. A missing, unreadable, or invalid CA root makes a
+verification-mode executor fail before it connects. Ordinary
+`sslmode=require` still uses TLS without requiring this CA-file setting.
+
 The ownership handoff is also deliberate: the two constrained persistence
 functions live in the `restore_drill_executor` schema and are owned by a
 separate `restore_drill_executor_owner` `NOLOGIN` role. The normal migration
@@ -108,14 +123,18 @@ The Compose service is deliberately narrow:
   resolver runs in that container, and `/etc/hosts` resolves the sole required
   database identity before DNS is consulted. Thus an embedded-DNS request has
   no external upstream, while raw DNS packets are also denied by the two
-  firewall hooks. IPv6 is disabled on this bridge.
+  firewall hooks. IPv6 is disabled on this bridge. Verification modes
+  additionally use the dedicated read-only CA-root mount described above;
+  `verify-full` verifies the retained DNS hostname, never the firewall IPv4
+  address.
 - The supported launchers, `scripts/compose.sh` and `butlers deploy`, stop any
   old executor, create its network without starting the credentialed process,
   install that default-deny policy, and only then start the stack. The executor
   has `restart: "no"`, so a Docker daemon or host restart cannot auto-start it
-  before the fence is recreated. Do not start this service through a bare
-  `docker compose up`; either supported launcher fails closed if it cannot
-  apply the required firewall policy.
+  before the fence is recreated. A failed checked stop/down phase also ends the
+  launcher before `create`, firewall invocation, or `up`. Do not start this
+  service through a bare `docker compose up`; either supported launcher fails
+  closed if it cannot stop the old executor or apply the required firewall policy.
 - It mounts `butlers_backups` read-only and has no Docker socket, `backend`,
   `frontend`, or `egress` network membership.
 - It does not inherit `x-postgres-env` and receives no `POSTGRES_USER`,
@@ -171,9 +190,10 @@ API-visible diagnostic detail is at most 512 characters from a controlled safe
 vocabulary; raw PostgreSQL stdout/stderr, connection strings, passwords, and
 dump content are withheld rather than retained in audit records or rendered by
 the dashboard. The executor-facing SQL persistence function is the final
-boundary: it ignores every caller-supplied `p_detail` value and stores only its
-fixed safe diagnostic, so a direct use of the executor credential cannot bypass
-the runner's sanitizer.
+boundary: it ignores every caller-supplied `p_detail` and `p_backup_name`,
+uses a fixed canonical audit target with no backup-path metadata, and accepts
+only a non-null `pass` or `fail` result. It stores only its fixed safe diagnostic,
+so a direct use of the executor credential cannot bypass the runner's sanitizer.
 
 ### Observing a drill
 

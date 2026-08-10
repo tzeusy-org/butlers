@@ -100,6 +100,13 @@ is rejected because `SET ROLE` cannot constrain its subprocesses. Ad hoc
 `ALTER ROLE` or a manually pre-created scratch database are rejected because
 they turn a recovery proof into an untracked live mutation.
 
+`verify-ca` and `verify-full` additionally require one dedicated,
+noncredential CA-root source file. Compose mounts it read-only only into the
+executor, libpq receives it through `PGSSLROOTCERT`, and asyncpg receives an
+explicit verification context. Missing or malformed roots fail configuration
+before the executor connects. `require` remains an encrypted non-verifying
+mode and deliberately does not require the root-file setting.
+
 ### 2. The scratch database has an explicit, single-executor lifecycle
 
 Each attempt first removes a stale scratch database, creates a fresh scratch
@@ -140,9 +147,11 @@ never parsed to infer a code or cadence.
 
 The security-definer persistence function is the final enforcement point, not
 an assumption about the Python executor: an executor credential holder can
-call it directly. It therefore discards every caller-supplied detail value and
-stores only the fixed bounded withheld diagnostic alongside structured result
-and table-count data. A degraded ledger-read exception follows the same rule:
+call it directly. It therefore discards every caller-supplied detail and
+backup-name value, records a fixed canonical audit target with no artifact-path
+metadata, rejects null or non-`pass`/`fail` results, and stores only the fixed
+bounded withheld diagnostic alongside structured result and table-count data.
+A degraded ledger-read exception follows the same rule:
 the API and its log use a fixed unavailable diagnostic rather than exception
 text or traceback, because both can carry a DSN, credential, SQL, or dump
 fragment.

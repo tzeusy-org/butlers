@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import logging
+import ssl
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +16,7 @@ import pytest
 from butlers.jobs.backup_health import RestoreDrillResult, _run_restore_drill_sync
 from butlers.jobs.restore_drill_executor import (
     RestoreDrillExecutorConfig,
+    _asyncpg_ssl_context,
     _psql_env,
     _read_executor_password,
     load_restore_drill_executor_config,
@@ -35,6 +38,15 @@ def _write_gzip_backup(tmp_path: Path) -> Path:
     return path
 
 
+def _system_ca_bundle() -> Path:
+    """Return the host trust bundle without embedding certificate material in tests."""
+    paths = ssl.get_default_verify_paths()
+    for candidate in (paths.cafile, paths.openssl_cafile):
+        if candidate is not None and Path(candidate).is_file():
+            return Path(candidate)
+    pytest.skip("a system CA bundle is required for restore-drill TLS coverage")
+
+
 def test_executor_configuration_reads_its_password_from_a_file_not_shared_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -51,6 +63,7 @@ def test_executor_configuration_reads_its_password_from_a_file_not_shared_enviro
     assert config.user == "restore_drill_executor"
     assert config.password == "file-backed-test-password"
     assert config.sslmode is None
+    assert config.sslrootcert_file is None
     assert _psql_env(config) == {"PGPASSWORD": "file-backed-test-password"}
 
     monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_SSLMODE", "require")
@@ -62,6 +75,11 @@ def test_executor_configuration_reads_its_password_from_a_file_not_shared_enviro
         "PGPASSWORD": "file-backed-test-password",
         "PGSSLMODE": "require",
     }
+    assert dedicated_config.sslrootcert_file is None
+    require_context = _asyncpg_ssl_context(dedicated_config)
+    assert isinstance(require_context, ssl.SSLContext)
+    assert require_context.check_hostname is False
+    assert require_context.verify_mode == ssl.CERT_NONE
 
 
 def test_executor_keeps_dns_tls_identity_for_verify_full_and_strips_one_terminal_lf(
@@ -69,16 +87,61 @@ def test_executor_keeps_dns_tls_identity_for_verify_full_and_strips_one_terminal
 ) -> None:
     password_file = tmp_path / "restore-drill-password"
     password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    ca_bundle = _system_ca_bundle()
     monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
     monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
     monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_SSLMODE", "verify-full")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE", str(ca_bundle))
 
     config = load_restore_drill_executor_config()
 
     assert config.host == "postgres.example.test"
     assert config.cli_db_params()["host"] == "postgres.example.test"
     assert config.sslmode == "verify-full"
+    assert config.sslrootcert_file == ca_bundle
     assert _psql_env(config)["PGSSLMODE"] == "verify-full"
+    assert _psql_env(config)["PGSSLROOTCERT"] == str(ca_bundle)
+    context = _asyncpg_ssl_context(config)
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+@pytest.mark.parametrize(
+    ("sslmode", "expected_hostname_check"),
+    [("verify-ca", False), ("verify-full", True)],
+)
+def test_executor_verification_modes_require_a_valid_dedicated_ca_root_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sslmode: str,
+    expected_hostname_check: bool,
+) -> None:
+    """Verification modes fail closed; ordinary ``require`` does not need this file."""
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_SSLMODE", sslmode)
+    monkeypatch.delenv("RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE", raising=False)
+
+    with pytest.raises(ValueError, match="CA root"):
+        load_restore_drill_executor_config()
+
+    invalid_ca = tmp_path / "invalid-ca.pem"
+    invalid_ca.write_text("not a PEM certificate", encoding="utf-8")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE", str(invalid_ca))
+
+    with pytest.raises(ValueError, match="CA root"):
+        load_restore_drill_executor_config()
+
+    ca_bundle = _system_ca_bundle()
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE", str(ca_bundle))
+    config = load_restore_drill_executor_config()
+
+    assert config.sslrootcert_file == ca_bundle
+    assert _psql_env(config)["PGSSLROOTCERT"] == str(ca_bundle)
+    context = _asyncpg_ssl_context(config)
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is expected_hostname_check
 
 
 @pytest.mark.parametrize("secret", ["one\ntwo", "one\r", "one\n\n", "\x00"])
@@ -116,6 +179,7 @@ async def test_executor_pool_uses_the_hostname_as_verify_full_tls_identity(
         drill_interval_s=604800,
         check_interval_s=3600,
         sslmode="verify-full",
+        sslrootcert_file=_system_ca_bundle(),
     )
     captured: dict[str, object] = {}
     pool = AsyncMock()
@@ -134,7 +198,10 @@ async def test_executor_pool_uses_the_hostname_as_verify_full_tls_identity(
         await run_restore_drill_executor_loop(config)
 
     assert captured["host"] == "postgres.example.test"
-    assert captured["ssl"] == "verify-full"
+    context = captured["ssl"]
+    assert isinstance(context, ssl.SSLContext)
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
     pool.close.assert_awaited_once()
 
 
@@ -173,6 +240,7 @@ class _FakeExecutorPersistence:
     due: bool
     due_intervals: list[int] = field(default_factory=list)
     recorded: list[tuple[str, str, str, int | None]] = field(default_factory=list)
+    record_error: Exception | None = None
 
     async def is_due(self, interval_s: int) -> bool:
         self.due_intervals.append(interval_s)
@@ -181,6 +249,8 @@ class _FakeExecutorPersistence:
     async def record_result(
         self, *, backup_name: str, result: str, detail: str, table_count: int | None
     ) -> int:
+        if self.record_error is not None:
+            raise self.record_error
         self.recorded.append((backup_name, result, detail, table_count))
         return 1
 
@@ -249,6 +319,122 @@ async def test_executor_persistence_boundary_withholds_untrusted_result_detail(
     assert persistence.recorded == [
         (backup.name, "fail", "restore drill diagnostic withheld", None)
     ]
+
+
+@pytest.mark.asyncio
+async def test_executor_result_persistence_failure_logs_only_fixed_safe_diagnostic(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A persistence exception can carry a DSN but must not reach logs or the summary."""
+    backup = _write_gzip_backup(tmp_path)
+    config = RestoreDrillExecutorConfig(
+        host="db.example.test",
+        port=5432,
+        application_db="butlers",
+        maintenance_db="postgres",
+        user="restore_drill_executor",
+        password="file-backed-test-password",
+        backup_dir=tmp_path,
+        drill_interval_s=604800,
+        check_interval_s=3600,
+    )
+    hostile_marker = "record-result-private-dsn-marker"
+    persistence = _FakeExecutorPersistence(
+        due=True,
+        record_error=RuntimeError(f"postgresql://executor:{hostile_marker}@db.example.test"),
+    )
+
+    def runner(_path: Path, **_kwargs: object) -> RestoreDrillResult:
+        return RestoreDrillResult(ok=True, detail="restored 1 table", table_count=1)
+
+    caplog.set_level(logging.WARNING, logger="butlers.jobs.restore_drill_executor")
+    summary = await run_restore_drill_executor_tick(config, persistence, runner=runner)
+
+    assert summary == {"ok": True, "recorded": False, "backup_file": backup.name}
+    assert "restore drill executor result persistence failed" in caplog.text
+    assert hostile_marker not in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_executor_due_check_failure_logs_only_fixed_safe_diagnostic(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The due boundary must not log exception text before a scratch lifecycle starts."""
+
+    class FailingDuePersistence:
+        async def is_due(self, _interval_s: int) -> bool:
+            raise RuntimeError("postgresql://executor:due-check-private-marker@db.example.test")
+
+        async def record_result(
+            self, *, backup_name: str, result: str, detail: str, table_count: int | None
+        ) -> int:
+            raise AssertionError("a failed due check must not persist a result")
+
+    config = RestoreDrillExecutorConfig(
+        host="db.example.test",
+        port=5432,
+        application_db="butlers",
+        maintenance_db="postgres",
+        user="restore_drill_executor",
+        password="file-backed-test-password",
+        backup_dir=tmp_path,
+        drill_interval_s=604800,
+        check_interval_s=3600,
+    )
+    caplog.set_level(logging.WARNING, logger="butlers.jobs.restore_drill_executor")
+
+    summary = await run_restore_drill_executor_tick(config, FailingDuePersistence())
+
+    assert summary == {"skipped": True, "reason": "due check unavailable"}
+    assert "restore drill executor due check failed" in caplog.text
+    assert "due-check-private-marker" not in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_executor_tick_failure_logs_only_fixed_safe_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unexpected tick failures are safe even when their exception embeds a DSN."""
+    config = RestoreDrillExecutorConfig(
+        host="db.example.test",
+        port=5432,
+        application_db="butlers",
+        maintenance_db="postgres",
+        user="restore_drill_executor",
+        password="file-backed-test-password",
+        backup_dir=tmp_path,
+        drill_interval_s=604800,
+        check_interval_s=3600,
+    )
+    pool = AsyncMock()
+
+    async def fake_create_pool(**_kwargs: object):
+        return pool
+
+    async def cancel_after_first_sleep(_delay: int) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("butlers.jobs.restore_drill_executor.asyncpg.create_pool", fake_create_pool)
+    monkeypatch.setattr(
+        "butlers.jobs.restore_drill_executor.run_restore_drill_executor_tick",
+        AsyncMock(
+            side_effect=RuntimeError("postgresql://executor:tick-private-marker@db.example.test")
+        ),
+    )
+    monkeypatch.setattr(
+        "butlers.jobs.restore_drill_executor.asyncio.sleep", cancel_after_first_sleep
+    )
+    caplog.set_level(logging.WARNING, logger="butlers.jobs.restore_drill_executor")
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_restore_drill_executor_loop(config)
+
+    assert "restore drill executor tick failed" in caplog.text
+    assert "tick-private-marker" not in caplog.text
+    assert "Traceback" not in caplog.text
+    pool.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

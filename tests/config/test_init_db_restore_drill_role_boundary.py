@@ -183,6 +183,9 @@ def test_migration_owns_fixed_search_path_executor_persistence_boundary() -> Non
     assert "GRANT SELECT ON TABLE public.audit_log TO restore_drill_executor" not in source
     assert "GRANT INSERT ON TABLE public.audit_log TO restore_drill_executor" not in source
     assert "attention_ledger" not in source
+    assert "p_result IS NULL OR p_result NOT IN ('pass', 'fail')" in source
+    assert "'restore_drill',\n                p_result" in source
+    assert "'backup_file', p_backup_name" not in source
 
 
 def test_dashboard_has_no_restore_drill_scheduler_or_shared_credential_launch_path() -> None:
@@ -205,6 +208,9 @@ def test_operations_document_the_managed_boundary_without_a_live_workaround() ->
     assert "live application database" in source
     assert "butlers deploy" in source
     assert "verify-full" in source
+    assert "RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE" in source
+    assert "restore_drill_executor_ca.pem" in source
+    assert "sslmode=require" in source
     assert "ALTER ROLE" not in source
     assert "CREATE DATABASE butlers_restore" not in source
     assert "pg_restore.sh" not in source

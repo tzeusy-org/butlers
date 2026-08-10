@@ -127,7 +127,7 @@ def upgrade() -> None:
                OR octet_length(p_backup_name) > 512 THEN
                 RAISE EXCEPTION 'p_backup_name must be a non-empty value up to 512 bytes';
             END IF;
-            IF p_result NOT IN ('pass', 'fail') THEN
+            IF p_result IS NULL OR p_result NOT IN ('pass', 'fail') THEN
                 RAISE EXCEPTION 'p_result must be pass or fail';
             END IF;
             IF p_table_count IS NOT NULL AND p_table_count < 0 THEN
@@ -139,9 +139,11 @@ def upgrade() -> None:
             -- the Python runner to have already sanitized p_detail: a direct
             -- SQL caller can otherwise write raw client output into both
             -- audit_log.error and audit_log.metadata. The SQL surface keeps
-            -- no caller-supplied detail at all; the executor's structured
-            -- result/table count remains durable while a fixed safe diagnostic
-            -- is the only text that crosses this boundary.
+            -- no caller-supplied detail or backup artifact name at all: a
+            -- direct caller may supply a DSN, a path, or dump content in both
+            -- values. The executor's structured result/table count remains
+            -- durable while fixed safe values are the only text that crosses
+            -- this audit/API boundary.
             v_detail := 'restore drill diagnostic withheld';
 
             INSERT INTO public.audit_log (
@@ -155,11 +157,10 @@ def upgrade() -> None:
             VALUES (
                 'restore_drill',
                 'restore_drill_result',
-                p_backup_name,
+                'restore_drill',
                 p_result,
                 CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END,
                 jsonb_build_object(
-                    'backup_file', p_backup_name,
                     'table_count', p_table_count,
                     'detail', v_detail
                 )

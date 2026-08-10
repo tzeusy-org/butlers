@@ -44,7 +44,7 @@ Scope: v1-mandatory
   `INPUT` path, has a read-only backup mount and no listener, Docker socket,
   `backend`, `frontend`, or `egress` access
 - **AND** both supported launchers, `scripts/compose.sh` and `butlers deploy`,
-  stop/create the executor, invoke only a fixed root-owned firewall wrapper
+  treat stop/down failure as terminal before create, invoke only a fixed root-owned firewall wrapper
   with validated literal project/IPv4/port arguments, install that default-deny
   policy, and only then start it; failure to install the policy prevents the
   executor from starting, and it has no automatic restart policy that could
@@ -54,6 +54,10 @@ Scope: v1-mandatory
   IPv4 address is used only by the firewall and local container host mapping;
   Docker's resolver has only a container-loopback upstream with no resolver,
   and raw DNS packets are denied by the same forward and host/gateway boundary
+- **AND** `sslmode=verify-ca` and `sslmode=verify-full` receive one dedicated
+  noncredential CA-root file through a read-only executor-only mount; libpq and
+  asyncpg use that same root, missing or invalid roots fail closed before a
+  connection, and ordinary `sslmode=require` does not require that file
 - **AND** it receives its credential only through the private file-secret mount,
   not the shared `POSTGRES_*`/`DATABASE_URL` environment used by dashboard-api
 - **AND** dashboard-api reads durable results but does not schedule or execute

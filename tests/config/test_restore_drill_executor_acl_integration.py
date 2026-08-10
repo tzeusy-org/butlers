@@ -17,11 +17,13 @@ import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
+import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from alembic import command
+from butlers.jobs.backup_health import get_last_restore_drill
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import bootstrap_extensions, migration_db_name
 
@@ -259,6 +261,15 @@ def _database_from_url(url: str) -> str:
     return url.rsplit("/", 1)[1]
 
 
+async def _read_restore_drill_api_shape(database_url: str) -> dict[str, object] | None:
+    """Exercise the real dashboard ledger reader against the disposable core chain."""
+    pool = await asyncpg.create_pool(database_url, min_size=1, max_size=1)
+    try:
+        return await get_last_restore_drill(pool)
+    finally:
+        await pool.close()
+
+
 def test_real_core_chain_keeps_the_executor_interface_exclusive(
     postgres_container, tmp_path: Path
 ) -> None:
@@ -420,7 +431,10 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
     )
     raw_audit_id: int | None = None
     oversized_audit_id: int | None = None
+    api_shape: dict[str, object] | None = None
     raw_marker = "p-detail-private-marker"
+    hostile_backup_marker = "p-backup-private-dsn-marker"
+    hostile_dump_marker = "private-dump-name-marker"
     try:
         for role_name, direct_engine in direct_engines.items():
             _expect_permission_denied(
@@ -455,18 +469,6 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
             # so the function itself is the final privacy boundary. Direct SQL
             # must not bypass the Python runner's sanitizer and persist client
             # output or a formally allowed but unbounded detail string.
-            raw_audit_id = connection.execute(
-                text(
-                    "SELECT restore_drill_executor.record_result(:backup_name, 'fail', :detail, 1)"
-                ),
-                {
-                    "backup_name": "direct-raw-detail.sql.gz",
-                    "detail": (
-                        "postgresql://restore:"
-                        f"{raw_marker}@db.example.test/postgres COPY sensitive_table"
-                    ),
-                },
-            ).scalar_one()
             oversized_audit_id = connection.execute(
                 text(
                     "SELECT restore_drill_executor.record_result(:backup_name, 'fail', :detail, 1)"
@@ -476,6 +478,30 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                     "detail": "restored " + ("9" * 600) + " tables",
                 },
             ).scalar_one()
+            raw_audit_id = connection.execute(
+                text(
+                    "SELECT restore_drill_executor.record_result(:backup_name, 'fail', :detail, 1)"
+                ),
+                {
+                    "backup_name": (
+                        "postgresql://restore:"
+                        f"{hostile_backup_marker}@db.example.test/{hostile_dump_marker}.sql.gz"
+                    ),
+                    "detail": (
+                        "postgresql://restore:"
+                        f"{raw_marker}@db.example.test/postgres COPY sensitive_table"
+                    ),
+                },
+            ).scalar_one()
+            with pytest.raises(DBAPIError, match="p_result must be pass or fail"):
+                connection.execute(
+                    text(
+                        "SELECT restore_drill_executor.record_result("
+                        ":backup_name, CAST(NULL AS text), 'restored 1 table', 1)"
+                    ),
+                    {"backup_name": "null-result.sql.gz"},
+                ).scalar_one()
+            api_shape = asyncio.run(_read_restore_drill_api_shape(shared_url))
         _expect_permission_denied(executor_engine, "SELECT count(*) FROM public.audit_log")
         _expect_permission_denied(
             executor_engine,
@@ -495,7 +521,13 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                 connection.execute(
                     text(
                         """
-                    SELECT id, error, metadata ->> 'detail' AS detail
+                    SELECT
+                        id,
+                        error,
+                        target,
+                        metadata ->> 'detail' AS detail,
+                        metadata ->> 'backup_file' AS backup_file,
+                        metadata::text AS metadata_text
                     FROM public.audit_log
                     WHERE id IN (:raw_audit_id, :oversized_audit_id)
                     ORDER BY id
@@ -516,8 +548,15 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
             )
             assert raw_detail["error"] == "restore drill diagnostic withheld"
             assert raw_detail["detail"] == "restore drill diagnostic withheld"
+            assert raw_detail["target"] == "restore_drill"
+            assert raw_detail["backup_file"] is None
             assert raw_marker not in raw_detail["error"]
             assert raw_marker not in raw_detail["detail"]
+            assert raw_marker not in raw_detail["metadata_text"]
+            assert hostile_backup_marker not in raw_detail["target"]
+            assert hostile_backup_marker not in raw_detail["metadata_text"]
+            assert hostile_dump_marker not in raw_detail["target"]
+            assert hostile_dump_marker not in raw_detail["metadata_text"]
             assert len(oversized_detail["error"]) <= 512
             assert len(oversized_detail["detail"]) <= 512
             assert (
@@ -525,13 +564,20 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                     text(
                         "SELECT count(*) FROM public.audit_log "
                         "WHERE actor = 'restore_drill' AND action = 'restore_drill_result' "
-                        "AND target = 'acl-proof.sql.gz'"
+                        "AND result IS NULL"
                     )
                 ).scalar_one()
-                == 1
+                == 0
             )
     finally:
         engine.dispose()
+
+    assert api_shape is not None
+    assert api_shape["result"] == "fail"
+    assert api_shape["detail"] == "restore drill diagnostic withheld"
+    assert raw_marker not in repr(api_shape)
+    assert hostile_backup_marker not in repr(api_shape)
+    assert hostile_dump_marker not in repr(api_shape)
 
 
 @pytest.mark.parametrize("invalid_secret", [b"\xff", b"contains-nul\x00secret"])

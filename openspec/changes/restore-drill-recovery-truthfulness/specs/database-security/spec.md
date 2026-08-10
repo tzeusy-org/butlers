@@ -51,6 +51,10 @@ Scope: v1-mandatory
   identity without granting the bridge DNS egress; the rendered resolver has
   only a container-loopback upstream and the local host mapping resolves that
   sole PostgreSQL identity
+- **AND** its security-definer result writer discards caller-supplied backup
+  names and free-form diagnostics before audit/API-visible persistence, and
+  rejects null or non-`pass`/`fail` result values even for a direct executor
+  credential call
 
 #### Scenario: Privilege repair requires the managed bootstrap path
 - **WHEN** an operator encounters a restore-drill `CREATEDB` prerequisite failure

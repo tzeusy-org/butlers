@@ -25,6 +25,8 @@ _FIREWALL = _REPO_ROOT / "scripts" / "restore-drill-firewall.sh"
 _FIREWALL_INSTALLER = _REPO_ROOT / "scripts" / "install_restore_drill_firewall_wrapper.sh"
 _COMPOSE_LAUNCHER = _REPO_ROOT / "scripts" / "compose.sh"
 _FIREWALL_WRAPPER = "/usr/local/libexec/butlers-restore-drill-firewall"
+_CA_CONFIG_SOURCE = "restore_drill_executor_ca"
+_CA_CONTAINER_PATH = "/run/configs/restore_drill_executor_ca.pem"
 
 
 def _compose() -> dict:
@@ -63,6 +65,7 @@ def _rendered_executor() -> dict:
             "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
             "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "198.51.100.42",
             "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": "/tmp/restore-drill-test-secret",
+            "RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE": "/tmp/restore-drill-test-ca.pem",
         },
         text=True,
     )
@@ -95,6 +98,13 @@ def test_restore_drill_executor_has_a_dedicated_database_network_and_private_sec
             "mode": 0o400,
         }
     ]
+    assert service["configs"] == [
+        {
+            "source": _CA_CONFIG_SOURCE,
+            "target": _CA_CONTAINER_PATH,
+            "mode": 0o444,
+        }
+    ]
 
     environment = _environment(service)
     assert environment["RESTORE_DRILL_EXECUTOR_DB_HOST"].startswith(
@@ -105,12 +115,18 @@ def test_restore_drill_executor_has_a_dedicated_database_network_and_private_sec
         "${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}=${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to resolve the PostgreSQL IPv4 firewall endpoint}"
     ]
     assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in environment
+    assert environment["RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE"] == _CA_CONTAINER_PATH
     assert not any(key.startswith("POSTGRES_") for key in environment)
     assert "DATABASE_URL" not in environment
     assert service["entrypoint"][-1] == "butlers.jobs.restore_drill_executor"
 
     secret = compose["secrets"]["restore_drill_executor_password"]
     assert secret["file"].startswith("${RESTORE_DRILL_EXECUTOR_PASSWORD_FILE:")
+    ca_config = compose["configs"][_CA_CONFIG_SOURCE]
+    assert ca_config["file"] == (
+        "${RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE:-"
+        "./deploy/restore-drill-ca-unconfigured.pem}"
+    )
 
 
 def test_rendered_executor_keeps_tls_host_but_has_only_loopback_dns() -> None:
@@ -125,6 +141,9 @@ def test_rendered_executor_keeps_tls_host_but_has_only_loopback_dns() -> None:
     assert service["dns"] == ["127.0.0.1"]
     assert service["extra_hosts"] == ["postgres.example.test=198.51.100.42"]
     assert service["restart"] == "no"
+    assert service["environment"]["RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE"] == _CA_CONTAINER_PATH
+    rendered_configs = {config["target"]: config for config in service["configs"]}
+    assert rendered_configs[_CA_CONTAINER_PATH]["source"] == _CA_CONFIG_SOURCE
 
 
 def test_restore_drill_firewall_dry_run_default_denies_forward_and_host_paths() -> None:
@@ -191,6 +210,59 @@ def test_restore_drill_launcher_uses_only_fixed_root_wrapper_before_startup() ->
     assert f"sudo -n {_FIREWALL_WRAPPER} --project" in normalized_boundary
     assert '--db-host "${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}"' in boundary
     assert '--db-port "${RESTORE_DRILL_EXECUTOR_DB_PORT}"' in boundary
+
+
+def test_restore_drill_launcher_stops_if_down_fails_before_create_wrapper_or_up(
+    tmp_path: Path,
+) -> None:
+    """A failed stop leaves the credentialed executor untouched and unstarted."""
+    launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
+    start = launcher.index("# ── Swap: stop old containers, start new ones")
+    end = launcher.index("# ── Apply egress firewall", start)
+    swap_boundary = launcher[start:end]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    compose_probe = bin_dir / "compose-probe"
+    compose_probe.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'compose %s\\n\' "$*" >> "$RESTORE_DRILL_LAUNCHER_CALLS"\n'
+        'if [[ "$1" == down ]]; then exit 17; fi\n',
+        encoding="utf-8",
+    )
+    compose_probe.chmod(0o755)
+    sudo_probe = bin_dir / "sudo"
+    sudo_probe.write_text(
+        '#!/usr/bin/env bash\nprintf \'sudo %s\\n\' "$*" >> "$RESTORE_DRILL_LAUNCHER_CALLS"\n',
+        encoding="utf-8",
+    )
+    sudo_probe.chmod(0o755)
+
+    harness = "\n".join(
+        [
+            "set -euo pipefail",
+            "CMD=(compose-probe)",
+            "COMPOSE_PROJECT_NAME=restore-drill-test",
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=198.51.100.42",
+            "RESTORE_DRILL_EXECUTOR_DB_PORT=5432",
+            "SCALE_ARGS=()",
+            swap_boundary,
+        ]
+    )
+    completed = subprocess.run(
+        ["bash", "-c", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "RESTORE_DRILL_LAUNCHER_CALLS": str(calls),
+        },
+    )
+
+    assert completed.returncode != 0
+    assert calls.read_text(encoding="utf-8").splitlines() == ["compose down --remove-orphans"]
 
 
 def test_firewall_wrapper_install_contract_is_root_owned_and_fixed_path() -> None:
@@ -266,4 +338,5 @@ def test_private_executor_secret_is_absent_from_every_normal_runtime_service() -
         if name == "restore-drill-executor":
             continue
         assert "restore_drill_executor_password" not in repr(service.get("secrets", []))
+        assert _CA_CONFIG_SOURCE not in repr(service.get("configs", []))
         assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in _environment_keys(service)
