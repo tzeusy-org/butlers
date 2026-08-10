@@ -16,7 +16,7 @@ butler, connector, and dashboard runtime roles receive no direct receipt-table
 grant. Expired-row cleanup SHALL not remove a row before its retention bound.
 
 ID: REQ-database-security-008
-Source: heart-and-soul/security-and-secrets.md; RFC 0003; core-credentials REQ-core-credentials-002; design.md Decision 2
+Source: heart-and-soul/security.md; craft-and-care/security-and-secrets.md; RFC 0003; core-credentials REQ-core-credentials-002; design.md Decision 2
 Scope: v1-mandatory
 
 #### Scenario: Concurrent replay receipt claim permits one control execution
@@ -68,7 +68,7 @@ outcome to its butler/session. A future adversarial-component boundary requires
 independently authenticated runtime principals without peer `SET ROLE` ability.
 
 ID: REQ-database-security-007
-Source: heart-and-soul/security-and-secrets.md; RFC 0003; RFC 0006; database-security Public Schema Write Authorization Matrix; design.md Decision 4
+Source: heart-and-soul/security.md; craft-and-care/security-and-secrets.md; RFC 0003; RFC 0006; database-security Public Schema Write Authorization Matrix; design.md Decision 4
 Scope: v1-mandatory
 
 #### Scenario: Runtime producer has only validated append authority

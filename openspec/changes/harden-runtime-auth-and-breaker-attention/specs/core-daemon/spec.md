@@ -12,7 +12,7 @@ requirement does not change existing startup authority behavior for other CLI
 providers.
 
 ID: REQ-core-daemon-001
-Source: RFC 0001 startup phases; heart-and-soul/security-and-secrets.md; design.md Decision 1
+Source: RFC 0001 startup phases; heart-and-soul/security.md; craft-and-care/security-and-secrets.md; design.md Decision 1
 Scope: v1-mandatory
 
 #### Scenario: Daemon startup restores from one selected authority

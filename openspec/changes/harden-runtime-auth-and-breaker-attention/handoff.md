@@ -2,8 +2,15 @@
 
 ## Status
 
-**Gate 6: awaiting human sign-off.** This package is design-complete and has
-not created Beads, changed runtime state, migrated data, or implemented code.
+**Gate 6 passed and the refined security-doctrine contract is adopted.** The
+owner approved the signed process-bound control design and explicit at-most-once
+policy before PR #3705 merged. The subsequent execution-planning review made
+the deployment-key representation and rotation contract more precise and
+drafted the required doctrine amendment. The owner explicitly adopted that
+exact amendment and refined contract on 2026-08-10. Beads exist, but
+implementation stays held until the amendment merges and the repaired graph
+receives fresh GO verification. No runtime state, data, or code has been
+changed by this planning phase.
 
 ## Funnel Gate Record
 
@@ -15,31 +22,41 @@ not created Beads, changed runtime state, migrated data, or implemented code.
 | 3 — Specification | pass | `proposal.md`, `design.md`, and nine capability deltas describe the behavior and limits. |
 | 4 — Risks and constraints | pass | The design preserves schema isolation, does not expose or copy secret values, does not backfill historical pages, does not automatically resend ambiguous transport, and keeps probes separate from routed success provenance. |
 | 5 — Work package | pass | `tasks.md` provides dependency-ordered implementation and verification work below. |
-| 6 — Human sign-off | pending | Required before Bead creation or implementation. |
+| 6 — Human sign-off | pass | The owner approved the design merged by PR #3705 and requested the `$th-projects` execution-planning phase. |
+| Execution release — doctrine adoption | pass | On 2026-08-10 the owner explicitly adopted the exact post-merge security-doctrine amendment and refined key-file/rotation contract. Merge and fresh graph verification remain release conditions. |
 
-## Proposed Beads (draft only)
+## Execution decomposition record
 
-Create one P0 epic, **Harden runtime authentication and breaker attention**,
-with the following dependency graph after approval:
+The P0 epic **Harden runtime authentication and breaker attention** is tracked
+as `bu-0uqgo`. Its dispatch graph is being reconciled against the approved
+package and live ownership before implementation release:
 
 ```text
-outbox schema + atomic outcome recorder ──┬── Switchboard outbox worker + route result
-                                          ├── fleet-halt producer migration
-explicit Codex CLI-auth authority ────────┼── private runtime-bound model probe
-                                          │     └── Models API/UI truth surface
-canonical-to-execution OpenCode mapping ──┘
-all implementation leaves ─────────────────── final ACL/concurrency/e2e evidence
+doctrine/source release gate
+├── outbox representation → producer activation → Switchboard worker ───────┐
+├── explicit Codex authority ────────────────────────────────────────────┐   │
+├── canonical OpenCode execution mapping ───────────────────────────────┼───┤
+└── probe trust representation → signed coordinator ────────────────────┐   │
+    Dashboard runtime-child sandbox ───────────────→ mount/caller cutover ──┘
+                                                      Models/Spend truth ←──┘
+all ten implementation leaves → gen-1 reconciliation → epic report
 ```
 
-| Draft child | Priority | Depends on | Completion evidence |
+| Tracked child | Priority | Depends on | Completion evidence |
 |---|---:|---|---|
-| Durable outbox schema and serialized dispatch recorder | P0 | — | real-Postgres migration, authorized producer, retention, and concurrent edge tests prove one episode |
-| Explicit CLI-auth authority | P0 | — | multi-daemon/shared-home and unavailable-authority regressions pass without values in logs |
-| Switchboard at-most-once worker and terminal route semantics | P0 | outbox schema/recorder | role-isolation, fenced claim/recovery, crash/uncertainty, and post-send ACL regressions pass |
-| Fleet-halt outbox migration | P1 | outbox schema/recorder | one calendar-month episode, no direct ledger/audit debounce path |
-| OpenCode execution mapping and private runtime-probe coordinator | P1 | Codex CLI-auth authority | canonical pricing identity, native invocation, private control, and no-breaker-reset probe tests pass |
-| Models/Spend API and UI truth surfaces | P1 | worker and runtime probe | API/frontend tests cover independent states, unavailable state, and one reissue successor |
-| Cross-boundary verification and deployment evidence | P0 | all above | exact-head test matrix, ACL proof, and authorized live runtime validation complete |
+| `bu-0uqgo.9` doctrine/source release gate | P0 | — | merged doctrine classification, valid source metadata, four-pass convergence, fresh graph GO |
+| `bu-0uqgo.1` durable attention representation | P0 | gate plus external migration owners | real-Postgres migration, retention, producer ACL, and no-backfill tests |
+| `bu-0uqgo.2` breaker/fleet producer activation | P0 | outbox representation | serialized edge tests prove one episode and legacy direct delivery is absent |
+| `bu-0uqgo.3` at-most-once Switchboard worker | P0 | producer activation | lease/fence/crash/uncertainty and confirmed-send bookkeeping regressions |
+| `bu-ih90b` explicit Codex authority | P0 | gate | dashboard-refresh/next-invocation, shared-home, and unavailable-authority tests |
+| `bu-0uqgo.4` OpenCode execution mapper | P1 | gate | canonical identity and native CLI argument tests without data migration |
+| `bu-0uqgo.5` probe trust representation | P0 | gate, outbox convention, external migration/Secrets owners | inert schema/parser/receipt/grant/redaction evidence with no production key mount |
+| `bu-0uqgo.10` signed probe propagation | P0 | trust, Codex authority, OpenCode mapper | fixture-key private endpoint, replay, exact-runtime, and no-breaker-reset tests while production remains unavailable |
+| `bu-0uqgo.12` Dashboard CLI-auth child sandbox | P0 | gate, terminal base-image owner, explicit Codex authority, OpenCode mapper | complete runtime-CLI inventory, pinned Bubblewrap user/mount/PID namespaces, exclusive outer identities, exact Compose security policy/preflight, pidfd/namespace-init fencing, same-descriptor staging, adversarial peer/daemon tests, and exact deferred verification allowlist |
+| `bu-0uqgo.11` probe mount and caller cutover | P1 | signed propagation, runtime-child sandbox | canonical full-stack readiness gate, Test/verify/scheduler cutover, legacy local-probe absence, and safe rollback |
+| `bu-0uqgo.6` Models/Spend truth | P1 | worker, probe cutover, external frontend owners | batched breaker state, truthful degraded state, and one fenced reissue successor |
+| `bu-0uqgo.7` gen-1 reconciliation | P0 | all ten implementation leaves | exact implementation/spec/ACL/concurrency and separately authorized runtime evidence |
+| `bu-0uqgo.8` epic report | P0 | implementation plus reconciliation | complete evidence matrix, diagrams, and VISION callback |
 
 ## Verification Matrix
 
@@ -57,14 +74,16 @@ all implementation leaves ──────────────────
 - `openspec validate harden-runtime-auth-and-breaker-attention --strict` passes.
 - `git diff --check` passes for the tracked change package.
 - Repository-wide `spec-trace-check.py --authoring` is not a usable clean gate:
-  it reported **2,608 existing errors** across main specifications and unrelated
+  it reported **2,618 existing errors** across main specifications and unrelated
   active changes, and the tool has no scoped-change mode. This package uses
   unique requirement IDs and complete `ID`/`Source`/`Scope` metadata; its
   implementation tasks require test citations before completion.
 
-## Sign-off Requested
+## Execution release gate
 
-Approve this package to create the proposed Beads and begin implementation in
-the isolated worktree. The approval commits to the explicit at-most-once policy:
-after ambiguous external transport, the system records `uncertain` and only a
-confirmed operator action may create one new child episode.
+Original design sign-off and explicit adoption of the exact doctrine amendment
+are recorded. `bu-0uqgo.9` keeps every implementation lane held until this
+correction is merged and the repaired graph receives fresh GO verification.
+Closing that gate releases only dependency-ready Beads;
+it does not authorize live key generation, deployment, restart, induced
+breaker/fleet failures, ambiguous-send simulation, or external resend.
