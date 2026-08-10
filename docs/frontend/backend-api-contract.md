@@ -202,6 +202,7 @@ not prior prose, KPI, recent-day rows, cache state, or drilldown content.
 - `GET /api/notifications` -> `PaginatedResponse<NotificationSummary>`
 - `GET /api/notifications/stats` -> `ApiResponse<NotificationStats>`
 - `GET /api/butlers/{name}/notifications` -> `PaginatedResponse<NotificationSummary>`
+- `PATCH /api/notifications/{id}/read` -> `ApiResponse<NotificationSummary>`
 
 Required query support:
 
@@ -217,8 +218,17 @@ Required query support:
 
 `NotificationSummary.metadata` normalization:
 
-- API responses always emit `metadata` as either an object or `null`.
-- Legacy non-object metadata payloads (arrays, strings, scalars) are normalized to `null`.
+- The global list, butler-scoped list, and mark-read response always emit
+  `metadata` as either an object or `null` through the same one-layer normalizer.
+- A mapping is returned as a shallow object copy, and `null` remains `null`.
+- A legacy JSONB string whose one JSON parse yields an object is returned as
+  that object.
+- A malformed string, or a string whose one parse yields an array, string,
+  number, boolean, or `null`, is returned as `{"_raw": <original outer string>}`.
+- An actual non-string JSONB array, number, or boolean remains `null`; it is
+  not wrapped in `_raw`.
+- The normalizer never recursively decodes a parsed string or infers missing
+  provenance.
 
 ## Issues Contract
 
