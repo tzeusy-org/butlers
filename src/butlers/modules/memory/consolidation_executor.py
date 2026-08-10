@@ -54,6 +54,10 @@ class ConsolidationEvidenceValidationError(ValueError):
     """Raised when an output artifact lacks valid claimed-episode evidence."""
 
 
+class _TerminalConsolidationPersistenceError(RuntimeError):
+    """Abort the fenced transaction when the terminal lifecycle write fails."""
+
+
 class _ConnectionAcquire:
     """Make one acquired connection look like a pool to storage helpers."""
 
@@ -90,6 +94,19 @@ def _lost_claim_result() -> dict[str, Any]:
         "episodes_consolidated": 0,
         "episode_ttl_days": 0,
         "errors": ["Consolidation lease was lost before episodes could be finalized"],
+    }
+
+
+def _terminal_persistence_failure_result() -> dict[str, Any]:
+    """Return a sanitized result after rolling back protected persistence."""
+    return {
+        "facts_created": 0,
+        "facts_updated": 0,
+        "rules_created": 0,
+        "confirmations_made": 0,
+        "episodes_consolidated": 0,
+        "episode_ttl_days": 0,
+        "errors": ["Failed to mark episodes as consolidated"],
     }
 
 
@@ -323,32 +340,38 @@ async def execute_consolidation(
         # table. Resolve it before opening the protected transaction so that
         # fallback cannot leave PostgreSQL's outer transaction aborted.
         episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
-        async with pool.acquire() as connection:
-            async with connection.transaction():
-                if not await _lock_and_renew_claim_for_persistence(
-                    connection,
-                    source_episode_ids=source_episode_ids,
-                    claim_token=claim_token,
-                    lease_duration_seconds=lease_duration_seconds,
-                ):
-                    return _lost_claim_result()
-                return await execute_consolidation(
-                    pool=_ConnectionBackedPool(connection),
-                    embedding_engine=embedding_engine,
-                    parsed=parsed,
-                    source_episode_ids=source_episode_ids,
-                    butler_name=butler_name,
-                    scope=scope,
-                    retention_class=retention_class,
-                    tenant_id=tenant_id,
-                    request_id=request_id,
-                    enable_shared_catalog=enable_shared_catalog,
-                    source_schema=source_schema,
-                    claim_token=claim_token,
-                    lease_duration_seconds=lease_duration_seconds,
-                    _claim_persistence_fenced=True,
-                    _episode_ttl_days=episode_ttl_days,
-                )
+        try:
+            async with pool.acquire() as connection:
+                async with connection.transaction():
+                    if not await _lock_and_renew_claim_for_persistence(
+                        connection,
+                        source_episode_ids=source_episode_ids,
+                        claim_token=claim_token,
+                        lease_duration_seconds=lease_duration_seconds,
+                    ):
+                        return _lost_claim_result()
+                    return await execute_consolidation(
+                        pool=_ConnectionBackedPool(connection),
+                        embedding_engine=embedding_engine,
+                        parsed=parsed,
+                        source_episode_ids=source_episode_ids,
+                        butler_name=butler_name,
+                        scope=scope,
+                        retention_class=retention_class,
+                        tenant_id=tenant_id,
+                        request_id=request_id,
+                        enable_shared_catalog=enable_shared_catalog,
+                        source_schema=source_schema,
+                        claim_token=claim_token,
+                        lease_duration_seconds=lease_duration_seconds,
+                        _claim_persistence_fenced=True,
+                        _episode_ttl_days=episode_ttl_days,
+                    )
+        except _TerminalConsolidationPersistenceError:
+            # The exception must leave the outer transaction before returning:
+            # catching it inside any nested savepoint could commit artifacts or
+            # confirmations without their required terminal lifecycle event.
+            return _terminal_persistence_failure_result()
 
     effective_scope = scope if scope is not None else butler_name
     errors: list[str] = []
@@ -672,10 +695,20 @@ async def execute_consolidation(
                 if len(transitioned) == len(source_episode_ids):
                     episodes_consolidated = len(transitioned)
                 else:
+                    if _claim_persistence_fenced:
+                        raise _TerminalConsolidationPersistenceError(
+                            "Consolidation lease was lost before episodes could be finalized"
+                        )
                     errors.append("Consolidation lease was lost before episodes could be finalized")
         except Exception as exc:
             # Log detailed error internally
             logger.error("Failed to mark episodes as consolidated: %s", exc, exc_info=True)
+            if _claim_persistence_fenced:
+                # Do not turn a terminal CTE failure into a normal result while
+                # an outer transaction still contains derived artifacts. The
+                # outer fence catches this only after it has rolled back every
+                # prior artifact, evidence link, confirmation, and lease write.
+                raise _TerminalConsolidationPersistenceError from exc
             # Sanitize error message in return value
             errors.append("Failed to mark episodes as consolidated")
 

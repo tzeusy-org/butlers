@@ -23,7 +23,10 @@ from butlers.modules.memory.consolidation import (
     run_consolidation,
 )
 from butlers.modules.memory.consolidation_executor import execute_consolidation
-from butlers.modules.memory.consolidation_parser import ConsolidationResult
+from butlers.modules.memory.consolidation_parser import (
+    ConsolidationResult,
+    parse_consolidation_output,
+)
 from conftest import docker_available
 
 pytestmark = [
@@ -80,15 +83,50 @@ CREATE TABLE facts (
     subject TEXT NOT NULL DEFAULT '',
     predicate TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
+    embedding TEXT,
+    search_vector TSVECTOR,
+    importance DOUBLE PRECISION NOT NULL DEFAULT 5.0,
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    decay_rate DOUBLE PRECISION NOT NULL DEFAULT 0.01,
     permanence TEXT NOT NULL DEFAULT 'standard',
+    source_episode_id UUID,
+    supersedes_id UUID,
+    scope TEXT NOT NULL DEFAULT 'global',
     entity_id UUID,
+    object_entity_id UUID,
     valid_at TIMESTAMPTZ,
     validity TEXT NOT NULL DEFAULT 'active',
     source_butler TEXT NOT NULL DEFAULT 'memory',
     tenant_id TEXT NOT NULL DEFAULT 'shared',
+    request_id TEXT,
+    idempotency_key TEXT,
+    observed_at TIMESTAMPTZ,
+    retention_class TEXT NOT NULL DEFAULT 'operational',
+    sensitivity TEXT NOT NULL DEFAULT 'normal',
+    embedding_model_version TEXT NOT NULL DEFAULT 'consolidation-lifecycle-test',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_confirmed_at TIMESTAMPTZ
+    last_confirmed_at TIMESTAMPTZ,
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+CREATE TABLE predicate_registry (
+    name TEXT PRIMARY KEY,
+    is_edge BOOLEAN NOT NULL DEFAULT false,
+    is_temporal BOOLEAN NOT NULL DEFAULT false,
+    status TEXT NOT NULL DEFAULT 'active',
+    superseded_by TEXT,
+    expected_subject_type TEXT,
+    expected_object_type TEXT,
+    inverse_of TEXT,
+    is_symmetric BOOLEAN NOT NULL DEFAULT false,
+    aliases TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    description TEXT,
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TIMESTAMPTZ
+);
+
+INSERT INTO predicate_registry (name) VALUES ('test_property');
 
 CREATE TABLE rules (
     id UUID PRIMARY KEY,
@@ -576,6 +614,87 @@ async def test_success_transition_is_fenced_and_clears_retry_lifecycle_state(
             "event_type": "episode_consolidated",
             "payload": {"outcome": "consolidated"},
         }
+
+
+async def test_terminal_event_failure_rolls_back_fenced_artifacts_and_confirmation(
+    provisioned_postgres_pool,
+) -> None:
+    """A terminal audit failure rolls back every write in the protected group."""
+    async with provisioned_postgres_pool() as pool:
+        await _install_lifecycle_schema(pool)
+        await _install_artifact_schema(pool)
+        episode_id = await _insert_episode(
+            pool,
+            leased_until=datetime.now(UTC) + timedelta(minutes=5),
+            leased_by="claim-a",
+        )
+        confirmation_id = uuid.uuid4()
+        await pool.execute("INSERT INTO facts (id) VALUES ($1)", confirmation_id)
+        await pool.execute(
+            "ALTER TABLE memory_events "
+            "ADD CONSTRAINT reject_terminal_events "
+            "CHECK (event_type <> 'episode_consolidated')"
+        )
+
+        parsed = parse_consolidation_output(
+            json.dumps(
+                {
+                    "new_facts": [
+                        {
+                            "subject": "Owner",
+                            "predicate": "test_property",
+                            "content": "prefers transactional integrity",
+                            "evidence_episode_ids": [str(episode_id)],
+                        }
+                    ],
+                    "new_rules": [
+                        {
+                            "content": "Persist only with a durable terminal audit event.",
+                            "evidence_episode_ids": [str(episode_id)],
+                        }
+                    ],
+                    "confirmations": [str(confirmation_id)],
+                }
+            )
+        )
+        assert parsed.parse_errors == []
+
+        result = await execute_consolidation(
+            pool=pool,
+            embedding_engine=_StaticEmbeddingEngine(),
+            parsed=parsed,
+            source_episode_ids=[episode_id],
+            butler_name="memory",
+            claim_token="claim-a",
+        )
+
+        assert result == {
+            "facts_created": 0,
+            "facts_updated": 0,
+            "rules_created": 0,
+            "confirmations_made": 0,
+            "episodes_consolidated": 0,
+            "episode_ttl_days": 0,
+            "errors": ["Failed to mark episodes as consolidated"],
+        }
+        assert (
+            await pool.fetchval("SELECT count(*) FROM facts WHERE predicate = 'test_property'") == 0
+        )
+        assert await pool.fetchval("SELECT count(*) FROM rules") == 0
+        assert await pool.fetchval("SELECT count(*) FROM memory_links") == 0
+        assert (
+            await pool.fetchval(
+                "SELECT last_confirmed_at FROM facts WHERE id = $1", confirmation_id
+            )
+        ) is None
+        assert await pool.fetchval("SELECT count(*) FROM memory_events") == 0
+
+        row = await _episode_lifecycle(pool, episode_id)
+        assert row["consolidation_status"] == "pending"
+        assert row["consolidated"] is False
+        assert row["consolidation_attempts"] == 0
+        assert row["leased_by"] == "claim-a"
+        assert row["leased_until"] > datetime.now(UTC)
 
 
 async def test_replaced_claim_cannot_persist_artifacts_or_terminal_lifecycle(
