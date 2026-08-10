@@ -12,12 +12,13 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
 
-from butlers.modules.memory import MemoryModule
+from butlers.background import dispatch_scheduled_task
+from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.memory.consolidation import (
     BASE_RETRY_SECONDS,
     MAX_CONSOLIDATION_ATTEMPTS,
@@ -238,6 +239,22 @@ class _BlockingUnsuccessfulSpawner:
         return SimpleNamespace(success=False, output=None)
 
 
+class _BlockingSuccessfulSpawner:
+    """Hold a live scheduled runtime until its pending-episode claim is observable."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.trigger_sources: list[str] = []
+
+    async def trigger(self, *, prompt: str, trigger_source: str) -> SimpleNamespace:
+        assert prompt
+        self.trigger_sources.append(trigger_source)
+        self.started.set()
+        await self.release.wait()
+        return SimpleNamespace(success=True, output="{}", error=None)
+
+
 async def _insert_episode(
     pool,
     *,
@@ -376,10 +393,14 @@ async def test_scheduled_run_claims_pending_and_only_retry_eligible_failed_episo
 
 async def test_private_memory_claim_path_does_not_retry_failed_episodes(
     provisioned_postgres_pool,
+    monkeypatch,
 ) -> None:
-    """The private-memory call path preserves old pending-only recovery behavior."""
-    async with provisioned_postgres_pool() as pool:
+    """Chronicler's live private hook claims pending work but leaves due failures untouched."""
+    async with provisioned_postgres_pool(schema="chronicler_mem") as pool:
+        await pool.execute("CREATE SCHEMA chronicler_mem")
+        assert await pool.fetchval("SELECT current_schema()") == "chronicler_mem"
         await _install_lifecycle_schema(pool)
+        await _install_artifact_schema(pool)
         now = datetime.now(UTC)
         pending = await _insert_episode(pool)
         failed_due = await _insert_episode(
@@ -387,19 +408,55 @@ async def test_private_memory_claim_path_does_not_retry_failed_episodes(
             status="failed",
             attempts=1,
             retry_at=now - timedelta(seconds=1),
+            last_error="previous private failure",
         )
 
-        stats = await run_consolidation(
-            pool=pool,
-            embedding_engine=object(),
-            cc_spawner=None,
-            batch_size=20,
-            retry_failed=False,
-        )
+        # The real Chronicler module owns a private memory pool.  Inject the
+        # testcontainer-backed pool so its actual startup hook can register the
+        # production scheduler callback without opening a second test pool.
+        module = MemoryModule()
+        module._memory_db = SimpleNamespace(pool=pool, close=AsyncMock())
+        module._get_embedding_engine = lambda: _StaticEmbeddingEngine()
+        monkeypatch.setattr(module, "_register_default_maintenance_schedules", AsyncMock())
+        spawner = _BlockingSuccessfulSpawner()
 
-        assert stats["episodes_processed"] == 1
-        assert (await _episode_lifecycle(pool, pending))["leased_by"]
-        assert (await _episode_lifecycle(pool, failed_due))["leased_by"] is None
+        try:
+            await module.on_startup(
+                config=MemoryModuleConfig(memory_schema="chronicler_mem"),
+                db=SimpleNamespace(pool=pool, schema="chronicler"),
+            )
+            assert module._allows_failed_consolidation_retry() is False
+
+            failed_before = dict(await _episode_lifecycle(pool, failed_due))
+            scheduled_run = asyncio.create_task(
+                dispatch_scheduled_task(
+                    butler_name="chronicler",
+                    pool=pool,
+                    spawner=spawner,
+                    trigger_source="schedule:memory_consolidation",
+                    job_name="memory_consolidation",
+                    job_args={"batch_size": 20},
+                )
+            )
+            try:
+                await asyncio.wait_for(spawner.started.wait(), timeout=5)
+
+                pending_claim = await _episode_lifecycle(pool, pending)
+                assert pending_claim["leased_by"] is not None
+                assert pending_claim["leased_until"] > datetime.now(UTC)
+                assert dict(await _episode_lifecycle(pool, failed_due)) == failed_before
+            finally:
+                spawner.release.set()
+                stats = await scheduled_run
+
+            assert stats["episodes_processed"] == 1
+            assert spawner.trigger_sources == ["schedule:consolidation"]
+            pending_after = await _episode_lifecycle(pool, pending)
+            assert pending_after["consolidation_status"] == "consolidated"
+            assert pending_after["consolidated"] is True
+            assert dict(await _episode_lifecycle(pool, failed_due)) == failed_before
+        finally:
+            await module.on_shutdown()
 
 
 async def test_registered_relationship_admin_dry_run_leaves_due_failed_retry_for_scheduler(
