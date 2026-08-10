@@ -57,6 +57,25 @@ describe("ApprovalsVerdictOpener -- all clear", () => {
     expect(html).toContain('data-testid="approvals-verdict-all-clear"');
     expect(html).toContain("No approvals waiting.");
   });
+
+  it("uses stalled-specific all-clear copy and suppresses waiting clauses in the stalled lane", () => {
+    const html = render(
+      <ApprovalsVerdictOpener
+        lane="stalled"
+        pending={[summary({ id: "stalled-row" })]}
+        pendingLoading={false}
+        pendingError={false}
+        stalledCount={0}
+        historyLoading={false}
+        historyError={false}
+      />,
+    );
+
+    expect(html).toContain('data-testid="approvals-verdict-all-clear"');
+    expect(html).toContain("No stalled approvals.");
+    expect(html).not.toContain("No approvals waiting.");
+    expect(html).not.toContain("1 waiting");
+  });
 });
 
 describe("ApprovalsVerdictOpener -- clauses", () => {
@@ -83,7 +102,9 @@ describe("ApprovalsVerdictOpener -- clauses", () => {
     expect(html).toContain("nearest expires in 40m");
     expect(html).toContain('href="/approvals/a-1"');
     expect(html).toContain("one stalled action never ran");
-    // A whole-population aggregate has no fabricated row-level destination.
+    // The aggregate now has a truthful filtered-lane destination, but never
+    // invents a particular row id from the whole-population count.
+    expect(html).toContain('href="/approvals?state=stalled"');
     expect(html).not.toContain('href="/approvals/h-1"');
   });
 

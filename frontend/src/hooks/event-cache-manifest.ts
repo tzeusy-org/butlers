@@ -39,6 +39,7 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "approval", queryKey: ["approvals", "history"], source: "ApprovalsPage.tsx (history)" },
   { eventType: "approval", queryKey: ["approvals", "metrics"], source: "use-approvals.ts (useApprovalMetrics)" },
   { eventType: "approval", queryKey: ["approvals", "detail", "abc-1"], source: "use-approvals.ts (useApprovalDetail)" },
+  { eventType: "approval", queryKey: ["approvals", "stalled-route-verification", "abc-1"], source: "ApprovalsPage.tsx (unlisted Stalled direct-route verifier)" },
 
   // spend
   { eventType: "spend", queryKey: ["cost-summary"], source: "use-spend.ts (useSpendSummary)" },

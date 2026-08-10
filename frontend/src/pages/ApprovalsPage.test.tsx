@@ -131,6 +131,7 @@ import {
   createApprovalRuleFromAction,
   updateApprovalsPolicy,
 } from "@/api/index.ts";
+import { applyFleetEvent } from "@/hooks/event-cache-registry";
 import { toast } from "sonner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -159,6 +160,16 @@ function makeSummary(id: string, toolName = "send_email") {
 function makeApiResponse<T>(data: T) {
   // Include meta to match ApiResponse<T> shape ({ data, meta: ApiMeta }).
   return Promise.resolve({ data, meta: {} });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 // Degraded fan-out: same envelope, but meta names the butler pools that were
@@ -603,6 +614,43 @@ describe("ApprovalsPage — load-more", () => {
     // Verify that getApprovalsFlat was called with the bumped limit.
     expect(getApprovalsFlat).toHaveBeenCalledWith("waiting", 200);
   });
+
+  it("keeps current-lane rows visible while same-lane pagination is loading", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, i) => makeSummary(`page-${i}`));
+    const expandedPage = Array.from({ length: 200 }, (_, i) => makeSummary(`page-${i}`));
+    const expandedRequest = deferred<{
+      data: typeof expandedPage;
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((_: "waiting" | "stalled", limit: number) =>
+        limit === 100 ? makeApiResponse(firstPage) : expandedRequest.promise) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Load more") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Load more")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush(1);
+    });
+
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-approval-id="page-0"]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      expandedRequest.resolve({ data: expandedPage, meta: {} });
+      await flush();
+    });
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="rail-item"][data-approval-id="page-199"]') !==
+        null,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -822,7 +870,7 @@ function makeHistoryItem(
   id: string,
   status: string,
   toolName = "send_email",
-  executionResult: Record<string, unknown> | null = null,
+  executionResult: Record<string, unknown> | null | undefined = null,
 ) {
   return {
     id,
@@ -855,6 +903,32 @@ function makePendingDetail(id: string) {
     decided_at: null,
     target_contact: null,
   });
+}
+
+function makeStalledDetailData(
+  id: string,
+  overrides: Partial<Record<string, unknown>> = {},
+) {
+  return {
+    id,
+    title: `Stalled ${id}`,
+    butler: "general",
+    created_at: "2026-05-17T10:00:00Z",
+    expires_at: null,
+    why: "The owner approved this.",
+    evidence: [],
+    proposed_action: {
+      tool_name: "send_email",
+      tool_args: {},
+      agent_summary: null,
+    },
+    status: "approved",
+    decided_by: "human:owner",
+    decided_at: "2026-05-17T10:05:00Z",
+    execution_result: null,
+    target_contact: null,
+    ...overrides,
+  };
 }
 
 describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
@@ -1343,6 +1417,42 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(findButton(container, "Abandon")).toBeUndefined();
   });
 
+  it("does not render dossier Retry when an approved action omits execution_result", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("missing-dossier-result")]) as AnyMock,
+    );
+    const detailWithoutResult = {
+      id: "missing-dossier-result",
+      title: "Send Email (general)",
+      butler: "general",
+      created_at: "2026-05-17T10:00:00Z",
+      expires_at: null,
+      why: "The owner approved this.",
+      evidence: [],
+      proposed_action: {
+        tool_name: "send_email",
+        tool_args: {},
+        agent_summary: null,
+      },
+      status: "approved",
+      decided_by: "human:owner",
+      decided_at: "2026-05-17T10:05:00Z",
+      denial_reason: null,
+      target_contact: null,
+    };
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse(detailWithoutResult) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-decision-outcome"]') !== null,
+    );
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Abandon")).toBeUndefined();
+  });
+
   it("denies in a single click — no 'Confirm Deny' step (optimistic)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("d1")]) as AnyMock,
@@ -1458,6 +1568,24 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(findButton(container, "Retry dispatch")).toBeUndefined();
   });
 
+  it("does not render Retry dispatch when an approved history row omits execution_result", async () => {
+    const rowWithoutResult = makeHistoryItem(
+      "h-missing-result",
+      "approved",
+    );
+    Reflect.deleteProperty(rowWithoutResult, "execution_result");
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([rowWithoutResult]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="history-row-link"]') !== null,
+    );
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
   it("calls retryApproval and toasts success when retry dispatches", async () => {
     vi.mocked(getApprovalsHistory).mockReturnValue(
       makeApiResponse([makeHistoryItem("h-approved", "approved")]) as AnyMock,
@@ -1474,6 +1602,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
       }) as AnyMock,
     );
 
+    const invalidateQueries = vi.spyOn(qc, "invalidateQueries");
     renderPage();
     await flushUntil(
       () => findButton(container, "Retry dispatch") !== undefined,
@@ -1489,6 +1618,137 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
 
     expect(retryApproval).toHaveBeenCalledWith("h-approved");
     expect(toast.success).toHaveBeenCalledWith("Dispatched");
+    expect(invalidateQueries.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([
+        ["approvals", "flat"],
+        ["approvals", "history"],
+        ["approvals", "detail", "h-approved"],
+        ["approvals", "metrics"],
+      ]),
+    );
+  });
+
+  it("keeps a retrying row visible and defers invalidation until Retry settles", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([makeHistoryItem("h-retrying", "approved")]) as AnyMock,
+    );
+    const retry = deferred<{
+      data: {
+        id: string;
+        butler: string;
+        tool_name: string;
+        tool_args: Record<string, never>;
+        status: string;
+        requested_at: string;
+        dispatched: boolean;
+      };
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(retryApproval).mockReturnValue(retry.promise as AnyMock);
+    const invalidateQueries = vi.spyOn(qc, "invalidateQueries");
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Retry dispatch")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush(1);
+    });
+
+    const retryingButton = findButton(container, "retrying…");
+    expect(retryingButton).toBeDefined();
+    expect(retryingButton?.disabled).toBe(true);
+    expect(retryingButton?.getAttribute("aria-busy")).toBe("true");
+    expect(container.querySelector('[data-testid="history-row-link"]')).not.toBeNull();
+    expect(invalidateQueries).not.toHaveBeenCalled();
+
+    await act(async () => {
+      retry.resolve({
+        data: {
+          id: "h-retrying",
+          butler: "general",
+          tool_name: "send_email",
+          tool_args: {},
+          status: "executed",
+          requested_at: "2026-05-17T10:00:00Z",
+          dispatched: true,
+        },
+        meta: {},
+      });
+      await flush();
+    });
+
+    expect(toast.success).toHaveBeenCalledWith("Dispatched");
+    expect(invalidateQueries.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([
+        ["approvals", "flat"],
+        ["approvals", "history"],
+        ["approvals", "detail", "h-retrying"],
+        ["approvals", "metrics"],
+      ]),
+    );
+  });
+
+  it("reports a completed non-dispatch retry outcome without inventing a cause", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([makeHistoryItem("h-still-stalled", "approved")]) as AnyMock,
+    );
+    vi.mocked(retryApproval).mockReturnValue(
+      makeApiResponse({
+        id: "h-still-stalled",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "approved",
+        requested_at: "2026-05-17T10:00:00Z",
+        dispatched: false,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Retry dispatch")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(toast.warning).toHaveBeenCalledWith("Still not run");
+    expect(toast.warning).not.toHaveBeenCalledWith("Still not run: no reachable butler");
+  });
+
+  it("keeps the retryable row and approval reads untouched when retry fails", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([makeHistoryItem("h-retry-error", "approved")]) as AnyMock,
+    );
+    const retryFailure = Promise.reject(
+      new Error("executor rejected: tool arguments were invalid"),
+    );
+    // The mutation consumes this rejection; attach a test-side handler too so
+    // Vitest never reports it as unhandled before React schedules onError.
+    void retryFailure.catch(() => undefined);
+    vi.mocked(retryApproval).mockReturnValue(retryFailure as AnyMock);
+    const invalidateQueries = vi.spyOn(qc, "invalidateQueries");
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Retry dispatch")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="history-row-link"]')).not.toBeNull();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Retry failed: executor rejected: tool arguments were invalid",
+    );
+    expect(invalidateQueries).not.toHaveBeenCalled();
   });
 
   it("renders resolved entity names in a 'Referenced Entities' block (bu-4ni21)", async () => {
@@ -1924,6 +2184,772 @@ describe("ApprovalsPage — stalled (approved-but-undispatched) state (bu-86c4c.
       (el) => el.textContent?.trim() === "stalled",
     );
     expect(stalledLabel?.className).not.toMatch(/text-green/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// URL-backed stalled lane (bu-kqnum.10.3)
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage — URL-backed stalled lane", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    resetPageMocks();
+    navigateCalls.length = 0;
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) =>
+        makeApiResponse({
+          id,
+          title: "Send Email (general)",
+          butler: "general",
+          created_at: "2026-05-17T10:00:00Z",
+          expires_at: null,
+          why: "The owner approved this.",
+          evidence: [],
+          proposed_action: { tool_name: "send_email", tool_args: {}, agent_summary: null },
+          status: "approved",
+          decided_by: "human:owner",
+          decided_at: "2026-05-17T10:05:00Z",
+          execution_result: null,
+          target_contact: null,
+        })) as AnyMock,
+    );
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderPage(initialEntry: string) {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <QueryClientProvider client={qc}>
+            <Routes>
+              <Route path="/approvals" element={<ApprovalsPage />} />
+              <Route path="/approvals/:id" element={<ApprovalsPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("opens a direct stalled URL as a semantic stalled lane and preserves it for dossier selection", async () => {
+    const stalled = {
+      ...makeSummary("stalled-1", "send_email"),
+      status: "approved",
+      execution_result: null,
+    };
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        makeApiResponse(state === "stalled" ? [stalled] : [makeSummary("waiting-1")])) as AnyMock,
+    );
+
+    renderPage("/approvals?state=stalled");
+    await flushUntil(() => container.querySelector('[data-testid="rail-item"]') !== null);
+
+    expect(getApprovalsFlat).toHaveBeenCalledWith("stalled", 100);
+    expect(container.textContent).toContain("Stalled approvals");
+    expect(container.textContent).not.toContain("Approve selected");
+
+    const laneNav = container.querySelector('nav[aria-label="Approval lanes"]');
+    const stalledLink = laneNav?.querySelector<HTMLAnchorElement>(
+      'a[href="/approvals?state=stalled"]',
+    );
+    const waitingLink = laneNav?.querySelector<HTMLAnchorElement>('a[href="/approvals"]');
+    expect(laneNav).not.toBeNull();
+    expect(stalledLink?.getAttribute("aria-current")).toBe("page");
+    expect(stalledLink?.className).toContain("focus-visible:outline");
+    expect(stalledLink?.className.split(" ")).toEqual(
+      expect.arrayContaining([
+        "rounded-[3px]",
+        "border",
+        "px-2.5",
+        "py-1",
+        "font-mono",
+        "text-[11px]",
+        "bg-foreground",
+        "text-background",
+      ]),
+    );
+    expect(waitingLink?.className.split(" ")).toEqual(
+      expect.arrayContaining([
+        "rounded-[3px]",
+        "border",
+        "px-2.5",
+        "py-1",
+        "font-mono",
+        "text-[11px]",
+        "bg-transparent",
+      ]),
+    );
+
+    navigateCalls.length = 0;
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="rail-item"]')?.click();
+      await flush();
+    });
+    expect(navigateCalls).toContainEqual([
+      "/approvals/stalled-1?state=stalled",
+      { replace: true },
+    ]);
+  });
+
+  it("opens a valid 101st stalled direct dossier after the bounded rail settles", async () => {
+    const outOfWindowId = "stalled-101";
+    const firstHundred = Array.from({ length: 100 }, (_, index) => ({
+      ...makeSummary(`stalled-${index + 1}`, "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    }));
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse(firstHundred) as AnyMock);
+
+    renderPage(`/approvals/${outOfWindowId}?state=stalled`);
+    await flushUntil(
+      () =>
+        vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === outOfWindowId),
+    );
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    expect(getApprovalsFlat).toHaveBeenCalledWith("stalled", 100);
+    expect(getApprovalDetail).toHaveBeenCalledWith(outOfWindowId);
+    expect(container.textContent).toContain("Approved, awaiting dispatch.");
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+    // The Stalled lane exposes only its established Retry action. Abandon is
+    // deliberately a waiting/history workflow, not a second stalled action.
+    expect(findButton(container, "Abandon")).toBeUndefined();
+  });
+
+  it("does not expose cached pending decision controls while a listed Stalled dossier refetches", async () => {
+    const actionId = "listed-stalled-cache-pending";
+    const listedStalled = {
+      ...makeSummary(actionId, "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    };
+    const detailRefresh = deferred<{
+      data: ReturnType<typeof makeStalledDetailData>;
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([listedStalled]) as AnyMock);
+    // An ordinary dossier prefetch can retain a pending payload while React
+    // Query starts its required fresh detail read. The Stalled lane must never
+    // reuse its decision controls during that window.
+    qc.setQueryDefaults(["approvals", "detail", actionId], { gcTime: Infinity });
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, {
+        title: "Cached pending ordinary dossier",
+        status: "pending",
+      }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(detailRefresh.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+
+    expect(container.textContent).toContain("Cached pending ordinary dossier");
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      detailRefresh.resolve({ data: makeStalledDetailData(actionId), meta: {} });
+      await flush();
+    });
+
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+    expect(findButton(container, "Retry dispatch")).toBeDefined();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+  });
+
+  it("revalidates a direct 101st stalled dossier after successful Retry before retaining Retry", async () => {
+    const actionId = "stalled-101-retry";
+    const firstHundred = Array.from({ length: 100 }, (_, index) => ({
+      ...makeSummary(`stalled-${index + 1}`, "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    }));
+    const flatRefresh = deferred<{
+      data: typeof firstHundred;
+      meta: Record<string, never>;
+    }>();
+    const verifierRefresh = deferred<{
+      data: ReturnType<typeof makeStalledDetailData>;
+      meta: Record<string, never>;
+    }>();
+    let detailCalls = 0;
+    vi.mocked(getApprovalsFlat)
+      .mockReturnValueOnce(makeApiResponse(firstHundred) as AnyMock)
+      .mockReturnValueOnce(flatRefresh.promise as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => {
+        detailCalls += 1;
+        if (detailCalls === 1) {
+          return makeApiResponse(makeStalledDetailData(id)) as AnyMock;
+        }
+        if (detailCalls === 2) {
+          return verifierRefresh.promise as AnyMock;
+        }
+        return makeApiResponse(
+          makeStalledDetailData(id, { execution_result: { dispatched: true } }),
+        ) as AnyMock;
+      }) as AnyMock,
+    );
+    vi.mocked(retryApproval).mockReturnValue(
+      makeApiResponse({
+        id: actionId,
+        butler: "general",
+        tool_name: "stalled_action",
+        tool_args: {},
+        status: "executed",
+        requested_at: "2026-05-17T10:00:00Z",
+        dispatched: true,
+      }) as AnyMock,
+    );
+    const invalidateQueries = vi.spyOn(qc, "invalidateQueries");
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Retry dispatch")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    // Keep the stale flat response pending. The verifier must independently
+    // refetch now, rather than letting its old approved/null payload retain
+    // Retry until the rail happens to settle again.
+    await flushUntil(() => detailCalls >= 2);
+    expect(invalidateQueries.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([["approvals", "stalled-route-verification", actionId]]),
+    );
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verifierRefresh.resolve({
+        data: makeStalledDetailData(actionId, { execution_result: { dispatched: true } }),
+        meta: {},
+      });
+      await flush();
+    });
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      flatRefresh.resolve({ data: firstHundred, meta: {} });
+      await flush();
+    });
+  });
+
+  it("clears a 101st stalled Retry during an approval event's deferred flat refresh", async () => {
+    const actionId = "stalled-101-fleet-event";
+    const firstHundred = Array.from({ length: 100 }, (_, index) => ({
+      ...makeSummary(`stalled-${index + 1}`, "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    }));
+    const flatRefresh = deferred<{
+      data: typeof firstHundred;
+      meta: Record<string, never>;
+    }>();
+    const verifierRefresh = deferred<{
+      data: ReturnType<typeof makeStalledDetailData>;
+      meta: Record<string, never>;
+    }>();
+    let detailCalls = 0;
+    vi.mocked(getApprovalsFlat)
+      .mockReturnValueOnce(makeApiResponse(firstHundred) as AnyMock)
+      .mockReturnValueOnce(flatRefresh.promise as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => {
+        detailCalls += 1;
+        if (detailCalls === 1) {
+          return makeApiResponse(makeStalledDetailData(id)) as AnyMock;
+        }
+        if (detailCalls === 2) {
+          return verifierRefresh.promise as AnyMock;
+        }
+        return makeApiResponse(
+          makeStalledDetailData(id, { execution_result: { dispatched: true } }),
+        ) as AnyMock;
+      }) as AnyMock,
+    );
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      applyFleetEvent(qc, {
+        type: "approval",
+        ts: 101,
+        data: { kind: "executed", approval_id: actionId },
+      });
+      await flush();
+    });
+
+    // The flat rail is intentionally held stale. The fleet event must still
+    // revalidate the direct verifier so its previous approved/null payload
+    // cannot retain Retry in the event-to-flat window.
+    await flushUntil(() => detailCalls >= 2);
+    expect(detailCalls).toBe(2);
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verifierRefresh.resolve({
+        data: makeStalledDetailData(actionId, { execution_result: { dispatched: true } }),
+        meta: {},
+      });
+      flatRefresh.resolve({ data: firstHundred, meta: {} });
+      await flush();
+    });
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
+  it("does not trust an ordinary cached dossier while the unlisted Stalled verifier is pending", async () => {
+    const actionId = "stalled-cache-pending";
+    const freshPending = {
+      data: makeStalledDetailData(actionId, {
+        title: "Fresh pending detail",
+        status: "pending",
+      }),
+      meta: {},
+    };
+    const verification = deferred<typeof freshPending>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    // Simulate a prefetch from the ordinary dossier route. The Stalled route
+    // must not treat this stale success as its eligibility verification.
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale dossier" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+
+    // A separate fresh request begins despite the ordinary cache entry, and
+    // neither its stale title nor its Retry control becomes visible first.
+    expect(getApprovalDetail).toHaveBeenCalledWith(actionId);
+    expect(container.textContent).not.toContain("Cached stale dossier");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+
+    await act(async () => {
+      verification.resolve(freshPending);
+      await flush();
+    });
+
+    // A fresh but no-longer-stalled result remains suppressed; the ordinary
+    // cached approval cannot reopen its dossier after the verifier settles.
+    expect(container.textContent).not.toContain("Cached stale dossier");
+    expect(container.textContent).not.toContain("Fresh pending detail");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Approve")).toBeUndefined();
+  });
+
+  it("suppresses an unlisted stalled dossier when fresh verification has a result", async () => {
+    const actionId = "stalled-cache-result";
+    const freshExecuted = {
+      data: makeStalledDetailData(actionId, {
+        title: "Fresh completed detail",
+        execution_result: { dispatched: false },
+      }),
+      meta: {},
+    };
+    const verification = deferred<typeof freshExecuted>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale retry" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verification.resolve(freshExecuted);
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("Cached stale retry");
+    expect(container.textContent).not.toContain("Fresh completed detail");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
+  it("suppresses an unlisted stalled dossier when fresh verification omits execution_result", async () => {
+    const actionId = "stalled-cache-missing-result";
+    const freshMissingResult = {
+      data: makeStalledDetailData(actionId, { title: "Fresh missing result" }),
+      meta: {},
+    };
+    Reflect.deleteProperty(freshMissingResult.data, "execution_result");
+    const verification = deferred<typeof freshMissingResult>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale retry" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+    expect(container.textContent).not.toContain("Cached stale retry");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verification.resolve(freshMissingResult);
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("Cached stale retry");
+    expect(container.textContent).not.toContain("Fresh missing result");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Abandon")).toBeUndefined();
+  });
+
+  it("suppresses an unlisted stalled dossier when fresh verification fails", async () => {
+    const actionId = "stalled-cache-error";
+    const verification = deferred<never>();
+    // React Query consumes the rejection; prevent the deferred from being
+    // observed as unhandled before the query attaches its handler.
+    void verification.promise.catch(() => undefined);
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale error" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+    expect(container.textContent).not.toContain("Cached stale error");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verification.reject(new Error("fresh verifier unavailable"));
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("Cached stale error");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Approve")).toBeUndefined();
+  });
+
+  it("requires the fresh verifier response to match the direct stalled id", async () => {
+    const actionId = "stalled-cache-id";
+    const freshMismatch = {
+      data: makeStalledDetailData("different-id", { title: "Fresh wrong id" }),
+      meta: {},
+    };
+    const verification = deferred<typeof freshMismatch>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale id" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+
+    await act(async () => {
+      verification.resolve(freshMismatch);
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("Cached stale id");
+    expect(container.textContent).not.toContain("Fresh wrong id");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
+  it("describes stalled rows as stalled when the flat metadata is unavailable", async () => {
+    const stalled = {
+      ...makeSummary("stalled-without-radar", "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    };
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([stalled]) as AnyMock);
+
+    renderPage("/approvals?state=stalled");
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="rail-item"][data-approval-id="stalled-without-radar"]') !==
+        null,
+    );
+
+    expect(container.textContent).toContain("one stalled action never ran");
+    expect(container.textContent).not.toContain("1 waiting");
+  });
+
+  it("keeps a settled empty stalled lane truthful", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    renderPage("/approvals?state=stalled");
+    await flushUntil(
+      () => container.querySelector('[data-testid="approvals-verdict-all-clear"]') !== null,
+    );
+
+    expect(container.textContent).toContain("No stalled approvals.");
+    expect(container.textContent).not.toContain("No approvals waiting.");
+    expect(container.textContent).toContain("Select a stalled approval to review.");
+    expect(container.textContent).not.toContain("Select a pending approval to review.");
+  });
+
+  it("retains keyboard navigation but disables approval shortcuts in the stalled lane", async () => {
+    const stalled = (id: string) => ({
+      ...makeSummary(id, "send_email"),
+      status: "approved",
+      execution_result: null,
+    });
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        makeApiResponse(state === "stalled" ? [stalled("stalled-1"), stalled("stalled-2")] : [])) as AnyMock,
+    );
+
+    renderPage("/approvals/stalled-1?state=stalled");
+    await flushUntil(
+      () => container.querySelectorAll('[data-testid="rail-item"]').length === 2,
+    );
+    expect(getApprovalDetail).toHaveBeenCalledWith("stalled-1");
+    navigateCalls.length = 0;
+    vi.mocked(toast).mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "j", bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+    expect(navigateCalls).toContainEqual([
+      "/approvals/stalled-2?state=stalled",
+      { replace: true },
+    ]);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+    expect(toast).not.toHaveBeenCalled();
+    expect(approveApproval).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-pending-verb="approve"]')).toBeNull();
+  });
+
+  it("does not mount a pending direct dossier while Stalled loads or after detail rejects it", async () => {
+    const pendingId = "pending-direct";
+    const stalled = {
+      ...makeSummary("stalled-other", "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    };
+    const stalledRequest = deferred<{
+      data: (typeof stalled)[];
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        state === "stalled" ? stalledRequest.promise : makeApiResponse([])) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(makePendingDetail(pendingId) as AnyMock);
+
+    renderPage(`/approvals/${pendingId}?state=stalled`);
+    await act(async () => {
+      await flush(1);
+    });
+
+    expect(getApprovalsFlat).toHaveBeenCalledWith("stalled", 100);
+    expect(getApprovalDetail).not.toHaveBeenCalled();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+
+    await act(async () => {
+      stalledRequest.resolve({ data: [stalled], meta: {} });
+      await flush();
+    });
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="rail-item"][data-approval-id="stalled-other"]') !==
+        null,
+    );
+
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === pendingId),
+    );
+    expect(getApprovalDetail).toHaveBeenCalledWith(pendingId);
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+  });
+
+  it("does not mount a pending direct dossier when the Stalled request fails", async () => {
+    const pendingId = "pending-direct-error";
+    const stalledRequest = deferred<never>();
+    // Query consumes the rejection; keep a test-side handler too so the
+    // deferred error cannot briefly register as unhandled before React does.
+    void stalledRequest.promise.catch(() => undefined);
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        state === "stalled" ? stalledRequest.promise : makeApiResponse([])) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(makePendingDetail(pendingId) as AnyMock);
+
+    renderPage(`/approvals/${pendingId}?state=stalled`);
+    await act(async () => {
+      await flush(1);
+    });
+    expect(getApprovalDetail).not.toHaveBeenCalled();
+
+    await act(async () => {
+      stalledRequest.reject(new Error("stalled lane unavailable"));
+      await flush();
+    });
+    await flushUntil(
+      () =>
+        container.textContent?.includes("Couldn't reach the stalled approvals lane.") ?? false,
+    );
+
+    expect(getApprovalDetail).not.toHaveBeenCalled();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+  });
+
+  it("does not retain Waiting rows or decision controls while Stalled is loading", async () => {
+    const waiting = makeSummary("waiting-transition", "waiting_sensitive_action");
+    const stalled = {
+      ...makeSummary("stalled-transition", "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    };
+    const stalledRequest = deferred<{
+      data: (typeof stalled)[];
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        state === "stalled"
+          ? stalledRequest.promise
+          : makeApiResponse([waiting])) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("waiting-transition") as AnyMock,
+    );
+
+    renderPage("/approvals");
+    await flushUntil(() => findButton(container, "Approve") !== undefined);
+    expect(container.textContent).toContain("waiting sensitive action");
+
+    await act(async () => {
+      container
+        .querySelector<HTMLAnchorElement>('a[href="/approvals?state=stalled"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await flush(1);
+    });
+
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-approval-id="waiting-transition"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("waiting sensitive action");
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+    expect(container.textContent).toContain("loading…");
+
+    await act(async () => {
+      stalledRequest.resolve({ data: [stalled], meta: {} });
+      await flush();
+    });
+
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="rail-item"][data-approval-id="stalled-transition"]') !==
+        null,
+    );
+    expect(container.textContent).toContain("stalled action");
+    expect(findButton(container, "Approve")).toBeUndefined();
+  });
+
+  it("shows the Stalled query error instead of retained Waiting data when the lane fetch fails", async () => {
+    const waiting = makeSummary("waiting-transition-error", "waiting_sensitive_action");
+    const stalledRequest = deferred<never>();
+    // Query consumes the rejection; keep a test-side handler too so the
+    // deferred error cannot briefly register as unhandled before React does.
+    void stalledRequest.promise.catch(() => undefined);
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        state === "stalled"
+          ? stalledRequest.promise
+          : makeApiResponse([waiting])) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("waiting-transition-error") as AnyMock,
+    );
+
+    renderPage("/approvals");
+    await flushUntil(() => findButton(container, "Approve") !== undefined);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLAnchorElement>('a[href="/approvals?state=stalled"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await flush(1);
+      stalledRequest.reject(new Error("stalled lane unavailable"));
+      await flush();
+    });
+
+    await flushUntil(
+      () =>
+        container.textContent?.includes("Couldn't reach the stalled approvals lane.") ?? false,
+    );
+    expect(container.textContent).toContain("Couldn't reach the stalled approvals lane.");
+    expect(container.textContent).not.toContain("waiting sensitive action");
+    expect(
+      container.querySelector('[data-testid="rail-item"][data-approval-id="waiting-transition-error"]'),
+    ).toBeNull();
+    expect(findButton(container, "Approve")).toBeUndefined();
   });
 });
 

@@ -33,7 +33,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -85,6 +85,7 @@ import { TONE_COLORS } from "@/components/ui/StateDot";
 // ---------------------------------------------------------------------------
 
 const PENDING_PAGE_SIZE = 100;
+type ApprovalLane = "waiting" | "stalled";
 
 // Keyboard-triage decision timing (bu-86c4c.14 — Act loop / hot queue).
 // Keyboard verbs (a/d/x) are the fast, blind-fire path — a slip of the key is
@@ -109,11 +110,44 @@ const KEYBOARD_DEFER_HOURS = 24;
 // ---------------------------------------------------------------------------
 
 const Q = {
-  pending: (limit: number) => ["approvals", "flat", "waiting", limit] as const,
+  flat: (state: ApprovalLane, limit: number) => ["approvals", "flat", state, limit] as const,
   detail: (id: string) => ["approvals", "detail", id] as const,
+  // An unlisted Stalled deep link needs an eligibility check that is wholly
+  // independent from the ordinary dossier cache. Include the settled flat
+  // response generation so a newly received rail result triggers a new
+  // verification rather than reusing an older direct-link result.
+  stalledRouteVerification: (id: string, flatDataUpdatedAt: number) =>
+    ["approvals", "stalled-route-verification", id, flatDataUpdatedAt] as const,
   history: () => ["approvals", "history"] as const,
   policy: () => ["approvals", "policy"] as const,
 };
+
+const APPROVAL_LANE_PILL_BASE = [
+  "inline-flex items-center justify-center rounded-[3px] border px-2.5 py-1",
+  "font-mono text-[11px] leading-none transition-colors",
+  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground",
+].join(" ");
+
+function approvalLaneHref(lane: ApprovalLane, actionId?: string): string {
+  const path = actionId ? `/approvals/${actionId}` : "/approvals";
+  return lane === "stalled" ? `${path}?state=stalled` : path;
+}
+
+function invalidateRetryApprovalReads(qc: ReturnType<typeof useQueryClient>, actionId: string): void {
+  // The flat prefix covers every active lane and page size, including both
+  // waiting and stalled results. This only runs after the retry request has
+  // completed successfully; retry never removes a server-authoritative row
+  // optimistically.
+  qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+  qc.invalidateQueries({ queryKey: Q.history() });
+  qc.invalidateQueries({ queryKey: Q.detail(actionId) });
+  // An unlisted (including 101st+) Stalled dossier is authorized only by its
+  // isolated verifier, never its ordinary detail cache. Invalidate every
+  // generation for this id so a successful retry cannot leave an old
+  // approved/null verifier payload exposing Retry until the flat rail settles.
+  qc.invalidateQueries({ queryKey: ["approvals", "stalled-route-verification", actionId] });
+  qc.invalidateQueries({ queryKey: ["approvals", "metrics"] });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -445,6 +479,9 @@ function RailItem({
 
 function Dossier({
   actionId,
+  verifiedDetail,
+  allowAbandon,
+  allowPendingDecisionControls,
   onApprove,
   onDeny,
   onDefer,
@@ -455,6 +492,16 @@ function Dossier({
   onCancelPending,
 }: {
   actionId: string;
+  /**
+   * A freshly verified unlisted Stalled deep link. It must take precedence
+   * over the ordinary dossier cache so stale prefetch data cannot expose an
+   * action after the verifier has established the current eligibility.
+   */
+  verifiedDetail?: ApprovalDetail;
+  /** Stalled is a Retry-only lane; waiting/history keeps the existing abandon flow. */
+  allowAbandon: boolean;
+  /** A Stalled flat row must never reopen ordinary pending decision controls. */
+  allowPendingDecisionControls: boolean;
   onApprove: () => void;
   onDeny: (reason?: string) => void;
   onDefer: (hours: number) => void;
@@ -478,7 +525,7 @@ function Dossier({
   const { data, isLoading, error } = useQuery({
     queryKey: Q.detail(actionId),
     queryFn: () => getApprovalDetail(actionId),
-    enabled: !!actionId,
+    enabled: !!actionId && !verifiedDetail,
   });
 
   function handleDefer() {
@@ -490,7 +537,7 @@ function Dossier({
     onDefer(h);
   }
 
-  if (isLoading) {
+  if (!verifiedDetail && isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
         loading…
@@ -498,7 +545,8 @@ function Dossier({
     );
   }
 
-  if (error || !data?.data) {
+  const detail = verifiedDetail ?? data?.data;
+  if ((!verifiedDetail && error) || !detail) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
         failed to load dossier
@@ -506,8 +554,8 @@ function Dossier({
     );
   }
 
-  const detail: ApprovalDetail = data.data;
   const isPending = detail.status === "pending";
+  const showPendingDecisionControls = isPending && allowPendingDecisionControls;
   const canRetryDispatch =
     detail.status === "approved" && detail.execution_result === null;
   // A keyboard-triage decision for THIS exact approval is scheduled but not
@@ -525,7 +573,7 @@ function Dossier({
           over the top-right corner without reserving flow space (the body is
           not pushed down). Stays pinned on scroll; the wrapper is click-through
           (pointer-events-none) so content beneath stays interactive. */}
-      {isPending && (
+      {showPendingDecisionControls && (
         <div className="sticky top-0 z-20 h-0 pointer-events-none">
           <div className="absolute right-0 top-0 flex flex-col items-end gap-2">
             {isScheduled ? (
@@ -680,7 +728,7 @@ function Dossier({
       <div className="space-y-6">
         {/* Title — right padding (when pending) keeps the headline clear of the
           floating decision cluster that overlays the top-right corner. */}
-        <div className={isPending ? "pr-56" : undefined}>
+        <div className={showPendingDecisionControls ? "pr-56" : undefined}>
           <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
             {detail.butler} · {fmtTs(detail.created_at)}
             {detail.session_id && (
@@ -810,7 +858,7 @@ function Dossier({
                   <dd className="mt-1 flex flex-wrap items-center gap-3 text-sm text-foreground">
                     <span>Approved, awaiting dispatch.</span>
                     <RetryDispatchButton actionId={detail.id} />
-                    <AbandonAction actionId={detail.id} />
+                    {allowAbandon && <AbandonAction actionId={detail.id} />}
                   </dd>
                 </div>
               )}
@@ -1244,19 +1292,19 @@ function RetryDispatchButton({ actionId }: { actionId: string }) {
       if (ran) {
         toast.success("Dispatched");
       } else {
-        toast.warning("Still not run: no reachable butler");
+        toast.warning("Still not run");
       }
-      qc.invalidateQueries({ queryKey: Q.history() });
-      qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
-      qc.invalidateQueries({ queryKey: Q.detail(actionId) });
+      invalidateRetryApprovalReads(qc, actionId);
     },
     onError: (e: Error) => toast.error(`Retry failed: ${e.message}`),
   });
 
   return (
     <button
+      type="button"
       onClick={() => retryMut.mutate()}
       disabled={retryMut.isPending}
+      aria-busy={retryMut.isPending || undefined}
       className={[
         "shrink-0 py-0.5 px-2 rounded text-[10px] font-mono uppercase tracking-wide border",
         "border-border text-foreground transition-colors",
@@ -1377,7 +1425,7 @@ function HistorySection() {
             </Link>
             {/* Only the exact approved/null-result state is retryable. An
                 abandoned row is terminal and intentionally read-only. */}
-            {item.status === "approved" && item.execution_result == null && (
+            {item.status === "approved" && item.execution_result === null && (
               <RetryDispatchButton actionId={item.id} />
             )}
             <span className="font-mono text-xs text-muted-foreground shrink-0">
@@ -1580,7 +1628,9 @@ export default function ApprovalsPage() {
   // :id in the URL the rail falls back to the top-ranked pending item
   // (see effectiveSelected below) without forcing a redirect.
   const { id: routeId } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const activeLane: ApprovalLane = searchParams.get("state") === "stalled" ? "stalled" : "waiting";
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
   const [teachingActionId, setTeachingActionId] = useState<string | null>(null);
 
@@ -1594,13 +1644,26 @@ export default function ApprovalsPage() {
   // callback for anything else. refetchInterval below is a reconciliation
   // sweep — a safety net for the rare case the bus is down, not the primary
   // update path.
-  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
-    queryKey: Q.pending(pendingLimit),
-    queryFn: () => getApprovalsFlat("waiting", pendingLimit),
+  const {
+    data,
+    isLoading,
+    isFetching,
+    isError,
+    isSuccess,
+    isFetchedAfterMount,
+    dataUpdatedAt,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: Q.flat(activeLane, pendingLimit),
+    queryFn: () => getApprovalsFlat(activeLane, pendingLimit),
     refetchInterval: POLL_BUS_RECONCILE_MS,
-    // Keep previous data visible while the expanded list is fetching to
-    // prevent layout shifts when the limit is bumped (v5: keepPreviousData).
-    placeholderData: (prev) => prev,
+    // Keep prior rows while pagination expands within the same lane, but
+    // never relabel a Waiting result as Stalled (or vice versa) while the
+    // new lane is loading. Without this query-key guard, the old dossier and
+    // its decision controls remain actionable under the wrong lane heading.
+    placeholderData: (prev, previousQuery) =>
+      previousQuery?.queryKey[2] === activeLane ? prev : undefined,
   });
 
   // Same queryKey as HistorySection's own useQuery below -- react-query
@@ -1637,11 +1700,56 @@ export default function ApprovalsPage() {
   // Rank by expiry urgency + blast radius rather than arrival order (JARVIS
   // audit move 9): summary.expires_at previously drove nothing, so an
   // approval about to expire looked identical to one that just arrived.
-  const rankedPending = useMemo(
-    () => [...(data?.data ?? [])].sort((a, b) => rankScore(b) - rankScore(a)),
-    [data],
-  );
+  const rankedPending = useMemo(() => {
+    const rows = data?.data ?? [];
+    return activeLane === "waiting"
+      ? [...rows].sort((a, b) => rankScore(b) - rankScore(a))
+      : rows;
+  }, [activeLane, data]);
   const pending = rankedPending;
+  const waitingVerdictRows = activeLane === "waiting" ? pending : [];
+  const stalledVerdictCount = Math.max(
+    data?.meta?.stalled_count ?? 0,
+    activeLane === "stalled" ? pending.length : 0,
+  );
+
+  // The stalled flat rail is bounded, while every approval URL remains a
+  // first-class deep link. Once a current Stalled rail response has resolved,
+  // check an unlisted route id with a dedicated, forced-fresh detail query
+  // before rendering its dossier. This deliberately never reuses Q.detail:
+  // its ordinary dossier cache can be prefetched or stale, and must not make
+  // an approval actionable after it has left the Stalled predicate.
+  const stalledRouteIsListed =
+    activeLane === "stalled" &&
+    isSuccess &&
+    isFetchedAfterMount &&
+    routeId !== undefined &&
+    data?.data?.some((summary) => summary.id === routeId) === true;
+  const shouldVerifyStalledRoute =
+    activeLane === "stalled" &&
+    isSuccess &&
+    isFetchedAfterMount &&
+    routeId !== undefined &&
+    !stalledRouteIsListed;
+  const {
+    data: stalledRouteVerification,
+    isSuccess: isStalledRouteVerificationSuccess,
+    isFetchedAfterMount: isStalledRouteVerificationFetchedAfterMount,
+    isFetching: isStalledRouteVerificationFetching,
+    isError: isStalledRouteVerificationError,
+  } = useQuery({
+    queryKey: Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt),
+    queryFn: () => getApprovalDetail(routeId ?? ""),
+    enabled: shouldVerifyStalledRoute,
+    // A direct stalled URL is an authorization boundary, not a prefetch hint:
+    // never inherit data from the ordinary dossier key and always make a new
+    // request when this verifier mounts. The rail-generation key above also
+    // starts a new verification after a later flat response arrives.
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+    refetchOnMount: "always",
+  });
 
   // Degraded fan-out (bu-jad4j.4): both approvals list endpoints fan across
   // each butler's pool and, rather than failing the request, drop any pool
@@ -1662,8 +1770,10 @@ export default function ApprovalsPage() {
     pendingSourcesDegraded.length > 0 ? (
       <div className="p-4">
         <SourceDegradedNote
-          label="Approvals queue"
-          detail={`${pendingSourcesDegraded.join(", ")} unreachable. Queue may be incomplete.`}
+          label={activeLane === "stalled" ? "Stalled approvals" : "Approvals queue"}
+          detail={`${pendingSourcesDegraded.join(", ")} unreachable. ${
+            activeLane === "stalled" ? "Stalled lane" : "Queue"
+          } may be incomplete.`}
           onRetry={() => void refetch()}
           testId="approvals-queue-degraded"
         />
@@ -1686,9 +1796,9 @@ export default function ApprovalsPage() {
           .slice(0, idx)
           .reverse()
           .find(isUsable)?.id;
-      navigate(nextId ? `/approvals/${nextId}` : "/approvals", { replace: true });
+      navigate(approvalLaneHref(activeLane, nextId), { replace: true });
     },
-    [navigate, rankedPending, routeId],
+    [activeLane, navigate, rankedPending, routeId],
   );
 
   // Optimistic decision flow (bu-approvals-fast-deny): a decision drops the
@@ -1729,6 +1839,40 @@ export default function ApprovalsPage() {
   );
   const firstId = actionablePending[0]?.id;
   const effectiveSelected = routeId ?? firstId ?? null;
+  // A Stalled direct URL must not use its route id as independent authority
+  // until either the flat page or a post-page detail check proves the exact
+  // approved/null-result predicate. Waiting keeps its historical deep-link
+  // behavior (including decided/history records that are not in the current
+  // rail).
+  const stalledSelectionConfirmed =
+    activeLane === "stalled" &&
+    isSuccess &&
+    isFetchedAfterMount &&
+    effectiveSelected !== null &&
+    (data?.data?.some((summary) => summary.id === effectiveSelected) === true ||
+      (routeId === effectiveSelected &&
+        isStalledRouteVerificationSuccess &&
+        isStalledRouteVerificationFetchedAfterMount &&
+        !isStalledRouteVerificationFetching &&
+        !isStalledRouteVerificationError &&
+        stalledRouteVerification?.data.id === effectiveSelected &&
+        stalledRouteVerification.data.status === "approved" &&
+        stalledRouteVerification.data.execution_result === null));
+  const verifiedStalledRouteDetail =
+    routeId === effectiveSelected &&
+    isStalledRouteVerificationSuccess &&
+    isStalledRouteVerificationFetchedAfterMount &&
+    !isStalledRouteVerificationFetching &&
+    !isStalledRouteVerificationError &&
+    stalledRouteVerification?.data.id === effectiveSelected &&
+    stalledRouteVerification.data.status === "approved" &&
+    stalledRouteVerification.data.execution_result === null
+      ? stalledRouteVerification.data
+      : undefined;
+  const dossierSelected =
+    activeLane === "stalled"
+      ? (stalledSelectionConfirmed ? effectiveSelected : null)
+      : effectiveSelected;
   // Show "Load more" only when the last response was full (may be more results).
   const hasMore = pending.length === pendingLimit;
 
@@ -1770,8 +1914,8 @@ export default function ApprovalsPage() {
   );
 
   const selectApproval = useCallback(
-    (id: string) => navigate(`/approvals/${id}`, { replace: true }),
-    [navigate],
+    (id: string) => navigate(approvalLaneHref(activeLane, id), { replace: true }),
+    [activeLane, navigate],
   );
 
   // j/k roving focus + a/d/x decision verbs + u=undo, active anywhere on the
@@ -1786,7 +1930,7 @@ export default function ApprovalsPage() {
   const pendingIds = useMemo(() => pending.map((p) => p.id), [pending]);
 
   const approvalVerbs = useMemo<ListTriageVerb[]>(() => {
-    if (!effectiveSelected) return [];
+    if (!effectiveSelected || activeLane !== "waiting") return [];
     const id = effectiveSelected;
     if (scheduledDecisions.has(id)) {
       return [{
@@ -1833,7 +1977,7 @@ export default function ApprovalsPage() {
         },
       },
     ];
-  }, [approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions]);
+  }, [activeLane, approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions]);
 
   const { hints: triageHints } = useListTriage({
     ids: pendingIds,
@@ -1881,11 +2025,12 @@ export default function ApprovalsPage() {
           line (JARVIS pursuit move 9). */}
       <div className="px-6 py-3 border-b border-border shrink-0">
         <ApprovalsVerdictOpener
-          pending={pending}
+          lane={activeLane}
+          pending={waitingVerdictRows}
           pendingLoading={isLoading}
           pendingError={isError}
           pendingSourcesDegraded={pendingSourcesDegraded}
-          stalledCount={data?.meta?.stalled_count ?? 0}
+          stalledCount={stalledVerdictCount}
           historyLoading={historyLoading}
           historyError={historyIsError}
           historySourcesDegraded={historySourcesDegraded}
@@ -1957,6 +2102,40 @@ export default function ApprovalsPage() {
       >
         {/* Left rail */}
         <div className="w-full md:w-72 shrink-0 border-b md:border-b-0 md:border-r border-border flex flex-col min-h-0 max-h-64 md:max-h-none">
+          <nav
+            aria-label="Approval lanes"
+            className="flex items-center gap-1 border-b border-border p-2"
+          >
+            <Link
+              to="/approvals"
+              aria-current={activeLane === "waiting" ? "page" : undefined}
+              className={[
+                APPROVAL_LANE_PILL_BASE,
+                activeLane === "waiting"
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border bg-transparent text-muted-foreground hover:border-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              Waiting
+            </Link>
+            <Link
+              to="/approvals?state=stalled"
+              aria-current={activeLane === "stalled" ? "page" : undefined}
+              className={[
+                APPROVAL_LANE_PILL_BASE,
+                activeLane === "stalled"
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border bg-transparent text-muted-foreground hover:border-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              Stalled
+            </Link>
+          </nav>
+          <div className="px-3 py-2 border-b border-border">
+            <h2 className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+              {activeLane === "stalled" ? "Stalled approvals" : "Waiting approvals"}
+            </h2>
+          </div>
           <div className="flex-1 overflow-y-auto">
             <QueryBoundary
               isLoading={isLoading}
@@ -1964,7 +2143,7 @@ export default function ApprovalsPage() {
               error={error}
               isEmpty={pending.length === 0}
               onRetry={() => void refetch()}
-              sourceLabel="the approvals queue"
+              sourceLabel={activeLane === "stalled" ? "the stalled approvals lane" : "the approvals queue"}
               loadingFallback={
                 <div className="p-4 text-sm text-muted-foreground font-mono">
                   loading…
@@ -1978,7 +2157,7 @@ export default function ApprovalsPage() {
                 // reachable-but-empty queue keeps the honest empty state.
                 queueDegradedNote ?? (
                   <div className="p-4 text-sm text-muted-foreground font-mono">
-                    No pending approvals.
+                    {activeLane === "stalled" ? "No stalled approvals." : "No pending approvals."}
                   </div>
                 )
               }
@@ -2024,26 +2203,31 @@ export default function ApprovalsPage() {
         </div>
 
         {/* Right dossier pane */}
-        {effectiveSelected ? (
+        {dossierSelected ? (
           <Dossier
-            key={effectiveSelected}
-            actionId={effectiveSelected}
-            onApprove={() => approve(effectiveSelected)}
-            onDeny={(reason) => denyMut.mutate({ id: effectiveSelected, reason })}
-            onDefer={(hours) => deferMut.mutate({ id: effectiveSelected, hours })}
+            key={dossierSelected}
+            actionId={dossierSelected}
+            verifiedDetail={verifiedStalledRouteDetail}
+            allowAbandon={activeLane !== "stalled"}
+            allowPendingDecisionControls={activeLane !== "stalled"}
+            onApprove={() => approve(dossierSelected)}
+            onDeny={(reason) => denyMut.mutate({ id: dossierSelected, reason })}
+            onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}
             // Scoped to THIS approval's id, not just "some mutation of this
             // kind is in flight" -- approving item A no longer mislabels the
             // very next dossier (item B) as already approving (JARVIS audit
             // move 9's page-global-pending finding).
-            approvePending={approveMut.isPending && approveMut.variables === effectiveSelected}
-            denyPending={denyMut.isPending && denyMut.variables?.id === effectiveSelected}
-            deferPending={deferMut.isPending && deferMut.variables?.id === effectiveSelected}
-            pendingVerb={scheduledDecisions.get(effectiveSelected)?.verb ?? null}
-            onCancelPending={() => cancelDecision(effectiveSelected)}
+            approvePending={approveMut.isPending && approveMut.variables === dossierSelected}
+            denyPending={denyMut.isPending && denyMut.variables?.id === dossierSelected}
+            deferPending={deferMut.isPending && deferMut.variables?.id === dossierSelected}
+            pendingVerb={scheduledDecisions.get(dossierSelected)?.verb ?? null}
+            onCancelPending={() => cancelDecision(dossierSelected)}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground font-mono">
-            Select a pending approval to review.
+            {activeLane === "stalled"
+              ? "Select a stalled approval to review."
+              : "Select a pending approval to review."}
           </div>
         )}
 
