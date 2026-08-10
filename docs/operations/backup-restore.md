@@ -51,10 +51,13 @@ butlers, and connectors only for creating and removing the fixed scratch
 database. The normal `POSTGRES_USER`, every `butler_*_rw` role, and
 `connector_writer` remain `NOCREATEDB`.
 
-Dashboard-api has a read-only role in this flow: it reads the durable result
-from `public.audit_log` for `GET /api/system/backups`; it receives neither the
-executor credential nor a process path that can launch `createdb`, `psql`, or
-`dropdb` for the drill.
+Dashboard-api has a read-only role in this flow: it calls the fixed
+`restore_drill_executor.latest_result()` reader for `GET /api/system/backups`.
+That reader exposes only the latest executor-owner ledger result; the matching
+`public.audit_log` row is an unauthoritative telemetry projection because normal
+application roles can write public audit events. Dashboard-api receives neither
+the executor credential nor a process path that can launch `createdb`, `psql`,
+or `dropdb` for the drill.
 
 ### Bootstrap prerequisite
 
@@ -90,13 +93,17 @@ use that same mounted root. A missing, unreadable, or invalid CA root makes a
 verification-mode executor fail before it connects. Ordinary
 `sslmode=require` still uses TLS without requiring this CA-file setting.
 
-The ownership handoff is also deliberate: the two constrained persistence
+The ownership handoff is also deliberate: the private
+`restore_drill_executor.restore_drill_results` ledger and its three constrained
 functions live in the `restore_drill_executor` schema and are owned by a
-separate `restore_drill_executor_owner` `NOLOGIN` role. The normal migration
-and dashboard login has neither schema usage nor function execution after the
-migration finishes; it cannot bypass the executor interface through object
-ownership. The privileged bootstrap is the only role boundary allowed to set
-up that handoff.
+separate `restore_drill_executor_owner` `NOLOGIN` role. The executor receives
+only `is_due()` and `record_result()` execution; it has no direct ledger table
+access. The shared dashboard/migration login receives only schema usage plus
+the fixed `latest_result()` reader; it has no writer execution, direct ledger
+access, or owner membership. Butler and connector roles receive none of those
+privileges. The public audit projection is never a due-check or API authority.
+The privileged bootstrap is the only role boundary allowed to set up that
+handoff.
 
 Do not bypass that managed procedure. In particular, do not issue ad hoc
 database-role changes, manually pre-create the scratch database, pass a shared
@@ -188,12 +195,14 @@ the result a failed drill even after a successful restore/verification, so a
 leftover scratch database is never reported as recovery evidence. Stored and
 API-visible diagnostic detail is at most 512 characters from a controlled safe
 vocabulary; raw PostgreSQL stdout/stderr, connection strings, passwords, and
-dump content are withheld rather than retained in audit records or rendered by
-the dashboard. The executor-facing SQL persistence function is the final
-boundary: it ignores every caller-supplied `p_detail` and `p_backup_name`,
-uses a fixed canonical audit target with no backup-path metadata, and accepts
-only a non-null `pass` or `fail` result. It stores only its fixed safe diagnostic,
-so a direct use of the executor credential cannot bypass the runner's sanitizer.
+dump content are withheld rather than retained in the protected result ledger,
+its fixed audit projection, or rendered by the dashboard. The executor-facing
+SQL persistence function is the final boundary: it ignores every
+caller-supplied `p_detail`, `p_backup_name`, and `p_table_count`, uses a fixed
+canonical audit target with no backup-path or count metadata, and accepts only
+a non-null `pass` or `fail` result. It stores only its fixed safe diagnostic,
+so a direct use of the executor credential cannot bypass the runner's sanitizer
+or influence the durable/API-visible result shape.
 
 ### Observing a drill
 
@@ -212,13 +221,13 @@ evidence.
 ## Failure and rollback boundary
 
 If the executor cannot create its scratch database or cannot persist a result,
-preserve the backup artifact and existing audit history. Investigate the
-managed bootstrap/deployment configuration; do not grant recovery capability
-to the dashboard, a butler, or a connector, and do not create scratch state by
-hand.
+preserve the backup artifact, protected result ledger, and audit history.
+Investigate the managed bootstrap/deployment configuration; do not grant
+recovery capability to the dashboard, a butler, or a connector, and do not
+create scratch state by hand.
 
 To roll back this feature, remove or stop the executor deployment only after
-it is no longer running, preserve the audit records and backup volume, and use
-the reviewed migration and managed bootstrap procedures for any privilege
-remediation. A rollback must never restore a dump into the live application
-database or manually erase recovery evidence.
+it is no longer running, preserve the authoritative ledger, audit projection,
+and backup volume, and use the reviewed migration and managed bootstrap
+procedures for any privilege remediation. A rollback must never restore a dump
+into the live application database or manually erase recovery evidence.

@@ -52,9 +52,16 @@ Scope: v1-mandatory
   only a container-loopback upstream and the local host mapping resolves that
   sole PostgreSQL identity
 - **AND** its security-definer result writer discards caller-supplied backup
-  names and free-form diagnostics before audit/API-visible persistence, and
-  rejects null or non-`pass`/`fail` result values even for a direct executor
-  credential call
+  names, free-form diagnostics, and table-count compatibility values before
+  durable or audit/API-visible persistence, and rejects null or non-`pass`/
+  `fail` result values even for a direct executor credential call
+- **AND** an executor-owner private result ledger is the sole restore-drill
+  due-check and dashboard-read authority; the fixed `public.audit_log`
+  projection is telemetry only, so a normal-role or administrative public audit
+  spoof cannot manufacture an API pass or affect due state
+- **AND** the executor receives only the fixed due/result-writer functions,
+  the shared dashboard/migration login receives only the fixed result-reader
+  function, and neither has direct private-ledger table privileges
 
 #### Scenario: Privilege repair requires the managed bootstrap path
 - **WHEN** an operator encounters a restore-drill `CREATEDB` prerequisite failure

@@ -5,10 +5,13 @@ Revises: core_195
 Create Date: 2026-08-10 00:00:00.000000
 
 The recovery executor may create and remove only its fixed scratch database at
-the server level. Its live application-database access is limited to two
+the server level. Its live application-database access is limited to three
 fixed-search-path SECURITY DEFINER functions in an executor-only schema.
 Their NOLOGIN owner is intentionally unavailable to the shared migration and
-dashboard credential, so object ownership cannot bypass EXECUTE ACLs.
+dashboard credential, so object ownership cannot bypass EXECUTE ACLs. The
+executor-owner ledger is the sole restore-result authority: ``public.audit_log``
+keeps a fixed audit projection but remains deliberately unauthoritative because
+normal application roles have broad public audit DML.
 """
 
 from __future__ import annotations
@@ -78,6 +81,16 @@ def upgrade() -> None:
     )
     op.execute(
         """
+        CREATE TABLE IF NOT EXISTS restore_drill_executor.restore_drill_results (
+            id BIGSERIAL PRIMARY KEY,
+            recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            result TEXT NOT NULL CHECK (result IN ('pass', 'fail')),
+            detail TEXT
+        )
+        """
+    )
+    op.execute(
+        """
         CREATE OR REPLACE FUNCTION restore_drill_executor.is_due(
             p_interval_seconds INTEGER
         )
@@ -93,11 +106,9 @@ def upgrade() -> None:
                 RAISE EXCEPTION 'p_interval_seconds must be positive';
             END IF;
 
-            SELECT max(ts)
+            SELECT max(recorded_at)
             INTO v_last_recorded_at
-            FROM public.audit_log
-            WHERE actor = 'restore_drill'
-              AND action = 'restore_drill_result';
+            FROM restore_drill_executor.restore_drill_results;
 
             RETURN v_last_recorded_at IS NULL
                 OR v_last_recorded_at <= clock_timestamp()
@@ -120,32 +131,35 @@ def upgrade() -> None:
         SET search_path = pg_catalog, public
         AS $$
         DECLARE
-            v_audit_id BIGINT;
+            v_result_id BIGINT;
             v_detail TEXT;
         BEGIN
-            IF p_backup_name IS NULL OR btrim(p_backup_name) = ''
-               OR octet_length(p_backup_name) > 512 THEN
-                RAISE EXCEPTION 'p_backup_name must be a non-empty value up to 512 bytes';
-            END IF;
             IF p_result IS NULL OR p_result NOT IN ('pass', 'fail') THEN
                 RAISE EXCEPTION 'p_result must be pass or fail';
             END IF;
-            IF p_table_count IS NOT NULL AND p_table_count < 0 THEN
-                RAISE EXCEPTION 'p_table_count must not be negative';
-            END IF;
 
             -- ``record_result`` is callable directly by the executor login,
-            -- so it is the final audit/API privacy boundary. Never rely on
-            -- the Python runner to have already sanitized p_detail: a direct
-            -- SQL caller can otherwise write raw client output into both
-            -- audit_log.error and audit_log.metadata. The SQL surface keeps
-            -- no caller-supplied detail or backup artifact name at all: a
-            -- direct caller may supply a DSN, a path, or dump content in both
-            -- values. The executor's structured result/table count remains
-            -- durable while fixed safe values are the only text that crosses
-            -- this audit/API boundary.
+            -- so it is the final privacy and result-authority boundary. Keep
+            -- the four-argument ABI for the deployed executor, but make every
+            -- caller-controlled compatibility input except p_result inert:
+            -- direct SQL callers may otherwise persist DSNs, dump content, or
+            -- invented table counts through a trusted credential.
             v_detail := 'restore drill diagnostic withheld';
 
+            INSERT INTO restore_drill_executor.restore_drill_results (
+                result,
+                detail
+            )
+            VALUES (
+                p_result,
+                CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END
+            )
+            RETURNING id INTO v_result_id;
+
+            -- This audit row remains useful append-only telemetry, but no
+            -- scheduler or API reader may infer restore truth from it. The
+            -- insert shares the protected ledger transaction and uses only
+            -- fixed canonical values.
             INSERT INTO public.audit_log (
                 actor,
                 action,
@@ -161,20 +175,42 @@ def upgrade() -> None:
                 p_result,
                 CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END,
                 jsonb_build_object(
-                    'table_count', p_table_count,
-                    'detail', v_detail
+                    'detail', CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END
                 )
-            )
-            RETURNING id INTO v_audit_id;
+            );
 
-            RETURN v_audit_id;
+            RETURN v_result_id;
         END;
         $$;
         """
     )
     op.execute(
         """
+        CREATE OR REPLACE FUNCTION restore_drill_executor.latest_result()
+        RETURNS TABLE (
+            checked_at TIMESTAMPTZ,
+            result TEXT,
+            detail TEXT
+        )
+        LANGUAGE sql
+        SECURITY DEFINER
+        SET search_path = pg_catalog
+        AS $$
+            SELECT recorded_at, result, detail
+            FROM restore_drill_executor.restore_drill_results
+            ORDER BY recorded_at DESC, id DESC
+            LIMIT 1
+        $$;
+        """
+    )
+    op.execute(
+        """
         DO $$
+        DECLARE
+            v_dashboard_role NAME := COALESCE(
+                NULLIF(current_setting('butlers.connecting_user', true), ''),
+                'butlers'
+            )::name;
         BEGIN
             IF to_regprocedure('restore_drill_executor_admin.finalize_interface()') IS NOT NULL THEN
                 PERFORM restore_drill_executor_admin.finalize_interface();
@@ -184,7 +220,13 @@ def upgrade() -> None:
                     || 'TO restore_drill_executor_owner';
                 EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.audit_log_id_seq '
                     || 'TO restore_drill_executor_owner';
+                EXECUTE 'ALTER TABLE restore_drill_executor.restore_drill_results '
+                    || 'OWNER TO restore_drill_executor_owner';
+                EXECUTE 'ALTER SEQUENCE restore_drill_executor.restore_drill_results_id_seq '
+                    || 'OWNER TO restore_drill_executor_owner';
                 EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(INTEGER) '
+                    || 'OWNER TO restore_drill_executor_owner';
+                EXECUTE 'ALTER FUNCTION restore_drill_executor.latest_result() '
                     || 'OWNER TO restore_drill_executor_owner';
                 EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result('
                     || 'TEXT, TEXT, TEXT, INTEGER) OWNER TO restore_drill_executor_owner';
@@ -195,12 +237,32 @@ def upgrade() -> None:
                     || 'restore_drill_executor FROM PUBLIC';
                 EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA '
                     || 'restore_drill_executor FROM restore_drill_executor';
+                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA '
+                    || 'restore_drill_executor FROM PUBLIC';
+                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA '
+                    || 'restore_drill_executor FROM restore_drill_executor';
+                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA '
+                    || 'restore_drill_executor FROM PUBLIC';
+                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA '
+                    || 'restore_drill_executor FROM restore_drill_executor';
                 EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor '
                     || 'TO restore_drill_executor';
                 EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.is_due(INTEGER) '
                     || 'TO restore_drill_executor';
                 EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.record_result('
                     || 'TEXT, TEXT, TEXT, INTEGER) TO restore_drill_executor';
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_dashboard_role) THEN
+                    EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor TO '
+                        || quote_ident(v_dashboard_role);
+                    EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.latest_result() TO '
+                        || quote_ident(v_dashboard_role);
+                    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE '
+                        || 'restore_drill_executor.restore_drill_results FROM '
+                        || quote_ident(v_dashboard_role);
+                    EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE '
+                        || 'restore_drill_executor.restore_drill_results_id_seq FROM '
+                        || quote_ident(v_dashboard_role);
+                END IF;
             ELSE
                 RAISE EXCEPTION
                     'restore-drill ownership finalizer is unavailable; '
@@ -230,10 +292,14 @@ def downgrade() -> None:
             REVOKE ALL ON FUNCTION restore_drill_executor.record_result(
                 TEXT, TEXT, TEXT, INTEGER
             ) FROM restore_drill_executor;
+            REVOKE ALL ON FUNCTION restore_drill_executor.latest_result()
+                FROM PUBLIC;
+            DROP FUNCTION IF EXISTS restore_drill_executor.latest_result();
             DROP FUNCTION IF EXISTS restore_drill_executor.record_result(
                 TEXT, TEXT, TEXT, INTEGER
             );
             DROP FUNCTION IF EXISTS restore_drill_executor.is_due(INTEGER);
+            DROP TABLE IF EXISTS restore_drill_executor.restore_drill_results;
         END;
         $$;
         """

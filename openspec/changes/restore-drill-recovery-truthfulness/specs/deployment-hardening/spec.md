@@ -85,7 +85,8 @@ Scope: v1-mandatory
 - **WHEN** the restore-drill implementation or its attention-source migration is
   rolled back
 - **THEN** rollback does not restore a dump into the live database, delete backup
-  artifacts, or manually erase the audit result that recorded a failure
+  artifacts, or manually erase the executor-owner result authority that recorded
+  a failure (or its fixed public audit projection)
 - **AND** a source-constraint downgrade removes only records that the older
   constraint cannot represent before narrowing the constraint
 - **AND** role remediation, if needed, is performed only through the managed

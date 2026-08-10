@@ -29,16 +29,15 @@ DRILL_SCRATCH_DB = "butlers_restore_drill"
 #: its migration-owned persistence boundary rather than crashing its loop.
 RESTORE_TIMEOUT_S = 1800.0
 
-_DRILL_ACTION = "restore_drill_result"
-
 _INTEGRITY_QUERY = (
     "SELECT count(*) FROM information_schema.tables "
     "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
 )
 
-# Details cross the executor persistence boundary into audit metadata and the
-# dashboard API. Client output is untrusted (and can be a connection string or
-# actual dump text), so only this small controlled vocabulary is retainable.
+# Details cross the executor persistence boundary into the protected result
+# ledger and dashboard API. Client output is untrusted (and can be a connection
+# string or actual dump text), so only this small controlled vocabulary is
+# retainable.
 MAX_RESTORE_DRILL_DETAIL_CHARS = 512
 _SAFE_RESTORE_DRILL_DETAIL = re.compile(
     r"^(?:"
@@ -249,20 +248,23 @@ def _run_restore_drill_sync(
 
 
 async def get_last_restore_drill(pool: asyncpg.Pool) -> dict[str, Any] | None:
-    """Return the latest durable restore-drill result for dashboard readers."""
+    """Return the latest authoritative result through the fixed reader surface.
+
+    ``public.audit_log`` intentionally remains writable by ordinary runtime
+    roles, so it is a telemetry projection only. Dashboard callers use this
+    owner-side security-definer function instead of ever trusting an audit row
+    shaped like a restore-drill result.
+    """
     row = await pool.fetchrow(
         """
-        SELECT ts, result, error
-        FROM public.audit_log
-        WHERE action = $1
-        ORDER BY ts DESC LIMIT 1
-        """,
-        _DRILL_ACTION,
+        SELECT checked_at, result, detail
+        FROM restore_drill_executor.latest_result()
+        """
     )
     if row is None:
         return None
     return {
-        "checked_at": _as_aware_utc(row["ts"]).isoformat(),
+        "checked_at": _as_aware_utc(row["checked_at"]).isoformat(),
         "result": row["result"],
-        "detail": None if row["error"] is None else sanitize_restore_drill_detail(row["error"]),
+        "detail": None if row["detail"] is None else sanitize_restore_drill_detail(row["detail"]),
     }

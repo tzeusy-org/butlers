@@ -36,7 +36,8 @@ background sentinel loop persists to public.audit_log. /api/system/backups is
 similarly read-only: artifact integrity (gzip decompression, size floor) is
 computed live per request (memoized per file), while the restore-drill result
 is read (never written) from the ledger maintained by the isolated
-``restore-drill-executor`` service in public.audit_log.
+``restore-drill-executor`` service through its fixed security-definer reader.
+The corresponding public audit row is telemetry, not result authority.
 
 Operation names assumed in the actor registry for /api/system/egress
 (documented here for the bu-n28xh audit):
@@ -252,10 +253,10 @@ class BackupEvent(BaseModel):
 class RestoreDrillFacts(BaseModel):
     """Result of the most recent weekly restore-drill attempt (bu-9r3hd.5).
 
-    Populated from ``public.audit_log`` (action ``restore_drill_result``,
-    written by the isolated restore-drill executor) -- this router only reads
-    it. ``result="pending"`` means the drill has never run yet, which is a
-    real "we don't know" state, not a fabricated pass.
+    Populated through the isolated executor owner's fixed result reader --
+    never from ``public.audit_log``, whose broad-DML telemetry rows are not
+    authoritative. ``result="pending"`` means the drill has never run yet,
+    which is a real "we don't know" state, not a fabricated pass.
     """
 
     checked_at: str | None
@@ -962,9 +963,10 @@ async def get_backup_facts(
     integrity (gzip decompression, size floor) is cheap enough to check live
     on every request and is memoized per (path, mtime, size) so an unchanged
     file is never re-verified. ``restore_drill`` is read from the ledger
-    the isolated restore-drill executor maintains in ``public.audit_log`` --
-    actually attempting a restore is expensive and mutates state, so it never
-    happens inline with this dashboard request.
+    through its private result authority and fixed reader -- actually
+    attempting a restore is expensive and mutates state, so it never happens
+    inline with this dashboard request. A public audit projection cannot
+    influence this response.
 
     When ``BUTLERS_BACKUP_DIR`` is not set or the directory is absent, the
     endpoint returns ``backup_source_reachable=false`` with null fields.

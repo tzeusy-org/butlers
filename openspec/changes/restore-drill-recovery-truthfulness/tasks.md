@@ -9,9 +9,12 @@
   every `butler_*_rw` role, and `connector_writer` remain `NOCREATEDB`.
 - [ ] 1.2 Add the migration-owned, fixed-`search_path` security-definer
   interface through which that executor alone reads due state and records
-  restore-drill result/attention provenance. Grant no direct general-table or
-  schema-creation access to the executor; make `createdb`/`dropdb` name their
-  maintenance database explicitly.
+  restore-drill result/attention provenance. Its owner-private result ledger
+  is the sole due/API authority; the fixed public audit projection is
+  unauthoritative, and the shared dashboard login receives only the fixed
+  read function rather than direct ledger access. Grant no direct
+  general-table or schema-creation access to the executor; make
+  `createdb`/`dropdb` name their maintenance database explicitly.
 - [ ] 1.3 Add a dedicated deterministic restore-drill executor/service and move
   scheduling plus CLI subprocess launch out of dashboard-api. Its compose
   definition has only a dedicated restore-drill database bridge whose

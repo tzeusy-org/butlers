@@ -522,6 +522,7 @@ SET search_path = pg_catalog
 AS $$
 DECLARE
     v_migration_role NAME;
+    v_runtime_role NAME;
 BEGIN
     SELECT migration_role
     INTO v_migration_role
@@ -532,7 +533,8 @@ BEGIN
         RAISE EXCEPTION 'restore-drill bootstrap configuration is missing';
     END IF;
     IF to_regprocedure('restore_drill_executor.is_due(integer)') IS NULL
-       OR to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NULL THEN
+       OR to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NULL
+       OR to_regprocedure('restore_drill_executor.latest_result()') IS NULL THEN
         RAISE EXCEPTION 'restore-drill interface functions must exist before ownership finalization';
     END IF;
 
@@ -540,20 +542,68 @@ BEGIN
     EXECUTE 'GRANT SELECT, INSERT ON TABLE public.audit_log TO restore_drill_executor_owner';
     EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.audit_log_id_seq TO restore_drill_executor_owner';
 
+    EXECUTE 'ALTER TABLE restore_drill_executor.restore_drill_results '
+        || 'OWNER TO restore_drill_executor_owner';
+    EXECUTE 'ALTER SEQUENCE restore_drill_executor.restore_drill_results_id_seq '
+        || 'OWNER TO restore_drill_executor_owner';
     EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(integer) OWNER TO restore_drill_executor_owner';
     EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result(text, text, text, integer) OWNER TO restore_drill_executor_owner';
+    EXECUTE 'ALTER FUNCTION restore_drill_executor.latest_result() OWNER TO restore_drill_executor_owner';
     EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM restore_drill_executor';
     EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA restore_drill_executor FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA restore_drill_executor FROM restore_drill_executor';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA restore_drill_executor FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA restore_drill_executor FROM restore_drill_executor';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA restore_drill_executor FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA restore_drill_executor FROM restore_drill_executor';
     EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM %I', v_migration_role);
     EXECUTE format(
         'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA restore_drill_executor FROM %I',
         v_migration_role
     );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA restore_drill_executor FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA restore_drill_executor FROM %I',
+        v_migration_role
+    );
+    FOREACH v_runtime_role IN ARRAY ARRAY[
+        'butler_chronicler_rw',
+        'butler_education_rw',
+        'butler_finance_rw',
+        'butler_general_rw',
+        'butler_health_rw',
+        'butler_home_rw',
+        'butler_lifestyle_rw',
+        'butler_messenger_rw',
+        'butler_qa_rw',
+        'butler_relationship_rw',
+        'butler_switchboard_rw',
+        'butler_travel_rw',
+        'connector_writer'
+    ]::name[] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON TABLE restore_drill_executor.restore_drill_results FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON SEQUENCE restore_drill_executor.restore_drill_results_id_seq FROM %I',
+                v_runtime_role
+            );
+        END IF;
+    END LOOP;
     EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor TO restore_drill_executor';
     EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.is_due(integer) TO restore_drill_executor';
     EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.record_result(text, text, text, integer) TO restore_drill_executor';
+    EXECUTE format('GRANT USAGE ON SCHEMA restore_drill_executor TO %I', v_migration_role);
+    EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION restore_drill_executor.latest_result() TO %I',
+        v_migration_role
+    );
     EXECUTE format(
         'REVOKE EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() FROM %I',
         v_migration_role
@@ -569,7 +619,8 @@ DECLARE
     _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
 BEGIN
     IF to_regprocedure('restore_drill_executor.is_due(integer)') IS NOT NULL
-       AND to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NOT NULL THEN
+       AND to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NOT NULL
+       AND to_regprocedure('restore_drill_executor.latest_result()') IS NOT NULL THEN
         PERFORM restore_drill_executor_admin.finalize_interface();
     ELSE
         EXECUTE format('GRANT USAGE, CREATE ON SCHEMA restore_drill_executor TO %I', _migration_user);

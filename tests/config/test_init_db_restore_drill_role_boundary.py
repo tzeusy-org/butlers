@@ -38,6 +38,9 @@ def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -
     assert "ALTER ROLE %I NOCREATEDB" in source
     assert "GRANT USAGE ON SCHEMA public TO %I" in source
     assert "GRANT %I TO %I WITH SET TRUE" in source
+    assert "ALTER TABLE restore_drill_executor.restore_drill_results" in source
+    assert "GRANT EXECUTE ON FUNCTION restore_drill_executor.latest_result() TO %I" in source
+    assert "REVOKE ALL PRIVILEGES ON TABLE restore_drill_executor.restore_drill_results" in source
     runtime_roles_start = source.index("_all_runtime_roles TEXT[]")
     runtime_roles_end = source.index("];", runtime_roles_start)
     assert "restore_drill_executor" not in source[runtime_roles_start:runtime_roles_end]
@@ -164,14 +167,17 @@ def test_managed_provisioner_accepts_one_terminal_lf_without_passing_it_to_psql(
     assert base64.b64encode((password + "\n").encode()).decode() not in input_text
 
 
-def test_migration_owns_fixed_search_path_executor_persistence_boundary() -> None:
-    """The executor receives functions, not broad audit-table or schema grants."""
+def test_migration_owns_fixed_search_path_executor_result_authority() -> None:
+    """The executor receives functions; public audit is never result authority."""
     source = _MIGRATION.read_text(encoding="utf-8")
 
     assert "SECURITY DEFINER" in source
     assert "CREATE SCHEMA IF NOT EXISTS restore_drill_executor" in source
+    assert "CREATE TABLE IF NOT EXISTS restore_drill_executor.restore_drill_results" in source
     assert "ALTER FUNCTION restore_drill_executor.is_due(INTEGER)" in source
     assert "ALTER FUNCTION restore_drill_executor.record_result(" in source
+    assert "ALTER FUNCTION restore_drill_executor.latest_result()" in source
+    assert "FROM restore_drill_executor.restore_drill_results" in source
     assert "OWNER TO restore_drill_executor_owner" in source
     assert "SET search_path = pg_catalog, public" in source
     assert "GRANT USAGE ON SCHEMA restore_drill_executor" in source
@@ -186,6 +192,9 @@ def test_migration_owns_fixed_search_path_executor_persistence_boundary() -> Non
     assert "p_result IS NULL OR p_result NOT IN ('pass', 'fail')" in source
     assert "'restore_drill',\n                p_result" in source
     assert "'backup_file', p_backup_name" not in source
+    assert "p_table_count must not be negative" not in source
+    assert "'table_count', p_table_count" not in source
+    assert "caller-controlled compatibility input except p_result inert" in source
 
 
 def test_dashboard_has_no_restore_drill_scheduler_or_shared_credential_launch_path() -> None:

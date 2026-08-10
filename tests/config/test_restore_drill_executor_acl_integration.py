@@ -270,14 +270,16 @@ async def _read_restore_drill_api_shape(database_url: str) -> dict[str, object] 
         await pool.close()
 
 
-def test_real_core_chain_keeps_the_executor_interface_exclusive(
+def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
     postgres_container, tmp_path: Path
 ) -> None:
-    """REQ-database-security-006: only the executor can reach both functions.
+    """REQ-database-security-006: only the executor can write trusted results.
 
     This is intentionally a true core-chain proof: no hand-created audit table,
     patched Alembic operation, or mock ownership transfer can make a stale ACL
-    look correct.
+    look correct. ``public.audit_log`` remains broad-DML telemetry, so a
+    restore-drill-shaped public row must never become the scheduling or API
+    authority.
     """
     admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
         postgres_container
@@ -299,7 +301,7 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
     )
     assert provisioned.returncode == 0, provisioned.stderr
 
-    engine = create_engine(admin_url)
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as connection:
             roles = (
@@ -347,6 +349,21 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                             'restore_drill_executor.record_result(text,text,text,integer)',
                             'EXECUTE'
                         ) AS record_result_execute,
+                        has_function_privilege(
+                            subject,
+                            'restore_drill_executor.latest_result()',
+                            'EXECUTE'
+                        ) AS latest_result_execute,
+                        has_table_privilege(
+                            subject,
+                            'restore_drill_executor.restore_drill_results',
+                            'SELECT'
+                        ) AS ledger_select,
+                        has_table_privilege(
+                            subject,
+                            'restore_drill_executor.restore_drill_results',
+                            'INSERT'
+                        ) AS ledger_insert,
                         pg_has_role(subject, 'restore_drill_executor_owner', 'USAGE')
                             AS owner_membership
                     FROM subjects
@@ -365,7 +382,7 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                     FROM pg_proc p
                     JOIN pg_namespace n ON n.oid = p.pronamespace
                     WHERE n.nspname = 'restore_drill_executor'
-                      AND p.proname IN ('is_due', 'record_result')
+                      AND p.proname IN ('is_due', 'latest_result', 'record_result')
                     ORDER BY p.proname
                     """
                     )
@@ -391,12 +408,25 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
         assert role_flags[role_name]["rolcreatedb"] is False
 
     acl = {row["subject"]: row for row in acl_rows}
-    for role_name in _NORMAL_ROLE_PASSWORDS:
+    assert acl["butlers"] == {
+        "subject": "butlers",
+        "schema_usage": True,
+        "is_due_execute": False,
+        "record_result_execute": False,
+        "latest_result_execute": True,
+        "ledger_select": False,
+        "ledger_insert": False,
+        "owner_membership": False,
+    }
+    for role_name in ("butler_general_rw", "connector_writer", _PUBLIC_PROBE_ROLE):
         assert acl[role_name] == {
             "subject": role_name,
             "schema_usage": False,
             "is_due_execute": False,
             "record_result_execute": False,
+            "latest_result_execute": False,
+            "ledger_select": False,
+            "ledger_insert": False,
             "owner_membership": False,
         }
     assert acl["restore_drill_executor"] == {
@@ -404,10 +434,14 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
         "schema_usage": True,
         "is_due_execute": True,
         "record_result_execute": True,
+        "latest_result_execute": False,
+        "ledger_select": False,
+        "ledger_insert": False,
         "owner_membership": False,
     }
     assert function_owners == [
         {"proname": "is_due", "owner": "restore_drill_executor_owner"},
+        {"proname": "latest_result", "owner": "restore_drill_executor_owner"},
         {"proname": "record_result", "owner": "restore_drill_executor_owner"},
     ]
 
@@ -429,12 +463,12 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
         ),
         isolation_level="AUTOCOMMIT",
     )
-    raw_audit_id: int | None = None
-    oversized_audit_id: int | None = None
+    trusted_result_id: int | None = None
     api_shape: dict[str, object] | None = None
     raw_marker = "p-detail-private-marker"
     hostile_backup_marker = "p-backup-private-dsn-marker"
     hostile_dump_marker = "private-dump-name-marker"
+    absurd_table_count = -2_147_483_648
     try:
         for role_name, direct_engine in direct_engines.items():
             _expect_permission_denied(
@@ -449,6 +483,42 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                 direct_engine,
                 "SELECT restore_drill_executor.record_result('forbidden.sql.gz', 'pass', 'x', 1)",
             )
+            _expect_permission_denied(
+                direct_engine,
+                "SELECT count(*) FROM restore_drill_executor.restore_drill_results",
+            )
+            _expect_permission_denied(
+                direct_engine,
+                "INSERT INTO restore_drill_executor.restore_drill_results (result, detail) "
+                "VALUES ('pass', 'forbidden')",
+            )
+
+        for role_name in ("butlers", "butler_general_rw", "connector_writer"):
+            with direct_engines[role_name].connect() as connection:
+                spoof_id = connection.execute(
+                    text(
+                        """
+                        INSERT INTO public.audit_log (actor, action, target, result, error, metadata)
+                        VALUES (
+                            :actor,
+                            'restore_drill_result',
+                            'ordinary-public-audit-spoof',
+                            'pass',
+                            'spoofed public audit result',
+                            '{}'::jsonb
+                        )
+                        RETURNING id
+                        """
+                    ),
+                    {"actor": f"ordinary-public-audit-spoof:{role_name}"},
+                ).scalar_one()
+                assert isinstance(spoof_id, int)
+
+        # Broad public audit DML deliberately remains available to normal
+        # writers. It is a projection only: before the executor writes the
+        # private authority ledger, it cannot manufacture a dashboard pass or
+        # change the due decision.
+        assert asyncio.run(_read_restore_drill_api_shape(shared_url)) is None
 
         with executor_engine.connect() as connection:
             assert (
@@ -457,30 +527,14 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                 ).scalar_one()
                 is True
             )
-            audit_id = connection.execute(
+            # A direct executor credential holder can choose every compatibility
+            # argument. The final SQL boundary must retain none of those values
+            # (including the absurd table count) in either durable authority or
+            # the public audit projection.
+            trusted_result_id = connection.execute(
                 text(
                     "SELECT restore_drill_executor.record_result("
-                    "'acl-proof.sql.gz', 'pass', 'restored 1 table', 1)"
-                )
-            ).scalar_one()
-            assert isinstance(audit_id, int)
-
-            # The executor login is permitted to invoke this narrow function,
-            # so the function itself is the final privacy boundary. Direct SQL
-            # must not bypass the Python runner's sanitizer and persist client
-            # output or a formally allowed but unbounded detail string.
-            oversized_audit_id = connection.execute(
-                text(
-                    "SELECT restore_drill_executor.record_result(:backup_name, 'fail', :detail, 1)"
-                ),
-                {
-                    "backup_name": "direct-oversized-detail.sql.gz",
-                    "detail": "restored " + ("9" * 600) + " tables",
-                },
-            ).scalar_one()
-            raw_audit_id = connection.execute(
-                text(
-                    "SELECT restore_drill_executor.record_result(:backup_name, 'fail', :detail, 1)"
+                    ":backup_name, 'fail', :detail, :table_count)"
                 ),
                 {
                     "backup_name": (
@@ -491,8 +545,10 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                         "postgresql://restore:"
                         f"{raw_marker}@db.example.test/postgres COPY sensitive_table"
                     ),
+                    "table_count": absurd_table_count,
                 },
             ).scalar_one()
+            assert isinstance(trusted_result_id, int)
             with pytest.raises(DBAPIError, match="p_result must be pass or fail"):
                 connection.execute(
                     text(
@@ -501,8 +557,17 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
                     ),
                     {"backup_name": "null-result.sql.gz"},
                 ).scalar_one()
-            api_shape = asyncio.run(_read_restore_drill_api_shape(shared_url))
+            assert (
+                connection.execute(
+                    text("SELECT restore_drill_executor.is_due(604800)")
+                ).scalar_one()
+                is False
+            )
         _expect_permission_denied(executor_engine, "SELECT count(*) FROM public.audit_log")
+        _expect_permission_denied(
+            executor_engine,
+            "SELECT count(*) FROM restore_drill_executor.restore_drill_results",
+        )
         _expect_permission_denied(
             executor_engine,
             "CREATE TABLE restore_drill_executor.forbidden_direct_table (id integer)",
@@ -512,66 +577,83 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
             direct_engine.dispose()
         executor_engine.dispose()
 
-    engine = create_engine(admin_url)
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as connection:
-            assert raw_audit_id is not None
-            assert oversized_audit_id is not None
-            persisted_details = (
+            assert trusted_result_id is not None
+            # Even a newer row forged by a database administrator in the
+            # intentionally broad public projection cannot override the
+            # protected authority consumed by due checks and dashboard reads.
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO public.audit_log (actor, action, target, result, error, metadata)
+                    VALUES (
+                        'admin-public-audit-spoof',
+                        'restore_drill_result',
+                        'admin-public-audit-spoof',
+                        'pass',
+                        'spoofed public audit result',
+                        '{}'::jsonb
+                    )
+                    """
+                )
+            )
+            assert (
+                connection.execute(
+                    text("SELECT restore_drill_executor.is_due(604800)")
+                ).scalar_one()
+                is False
+            )
+            authority_row = (
                 connection.execute(
                     text(
                         """
-                    SELECT
-                        id,
-                        error,
-                        target,
-                        metadata ->> 'detail' AS detail,
-                        metadata ->> 'backup_file' AS backup_file,
-                        metadata::text AS metadata_text
-                    FROM public.audit_log
-                    WHERE id IN (:raw_audit_id, :oversized_audit_id)
-                    ORDER BY id
-                    """
+                    SELECT result, detail, to_jsonb(result_row)::text AS row_text
+                    FROM restore_drill_executor.restore_drill_results AS result_row
+                    WHERE id = :trusted_result_id
+                        """
                     ),
-                    {
-                        "raw_audit_id": raw_audit_id,
-                        "oversized_audit_id": oversized_audit_id,
-                    },
+                    {"trusted_result_id": trusted_result_id},
                 )
                 .mappings()
-                .all()
+                .one()
             )
-            assert len(persisted_details) == 2
-            raw_detail = next(row for row in persisted_details if row["id"] == raw_audit_id)
-            oversized_detail = next(
-                row for row in persisted_details if row["id"] == oversized_audit_id
-            )
-            assert raw_detail["error"] == "restore drill diagnostic withheld"
-            assert raw_detail["detail"] == "restore drill diagnostic withheld"
-            assert raw_detail["target"] == "restore_drill"
-            assert raw_detail["backup_file"] is None
-            assert raw_marker not in raw_detail["error"]
-            assert raw_marker not in raw_detail["detail"]
-            assert raw_marker not in raw_detail["metadata_text"]
-            assert hostile_backup_marker not in raw_detail["target"]
-            assert hostile_backup_marker not in raw_detail["metadata_text"]
-            assert hostile_dump_marker not in raw_detail["target"]
-            assert hostile_dump_marker not in raw_detail["metadata_text"]
-            assert len(oversized_detail["error"]) <= 512
-            assert len(oversized_detail["detail"]) <= 512
-            assert (
+            audit_projection = (
                 connection.execute(
                     text(
-                        "SELECT count(*) FROM public.audit_log "
-                        "WHERE actor = 'restore_drill' AND action = 'restore_drill_result' "
-                        "AND result IS NULL"
+                        """
+                    SELECT error, target, metadata::text AS metadata_text
+                    FROM public.audit_log
+                    WHERE actor = 'restore_drill'
+                      AND action = 'restore_drill_result'
+                      AND result = 'fail'
+                    ORDER BY id DESC
+                    LIMIT 1
+                        """
                     )
-                ).scalar_one()
-                == 0
+                )
+                .mappings()
+                .one()
             )
+            assert authority_row["result"] == "fail"
+            assert authority_row["detail"] == "restore drill diagnostic withheld"
+            assert "table_count" not in authority_row["row_text"]
+            assert str(absurd_table_count) not in authority_row["row_text"]
+            assert raw_marker not in authority_row["row_text"]
+            assert hostile_backup_marker not in authority_row["row_text"]
+            assert hostile_dump_marker not in authority_row["row_text"]
+            assert audit_projection["error"] == "restore drill diagnostic withheld"
+            assert audit_projection["target"] == "restore_drill"
+            assert "table_count" not in audit_projection["metadata_text"]
+            assert str(absurd_table_count) not in audit_projection["metadata_text"]
+            assert raw_marker not in audit_projection["metadata_text"]
+            assert hostile_backup_marker not in audit_projection["metadata_text"]
+            assert hostile_dump_marker not in audit_projection["metadata_text"]
     finally:
         engine.dispose()
 
+    api_shape = asyncio.run(_read_restore_drill_api_shape(shared_url))
     assert api_shape is not None
     assert api_shape["result"] == "fail"
     assert api_shape["detail"] == "restore drill diagnostic withheld"

@@ -280,25 +280,32 @@ def test_run_restore_drill_sync_never_persists_raw_client_output(
     assert "COPY owner_private_data" not in result.detail
 
 
-class _FakeAuditPool:
+class _FakeRestoreDrillAuthorityPool:
     def __init__(self, *, row: dict | None):
         self._row = row
+        self.query: str | None = None
 
-    async def fetchrow(self, _sql: str, *_args: object) -> dict | None:
+    async def fetchrow(self, sql: str, *_args: object) -> dict | None:
+        self.query = sql
         return self._row
 
 
 @pytest.mark.asyncio
 async def test_get_last_restore_drill_none_when_never_run() -> None:
-    assert await get_last_restore_drill(_FakeAuditPool(row=None)) is None
+    pool = _FakeRestoreDrillAuthorityPool(row=None)
+
+    assert await get_last_restore_drill(pool) is None
+    assert pool.query is not None
+    assert "restore_drill_executor.latest_result()" in pool.query
+    assert "public.audit_log" not in pool.query
 
 
 @pytest.mark.asyncio
 async def test_get_last_restore_drill_returns_latest_row() -> None:
     ts = datetime(2026, 7, 10, 2, 0, tzinfo=UTC)
-    row = {"ts": ts, "result": "pass", "error": None}
+    row = {"checked_at": ts, "result": "pass", "detail": None}
 
-    result = await get_last_restore_drill(_FakeAuditPool(row=row))
+    result = await get_last_restore_drill(_FakeRestoreDrillAuthorityPool(row=row))
 
     assert result == {"checked_at": ts.isoformat(), "result": "pass", "detail": None}
 
@@ -306,7 +313,9 @@ async def test_get_last_restore_drill_returns_latest_row() -> None:
 @pytest.mark.asyncio
 async def test_get_last_restore_drill_naive_timestamp_treated_as_utc() -> None:
     result = await get_last_restore_drill(
-        _FakeAuditPool(row={"ts": datetime(2026, 7, 10, 2, 0), "result": "fail", "error": "boom"})
+        _FakeRestoreDrillAuthorityPool(
+            row={"checked_at": datetime(2026, 7, 10, 2, 0), "result": "fail", "detail": "boom"}
+        )
     )
 
     assert result is not None
@@ -316,11 +325,11 @@ async def test_get_last_restore_drill_naive_timestamp_treated_as_utc() -> None:
 @pytest.mark.asyncio
 async def test_get_last_restore_drill_withholds_legacy_raw_client_output() -> None:
     result = await get_last_restore_drill(
-        _FakeAuditPool(
+        _FakeRestoreDrillAuthorityPool(
             row={
-                "ts": datetime(2026, 7, 10, 2, 0, tzinfo=UTC),
+                "checked_at": datetime(2026, 7, 10, 2, 0, tzinfo=UTC),
                 "result": "fail",
-                "error": "postgresql://restore:top-secret@db.example.test/postgres COPY private_data",
+                "detail": "postgresql://restore:top-secret@db.example.test/postgres COPY private_data",
             }
         )
     )

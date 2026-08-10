@@ -2,11 +2,12 @@
 
 **[Observed]** The deterministic dashboard-api restore-drill loop restores the newest plain-SQL
 backup into the fixed `butlers_restore_drill` scratch database, records its
-result in `public.audit_log`, and exposes that result through
-`GET /api/system/backups`. It currently records free-form detail only and
-treats every recorded outcome alike for the seven-day cadence. Consequently a
-`createdb` permission failure can postpone the next attempt for a week while
-the owner has no durable attention event or failure age.
+result through the isolated executor boundary, and exposes that result through
+`GET /api/system/backups`. Public audit telemetry is broad-DML and therefore
+cannot be the authoritative result source. It currently records free-form
+detail only and treats every recorded outcome alike for the seven-day cadence.
+Consequently a `createdb` permission failure can postpone the next attempt for
+a week while the owner has no durable attention event or failure age.
 
 The existing role model is schema-scoped at runtime (`SET ROLE
 butler_<schema>_rw` and `connector_writer`), while the dashboard-api loop calls
@@ -129,7 +130,7 @@ sufficient.
 
 ### 3. Persisted result fields drive cadence and the failure epoch
 
-The audit record is the scheduling authority. No record is immediately due;
+The executor-owner result ledger is the scheduling authority. No record is immediately due;
 `pass` is due after seven days; `fail` is due after 24 hours. A missing backup
 file is a legitimate no-result skip and creates neither a failure record nor
 an attention event. A degraded ledger read does not alter scheduling because
@@ -147,10 +148,13 @@ never parsed to infer a code or cadence.
 
 The security-definer persistence function is the final enforcement point, not
 an assumption about the Python executor: an executor credential holder can
-call it directly. It therefore discards every caller-supplied detail and
-backup-name value, records a fixed canonical audit target with no artifact-path
-metadata, rejects null or non-`pass`/`fail` results, and stores only the fixed
-bounded withheld diagnostic alongside structured result and table-count data.
+call it directly. It therefore keeps its four-argument compatibility ABI but
+discards caller-supplied backup name, detail, and table-count values; validates
+only non-null `pass`/`fail`; writes the protected owner ledger; and emits only
+a fixed canonical public audit projection. Due checks and the dashboard reader
+use the protected ledger through fixed owner-side functions, never a
+`public.audit_log` row. A normal-role or even a newer administrative public
+audit spoof therefore cannot manufacture an API pass or alter scheduling.
 A degraded ledger-read exception follows the same rule:
 the API and its log use a fixed unavailable diagnostic rather than exception
 text or traceback, because both can carry a DSN, credential, SQL, or dump
@@ -169,9 +173,9 @@ insert into `public.attention_ledger` with `source="restore_drill"`,
 is the stable failure code; metadata contains only the stage, code, bounded
 sanitized detail, and the recorded-at reference needed for diagnosis. The
 attention source check constraint and reader filter vocabulary are expanded in
-the same migration. A ledger-write failure is logged and swallowed, but cannot
-erase, downgrade, or prevent the audit result; an audit-result write failure
-cannot be represented as a durable attention success.
+the same migration. An attention-ledger write failure is logged and swallowed,
+but cannot erase, downgrade, or prevent the authoritative result; a result
+authority write failure cannot be represented as a durable attention success.
 
 Using `source="notify"` or a synthetic notification reference is rejected
 because no owner-facing delivery occurred. Reusing unstructured error text for
@@ -203,9 +207,10 @@ depending on color alone.
 - **A fixed scratch name collides across replicas** → Keep the current
   single-executor assumption explicit and block multi-replica enablement until
   a cross-process lock is implemented.
-- **A ledger write fails after a real drill failure** → Preserve the audit
-  result as authority, log the ledger failure, and leave the 24-hour retry
-  cadence intact.
+- **A broad public audit writer forges a restore-shaped row** → Keep the
+  executor-owner ledger as the sole due/API authority, make the public audit
+  projection fixed and unauthoritative, and prove the effective role matrix
+  against a real PostgreSQL core chain.
 - **Old audit rows lack structured fields** → Preserve their result and
   timestamp, return unknown/null structured provenance, and never infer it
   from legacy error text.
@@ -236,9 +241,9 @@ depending on color alone.
    If the source-constraint migration is downgraded, remove only
    `source="restore_drill"` attention observations before narrowing the
    constraint and revoke the executor's bounded interface before removing its
-   service/secret mount; retain audit results and backup artifacts. Do not issue
-   ad hoc `ALTER ROLE` statements or manually delete failed-drill evidence as
-   rollback.
+   service/secret mount; retain authoritative result records, their fixed audit
+   projections, and backup artifacts. Do not issue ad hoc `ALTER ROLE`
+   statements or manually delete failed-drill evidence as rollback.
 
 ## Open Questions
 
