@@ -426,7 +426,50 @@ class TestLifecycle:
             batch_size=7,
             enable_shared_catalog=True,
             source_schema="private_memory",
+            retry_failed=True,
         )
+
+    async def test_consolidation_hook_excludes_private_memory_from_failed_recovery(
+        self, monkeypatch
+    ) -> None:
+        """A dedicated memory schema keeps failed rows out of automatic recovery."""
+        mod = MemoryModule()
+        private_memory_pool = MagicMock(name="chronicler_mem_pool")
+        fake_db = MagicMock(pool=MagicMock(name="chronicler_domain_pool"), schema="chronicler")
+        captured_hook: dict[str, Any] = {}
+
+        monkeypatch.setattr(mod, "_ensure_memory_schema_pool", AsyncMock())
+        monkeypatch.setattr(mod, "_get_pool", lambda: private_memory_pool)
+        monkeypatch.setattr(mod, "_get_embedding_engine", lambda: MagicMock())
+        monkeypatch.setattr(mod, "_register_default_maintenance_schedules", AsyncMock())
+        monkeypatch.setattr("butlers.core.memory_hooks.register_memory_forget", lambda fn: None)
+        monkeypatch.setattr("butlers.core.memory_hooks.register_catalog_search", lambda fn: None)
+
+        def _register_runtime(owner, *, pool_resolver, consolidation):
+            captured_hook["hook"] = consolidation
+            return MagicMock(name="maintenance_runtime")
+
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.register_memory_maintenance_runtime",
+            _register_runtime,
+        )
+        run_consolidation = AsyncMock(return_value={"episodes_consolidated": 0})
+        monkeypatch.setattr(
+            "butlers.modules.memory.consolidation.run_consolidation", run_consolidation
+        )
+
+        await mod.on_startup(
+            config=MemoryModuleConfig(memory_schema="chronicler_mem"),
+            db=fake_db,
+        )
+        await captured_hook["hook"](
+            spawner=MagicMock(name="spawner"),
+            batch_size=7,
+            enable_shared_catalog=True,
+        )
+
+        assert run_consolidation.await_args.kwargs["retry_failed"] is False
+        await mod.on_shutdown()
 
     async def test_runtime_pool_hook_uses_module_pool(self, monkeypatch) -> None:
         """Direct maintenance resolves the started module's private pool."""

@@ -452,6 +452,7 @@ class MemoryModule(Module):
                 batch_size=batch_size,
                 enable_shared_catalog=enable_shared_catalog,
                 source_schema=module._config.catalog_source_schema or None,
+                retry_failed=module._allows_failed_consolidation_retry(),
             )
 
         if self._session_runtime_owner is not None and self._session_runtime is not None:
@@ -646,6 +647,22 @@ class MemoryModule(Module):
         if self._db is None:
             raise RuntimeError("MemoryModule not initialised — no DB available")
         return self._db.pool
+
+    def _allows_failed_consolidation_retry(self) -> bool:
+        """Return whether this module may automatically retry failed episodes.
+
+        A dedicated ``memory_schema`` is a bounded private-schema exception
+        (currently Chronicler's ``chronicler_mem``). Its existing pending-only
+        maintenance semantics remain intact: an explicit schema override is
+        eligible only when it names the owning butler schema exactly. Missing
+        ownership evidence fails closed rather than extending recovery to a
+        private relation.
+        """
+        override = (self._config.memory_schema or "").strip()
+        if not override:
+            return True
+        owner_schema = getattr(self._db, "schema", None)
+        return isinstance(owner_schema, str) and override == owner_schema.strip()
 
     async def _get_or_create_chronicler_pool(self) -> Any:
         """Return a lazily-created asyncpg pool scoped to the chronicler schema.
@@ -1564,6 +1581,7 @@ class MemoryModule(Module):
                 module._get_embedding_engine(),
                 enable_shared_catalog=module._config.enable_shared_catalog,
                 source_schema=effective_catalog_source_schema,
+                retry_failed=module._allows_failed_consolidation_retry(),
             )
 
         @_tool("admin")

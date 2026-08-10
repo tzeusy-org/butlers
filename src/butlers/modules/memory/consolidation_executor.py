@@ -54,6 +54,10 @@ class ConsolidationEvidenceValidationError(ValueError):
     """Raised when an output artifact lacks valid claimed-episode evidence."""
 
 
+class _TerminalConsolidationPersistenceError(RuntimeError):
+    """Abort the fenced transaction when the terminal lifecycle write fails."""
+
+
 class _ConnectionAcquire:
     """Make one acquired connection look like a pool to storage helpers."""
 
@@ -78,6 +82,77 @@ class _ConnectionBackedPool:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._connection, name)
+
+
+def _lost_claim_result() -> dict[str, Any]:
+    """Return the no-side-effect result used when a claimant lost its fence."""
+    return {
+        "facts_created": 0,
+        "facts_updated": 0,
+        "rules_created": 0,
+        "confirmations_made": 0,
+        "episodes_consolidated": 0,
+        "episode_ttl_days": 0,
+        "errors": ["Consolidation lease was lost before episodes could be finalized"],
+    }
+
+
+def _terminal_persistence_failure_result() -> dict[str, Any]:
+    """Return a sanitized result after rolling back protected persistence."""
+    return {
+        "facts_created": 0,
+        "facts_updated": 0,
+        "rules_created": 0,
+        "confirmations_made": 0,
+        "episodes_consolidated": 0,
+        "episode_ttl_days": 0,
+        "errors": ["Failed to mark episodes as consolidated"],
+    }
+
+
+async def _lock_and_renew_claim_for_persistence(
+    connection: Any,
+    *,
+    source_episode_ids: list[uuid.UUID],
+    claim_token: str,
+    lease_duration_seconds: int,
+) -> bool:
+    """Fence every derived write behind the current claimant's locked lease.
+
+    The row locks are intentionally held by the caller's outer transaction for
+    the full artifact, confirmation, and terminal-event boundary.  A scheduler
+    whose lease timestamp expires while that transaction is open sees those rows
+    through ``FOR UPDATE SKIP LOCKED`` and cannot replace the claimant before the
+    terminal transition commits.
+    """
+    claimed = await connection.fetch(
+        """
+        SELECT id
+        FROM episodes
+        WHERE id = ANY($1::uuid[])
+          AND leased_by = $2
+          AND leased_until > now()
+          AND consolidation_status IN ('pending', 'failed')
+        FOR UPDATE
+        """,
+        source_episode_ids,
+        claim_token,
+    )
+    if len(claimed) != len(source_episode_ids):
+        return False
+
+    await connection.execute(
+        """
+        UPDATE episodes
+        SET leased_until = now() + ($3 * interval '1 second')
+        WHERE id = ANY($1::uuid[])
+          AND leased_by = $2
+        """,
+        source_episode_ids,
+        claim_token,
+        lease_duration_seconds,
+    )
+    return True
 
 
 def _validate_artifact_evidence(
@@ -203,6 +278,10 @@ async def execute_consolidation(
     request_id: str | None = None,
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
+    claim_token: str | None = None,
+    lease_duration_seconds: int = 300,
+    _claim_persistence_fenced: bool = False,
+    _episode_ttl_days: int | None = None,
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
 
@@ -240,11 +319,60 @@ async def execute_consolidation(
         source_schema: The butler schema name written to catalog rows.
             Required (by ``store_fact``/``store_rule``'s own gate) when
             ``enable_shared_catalog=True``; ignored otherwise.
+        claim_token: Opaque lease owner from ``run_consolidation``. When set,
+            every derived artifact, confirmation, terminal state change, and
+            lifecycle event is fenced to that still-active claim in one outer
+            transaction.
+        lease_duration_seconds: Lease duration used to renew a valid claim
+            immediately before protected persistence begins.
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
         confirmations_made, episodes_consolidated, episode_ttl_days, errors
     """
+    # Runtime execution happens outside a transaction, but persistence cannot:
+    # a replacement claimant must win before any derived write becomes visible.
+    # Lock and renew every source row first, then recurse through the existing
+    # executor using a connection-backed pool so all nested storage transactions
+    # remain under this outer row-lock fence through the terminal event.
+    if claim_token is not None and source_episode_ids and not _claim_persistence_fenced:
+        # The TTL helper deliberately tolerates a pre-migration absent policy
+        # table. Resolve it before opening the protected transaction so that
+        # fallback cannot leave PostgreSQL's outer transaction aborted.
+        episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
+        try:
+            async with pool.acquire() as connection:
+                async with connection.transaction():
+                    if not await _lock_and_renew_claim_for_persistence(
+                        connection,
+                        source_episode_ids=source_episode_ids,
+                        claim_token=claim_token,
+                        lease_duration_seconds=lease_duration_seconds,
+                    ):
+                        return _lost_claim_result()
+                    return await execute_consolidation(
+                        pool=_ConnectionBackedPool(connection),
+                        embedding_engine=embedding_engine,
+                        parsed=parsed,
+                        source_episode_ids=source_episode_ids,
+                        butler_name=butler_name,
+                        scope=scope,
+                        retention_class=retention_class,
+                        tenant_id=tenant_id,
+                        request_id=request_id,
+                        enable_shared_catalog=enable_shared_catalog,
+                        source_schema=source_schema,
+                        claim_token=claim_token,
+                        lease_duration_seconds=lease_duration_seconds,
+                        _claim_persistence_fenced=True,
+                        _episode_ttl_days=episode_ttl_days,
+                    )
+        except _TerminalConsolidationPersistenceError:
+            # The exception must leave the outer transaction before returning:
+            # catching it inside any nested savepoint could commit artifacts or
+            # confirmations without their required terminal lifecycle event.
+            return _terminal_persistence_failure_result()
+
     effective_scope = scope if scope is not None else butler_name
     errors: list[str] = []
     facts_created = 0
@@ -268,7 +396,11 @@ async def execute_consolidation(
         source_schema = await pool.fetchval("SELECT current_schema()")
 
     # Resolve episode TTL from memory_policies for the given retention_class.
-    episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
+    episode_ttl_days = (
+        _episode_ttl_days
+        if _episode_ttl_days is not None
+        else await _lookup_episode_ttl_days(pool, retention_class)
+    )
 
     # --- New facts ---
     for fact_index, fact in enumerate(parsed.new_facts):
@@ -489,32 +621,101 @@ async def execute_consolidation(
             errors.append(f"Failed to confirm fact {confirmation_id}")
 
     # --- Mark source episodes as consolidated (terminal state) ---
-    # Clear lease columns and set terminal consolidation_status.
-    # Also set consolidated=true for backward compatibility with cleanup queries.
+    # Clear the retry/failure lifecycle fields as well as the lease. Production
+    # callers provide the opaque claim token, which turns this into an all-or-
+    # nothing, owner-fenced terminal transition. The legacy no-token path is
+    # retained for direct executor callers that predate leasing (not the
+    # scheduler path).
     episodes_consolidated = 0
     if source_episode_ids:
         try:
-            await pool.execute(
-                """
-                UPDATE episodes
-                SET consolidated         = true,
-                    consolidation_status = 'consolidated',
-                    leased_until         = NULL,
-                    leased_by            = NULL
-                WHERE id = ANY($1)
-                """,
-                source_episode_ids,
-            )
-            episodes_consolidated = len(source_episode_ids)
+            if claim_token is None:
+                await pool.execute(
+                    """
+                    UPDATE episodes
+                    SET consolidated                 = true,
+                        consolidation_status         = 'consolidated',
+                        leased_until                 = NULL,
+                        leased_by                    = NULL,
+                        last_consolidation_error     = NULL,
+                        dead_letter_reason           = NULL,
+                        next_consolidation_retry_at  = NULL
+                    WHERE id = ANY($1::uuid[])
+                    """,
+                    source_episode_ids,
+                )
+                episodes_consolidated = len(source_episode_ids)
+            else:
+                async with pool.acquire() as connection:
+                    async with connection.transaction():
+                        transitioned = await connection.fetch(
+                            """
+                            WITH claimed AS (
+                                SELECT id
+                                FROM episodes
+                                WHERE id = ANY($1::uuid[])
+                                  AND leased_by = $2
+                                  AND ($4::boolean OR leased_until > now())
+                                  AND consolidation_status IN ('pending', 'failed')
+                                FOR UPDATE
+                            ), transitioned AS (
+                                UPDATE episodes
+                                SET consolidated                 = true,
+                                    consolidation_status         = 'consolidated',
+                                    leased_until                 = NULL,
+                                    leased_by                    = NULL,
+                                    last_consolidation_error     = NULL,
+                                    dead_letter_reason           = NULL,
+                                    next_consolidation_retry_at  = NULL
+                                WHERE id IN (SELECT id FROM claimed)
+                                  AND (SELECT count(*) FROM claimed) = cardinality($1::uuid[])
+                                RETURNING id, butler, tenant_id
+                            ), recorded AS (
+                                INSERT INTO memory_events (
+                                    event_type, actor, tenant_id, actor_butler,
+                                    memory_type, memory_id, payload
+                                )
+                                SELECT
+                                    'episode_consolidated',
+                                    'consolidation_worker',
+                                    COALESCE($3, tenant_id),
+                                    butler,
+                                    'episode',
+                                    id,
+                                    jsonb_build_object('outcome', 'consolidated')
+                                FROM transitioned
+                            )
+                            SELECT id FROM transitioned
+                            """,
+                            source_episode_ids,
+                            claim_token,
+                            tenant_id,
+                            _claim_persistence_fenced,
+                        )
+                if len(transitioned) == len(source_episode_ids):
+                    episodes_consolidated = len(transitioned)
+                else:
+                    if _claim_persistence_fenced:
+                        raise _TerminalConsolidationPersistenceError(
+                            "Consolidation lease was lost before episodes could be finalized"
+                        )
+                    errors.append("Consolidation lease was lost before episodes could be finalized")
         except Exception as exc:
             # Log detailed error internally
             logger.error("Failed to mark episodes as consolidated: %s", exc, exc_info=True)
+            if _claim_persistence_fenced:
+                # Do not turn a terminal CTE failure into a normal result while
+                # an outer transaction still contains derived artifacts. The
+                # outer fence catches this only after it has rolled back every
+                # prior artifact, evidence link, confirmation, and lease write.
+                raise _TerminalConsolidationPersistenceError from exc
             # Sanitize error message in return value
             errors.append("Failed to mark episodes as consolidated")
 
-    # Emit memory_events for successful consolidation (best-effort)
-    # Include tenant_id so the audit trail preserves tenant lineage.
-    if episodes_consolidated > 0:
+    # Legacy direct callers have no claim token, so retain their best-effort
+    # event emission. Leased production callers write this event atomically in
+    # the fenced CTE above.
+    if episodes_consolidated > 0 and claim_token is None:
         try:
             await pool.execute(
                 """
@@ -527,12 +728,9 @@ async def execute_consolidation(
                     butler,
                     'episode',
                     id,
-                    jsonb_build_object(
-                        'episode_id', id::text,
-                        'butler',     butler
-                    )
+                    jsonb_build_object('outcome', 'consolidated')
                 FROM episodes
-                WHERE id = ANY($1)
+                WHERE id = ANY($1::uuid[])
                 """,
                 source_episode_ids,
                 tenant_id,
