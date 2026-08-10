@@ -70,7 +70,8 @@ RESTORE_DRILL_EXECUTOR_PASSWORD_FILE=/secure/managed/path/restore-drill-executor
 The file is a Tier-0 deployment secret. It is created and retained outside the
 repository, is never copied into `.env` as a value, and is mounted by Compose
 only at `/run/secrets/restore_drill_executor_password` in the executor
-container. The bootstrap procedure creates or repairs the distinct login with
+container. Its content is UTF-8 with at most one terminal LF; embedded/multiple
+LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the distinct login with
 `LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION` and maintains
 the normal-role `NOCREATEDB` boundary.
 
@@ -96,10 +97,15 @@ The Compose service is deliberately narrow:
   PostgreSQL is externally hosted; instead
   `scripts/restore-drill-firewall.sh` installs a project-scoped host firewall
   chain that allows only TCP to the resolved PostgreSQL IPv4 endpoint and port
-  and drops every other outbound packet. IPv6 is disabled on this bridge.
-- `scripts/compose.sh` creates the executor without starting it, installs that
-  default-deny policy, and only then starts the Compose stack. Start this
-  service through that launcher, not a bare `docker compose up`; the launcher
+  and drops every other outbound packet. A configured DNS database host remains
+  the executor's connection/TLS identity (including `sslmode=verify-full`),
+  while Compose maps that name locally to the separately resolved IPv4 firewall
+  endpoint; the executor therefore has no DNS egress. IPv6 is disabled on this
+  bridge.
+- The supported launchers, `scripts/compose.sh` and `butlers deploy`, stop any
+  old executor, create its network without starting the credentialed process,
+  install that default-deny policy, and only then start the stack. Do not start
+  this service through a bare `docker compose up`; either supported launcher
   fails closed if it cannot apply the required firewall policy.
 - It mounts `butlers_backups` read-only and has no Docker socket, `backend`,
   `frontend`, or `egress` network membership.

@@ -111,10 +111,17 @@ def _read_positive_int(name: str, default: int) -> int:
 def _read_executor_password(path: Path) -> str:
     """Read the file-backed secret without copying it into process logs."""
     try:
-        password = path.read_text(encoding="utf-8").rstrip("\r\n")
-    except OSError as exc:
+        # Decode bytes directly: ``Path.read_text`` uses universal-newline
+        # translation, which would turn a forbidden CR into an LF before the
+        # secret contract can reject it.
+        password = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         raise ValueError("restore-drill executor password file is unreadable") from exc
-    if not password or "\n" in password or "\r" in password:
+    # Match the managed provisioner: one optional terminal LF is a file-format
+    # convenience, while embedded/multiple newlines, CR, and NUL are invalid.
+    if password.endswith("\n"):
+        password = password[:-1]
+    if not password or "\n" in password or "\r" in password or "\x00" in password:
         raise ValueError("restore-drill executor password file must contain one non-empty line")
     return password
 

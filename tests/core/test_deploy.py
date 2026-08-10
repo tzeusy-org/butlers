@@ -9,6 +9,8 @@ tests/integration/test_deploy_ledger_roundtrip.py.
 from __future__ import annotations
 
 import logging
+import os
+import socket
 import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -19,12 +21,15 @@ import pytest
 from butlers.core.deploy import (
     DeployConfig,
     DeployError,
+    RestoreDrillEndpoint,
     _clean_compose_env,
     _compose_base_args,
     _head_vs_origin_main,
+    _resolve_restore_drill_endpoint,
     build_image,
     materialize_beads_export,
     preflight_check,
+    prepare_restore_drill_executor,
     recreate_services,
     resolve_git_sha,
     run_deploy,
@@ -106,6 +111,107 @@ class TestComposeArgsAndEnv:
         monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
         env = _clean_compose_env()
         assert "COMPOSE_PROFILES" not in env
+
+
+class TestRestoreDrillDeployBoundary:
+    """The supported deploy path must install the executor firewall before up."""
+
+    def test_resolves_firewall_ipv4_without_replacing_verify_full_hostname(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / ".env.prod").write_text(
+            "POSTGRES_HOST=postgres.example.test\nPOSTGRES_PORT=5433\n",
+            encoding="utf-8",
+        )
+        for name in (
+            "POSTGRES_HOST",
+            "POSTGRES_PORT",
+            "RESTORE_DRILL_EXECUTOR_DB_HOST",
+            "RESTORE_DRILL_EXECUTOR_DB_PORT",
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        def fake_getaddrinfo(host, port, family, type):
+            assert host == "postgres.example.test"
+            assert family == socket.AF_INET
+            assert type == socket.SOCK_STREAM
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.51.100.42", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        endpoint = _resolve_restore_drill_endpoint(_config(repo_root=tmp_path))
+
+        assert endpoint == RestoreDrillEndpoint(
+            connection_host="postgres.example.test",
+            firewall_ipv4="198.51.100.42",
+            port=5433,
+        )
+        assert endpoint.compose_environment() == {
+            "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "198.51.100.42",
+            "RESTORE_DRILL_EXECUTOR_DB_PORT": "5433",
+        }
+
+    def test_stops_creates_firewalls_then_starts_with_one_resolved_endpoint(
+        self, tmp_path, monkeypatch
+    ):
+        calls: list[tuple[list[str], dict[str, str]]] = []
+
+        def fake_run(cmd, cwd, env, capture_output, text):
+            calls.append((cmd, env))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        firewall_script = tmp_path / "scripts" / "restore-drill-firewall.sh"
+        firewall_script.parent.mkdir()
+        firewall_script.write_text("#!/bin/sh\n", encoding="utf-8")
+        config = _config(repo_root=tmp_path)
+        endpoint = RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432)
+
+        prepare_restore_drill_executor(config, endpoint)
+        recreate_services(config, endpoint)
+
+        commands = [command for command, _env in calls]
+        assert commands[0][-2:] == ["stop", "restore-drill-executor"]
+        assert commands[1][-2:] == ["create", "restore-drill-executor"]
+        assert commands[2] == [
+            "sudo",
+            "-n",
+            "env",
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=198.51.100.42",
+            "RESTORE_DRILL_EXECUTOR_DB_PORT=5432",
+            "COMPOSE_PROJECT_NAME=butlers",
+            str(firewall_script),
+        ]
+        assert commands[3][-3:] == ["up", "-d", "--remove-orphans"]
+
+        for _command, env in (calls[0], calls[1], calls[3]):
+            assert env["RESTORE_DRILL_EXECUTOR_DB_HOST"] == "postgres.example.test"
+            assert env["RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST"] == "198.51.100.42"
+            assert env["RESTORE_DRILL_EXECUTOR_DB_PORT"] == "5432"
+        assert calls[2][1] == {"PATH": os.environ["PATH"]}
+
+    def test_firewall_failure_fails_closed_before_recreate(self, tmp_path, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, cwd, env, capture_output, text):
+            calls.append(cmd)
+            if cmd[:3] == ["sudo", "-n", "env"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="sudo denied")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        firewall_script = tmp_path / "scripts" / "restore-drill-firewall.sh"
+        firewall_script.parent.mkdir()
+        firewall_script.write_text("#!/bin/sh\n", encoding="utf-8")
+        endpoint = RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432)
+
+        with pytest.raises(DeployError) as exc_info:
+            prepare_restore_drill_executor(_config(repo_root=tmp_path), endpoint)
+
+        assert exc_info.value.phase == "restore-drill-firewall"
+        assert not any(command[-1:] == ["up"] or "up" in command for command in calls)
 
 
 class TestBuildImage:
@@ -350,7 +456,15 @@ class TestRunDeploy:
         monkeypatch.setattr("butlers.core.deploy.build_image", make("build"))
         monkeypatch.setattr("butlers.core.deploy.run_migrations", make("migrate"))
         monkeypatch.setattr("butlers.core.deploy.materialize_beads_export", _export_ok)
+        monkeypatch.setattr(
+            "butlers.core.deploy.prepare_restore_drill_executor",
+            make("restore-drill-boundary"),
+        )
         monkeypatch.setattr("butlers.core.deploy.recreate_services", make("recreate"))
+        monkeypatch.setattr(
+            "butlers.core.deploy._resolve_restore_drill_endpoint",
+            lambda config: RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432),
+        )
         monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
         monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: "deadbeef")
         # Preflight is exercised directly in TestPreflightCheck against real
@@ -370,7 +484,14 @@ class TestRunDeploy:
 
         result = await run_deploy(_config(), pool=pool)
 
-        assert calls == ["build", "migrate", "beads-export", "recreate", "health-check"]
+        assert calls == [
+            "build",
+            "migrate",
+            "beads-export",
+            "restore-drill-boundary",
+            "recreate",
+            "health-check",
+        ]
         assert result.result == "success"
         assert result.git_sha == "deadbeef"
         assert result.migration_head == "core_163"
@@ -386,7 +507,9 @@ class TestRunDeploy:
         # Injected pool must not be closed by run_deploy.
         pool.close.assert_not_awaited()
 
-    @pytest.mark.parametrize("fail_at", ["build", "migrate", "recreate", "health-check"])
+    @pytest.mark.parametrize(
+        "fail_at", ["build", "migrate", "restore-drill-boundary", "recreate", "health-check"]
+    )
     async def test_failure_at_each_phase_records_failed_row_and_reraises(
         self, monkeypatch, fail_at
     ):

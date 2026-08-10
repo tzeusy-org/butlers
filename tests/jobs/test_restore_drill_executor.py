@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -13,7 +15,9 @@ from butlers.jobs.backup_health import RestoreDrillResult, _run_restore_drill_sy
 from butlers.jobs.restore_drill_executor import (
     RestoreDrillExecutorConfig,
     _psql_env,
+    _read_executor_password,
     load_restore_drill_executor_config,
+    run_restore_drill_executor_loop,
     run_restore_drill_executor_tick,
 )
 
@@ -58,6 +62,80 @@ def test_executor_configuration_reads_its_password_from_a_file_not_shared_enviro
         "PGPASSWORD": "file-backed-test-password",
         "PGSSLMODE": "require",
     }
+
+
+def test_executor_keeps_dns_tls_identity_for_verify_full_and_strips_one_terminal_lf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_SSLMODE", "verify-full")
+
+    config = load_restore_drill_executor_config()
+
+    assert config.host == "postgres.example.test"
+    assert config.cli_db_params()["host"] == "postgres.example.test"
+    assert config.sslmode == "verify-full"
+    assert _psql_env(config)["PGSSLMODE"] == "verify-full"
+
+
+@pytest.mark.parametrize("secret", ["one\ntwo", "one\r", "one\n\n", "\x00"])
+def test_executor_password_rejects_ambiguous_or_nul_secret_content(
+    tmp_path: Path, secret: str
+) -> None:
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text(secret, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="password file"):
+        _read_executor_password(password_file)
+
+
+def test_executor_password_rejects_invalid_utf8_without_leaking_contents(tmp_path: Path) -> None:
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_bytes(b"\xff")
+
+    with pytest.raises(ValueError, match="unreadable"):
+        _read_executor_password(password_file)
+
+
+@pytest.mark.asyncio
+async def test_executor_pool_uses_the_hostname_as_verify_full_tls_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The firewall IPv4 must never replace the hostname passed to asyncpg."""
+    config = RestoreDrillExecutorConfig(
+        host="postgres.example.test",
+        port=5432,
+        application_db="butlers",
+        maintenance_db="postgres",
+        user="restore_drill_executor",
+        password="file-backed-test-password",
+        backup_dir=tmp_path,
+        drill_interval_s=604800,
+        check_interval_s=3600,
+        sslmode="verify-full",
+    )
+    captured: dict[str, object] = {}
+    pool = AsyncMock()
+
+    async def fake_create_pool(**kwargs: object):
+        captured.update(kwargs)
+        return pool
+
+    monkeypatch.setattr("butlers.jobs.restore_drill_executor.asyncpg.create_pool", fake_create_pool)
+    monkeypatch.setattr(
+        "butlers.jobs.restore_drill_executor.run_restore_drill_executor_tick",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_restore_drill_executor_loop(config)
+
+    assert captured["host"] == "postgres.example.test"
+    assert captured["ssl"] == "verify-full"
+    pool.close.assert_awaited_once()
 
 
 def test_executor_names_the_maintenance_database_for_create_and_drop(

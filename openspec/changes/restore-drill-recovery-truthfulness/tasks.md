@@ -16,7 +16,10 @@
   scheduling plus CLI subprocess launch out of dashboard-api. Its compose
   definition has only a dedicated restore-drill database bridge whose
   project-scoped host policy default-denies outbound traffic except the
-  configured PostgreSQL endpoint and port, a read-only backup mount, no
+  configured PostgreSQL endpoint and port; supported `scripts/compose.sh` and
+  `butlers deploy` paths must install that policy before startup while retaining
+  a DNS `verify-full` TLS identity separately from the resolved IPv4 firewall
+  endpoint; add a read-only backup mount, no
   listener, Docker socket, `backend`, `frontend`, or `egress` membership, and a
   private secret-file mount. It MUST NOT inherit `x-postgres-env`, receive
   `POSTGRES_USER`/`POSTGRES_PASSWORD`/`DATABASE_URL`, or expose the executor
@@ -24,7 +27,8 @@
 - [ ] 1.4 Add configuration, bootstrap, compose, and role-boundary tests that
   prove the executor role is isolated, dashboard/butler/connector credentials
   remain `NOCREATEDB`, a dashboard-style shared credential cannot create the
-  scratch database, and no rendered dashboard service receives the private
+  scratch database, an effective full-core-chain ACL matrix denies both narrow
+  functions to shared/butler/connector/PUBLIC subjects, and no rendered dashboard service receives the private
   executor secret. Cite `REQ-database-security-006` in the test.
 - [ ] 1.5 Update `docs/operations/backup-restore.md` to name the managed
   executor bootstrap prerequisite, file-secret boundary, fixed scratch

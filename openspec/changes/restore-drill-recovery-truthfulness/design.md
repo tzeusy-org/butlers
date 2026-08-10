@@ -77,8 +77,12 @@ executor is the sole service with that credential, joins only the dedicated
 `restore_drill_db` bridge, and a host policy default-denies all traffic from
 that bridge except TCP to its configured PostgreSQL endpoint and port. The
 bridge is intentionally not Docker `internal` because PostgreSQL is externally
-hosted; the launcher installs the default-deny policy before starting the
-executor. It mounts backups read-only, has no listener, Docker socket,
+hosted; both supported launchers (`scripts/compose.sh` and `butlers deploy`)
+stop/create the executor, install the default-deny policy, and only then start
+it. When PostgreSQL is named by DNS, that hostname remains the executor's TLS
+identity (including `verify-full`), while the host resolves a separate IPv4
+firewall endpoint and Compose maps the hostname locally so the bridge has no
+DNS egress. It mounts backups read-only, has no listener, Docker socket,
 `backend`, `frontend`, or `egress` membership, and runs no LLM session. The
 dashboard, butlers, and connectors remain `NOCREATEDB`; their shared credential
 is tested as unable to create a scratch database. Granting `CREATEDB` to that

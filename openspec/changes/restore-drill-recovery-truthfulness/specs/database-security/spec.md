@@ -45,6 +45,9 @@ Scope: v1-mandatory
   default-denies every destination except the configured PostgreSQL endpoint
   and port, mounts backup artifacts read-only, and has no listener, Docker
   socket, `backend`, `frontend`, or `egress` access
+- **AND** its DNS connection hostname remains distinct from the resolved IPv4
+  firewall endpoint so `sslmode=verify-full` verifies the intended PostgreSQL
+  identity without granting the bridge DNS egress
 
 #### Scenario: Privilege repair requires the managed bootstrap path
 - **WHEN** an operator encounters a restore-drill `CREATEDB` prerequisite failure

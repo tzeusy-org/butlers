@@ -8,7 +8,7 @@
 # without starting it, applies this policy, and only then starts the stack.
 #
 # Usage:
-#   sudo RESTORE_DRILL_EXECUTOR_DB_HOST=203.0.113.10 \
+#   sudo RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=203.0.113.10 \
 #        RESTORE_DRILL_EXECUTOR_DB_PORT=5432 \
 #        ./scripts/restore-drill-firewall.sh
 #   sudo ./scripts/restore-drill-firewall.sh --remove
@@ -55,11 +55,11 @@ is_ipv4() {
 }
 
 validate_endpoint() {
-    RESTORE_DRILL_DB_HOST="${RESTORE_DRILL_EXECUTOR_DB_HOST:?Set RESTORE_DRILL_EXECUTOR_DB_HOST to the resolved PostgreSQL IPv4 endpoint}"
+    RESTORE_DRILL_DB_HOST="${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Set RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST to the resolved PostgreSQL IPv4 endpoint}"
     RESTORE_DRILL_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}"
 
     if ! is_ipv4 "$RESTORE_DRILL_DB_HOST"; then
-        printf '%s\n' 'ERROR: RESTORE_DRILL_EXECUTOR_DB_HOST must be a resolved IPv4 address.' >&2
+        printf '%s\n' 'ERROR: RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST must be a resolved IPv4 address.' >&2
         exit 2
     fi
     if [[ ! "$RESTORE_DRILL_DB_PORT" =~ ^[0-9]+$ ]] \

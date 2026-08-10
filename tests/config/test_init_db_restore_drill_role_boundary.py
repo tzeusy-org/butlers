@@ -126,6 +126,42 @@ def test_managed_provisioner_passes_secret_to_psql_as_encoded_literal_data(tmp_p
     assert input_text.startswith("\\set restore_drill_executor_password_b64 ")
     assert "\n\\unset restore_drill_executor_password_b64\n" in input_text
     assert "decode(:'restore_drill_executor_password_b64', 'base64')" in input_text
+    assert "BEGIN;" in input_text
+    assert "COMMIT;" in input_text
+
+
+def test_managed_provisioner_accepts_one_terminal_lf_without_passing_it_to_psql(
+    tmp_path: Path,
+) -> None:
+    """The provisioner and executor share one unambiguous file-secret contract."""
+    password = "test-terminal-lf-secret"
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text(password + "\n", encoding="utf-8")
+    psql_input = tmp_path / "psql-input"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_executable(
+        bin_dir / "psql",
+        '#!/bin/sh\ncat > "$PSQL_INPUT_CAPTURE"\n',
+    )
+
+    completed = subprocess.run(
+        [_PROVISIONER],
+        check=False,
+        env={
+            **os.environ,
+            "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": str(password_file),
+            "PSQL_INPUT_CAPTURE": str(psql_input),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    input_text = psql_input.read_text(encoding="utf-8")
+    assert base64.b64encode(password.encode()).decode() in input_text
+    assert base64.b64encode((password + "\n").encode()).decode() not in input_text
 
 
 def test_migration_owns_fixed_search_path_executor_persistence_boundary() -> None:
@@ -167,6 +203,8 @@ def test_operations_document_the_managed_boundary_without_a_live_workaround() ->
     assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" in source
     assert "single-executor" in source
     assert "live application database" in source
+    assert "butlers deploy" in source
+    assert "verify-full" in source
     assert "ALTER ROLE" not in source
     assert "CREATE DATABASE butlers_restore" not in source
     assert "pg_restore.sh" not in source

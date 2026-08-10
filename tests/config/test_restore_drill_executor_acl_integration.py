@@ -2,26 +2,28 @@
 
 REQ-database-security-006 requires effective role ACLs, not static SQL alone.
 This module bootstraps an isolated testcontainer, runs ``init-db.sql`` and the
-real core migration chain as the shared migration login, then verifies the
-executor-only database interface.  It deliberately does not create a scratch
-database or invoke any restore client; that broader lifecycle proof belongs to
-the later restore integration slice.
+real ``core@head`` migration chain as the normal shared migration login, then
+checks the resulting effective ACL matrix. It deliberately does not create a
+scratch database or invoke restore clients; that broader lifecycle proof is a
+later restore-integration slice.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import asyncio
 import os
 import shutil
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from urllib.parse import quote
 
 import pytest
-from alembic.operations import Operations
-from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
+
+from alembic import command
+from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.testing.migration import bootstrap_extensions, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 psql_available = shutil.which("psql") is not None
@@ -35,9 +37,19 @@ pytestmark = [
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
 _PROVISIONER = _REPO_ROOT / "scripts" / "provision_restore_drill_executor.sh"
-_MIGRATION = (
-    _REPO_ROOT / "alembic" / "versions" / "core" / "core_196_restore_drill_executor_boundary.py"
-)
+
+_SHARED_PASSWORD = "shared-restore-drill-test-password"
+_BUTLER_PASSWORD = "butler-restore-drill-test-password"
+_CONNECTOR_PASSWORD = "connector-restore-drill-test-password"
+_PUBLIC_PASSWORD = "public-restore-drill-test-password"
+_EXECUTOR_PASSWORD = "executor-restore-drill-test-password"
+_PUBLIC_PROBE_ROLE = "restore_drill_public_probe"
+_NORMAL_ROLE_PASSWORDS = {
+    "butlers": _SHARED_PASSWORD,
+    "butler_general_rw": _BUTLER_PASSWORD,
+    "connector_writer": _CONNECTOR_PASSWORD,
+    _PUBLIC_PROBE_ROLE: _PUBLIC_PASSWORD,
+}
 
 
 @pytest.fixture(scope="module")
@@ -54,6 +66,12 @@ def _admin_params(postgres_container) -> tuple[str, str, str, str]:
         str(postgres_container.get_exposed_port(5432)),
         postgres_container.username,
         postgres_container.password,
+    )
+
+
+def _url(*, user: str, password: str, host: str, port: str, database: str) -> str:
+    return (
+        f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}/{database}"
     )
 
 
@@ -86,84 +104,141 @@ def _run_psql_file(
 
 
 def _expect_permission_denied(engine, statement: str) -> None:
-    with engine.connect() as connection, pytest.raises(ProgrammingError):
+    with engine.connect() as connection, pytest.raises(ProgrammingError, match="permission denied"):
         connection.execute(text(statement))
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_196", _MIGRATION)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _bootstrap_database(postgres_container) -> tuple[str, str, str, str, str, str]:
+    """Create a disposable database and run the managed bootstrap as admin.
 
-
-def _apply_executor_boundary_migration(shared_url: str) -> None:
-    """Run the production core_196 upgrade as the shared migration login.
-
-    The full core chain intentionally supports deployments that add specialist
-    schemas later. This focused role-boundary test supplies the already-migrated
-    audit-log prerequisite and executes the target migration through a real
-    Alembic operation context, rather than depending on unrelated specialist
-    chain ordering.
+    The return values are ``admin_url, shared_url, host, port, admin_user,
+    admin_password``. The full core chain is intentionally not run here so the
+    invalid-secret regression can prove the provisioner transaction alone.
     """
-    migration = _load_migration()
-    engine = create_engine(shared_url)
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    database = migration_db_name()
+    admin_url = _url(
+        user=admin_user,
+        password=admin_password,
+        host=host,
+        port=port,
+        database=database,
+    )
+    shared_url = _url(
+        user="butlers",
+        password=_SHARED_PASSWORD,
+        host=host,
+        port=port,
+        database=database,
+    )
+    control_url = _url(
+        user=admin_user,
+        password=admin_password,
+        host=host,
+        port=port,
+        database="postgres",
+    )
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
     try:
-        with engine.begin() as connection:
+        with engine.connect() as connection:
             connection.execute(
                 text(
                     """
-                    CREATE TABLE public.audit_log (
-                        id BIGSERIAL PRIMARY KEY,
-                        ts TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        actor TEXT NOT NULL,
-                        action TEXT NOT NULL,
-                        target TEXT,
-                        result TEXT,
-                        error TEXT,
-                        metadata JSONB
-                    )
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'butlers') THEN
+                            CREATE ROLE butlers LOGIN PASSWORD 'shared-restore-drill-test-password';
+                        END IF;
+                    END;
+                    $$
                     """
                 )
             )
-            context = MigrationContext.configure(connection)
-            real_op = Operations(context)
-            with patch.object(migration, "op", real_op):
-                migration.upgrade()
+            connection.execute(
+                text("ALTER ROLE butlers LOGIN PASSWORD :password"), {"password": _SHARED_PASSWORD}
+            )
+            connection.execute(text(f'CREATE DATABASE "{database}" OWNER butlers'))
     finally:
         engine.dispose()
 
-
-def test_bootstrap_and_migration_keep_the_executor_interface_exclusive(
-    postgres_container, tmp_path: Path
-) -> None:
-    """REQ-database-security-006: shared credentials cannot become the executor."""
-    host, port, admin_user, admin_password = _admin_params(postgres_container)
-    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as connection:
-            connection.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'shared-test-password'"))
-            connection.execute(text("CREATE DATABASE butlers OWNER butlers"))
-    finally:
-        engine.dispose()
-
+    bootstrap_extensions(admin_url)
     _run_psql_file(
         host=host,
         port=port,
         user=admin_user,
         password=admin_password,
-        database="butlers",
+        database=database,
         file_path=_INIT_DB,
     )
+    return admin_url, shared_url, host, port, admin_user, admin_password
 
-    shared_url = f"postgresql://butlers:shared-test-password@{host}:{port}/butlers"
-    _apply_executor_boundary_migration(shared_url)
 
-    password_file = tmp_path / "restore-drill-executor-password"
-    password_file.write_text("executor-test-password", encoding="utf-8")
-    provisioned = subprocess.run(
+def _configure_direct_acl_subjects(admin_url: str) -> None:
+    """Give disposable direct-login test roles passwords without widening ACLs."""
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(
+                text("ALTER ROLE butler_general_rw LOGIN PASSWORD :password"),
+                {"password": _BUTLER_PASSWORD},
+            )
+            connection.execute(
+                text("ALTER ROLE connector_writer LOGIN PASSWORD :password"),
+                {"password": _CONNECTOR_PASSWORD},
+            )
+            connection.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_public_probe'
+                        ) THEN
+                            CREATE ROLE restore_drill_public_probe LOGIN NOINHERIT
+                                NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION
+                                PASSWORD 'public-restore-drill-test-password';
+                        END IF;
+                    END;
+                    $$
+                    """
+                ),
+            )
+            connection.execute(
+                text("ALTER ROLE restore_drill_public_probe LOGIN NOCREATEDB PASSWORD :password"),
+                {"password": _PUBLIC_PASSWORD},
+            )
+            database = _database_from_url(admin_url)
+            connection.execute(
+                text(f'GRANT CONNECT ON DATABASE "{database}" TO restore_drill_public_probe')
+            )
+    finally:
+        engine.dispose()
+
+
+def _run_real_core_chain_with_relationship_prerequisite(shared_url: str) -> None:
+    """Migrate the actual core chain through its cross-chain prerequisite.
+
+    ``core_150`` grants access to the relationship fact table. The real
+    relationship migration itself references core's entity table, so a fresh
+    database must reach core_122, migrate the relationship chain, then finish
+    ``core@head``. No table or target migration is hand-created here.
+    """
+    config = _build_alembic_config(shared_url, chains=["core"])
+    command.upgrade(config, "core_122")
+    asyncio.run(run_migrations(shared_url, chain="relationship", schema="relationship"))
+    asyncio.run(run_migrations(shared_url, chain="core"))
+
+
+def _provision_executor(
+    *,
+    host: str,
+    port: str,
+    admin_user: str,
+    admin_password: str,
+    database: str,
+    password_file: Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         [_PROVISIONER],
         check=False,
         env={
@@ -172,120 +247,192 @@ def test_bootstrap_and_migration_keep_the_executor_interface_exclusive(
             "PGPORT": port,
             "PGUSER": admin_user,
             "PGPASSWORD": admin_password,
-            "PGDATABASE": "butlers",
+            "PGDATABASE": database,
             "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": str(password_file),
         },
         capture_output=True,
         text=True,
     )
+
+
+def _database_from_url(url: str) -> str:
+    return url.rsplit("/", 1)[1]
+
+
+def test_real_core_chain_keeps_the_executor_interface_exclusive(
+    postgres_container, tmp_path: Path
+) -> None:
+    """REQ-database-security-006: only the executor can reach both functions.
+
+    This is intentionally a true core-chain proof: no hand-created audit table,
+    patched Alembic operation, or mock ownership transfer can make a stale ACL
+    look correct.
+    """
+    admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
+        postgres_container
+    )
+    _configure_direct_acl_subjects(admin_url)
+    _run_real_core_chain_with_relationship_prerequisite(shared_url)
+
+    password_file = tmp_path / "restore-drill-executor-password"
+    # One terminal LF is intentional: it exercises the same contract enforced
+    # by the executor process and prevents drift between bootstrap and runtime.
+    password_file.write_text(_EXECUTOR_PASSWORD + "\n", encoding="utf-8")
+    provisioned = _provision_executor(
+        host=host,
+        port=port,
+        admin_user=admin_user,
+        admin_password=admin_password,
+        database=_database_from_url(admin_url),
+        password_file=password_file,
+    )
     assert provisioned.returncode == 0, provisioned.stderr
 
-    audit_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
-    audit_engine = create_engine(audit_url)
+    engine = create_engine(admin_url)
     try:
-        with audit_engine.connect() as connection:
+        with engine.connect() as connection:
             roles = (
                 connection.execute(
                     text(
                         """
-                    SELECT rolname, rolcreatedb
+                    SELECT rolname, rolcanlogin, rolcreatedb
                     FROM pg_roles
-                    WHERE rolname = 'butlers'
-                       OR rolname = 'connector_writer'
-                       OR rolname LIKE 'butler\\_%\\_rw' ESCAPE '\\'
-                       OR rolname IN ('restore_drill_executor', 'restore_drill_executor_owner')
+                    WHERE rolname IN (
+                        'butlers',
+                        'butler_general_rw',
+                        'connector_writer',
+                        'restore_drill_public_probe',
+                        'restore_drill_executor',
+                        'restore_drill_executor_owner'
+                    )
                     """
                     )
                 )
                 .mappings()
                 .all()
             )
-            acl = (
+            acl_rows = (
                 connection.execute(
                     text(
                         """
+                    WITH subjects(subject) AS (
+                        VALUES
+                            ('butlers'::name),
+                            ('butler_general_rw'::name),
+                            ('connector_writer'::name),
+                            ('restore_drill_public_probe'::name),
+                            ('restore_drill_executor'::name)
+                    )
                     SELECT
-                        has_schema_privilege('restore_drill_executor', 'restore_drill_executor', 'USAGE')
-                            AS executor_schema_usage,
-                        has_schema_privilege('butlers', 'restore_drill_executor', 'USAGE')
-                            AS shared_schema_usage,
-                        has_function_privilege(
-                            'restore_drill_executor',
-                            'restore_drill_executor.is_due(integer)',
-                            'EXECUTE'
-                        ) AS executor_execute,
-                        has_function_privilege(
-                            'butlers',
-                            'restore_drill_executor.is_due(integer)',
-                            'EXECUTE'
-                        ) AS shared_execute,
+                        subject::text AS subject,
                         has_schema_privilege(
-                            'butlers',
-                            'restore_drill_executor_admin',
-                            'USAGE'
-                        ) AS shared_finalizer_schema_usage,
+                            subject, 'restore_drill_executor', 'USAGE'
+                        ) AS schema_usage,
                         has_function_privilege(
-                            'butlers',
-                            'restore_drill_executor_admin.finalize_interface()',
+                            subject, 'restore_drill_executor.is_due(integer)', 'EXECUTE'
+                        ) AS is_due_execute,
+                        has_function_privilege(
+                            subject,
+                            'restore_drill_executor.record_result(text,text,text,integer)',
                             'EXECUTE'
-                        ) AS shared_finalizer_execute,
-                        pg_has_role(
-                            'butlers',
-                            'restore_drill_executor_owner',
-                            'USAGE'
-                        ) AS shared_owner_membership,
-                        (
-                            SELECT pg_get_userbyid(p.proowner)
-                            FROM pg_proc p
-                            JOIN pg_namespace n ON n.oid = p.pronamespace
-                            WHERE n.nspname = 'restore_drill_executor'
-                              AND p.proname = 'is_due'
-                        ) AS function_owner
+                        ) AS record_result_execute,
+                        pg_has_role(subject, 'restore_drill_executor_owner', 'USAGE')
+                            AS owner_membership
+                    FROM subjects
+                    ORDER BY subject::text
                     """
                     )
                 )
                 .mappings()
-                .one()
+                .all()
+            )
+            function_owners = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT p.proname, pg_get_userbyid(p.proowner) AS owner
+                    FROM pg_proc p
+                    JOIN pg_namespace n ON n.oid = p.pronamespace
+                    WHERE n.nspname = 'restore_drill_executor'
+                      AND p.proname IN ('is_due', 'record_result')
+                    ORDER BY p.proname
+                    """
+                    )
+                )
+                .mappings()
+                .all()
             )
     finally:
-        audit_engine.dispose()
+        engine.dispose()
 
-    role_flags = {row["rolname"]: row["rolcreatedb"] for row in roles}
-    assert role_flags["restore_drill_executor"] is True
-    assert role_flags["restore_drill_executor_owner"] is False
-    assert all(
-        role_flags[name] is False for name in role_flags if name not in {"restore_drill_executor"}
-    )
-    assert acl == {
-        "executor_schema_usage": True,
-        "shared_schema_usage": False,
-        "executor_execute": True,
-        "shared_execute": False,
-        "shared_finalizer_schema_usage": False,
-        "shared_finalizer_execute": False,
-        "shared_owner_membership": False,
-        "function_owner": "restore_drill_executor_owner",
+    role_flags = {row["rolname"]: row for row in roles}
+    assert role_flags["restore_drill_executor"] == {
+        "rolname": "restore_drill_executor",
+        "rolcanlogin": True,
+        "rolcreatedb": True,
     }
+    assert role_flags["restore_drill_executor_owner"] == {
+        "rolname": "restore_drill_executor_owner",
+        "rolcanlogin": False,
+        "rolcreatedb": False,
+    }
+    for role_name in _NORMAL_ROLE_PASSWORDS:
+        assert role_flags[role_name]["rolcreatedb"] is False
 
-    shared_engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
-    executor_url = (
-        f"postgresql://restore_drill_executor:executor-test-password@{host}:{port}/butlers"
+    acl = {row["subject"]: row for row in acl_rows}
+    for role_name in _NORMAL_ROLE_PASSWORDS:
+        assert acl[role_name] == {
+            "subject": role_name,
+            "schema_usage": False,
+            "is_due_execute": False,
+            "record_result_execute": False,
+            "owner_membership": False,
+        }
+    assert acl["restore_drill_executor"] == {
+        "subject": "restore_drill_executor",
+        "schema_usage": True,
+        "is_due_execute": True,
+        "record_result_execute": True,
+        "owner_membership": False,
+    }
+    assert function_owners == [
+        {"proname": "is_due", "owner": "restore_drill_executor_owner"},
+        {"proname": "record_result", "owner": "restore_drill_executor_owner"},
+    ]
+
+    database = _database_from_url(admin_url)
+    direct_engines = {
+        role: create_engine(
+            _url(user=role, password=password, host=host, port=port, database=database),
+            isolation_level="AUTOCOMMIT",
+        )
+        for role, password in _NORMAL_ROLE_PASSWORDS.items()
+    }
+    executor_engine = create_engine(
+        _url(
+            user="restore_drill_executor",
+            password=_EXECUTOR_PASSWORD,
+            host=host,
+            port=port,
+            database=database,
+        ),
+        isolation_level="AUTOCOMMIT",
     )
-    executor_engine = create_engine(executor_url, isolation_level="AUTOCOMMIT")
     try:
-        _expect_permission_denied(shared_engine, "CREATE DATABASE forbidden_shared_restore_drill")
-        _expect_permission_denied(
-            shared_engine,
-            "SELECT restore_drill_executor.is_due(604800)",
-        )
-        _expect_permission_denied(
-            executor_engine,
-            "SELECT count(*) FROM public.audit_log",
-        )
-        _expect_permission_denied(
-            executor_engine,
-            "CREATE TABLE restore_drill_executor.forbidden_direct_table (id integer)",
-        )
+        for role_name, direct_engine in direct_engines.items():
+            _expect_permission_denied(
+                direct_engine,
+                f"CREATE DATABASE forbidden_restore_drill_{role_name}",
+            )
+            _expect_permission_denied(
+                direct_engine,
+                "SELECT restore_drill_executor.is_due(604800)",
+            )
+            _expect_permission_denied(
+                direct_engine,
+                "SELECT restore_drill_executor.record_result('forbidden.sql.gz', 'pass', 'x', 1)",
+            )
+
         with executor_engine.connect() as connection:
             assert (
                 connection.execute(
@@ -293,6 +440,89 @@ def test_bootstrap_and_migration_keep_the_executor_interface_exclusive(
                 ).scalar_one()
                 is True
             )
+            audit_id = connection.execute(
+                text(
+                    "SELECT restore_drill_executor.record_result("
+                    "'acl-proof.sql.gz', 'pass', 'verified', 1)"
+                )
+            ).scalar_one()
+            assert isinstance(audit_id, int)
+        _expect_permission_denied(executor_engine, "SELECT count(*) FROM public.audit_log")
+        _expect_permission_denied(
+            executor_engine,
+            "CREATE TABLE restore_drill_executor.forbidden_direct_table (id integer)",
+        )
     finally:
-        shared_engine.dispose()
+        for direct_engine in direct_engines.values():
+            direct_engine.dispose()
         executor_engine.dispose()
+
+    engine = create_engine(admin_url)
+    try:
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT count(*) FROM public.audit_log "
+                        "WHERE actor = 'restore_drill' AND action = 'restore_drill_result' "
+                        "AND target = 'acl-proof.sql.gz'"
+                    )
+                ).scalar_one()
+                == 1
+            )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("invalid_secret", [b"\xff", b"contains-nul\x00secret"])
+def test_invalid_secret_rolls_back_login_and_createdb_role_mutation(
+    postgres_container, tmp_path: Path, invalid_secret: bytes
+) -> None:
+    """A PostgreSQL decode error cannot leave the executor login partially enabled."""
+    admin_url, _shared_url, host, port, admin_user, admin_password = _bootstrap_database(
+        postgres_container
+    )
+    database = _database_from_url(admin_url)
+    # Roles are server-global while this module deliberately reuses one
+    # container. Re-establish the managed reserved posture before asserting
+    # this invocation's transaction behavior.
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(
+                text(
+                    "ALTER ROLE restore_drill_executor NOLOGIN NOCREATEDB "
+                    "NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    password_file = tmp_path / "invalid-restore-drill-password"
+    password_file.write_bytes(invalid_secret)
+    provisioned = _provision_executor(
+        host=host,
+        port=port,
+        admin_user=admin_user,
+        admin_password=admin_password,
+        database=database,
+        password_file=password_file,
+    )
+    assert provisioned.returncode != 0
+
+    engine = create_engine(admin_url)
+    try:
+        with engine.connect() as connection:
+            flags = (
+                connection.execute(
+                    text(
+                        "SELECT rolcanlogin, rolcreatedb FROM pg_roles "
+                        "WHERE rolname = 'restore_drill_executor'"
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        engine.dispose()
+    assert flags == {"rolcanlogin": False, "rolcreatedb": False}

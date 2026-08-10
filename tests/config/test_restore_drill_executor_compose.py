@@ -66,6 +66,13 @@ def test_restore_drill_executor_has_a_dedicated_database_network_and_private_sec
     ]
 
     environment = _environment(service)
+    assert environment["RESTORE_DRILL_EXECUTOR_DB_HOST"].startswith(
+        "${RESTORE_DRILL_EXECUTOR_DB_HOST:?"
+    )
+    assert "resolved PostgreSQL IPv4" not in environment["RESTORE_DRILL_EXECUTOR_DB_HOST"]
+    assert service["extra_hosts"] == [
+        "${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}=${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to resolve the PostgreSQL IPv4 firewall endpoint}"
+    ]
     assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in environment
     assert not any(key.startswith("POSTGRES_") for key in environment)
     assert "DATABASE_URL" not in environment
@@ -105,7 +112,11 @@ def test_restore_drill_firewall_default_denies_outbound_except_postgres(
     env = {
         **os.environ,
         "COMPOSE_PROJECT_NAME": "test",
-        "RESTORE_DRILL_EXECUTOR_DB_HOST": "198.51.100.42",
+        # The executor still connects as this DNS name so verify-full checks
+        # the server certificate identity. Docker resolves it through the
+        # service's extra_hosts mapping; the firewall sees only the fixed IPv4.
+        "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
+        "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "198.51.100.42",
         "RESTORE_DRILL_EXECUTOR_DB_PORT": "5432",
         "IPTABLES_LOG": str(iptables_log),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -131,9 +142,11 @@ def test_restore_drill_firewall_default_denies_outbound_except_postgres(
     assert launcher.index("create restore-drill-executor") < launcher.index(_FIREWALL.name)
     assert launcher.index(_FIREWALL.name) < launcher.index('"${CMD[@]}" up -d')
     assert "restore-drill executor remains stopped" in launcher
+    assert "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST" in launcher
+    assert 'RESTORE_DRILL_EXECUTOR_DB_HOST="$_restore_drill_source_host"' in launcher
 
 
-def test_restore_drill_firewall_rejects_unresolved_hostname_without_installing_rules(
+def test_restore_drill_firewall_rejects_unresolved_firewall_hostname_without_installing_rules(
     tmp_path: Path,
 ) -> None:
     """No DNS exception can silently widen this PostgreSQL-only network."""
@@ -153,6 +166,7 @@ def test_restore_drill_firewall_rejects_unresolved_hostname_without_installing_r
         env={
             **os.environ,
             "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "still-a-hostname.example.test",
             "IPTABLES_CALLED": str(iptables_called),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
         },
@@ -162,7 +176,7 @@ def test_restore_drill_firewall_rejects_unresolved_hostname_without_installing_r
 
     assert completed.returncode == 2
     assert not iptables_called.exists()
-    assert "resolved IPv4" in completed.stderr
+    assert "FIREWALL_DB_HOST" in completed.stderr
 
 
 def test_private_executor_secret_is_absent_from_every_normal_runtime_service() -> None:

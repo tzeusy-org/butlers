@@ -69,9 +69,12 @@ for the deployment boundary and rollback rules.
 `restore-drill-firewall.sh` enforces the executor's dedicated
 `restore_drill_db` bridge as default-deny: it permits only TCP to the resolved
 PostgreSQL IPv4 endpoint and port, then drops all other outbound traffic from
-that bridge. `scripts/compose.sh` creates the executor without starting it,
-installs the policy with passwordless `sudo`, and only then starts the stack;
-it fails closed when that policy cannot be installed. Do not start
+that bridge. The executor keeps a configured DNS database host as its TLS
+identity (including `verify-full`), while Compose resolves that name locally to
+the separately supplied IPv4 endpoint so the bridge has no DNS egress. Both
+`scripts/compose.sh` and `butlers deploy` stop/create the executor, install the
+policy with passwordless `sudo`, and only then start the stack; they fail closed
+when that policy cannot be installed. Do not start
 `restore-drill-executor` through a bare `docker compose up` command.
 
 ## dev.sh

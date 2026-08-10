@@ -218,15 +218,16 @@ services:
   # The sole holder of the recovery-only database credential. It has no HTTP
   # listener and deliberately does not inherit x-postgres-env: dashboard-api,
   # butlers, and connectors remain unable to create the scratch database.
-  # scripts/compose.sh resolves the purpose-specific endpoint to IPv4 and
-  # applies the bridge's PostgreSQL-only default-deny firewall before starting
-  # this service. Do not start this service through bare `docker compose up`.
+  # Supported launchers retain the purpose-specific hostname for TLS identity,
+  # map it locally to a resolved IPv4, and apply the bridge's PostgreSQL-only
+  # default-deny firewall before starting this service. Do not start this
+  # service through bare `docker compose up`.
   restore-drill-executor:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
     command: []
     environment:
-      RESTORE_DRILL_EXECUTOR_DB_HOST: ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run scripts/compose.sh or set the resolved PostgreSQL IPv4 endpoint}
+      RESTORE_DRILL_EXECUTOR_DB_HOST: ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}
       RESTORE_DRILL_EXECUTOR_DB_PORT: ${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}
       RESTORE_DRILL_EXECUTOR_SSLMODE: ${POSTGRES_SSLMODE:-}
       RESTORE_DRILL_EXECUTOR_APPLICATION_DB: ${POSTGRES_DB:-butlers}
@@ -243,6 +244,10 @@ services:
     depends_on:
       migrations:
         condition: service_completed_successfully
+    # The executor resolves this identity through /etc/hosts rather than DNS.
+    # Its libpq/asyncpg host remains the DNS name for sslmode=verify-full.
+    extra_hosts:
+      - ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}=${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to resolve the PostgreSQL IPv4 firewall endpoint}
     networks: [restore_drill_db]
     restart: unless-stopped
 

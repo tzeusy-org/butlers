@@ -84,9 +84,10 @@ set +a
 echo "Database: ${BUTLERS_MODE} (${POSTGRES_HOST}:${POSTGRES_PORT:-5432})"
 
 # The restore-drill executor has a distinct, default-deny bridge. Resolve its
-# endpoint on the host before Compose creates the container so the executor
-# never needs DNS or any non-PostgreSQL egress. An explicit IPv4 override is
-# available for deployments that do not want to derive it from POSTGRES_HOST.
+# firewall endpoint on the host before Compose creates the container so the
+# executor never needs DNS or any non-PostgreSQL egress. Keep a DNS connection
+# host intact, though: verify-full needs it to check the PostgreSQL certificate
+# identity, while Compose's extra_hosts maps it to the resolved IPv4 locally.
 _restore_drill_is_ipv4() {
   local ip="$1" octet
   local -a octets
@@ -98,19 +99,35 @@ _restore_drill_is_ipv4() {
   done
 }
 
+_restore_drill_is_dns_name() {
+  local host="$1"
+  [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$ ]]
+}
+
 _restore_drill_source_host="${RESTORE_DRILL_EXECUTOR_DB_HOST:-${POSTGRES_HOST:?Set POSTGRES_HOST in ${ENV_FILE}}}"
-if _restore_drill_is_ipv4 "$_restore_drill_source_host"; then
-  RESTORE_DRILL_EXECUTOR_DB_HOST="$_restore_drill_source_host"
+if ! _restore_drill_is_ipv4 "$_restore_drill_source_host" \
+  && ! _restore_drill_is_dns_name "$_restore_drill_source_host"; then
+  echo "ERROR: Restore-drill PostgreSQL host must be a DNS hostname or IPv4 address." >&2
+  exit 1
+fi
+RESTORE_DRILL_EXECUTOR_DB_HOST="$_restore_drill_source_host"
+if [ -n "${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:-}" ]; then
+  if ! _restore_drill_is_ipv4 "$RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST"; then
+    echo "ERROR: RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST must be a resolved PostgreSQL IPv4 endpoint." >&2
+    exit 1
+  fi
+elif _restore_drill_is_ipv4 "$_restore_drill_source_host"; then
+  RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST="$_restore_drill_source_host"
 else
-  RESTORE_DRILL_EXECUTOR_DB_HOST="$(getent ahostsv4 "$_restore_drill_source_host" | awk 'NR == 1 {print $1}')"
-  if ! _restore_drill_is_ipv4 "$RESTORE_DRILL_EXECUTOR_DB_HOST"; then
+  RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST="$(getent ahostsv4 "$_restore_drill_source_host" | awk 'NR == 1 {print $1}')"
+  if ! _restore_drill_is_ipv4 "$RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST"; then
     echo "ERROR: Could not resolve a PostgreSQL IPv4 endpoint for restore-drill executor: $_restore_drill_source_host" >&2
     exit 1
   fi
 fi
 RESTORE_DRILL_EXECUTOR_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT:-${POSTGRES_PORT:-5432}}"
-export RESTORE_DRILL_EXECUTOR_DB_HOST RESTORE_DRILL_EXECUTOR_DB_PORT
-echo "Restore-drill endpoint: ${RESTORE_DRILL_EXECUTOR_DB_HOST}:${RESTORE_DRILL_EXECUTOR_DB_PORT} (default-deny bridge)"
+export RESTORE_DRILL_EXECUTOR_DB_HOST RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST RESTORE_DRILL_EXECUTOR_DB_PORT
+echo "Restore-drill endpoint: ${RESTORE_DRILL_EXECUTOR_DB_HOST}:${RESTORE_DRILL_EXECUTOR_DB_PORT} (TLS identity; firewall IPv4 ${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}, default-deny bridge)"
 
 # ── Mode-dependent configuration ────────────────────────────────────────
 # Prod and dev use different URL prefixes, host ports, and project names
@@ -449,7 +466,7 @@ if ! sudo -n true 2>/dev/null; then
   echo "  Configure passwordless sudo for ${SCRIPT_DIR}/restore-drill-firewall.sh, then rerun scripts/compose.sh." >&2
   exit 1
 fi
-sudo RESTORE_DRILL_EXECUTOR_DB_HOST="${RESTORE_DRILL_EXECUTOR_DB_HOST}" \
+sudo RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST="${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}" \
   RESTORE_DRILL_EXECUTOR_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT}" \
   COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" \
   "${SCRIPT_DIR}/restore-drill-firewall.sh"
