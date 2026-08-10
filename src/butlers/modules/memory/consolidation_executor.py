@@ -203,6 +203,7 @@ async def execute_consolidation(
     request_id: str | None = None,
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
+    claim_token: str | None = None,
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
 
@@ -240,6 +241,9 @@ async def execute_consolidation(
         source_schema: The butler schema name written to catalog rows.
             Required (by ``store_fact``/``store_rule``'s own gate) when
             ``enable_shared_catalog=True``; ignored otherwise.
+        claim_token: Opaque lease owner from ``run_consolidation``. When set,
+            terminal persistence is fenced to that still-active claim and the
+            state transition plus lifecycle event are committed atomically.
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
@@ -489,32 +493,90 @@ async def execute_consolidation(
             errors.append(f"Failed to confirm fact {confirmation_id}")
 
     # --- Mark source episodes as consolidated (terminal state) ---
-    # Clear lease columns and set terminal consolidation_status.
-    # Also set consolidated=true for backward compatibility with cleanup queries.
+    # Clear the retry/failure lifecycle fields as well as the lease. Production
+    # callers provide the opaque claim token, which turns this into an all-or-
+    # nothing, owner-fenced terminal transition. The legacy no-token path is
+    # retained for direct executor callers that predate leasing (not the
+    # scheduler path).
     episodes_consolidated = 0
     if source_episode_ids:
         try:
-            await pool.execute(
-                """
-                UPDATE episodes
-                SET consolidated         = true,
-                    consolidation_status = 'consolidated',
-                    leased_until         = NULL,
-                    leased_by            = NULL
-                WHERE id = ANY($1)
-                """,
-                source_episode_ids,
-            )
-            episodes_consolidated = len(source_episode_ids)
+            if claim_token is None:
+                await pool.execute(
+                    """
+                    UPDATE episodes
+                    SET consolidated                 = true,
+                        consolidation_status         = 'consolidated',
+                        leased_until                 = NULL,
+                        leased_by                    = NULL,
+                        last_consolidation_error     = NULL,
+                        dead_letter_reason           = NULL,
+                        next_consolidation_retry_at  = NULL
+                    WHERE id = ANY($1::uuid[])
+                    """,
+                    source_episode_ids,
+                )
+                episodes_consolidated = len(source_episode_ids)
+            else:
+                async with pool.acquire() as connection:
+                    async with connection.transaction():
+                        transitioned = await connection.fetch(
+                            """
+                            WITH claimed AS (
+                                SELECT id
+                                FROM episodes
+                                WHERE id = ANY($1::uuid[])
+                                  AND leased_by = $2
+                                  AND leased_until > now()
+                                  AND consolidation_status IN ('pending', 'failed')
+                                FOR UPDATE
+                            ), transitioned AS (
+                                UPDATE episodes
+                                SET consolidated                 = true,
+                                    consolidation_status         = 'consolidated',
+                                    leased_until                 = NULL,
+                                    leased_by                    = NULL,
+                                    last_consolidation_error     = NULL,
+                                    dead_letter_reason           = NULL,
+                                    next_consolidation_retry_at  = NULL
+                                WHERE id IN (SELECT id FROM claimed)
+                                  AND (SELECT count(*) FROM claimed) = cardinality($1::uuid[])
+                                RETURNING id, butler, tenant_id
+                            ), recorded AS (
+                                INSERT INTO memory_events (
+                                    event_type, actor, tenant_id, actor_butler,
+                                    memory_type, memory_id, payload
+                                )
+                                SELECT
+                                    'episode_consolidated',
+                                    'consolidation_worker',
+                                    COALESCE($3, tenant_id),
+                                    butler,
+                                    'episode',
+                                    id,
+                                    jsonb_build_object('outcome', 'consolidated')
+                                FROM transitioned
+                            )
+                            SELECT id FROM transitioned
+                            """,
+                            source_episode_ids,
+                            claim_token,
+                            tenant_id,
+                        )
+                if len(transitioned) == len(source_episode_ids):
+                    episodes_consolidated = len(transitioned)
+                else:
+                    errors.append("Consolidation lease was lost before episodes could be finalized")
         except Exception as exc:
             # Log detailed error internally
             logger.error("Failed to mark episodes as consolidated: %s", exc, exc_info=True)
             # Sanitize error message in return value
             errors.append("Failed to mark episodes as consolidated")
 
-    # Emit memory_events for successful consolidation (best-effort)
-    # Include tenant_id so the audit trail preserves tenant lineage.
-    if episodes_consolidated > 0:
+    # Legacy direct callers have no claim token, so retain their best-effort
+    # event emission. Leased production callers write this event atomically in
+    # the fenced CTE above.
+    if episodes_consolidated > 0 and claim_token is None:
         try:
             await pool.execute(
                 """
@@ -527,12 +589,9 @@ async def execute_consolidation(
                     butler,
                     'episode',
                     id,
-                    jsonb_build_object(
-                        'episode_id', id::text,
-                        'butler',     butler
-                    )
+                    jsonb_build_object('outcome', 'consolidated')
                 FROM episodes
-                WHERE id = ANY($1)
+                WHERE id = ANY($1::uuid[])
                 """,
                 source_episode_ids,
                 tenant_id,

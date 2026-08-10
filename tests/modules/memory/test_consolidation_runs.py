@@ -395,7 +395,7 @@ class TestRunConsolidationWritesAuditRow:
             cc_spawner=_FakeSpawner(output=output),
         )
 
-        detail = "runtime session returned no consolidation output"
+        detail = "Consolidation runtime returned no output."
         assert stats["groups_consolidated"] == 0
         assert stats["errors"] == [f"runtime session failed for switchboard: {detail}"]
         failure_updates = [
@@ -424,7 +424,7 @@ class TestRunConsolidationWritesAuditRow:
             cc_spawner=_FakeSpawner(success=False),
         )
 
-        detail = "unsuccessful runtime result contained no error detail"
+        detail = "Consolidation runtime reported a failure."
         assert stats["groups_consolidated"] == 0
         assert stats["errors"] == [f"runtime session failed for switchboard: {detail}"]
         failure_updates = [
@@ -464,9 +464,7 @@ class TestRunConsolidationWritesAuditRow:
         failure_updates = [
             args for query, args in pool.executes if "last_consolidation_error" in query
         ]
-        assert failure_updates[0][0] == (
-            "invalid consolidation episode evidence for new_facts[0]: expected a non-empty list"
-        )
+        assert failure_updates[0][0] == "Consolidation execution failed."
 
 
 # ---------------------------------------------------------------------------
