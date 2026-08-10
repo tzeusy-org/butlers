@@ -33,7 +33,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -85,6 +85,7 @@ import { TONE_COLORS } from "@/components/ui/StateDot";
 // ---------------------------------------------------------------------------
 
 const PENDING_PAGE_SIZE = 100;
+type ApprovalLane = "waiting" | "stalled";
 
 // Keyboard-triage decision timing (bu-86c4c.14 — Act loop / hot queue).
 // Keyboard verbs (a/d/x) are the fast, blind-fire path — a slip of the key is
@@ -109,11 +110,27 @@ const KEYBOARD_DEFER_HOURS = 24;
 // ---------------------------------------------------------------------------
 
 const Q = {
-  pending: (limit: number) => ["approvals", "flat", "waiting", limit] as const,
+  flat: (state: ApprovalLane, limit: number) => ["approvals", "flat", state, limit] as const,
   detail: (id: string) => ["approvals", "detail", id] as const,
   history: () => ["approvals", "history"] as const,
   policy: () => ["approvals", "policy"] as const,
 };
+
+function approvalLaneHref(lane: ApprovalLane, actionId?: string): string {
+  const path = actionId ? `/approvals/${actionId}` : "/approvals";
+  return lane === "stalled" ? `${path}?state=stalled` : path;
+}
+
+function invalidateRetryApprovalReads(qc: ReturnType<typeof useQueryClient>, actionId: string): void {
+  // The flat prefix covers every active lane and page size, including both
+  // waiting and stalled results. This only runs after the retry request has
+  // completed successfully; retry never removes a server-authoritative row
+  // optimistically.
+  qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+  qc.invalidateQueries({ queryKey: Q.history() });
+  qc.invalidateQueries({ queryKey: Q.detail(actionId) });
+  qc.invalidateQueries({ queryKey: ["approvals", "metrics"] });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1244,19 +1261,19 @@ function RetryDispatchButton({ actionId }: { actionId: string }) {
       if (ran) {
         toast.success("Dispatched");
       } else {
-        toast.warning("Still not run: no reachable butler");
+        toast.warning("Still not run");
       }
-      qc.invalidateQueries({ queryKey: Q.history() });
-      qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
-      qc.invalidateQueries({ queryKey: Q.detail(actionId) });
+      invalidateRetryApprovalReads(qc, actionId);
     },
     onError: (e: Error) => toast.error(`Retry failed: ${e.message}`),
   });
 
   return (
     <button
+      type="button"
       onClick={() => retryMut.mutate()}
       disabled={retryMut.isPending}
+      aria-busy={retryMut.isPending || undefined}
       className={[
         "shrink-0 py-0.5 px-2 rounded text-[10px] font-mono uppercase tracking-wide border",
         "border-border text-foreground transition-colors",
@@ -1377,7 +1394,7 @@ function HistorySection() {
             </Link>
             {/* Only the exact approved/null-result state is retryable. An
                 abandoned row is terminal and intentionally read-only. */}
-            {item.status === "approved" && item.execution_result == null && (
+            {item.status === "approved" && item.execution_result === null && (
               <RetryDispatchButton actionId={item.id} />
             )}
             <span className="font-mono text-xs text-muted-foreground shrink-0">
@@ -1580,7 +1597,9 @@ export default function ApprovalsPage() {
   // :id in the URL the rail falls back to the top-ranked pending item
   // (see effectiveSelected below) without forcing a redirect.
   const { id: routeId } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const activeLane: ApprovalLane = searchParams.get("state") === "stalled" ? "stalled" : "waiting";
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
   const [teachingActionId, setTeachingActionId] = useState<string | null>(null);
 
@@ -1595,8 +1614,8 @@ export default function ApprovalsPage() {
   // sweep — a safety net for the rare case the bus is down, not the primary
   // update path.
   const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
-    queryKey: Q.pending(pendingLimit),
-    queryFn: () => getApprovalsFlat("waiting", pendingLimit),
+    queryKey: Q.flat(activeLane, pendingLimit),
+    queryFn: () => getApprovalsFlat(activeLane, pendingLimit),
     refetchInterval: POLL_BUS_RECONCILE_MS,
     // Keep previous data visible while the expanded list is fetching to
     // prevent layout shifts when the limit is bumped (v5: keepPreviousData).
@@ -1637,10 +1656,12 @@ export default function ApprovalsPage() {
   // Rank by expiry urgency + blast radius rather than arrival order (JARVIS
   // audit move 9): summary.expires_at previously drove nothing, so an
   // approval about to expire looked identical to one that just arrived.
-  const rankedPending = useMemo(
-    () => [...(data?.data ?? [])].sort((a, b) => rankScore(b) - rankScore(a)),
-    [data],
-  );
+  const rankedPending = useMemo(() => {
+    const rows = data?.data ?? [];
+    return activeLane === "waiting"
+      ? [...rows].sort((a, b) => rankScore(b) - rankScore(a))
+      : rows;
+  }, [activeLane, data]);
   const pending = rankedPending;
 
   // Degraded fan-out (bu-jad4j.4): both approvals list endpoints fan across
@@ -1662,8 +1683,10 @@ export default function ApprovalsPage() {
     pendingSourcesDegraded.length > 0 ? (
       <div className="p-4">
         <SourceDegradedNote
-          label="Approvals queue"
-          detail={`${pendingSourcesDegraded.join(", ")} unreachable. Queue may be incomplete.`}
+          label={activeLane === "stalled" ? "Stalled approvals" : "Approvals queue"}
+          detail={`${pendingSourcesDegraded.join(", ")} unreachable. ${
+            activeLane === "stalled" ? "Stalled lane" : "Queue"
+          } may be incomplete.`}
           onRetry={() => void refetch()}
           testId="approvals-queue-degraded"
         />
@@ -1686,9 +1709,9 @@ export default function ApprovalsPage() {
           .slice(0, idx)
           .reverse()
           .find(isUsable)?.id;
-      navigate(nextId ? `/approvals/${nextId}` : "/approvals", { replace: true });
+      navigate(approvalLaneHref(activeLane, nextId), { replace: true });
     },
-    [navigate, rankedPending, routeId],
+    [activeLane, navigate, rankedPending, routeId],
   );
 
   // Optimistic decision flow (bu-approvals-fast-deny): a decision drops the
@@ -1770,8 +1793,8 @@ export default function ApprovalsPage() {
   );
 
   const selectApproval = useCallback(
-    (id: string) => navigate(`/approvals/${id}`, { replace: true }),
-    [navigate],
+    (id: string) => navigate(approvalLaneHref(activeLane, id), { replace: true }),
+    [activeLane, navigate],
   );
 
   // j/k roving focus + a/d/x decision verbs + u=undo, active anywhere on the
@@ -1786,7 +1809,7 @@ export default function ApprovalsPage() {
   const pendingIds = useMemo(() => pending.map((p) => p.id), [pending]);
 
   const approvalVerbs = useMemo<ListTriageVerb[]>(() => {
-    if (!effectiveSelected) return [];
+    if (!effectiveSelected || activeLane !== "waiting") return [];
     const id = effectiveSelected;
     if (scheduledDecisions.has(id)) {
       return [{
@@ -1833,7 +1856,7 @@ export default function ApprovalsPage() {
         },
       },
     ];
-  }, [approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions]);
+  }, [activeLane, approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions]);
 
   const { hints: triageHints } = useListTriage({
     ids: pendingIds,
@@ -1957,6 +1980,42 @@ export default function ApprovalsPage() {
       >
         {/* Left rail */}
         <div className="w-full md:w-72 shrink-0 border-b md:border-b-0 md:border-r border-border flex flex-col min-h-0 max-h-64 md:max-h-none">
+          <nav
+            aria-label="Approval lanes"
+            className="flex items-center gap-1 border-b border-border p-2"
+          >
+            <Link
+              to="/approvals"
+              aria-current={activeLane === "waiting" ? "page" : undefined}
+              className={[
+                "inline-flex min-h-8 items-center rounded px-2 text-xs font-mono uppercase tracking-wide",
+                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+                activeLane === "waiting"
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              Waiting
+            </Link>
+            <Link
+              to="/approvals?state=stalled"
+              aria-current={activeLane === "stalled" ? "page" : undefined}
+              className={[
+                "inline-flex min-h-8 items-center rounded px-2 text-xs font-mono uppercase tracking-wide",
+                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+                activeLane === "stalled"
+                  ? "bg-foreground/10 text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              Stalled
+            </Link>
+          </nav>
+          <div className="px-3 py-2 border-b border-border">
+            <h2 className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+              {activeLane === "stalled" ? "Stalled approvals" : "Waiting approvals"}
+            </h2>
+          </div>
           <div className="flex-1 overflow-y-auto">
             <QueryBoundary
               isLoading={isLoading}
@@ -1964,7 +2023,7 @@ export default function ApprovalsPage() {
               error={error}
               isEmpty={pending.length === 0}
               onRetry={() => void refetch()}
-              sourceLabel="the approvals queue"
+              sourceLabel={activeLane === "stalled" ? "the stalled approvals lane" : "the approvals queue"}
               loadingFallback={
                 <div className="p-4 text-sm text-muted-foreground font-mono">
                   loading…
@@ -1978,7 +2037,7 @@ export default function ApprovalsPage() {
                 // reachable-but-empty queue keeps the honest empty state.
                 queueDegradedNote ?? (
                   <div className="p-4 text-sm text-muted-foreground font-mono">
-                    No pending approvals.
+                    {activeLane === "stalled" ? "No stalled approvals." : "No pending approvals."}
                   </div>
                 )
               }

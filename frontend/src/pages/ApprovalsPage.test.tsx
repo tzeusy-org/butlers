@@ -822,7 +822,7 @@ function makeHistoryItem(
   id: string,
   status: string,
   toolName = "send_email",
-  executionResult: Record<string, unknown> | null = null,
+  executionResult: Record<string, unknown> | null | undefined = null,
 ) {
   return {
     id,
@@ -1458,6 +1458,24 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(findButton(container, "Retry dispatch")).toBeUndefined();
   });
 
+  it("does not render Retry dispatch when an approved history row omits execution_result", async () => {
+    const rowWithoutResult = makeHistoryItem(
+      "h-missing-result",
+      "approved",
+    );
+    Reflect.deleteProperty(rowWithoutResult, "execution_result");
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([rowWithoutResult]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="history-row-link"]') !== null,
+    );
+
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
   it("calls retryApproval and toasts success when retry dispatches", async () => {
     vi.mocked(getApprovalsHistory).mockReturnValue(
       makeApiResponse([makeHistoryItem("h-approved", "approved")]) as AnyMock,
@@ -1474,6 +1492,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
       }) as AnyMock,
     );
 
+    const invalidateQueries = vi.spyOn(qc, "invalidateQueries");
     renderPage();
     await flushUntil(
       () => findButton(container, "Retry dispatch") !== undefined,
@@ -1489,6 +1508,74 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
 
     expect(retryApproval).toHaveBeenCalledWith("h-approved");
     expect(toast.success).toHaveBeenCalledWith("Dispatched");
+    expect(invalidateQueries.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(
+      expect.arrayContaining([
+        ["approvals", "flat"],
+        ["approvals", "history"],
+        ["approvals", "detail", "h-approved"],
+        ["approvals", "metrics"],
+      ]),
+    );
+  });
+
+  it("reports a completed non-dispatch retry outcome without inventing a cause", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([makeHistoryItem("h-still-stalled", "approved")]) as AnyMock,
+    );
+    vi.mocked(retryApproval).mockReturnValue(
+      makeApiResponse({
+        id: "h-still-stalled",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "approved",
+        requested_at: "2026-05-17T10:00:00Z",
+        dispatched: false,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Retry dispatch")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(toast.warning).toHaveBeenCalledWith("Still not run");
+    expect(toast.warning).not.toHaveBeenCalledWith("Still not run: no reachable butler");
+  });
+
+  it("keeps the retryable row and approval reads untouched when retry fails", async () => {
+    vi.mocked(getApprovalsHistory).mockReturnValue(
+      makeApiResponse([makeHistoryItem("h-retry-error", "approved")]) as AnyMock,
+    );
+    const retryFailure = Promise.reject(
+      new Error("executor rejected: tool arguments were invalid"),
+    );
+    // The mutation consumes this rejection; attach a test-side handler too so
+    // Vitest never reports it as unhandled before React schedules onError.
+    void retryFailure.catch(() => undefined);
+    vi.mocked(retryApproval).mockReturnValue(retryFailure as AnyMock);
+    const invalidateQueries = vi.spyOn(qc, "invalidateQueries");
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Retry dispatch")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="history-row-link"]')).not.toBeNull();
+    expect(toast.error).toHaveBeenCalledWith(
+      "Retry failed: executor rejected: tool arguments were invalid",
+    );
+    expect(invalidateQueries).not.toHaveBeenCalled();
   });
 
   it("renders resolved entity names in a 'Referenced Entities' block (bu-4ni21)", async () => {
@@ -1924,6 +2011,147 @@ describe("ApprovalsPage — stalled (approved-but-undispatched) state (bu-86c4c.
       (el) => el.textContent?.trim() === "stalled",
     );
     expect(stalledLabel?.className).not.toMatch(/text-green/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// URL-backed stalled lane (bu-kqnum.10.3)
+// ---------------------------------------------------------------------------
+
+describe("ApprovalsPage — URL-backed stalled lane", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    resetPageMocks();
+    navigateCalls.length = 0;
+    vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
+    vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
+    vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) =>
+        makeApiResponse({
+          id,
+          title: "Send Email (general)",
+          butler: "general",
+          created_at: "2026-05-17T10:00:00Z",
+          expires_at: null,
+          why: "The owner approved this.",
+          evidence: [],
+          proposed_action: { tool_name: "send_email", tool_args: {}, agent_summary: null },
+          status: "approved",
+          decided_by: "human:owner",
+          decided_at: "2026-05-17T10:05:00Z",
+          execution_result: null,
+          target_contact: null,
+        })) as AnyMock,
+    );
+    qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function renderPage(initialEntry: string) {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <QueryClientProvider client={qc}>
+            <Routes>
+              <Route path="/approvals" element={<ApprovalsPage />} />
+              <Route path="/approvals/:id" element={<ApprovalsPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("opens a direct stalled URL as a semantic stalled lane and preserves it for dossier selection", async () => {
+    const stalled = {
+      ...makeSummary("stalled-1", "send_email"),
+      status: "approved",
+      execution_result: null,
+    };
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        makeApiResponse(state === "stalled" ? [stalled] : [makeSummary("waiting-1")])) as AnyMock,
+    );
+
+    renderPage("/approvals?state=stalled");
+    await flushUntil(() => container.querySelector('[data-testid="rail-item"]') !== null);
+
+    expect(getApprovalsFlat).toHaveBeenCalledWith("stalled", 100);
+    expect(container.textContent).toContain("Stalled approvals");
+    expect(container.textContent).not.toContain("Approve selected");
+
+    const laneNav = container.querySelector('nav[aria-label="Approval lanes"]');
+    const stalledLink = laneNav?.querySelector<HTMLAnchorElement>(
+      'a[href="/approvals?state=stalled"]',
+    );
+    expect(laneNav).not.toBeNull();
+    expect(stalledLink?.getAttribute("aria-current")).toBe("page");
+    expect(stalledLink?.className).toContain("focus-visible:outline");
+
+    navigateCalls.length = 0;
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="rail-item"]')?.click();
+      await flush();
+    });
+    expect(navigateCalls).toContainEqual([
+      "/approvals/stalled-1?state=stalled",
+      { replace: true },
+    ]);
+  });
+
+  it("retains keyboard navigation but disables approval shortcuts in the stalled lane", async () => {
+    const stalled = (id: string) => ({
+      ...makeSummary(id, "send_email"),
+      status: "approved",
+      execution_result: null,
+    });
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        makeApiResponse(state === "stalled" ? [stalled("stalled-1"), stalled("stalled-2")] : [])) as AnyMock,
+    );
+
+    renderPage("/approvals/stalled-1?state=stalled");
+    await flushUntil(
+      () => container.querySelectorAll('[data-testid="rail-item"]').length === 2,
+    );
+    navigateCalls.length = 0;
+    vi.mocked(toast).mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "j", bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+    expect(navigateCalls).toContainEqual([
+      "/approvals/stalled-2?state=stalled",
+      { replace: true },
+    ]);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }),
+      );
+      await flush();
+    });
+    expect(toast).not.toHaveBeenCalled();
+    expect(approveApproval).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-pending-verb="approve"]')).toBeNull();
   });
 });
 

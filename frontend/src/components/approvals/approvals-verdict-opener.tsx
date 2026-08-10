@@ -5,10 +5,10 @@
 // Composes the pending queue + its whole-population stalled-radar metadata
 // into one synthesized verdict line via the shared DispatchVerdict primitive:
 // "3 waiting; nearest expires in 40m; one stalled action never ran". The
-// stalled aggregate intentionally has no invented row-level link: it can be
-// outside the bounded history window. ("stalled" not "approved": this page
-// never renders the raw "approved" status text anywhere -- see
-// ApprovalsPage's statusLabel doctrine comment.)
+// stalled aggregate links to the truthful filtered lane, never an invented
+// row-level destination: it can be outside the bounded history window.
+// ("stalled" not "approved": this page never renders the raw "approved"
+// status text anywhere -- see ApprovalsPage's statusLabel doctrine comment.)
 // ---------------------------------------------------------------------------
 
 import type { ApprovalSummary } from "@/api/index.ts";
@@ -75,11 +75,13 @@ function buildClauses(
     clauses.push({
       key: "stalled",
       text: "one stalled action never ran",
+      href: "/approvals?state=stalled",
     });
   } else if (stalledCount > 1) {
     clauses.push({
       key: "stalled",
       text: `${stalledCount} stalled actions never ran`,
+      href: "/approvals?state=stalled",
     });
   }
 
