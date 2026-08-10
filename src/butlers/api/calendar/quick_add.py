@@ -154,6 +154,7 @@ async def parse_quick_add(
     butler_name: str | None = None,
     timezone: str | None = None,
     now_iso: str | None = None,
+    codex_auth_authority: CredentialStore | None = None,
 ) -> QuickAddParseOutcome:
     """Parse ``text`` into a draft event via the cheap-tier LLM. Never writes.
 
@@ -177,9 +178,10 @@ async def parse_quick_add(
         pool,
         butler_name=effective_butler,
         complexity_tier=Complexity.CHEAP,
-        # The API router supplies DatabaseManager.credential_shared_pool(),
-        # so it is safe and necessary to make the Codex authority explicit.
-        credential_store=CredentialStore(pool),
+        # This helper may be called with a schema-local model pool.  It must
+        # never promote that pool to a Codex credential authority; the router
+        # injects a separately selected authority when it knows one.
+        codex_auth_authority=codex_auth_authority,
     )
     try:
         raw = (
@@ -188,8 +190,11 @@ async def parse_quick_add(
                 system_prompt=_SYSTEM_PROMPT,
             )
         ).strip()
-    except Exception as exc:
-        logger.warning("quick-add: LLM parse failed: %s", exc)
+    except Exception:
+        # A catalog-selected Codex runtime can surface provider diagnostics in
+        # its exception.  This endpoint has an honest degraded response, so
+        # keep logs value-free instead of retaining that provider text.
+        logger.warning("quick-add: LLM parse failed safely")
         return QuickAddParseOutcome(parse_available=False, draft=None, reason=_REASON_UNPARSEABLE)
 
     draft = _coerce_draft(raw)

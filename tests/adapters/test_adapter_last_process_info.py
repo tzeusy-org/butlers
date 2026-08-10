@@ -6,11 +6,13 @@ Verifies adapters populate last_process_info after invoke() completes
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from butlers.core.runtimes import ClaudeCodeAdapter, CodexAdapter, GeminiAdapter, RuntimeAdapter
+from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 
 pytestmark = pytest.mark.unit
 
@@ -27,6 +29,45 @@ _SUBPROCESS_ADAPTERS = [
         GeminiAdapter, "gemini_binary", "/usr/bin/gemini", _GEMINI_EXEC, "gemini", id="gemini"
     ),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _authorize_codex_process_info_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model an already-selected authority for Codex process-info behavior.
+
+    Authority selection and fail-closed behavior are covered by the dedicated
+    Codex auth suite. This generic adapter contract only exercises metadata
+    recorded after an authorized subprocess is launched.
+    """
+
+    async def _reconcile(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    async def _finalize(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        expected_store_value: str | None,
+        authority_known: bool,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del expected_store_value, authority_known, auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    monkeypatch.setattr(CodexAdapter, "_reconcile_canonical_auth", _reconcile)
+    monkeypatch.setattr(CodexAdapter, "_finalize_canonical_auth", _finalize)
 
 
 def test_base_adapter_last_process_info_is_none():

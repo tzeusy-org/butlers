@@ -27,6 +27,7 @@ import butlers.tools.health as health_tools
 from butlers.api.app import create_app
 from butlers.api.briefing.cache import BriefingCache
 from butlers.api.db import DatabaseManager
+from butlers.credential_store import CredentialStore
 
 pytestmark = pytest.mark.unit
 
@@ -109,6 +110,36 @@ def _client(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
+def _briefing_db(*, shared_pool=None, shared_pool_unavailable: bool = False):
+    """Build the minimum DB manager shape used by the direct route tests."""
+    sw_pool = AsyncMock()
+    sw_pool.fetchrow.return_value = {"id": "owner-1"}
+    health_pool = AsyncMock()
+
+    def pool_for(name):
+        return sw_pool if name == "switchboard" else health_pool
+
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.side_effect = pool_for
+    if shared_pool_unavailable:
+        db.credential_shared_pool.side_effect = KeyError("Shared credential pool is not configured")
+    else:
+        db.credential_shared_pool.return_value = shared_pool
+    return db
+
+
+def _briefing_state() -> dict:
+    return {
+        "now": _NOW,
+        "summary": {
+            "recent_measurements": [],
+            "active_medications": [],
+            "active_conditions": [],
+        },
+        "insights": [],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Templated-only by default (cost flag off)
 # ---------------------------------------------------------------------------
@@ -158,6 +189,78 @@ async def test_llm_clean_text_sets_source_llm(monkeypatch):
     assert data["elaboration"] == clean
 
 
+async def test_health_llm_uses_dedicated_shared_pool_for_codex_authority(monkeypatch):
+    """The health route never treats its Switchboard pool as Codex authority."""
+    monkeypatch.setenv("HEALTH_BRIEFING_LLM_ENABLED", "1")
+    shared_pool = MagicMock()
+    db = _briefing_db(shared_pool=shared_pool)
+    monkeypatch.setattr(_health_router, "_owner_local_now", AsyncMock(return_value=_NOW))
+    monkeypatch.setattr(
+        _health_router,
+        "_fetch_health_briefing_state",
+        AsyncMock(return_value=_briefing_state()),
+    )
+    dispatcher = MagicMock()
+    dispatcher.call = AsyncMock(
+        return_value="The health log holds no active medications or tracked conditions."
+    )
+    dispatcher_ctor = MagicMock(return_value=dispatcher)
+    monkeypatch.setattr(_health_router, "DiscretionDispatcher", dispatcher_ctor)
+
+    response = await _health_router.get_health_briefing(db=db, cache=BriefingCache())
+
+    assert response.data.source == "llm"
+    authority = dispatcher_ctor.call_args.kwargs["codex_auth_authority"]
+    assert isinstance(authority, CredentialStore)
+    assert authority.pool is shared_pool
+    assert authority.require_system_global_pool() is shared_pool
+
+
+async def test_health_llm_missing_shared_pool_falls_back_without_local_authority(monkeypatch):
+    """Unavailable shared credentials leave Codex authority unset and safely fall back."""
+    monkeypatch.setenv("HEALTH_BRIEFING_LLM_ENABLED", "1")
+    db = _briefing_db(shared_pool_unavailable=True)
+    monkeypatch.setattr(_health_router, "_owner_local_now", AsyncMock(return_value=_NOW))
+    monkeypatch.setattr(
+        _health_router,
+        "_fetch_health_briefing_state",
+        AsyncMock(return_value=_briefing_state()),
+    )
+    dispatcher = MagicMock()
+    dispatcher.call = AsyncMock(side_effect=RuntimeError("Codex authority unavailable"))
+    dispatcher_ctor = MagicMock(return_value=dispatcher)
+    monkeypatch.setattr(_health_router, "DiscretionDispatcher", dispatcher_ctor)
+
+    response = await _health_router.get_health_briefing(db=db, cache=BriefingCache())
+
+    assert response.data.source == "fallback"
+    assert dispatcher_ctor.call_args.kwargs["codex_auth_authority"] is None
+    db.credential_shared_pool.assert_called_once_with()
+
+
+async def test_health_llm_failure_redacts_provider_diagnostic(monkeypatch, caplog):
+    """Codex-capable briefing failures preserve context without retaining provider output."""
+    monkeypatch.setenv("HEALTH_BRIEFING_LLM_ENABLED", "1")
+    db = _briefing_db(shared_pool=MagicMock())
+    monkeypatch.setattr(_health_router, "_owner_local_now", AsyncMock(return_value=_NOW))
+    monkeypatch.setattr(
+        _health_router,
+        "_fetch_health_briefing_state",
+        AsyncMock(return_value=_briefing_state()),
+    )
+    marker = "opaque-provider-diagnostic"
+    dispatcher = MagicMock()
+    dispatcher.call = AsyncMock(side_effect=RuntimeError(marker))
+    monkeypatch.setattr(_health_router, "DiscretionDispatcher", MagicMock(return_value=dispatcher))
+
+    with caplog.at_level("WARNING", logger=_health_router.__name__):
+        response = await _health_router.get_health_briefing(db=db, cache=BriefingCache())
+
+    assert response.data.source == "fallback"
+    assert marker not in caplog.text
+    assert marker not in response.data.elaboration
+
+
 # ---------------------------------------------------------------------------
 # Non-diagnostic voice-lint rejection
 # ---------------------------------------------------------------------------
@@ -188,7 +291,7 @@ async def test_llm_timeout_returns_templated(monkeypatch):
     """An LLM timeout/transport error -> HTTP 200 templated fallback (never raises)."""
     monkeypatch.setenv("HEALTH_BRIEFING_LLM_ENABLED", "1")
 
-    async def boom(pool, state, state_class):
+    async def boom(pool, state, state_class, *, codex_auth_authority=None):
         raise TimeoutError("transport timed out")
 
     monkeypatch.setattr(_health_router, "elaborate_health_llm", boom)

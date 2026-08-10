@@ -83,6 +83,7 @@ from butlers.api.models import ApiResponse
 from butlers.api.pricing import PricingConfig
 from butlers.core.general_settings import load_general_settings
 from butlers.core.qa.patrol_status import is_valid_patrol_status
+from butlers.credential_store import CredentialStore
 from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
@@ -766,6 +767,7 @@ async def _compose_briefing(
     owner_id: Any,
     pool: Any,
     *,
+    codex_auth_authority: Any | None = None,
     cache_generation: int | None = None,
 ) -> dict:
     """Compose a fresh Briefing dict and populate the cache when still current.
@@ -824,7 +826,12 @@ async def _compose_briefing(
 
     if state_class != "degraded":
         try:
-            llm_text = await elaborate_llm(pool, state, state_class)
+            llm_text = await elaborate_llm(
+                pool,
+                state,
+                state_class,
+                codex_auth_authority=codex_auth_authority,
+            )
             if llm_text:
                 if voice_lint_passes(llm_text):
                     elaboration = llm_text
@@ -892,9 +899,17 @@ async def get_dashboard_briefing(
         sw_pool = db.pool("switchboard")
     except KeyError:
         raise HTTPException(status_code=503, detail="Switchboard database is not available")
+    codex_auth_authority: CredentialStore | None = None
     try:
         settings_pool = db.credential_shared_pool()
+        codex_auth_authority = CredentialStore(
+            settings_pool,
+            system_global_pool=settings_pool,
+        )
     except KeyError:
+        # Keep the established state-read fallback, but never mistake the
+        # Switchboard pool for Codex's global credential authority. A
+        # catalog-selected Codex elaboration will fail closed instead.
         settings_pool = sw_pool
 
     # Owner-only gate (HTTP 403 for non-owner, passes 401 from middleware).
@@ -921,6 +936,7 @@ async def get_dashboard_briefing(
         cache,
         owner_id,
         sw_pool,
+        codex_auth_authority=codex_auth_authority,
         cache_generation=cache_generation,
     )
     return ApiResponse(data=Briefing(**briefing_dict))

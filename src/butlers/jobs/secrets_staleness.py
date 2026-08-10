@@ -354,9 +354,15 @@ async def _dispatch_probe(db: DatabaseManager, target: ProbeTarget) -> ProbeOutc
             skip_reason=skip_reason,
         )
     except Exception:
-        logger.exception(
-            "secrets_staleness: probe dispatch failed for key=%s", target.canonical_key
-        )
+        if target.family == "cli" and target.cli_provider == "codex":
+            # The scheduled path reaches the same Codex device-auth probe as
+            # the dashboard. Its exception can retain provider diagnostics,
+            # so leave an actionable category without logging raw detail.
+            logger.warning("secrets_staleness: Codex probe dispatch failed safely")
+        else:
+            logger.exception(
+                "secrets_staleness: probe dispatch failed for key=%s", target.canonical_key
+            )
         return ProbeOutcome(
             key=target.canonical_key,
             family=target.family,

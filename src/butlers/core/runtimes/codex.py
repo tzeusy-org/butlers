@@ -31,6 +31,7 @@ import pwd
 import re
 import shutil
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -92,6 +93,42 @@ _BENIGN_STDERR_LINES = frozenset(
     }
 )
 _BENIGN_STDERR_PREFIXES = ("WARNING: proceeding, even though we could not update PATH:",)
+
+# Runtime/provider diagnostics are untrusted input.  They are useful for
+# failover classification, but must not retain credential-shaped values in
+# logs, session metadata, or re-raised errors.  Keep the labels/phrases so
+# operators still see actionable categories (401, rate limit, MCP failure).
+_SENSITIVE_RUNTIME_DIAGNOSTIC_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"(?i)([\"']?\b(?:proxy[_-]?)?authorization\b[\"']?\s*[:=]\s*[\"']?)"
+            r"(?:(?:bearer|basic|token)\s+)?[^\"'\s,}\]]+"
+        ),
+        r"\1<redacted>",
+    ),
+    (
+        re.compile(
+            r"(?i)([\"']?\b(?:access|refresh|id|session)?[_-]?token\b[\"']?\s*[:=]\s*[\"']?)"
+            r"[^\"'\s,}\]]+"
+        ),
+        r"\1<redacted>",
+    ),
+    (
+        re.compile(
+            r"(?i)([\"']?\b(?:api[_-]?key|secret|password)\b[\"']?\s*[:=]\s*[\"']?)"
+            r"[^\"'\s,}\]]+"
+        ),
+        r"\1<redacted>",
+    ),
+)
+
+
+def _redact_sensitive_runtime_diagnostic(text: str) -> str:
+    """Remove credential-shaped values from untrusted Codex diagnostics."""
+    redacted = text
+    for pattern, replacement in _SENSITIVE_RUNTIME_DIAGNOSTIC_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
 
 
 @dataclass
@@ -676,7 +713,12 @@ def _terminate_prewarm_process(proc: asyncio.subprocess.Process) -> None:
     asyncio.create_task(_drain_terminated_prewarm_process(proc))
 
 
-async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
+async def run_codex_pre_warm(
+    codex_dir: Path,
+    codex_binary: str,
+    *,
+    authority_preflight: Callable[[], Awaitable[bool]],
+) -> bool:
     """Run ``codex login status`` under the cross-process refresh lock.
 
     Forces a token refresh if the stored credentials are stale, so that all
@@ -686,6 +728,11 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
     - On first ``CodexAdapter.invoke()`` per process (startup pre-warm).
     - After a successful CLI auth flow for the ``codex`` provider.
 
+    ``authority_preflight`` is deliberately required.  It runs while the
+    refresh lock is held and immediately before the child process is created,
+    so a status probe cannot fall back to a daemon-local auth file after a
+    system-global authority becomes unavailable or rotates.
+
     Ordinary failures are best-effort: they are logged and swallowed so the
     caller's control flow is never disrupted. Cancellation is deliberately
     re-raised after killing and detaching a child-process reaper so an
@@ -694,6 +741,12 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
     proc: asyncio.subprocess.Process | None = None
     try:
         async with _codex_refresh_lock(codex_dir):
+            if not await authority_preflight():
+                logger.warning(
+                    "codex pre-warm: system-global authority unavailable; "
+                    "refusing login-status subprocess"
+                )
+                return False
             proc = await asyncio.create_subprocess_exec(
                 codex_binary,
                 "login",
@@ -707,7 +760,7 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
             except TimeoutError:
                 _terminate_prewarm_process(proc)
                 logger.warning("codex pre-warm: login status timed out after 30s")
-                return
+                return False
             if proc.returncode != 0:
                 stderr_snip = stderr_bytes.decode("utf-8", errors="replace").strip()[:200]
                 logger.warning(
@@ -717,6 +770,7 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
                 )
             else:
                 logger.debug("codex pre-warm: login status OK")
+            return True
     except asyncio.CancelledError:
         # An invocation-wide auth budget may cancel this best-effort warmup.
         # ``communicate`` cancellation does not guarantee the child is gone,
@@ -726,10 +780,17 @@ async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
             _terminate_prewarm_process(proc)
         raise
     except Exception:
-        logger.warning("codex pre-warm: unexpected error", exc_info=True)
+        # Do not include driver exception detail: it can retain credential
+        # bind context. A future invocation will re-check the authority.
+        logger.warning("codex pre-warm: unexpected safe failure")
+    return False
 
 
-async def _maybe_speculative_codex_prewarm(codex_binary: str) -> None:
+async def _maybe_speculative_codex_prewarm(
+    codex_binary: str,
+    *,
+    authority_preflight: Callable[[], Awaitable[bool]],
+) -> None:
     """Best-effort, fire-and-forget codex token pre-warm (bu-ep4ks.13 follow-up / bu-k9te9).
 
     Mirrors the exact condition ``CodexAdapter.invoke()`` uses to decide whether the
@@ -758,10 +819,16 @@ async def _maybe_speculative_codex_prewarm(codex_binary: str) -> None:
         if prewarm_key in CodexAdapter._prewarm_done:
             return
         logger.debug("codex speculative pre-warm: running (prewarm_key=%s)", prewarm_key)
-        await run_codex_pre_warm(real_codex_dir, codex_binary)
-        CodexAdapter._prewarm_done.add(prewarm_key)
+        if await run_codex_pre_warm(
+            real_codex_dir,
+            codex_binary,
+            authority_preflight=authority_preflight,
+        ):
+            CodexAdapter._prewarm_done.add(prewarm_key)
     except Exception:
-        logger.debug("codex speculative pre-warm failed (non-fatal)", exc_info=True)
+        # The status helper can surface provider diagnostics.  Speculative
+        # prewarm is advisory, so retain no exception detail here.
+        logger.debug("codex speculative pre-warm failed safely (non-fatal)")
 
 
 def _extract_text_field(value: Any) -> str | None:
@@ -902,6 +969,13 @@ def _extract_stdout_json_detail(stdout: str) -> tuple[str | None, bool]:
 
 
 def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
+    """Select a useful, value-free error detail from Codex process output."""
+    return _redact_sensitive_runtime_diagnostic(
+        _select_error_detail_unredacted(stderr, stdout, returncode)
+    )
+
+
+def _select_error_detail_unredacted(stderr: str, stdout: str, returncode: int) -> str:
     """Prefer actionable Codex failure details over benign stderr noise.
 
     A structured ``turn.failed`` (or terminal ``error``) event on stdout is the
@@ -1058,13 +1132,10 @@ def _render_structured_error_value(value: Any) -> str | None:
                 preferred_parts.append(nested)
         if preferred_parts:
             return " | ".join(dict.fromkeys(preferred_parts))
-        try:
-            logger.debug(
-                "codex.adapter.structured_error.unrecognized payload=%s",
-                json.dumps(value, sort_keys=True),
-            )
-        except (TypeError, ValueError):
-            logger.debug("codex.adapter.structured_error.unrecognized payload=<unserializable>")
+        # Structured provider payloads can contain auth material.  Preserve
+        # only the categorical diagnostic rather than serializing an unknown
+        # shape into debug logs.
+        logger.debug("codex.adapter.structured_error.unrecognized payload=<redacted>")
         return _UNRECOGNIZED_STRUCTURED_ERROR
     if isinstance(value, list):
         parts = [_render_structured_error_value(item) for item in value]
@@ -1526,6 +1597,35 @@ class CodexAdapter(RuntimeAdapter):
             return self._codex_binary
         return _find_codex_binary()
 
+    @staticmethod
+    def _authority_snapshot_can_launch(snapshot: CodexAuthSyncResult) -> bool:
+        """Return whether *snapshot* authorizes a new Codex subprocess.
+
+        A confirmed missing row is not an authorization to reuse a local file:
+        an explicit device-auth flow is the only supported bootstrap path.  The
+        raw snapshot is intentionally never surfaced in a log or exception.
+        """
+        return snapshot.authority_known and snapshot.expected_store_value is not None
+
+    def _refuse_new_codex_subprocess(self) -> None:
+        """Record and raise the fail-closed authority boundary."""
+        self._last_process_info = {
+            "pid": None,
+            "exit_code": None,
+            "command": "(not launched: system-global authority unavailable)",
+            "stderr": "(system-global Codex authority unavailable)",
+            "runtime_type": "codex",
+            "is_pre_tool_call": True,
+            "authority_unavailable": True,
+        }
+        logger.warning(
+            "codex: system-global authority unavailable; refusing new Codex subprocess (butler=%s)",
+            self._butler_name,
+        )
+        raise RuntimeError(
+            "system-global Codex authority unavailable; refusing new Codex subprocess"
+        )
+
     async def _reconcile_canonical_auth(
         self,
         token_path: Path | None,
@@ -1542,6 +1642,18 @@ class CodexAdapter(RuntimeAdapter):
         from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 
         if token_path is None or self._credential_store is None:
+            return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+
+        try:
+            self._credential_store.require_system_global_pool()
+        except Exception:
+            # No local or fallback pool is an authority substitute. Avoid
+            # exception detail because pool/driver errors can retain secrets.
+            logger.warning(
+                "codex: no explicit system-global authority is configured; "
+                "refusing new Codex subprocess (butler=%s)",
+                self._butler_name,
+            )
             return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
 
         timeout_s = (
@@ -1575,10 +1687,9 @@ class CodexAdapter(RuntimeAdapter):
             # Auth propagation is intentionally best-effort.  Never include
             # exception detail here: credential-store errors can embed secrets.
             logger.warning(
-                "codex: canonical auth reconciliation failed; continuing with local auth "
-                "(butler=%s path=%s)",
+                "codex: canonical auth reconciliation failed; refusing new Codex subprocess "
+                "(butler=%s)",
                 self._butler_name,
-                token_path,
             )
             return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
         finally:
@@ -1603,6 +1714,11 @@ class CodexAdapter(RuntimeAdapter):
         from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 
         if token_path is None or self._credential_store is None:
+            return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+
+        try:
+            self._credential_store.require_system_global_pool()
+        except Exception:
             return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
 
         timeout_s = (
@@ -1636,10 +1752,9 @@ class CodexAdapter(RuntimeAdapter):
             return result
         except Exception:
             logger.warning(
-                "codex: canonical auth finalization failed; preserving local auth "
-                "(butler=%s path=%s)",
+                "codex: canonical auth finalization failed; leaving canonical auth unchanged "
+                "(butler=%s)",
                 self._butler_name,
-                token_path,
             )
             return CodexAuthSyncResult(expected_store_value=None, authority_known=False)
         finally:
@@ -1650,8 +1765,9 @@ class CodexAdapter(RuntimeAdapter):
         self,
         codex_dir: Path,
         binary: str,
+        token_path: Path | None,
         auth_sync_budget: _CodexAuthSyncBudget,
-    ) -> bool:
+    ) -> tuple[bool, CodexAuthSyncResult]:
         """Run on-path prewarm only within this invocation's auth allowance.
 
         ``codex login status`` may wait on the refresh lock or network. It is
@@ -1668,30 +1784,51 @@ class CodexAdapter(RuntimeAdapter):
                 "allowance was exhausted (butler=%s)",
                 self._butler_name,
             )
-            return False
+            from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+            return False, CodexAuthSyncResult(expected_store_value=None, authority_known=False)
+
+        from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+        authority_snapshot = CodexAuthSyncResult(
+            expected_store_value=None,
+            authority_known=False,
+        )
+
+        async def _authority_preflight() -> bool:
+            nonlocal authority_snapshot
+            authority_snapshot = await self._reconcile_canonical_auth(
+                token_path,
+                auth_sync_budget=auth_sync_budget,
+            )
+            return self._authority_snapshot_can_launch(authority_snapshot)
 
         started = time.monotonic()
         try:
-            await asyncio.wait_for(
-                run_codex_pre_warm(codex_dir, binary),
+            completed = await asyncio.wait_for(
+                run_codex_pre_warm(
+                    codex_dir,
+                    binary,
+                    authority_preflight=_authority_preflight,
+                ),
                 timeout=timeout_s,
             )
-            return True
+            return completed, authority_snapshot
         except TimeoutError:
             logger.warning(
                 "codex invoke: startup pre-warm exceeded bounded auth synchronization "
                 "allowance (butler=%s)",
                 self._butler_name,
             )
-            return False
+            return False, authority_snapshot
         except Exception:
-            # A pre-warm is an optimization. Keep a locally-authenticated
-            # provider invocation runnable even when it fails unexpectedly.
+            # A pre-warm is an optimization; authority failure is handled by
+            # the caller before any normal Codex subprocess can be created.
             logger.warning(
                 "codex invoke: startup pre-warm failed; continuing with normal spawn (butler=%s)",
                 self._butler_name,
             )
-            return False
+            return False, authority_snapshot
         finally:
             auth_sync_budget.consume(time.monotonic() - started)
 
@@ -1709,8 +1846,27 @@ class CodexAdapter(RuntimeAdapter):
             token_path,
             auth_sync_budget=auth_sync_budget,
         )
+        if not self._authority_snapshot_can_launch(authority_snapshot):
+            logger.warning(
+                "codex speculative pre-warm: system-global authority unavailable; "
+                "skipping login-status subprocess (butler=%s)",
+                self._butler_name,
+            )
+            return
+
+        async def _authority_preflight() -> bool:
+            nonlocal authority_snapshot
+            authority_snapshot = await self._reconcile_canonical_auth(
+                token_path,
+                auth_sync_budget=auth_sync_budget,
+            )
+            return self._authority_snapshot_can_launch(authority_snapshot)
+
         try:
-            await _maybe_speculative_codex_prewarm(self._get_binary())
+            await _maybe_speculative_codex_prewarm(
+                self._get_binary(),
+                authority_preflight=_authority_preflight,
+            )
         finally:
             # ``codex login status`` can itself rotate auth.  Finalize using
             # the snapshot captured before it began, so a newer dashboard
@@ -1818,6 +1974,8 @@ class CodexAdapter(RuntimeAdapter):
             auth_token_path,
             auth_sync_budget=auth_sync_budget,
         )
+        if not self._authority_snapshot_can_launch(auth_authority_snapshot):
+            self._refuse_new_codex_subprocess()
 
         # --- Cross-process refresh-token serialisation -----------------------
         # When the on-disk auth.json exists but the access_token is near expiry
@@ -1844,11 +2002,17 @@ class CodexAdapter(RuntimeAdapter):
             # First invoke() for this process on a token that looks stale:
             # run a pre-warm to refresh the token before the actual spawn.
             logger.debug("codex invoke: running startup pre-warm (prewarm_key=%s)", _prewarm_key)
-            prewarm_completed = await self._run_prewarm_with_auth_sync_budget(
+            (
+                prewarm_completed,
+                prewarm_authority_snapshot,
+            ) = await self._run_prewarm_with_auth_sync_budget(
                 real_codex_dir,
                 binary,
+                auth_token_path,
                 auth_sync_budget,
             )
+            if not self._authority_snapshot_can_launch(prewarm_authority_snapshot):
+                self._refuse_new_codex_subprocess()
             if prewarm_completed:
                 CodexAdapter._prewarm_done.add(_prewarm_key)
             # A successful pre-warm may have rotated the auth document.  Bind
@@ -1856,10 +2020,12 @@ class CodexAdapter(RuntimeAdapter):
             # so an operator refresh that won in the meantime remains current.
             auth_authority_snapshot = await self._finalize_canonical_auth(
                 auth_token_path,
-                expected_store_value=auth_authority_snapshot.expected_store_value,
-                authority_known=auth_authority_snapshot.authority_known,
+                expected_store_value=prewarm_authority_snapshot.expected_store_value,
+                authority_known=prewarm_authority_snapshot.authority_known,
                 auth_sync_budget=auth_sync_budget,
             )
+            if not self._authority_snapshot_can_launch(auth_authority_snapshot):
+                self._refuse_new_codex_subprocess()
             # Re-evaluate — the pre-warm may have refreshed the token.
             _needs_refresh = _auth_json_present and _token_needs_refresh(real_codex_dir)
         # ---------------------------------------------------------------------
@@ -2228,6 +2394,8 @@ class CodexAdapter(RuntimeAdapter):
                 auth_invocation.authority_known = authority_snapshot.authority_known
                 auth_invocation.completed = False
                 auth_invocation.health_result = None
+                if not self._authority_snapshot_can_launch(authority_snapshot):
+                    self._refuse_new_codex_subprocess()
 
             # Feed the prompt through stdin using the "-" sentinel so Codex
             # does not treat inherited daemon pipes as "additional input".
@@ -2246,7 +2414,9 @@ class CodexAdapter(RuntimeAdapter):
             )
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
+            stderr = _redact_sensitive_runtime_diagnostic(
+                stderr_bytes.decode("utf-8", errors="replace")
+            )
 
             if auth_invocation is not None:
                 auth_invocation.completed = True
@@ -2367,13 +2537,13 @@ class CodexAdapter(RuntimeAdapter):
 
         async def _run() -> None:
             try:
-                if key == "cli-auth/codex" and expected_store_value is not None:
-                    await store.record_test_result_if_unchanged(
-                        key,
-                        ok,
-                        message,
+                if key == "cli-auth/codex":
+                    if expected_store_value is None:
+                        return
+                    await store.record_codex_cli_auth_test_result_if_unchanged(
+                        ok=ok,
+                        message=message,
                         expected_value=expected_store_value,
-                        use_shared_authority=True,
                     )
                 else:
                     await store.record_test_result(key, ok, message)

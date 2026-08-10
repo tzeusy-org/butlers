@@ -44,6 +44,13 @@ _runtime_switchboard_client_var: contextvars.ContextVar[Any | None] = contextvar
 _runtime_approval_push_runtime_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "_runtime_approval_push_runtime_var", default=None
 )
+# Explicit global Codex authority, scoped to deterministic scheduled work.
+# Job handlers retain their stable ``(pool, job_args)`` signature, while a
+# scheduled discretion path can still inject the daemon-selected authority
+# instead of mistaking its schema-local job pool for system-global state.
+_runtime_codex_auth_authority_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "_runtime_codex_auth_authority_var", default=None
+)
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
@@ -131,6 +138,21 @@ def get_current_approval_push_runtime() -> Any | None:
     "attempt no push" (e.g. a butler with no live switchboard connection).
     """
     return _runtime_approval_push_runtime_var.get()
+
+
+def set_current_codex_auth_authority(authority: Any | None) -> contextvars.Token[Any | None]:
+    """Bind the explicit system-global Codex authority to this task context."""
+    return _runtime_codex_auth_authority_var.set(authority)
+
+
+def reset_current_codex_auth_authority(token: contextvars.Token[Any | None]) -> None:
+    """Restore the prior scheduled-work Codex authority binding."""
+    _runtime_codex_auth_authority_var.reset(token)
+
+
+def get_current_codex_auth_authority() -> Any | None:
+    """Return the explicit Codex authority bound by scheduled dispatch, if any."""
+    return _runtime_codex_auth_authority_var.get()
 
 
 def ensure_runtime_session_capture(session_id: str) -> None:

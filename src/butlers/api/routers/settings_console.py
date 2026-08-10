@@ -350,8 +350,27 @@ async def _check_cli_auth(db: DatabaseManager | None) -> list[AttentionItem]:
     try:
         from butlers.cli_auth.health import probe_all
         from butlers.cli_auth.registry import PROVIDERS
+        from butlers.credential_store import CredentialStore
 
-        health_results = await asyncio.wait_for(probe_all(), timeout=_QUERY_TIMEOUT_S)
+        codex_authority: CredentialStore | None = None
+        if db is not None:
+            try:
+                shared_pool = db.credential_shared_pool()
+                codex_authority = CredentialStore(
+                    shared_pool,
+                    system_global_pool=shared_pool,
+                )
+            except Exception:
+                # ``probe_all`` will return Codex's explicit safe failure and
+                # skip its status subprocess. Other provider probes retain
+                # their independent behavior.
+                logger.warning("console: system-global Codex authority unavailable")
+        health_results = await asyncio.wait_for(
+            probe_all(
+                codex_authority=codex_authority,
+            ),
+            timeout=_QUERY_TIMEOUT_S,
+        )
         for p in PROVIDERS.values():
             if not p.is_available() and p.auth_mode != "api_key":
                 continue
@@ -366,8 +385,10 @@ async def _check_cli_auth(db: DatabaseManager | None) -> list[AttentionItem]:
                         action_route=f"/secrets?focus=c:cli-auth/{quote(p.name, safe='')}",
                     )
                 )
-    except Exception as exc:
-        logger.debug("console: cli-auth check skipped: %s", exc)
+    except Exception:
+        # Probe/adaptor failures for Codex can carry provider diagnostics.
+        # The console has a safe degraded path, so avoid retaining them.
+        logger.debug("console: cli-auth check skipped safely")
     return items
 
 

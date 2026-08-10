@@ -423,6 +423,43 @@ async def test_check_cli_auth_uses_provider_passport_focus_route_and_identity():
 
 
 @pytest.mark.asyncio
+async def test_check_cli_auth_passes_only_explicit_global_authority_to_codex_probe():
+    """REQ-core-credentials-001: console probes never infer Codex authority."""
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+    from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
+
+    provider = CLIAuthProviderDef(
+        name="codex",
+        display_name="Codex",
+        runtime="codex",
+        binary_name="codex",
+    )
+    pool = MagicMock()
+    db = MagicMock()
+    db.credential_shared_pool.return_value = pool
+    probe_all = AsyncMock(
+        return_value={
+            "codex": AuthHealthResult(
+                provider="codex",
+                state=AuthHealthState.authenticated,
+            )
+        }
+    )
+
+    with (
+        patch.dict(PROVIDERS, {"codex": provider}, clear=True),
+        patch.object(CLIAuthProviderDef, "is_available", return_value=True),
+        patch("butlers.cli_auth.health.probe_all", new=probe_all),
+    ):
+        assert await console_mod._check_cli_auth(db) == []
+
+    authority = probe_all.await_args.kwargs["codex_authority"]
+    assert authority.pool is pool
+    assert authority.has_system_global_authority is True
+    assert "credential_store" not in probe_all.await_args.kwargs
+
+
+@pytest.mark.asyncio
 async def test_console_open_approvals_generates_red_attention():
     """Open approvals should create a red attention item."""
     app = _make_app(db=None)

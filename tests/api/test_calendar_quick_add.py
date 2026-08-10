@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.routers.calendar_workspace import _get_db_manager
@@ -102,8 +103,62 @@ async def test_parse_quick_add_returns_draft_and_never_writes(app):
     assert data["reason"] is None
     # No-write guarantee: the parse path never reached the MCP surface.
     mock_mgr.get_client.assert_not_called()
+    mock_db.pool.assert_not_called()
     _, dispatcher_kwargs = dispatcher_cls.call_args
-    assert dispatcher_kwargs["credential_store"].pool is mock_db.credential_shared_pool.return_value
+    authority = dispatcher_kwargs["codex_auth_authority"]
+    assert authority.require_system_global_pool() is mock_db.credential_shared_pool.return_value
+
+
+async def test_parse_quick_add_requires_global_authority_without_local_pool_fallback(app):
+    """Quick-add rejects unavailable shared authority before model dispatch."""
+    app, mock_db, _ = _build_app(app)
+    mock_db.credential_shared_pool.side_effect = KeyError("shared pool unavailable")
+    mock_db.butler_names = ["calendar"]
+    mock_db.pool.return_value = AsyncMock()
+    dispatcher = MagicMock()
+    dispatcher.call = AsyncMock(return_value='{"title": "Must not dispatch"}')
+
+    with (
+        patch(
+            "butlers.api.calendar.quick_add.resolve_model",
+            new=AsyncMock(return_value=_FAKE_MODEL),
+        ),
+        patch(
+            "butlers.api.calendar.quick_add.DiscretionDispatcher",
+            return_value=dispatcher,
+        ) as dispatcher_cls,
+    ):
+        resp = await _post(app, {"text": "lunch tomorrow"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Shared database pool is not available"
+    mock_db.pool.assert_not_called()
+    dispatcher_cls.assert_not_called()
+
+
+async def test_direct_quick_add_never_promotes_model_pool_to_codex_authority():
+    """REQ-core-credentials-001: direct dispatch cannot infer Codex authority."""
+    local_model_pool = AsyncMock()
+    dispatcher = MagicMock()
+    dispatcher.call = AsyncMock(return_value='{"title": "Lunch"}')
+
+    with (
+        patch(
+            "butlers.api.calendar.quick_add.resolve_model",
+            new=AsyncMock(return_value=_FAKE_MODEL),
+        ),
+        patch(
+            "butlers.api.calendar.quick_add.DiscretionDispatcher",
+            return_value=dispatcher,
+        ) as dispatcher_cls,
+    ):
+        outcome = await parse_quick_add(
+            local_model_pool,
+            text="lunch tomorrow",
+        )
+
+    assert outcome.parse_available is True
+    assert dispatcher_cls.call_args.kwargs["codex_auth_authority"] is None
 
 
 # ---------------------------------------------------------------------------

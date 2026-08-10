@@ -44,7 +44,7 @@ Alembic runs the core chain and, where present, the butler-specific chain. These
 
 ### Phase 8: Prepare Module Dependencies and Bootstrap State
 
-Module migration chains run next. The daemon builds a DB-first `CredentialStore`, validates module credentials, initializes optional blob storage, restores CLI auth, bootstraps owner/catalogue records, and recovers orphaned sessions. Module migration and credential failures remain isolated to the affected module.
+Module migration chains run next. The daemon builds a DB-first `CredentialStore`, explicitly selects its system-global Codex authority before restore (even when the local and global pool are the same object), validates module credentials, initializes optional blob storage, restores CLI auth, bootstraps owner/catalogue records, and recovers orphaned sessions. A missing Codex authority is safe degraded startup evidence, not permission to recover from a schema-local row. Module migration and credential failures remain isolated to the affected module.
 
 ### Phase 9: Resolve Runtime Config
 

@@ -18,6 +18,27 @@ When a module calls `store.resolve("TELEGRAM_BOT_TOKEN")`:
 
 This layered approach means credentials stored via the dashboard (which writes to DB) always take precedence over environment variables.
 
+### Codex uses an explicit system-global authority
+
+`cli-auth/codex` is the one exception to the generic local-first resolution
+order. It represents the shared Codex CLI identity, not a per-schema domain
+secret. Every Codex path must receive an explicitly selected
+`CredentialStore(..., system_global_pool=...)` and use its strict
+`load_codex_cli_auth()`, `store_codex_cli_auth()`, conditional rotation, and
+conditional health methods. A flat deployment may deliberately pass the same
+pool object as both local and system-global, but it still has to name that
+selection.
+
+Codex never uses `load()`, `resolve()`, `shared_pool`, `store_shared()`, or an
+environment value as an authority fallback. If the explicit authority is
+absent, unavailable, slow, or malformed, new Codex work fails closed; it does
+not copy an old schema-local row or local `auth.json` back into the authority.
+An already-running session is not replayed or changed. Ordinary credentials
+and the other CLI providers retain the normal local/fallback behavior.
+
+This is the implementation of `REQ-core-credentials-001` and
+`REQ-core-daemon-001`.
+
 ## The `butler_secrets` Table
 
 ```sql
@@ -49,6 +70,15 @@ await store.store_shared("GOOGLE_OAUTH_CLIENT_ID", "...", category="google")
 ```
 
 `store()` writes to the local pool. `store_shared()` writes to the first fallback (shared) pool, falling back to local if no shared pool is configured.
+
+For Codex only, use the explicit APIs instead of either generic writer:
+
+```python
+# `system_global_pool` is selected by the daemon/dashboard/connector boundary.
+authority = CredentialStore(local_pool, system_global_pool=shared_pool)
+await authority.store_codex_cli_auth(auth_document)
+current = await authority.load_codex_cli_auth()
+```
 
 ### Reading
 
@@ -113,7 +143,28 @@ During application startup, `restore_tokens()` reads all CLI auth tokens from DB
 - Sets file permissions to `0o600`.
 - Merges JSON content when multiple providers share the same token path (e.g., opencode-openai and opencode-go both use `auth.json`).
 
+For Codex, `restore_tokens()` reads only the explicit system-global authority
+and atomically replaces `~/.codex/auth.json` with that exact valid JSON object
+at mode `0600`. It intentionally does not merge a stale local document. Before
+each new runtime subprocess, reconciliation repeats the same authority check;
+conditional writes fence CLI-driven token rotation and health state against a
+concurrent dashboard replacement.
+
 This means CLI credentials do not require persistent volume mounts in Kubernetes -- they are reconstructed from the DB on every startup.
+
+### Codex authority coverage
+
+| Surface | Authority boundary |
+|---|---|
+| Daemon and dashboard startup restore | Lifecycle/API constructs an explicit global store before restore. |
+| Dashboard device auth, Passport mutation, and health probe | `cli_auth` and Passport name the shared store explicitly for persistence/revoke; device auth, manual probe, and scheduled passport probe converge through the same strict `cli_auth` boundary. |
+| Runtime and speculative prewarm | `CodexAdapter` reconciles and revalidates the selected authority before every new child. |
+| Direct and scheduled dispatch | `DiscretionDispatcher` accepts a separate `codex_auth_authority`; scheduled handlers receive the daemon-selected object through context injection. |
+| Standalone Codex-dependent connectors | The connector opens an explicit shared authority, restores through it, injects it into dispatch, and closes that pool on shutdown. |
+
+Safe operator evidence may identify that an authority channel was unavailable or
+that a local scope was ignored. It must never include an auth document, token,
+fingerprint, or raw provider error.
 
 ## Security Model
 
@@ -161,6 +212,14 @@ psql -h localhost -U butlers -d butlers -c \
    WHERE 'owner' = ANY(e.roles)
    ORDER BY ei.type;"
 # Expected: rows for google_oauth_refresh, telegram_api_id, etc. if configured
+
+# 6. Focused Codex authority regression checks (no credential values required)
+uv run pytest \
+  tests/config/test_credential_store.py \
+  tests/adapters/test_codex_auth_sync.py \
+  tests/cli/test_cli_auth.py \
+  tests/connectors/test_connector_codex_auth_restore.py \
+  tests/connectors/test_discretion_dispatcher.py
 ```
 
 ## Related Pages

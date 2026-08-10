@@ -19,13 +19,9 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.credential_store import CredentialStore
-
-if TYPE_CHECKING:
-    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -45,27 +41,30 @@ def _is_valid_codex_auth_document(content: str) -> bool:
     return isinstance(parsed, dict) and bool(parsed)
 
 
-def _uses_shared_authority(provider: CLIAuthProviderDef, store: CredentialStore) -> bool:
-    """Whether *provider* must bypass a schema-local credential shadow.
-
-    Codex device authentication is a shared runtime identity.  Daemons in
-    schema-isolated deployments receive a local store plus the public pool as
-    a fallback; normal ``load()`` resolution prefers the local row, which can
-    otherwise hide a dashboard refresh stored in public.  Flat deployments
-    have no fallback, so their local store remains the authority.
-    """
-    return provider.name == "codex" and store.shared_pool is not None
+def _require_codex_authority(codex_authority: CredentialStore | None) -> CredentialStore:
+    """Return the selected Codex authority or fail closed without a local fallback."""
+    if codex_authority is None:
+        raise RuntimeError("Codex system-global credential authority is unavailable.")
+    # Validate selection before a provider-specific operation so callers cannot
+    # accidentally pass an ordinary local-first store as an authority.
+    codex_authority.require_system_global_pool()
+    return codex_authority
 
 
-async def load_persisted_token(provider: CLIAuthProviderDef, store: CredentialStore) -> str | None:
+async def load_persisted_token(
+    provider: CLIAuthProviderDef,
+    store: CredentialStore,
+    *,
+    codex_authority: CredentialStore | None = None,
+) -> str | None:
     """Load a CLI credential from its provider-specific authority.
 
-    Codex explicitly reads the shared pool whenever one exists.  Other CLI
-    providers retain the existing store lookup semantics.
+    Codex exclusively reads the selected system-global authority. Other CLI
+    providers retain the existing local-first store lookup semantics.
     """
     key = _db_key(provider)
-    if _uses_shared_authority(provider, store):
-        return await store.load_shared(key)
+    if provider.name == "codex":
+        return await _require_codex_authority(codex_authority).load_codex_cli_auth()
     return await store.load(key)
 
 
@@ -73,6 +72,8 @@ async def _store_persisted_token(
     provider: CLIAuthProviderDef,
     store: CredentialStore,
     content: str,
+    *,
+    codex_authority: CredentialStore | None = None,
 ) -> None:
     """Persist *content* through the provider-specific credential authority."""
     key = _db_key(provider)
@@ -81,10 +82,10 @@ async def _store_persisted_token(
         "description": f"CLI auth token for {provider.display_name}",
         "is_sensitive": True,
     }
-    if _uses_shared_authority(provider, store):
-        await store.store_shared(key, content, **kwargs)
-    else:
-        await store.store(key, content, **kwargs)
+    if provider.name == "codex":
+        await _require_codex_authority(codex_authority).store_codex_cli_auth(content)
+        return
+    await store.store(key, content, **kwargs)
 
 
 def _write_token_file_atomically(token_path: Path, content: str) -> None:
@@ -124,7 +125,12 @@ def _write_token_file_atomically(token_path: Path, content: str) -> None:
             pass
 
 
-async def persist_token(provider: CLIAuthProviderDef, store: CredentialStore) -> bool:
+async def persist_token(
+    provider: CLIAuthProviderDef,
+    store: CredentialStore,
+    *,
+    codex_authority: CredentialStore | None = None,
+) -> bool:
     """Read the CLI's token file from disk and store it in the DB.
 
     Called after a successful auth flow. Returns True if persisted.
@@ -160,12 +166,30 @@ async def persist_token(provider: CLIAuthProviderDef, store: CredentialStore) ->
         return False
 
     key = _db_key(provider)
-    await _store_persisted_token(provider, store, content)
+    try:
+        await _store_persisted_token(
+            provider,
+            store,
+            content,
+            codex_authority=codex_authority,
+        )
+    except Exception:
+        # Deliberately never log the exception: DB bind context can retain the
+        # serialized auth document. A missing authority must not fall back to
+        # the local schema where this callback is running.
+        if provider.name == "codex":
+            logger.warning("CLI auth persist: Codex system-global authority unavailable")
+            return False
+        raise
     logger.info("CLI auth persist: stored token for %s (key=%s)", provider.name, key)
     return True
 
 
-async def restore_tokens(store: CredentialStore) -> dict[str, bool]:
+async def restore_tokens(
+    store: CredentialStore,
+    *,
+    codex_authority: CredentialStore | None = None,
+) -> dict[str, bool]:
     """Restore all CLI auth tokens from the DB to their filesystem paths.
 
     Called on application startup. Returns a dict of provider name → success.
@@ -175,9 +199,19 @@ async def restore_tokens(store: CredentialStore) -> dict[str, bool]:
     for provider in PROVIDERS.values():
         key = _db_key(provider)
         try:
-            content = await load_persisted_token(provider, store)
+            content = await load_persisted_token(
+                provider,
+                store,
+                codex_authority=codex_authority,
+            )
         except Exception:
-            logger.warning("CLI auth restore: failed to load key=%s from credential store", key)
+            if provider.name == "codex":
+                logger.warning(
+                    "CLI auth restore: Codex system-global authority unavailable; "
+                    "skipping local credential fallback"
+                )
+            else:
+                logger.warning("CLI auth restore: failed to load key=%s from credential store", key)
             results[provider.name] = False
             continue
 
@@ -199,12 +233,13 @@ async def restore_tokens(store: CredentialStore) -> dict[str, bool]:
 
             token_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Multiple providers may share the same token_path (e.g.
-            # opencode-openai and opencode-go both use auth.json). Merge
-            # the restored JSON into any existing file content so that one
-            # provider's restore doesn't clobber another's credentials.
+            # Multiple *non-Codex* providers may share the same token_path
+            # (e.g. opencode-openai and opencode-go both use auth.json).
+            # Preserve that compatibility merge only for them. Codex has one
+            # explicit authority and must replace, rather than inherit from,
+            # a pre-existing local document.
             final_content = content
-            if token_path.exists():
+            if provider.name != "codex" and token_path.exists():
                 try:
                     existing = json.loads(token_path.read_text(encoding="utf-8"))
                     restored = json.loads(content)
@@ -241,7 +276,12 @@ def _record_codex_baseline() -> None:
         logger.debug("codex_auth_sync: baseline recording skipped")
 
 
-async def restore_connector_cli_auth(pool: asyncpg.Pool | None, *, context: str) -> dict[str, bool]:
+async def restore_connector_cli_auth(
+    credential_store: CredentialStore | None,
+    *,
+    codex_authority: CredentialStore | None,
+    context: str,
+) -> dict[str, bool]:
     """Restore CLI-auth tokens from the shared credential DB at connector startup.
 
     Standalone connector containers (whatsapp/telegram user clients, live-listener)
@@ -253,8 +293,9 @@ async def restore_connector_cli_auth(pool: asyncpg.Pool | None, *, context: str)
     daemon-startup restore (restore_tokens + codex baseline) onto a connector's own
     DB pool, honoring disposition A (shared daemon codex identity): the codex row
     lives under the single fixed key ``cli-auth/codex`` in ``butler_secrets`` and is
-    read through whatever pool the connector already has (its cursor pool reaches the
-    shared credential DB in the default single-DB deployment).
+    read through an explicitly supplied system-global authority. A connector
+    cursor/model pool is never inferred to be that authority. Non-Codex
+    providers continue to use the caller's existing connector-local store.
 
     Non-fatal but deliberately LOUD: on any failure, or when no codex token is
     restored, this logs at WARNING so a connector never *silently* runs without codex
@@ -262,18 +303,19 @@ async def restore_connector_cli_auth(pool: asyncpg.Pool | None, *, context: str)
     connector's existing discretion-auth health hook. Returns the per-provider restore
     results (``{}`` on outright failure).
     """
-    if pool is None:
+    if credential_store is None:
         logger.warning(
-            "%s: no DB pool available to restore CLI auth from the credential DB; "
-            "discretion-tier codex calls will 401 and fail closed until a credential DB "
-            "is reachable",
+            "%s: no connector credential store available to restore CLI auth; "
+            "Codex discretion calls will fail closed until a credential DB is reachable",
             context,
         )
         return {}
 
-    store = CredentialStore(pool)
     try:
-        results = await restore_tokens(store)
+        results = await restore_tokens(
+            credential_store,
+            codex_authority=codex_authority,
+        )
     except Exception:
         logger.warning(
             "%s: CLI-auth restore from the credential DB failed; discretion-tier codex "

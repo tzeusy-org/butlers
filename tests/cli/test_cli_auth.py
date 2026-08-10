@@ -175,6 +175,116 @@ async def test_session_lifecycle(tmp_path):
     assert get_session("nonexistent") is None
 
 
+async def test_codex_session_never_logs_device_code_or_callback_error(tmp_path, caplog) -> None:
+    """Codex device-auth diagnostics do not leak into shared process logs."""
+    provider = replace(
+        _test_provider(tmp_path),
+        name="codex",
+        command=[
+            "bash",
+            "-c",
+            'echo "Enter code: DEVICE-CODE-MARKER"; echo "Successfully logged in"',
+        ],
+    )
+
+    async def _raise_with_sensitive_detail(_: CLIAuthProviderDef) -> None:
+        raise RuntimeError("callback-error-marker")
+
+    session = CLIAuthSession(
+        id="codex-redaction", provider=provider, on_success=_raise_with_sensitive_detail
+    )
+    with caplog.at_level("INFO", logger="butlers.cli_auth.session"):
+        await session.start()
+        await session.wait(timeout=5.0)
+
+    assert session.state == "failed"
+    assert session.message == "Codex authentication was not saved to the system authority."
+    assert "DEVICE-CODE-MARKER" not in caplog.text
+    assert "callback-error-marker" not in caplog.text
+    assert "Codex on_success callback failed safely" in caplog.text
+
+
+async def test_codex_session_fails_when_global_persistence_is_not_confirmed(tmp_path: Path) -> None:
+    """REQ-core-credentials-001: a local-only device-auth result is not a successful login."""
+    provider = replace(
+        _test_provider(tmp_path),
+        name="codex",
+        command=["bash", "-c", 'echo "Successfully logged in"'],
+    )
+
+    async def _not_persisted(_: CLIAuthProviderDef) -> bool:
+        return False
+
+    session = CLIAuthSession(
+        id="codex-global-persist", provider=provider, on_success=_not_persisted
+    )
+    await session.start()
+    await session.wait(timeout=5.0)
+
+    assert session.state == "failed"
+    assert session.message == "Codex authentication was not saved to the system authority."
+
+
+async def test_codex_device_auth_refuses_to_start_without_global_authority() -> None:
+    """REQ-core-credentials-001: no local Codex device-auth session is spawned without authority."""
+    from fastapi import HTTPException
+
+    from butlers.api.routers.cli_auth import start_auth
+
+    with (
+        patch("butlers.api.routers.cli_auth._make_credential_store", return_value=None),
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
+        patch("butlers.api.routers.cli_auth.CLIAuthSession.start", new_callable=AsyncMock) as start,
+        patch("butlers.api.routers.cli_auth.CLIAuthSession.wait", new_callable=AsyncMock),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await start_auth("codex", db_manager=MagicMock())
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "System-global Codex credential authority unavailable."
+    start.assert_not_awaited()
+
+
+async def test_codex_provider_listing_does_not_trust_a_local_auth_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """REQ-core-credentials-001: dashboard status follows the explicit authority probe."""
+    from butlers.api.routers.cli_auth import list_providers
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    local_auth = tmp_path / "auth.json"
+    local_auth.write_text('{"stale": "local"}', encoding="utf-8")
+    provider = CLIAuthProviderDef(
+        name="codex",
+        display_name="Codex",
+        runtime="codex",
+        auth_mode="device_code",
+        command=["true"],
+        url_pattern=re.compile(r"(https://\\S+)"),
+        code_pattern=re.compile(r"code: (\\S+)"),
+        success_pattern=re.compile(r"success"),
+        token_path=local_auth,
+        status_command=["true"],
+        status_ok_pattern=re.compile(r"Logged in"),
+    )
+    monkeypatch.setitem(PROVIDERS, "codex", provider)
+    unavailable = AuthHealthResult(
+        provider="codex",
+        state=AuthHealthState.probe_failed,
+        detail="System-global Codex authority unavailable; probe was not run.",
+    )
+
+    with patch(
+        "butlers.api.routers.cli_auth.probe_all", AsyncMock(return_value={"codex": unavailable})
+    ):
+        providers = await list_providers(db_manager=None)
+
+    codex = next(item for item in providers if item.name == "codex")
+    assert codex.authenticated is False
+    assert codex.health is not None
+    assert codex.health.value == AuthHealthState.probe_failed.value
+
+
 async def test_session_timeout(tmp_path):
     """Session should expire when timeout is very short."""
     provider = CLIAuthProviderDef(
@@ -218,8 +328,10 @@ async def test_codex_dashboard_success_reconciles_final_prewarm_auth(tmp_path: P
         callbacks.append("finalize")
         return CodexAuthSyncResult(expected_store_value=expected_store_value)
 
-    async def _prewarm(*_args, **_kwargs) -> None:
+    async def _prewarm(*_args, authority_preflight, **_kwargs) -> bool:
         callbacks.append("prewarm")
+        assert await authority_preflight()
+        return True
 
     CodexAdapter._prewarm_done.discard(str(provider.token_path.parent))
     with (
@@ -232,6 +344,10 @@ async def test_codex_dashboard_success_reconciles_final_prewarm_auth(tmp_path: P
             "butlers.core.runtimes._codex_auth_sync.finalize_codex_auth_rotation",
             side_effect=_finalize,
         ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.codex_auth_file_matches_authority",
+            return_value=True,
+        ),
         patch("butlers.core.runtimes.codex._resolve_canonical_home", return_value=tmp_path),
         patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_prewarm),
         patch("shutil.which", return_value="/usr/bin/codex"),
@@ -240,7 +356,7 @@ async def test_codex_dashboard_success_reconciles_final_prewarm_auth(tmp_path: P
         assert on_success is not None
         await on_success(provider)
 
-    assert callbacks == ["persist", "reconcile", "prewarm", "finalize"]
+    assert callbacks == ["persist", "reconcile", "prewarm", "reconcile", "finalize"]
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +463,68 @@ async def test_opencode_go_health_command_maps_canonical_model_at_execution_boun
 # ---------------------------------------------------------------------------
 
 
+async def test_codex_probe_requires_explicit_system_global_authority(tmp_path: Path) -> None:
+    """REQ-core-credentials-001: a local Codex auth file never authorizes a probe."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"authority":"opaque-local-only"}', encoding="utf-8")
+    codex = replace(PROVIDERS["codex"], token_path=auth_path)
+
+    with (
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
+        patch("butlers.cli_auth.health.asyncio.create_subprocess_exec") as spawn,
+    ):
+        result = await probe_provider(codex)
+
+    assert result.state is AuthHealthState.probe_failed
+    assert "system-global" in (result.detail or "").lower()
+    spawn.assert_not_awaited()
+
+
+async def test_codex_probe_never_persists_raw_status_output(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """REQ-core-credentials-001: Codex probe diagnostics stay value-free."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+    auth_path = _fake_codex_auth_file(tmp_path)
+    raw_status_detail = "raw-provider-status-must-not-be-persisted"
+    expected_authority = auth_path.read_text(encoding="utf-8")
+    codex = replace(PROVIDERS["codex"], token_path=auth_path)
+
+    async def fake_subprocess(*_args, **_kwargs):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(
+            return_value=(f"Logged in {raw_status_detail}\\n".encode(), b"")
+        )
+        return proc
+
+    with (
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
+        patch("butlers.cli_auth.health.asyncio.create_subprocess_exec", fake_subprocess),
+        patch(
+            "butlers.cli_auth.health._probe_codex_backend", AsyncMock(return_value=(False, None))
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            return_value=CodexAuthSyncResult(expected_store_value=expected_authority),
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.codex_auth_file_matches_authority",
+            return_value=True,
+        ),
+        caplog.at_level("DEBUG"),
+    ):
+        result = await probe_provider(codex, codex_authority=MagicMock())
+
+    assert result.state is AuthHealthState.authenticated
+    assert result.detail == "Codex CLI reports authenticated."
+    assert raw_status_detail not in caplog.text
+
+
 def _fake_codex_auth_file(tmp_path: Path, exp_offset: int = 86400) -> Path:
     """Write a minimal ~/.codex/auth.json with a JWT that expires in the future."""
     import base64 as _b64
@@ -366,6 +544,7 @@ def _fake_codex_auth_file(tmp_path: Path, exp_offset: int = 86400) -> Path:
 async def test_codex_backend_probe_flags_revoked_token(tmp_path):
     """A 401 from the backend downgrades the provider to not_authenticated."""
     from butlers.cli_auth.health import AuthHealthState, probe_provider
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 
     auth_path = _fake_codex_auth_file(tmp_path)
 
@@ -395,12 +574,22 @@ async def test_codex_backend_probe_flags_revoked_token(tmp_path):
 
     codex = _dc.replace(PROVIDERS["codex"], token_path=auth_path)
 
+    authority = MagicMock()
+    expected_authority = auth_path.read_text(encoding="utf-8")
     with (
         patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
         patch("butlers.cli_auth.health.asyncio.create_subprocess_exec", fake_subprocess),
         patch("butlers.cli_auth.health.httpx.AsyncClient", _FakeClient),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            return_value=CodexAuthSyncResult(expected_store_value=expected_authority),
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.codex_auth_file_matches_authority",
+            return_value=True,
+        ),
     ):
-        result = await probe_provider(codex)
+        result = await probe_provider(codex, codex_authority=authority)
 
     assert result.state == AuthHealthState.not_authenticated
     assert "401" in (result.detail or "")
@@ -409,6 +598,7 @@ async def test_codex_backend_probe_flags_revoked_token(tmp_path):
 async def test_codex_backend_probe_network_error_keeps_authenticated(tmp_path):
     """Transient network failure on the backend probe must not red-flag Codex."""
     from butlers.cli_auth.health import AuthHealthState, probe_provider
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 
     auth_path = _fake_codex_auth_file(tmp_path)
 
@@ -437,12 +627,22 @@ async def test_codex_backend_probe_network_error_keeps_authenticated(tmp_path):
 
     codex = _dc.replace(PROVIDERS["codex"], token_path=auth_path)
 
+    authority = MagicMock()
+    expected_authority = auth_path.read_text(encoding="utf-8")
     with (
         patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
         patch("butlers.cli_auth.health.asyncio.create_subprocess_exec", fake_subprocess),
         patch("butlers.cli_auth.health.httpx.AsyncClient", _FakeClient),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            return_value=CodexAuthSyncResult(expected_store_value=expected_authority),
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.codex_auth_file_matches_authority",
+            return_value=True,
+        ),
     ):
-        result = await probe_provider(codex)
+        result = await probe_provider(codex, codex_authority=authority)
 
     assert result.state == AuthHealthState.authenticated
 
@@ -890,9 +1090,8 @@ async def test_test_endpoint_probe_rotation_cannot_overwrite_newer_dashboard_aut
     authority_c = '{"refresh_token":"dashboard-C"}'
     provider = replace(PROVIDERS["codex"], token_path=auth_path)
     store = MagicMock()
-    store.shared_pool = MagicMock()
-    store.store_shared_if_unchanged = AsyncMock(return_value=False)
-    store.load_shared = AsyncMock(return_value=authority_c)
+    store.store_codex_cli_auth_if_unchanged = AsyncMock(return_value=False)
+    store.load_codex_cli_auth = AsyncMock(return_value=authority_c)
     store.pool = MagicMock()
     store.pool.execute = AsyncMock()
 
@@ -922,8 +1121,8 @@ async def test_test_endpoint_probe_rotation_cannot_overwrite_newer_dashboard_aut
         response = await test_api_key("codex", db_manager=MagicMock())
 
     assert response.success is True
-    store.store_shared_if_unchanged.assert_awaited_once()
-    _, kwargs = store.store_shared_if_unchanged.call_args
+    store.store_codex_cli_auth_if_unchanged.assert_awaited_once()
+    _, kwargs = store.store_codex_cli_auth_if_unchanged.call_args
     assert kwargs["expected_value"] == authority_b
     assert auth_path.read_text(encoding="utf-8") == authority_c
     store.pool.execute.assert_not_awaited()

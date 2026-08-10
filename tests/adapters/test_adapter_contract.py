@@ -26,6 +26,7 @@ from butlers.core.runtimes import (
     RuntimeAdapter,
     get_adapter,
 )
+from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 from butlers.core.runtimes.claude_code import _parse_claude_output
 from butlers.core.runtimes.codex import _extract_tool_call as codex_extract_tool_call
 from butlers.core.runtimes.codex import _parse_codex_output
@@ -35,6 +36,45 @@ from butlers.core.runtimes.opencode import _extract_usage as opencode_extract_us
 from butlers.core.runtimes.opencode import _parse_opencode_output
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _authorize_codex_for_cross_adapter_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supply the explicit authority boundary to non-authority contracts.
+
+    Codex-specific authority and fail-closed behavior is tested separately;
+    this shared adapter suite verifies behavior after a launch is authorized.
+    """
+
+    async def _reconcile(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    async def _finalize(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        expected_store_value: str | None,
+        authority_known: bool,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del expected_store_value, authority_known, auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    monkeypatch.setattr(CodexAdapter, "_reconcile_canonical_auth", _reconcile)
+    monkeypatch.setattr(CodexAdapter, "_finalize_canonical_auth", _finalize)
+
 
 # ---------------------------------------------------------------------------
 # Adapter registry contract — all adapters register themselves

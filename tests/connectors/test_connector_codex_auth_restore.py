@@ -32,10 +32,10 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-async def test_helper_builds_store_with_pool_and_records_baseline_on_codex() -> None:
-    """Builds a CredentialStore around the connector's pool, calls restore_tokens,
-    and records the codex baseline when the codex token was restored."""
-    pool = MagicMock()
+async def test_helper_uses_explicit_authority_and_records_baseline_on_codex() -> None:
+    """REQ-core-credentials-001: connector restore uses its explicit authority."""
+    connector_store = MagicMock()
+    authority = MagicMock()
     with (
         patch(
             "butlers.cli_auth.persistence.restore_tokens",
@@ -43,19 +43,25 @@ async def test_helper_builds_store_with_pool_and_records_baseline_on_codex() -> 
         ) as restore_tokens,
         patch("butlers.cli_auth.persistence._record_codex_baseline") as baseline,
     ):
-        results = await restore_connector_cli_auth(pool, context="unit")
+        results = await restore_connector_cli_auth(
+            connector_store,
+            codex_authority=authority,
+            context="unit",
+        )
 
     assert results == {"codex": True, "opencode-go": False}
-    # CredentialStore was constructed around exactly the pool we passed.
+    # The helper must not construct an authority from a cursor/model pool.
     store_arg = restore_tokens.await_args.args[0]
-    assert store_arg.pool is pool
+    assert store_arg is connector_store
+    assert restore_tokens.await_args.kwargs["codex_authority"] is authority
     baseline.assert_called_once()
 
 
 async def test_helper_warns_loudly_and_skips_baseline_when_no_codex(caplog) -> None:
     """When no codex token is restored, the helper logs a loud WARNING (honest
     degraded surface) and does NOT record a baseline — never a silent skip."""
-    pool = MagicMock()
+    connector_store = MagicMock()
+    authority = MagicMock()
     with (
         patch(
             "butlers.cli_auth.persistence.restore_tokens",
@@ -64,7 +70,11 @@ async def test_helper_warns_loudly_and_skips_baseline_when_no_codex(caplog) -> N
         patch("butlers.cli_auth.persistence._record_codex_baseline") as baseline,
         caplog.at_level(logging.WARNING, logger="butlers.cli_auth.persistence"),
     ):
-        results = await restore_connector_cli_auth(pool, context="whatsapp_user_client")
+        results = await restore_connector_cli_auth(
+            connector_store,
+            codex_authority=authority,
+            context="whatsapp_user_client",
+        )
 
     assert results == {"codex": False}
     baseline.assert_not_called()
@@ -73,24 +83,50 @@ async def test_helper_warns_loudly_and_skips_baseline_when_no_codex(caplog) -> N
     )
 
 
-async def test_helper_warns_and_noops_when_pool_is_none(caplog) -> None:
-    """A None pool (DB disabled/unreachable) is handled loudly and returns {} —
-    never a CredentialStore(None) crash — per the honest fail-open contract."""
+async def test_helper_preserves_non_codex_store_when_codex_authority_is_absent(caplog) -> None:
+    """REQ-core-credentials-001: other providers keep their connector-local store."""
+    connector_store = MagicMock()
+    with (
+        patch(
+            "butlers.cli_auth.persistence.restore_tokens",
+            new=AsyncMock(return_value={"codex": False, "opencode-go": True}),
+        ) as restore_tokens,
+        caplog.at_level(logging.WARNING, logger="butlers.cli_auth.persistence"),
+    ):
+        results = await restore_connector_cli_auth(
+            connector_store,
+            codex_authority=None,
+            context="live_listener",
+        )
+
+    assert results == {"codex": False, "opencode-go": True}
+    assert restore_tokens.await_args.args[0] is connector_store
+    assert restore_tokens.await_args.kwargs["codex_authority"] is None
+    assert any("no codex" in r.message.lower() for r in caplog.records)
+
+
+async def test_helper_warns_and_noops_when_store_is_none(caplog) -> None:
+    """A missing connector store is handled loudly and returns {}."""
     with (
         patch("butlers.cli_auth.persistence.restore_tokens") as restore_tokens,
         caplog.at_level(logging.WARNING, logger="butlers.cli_auth.persistence"),
     ):
-        results = await restore_connector_cli_auth(None, context="live_listener")
+        results = await restore_connector_cli_auth(
+            None,
+            codex_authority=None,
+            context="live_listener",
+        )
 
     assert results == {}
     restore_tokens.assert_not_called()
-    assert any("no db pool" in r.message.lower() for r in caplog.records)
+    assert any("no connector credential store" in r.message.lower() for r in caplog.records)
 
 
 async def test_helper_is_non_fatal_and_loud_when_restore_raises(caplog) -> None:
     """Regression pin: a failed restore logs loudly and returns {} — it must NOT
     raise (crash-looping the connector) nor silently swallow at debug."""
-    pool = MagicMock()
+    connector_store = MagicMock()
+    authority = MagicMock()
     with (
         patch(
             "butlers.cli_auth.persistence.restore_tokens",
@@ -98,7 +134,11 @@ async def test_helper_is_non_fatal_and_loud_when_restore_raises(caplog) -> None:
         ),
         caplog.at_level(logging.WARNING, logger="butlers.cli_auth.persistence"),
     ):
-        results = await restore_connector_cli_auth(pool, context="live_listener")
+        results = await restore_connector_cli_auth(
+            connector_store,
+            codex_authority=authority,
+            context="live_listener",
+        )
 
     assert results == {}
     assert any("failed" in r.message.lower() for r in caplog.records)
@@ -121,6 +161,10 @@ async def test_whatsapp_entrypoint_restores_codex_auth() -> None:
     )
     pool = MagicMock()
     pool.close = AsyncMock()
+    authority_pool = MagicMock()
+    authority_pool.close = AsyncMock()
+    authority = MagicMock()
+    authority.require_system_global_pool.return_value = authority_pool
     conn = MagicMock()
     conn.start = AsyncMock()
     conn.stop = AsyncMock()
@@ -132,6 +176,11 @@ async def test_whatsapp_entrypoint_restores_codex_auth() -> None:
             "butlers.connectors.cursor_store.create_cursor_pool_from_env",
             new=AsyncMock(return_value=pool),
         ),
+        patch.object(
+            wa,
+            "create_system_global_credential_store_from_env",
+            new=AsyncMock(return_value=authority),
+        ),
         patch.object(wa, "WhatsAppUserClientConnector", return_value=conn),
         patch.object(wa, "_run_health_server", new=AsyncMock()),
         patch(
@@ -142,8 +191,13 @@ async def test_whatsapp_entrypoint_restores_codex_auth() -> None:
         await wa.run_whatsapp_user_client_connector()
 
     restore.assert_awaited_once()
-    assert restore.await_args.args[0] is pool
+    assert restore.await_args.args[0].pool is pool
+    assert restore.await_args.kwargs == {
+        "codex_authority": authority,
+        "context": "whatsapp_user_client",
+    }
     conn.start.assert_awaited_once()
+    authority_pool.close.assert_awaited_once()
 
 
 async def test_telegram_user_entrypoint_restores_codex_auth() -> None:
@@ -157,6 +211,10 @@ async def test_telegram_user_entrypoint_restores_codex_auth() -> None:
     )
     pool = MagicMock()
     pool.close = AsyncMock()
+    authority_pool = MagicMock()
+    authority_pool.close = AsyncMock()
+    authority = MagicMock()
+    authority.require_system_global_pool.return_value = authority_pool
     control_pool = MagicMock()
     control_pool.close = AsyncMock()
     conn = MagicMock()
@@ -183,6 +241,11 @@ async def test_telegram_user_entrypoint_restores_codex_auth() -> None:
         ),
         patch.object(
             tg,
+            "create_system_global_credential_store_from_env",
+            new=AsyncMock(return_value=authority),
+        ),
+        patch.object(
+            tg,
             "load_account_wide_ingestion_consent",
             new=AsyncMock(
                 return_value={
@@ -202,9 +265,14 @@ async def test_telegram_user_entrypoint_restores_codex_auth() -> None:
         await tg.run_telegram_user_client_connector()
 
     restore.assert_awaited_once()
-    assert restore.await_args.args[0] is pool
+    assert restore.await_args.args[0].pool is pool
+    assert restore.await_args.kwargs == {
+        "codex_authority": authority,
+        "context": "telegram_user_client",
+    }
     conn.start.assert_awaited_once()
     control_pool.close.assert_awaited_once()
+    authority_pool.close.assert_awaited_once()
 
 
 async def test_telegram_control_pool_targets_shared_db_not_checkpoint_db(
@@ -601,6 +669,10 @@ async def test_telegram_user_entrypoint_starts_after_persisted_account_wide_scop
     )
     pool = MagicMock()
     pool.close = AsyncMock()
+    authority_pool = MagicMock()
+    authority_pool.close = AsyncMock()
+    authority = MagicMock()
+    authority.require_system_global_pool.return_value = authority_pool
     control_pool = MagicMock()
     control_pool.close = AsyncMock()
     conn = MagicMock()
@@ -631,6 +703,11 @@ async def test_telegram_user_entrypoint_starts_after_persisted_account_wide_scop
         ),
         patch.object(
             tg,
+            "create_system_global_credential_store_from_env",
+            new=AsyncMock(return_value=authority),
+        ),
+        patch.object(
+            tg,
             "load_account_wide_ingestion_consent",
             new=AsyncMock(
                 return_value={
@@ -653,6 +730,7 @@ async def test_telegram_user_entrypoint_starts_after_persisted_account_wide_scop
     resolve_identity.assert_awaited_once()
     conn.start.assert_awaited_once()
     control_pool.close.assert_awaited_once()
+    authority_pool.close.assert_awaited_once()
 
 
 async def test_live_listener_entrypoint_restores_codex_auth() -> None:
@@ -660,6 +738,10 @@ async def test_live_listener_entrypoint_restores_codex_auth() -> None:
 
     pool = MagicMock()
     pool.close = AsyncMock()
+    authority_pool = MagicMock()
+    authority_pool.close = AsyncMock()
+    authority = MagicMock()
+    authority.require_system_global_pool.return_value = authority_pool
     conn = MagicMock()
     conn.run_forever = AsyncMock()
     conn.stop = AsyncMock()
@@ -674,6 +756,11 @@ async def test_live_listener_entrypoint_restores_codex_auth() -> None:
             "butlers.connectors.cursor_store.create_cursor_pool_from_env",
             new=AsyncMock(return_value=pool),
         ),
+        patch.object(
+            ll,
+            "create_system_global_credential_store_from_env",
+            new=AsyncMock(return_value=authority),
+        ),
         patch.object(ll, "LiveListenerConnector", return_value=conn),
         patch(
             "butlers.cli_auth.persistence.restore_connector_cli_auth",
@@ -683,5 +770,10 @@ async def test_live_listener_entrypoint_restores_codex_auth() -> None:
         await ll.run_connector()
 
     restore.assert_awaited_once()
-    assert restore.await_args.args[0] is pool
+    assert restore.await_args.args[0].pool is pool
+    assert restore.await_args.kwargs == {
+        "codex_authority": authority,
+        "context": "live_listener",
+    }
     conn.run_forever.assert_awaited_once()
+    authority_pool.close.assert_awaited_once()

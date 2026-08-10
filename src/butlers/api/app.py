@@ -295,13 +295,15 @@ async def lifespan(app: FastAPI):
 
             db_mgr = get_db_manager()
             shared_pool = db_mgr.credential_shared_pool()
-            store = CredentialStore(shared_pool)
-            results = await restore_tokens(store)
+            store = CredentialStore(shared_pool, system_global_pool=shared_pool)
+            results = await restore_tokens(store, codex_authority=store)
             restored = sum(1 for v in results.values() if v)
             if restored:
                 logger.info("Restored %d CLI auth token(s) from DB", restored)
         except Exception:
-            logger.debug("CLI auth token restoration skipped", exc_info=True)
+            # Keep startup degraded evidence value-free: an authority/driver
+            # exception can retain serialized credential bind context.
+            logger.warning("CLI auth token restoration skipped safely")
 
         # Proactive secrets lifecycle notifications (bu-1lb5j): a periodic
         # background scan for credentials that newly transitioned into an

@@ -5692,23 +5692,38 @@ async def rotate_cli_credential(
     supplied = (body.value or "").strip() if body is not None else ""
     user_supplied = bool(supplied)
 
-    try:
-        existing = await _fetch_single_cli_secret(
-            shared_pool,
-            credential_id,
-            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
-        )
-    except _CliSecretSourceUnavailableError as exc:
-        logger.warning("CLI credential source unavailable for shared-public")
-        raise HTTPException(
-            status_code=503,
-            detail="CLI credential source unavailable for shared-public",
-        ) from exc
+    codex_authority: CredentialStore | None = None
+    if credential_id == "cli-auth/codex":
+        # Read through the same strict channel used for the subsequent write;
+        # a generic shared-pool lookup must not become a parallel authority.
+        codex_authority = CredentialStore(shared_pool, system_global_pool=shared_pool)
+        try:
+            existing_present = await codex_authority.load_codex_cli_auth() is not None
+        except Exception:
+            logger.warning("rotate_cli_credential: Codex authority read failed")
+            raise HTTPException(
+                status_code=503,
+                detail="Codex CLI credential authority unavailable",
+            ) from None
+    else:
+        try:
+            existing = await _fetch_single_cli_secret(
+                shared_pool,
+                credential_id,
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+            )
+        except _CliSecretSourceUnavailableError as exc:
+            logger.warning("CLI credential source unavailable for shared-public")
+            raise HTTPException(
+                status_code=503,
+                detail="CLI credential source unavailable for shared-public",
+            ) from exc
+        existing_present = existing is not None
 
     if not user_supplied:
         # Auto-generate path: a fresh value only makes sense for an existing
         # token, so 404 when there is nothing to rotate.
-        if existing is None:
+        if not existing_present:
             raise HTTPException(status_code=404, detail="CLI credential not found")
         # cli-auth/* rows mirror an external CLI's auth.json — a server-minted
         # random value would desync the mirror from the real credential (see
@@ -5729,48 +5744,71 @@ async def rotate_cli_credential(
         new_value = supplied
         audit_note = (
             "Value updated via set-token (owner-supplied)"
-            if existing is not None
+            if existing_present
             else "Value set via set-token (owner-supplied, first save)"
         )
 
-    # The persistence-key convention is authoritative: cli-auth/* rows mirror
-    # external CLI auth state and belong to the cli-auth category. This also
-    # repairs a legacy mismatched category on the next owner-supplied update.
-    category = "cli-auth" if credential_id.startswith("cli-auth/") else "cli"
+    if credential_id == "cli-auth/codex":
+        # Passport's paste-to-save surface is another Codex persistence path.
+        # Name the shared pool as the strict authority instead of bypassing it
+        # through local-looking raw SQL; malformed documents must not become
+        # a newly persisted global identity.
+        assert codex_authority is not None
+        try:
+            await codex_authority.store_codex_cli_auth(new_value)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail="Codex CLI auth must be a valid non-empty JSON document.",
+            ) from None
+        except Exception:
+            # The value is a raw credential bind parameter. Driver/proxy
+            # exceptions are not trusted to redact their diagnostic context.
+            logger.warning("rotate_cli_credential: Codex authority persist failed")
+            raise HTTPException(
+                status_code=503,
+                detail="Codex CLI credential rotation failed",
+            ) from None
+    else:
+        # The persistence-key convention is authoritative: cli-auth/* rows
+        # mirror external CLI auth state and belong to the cli-auth category.
+        # This also repairs a legacy mismatched category on the next
+        # owner-supplied update.
+        category = "cli-auth" if credential_id.startswith("cli-auth/") else "cli"
 
-    # Persist. UPSERT so a first-time owner-supplied save creates the row
-    # instead of 404-ing.
-    try:
-        await shared_pool.execute(
-            """
-            INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
-            VALUES ($1, $2, $3, now())
-            ON CONFLICT (secret_key) DO UPDATE
-                SET secret_value = EXCLUDED.secret_value,
-                    category = EXCLUDED.category,
-                    last_test_ok = CASE
-                        WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
-                        THEN NULL ELSE butler_secrets.last_test_ok END,
-                    last_verified = CASE
-                        WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
-                        THEN NULL ELSE butler_secrets.last_verified END,
-                    last_test_code = CASE
-                        WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
-                        THEN NULL ELSE butler_secrets.last_test_code END,
-                    last_test_message = CASE
-                        WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
-                        THEN NULL ELSE butler_secrets.last_test_message END,
-                    updated_at = EXCLUDED.updated_at
-            """,
-            credential_id,
-            new_value,
-            category,
-        )
-    except Exception as exc:
-        # The value is a raw credential bind parameter.  Driver/proxy
-        # exceptions are not trusted to redact their diagnostic context.
-        logger.warning("rotate_cli_credential: persist failed for id=%s", credential_id)
-        raise HTTPException(status_code=503, detail="CLI credential rotation failed") from exc
+        # Persist. UPSERT so a first-time owner-supplied save creates the row
+        # instead of 404-ing.
+        try:
+            await shared_pool.execute(
+                """
+                INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+                VALUES ($1, $2, $3, now())
+                ON CONFLICT (secret_key) DO UPDATE
+                    SET secret_value = EXCLUDED.secret_value,
+                        category = EXCLUDED.category,
+                        last_test_ok = CASE
+                            WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                            THEN NULL ELSE butler_secrets.last_test_ok END,
+                        last_verified = CASE
+                            WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                            THEN NULL ELSE butler_secrets.last_verified END,
+                        last_test_code = CASE
+                            WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                            THEN NULL ELSE butler_secrets.last_test_code END,
+                        last_test_message = CASE
+                            WHEN butler_secrets.secret_value IS DISTINCT FROM EXCLUDED.secret_value
+                            THEN NULL ELSE butler_secrets.last_test_message END,
+                        updated_at = EXCLUDED.updated_at
+                """,
+                credential_id,
+                new_value,
+                category,
+            )
+        except Exception as exc:
+            # The value is a raw credential bind parameter.  Driver/proxy
+            # exceptions are not trusted to redact their diagnostic context.
+            logger.warning("rotate_cli_credential: persist failed for id=%s", credential_id)
+            raise HTTPException(status_code=503, detail="CLI credential rotation failed") from exc
 
     # Compute fingerprint of the persisted value.
     fp = _fingerprint(new_value)
@@ -5826,34 +5864,52 @@ async def revoke_cli_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Confirm the CLI token exists before deleting.
-    try:
-        existing = await _fetch_single_cli_secret(
-            shared_pool,
-            credential_id,
-            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
-        )
-    except _CliSecretSourceUnavailableError as exc:
-        logger.warning("CLI credential source unavailable for shared-public")
-        raise HTTPException(
-            status_code=503,
-            detail="CLI credential source unavailable for shared-public",
-        ) from exc
-    if existing is None:
-        raise HTTPException(status_code=404, detail="CLI credential not found")
+    if credential_id == "cli-auth/codex":
+        # Deletion is a state mutation of the same system-global identity.
+        # Subsequent Codex launches will observe the missing authority row and
+        # fail closed rather than reuse a local auth file.
+        codex_authority = CredentialStore(shared_pool, system_global_pool=shared_pool)
+        try:
+            if await codex_authority.load_codex_cli_auth() is None:
+                raise HTTPException(status_code=404, detail="CLI credential not found")
+            await codex_authority.delete_codex_cli_auth()
+        except HTTPException:
+            raise
+        except Exception:
+            logger.warning("revoke_cli_credential: Codex authority delete failed")
+            raise HTTPException(
+                status_code=503,
+                detail="Codex CLI credential revoke failed",
+            ) from None
+    else:
+        # Confirm the CLI token exists before deleting.
+        try:
+            existing = await _fetch_single_cli_secret(
+                shared_pool,
+                credential_id,
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+            )
+        except _CliSecretSourceUnavailableError as exc:
+            logger.warning("CLI credential source unavailable for shared-public")
+            raise HTTPException(
+                status_code=503,
+                detail="CLI credential source unavailable for shared-public",
+            ) from exc
+        if existing is None:
+            raise HTTPException(status_code=404, detail="CLI credential not found")
 
-    # Hard-delete the row (scope to PK from pre-fetched row).
-    try:
-        await shared_pool.execute(
-            """
-            DELETE FROM butler_secrets
-            WHERE secret_key = $1
-            """,
-            existing.id,
-        )
-    except Exception as exc:
-        logger.warning("revoke_cli_credential: delete failed for id=%s: %s", credential_id, exc)
-        raise HTTPException(status_code=503, detail="CLI credential revoke failed") from exc
+        # Hard-delete the row (scope to PK from pre-fetched row).
+        try:
+            await shared_pool.execute(
+                """
+                DELETE FROM butler_secrets
+                WHERE secret_key = $1
+                """,
+                existing.id,
+            )
+        except Exception as exc:
+            logger.warning("revoke_cli_credential: delete failed for id=%s: %s", credential_id, exc)
+            raise HTTPException(status_code=503, detail="CLI credential revoke failed") from exc
 
     # Audit — fire-and-forget.
     await _write_cli_audit(
@@ -5981,10 +6037,24 @@ async def reauthorize_cli_credential(
         # Build on_success callback that persists the token and wires DB.
         from butlers.api.routers.cli_auth import _build_on_success
 
+        on_success = _build_on_success(db)
+        if provider_def.name == "codex" and on_success is None:
+            # Device auth writes a local auth file first. Without an explicit
+            # system-global persistence callback, reporting a session would
+            # falsely present that local-only result as usable Codex auth.
+            logger.warning(
+                "reauthorize_cli_credential: Codex device auth refused without "
+                "system-global authority"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="System-global Codex credential authority unavailable.",
+            )
+
         session = CLIAuthSession(
             id=session_id,
             provider=provider_def,
-            on_success=_build_on_success(db),
+            on_success=on_success,
         )
         store_session(session)
 
@@ -5993,6 +6063,15 @@ async def reauthorize_cli_credential(
             # Wait briefly for the device code to appear in stdout.
             await session.wait(timeout=10.0)
         except Exception as exc:  # noqa: BLE001
+            if provider_def.name == "codex":
+                # Device-code subprocess errors can contain provider auth
+                # diagnostics. The explicit on-success authority path has no
+                # need for them, so preserve only a categorical failure.
+                logger.warning("reauthorize_cli_credential: Codex session start failed safely")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Failed to start Codex device-code session.",
+                ) from None
             logger.warning(
                 "reauthorize_cli_credential: session start failed for id=%s: %s",
                 credential_id,

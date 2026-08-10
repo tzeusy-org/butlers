@@ -178,12 +178,13 @@ def test_reauthorize_cli_devicecode_returns_200_envelope_and_session(monkeypatch
 
     monkeypatch.setattr(_audit_mod, "append", _fake_append)
     client = _build_app(mock_db)
+    on_success = AsyncMock()
 
     with (
         patch("butlers.api.routers.secrets_v2.PROVIDERS") as mock_providers,
         patch("butlers.api.routers.secrets_v2.CLIAuthSession") as mock_session_cls,
         patch("butlers.api.routers.secrets_v2.store_session"),
-        patch("butlers.api.routers.cli_auth._build_on_success", return_value=None),
+        patch("butlers.api.routers.cli_auth._build_on_success", return_value=on_success),
     ):
         fake_provider = MagicMock()
         fake_provider.name = "codex"
@@ -207,10 +208,37 @@ def test_reauthorize_cli_devicecode_returns_200_envelope_and_session(monkeypatch
         data = body["data"]
         assert data["auth_mode"] == "device_code"
         assert data["session_id"], "Expected non-empty session_id for device_code provider"
+        assert mock_session_cls.call_args.kwargs["on_success"] is on_success
 
     attempted = [c for c in audit_calls if c["action"] == "attempted"]
     assert attempted, f"No 'attempted' audit row found; got: {audit_calls}"
     assert attempted[0].get("target") == "c:codex"
+
+
+def test_reauthorize_cli_codex_without_authority_is_503_before_session_start():
+    """Codex device auth must not report local success without global persistence."""
+    mock_db = _make_db(shared_pool_available=False)
+    client = _build_app(mock_db)
+
+    with (
+        patch("butlers.api.routers.secrets_v2.PROVIDERS") as mock_providers,
+        patch("butlers.api.routers.secrets_v2.CLIAuthSession") as mock_session_cls,
+        patch("butlers.api.routers.secrets_v2.store_session") as store_session_mock,
+        patch("butlers.api.routers.cli_auth._build_on_success", return_value=None),
+    ):
+        fake_provider = MagicMock()
+        fake_provider.name = "codex"
+        fake_provider.auth_mode = "device_code"
+        fake_provider.binary.return_value = "codex"
+        fake_provider.is_available.return_value = True
+        mock_providers.get.return_value = fake_provider
+
+        resp = client.post("/api/secrets/cli/codex/reauthorize")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "System-global Codex credential authority unavailable."
+    mock_session_cls.assert_not_called()
+    store_session_mock.assert_not_called()
 
 
 def test_reauthorize_cli_devicecode_503_when_binary_not_available():

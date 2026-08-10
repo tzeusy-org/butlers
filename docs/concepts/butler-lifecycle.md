@@ -44,7 +44,7 @@ Core Alembic migrations run first (schema-scoped), followed by a butler-specific
 
 ### Step 8: Prepare Module Dependencies and Bootstrap State
 
-Module migration chains run, then the daemon creates a layered `CredentialStore`, validates module credentials, initializes optional blob storage, restores CLI auth, bootstraps owner/catalogue records, and recovers orphaned sessions. Module migration and credential failures remain non-fatal and cascade to dependents.
+Module migration chains run, then the daemon creates a layered `CredentialStore`, explicitly selects the system-global `cli-auth/codex` authority (the same pool may be named in flat topology), validates module credentials, initializes optional blob storage, restores CLI auth, bootstraps owner/catalogue records, and recovers orphaned sessions. Codex restore finishes from that authority before new Codex runtime work; if it is unavailable, startup reports safe degraded evidence and does not recover from a local schema credential. Module migration and credential failures remain non-fatal and cascade to dependents.
 
 ### Step 9: Resolve Runtime Config
 

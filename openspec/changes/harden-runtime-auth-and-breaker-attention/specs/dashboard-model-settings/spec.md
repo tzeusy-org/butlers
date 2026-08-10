@@ -1,3 +1,63 @@
+## MODIFIED Requirements
+
+### Requirement: Catalog Verify-All API
+
+The dashboard SHALL expose `POST /api/settings/models/verify-all` to
+re-verify enabled catalog models in bounded parallelism. The verification core
+(`butlers.api.routers.model_settings.run_verify_all_models`) is shared by this
+manual endpoint and the hourly automated sweep so both use the same explicit
+Codex authority and persistence semantics. The manual endpoint SHALL select
+its shared credential pool before constructing `CredentialStore(pool,
+system_global_pool=pool)` and pass that authority only to Codex adapter
+construction; non-Codex adapter construction retains its existing provider
+configuration behavior.
+
+#### Scenario: Verify-all persists completed model probes
+
+- **WHEN** `POST /api/settings/models/verify-all` is called for an enabled
+  model whose runtime can be constructed with its required authority
+- **THEN** the system issues a 1-token completion with bounded concurrency of
+  eight and persists `last_verified_at`, `last_verified_latency_ms`,
+  `last_verified_ok`, and `last_verified_error` for that model
+- **AND** `last_verified_error` is cleared on success and retains the existing
+  safe failure classification on a failed probe
+- **AND** the call remains rate-limited to once per minute system-wide and
+  appends one `models.verify_all` audit record for the accepted run
+
+#### Scenario: Unavailable Codex authority is skipped without poisoning verification evidence
+
+- **WHEN** the shared verification core encounters an enabled Codex entry
+  without an explicitly selected system-global Codex `CredentialStore`
+  authority
+- **THEN** it SHALL neither construct a Codex adapter nor invoke a Codex
+  subprocess for that entry
+- **AND** it SHALL not write `last_verified_at`, `last_verified_latency_ms`,
+  `last_verified_ok`, or `last_verified_error`, preserving the prior catalog
+  evidence and routing eligibility
+- **AND** the accepted result increments `skipped`, does not increment
+  `failed`, and records only a categorical authority-unavailable audit note
+  without provider diagnostic text
+- **AND** remaining eligible non-Codex and authorized Codex entries retain
+  their normal construction, invocation, and persistence behavior
+
+### Requirement: Hourly Automated Verification Sweep
+
+The dashboard-api process SHALL run an hourly background sweep
+(`butlers.jobs.model_verify.run_model_verify_loop`, started from the FastAPI
+lifespan) that calls the same verification core as the manual endpoint. Each
+sweep SHALL construct and pass `CredentialStore(pool, system_global_pool=pool)`
+from `DatabaseManager.credential_shared_pool()`; it SHALL not infer Codex
+authority from a schema-local or fallback pool.
+
+#### Scenario: Hourly sweep preserves authority-unavailable catalog entries
+
+- **WHEN** the shared credential pool is unavailable at a sweep tick
+- **THEN** the sweep is a logged no-op and does not call the verification core
+- **AND** it does not write failed verification evidence for any model
+- **WHEN** the core reports an authority-unavailable Codex skip
+- **THEN** the sweep returns that safe `skipped` count rather than recording a
+  false model failure or excluding the entry from routing
+
 ## ADDED Requirements
 
 ### Requirement: Catalog Test Uses a Runtime Probe, Not a Dashboard-Local Adapter

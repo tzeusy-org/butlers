@@ -45,6 +45,7 @@ Note: raw secret values are NEVER exposed by ``list_secrets()`` or ``__repr__``.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import AsyncIterator, Iterable
@@ -59,6 +60,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TABLE = "butler_secrets"
+_CODEX_CLI_AUTH_KEY = "cli-auth/codex"
+_CODEX_CLI_AUTH_CATEGORY = "cli-auth"
+_CODEX_CLI_AUTH_DESCRIPTION = "CLI auth token for Codex (OpenAI)"
+
+
+class SystemGlobalCredentialAuthorityUnavailableError(RuntimeError):
+    """Raised when a caller did not explicitly provide a system-global authority.
+
+    ``cli-auth/codex`` is a shared runtime identity.  It must never infer its
+    authority from local-first fallback order, even when a flat deployment uses
+    the same pool for local and system-global credentials.
+    """
+
+
+def _is_valid_codex_cli_auth_document(value: str) -> bool:
+    """Return whether *value* is a non-empty JSON object suitable for Codex auth."""
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and bool(parsed)
+
 
 # ---------------------------------------------------------------------------
 # entity_info write-time guard (RFC 0004 Amendment 3, bu-oluyt.1)
@@ -302,16 +325,117 @@ class CredentialStore:
         pool: asyncpg.Pool,
         *,
         fallback_pools: Iterable[asyncpg.Pool] | None = None,
+        system_global_pool: asyncpg.Pool | None = None,
     ) -> None:
         self.pool = pool
         self._fallback_pools: tuple[asyncpg.Pool, ...] = tuple(
             p for p in (fallback_pools or ()) if p is not pool
         )
+        # Deliberately retain this independently from fallback_pools. A flat
+        # topology explicitly supplies ``pool`` here; absence must not silently
+        # degrade into a local authority.
+        self._system_global_pool = system_global_pool
 
     @property
     def shared_pool(self) -> asyncpg.Pool | None:
         """Return the first fallback (shared) pool, or ``None``."""
         return self._fallback_pools[0] if self._fallback_pools else None
+
+    @property
+    def has_system_global_authority(self) -> bool:
+        """Whether an authority was explicitly selected for system-global values."""
+        return self._system_global_pool is not None
+
+    def require_system_global_pool(self) -> asyncpg.Pool:
+        """Return the explicitly selected system-global pool or fail closed."""
+        if self._system_global_pool is None:
+            raise SystemGlobalCredentialAuthorityUnavailableError(
+                "No explicit system-global credential authority is configured."
+            )
+        return self._system_global_pool
+
+    async def load_codex_cli_auth(self) -> str | None:
+        """Load ``cli-auth/codex`` only from the selected system-global authority."""
+        pool = self.require_system_global_pool()
+        row = await _safe_fetch_secret_row(pool, _CODEX_CLI_AUTH_KEY, source_name="system-global")
+        if row is None:
+            return None
+        return row["secret_value"]
+
+    async def store_codex_cli_auth(self, value: str) -> None:
+        """Store ``cli-auth/codex`` only in the selected system-global authority."""
+        if not _is_valid_codex_cli_auth_document(value):
+            raise ValueError("Codex CLI auth document must be a non-empty JSON object")
+        await self._store_on_pool(
+            self.require_system_global_pool(),
+            _CODEX_CLI_AUTH_KEY,
+            value,
+            category=_CODEX_CLI_AUTH_CATEGORY,
+            description=_CODEX_CLI_AUTH_DESCRIPTION,
+            is_sensitive=True,
+            expires_at=None,
+        )
+        logger.info("System-global Codex CLI auth stored")
+
+    async def store_codex_cli_auth_if_unchanged(
+        self,
+        value: str,
+        *,
+        expected_value: str | None,
+    ) -> bool:
+        """CAS-write Codex auth only in the selected system-global authority."""
+        if not _is_valid_codex_cli_auth_document(value):
+            raise ValueError("Codex CLI auth document must be a non-empty JSON object")
+        stored = await self._store_if_unchanged_on_pool(
+            self.require_system_global_pool(),
+            _CODEX_CLI_AUTH_KEY,
+            value,
+            expected_value=expected_value,
+            category=_CODEX_CLI_AUTH_CATEGORY,
+            description=_CODEX_CLI_AUTH_DESCRIPTION,
+            is_sensitive=True,
+        )
+        logger.debug("Conditional system-global Codex CLI auth write: stored=%r", stored)
+        return stored
+
+    async def record_codex_cli_auth_test_result_if_unchanged(
+        self,
+        *,
+        ok: bool,
+        message: str | None = None,
+        expected_value: str,
+    ) -> bool:
+        """Fence a Codex health result to the selected system-global authority."""
+        pool = self.require_system_global_pool()
+        async with pool.acquire() as conn:
+            recorded = await self.record_codex_cli_auth_test_result_if_unchanged_on_connection(
+                conn,
+                ok=ok,
+                message=message,
+                expected_value=expected_value,
+            )
+        logger.debug(
+            "Conditional system-global Codex CLI auth health result: recorded=%r",
+            recorded,
+        )
+        return recorded
+
+    async def record_codex_cli_auth_test_result_if_unchanged_on_connection(
+        self,
+        conn: Any,
+        *,
+        ok: bool,
+        message: str | None = None,
+        expected_value: str,
+    ) -> bool:
+        """Run a Codex health fence on a connection from the explicit authority."""
+        return await self.record_test_result_if_unchanged_on_connection(
+            conn,
+            _CODEX_CLI_AUTH_KEY,
+            ok,
+            message,
+            expected_value=expected_value,
+        )
 
     # ------------------------------------------------------------------
     # Write operations
@@ -355,6 +479,36 @@ class CredentialStore:
         ValueError
             If *key* or *value* is an empty string.
         """
+        await self._store_on_pool(
+            self.pool,
+            key,
+            value,
+            category=category,
+            description=description,
+            is_sensitive=is_sensitive,
+            expires_at=expires_at,
+        )
+
+        # Log at info level; NEVER include the value.
+        logger.info(
+            "Secret stored: key=%r category=%r is_sensitive=%r",
+            key,
+            category,
+            is_sensitive,
+        )
+
+    async def _store_on_pool(
+        self,
+        pool: asyncpg.Pool,
+        key: str,
+        value: str,
+        *,
+        category: str,
+        description: str | None,
+        is_sensitive: bool,
+        expires_at: datetime | None,
+    ) -> None:
+        """Upsert one credential on an already-selected pool without logging its value."""
         key = key.strip()
         value = value.strip().strip('"').strip("'")
         if not key:
@@ -362,7 +516,7 @@ class CredentialStore:
         if not value:
             raise ValueError("value must be a non-empty string")
 
-        async with self.pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 f"""
                 INSERT INTO {_TABLE}
@@ -396,14 +550,6 @@ class CredentialStore:
                 is_sensitive,
                 expires_at,
             )
-
-        # Log at info level; NEVER include the value.
-        logger.info(
-            "Secret stored: key=%r category=%r is_sensitive=%r",
-            key,
-            category,
-            is_sensitive,
-        )
 
     async def store_shared(
         self,
@@ -497,6 +643,47 @@ class CredentialStore:
         Raw credential values are intentionally never logged.
         """
         pool = self.shared_pool or self.pool
+        stored = await self._store_if_unchanged_on_pool(
+            pool,
+            key,
+            value,
+            expected_value=expected_value,
+            category=category,
+            description=description,
+            is_sensitive=is_sensitive,
+        )
+        logger.debug(
+            "Conditional shared secret write: key=%r category=%r stored=%r",
+            key,
+            category,
+            stored,
+        )
+        return stored
+
+    async def delete_codex_cli_auth(self) -> bool:
+        """Delete ``cli-auth/codex`` only from the selected system-global authority."""
+        pool = self.require_system_global_pool()
+        async with pool.acquire() as conn:
+            status = await conn.execute(
+                f"DELETE FROM {_TABLE} WHERE secret_key = $1",
+                _CODEX_CLI_AUTH_KEY,
+            )
+        deleted = status.endswith(" 1")
+        logger.info("System-global Codex CLI auth deleted: deleted=%r", deleted)
+        return deleted
+
+    async def _store_if_unchanged_on_pool(
+        self,
+        pool: asyncpg.Pool,
+        key: str,
+        value: str,
+        *,
+        expected_value: str | None,
+        category: str,
+        description: str | None,
+        is_sensitive: bool,
+    ) -> bool:
+        """Run one credential compare-and-set on an already-selected pool."""
         key = key.strip()
         value = value.strip().strip('"').strip("'")
         if not key:
@@ -552,12 +739,6 @@ class CredentialStore:
                 )
 
         stored = status.endswith(" 1")
-        logger.debug(
-            "Conditional shared secret write: key=%r category=%r stored=%r",
-            key,
-            category,
-            stored,
-        )
         return stored
 
     async def record_test_result(
@@ -887,7 +1068,11 @@ class CredentialStore:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        return f"CredentialStore(pool={self.pool!r}, fallback_pools={len(self._fallback_pools)})"
+        return (
+            "CredentialStore("
+            f"pool={self.pool!r}, fallback_pools={len(self._fallback_pools)}, "
+            f"system_global_authority={self.has_system_global_authority})"
+        )
 
     def _iter_lookup_pools(self) -> list[tuple[str, asyncpg.Pool]]:
         pools: list[tuple[str, asyncpg.Pool]] = [("local", self.pool)]
@@ -913,6 +1098,59 @@ def shared_db_name_from_env() -> str:
     """Resolve the shared credential database name from env/defaults."""
     name = os.environ.get(_ENV_SHARED_DB_NAME, _DEFAULT_SHARED_DB_NAME).strip()
     return name or _DEFAULT_SHARED_DB_NAME
+
+
+async def create_system_global_credential_store_from_env() -> CredentialStore:
+    """Create an explicitly selected global credential authority for a connector.
+
+    Connector cursor/model pools can target a schema-local database.  They are
+    never evidence that ``cli-auth/codex`` belongs there, so standalone
+    connectors open this deliberately separate pool against the configured
+    shared credential database.  Callers own and close the returned pool via
+    ``store.require_system_global_pool().close()``.
+
+    This intentionally retains the configured database principal rather than
+    applying a connector-local ``connector_writer`` role: the global Codex
+    authority must perform its fenced rotation and health-state writes, while
+    connector-local roles are read-only for shared credentials.
+    """
+    import asyncpg as _asyncpg
+
+    from butlers.db import (
+        db_params_from_env,
+        register_jsonb_codec,
+        schema_search_path,
+        should_retry_with_ssl_disable,
+    )
+
+    db_params = db_params_from_env()
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
+    pool_kwargs: dict[str, Any] = {
+        "host": str(db_params.get("host") or "localhost"),
+        "port": int(db_params.get("port") or 5432),
+        "user": str(db_params.get("user") or "butlers"),
+        "password": str(db_params.get("password") or "butlers"),
+        "database": shared_db_name_from_env(),
+        "min_size": 1,
+        "max_size": 2,
+        "command_timeout": 5,
+        "init": register_jsonb_codec,
+    }
+    if shared_schema:
+        pool_kwargs["server_settings"] = {"search_path": schema_search_path(shared_schema)}
+    configured_ssl = db_params.get("ssl")
+    if configured_ssl is not None:
+        pool_kwargs["ssl"] = configured_ssl
+
+    try:
+        pool = await _asyncpg.create_pool(**pool_kwargs)
+    except Exception as exc:
+        ssl_value = configured_ssl if isinstance(configured_ssl, str) else None
+        if not should_retry_with_ssl_disable(exc, ssl_value):
+            raise
+        pool_kwargs["ssl"] = "disable"
+        pool = await _asyncpg.create_pool(**pool_kwargs)
+    return CredentialStore(pool, system_global_pool=pool)
 
 
 async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:

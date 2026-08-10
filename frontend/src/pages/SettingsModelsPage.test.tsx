@@ -74,7 +74,9 @@ import {
   useResetModelUsage,
   useSetModelTokenLimits,
   useUpdateModelCatalogEntry,
+  useVerifyAllModels,
 } from "@/hooks/use-model-catalog";
+import { toast } from "sonner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -196,6 +198,24 @@ describe("SettingsModelsPage — page structure", () => {
     setHookState({ entries: [] });
     const html = renderPage();
     expect(html).toContain("Verify all");
+  });
+});
+
+describe("SettingsModelsPage — verify-all result", () => {
+  it("reports authority-unavailable Codex entries as skipped rather than failed", () => {
+    const mutate = vi.fn((_unused, options) => {
+      options.onSuccess({
+        data: { accepted: true, total: 2, ok: 1, failed: 0, skipped: 1 },
+        meta: {},
+      });
+    });
+    vi.mocked(useVerifyAllModels).mockReturnValue({ mutate, isPending: false } as AnyMock);
+    setHookState({ entries: [] });
+    mountPage();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /verify all/i })[0]);
+
+    expect(toast.success).toHaveBeenCalledWith("Verified 1/2 models · 1 skipped");
   });
 });
 

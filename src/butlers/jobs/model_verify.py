@@ -38,6 +38,7 @@ import asyncio
 import logging
 
 from butlers.api.db import DatabaseManager
+from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +52,10 @@ _AUDIT_ACTOR = "model_verify_sweep"
 async def run_model_verify_sweep(db: DatabaseManager) -> dict[str, int] | None:
     """Run one verify-all sweep against the shared credential pool.
 
-    Returns a summary dict ``{total, ok, failed}``, or ``None`` if no shared
-    pool is configured (mirrors ``run_secrets_lifecycle_check``'s no-pool
-    short-circuit). Never raises — a failure inside the verification core is
-    logged and swallowed so the loop is never killed by one bad tick.
+    Returns a summary dict ``{total, ok, failed, skipped}``, or ``None`` if no
+    shared pool is configured (mirrors ``run_secrets_lifecycle_check``'s
+    no-pool short-circuit). Never raises — a failure inside the verification
+    core is logged and swallowed so the loop is never killed by one bad tick.
     """
     try:
         pool = db.credential_shared_pool()
@@ -67,8 +68,18 @@ async def run_model_verify_sweep(db: DatabaseManager) -> dict[str, int] | None:
     # pattern used throughout butlers.core.*_attention modules).
     from butlers.api.routers.model_settings import run_verify_all_models
 
-    result = await run_verify_all_models(pool, audit_actor=_AUDIT_ACTOR)
-    return {"total": result.total, "ok": result.ok, "failed": result.failed}
+    codex_auth_authority = CredentialStore(pool, system_global_pool=pool)
+    result = await run_verify_all_models(
+        pool,
+        audit_actor=_AUDIT_ACTOR,
+        codex_auth_authority=codex_auth_authority,
+    )
+    return {
+        "total": result.total,
+        "ok": result.ok,
+        "failed": result.failed,
+        "skipped": result.skipped,
+    }
 
 
 async def run_model_verify_loop(

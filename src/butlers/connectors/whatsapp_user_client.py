@@ -79,6 +79,8 @@ from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
+    CredentialStore,
+    create_system_global_credential_store_from_env,
     resolve_owner_entity_info,
     shared_db_name_from_env,
 )
@@ -602,6 +604,7 @@ class WhatsAppUserClientConnector:
         config: WhatsAppUserClientConnectorConfig,
         db_pool: Any | None = None,
         cursor_pool: Any | None = None,
+        codex_auth_authority: CredentialStore | None = None,
     ) -> None:
         self._config = config
         self._mcp_client = CachedMCPClient(
@@ -650,7 +653,12 @@ class WhatsAppUserClientConnector:
 
         # Discretion layer
         self._discretion_dispatcher: DiscretionDispatcher | None = (
-            DiscretionDispatcher(pool=db_pool) if db_pool is not None else None
+            DiscretionDispatcher(
+                pool=db_pool,
+                codex_auth_authority=codex_auth_authority,
+            )
+            if db_pool is not None
+            else None
         )
         self._discretion_evaluators: dict[str, DiscretionEvaluator] = {}
         self._weight_resolver: ContactWeightResolver | None = (
@@ -2455,7 +2463,21 @@ async def run_whatsapp_user_client_connector() -> None:
     cursor_pool = await create_cursor_pool_from_env()
     logger.info("WhatsApp user-client connector: cursor pool created")
 
-    connector = WhatsAppUserClientConnector(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
+    codex_auth_authority: CredentialStore | None = None
+    try:
+        codex_auth_authority = await create_system_global_credential_store_from_env()
+    except Exception:
+        logger.warning(
+            "WhatsApp user-client connector: system-global Codex authority unavailable; "
+            "Codex discretion calls will fail closed"
+        )
+
+    connector = WhatsAppUserClientConnector(
+        config,
+        db_pool=cursor_pool,
+        cursor_pool=cursor_pool,
+        codex_auth_authority=codex_auth_authority,
+    )
 
     # Restore the shared codex CLI-auth token from the credential DB to disk so
     # this connector's discretion-tier codex calls find ~/.codex/auth.json instead
@@ -2463,7 +2485,11 @@ async def run_whatsapp_user_client_connector() -> None:
     # failure; degraded state also surfaces via the discretion-auth health hook.
     from butlers.cli_auth.persistence import restore_connector_cli_auth
 
-    await restore_connector_cli_auth(cursor_pool, context="whatsapp_user_client")
+    await restore_connector_cli_auth(
+        CredentialStore(cursor_pool),
+        codex_authority=codex_auth_authority,
+        context="whatsapp_user_client",
+    )
 
     # Step 4: Run health server and connector concurrently
     health_task = asyncio.create_task(
@@ -2482,6 +2508,8 @@ async def run_whatsapp_user_client_connector() -> None:
         except (asyncio.CancelledError, Exception):
             pass
         await connector.stop()
+        if codex_auth_authority is not None:
+            await codex_auth_authority.require_system_global_pool().close()
         if cursor_pool is not None:
             await cursor_pool.close()
 

@@ -63,7 +63,10 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
         pool = db_manager.credential_shared_pool()
     except Exception:
         return None
-    return CredentialStore(pool)
+    # The dashboard owns the system-global CLI auth record. Even in a flat
+    # topology, name that authority explicitly rather than relying on local
+    # CredentialStore resolution order.
+    return CredentialStore(pool, system_global_pool=pool)
 
 
 def _build_on_success(db_manager: Any):
@@ -80,9 +83,20 @@ def _build_on_success(db_manager: Any):
         return None
 
     async def _on_success(provider: CLIAuthProviderDef) -> None:
-        await persist_token(provider, store)
+        persisted = await persist_token(
+            provider,
+            store,
+            codex_authority=store if provider.name == "codex" else None,
+        )
 
         if provider.name == "codex":
+            if not persisted:
+                # Do not let a device-auth session report success when its
+                # local file could not be committed to the selected global
+                # authority. The session maps this safe False result to a
+                # failed state without exposing provider or credential detail.
+                logger.warning("CLI auth on_success: Codex authority persistence failed safely")
+                return False
             # Warm the freshly-issued token under the cross-process lock so
             # all butler daemons see a valid access_token on disk before any
             # of them start spawning Codex CLI invocations.
@@ -90,6 +104,7 @@ def _build_on_success(db_manager: Any):
                 import shutil as _shutil
 
                 from butlers.core.runtimes._codex_auth_sync import (
+                    codex_auth_file_matches_authority,
                     finalize_codex_auth_rotation,
                     reconcile_codex_auth,
                 )
@@ -113,23 +128,61 @@ def _build_on_success(db_manager: Any):
                         store,
                         butler_name="dashboard",
                     )
+                    if (
+                        not baseline.authority_known
+                        or baseline.expected_store_value is None
+                        or not codex_auth_file_matches_authority(
+                            token_path,
+                            baseline.expected_store_value,
+                        )
+                    ):
+                        logger.warning(
+                            "CLI auth on_success: system-global Codex authority unavailable; "
+                            "skipping login-status subprocess"
+                        )
+                        return
+
+                    prewarm_baseline = baseline
+
+                    async def _authority_preflight() -> bool:
+                        nonlocal prewarm_baseline
+                        prewarm_baseline = await reconcile_codex_auth(
+                            token_path,
+                            store,
+                            butler_name="dashboard",
+                        )
+                        return (
+                            prewarm_baseline.authority_known
+                            and prewarm_baseline.expected_store_value is not None
+                            and codex_auth_file_matches_authority(
+                                token_path,
+                                prewarm_baseline.expected_store_value,
+                            )
+                        )
+
                     try:
-                        await run_codex_pre_warm(codex_dir, codex_binary)
+                        prewarm_completed = await run_codex_pre_warm(
+                            codex_dir,
+                            codex_binary,
+                            authority_preflight=_authority_preflight,
+                        )
                     finally:
                         await finalize_codex_auth_rotation(
                             token_path,
                             store,
-                            expected_store_value=baseline.expected_store_value,
-                            authority_known=baseline.authority_known,
+                            expected_store_value=prewarm_baseline.expected_store_value,
+                            authority_known=prewarm_baseline.authority_known,
                             butler_name="dashboard",
                         )
                     # Mark pre-warm done for this process so the first spawn
                     # takes the fast path.  A pre-warm exception skips this
                     # line after the final reconciliation and is handled by
                     # the outer best-effort boundary.
-                    CodexAdapter._prewarm_done.add(str(codex_dir))
+                    if prewarm_completed:
+                        CodexAdapter._prewarm_done.add(str(codex_dir))
             except Exception:
                 logger.warning("CLI auth on_success: codex pre-warm failed (non-fatal)")
+            return True
 
     return _on_success
 
@@ -153,7 +206,7 @@ async def list_providers(
     determine whether tokens are actually valid (not just present on disk).
     """
     store = _make_credential_store(db_manager)
-    health_results = await probe_all(credential_store=store)
+    health_results = await probe_all(credential_store=store, codex_authority=store)
 
     result = []
     for p in PROVIDERS.values():
@@ -161,17 +214,22 @@ async def list_providers(
         if not p.is_available() and p.auth_mode != "api_key":
             continue
         health = health_results.get(p.name)
+        if p.name == "codex":
+            # The local file is merely the runtime projection of the selected
+            # authority. A stale file must not make the dashboard claim Codex
+            # is authenticated when the strict authority probe failed.
+            authenticated = health is not None and health.state == AuthHealthState.authenticated
+        elif p.auth_mode == "device_code":
+            authenticated = p.is_authenticated()
+        else:
+            authenticated = health is not None and health.state == AuthHealthState.authenticated
         result.append(
             CLIAuthProvider(
                 name=p.name,
                 display_name=p.display_name,
                 runtime=p.runtime,
                 auth_mode=p.auth_mode,
-                authenticated=(
-                    p.is_authenticated()
-                    if p.auth_mode == "device_code"
-                    else (health is not None and health.state == "authenticated")
-                ),
+                authenticated=authenticated,
                 health=CLIAuthHealthState(health.state) if health else None,
                 health_detail=health.detail if health else None,
                 token_path=str(p.token_path) if p.token_path else None,
@@ -206,11 +264,23 @@ async def start_auth(
             detail=f"CLI binary '{provider_def.binary()}' not found on PATH.",
         )
 
+    on_success = _build_on_success(db_manager)
+    if provider_def.name == "codex" and on_success is None:
+        # Starting device auth writes a local canonical auth file. Without the
+        # explicitly selected global authority its result could only remain a
+        # stale local credential, so refuse before spawning the CLI instead of
+        # discovering the failure after the owner has completed the flow.
+        logger.warning("CLI auth: Codex device auth refused without system-global authority")
+        raise HTTPException(
+            status_code=503,
+            detail="System-global Codex credential authority unavailable.",
+        )
+
     session_id = secrets.token_urlsafe(16)
     session = CLIAuthSession(
         id=session_id,
         provider=provider_def,
-        on_success=_build_on_success(db_manager),
+        on_success=on_success,
     )
     store_session(session)
 
@@ -317,7 +387,11 @@ async def save_api_key(
         if provider_def.token_path is not None and provider_def.token_path.exists():
             from butlers.cli_auth.persistence import persist_token
 
-            await persist_token(provider_def, store)
+            await persist_token(
+                provider_def,
+                store,
+                codex_authority=store if provider_def.name == "codex" else None,
+            )
 
     logger.info("CLI auth: stored API key for %s", provider_def.name)
     return CLIAuthApiKeyResponse(
@@ -494,13 +568,12 @@ async def _persist_codex_test_outcome_if_current(
     bytes that the canonical ``auth.json`` matched immediately before and
     after the external probe; this helper never logs those bytes.
     """
-    pool = store.shared_pool or store.pool
+    pool = store.require_system_global_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            recorded = await store.record_test_result_if_unchanged_on_connection(
+            recorded = await store.record_codex_cli_auth_test_result_if_unchanged_on_connection(
                 conn,
-                key,
-                ok,
+                ok=ok,
                 message=None if ok else message,
                 expected_value=expected_store_value,
             )
@@ -696,7 +769,11 @@ async def _run_provider_test(
     if provider_def.auth_mode != "api_key":
         # device_code (and any non-api_key) provider: probe live auth health.
         store = credential_store or _make_credential_store(db_manager)
-        health = await probe_provider(provider_def, store)
+        health = await probe_provider(
+            provider_def,
+            store,
+            codex_authority=store if provider_def.name == "codex" else None,
+        )
         return CLIAuthTestResponse(
             provider=provider_def.name,
             success=health.state == AuthHealthState.authenticated,

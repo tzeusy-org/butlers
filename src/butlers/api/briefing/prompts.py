@@ -21,6 +21,7 @@ from typing import Any
 
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity
+from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,13 @@ def _build_user_message(state: dict, state_class: str) -> str:
     )
 
 
-async def elaborate_llm(pool: Any, state: dict, state_class: str) -> str | None:
+async def elaborate_llm(
+    pool: Any,
+    state: dict,
+    state_class: str,
+    *,
+    codex_auth_authority: CredentialStore | None = None,
+) -> str | None:
     """Call the catalog-backed local runtime and return the paragraph or None.
 
     Returns:
@@ -152,11 +159,13 @@ async def elaborate_llm(pool: Any, state: dict, state_class: str) -> str | None:
         response is non-empty. None on any failure so the caller can use the
         deterministic fallback path.
     """
-    dispatcher = DiscretionDispatcher(
-        pool,
-        butler_name=BRIEFING_RUNTIME_BUTLER_NAME,
-        complexity_tier=Complexity.CHEAP,
-    )
+    dispatcher_kwargs: dict[str, Any] = {
+        "butler_name": BRIEFING_RUNTIME_BUTLER_NAME,
+        "complexity_tier": Complexity.CHEAP,
+    }
+    if codex_auth_authority is not None:
+        dispatcher_kwargs["codex_auth_authority"] = codex_auth_authority
+    dispatcher = DiscretionDispatcher(pool, **dispatcher_kwargs)
     try:
         text = (
             await dispatcher.call(
@@ -168,6 +177,8 @@ async def elaborate_llm(pool: Any, state: dict, state_class: str) -> str | None:
             logger.info("LLM elaboration returned empty text")
             return None
         return text
-    except Exception as exc:
-        logger.warning("Local runtime elaboration failed: %s", exc)
+    except Exception:
+        # Direct dispatch may use Codex; do not retain raw adapter/provider
+        # diagnostics in dashboard logs.
+        logger.warning("Local runtime elaboration failed safely")
         return None

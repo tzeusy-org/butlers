@@ -165,3 +165,34 @@ class TestNativeScheduleDispatch:
             batch_size=7,
             enable_shared_catalog=True,
         )
+
+    async def test_deterministic_dispatch_binds_explicit_codex_authority(self) -> None:
+        """REQ-core-credentials-001: scheduled work receives no inferred local authority."""
+        from butlers.background import dispatch_scheduled_task
+        from butlers.core.tool_call_capture import get_current_codex_auth_authority
+
+        authority = MagicMock()
+        spawner = MagicMock()
+        spawner.codex_auth_authority = authority
+        seen: list[object | None] = []
+
+        async def handler(_pool, _job_args):
+            seen.append(get_current_codex_auth_authority())
+            return {"status": "handled"}
+
+        with patch.dict(
+            "butlers.background._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+            {"chronicler": {"authority_probe": handler}},
+            clear=True,
+        ):
+            result = await dispatch_scheduled_task(
+                butler_name="chronicler",
+                pool=MagicMock(),
+                spawner=spawner,
+                trigger_source="schedule:authority_probe",
+                job_name="authority_probe",
+            )
+
+        assert result == {"status": "handled"}
+        assert seen == [authority]
+        assert get_current_codex_auth_authority() is None

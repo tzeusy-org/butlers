@@ -1838,7 +1838,13 @@ class ButlerDaemon:
         await run_shutdown(self)
 
     async def _build_credential_store(self, local_pool: asyncpg.Pool) -> CredentialStore:
-        """Build a credential store with local override + shared fallback."""
+        """Build local/fallback resolution plus an explicit global authority.
+
+        ``cli-auth/codex`` must receive ``system_global_pool`` even in a flat
+        topology where it is the same object as ``local_pool``.  A missing
+        global pool is intentionally represented as absent rather than being
+        inferred from the local credential scope.
+        """
         fallback_pools: list[asyncpg.Pool] = []
         schema_topology = bool(self.config.db_schema)
         configured_shared_db_name = shared_db_name_from_env()
@@ -1877,10 +1883,9 @@ class ButlerDaemon:
                 except Exception:
                     logger.warning(
                         "Shared credential DB unavailable (db=%s, schema=%s); "
-                        "falling back to local/env only",
+                        "Codex system-global authority is unavailable",
                         shared_db_name,
                         shared_db_schema,
-                        exc_info=True,
                     )
                     await shared_db.close()
                     shared_pool = None
@@ -1900,9 +1905,9 @@ class ButlerDaemon:
                     self._shared_credentials_db = shared_db
                 except Exception:
                     logger.warning(
-                        "Shared credential DB unavailable (db=%s); falling back to local/env only",
+                        "Shared credential DB unavailable (db=%s); "
+                        "Codex system-global authority is unavailable",
                         shared_db_name,
-                        exc_info=True,
                     )
                     await shared_db.close()
                     shared_pool = None
@@ -1910,4 +1915,8 @@ class ButlerDaemon:
         if shared_pool is not None and shared_pool is not local_pool:
             fallback_pools.append(shared_pool)
 
-        return CredentialStore(local_pool, fallback_pools=fallback_pools)
+        return CredentialStore(
+            local_pool,
+            fallback_pools=fallback_pools,
+            system_global_pool=shared_pool,
+        )

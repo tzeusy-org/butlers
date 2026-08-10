@@ -1496,6 +1496,7 @@ class TestLlmHappyPath:
     async def test_elaboration_uses_local_runtime_dispatcher(self):
         """elaborate_llm uses the catalog-backed local runtime dispatcher."""
         pool = _make_owner_pool()
+        authority = MagicMock()
 
         dispatcher = MagicMock()
         dispatcher.call = AsyncMock(return_value="The local runtime wrote this paragraph.")
@@ -1508,6 +1509,7 @@ class TestLlmHappyPath:
                 pool,
                 {"attention_items": [], "butler_statuses": []},
                 "quiet",
+                codex_auth_authority=authority,
             )
 
         assert text == "The local runtime wrote this paragraph."
@@ -1515,7 +1517,50 @@ class TestLlmHappyPath:
             pool,
             butler_name="__dashboard_briefing__",
             complexity_tier=Complexity.CHEAP,
+            codex_auth_authority=authority,
         )
+
+    async def test_missing_shared_pool_is_never_treated_as_codex_authority(self):
+        """REQ-cli-runtime-auth-003: switchboard state reads are not Codex authority."""
+        sw_pool = _make_owner_pool()
+        db = MagicMock(spec=DatabaseManager)
+        db.pool.return_value = sw_pool
+        db.credential_shared_pool.side_effect = KeyError("shared credentials unavailable")
+        cache = BriefingCache(ttl_seconds=300)
+        briefing = {
+            "greet": "Good afternoon.",
+            "headline": "All clear.",
+            "elaboration": "The deterministic briefing is available.",
+            "source": "fallback",
+            "state_class": "quiet",
+            "generated_at": "2026-08-11T00:00:00+00:00",
+        }
+        compose = AsyncMock(return_value=briefing)
+
+        with (
+            patch(
+                "butlers.api.routers.dashboard_briefing._owner_local_now",
+                new=AsyncMock(return_value=datetime(2026, 8, 11, tzinfo=UTC)),
+            ),
+            patch(
+                "butlers.api.routers.dashboard_briefing._fetch_dashboard_state",
+                new=AsyncMock(return_value={"now": datetime(2026, 8, 11, tzinfo=UTC)}),
+            ),
+            patch(
+                "butlers.api.routers.dashboard_briefing._compose_briefing",
+                new=compose,
+            ),
+        ):
+            response = await get_dashboard_briefing(
+                db=db,
+                cache=cache,
+                configs=[],
+                mgr=MagicMock(),
+                pricing=MagicMock(),
+            )
+
+        assert response.data.generated_at == briefing["generated_at"]
+        assert compose.await_args.kwargs["codex_auth_authority"] is None
 
     async def test_llm_happy_path_returns_llm_source(self):
         """When LLM returns a voice-clean response, source is 'llm'."""
@@ -1653,7 +1698,7 @@ class TestCacheTTL:
 
         call_count = 0
 
-        async def _llm_stub(pool, state, state_class):
+        async def _llm_stub(pool, state, state_class, *, codex_auth_authority=None):
             nonlocal call_count
             call_count += 1
             return "The system is running without issues."
@@ -1686,7 +1731,7 @@ class TestCacheTTL:
 
         call_count = 0
 
-        async def _llm_stub(pool, state, state_class):
+        async def _llm_stub(pool, state, state_class, *, codex_auth_authority=None):
             nonlocal call_count
             call_count += 1
             return "The system is running without issues."

@@ -19,7 +19,7 @@ The `Spawner` class is initialized with:
 - **`pool`** (`asyncpg.Pool`) --- database connection pool for session logging
 - **`module_credentials_env`** --- mapping of module names to required env var names
 - **`runtime`** (`RuntimeAdapter`) --- optional injected adapter (defaults to `ClaudeCodeAdapter`)
-- **`credential_store`** (`CredentialStore`) --- optional DB-first credential resolver
+- **`credential_store`** (`CredentialStore`) --- optional DB-first credential resolver. For Codex it must carry an explicitly selected system-global `cli-auth/codex` authority; a missing or unavailable selection refuses new Codex subprocesses instead of treating a local runtime file or fallback pool as authority.
 
 ## Trigger Method
 

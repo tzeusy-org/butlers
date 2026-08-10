@@ -556,6 +556,24 @@ class Spawner:
         """
         self._healing_module = healing_module
 
+    @property
+    def codex_auth_authority(self) -> CredentialStore | None:
+        """Return the daemon-selected global Codex authority, if explicitly set.
+
+        Scheduled deterministic jobs must receive this object by injection;
+        they may not infer a Codex authority from their local module pool.
+        """
+        if self._credential_store is None:
+            return None
+        try:
+            return (
+                self._credential_store
+                if self._credential_store.has_system_global_authority
+                else None
+            )
+        except Exception:
+            return None
+
     async def _resolve_provider_config(
         self, model_id: str | None
     ) -> dict[str, dict[str, Any]] | None:
@@ -585,14 +603,28 @@ class Spawner:
 
         from butlers.core.runtimes.base import create_adapter
 
-        log_root = resolve_log_root(self._config.logging.log_root)
-        adapter = create_adapter(
-            runtime_type,
-            provider_config=provider_config,
-            butler_name=self._config.name,
-            log_root=log_root,
-            credential_store=self._credential_store,
-        )
+        if runtime_type == "codex":
+            # Codex does not consume generic provider/log-root constructor
+            # kwargs. Passing them through ``create_adapter`` can trigger its
+            # compatibility fallback, which would drop the explicit global
+            # authority along with those unsupported kwargs. Keep the Codex
+            # construction surface exact so an authorized daemon session
+            # retains its selected authority; a missing authority still fails
+            # closed inside ``CodexAdapter``.
+            adapter = create_adapter(
+                runtime_type,
+                butler_name=self._config.name,
+                credential_store=self._credential_store,
+            )
+        else:
+            log_root = resolve_log_root(self._config.logging.log_root)
+            adapter = create_adapter(
+                runtime_type,
+                provider_config=provider_config,
+                butler_name=self._config.name,
+                log_root=log_root,
+                credential_store=self._credential_store,
+            )
         self._adapter_pool[runtime_type] = adapter
         self._adapter_pool_cfg[runtime_type] = cfg_str
         logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)

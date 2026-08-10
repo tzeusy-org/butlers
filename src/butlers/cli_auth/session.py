@@ -31,7 +31,9 @@ class CLIAuthSession:
     message: str | None = None
 
     # Optional callback invoked after successful auth (e.g. persist token to DB).
-    on_success: Callable[[CLIAuthProviderDef], Awaitable[None]] | None = field(
+    # A Codex callback returns ``False`` only when the device-auth result was
+    # not durably saved through the explicit system-global authority.
+    on_success: Callable[[CLIAuthProviderDef], Awaitable[bool | None]] | None = field(
         default=None, repr=False
     )
 
@@ -89,9 +91,30 @@ class CLIAuthSession:
         # Fire post-success callback (e.g. persist token to DB)
         if self.state == "success" and self.on_success is not None:
             try:
-                await self.on_success(self.provider)
+                persisted = await self.on_success(self.provider)
+                if self.provider.name == "codex" and persisted is False:
+                    # The CLI may have written a local auth.json, but without
+                    # a durable system-global write it is not an authorized
+                    # Codex session and must not be presented as one.
+                    self.state = "failed"
+                    self.message = "Codex authentication was not saved to the system authority."
+                    logger.warning(
+                        "CLI auth session %s: Codex authority persistence failed safely",
+                        self.id,
+                    )
             except Exception:
-                logger.exception("CLI auth session %s: on_success callback failed", self.id)
+                # The Codex callback persists and reconciles an auth document.
+                # Its exception text can contain provider diagnostics, so do not
+                # pass it through the session logger.
+                if self.provider.name == "codex":
+                    self.state = "failed"
+                    self.message = "Codex authentication was not saved to the system authority."
+                    logger.warning(
+                        "CLI auth session %s: Codex on_success callback failed safely",
+                        self.id,
+                    )
+                else:
+                    logger.exception("CLI auth session %s: on_success callback failed", self.id)
 
         self._done_event.set()
 
@@ -109,11 +132,10 @@ class CLIAuthSession:
                 self.device_code = m.group(1)
                 self.state = "awaiting_auth"
                 self.message = "Waiting for authorization."
-                logger.info(
-                    "CLI auth session %s: parsed device code %s",
-                    self.id,
-                    self.device_code,
-                )
+                # Device codes are short-lived credentials. They are returned
+                # only through the session API to the initiating dashboard,
+                # never copied into a log sink.
+                logger.info("CLI auth session %s: parsed device code", self.id)
 
         if self.provider.success_pattern.search(line):
             self.state = "success"

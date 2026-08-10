@@ -1639,8 +1639,12 @@ export default function SettingsModelsPage() {
   const handleVerifyAll = () => {
     verifyAll.mutate(undefined, {
       onSuccess: (resp) => {
-        const { ok, failed, total } = resp.data;
-        toast.success(`Verified ${ok}/${total} models${failed > 0 ? ` · ${failed} failed` : ""}`);
+        const { ok, failed, skipped, total } = resp.data;
+        toast.success(
+          `Verified ${ok}/${total} models${failed > 0 ? ` · ${failed} failed` : ""}${
+            skipped > 0 ? ` · ${skipped} skipped` : ""
+          }`,
+        );
       },
       onError: (err) => {
         if (err instanceof ApiError && err.status === 429) {

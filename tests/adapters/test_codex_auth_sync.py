@@ -71,9 +71,17 @@ def _make_ok_stdout() -> bytes:
 
 
 def _mock_store(*, shared: bool = False) -> MagicMock:
-    """Return a minimal mock CredentialStore."""
+    """Return a minimal explicit-Codex-authority mock CredentialStore.
+
+    Legacy generic mock methods remain the test observability seam below, but
+    every production call under test goes through the strict Codex-specific
+    methods. ``shared=False`` models an explicitly configured flat topology,
+    not an authority inferred from a local fallback.
+    """
     store = MagicMock()
     store.shared_pool = MagicMock() if shared else None
+    store.has_system_global_authority = True
+    store.require_system_global_pool = MagicMock(return_value=MagicMock())
     store.store = AsyncMock(return_value=None)
     store.store_shared = AsyncMock(return_value=True)
     store.store_shared_if_unchanged = AsyncMock(return_value=True)
@@ -81,6 +89,55 @@ def _mock_store(*, shared: bool = False) -> MagicMock:
     store.load_shared = AsyncMock(return_value=None)
     store.record_test_result = AsyncMock(return_value=None)
     store.record_test_result_if_unchanged = AsyncMock(return_value=True)
+
+    async def _load_codex() -> str | None:
+        store.require_system_global_pool()
+        if shared:
+            return await store.load_shared("cli-auth/codex")
+        return await store.load("cli-auth/codex")
+
+    async def _store_codex(value: str) -> None:
+        store.require_system_global_pool()
+        await store.store_shared(
+            "cli-auth/codex",
+            value,
+            category="cli-auth",
+            description="CLI auth token for Codex (OpenAI)",
+            is_sensitive=True,
+        )
+
+    async def _store_codex_if_unchanged(value: str, *, expected_value: str | None) -> bool:
+        store.require_system_global_pool()
+        return await store.store_shared_if_unchanged(
+            "cli-auth/codex",
+            value,
+            expected_value=expected_value,
+            category="cli-auth",
+            description="CLI auth token for Codex (OpenAI)",
+            is_sensitive=True,
+        )
+
+    async def _record_codex_test_result(
+        *,
+        ok: bool,
+        message: str | None = None,
+        expected_value: str,
+    ) -> bool:
+        store.require_system_global_pool()
+        return await store.record_test_result_if_unchanged(
+            "cli-auth/codex",
+            ok,
+            message,
+            expected_value=expected_value,
+            use_shared_authority=True,
+        )
+
+    store.load_codex_cli_auth = AsyncMock(side_effect=_load_codex)
+    store.store_codex_cli_auth = AsyncMock(side_effect=_store_codex)
+    store.store_codex_cli_auth_if_unchanged = AsyncMock(side_effect=_store_codex_if_unchanged)
+    store.record_codex_cli_auth_test_result_if_unchanged = AsyncMock(
+        side_effect=_record_codex_test_result
+    )
     return store
 
 
@@ -379,10 +436,36 @@ async def test_persist_codex_token_bypasses_schema_local_store_when_shared_exist
     provider = replace(PROVIDERS["codex"], token_path=token_path)
     store = _mock_store(shared=True)
 
-    assert await persist_token(provider, store) is True
+    assert await persist_token(provider, store, codex_authority=store) is True
 
     store.store_shared.assert_awaited_once()
     store.store.assert_not_awaited()
+
+
+async def test_restore_codex_replaces_local_document_with_explicit_authority(
+    tmp_path: Path,
+) -> None:
+    """REQ-core-daemon-001: restore never merges a stale local Codex document."""
+    from dataclasses import replace
+
+    from butlers.cli_auth.persistence import restore_tokens
+    from butlers.cli_auth.registry import PROVIDERS
+
+    token_path = tmp_path / ".codex" / "auth.json"
+    _write_auth(token_path, {"authority": "opaque-local-stale", "extra": "local-only"})
+    authority_document = json.dumps({"authority": "opaque-system-global"})
+    authority = _mock_store(shared=True)
+    authority.load_codex_cli_auth = AsyncMock(return_value=authority_document)
+    local_store = _mock_store()
+    provider = replace(PROVIDERS["codex"], token_path=token_path)
+
+    with patch("butlers.cli_auth.persistence.PROVIDERS", {"codex": provider}):
+        results = await restore_tokens(local_store, codex_authority=authority)
+
+    assert results == {"codex": True}
+    assert token_path.read_text(encoding="utf-8") == authority_document
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+    local_store.load.assert_not_awaited()
 
 
 async def test_reconcile_codex_auth_writes_changed_store_value(tmp_path: Path) -> None:
@@ -563,15 +646,15 @@ async def test_adapter_auth_sync_timeout_covers_queued_reconciliation(tmp_path: 
     assert result == CodexAuthSyncResult(expected_store_value=None, authority_known=False)
 
 
-async def test_invoke_uses_one_total_auth_sync_allowance(
+async def test_invoke_refuses_subprocess_when_spawn_revalidation_exhausts_authority_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Multiple pre/post sync phases share one bounded Spawner allowance.
+    """REQ-core-credentials-001: bounded authority revalidation fails closed.
 
     Without the shared budget, two reconciliations plus finalization could each
     consume the full per-operation cap and outrun the single declared Spawner
-    overhead. The subprocess itself remains runnable after the allowance is
-    spent, while the finalizer safely skips durable work it cannot fit.
+    overhead. A new Codex subprocess must now fail closed when its immediate
+    spawn revalidation cannot finish within that shared allowance.
     """
     auth = tmp_path / ".codex" / "auth.json"
     authority = json.dumps({"access_token": "authority-A"})
@@ -640,17 +723,18 @@ async def test_invoke_uses_one_total_auth_sync_allowance(
         patch("butlers.core.runtimes.codex._token_needs_refresh", return_value=False),
         patch(_EXEC, return_value=proc),
     ):
-        result, _, _ = await adapter.invoke(
-            prompt="hello",
-            system_prompt="",
-            mcp_servers={},
-            env={},
-        )
+        with pytest.raises(RuntimeError, match="system-global Codex authority unavailable"):
+            await adapter.invoke(
+                prompt="hello",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
 
-    assert result == "ok"
     assert reconcile.await_count == 2
     assert second_reconcile_cancelled
     finalize.assert_not_awaited()
+    proc.communicate.assert_not_awaited()
 
 
 async def test_reconcile_codex_auth_write_failure_is_safe_and_nonfatal(
@@ -702,8 +786,8 @@ async def test_reconcile_codex_auth_serializes_concurrent_writes(tmp_path: Path)
     assert stat.S_IMODE(auth.stat().st_mode) == 0o600
 
 
-async def test_reconcile_codex_auth_uses_local_store_without_shared_pool(tmp_path: Path) -> None:
-    """Flat deployments retain their local credential-store authority."""
+async def test_reconcile_codex_auth_uses_explicit_flat_authority(tmp_path: Path) -> None:
+    """REQ-core-credentials-001: flat topology uses an explicit global authority."""
     auth = tmp_path / ".codex" / "auth.json"
     stored = json.dumps({"access_token": "flat-store-token"})
     store = _mock_store()
@@ -716,6 +800,7 @@ async def test_reconcile_codex_auth_uses_local_store_without_shared_pool(tmp_pat
     assert store.load.await_count == 2
     store.load.assert_awaited_with("cli-auth/codex")
     store.load_shared.assert_not_awaited()
+    store.require_system_global_pool.assert_called()
 
 
 async def test_reconcile_codex_auth_corrects_matching_file_mode(tmp_path: Path) -> None:
@@ -869,7 +954,7 @@ async def test_reconcile_does_not_adopt_untracked_local_auth_when_authority_is_a
 async def test_invoke_does_not_resurrect_a_deleted_credential_or_its_health(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cached A deletion cannot be recreated by an unchanged A invocation."""
+    """A confirmed deletion refuses a new Codex subprocess and no health write."""
     auth = tmp_path / ".codex" / "auth.json"
     old = json.dumps({"access_token": "A"})
     auth.parent.mkdir(parents=True)
@@ -886,14 +971,16 @@ async def test_invoke_does_not_resurrect_a_deleted_credential_or_its_health(
 
     with (
         patch("butlers.core.runtimes.codex._token_needs_refresh", return_value=False),
-        patch(_EXEC, return_value=proc),
+        patch(_EXEC, return_value=proc) as mocked_exec,
     ):
-        await adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={})
+        with pytest.raises(RuntimeError, match="system-global Codex authority unavailable"):
+            await adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={})
         await asyncio.sleep(0)
 
     assert auth.read_text(encoding="utf-8") == old
     store.store_shared_if_unchanged.assert_not_awaited()
     store.record_test_result_if_unchanged.assert_not_awaited()
+    mocked_exec.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1085,47 +1172,53 @@ async def test_invoke_revalidates_authority_immediately_before_spawn(
     assert loads >= 3
 
 
-async def test_invoke_continues_when_live_reconciliation_cannot_read_store(
+async def test_invoke_refuses_new_subprocess_when_live_authority_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Credential-store degradation preserves the existing best-effort runtime path."""
+    """REQ-core-credentials-001: unavailable authority cannot authorize local Codex auth."""
     auth = tmp_path / ".codex" / "auth.json"
     _write_auth(auth, {"access_token": "local-token"})
     monkeypatch.setenv("HOME", str(tmp_path))
     store = _mock_store(shared=True)
-    store.load_shared = AsyncMock(side_effect=RuntimeError("store unavailable"))
+    store.load_codex_cli_auth = AsyncMock(side_effect=RuntimeError("authority unavailable"))
     adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store, butler_name="qa")
-
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(_make_ok_stdout(), b""))
-    mock_proc.returncode = 0
-
-    async def _ignore_sync(*_args, **_kwargs) -> None:
-        return None
 
     with (
         patch("butlers.core.runtimes.codex._token_needs_refresh", return_value=False),
-        patch(_EXEC, return_value=mock_proc) as mocked_exec,
-        patch(
-            "butlers.core.runtimes._codex_auth_sync.check_and_persist_rotation",
-            side_effect=_ignore_sync,
-        ),
+        patch(_EXEC) as mocked_exec,
+        pytest.raises(RuntimeError, match="system-global Codex authority unavailable"),
     ):
         await adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={})
 
-    mocked_exec.assert_awaited_once()
+    mocked_exec.assert_not_awaited()
+
+
+async def test_invoke_refuses_new_subprocess_when_authority_document_is_malformed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-core-credentials-001: malformed authority cannot authorize local auth."""
+    auth = tmp_path / ".codex" / "auth.json"
+    _write_auth(auth, {"access_token": "local-token"})
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = _mock_store(shared=True)
+    store.load_codex_cli_auth = AsyncMock(return_value="not-a-json-auth-document")
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store, butler_name="qa")
+
+    with (
+        patch("butlers.core.runtimes.codex._token_needs_refresh", return_value=False),
+        patch(_EXEC) as mocked_exec,
+        pytest.raises(RuntimeError, match="system-global Codex authority unavailable"),
+    ):
+        await adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={})
+
+    mocked_exec.assert_not_awaited()
+    assert auth.read_text(encoding="utf-8") == '{"access_token": "local-token"}'
 
 
 async def test_invoke_does_not_treat_unavailable_authority_as_absent_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A recovered store cannot replace a rotation after pre-spawn reads failed.
-
-    ``None`` is a valid CAS expectation only when a read established that the
-    credential row is absent.  A transient authority outage is unknown, so the
-    completed invocation must leave its canonical file alone instead of using
-    an insert-only CAS and then applying an old value once the DB recovers.
-    """
+    """A transient authority outage neither launches Codex nor bootstraps a row."""
     auth = tmp_path / ".codex" / "auth.json"
     original = json.dumps({"access_token": "old"})
     rotated = json.dumps({"access_token": "rotated"})
@@ -1136,14 +1229,14 @@ async def test_invoke_does_not_treat_unavailable_authority_as_absent_row(
     store = _mock_store(shared=True)
     load_calls = 0
 
-    async def _load_shared(_key: str) -> str:
+    async def _load_authority() -> str:
         nonlocal load_calls
         load_calls += 1
         if load_calls <= 2:
             raise RuntimeError("temporary authority outage")
         return original
 
-    store.load_shared = AsyncMock(side_effect=_load_shared)
+    store.load_codex_cli_auth = AsyncMock(side_effect=_load_authority)
     proc = AsyncMock()
     proc.returncode = 0
 
@@ -1156,30 +1249,32 @@ async def test_invoke_does_not_treat_unavailable_authority_as_absent_row(
 
     with (
         patch("butlers.core.runtimes.codex._token_needs_refresh", return_value=False),
-        patch(_EXEC, return_value=proc),
+        patch(_EXEC, return_value=proc) as mocked_exec,
+        pytest.raises(RuntimeError, match="system-global Codex authority unavailable"),
     ):
         await adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={})
 
-    assert auth.read_text(encoding="utf-8") == rotated
-    store.store_shared_if_unchanged.assert_not_awaited()
-    assert load_calls == 2
+    assert auth.read_text(encoding="utf-8") == original
+    store.store_codex_cli_auth_if_unchanged.assert_not_awaited()
+    mocked_exec.assert_not_awaited()
+    assert load_calls == 1
 
 
-async def test_invoke_continues_when_auth_store_reconciliation_times_out(
+async def test_invoke_refuses_new_subprocess_when_auth_authority_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A slow credential pool cannot turn a locally runnable session into a timeout."""
+    """REQ-core-credentials-001: slow authority cannot fall back to local auth."""
     auth = tmp_path / ".codex" / "auth.json"
     _write_auth(auth, {"access_token": "local-token"})
     monkeypatch.setenv("HOME", str(tmp_path))
     store = _mock_store(shared=True)
     never = asyncio.Event()
 
-    async def _hang(_key: str) -> str:
+    async def _hang() -> str:
         await never.wait()
         raise AssertionError("unreachable")
 
-    store.load_shared = AsyncMock(side_effect=_hang)
+    store.load_codex_cli_auth = AsyncMock(side_effect=_hang)
     proc = AsyncMock()
     proc.returncode = 0
     proc.communicate = AsyncMock(return_value=(_make_ok_stdout(), b""))
@@ -1191,15 +1286,16 @@ async def test_invoke_continues_when_auth_store_reconciliation_times_out(
             0.01,
         ),
         patch("butlers.core.runtimes.codex._token_needs_refresh", return_value=False),
-        patch(_EXEC, return_value=proc),
+        patch(_EXEC, return_value=proc) as mocked_exec,
     ):
-        result, _, _ = await asyncio.wait_for(
-            adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={}),
-            timeout=0.3,
-        )
+        with pytest.raises(RuntimeError, match="system-global Codex authority unavailable"):
+            await asyncio.wait_for(
+                adapter.invoke(prompt="hello", system_prompt="", mcp_servers={}, env={}),
+                timeout=0.3,
+            )
 
-    assert result == "ok"
-    proc.communicate.assert_awaited_once()
+    mocked_exec.assert_not_awaited()
+    proc.communicate.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1482,7 +1578,7 @@ async def test_schedule_record_test_result_noop_without_store() -> None:
 
 
 async def test_schedule_record_test_result_fires_task_with_store() -> None:
-    """An unfenced non-Codex result preserves the generic store writer."""
+    """An unfenced Codex result never falls back to the generic writer."""
     store = _mock_store()
     store.record_test_result = AsyncMock(return_value=None)
 
@@ -1494,7 +1590,8 @@ async def test_schedule_record_test_result_fires_task_with_store() -> None:
     adapter._schedule_record_test_result("cli-auth/codex", ok=False, message="test failure")
     await asyncio.sleep(0.05)
 
-    store.record_test_result.assert_awaited_once_with("cli-auth/codex", False, "test failure")
+    store.record_test_result.assert_not_awaited()
+    store.record_codex_cli_auth_test_result_if_unchanged.assert_not_awaited()
 
 
 async def test_schedule_record_test_result_fences_codex_against_shared_authority() -> None:
@@ -1511,12 +1608,10 @@ async def test_schedule_record_test_result_fences_codex_against_shared_authority
     )
     await asyncio.sleep(0.05)
 
-    store.record_test_result_if_unchanged.assert_awaited_once_with(
-        "cli-auth/codex",
-        False,
-        "old refresh failed",
+    store.record_codex_cli_auth_test_result_if_unchanged.assert_awaited_once_with(
+        ok=False,
+        message="old refresh failed",
         expected_value=snapshot,
-        use_shared_authority=True,
     )
     store.record_test_result.assert_not_awaited()
 

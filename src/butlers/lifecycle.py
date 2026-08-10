@@ -253,7 +253,10 @@ async def run_startup(daemon: Any) -> None:
     try:
         from butlers.cli_auth.persistence import restore_tokens
 
-        results = await restore_tokens(credential_store)
+        results = await restore_tokens(
+            credential_store,
+            codex_authority=credential_store,
+        )
         restored = sum(1 for v in results.values() if v)
         if restored:
             logger.info("Restored %d CLI auth token(s) from DB", restored)
@@ -272,7 +275,10 @@ async def run_startup(daemon: Any) -> None:
             except Exception:
                 logger.debug("codex_auth_sync: baseline recording skipped", exc_info=True)
     except Exception:
-        logger.debug("CLI auth token restoration skipped", exc_info=True)
+        # A failed authority read can retain DB bind context.  Startup may
+        # continue for non-Codex providers, but must not disclose it or
+        # repopulate Codex from a local schema credential.
+        logger.warning("CLI auth token restoration skipped safely")
 
     # 8d. Bootstrap owner entity (idempotent; non-fatal).
     #     Ensures owner entity exists in public.entities.

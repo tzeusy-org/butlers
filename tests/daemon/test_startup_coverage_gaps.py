@@ -281,8 +281,10 @@ class TestStep8c2CliTokenRestore:
         store = AsyncMock()
         store.shared_pool = None
         store.load = AsyncMock(return_value=None)  # No stored tokens
+        store.require_system_global_pool = MagicMock()
+        store.load_codex_cli_auth = AsyncMock(return_value=None)
 
-        results = await restore_tokens(store)
+        results = await restore_tokens(store, codex_authority=store)
         # All providers return False (no stored tokens)
         assert all(v is False for v in results.values())
 
@@ -319,9 +321,11 @@ class TestStep8c2CliTokenRestore:
         store = AsyncMock()
         store.shared_pool = None
         store.load = AsyncMock(side_effect=RuntimeError("DB gone"))
+        store.require_system_global_pool = MagicMock()
+        store.load_codex_cli_auth = AsyncMock(side_effect=RuntimeError("DB gone"))
 
         # Must not raise
-        results = await restore_tokens(store)
+        results = await restore_tokens(store, codex_authority=store)
         assert all(v is False for v in results.values())
 
     @pytest.mark.parametrize("invalid_authority", ["not-json", "", "{}", "[]", '[{"x": 1}]'])
@@ -340,10 +344,11 @@ class TestStep8c2CliTokenRestore:
         codex = replace(PROVIDERS["codex"], token_path=token_path)
         store = AsyncMock()
         store.shared_pool = None
-        store.load = AsyncMock(return_value=invalid_authority)
+        store.require_system_global_pool = MagicMock()
+        store.load_codex_cli_auth = AsyncMock(return_value=invalid_authority)
 
         with patch("butlers.cli_auth.persistence.PROVIDERS", {"codex": codex}):
-            results = await restore_tokens(store)
+            results = await restore_tokens(store, codex_authority=store)
 
         assert results == {"codex": False}
         assert token_path.read_text(encoding="utf-8") == '{"access_token":"working"}'

@@ -1,9 +1,9 @@
 """Tests for butlers.jobs.model_verify (bu-hmdqz.2).
 
 Covers:
-- run_model_verify_sweep: delegates to run_verify_all_models with
-  audit_actor="model_verify_sweep"; returns None (no raise) when no shared
-  pool is configured.
+- run_model_verify_sweep: delegates to run_verify_all_models with explicit
+  Codex authority and audit_actor="model_verify_sweep"; returns None (no
+  raise) when no shared pool is configured.
 - run_model_verify_loop: sleeps first, ticks on interval, can be cancelled,
   skips a tick when no pool is available, swallows a bad tick.
 """
@@ -11,7 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -46,13 +46,23 @@ async def test_sweep_returns_none_when_pool_missing():
 
 
 async def test_sweep_delegates_to_run_verify_all_models(monkeypatch):
-    verify_result = AsyncMock(return_value=type("R", (), {"total": 3, "ok": 2, "failed": 1})())
+    verify_result = AsyncMock(
+        return_value=type("R", (), {"total": 3, "ok": 2, "failed": 1, "skipped": 0})()
+    )
     monkeypatch.setattr("butlers.api.routers.model_settings.run_verify_all_models", verify_result)
     pool = object()
+    authority = MagicMock()
+    store_cls = MagicMock(return_value=authority)
+    monkeypatch.setattr("butlers.jobs.model_verify.CredentialStore", store_cls, raising=False)
     result = await run_model_verify_sweep(_FakeDatabaseManager(pool=pool))
 
-    verify_result.assert_awaited_once_with(pool, audit_actor="model_verify_sweep")
-    assert result == {"total": 3, "ok": 2, "failed": 1}
+    store_cls.assert_called_once_with(pool, system_global_pool=pool)
+    verify_result.assert_awaited_once_with(
+        pool,
+        audit_actor="model_verify_sweep",
+        codex_auth_authority=authority,
+    )
+    assert result == {"total": 3, "ok": 2, "failed": 1, "skipped": 0}
 
 
 # ---------------------------------------------------------------------------

@@ -484,7 +484,10 @@ class DiscretionEvaluator:
 
     Typical usage::
 
-        dispatcher = DiscretionDispatcher(pool=db_pool)
+        dispatcher = DiscretionDispatcher(
+            pool=db_pool,
+            codex_auth_authority=system_global_codex_authority,
+        )
         evaluator = DiscretionEvaluator(
             source_name="kitchen",
             dispatcher=dispatcher,

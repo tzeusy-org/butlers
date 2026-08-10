@@ -80,6 +80,8 @@ from butlers.connectors.telegram_user_client_consent import (
 )
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
+    CredentialStore,
+    create_system_global_credential_store_from_env,
     resolve_owner_entity_info,
     shared_db_name_from_env,
 )
@@ -329,6 +331,7 @@ class TelegramUserClientConnector:
         config: TelegramUserClientConnectorConfig,
         db_pool: Any | None = None,
         cursor_pool: Any | None = None,
+        codex_auth_authority: CredentialStore | None = None,
     ) -> None:
         if not TELETHON_AVAILABLE:
             raise RuntimeError("Telethon is not installed. Install with: uv pip install telethon")
@@ -385,7 +388,12 @@ class TelegramUserClientConnector:
         # Discretion layer: LLM-based FORWARD/IGNORE filter per chat.
         # Weight resolver maps sender → contact role → weight tier.
         self._discretion_dispatcher: DiscretionDispatcher | None = (
-            DiscretionDispatcher(pool=db_pool) if db_pool is not None else None
+            DiscretionDispatcher(
+                pool=db_pool,
+                codex_auth_authority=codex_auth_authority,
+            )
+            if db_pool is not None
+            else None
         )
         self._discretion_evaluators: dict[str, DiscretionEvaluator] = {}
         self._weight_resolver: ContactWeightResolver | None = (
@@ -2649,10 +2657,20 @@ async def run_telegram_user_client_connector() -> None:
             endpoint_identity=endpoint_identity,
         )
 
+        codex_auth_authority: CredentialStore | None = None
+        try:
+            codex_auth_authority = await create_system_global_credential_store_from_env()
+        except Exception:
+            logger.warning(
+                "Telegram user-client connector: system-global Codex authority unavailable; "
+                "Codex discretion calls will fail closed"
+            )
+
         connector = TelegramUserClientConnector(
             config,
             db_pool=cursor_pool,
             cursor_pool=cursor_pool,
+            codex_auth_authority=codex_auth_authority,
         )
 
         # Restore the shared codex CLI-auth token from the credential DB to disk so
@@ -2661,7 +2679,11 @@ async def run_telegram_user_client_connector() -> None:
         # failure; degraded state also surfaces via the discretion-auth health hook.
         from butlers.cli_auth.persistence import restore_connector_cli_auth
 
-        await restore_connector_cli_auth(cursor_pool, context="telegram_user_client")
+        await restore_connector_cli_auth(
+            CredentialStore(cursor_pool),
+            codex_authority=codex_auth_authority,
+            context="telegram_user_client",
+        )
 
         health_task = asyncio.create_task(
             _run_health_server(config.health_port, connector),
@@ -2679,6 +2701,8 @@ async def run_telegram_user_client_connector() -> None:
             except (asyncio.CancelledError, Exception):
                 pass
             await connector.stop()
+            if codex_auth_authority is not None:
+                await codex_auth_authority.require_system_global_pool().close()
     finally:
         await cursor_pool.close()
 

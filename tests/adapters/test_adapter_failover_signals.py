@@ -25,6 +25,7 @@ from butlers.core.failover_classifier import (
     FailoverContext,
     classify_failover_eligibility,
 )
+from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 from butlers.core.runtimes.codex import CodexAdapter, MCPToolDiscoveryError
 from butlers.core.runtimes.gemini import GeminiAdapter
@@ -36,6 +37,40 @@ _CODEX_EXEC = "butlers.core.runtimes.codex.asyncio.create_subprocess_exec"
 _CLAUDE_EXEC = "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec"
 _GEMINI_EXEC = "butlers.core.runtimes.gemini.asyncio.create_subprocess_exec"
 _OPENCODE_EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
+
+
+@pytest.fixture(autouse=True)
+def _authorize_codex_for_failover_surface_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise failover signals after the explicit authority gate has passed."""
+
+    async def _reconcile(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    async def _finalize(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        expected_store_value: str | None,
+        authority_known: bool,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del expected_store_value, authority_known, auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    monkeypatch.setattr(CodexAdapter, "_reconcile_canonical_auth", _reconcile)
+    monkeypatch.setattr(CodexAdapter, "_finalize_canonical_auth", _finalize)
 
 
 # ---------------------------------------------------------------------------

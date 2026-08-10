@@ -40,7 +40,7 @@ The auth flow is managed by `CLIAuthSession` in `src/butlers/cli_auth/session.py
 5. **Device code extracted**: When the URL and code patterns match, the session transitions to `awaiting_auth` state and the dashboard displays the code to the user.
 6. **User authorizes**: The user visits the auth URL and enters the device code.
 7. **Success detection**: When the success pattern matches in stdout (or the process exits cleanly and a token file exists), the session transitions to `success`.
-8. **Token persistence**: The `on_success` callback calls `persist_token()` to store the token in the DB.
+8. **Token persistence**: The `on_success` callback calls `persist_token()` to store the token in the DB. For Codex, it writes only the explicitly selected system-global authority, then reconciles/pre-warms against that same authority with conditional rotation fencing. If that authority cannot be selected, the dashboard refuses to spawn a Codex device-auth session; if a selected authority cannot confirm persistence, the session reports failure rather than treating a local file as a successful login.
 
 ### Session States
 
@@ -81,9 +81,11 @@ The health module at `src/butlers/cli_auth/health.py` probes each provider's aut
 
 For `device_code` providers:
 1. Check if the CLI binary is available on PATH.
-2. Run the provider's `status_command` (e.g., `codex login status`).
-3. Match output against `status_ok_pattern` (e.g., `"Logged in"`).
-4. If no status command is defined, fall back to checking if the token file exists.
+2. For Codex, reconcile the explicit system-global `cli-auth/codex` document to the canonical file and capture its exact authority snapshot before a status child can run.
+3. Run the provider's `status_command` (e.g., `codex login status`).
+4. Fence any Codex rotation and health result to that same snapshot; return only a value-free Codex result to persisted probe history.
+5. Match output against `status_ok_pattern` (e.g., `"Logged in"`) for other device-code providers.
+6. If no status command is defined, other providers fall back to checking if the token file exists. Codex reports a safe `probe_failed` result instead of treating a local file as authority.
 
 For `api_key` providers:
 1. Check if the token path exists and contains a valid API key entry.
@@ -98,6 +100,10 @@ After successful auth, `persist_token()` in `src/butlers/cli_auth/persistence.py
 1. Reads the CLI's token file from disk.
 2. Stores the content in `butler_secrets` with key `cli-auth/<provider_name>` and category `cli-auth`.
 
+For `cli-auth/codex`, this is a strict system-global write. A schema-local
+credential row, generic fallback pool, or environment variable cannot become a
+substitute authority.
+
 ### Restoring
 
 On application startup, `restore_tokens()`:
@@ -106,6 +112,15 @@ On application startup, `restore_tokens()`:
 3. Writes the content to the expected filesystem path.
 4. Sets file permissions to `0o600`.
 5. Handles shared token paths by merging JSON content (e.g., two providers sharing `auth.json`).
+
+For Codex, steps 2 and 5 are deliberately different: the restore uses only an
+explicit system-global authority and atomically replaces the canonical
+`~/.codex/auth.json` with its exact valid document. The next invocation repeats
+authority reconciliation, so a dashboard refresh takes effect without a daemon
+restart. No completed or running session is replayed. If the authority is
+missing, unavailable, slow, or malformed, new Codex work fails closed without
+recovering from a stale local document; other providers remain compatible with
+their ordinary restore behavior.
 
 This restore happens during the dashboard API lifespan startup, ensuring tokens are available before any butler attempts to spawn a CLI instance.
 
@@ -116,8 +131,8 @@ To confirm CLI auth provider registration, token persistence, and health probe b
 ```bash
 # 1. Verify the provider registry is importable and contains expected entries
 python3 -c "
-from butlers.cli_auth.registry import PROVIDER_REGISTRY
-for name, p in PROVIDER_REGISTRY.items():
+from butlers.cli_auth.registry import PROVIDERS
+for name, p in PROVIDERS.items():
     print(name, p.auth_mode, p.binary)
 "
 # Expected: codex (device_code, codex), opencode-openai (device_code, opencode),
@@ -125,27 +140,26 @@ for name, p in PROVIDER_REGISTRY.items():
 
 # 2. Confirm tokens are stored in butler_secrets under the cli-auth/ namespace
 psql -h localhost -U butlers -d butlers -c \
-  "SELECT key, category, length(value) > 0 AS has_value
+  "SELECT secret_key, category, length(secret_value) > 0 AS has_value
    FROM public.butler_secrets
-   WHERE key LIKE 'cli-auth/%';"
+   WHERE secret_key LIKE 'cli-auth/%';"
 # Expected: one row per authenticated provider with non-empty value
 
-# 3. Verify health probe reports correct state for each provider
-python3 -c "
-import asyncio
-from butlers.cli_auth.health import probe_all
-results = asyncio.run(probe_all())
-for name, result in results.items():
-    print(name, result.state)
-"
-# Expected: 'authenticated' for providers with valid tokens, 'unavailable' if binary not on PATH
+# 3. Verify Codex authority behavior without printing a credential
+uv run pytest \
+  tests/config/test_credential_store.py \
+  tests/adapters/test_codex_auth_sync.py \
+  tests/cli/test_cli_auth.py \
+  tests/connectors/test_connector_codex_auth_restore.py \
+  tests/connectors/test_discretion_dispatcher.py
+# Expected: strict authority, topology, atomic-write, rotation, and probe tests pass.
 
 # 4. Confirm token restore writes files with correct permissions on startup
 # (Run after application startup to check token file permissions)
 python3 -c "
 import os, stat
-from butlers.cli_auth.registry import PROVIDER_REGISTRY
-for name, p in PROVIDER_REGISTRY.items():
+from butlers.cli_auth.registry import PROVIDERS
+for name, p in PROVIDERS.items():
     if p.token_path and os.path.exists(p.token_path):
         mode = oct(stat.S_IMODE(os.stat(p.token_path).st_mode))
         print(name, p.token_path, mode)

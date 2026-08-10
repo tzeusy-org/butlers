@@ -88,7 +88,7 @@ def _make_shared_pool(
     async def _fetchrow(sql, *args):
         if "secret_probe_log" in sql:
             return probe_row
-        if "category IN ('cli', 'cli-auth')" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql or "WHERE secret_key = $1" in sql:
             return cli_row
         return None
 
@@ -261,14 +261,14 @@ def test_rotate_cli_value_replacement_clears_prior_health_atomically():
     updates the value.  The rotation UPSERT itself therefore resets every
     value-scoped health field when the credential bytes change.
     """
-    cli_row = _make_cli_row(key="cli-auth/codex", value="old-auth-document")
+    cli_row = _make_cli_row(key="cli-auth/codex", value='{"old": true}')
     mock_db = _make_db(cli_row=cli_row)
     shared_pool = mock_db.credential_shared_pool()
     client = _build_app(mock_db)
 
     response = client.post(
         "/api/secrets/cli/cli-auth/codex/rotate",
-        json={"value": "new-auth-document"},
+        json={"value": '{"new": true}'},
     )
 
     assert response.status_code == 200
@@ -385,7 +385,7 @@ def test_rotate_cli_no_body_still_generates_and_requires_existing():
 
 def test_rotate_cli_auto_generate_rejected_for_cli_auth_mirror_row():
     """Auto-generate (no value) on a cli-auth/* id returns 400, not a minted token."""
-    cli_row = _make_cli_row(key="cli-auth/codex", value="real_auth_json_blob")
+    cli_row = _make_cli_row(key="cli-auth/codex", value='{"existing": true}')
     mock_db = _make_db(cli_row=cli_row)
     client = _build_app(mock_db)
 
@@ -397,7 +397,7 @@ def test_rotate_cli_auto_generate_rejected_for_cli_auth_mirror_row():
 def test_rotate_cli_auto_generate_rejected_for_cli_auth_mirror_row_empty_value():
     """An empty/whitespace value on a cli-auth/* id also hits the auto-generate
     guard (empty is normalized to 'no value supplied')."""
-    cli_row = _make_cli_row(key="cli-auth/codex", value="real_auth_json_blob")
+    cli_row = _make_cli_row(key="cli-auth/codex", value='{"existing": true}')
     mock_db = _make_db(cli_row=cli_row)
     client = _build_app(mock_db)
 
@@ -408,17 +408,34 @@ def test_rotate_cli_auto_generate_rejected_for_cli_auth_mirror_row_empty_value()
 def test_rotate_cli_paste_still_allowed_for_cli_auth_mirror_row():
     """Paste-to-save (owner-supplied value) on a cli-auth/* id is unaffected —
     only the no-value auto-generate path is rejected."""
-    cli_row = _make_cli_row(key="cli-auth/codex", value="real_auth_json_blob")
+    cli_row = _make_cli_row(key="cli-auth/codex", value='{"existing": true}')
     mock_db = _make_db(cli_row=cli_row)
     client = _build_app(mock_db)
 
-    supplied = "fresh-real-auth-json-blob"
+    supplied = '{"fresh": true}'
     resp = client.post(
         "/api/secrets/cli/cli-auth/codex/rotate",
         json={"value": supplied},
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["value"] == supplied
+
+
+def test_rotate_codex_rejects_malformed_authority_document_without_writing():
+    """REQ-core-credentials-001: malformed Codex authority fails closed at persist."""
+    cli_row = _make_cli_row(key="cli-auth/codex", value='{"existing": true}')
+    mock_db = _make_db(cli_row=cli_row)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    response = client.post(
+        "/api/secrets/cli/cli-auth/codex/rotate",
+        json={"value": "not-a-json-auth-document"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Codex CLI auth must be a valid non-empty JSON document."
+    shared_pool.execute.assert_not_awaited()
 
 
 def test_rotate_cli_auto_generate_still_allowed_for_bare_self_issued_id():
@@ -437,8 +454,8 @@ def test_rotate_cli_auto_generate_still_allowed_for_bare_self_issued_id():
 
 def test_rotate_cli_persistence_error_does_not_log_owner_supplied_value(caplog):
     """A driver failure cannot reflect the pasted CLI credential into logs."""
-    supplied = "owner-supplied-cli-credential-must-not-reach-logs"
-    cli_row = _make_cli_row(key="cli-auth/codex", value="previous-value")
+    supplied = '{"opaque_owner_supplied": "must-not-reach-logs"}'
+    cli_row = _make_cli_row(key="cli-auth/codex", value='{"previous": true}')
     mock_db = _make_db(cli_row=cli_row, execute_ok=False)
     client = _build_app(mock_db)
 

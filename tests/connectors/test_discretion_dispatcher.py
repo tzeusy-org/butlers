@@ -57,9 +57,12 @@ def test_explicit_credential_authority_is_forwarded_to_runtime_adapter() -> None
     model pool, because that would let a local Codex row shadow dashboard auth.
     """
     pool = MagicMock()
-    credential_store = MagicMock()
+    codex_auth_authority = MagicMock()
     adapter = MagicMock()
-    dispatcher = DiscretionDispatcher(pool=pool, credential_store=credential_store)
+    dispatcher = DiscretionDispatcher(
+        pool=pool,
+        codex_auth_authority=codex_auth_authority,
+    )
 
     with patch(f"{_MODULE}.create_adapter", return_value=adapter) as create:
         assert dispatcher._get_or_create_adapter("codex") is adapter
@@ -68,12 +71,12 @@ def test_explicit_credential_authority_is_forwarded_to_runtime_adapter() -> None
         "codex",
         provider_config=None,
         butler_name="__discretion__",
-        credential_store=credential_store,
+        credential_store=codex_auth_authority,
     )
 
 
 def test_schema_local_dispatcher_does_not_guess_a_credential_authority() -> None:
-    """A bare dispatcher preserves no-store behavior rather than shadowing public auth."""
+    """REQ-core-credentials-001: a bare dispatcher cannot shadow public auth."""
     pool = MagicMock()
     adapter = MagicMock()
     dispatcher = DiscretionDispatcher(pool=pool)
@@ -85,6 +88,40 @@ def test_schema_local_dispatcher_does_not_guess_a_credential_authority() -> None
         "codex",
         provider_config=None,
         butler_name="__discretion__",
+    )
+
+
+def test_codex_dispatcher_ignores_generic_local_credential_store() -> None:
+    """REQ-core-credentials-001: generic adapter credentials are not Codex authority."""
+    pool = MagicMock()
+    local_only_store = MagicMock()
+    adapter = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool, credential_store=local_only_store)
+
+    with patch(f"{_MODULE}.create_adapter", return_value=adapter) as create:
+        dispatcher._get_or_create_adapter("codex")
+
+    create.assert_called_once_with(
+        "codex",
+        provider_config=None,
+        butler_name="__discretion__",
+    )
+
+
+def test_codex_dispatcher_keeps_authority_when_provider_config_is_present() -> None:
+    """REQ-core-credentials-001: generic factory fallback cannot strip Codex authority."""
+    pool = MagicMock()
+    codex_auth_authority = MagicMock()
+    adapter = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool, codex_auth_authority=codex_auth_authority)
+
+    with patch(f"{_MODULE}.create_adapter", return_value=adapter) as create:
+        dispatcher._get_or_create_adapter("codex", {"openai": {"base_url": "test"}})
+
+    create.assert_called_once_with(
+        "codex",
+        butler_name="__discretion__",
+        credential_store=codex_auth_authority,
     )
 
 

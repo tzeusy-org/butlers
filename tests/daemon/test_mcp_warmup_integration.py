@@ -19,7 +19,44 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+from butlers.core.runtimes.codex import CodexAdapter
+
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _authorize_codex_for_mcp_instrumentation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep warmup metrics tests downstream of the explicit authority gate."""
+
+    async def _reconcile(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    async def _finalize(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        expected_store_value: str | None,
+        authority_known: bool,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del expected_store_value, authority_known, auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    monkeypatch.setattr(CodexAdapter, "_reconcile_canonical_auth", _reconcile)
+    monkeypatch.setattr(CodexAdapter, "_finalize_canonical_auth", _finalize)
 
 
 class TestWarmupBestEffortContract:

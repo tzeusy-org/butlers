@@ -546,8 +546,9 @@ it does not grow a generic alert administration surface.
 7. Land the signed private coordinator and dedicated client dark, still without
    production key mounts. Fixture-backed tests exercise the exact Codex
    authority, OpenCode mapper, runtime home/configuration, receipt, and
-   verification persistence; the deployed path remains unavailable while
-   existing Test/verify/scheduler callers remain unchanged.
+   verification persistence; the deployed coordinator path remains unavailable
+   while existing Test/verify/scheduler callers retain their direct-adapter
+   deployment shape but use the explicit Codex authority.
 8. Before any production mount, route every non-verification Dashboard CLI-auth
    child through the per-invocation identity/containment launcher, remove Dashboard
    Codex prewarm and other non-verification adapter invocation, sanitize child
@@ -559,7 +560,8 @@ it does not grow a generic alert administration surface.
    domain is dead before same-descriptor validation, and no failed containment
    path can persist or release an identity early.
    Inventory the exact model-settings Test/verify adapter callsites as the only
-   deferred local paths; leave them unchanged and unmounted for stage 9.
+   local paths deferred for coordinator/sandbox removal in stage 9; retain
+   explicit Codex-authority propagation while they remain unmounted.
 9. In one deployable cutover, provision the Dashboard signer and shared verifier
    mounts and use the canonical full-stack restart. Dashboard control remains
    unavailable and signs nothing until Switchboard's non-secret readiness check

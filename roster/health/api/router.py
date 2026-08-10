@@ -29,6 +29,7 @@ from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.general_settings import load_general_settings, resolve_general_timezone
 from butlers.core.model_routing import Complexity
+from butlers.credential_store import CredentialStore
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -2439,7 +2440,13 @@ def _build_health_user_message(state: dict, state_class: str) -> str:
     )
 
 
-async def elaborate_health_llm(pool: Any, state: dict, state_class: str) -> str | None:
+async def elaborate_health_llm(
+    pool: Any,
+    state: dict,
+    state_class: str,
+    *,
+    codex_auth_authority: CredentialStore | None = None,
+) -> str | None:
     """Call the catalog-backed local runtime and return the paragraph or None.
 
     Returns None on any failure so the caller uses the deterministic fallback.
@@ -2448,6 +2455,7 @@ async def elaborate_health_llm(pool: Any, state: dict, state_class: str) -> str 
         pool,
         butler_name=HEALTH_BRIEFING_RUNTIME_BUTLER_NAME,
         complexity_tier=Complexity.CHEAP,
+        codex_auth_authority=codex_auth_authority,
     )
     try:
         text = (
@@ -2460,8 +2468,12 @@ async def elaborate_health_llm(pool: Any, state: dict, state_class: str) -> str 
             logger.info("Health briefing LLM elaboration returned empty text")
             return None
         return text
-    except Exception as exc:
-        logger.warning("Health briefing local-runtime elaboration failed: %s", exc)
+    except Exception:
+        logger.warning(
+            "Health briefing local-runtime elaboration failed safely "
+            "(state_class=%s); using templated fallback",
+            state_class,
+        )
         return None
 
 
@@ -2473,6 +2485,8 @@ async def _compose_health_briefing(
     cache: BriefingCache,
     owner_id: Any,
     llm_pool: Any,
+    *,
+    codex_auth_authority: CredentialStore | None = None,
 ) -> dict:
     """Compose a fresh Briefing dict and populate the cache.
 
@@ -2498,7 +2512,12 @@ async def _compose_health_briefing(
 
     if _health_briefing_llm_enabled():
         try:
-            llm_text = await elaborate_health_llm(llm_pool, state, state_class)
+            llm_text = await elaborate_health_llm(
+                llm_pool,
+                state,
+                state_class,
+                codex_auth_authority=codex_auth_authority,
+            )
             if llm_text:
                 if _health_voice_lint_passes(llm_text):
                     elaboration = llm_text
@@ -2517,12 +2536,11 @@ async def _compose_health_briefing(
                     "using templated fallback",
                     state_class,
                 )
-        except Exception as exc:
+        except Exception:
             logger.warning(
-                "Health briefing LLM elaboration raised (state_class=%s); "
-                "using templated fallback: %s",
+                "Health briefing LLM elaboration raised safely (state_class=%s); "
+                "using templated fallback",
                 state_class,
-                exc,
             )
     else:
         logger.debug(
@@ -2546,6 +2564,19 @@ async def _compose_health_briefing(
 
     cache.set(owner_id, briefing_dict)
     return briefing_dict
+
+
+def _health_briefing_codex_authority(db: DatabaseManager) -> CredentialStore | None:
+    """Build Codex authority solely from the dedicated shared credential pool."""
+    try:
+        shared_pool = db.credential_shared_pool()
+    except KeyError:
+        logger.warning(
+            "Health briefing Codex authority unavailable: shared credential pool is not "
+            "configured; Codex dispatch will fail closed to the templated fallback"
+        )
+        return None
+    return CredentialStore(shared_pool, system_global_pool=shared_pool)
 
 
 @router.get("/briefing", response_model=ApiResponse[Briefing])
@@ -2579,5 +2610,14 @@ async def get_health_briefing(
 
     now = await _owner_local_now(sw_pool)
     state = await _fetch_health_briefing_state(health_pool, sw_pool, now)
-    briefing_dict = await _compose_health_briefing(state, cache, owner_id, sw_pool)
+    codex_auth_authority = (
+        _health_briefing_codex_authority(db) if _health_briefing_llm_enabled() else None
+    )
+    briefing_dict = await _compose_health_briefing(
+        state,
+        cache,
+        owner_id,
+        sw_pool,
+        codex_auth_authority=codex_auth_authority,
+    )
     return ApiResponse(data=Briefing(**briefing_dict))

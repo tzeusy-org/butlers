@@ -112,6 +112,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
 from butlers.api.routers.audit import log_audit_entry
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.config import list_butlers
+from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import (
     CalendarModule,
@@ -2231,11 +2232,13 @@ async def _projection_freshness_after_mutation(
     return freshness if isinstance(freshness, dict) else None
 
 
-def _shared_pool(db: DatabaseManager):
-    """Return the shared credential pool, raising 503 when unavailable.
+def _quick_add_shared_authority_pool(db: DatabaseManager):
+    """Return quick-add's authoritative shared credential pool or raise 503.
 
     The quick-add parse resolves its model from ``public.model_catalog`` via the
-    shared credential pool — the same pool the model-settings surface uses.
+    shared credential pool — the same pool the model-settings surface uses. It
+    must not fall back to a schema-local pool because that pool cannot be
+    promoted to a system-global Codex credential authority.
     """
     try:
         return db.credential_shared_pool()
@@ -2265,13 +2268,14 @@ async def parse_quick_add_event(
     human-readable ``reason``, and no ``draft`` — never a fabricated event.
     Blank input is rejected at the model boundary (HTTP 422).
     """
-    pool = _shared_pool(db)
+    pool = _quick_add_shared_authority_pool(db)
     outcome = await parse_quick_add(
         pool,
         text=body.text,
         butler_name=body.butler_name,
         timezone=body.timezone,
         now_iso=body.now,
+        codex_auth_authority=CredentialStore(pool, system_global_pool=pool),
     )
     draft = QuickAddDraft.model_validate(outcome.draft) if outcome.draft is not None else None
     return ApiResponse[QuickAddParseResponse](
@@ -3531,7 +3535,7 @@ accounts_router = APIRouter(prefix="/api/calendar", tags=["calendar", "accounts"
 _GOOGLE_CALENDAR_CONNECTOR_TYPE = "google_calendar"
 
 
-def _shared_pool(db: DatabaseManager) -> Any | None:
+def _calendar_accounts_shared_pool(db: DatabaseManager) -> Any | None:
     """Return the shared credential pool (for ``public.google_accounts``), or None."""
     try:
         return db.credential_shared_pool()
@@ -3646,7 +3650,7 @@ async def list_calendar_accounts(
     surface is unavailable, accounts are still returned with an ``unknown``
     health indicator and ``health_available = false`` rather than failing.
     """
-    shared_pool = _shared_pool(db)
+    shared_pool = _calendar_accounts_shared_pool(db)
     if shared_pool is None:
         return ApiResponse[CalendarAccountsResponse](
             data=CalendarAccountsResponse(accounts=[], health_available=False)

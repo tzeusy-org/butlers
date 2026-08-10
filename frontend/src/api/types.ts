@@ -4805,6 +4805,7 @@ export interface VerifyAllResult {
   total: number;
   ok: number;
   failed: number;
+  skipped: number;
 }
 
 /** Request body for creating a catalog entry. */

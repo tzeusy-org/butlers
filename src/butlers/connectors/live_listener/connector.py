@@ -96,6 +96,7 @@ from butlers.connectors.live_listener.vad import (
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
+from butlers.credential_store import CredentialStore, create_system_global_credential_store_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -154,9 +155,11 @@ class LiveListenerConnector:
         config: LiveListenerConfig,
         db_pool: asyncpg.Pool | None = None,
         mcp_client: CachedMCPClient | None = None,
+        codex_auth_authority: CredentialStore | None = None,
     ) -> None:
         self._config = config
         self._db_pool = db_pool
+        self._codex_auth_authority = codex_auth_authority
 
         # Shared MCP client
         if mcp_client is not None:
@@ -226,6 +229,7 @@ class LiveListenerConnector:
             DiscretionDispatcher(
                 pool=self._db_pool,
                 timeout_s=self._config.discretion_timeout_s,
+                codex_auth_authority=self._codex_auth_authority,
             )
             if self._db_pool is not None
             else None
@@ -924,7 +928,20 @@ async def run_connector() -> None:
         logger.error("live-listener: failed to create DB pool: %s", exc)
         raise SystemExit(1) from exc
 
-    connector = LiveListenerConnector(config=config, db_pool=db_pool)
+    codex_auth_authority: CredentialStore | None = None
+    try:
+        codex_auth_authority = await create_system_global_credential_store_from_env()
+    except Exception:
+        logger.warning(
+            "live-listener: system-global Codex authority unavailable; "
+            "Codex discretion calls will fail closed"
+        )
+
+    connector = LiveListenerConnector(
+        config=config,
+        db_pool=db_pool,
+        codex_auth_authority=codex_auth_authority,
+    )
 
     # Restore the shared codex CLI-auth token from the credential DB to disk so
     # this connector's discretion-tier codex calls find ~/.codex/auth.json instead
@@ -932,7 +949,11 @@ async def run_connector() -> None:
     # failure; degraded state also surfaces via the discretion-auth health hook.
     from butlers.cli_auth.persistence import restore_connector_cli_auth
 
-    await restore_connector_cli_auth(db_pool, context="live_listener")
+    await restore_connector_cli_auth(
+        CredentialStore(db_pool),
+        codex_authority=codex_auth_authority,
+        context="live_listener",
+    )
 
     try:
         await connector.run_forever()
@@ -940,6 +961,8 @@ async def run_connector() -> None:
         logger.info("live-listener: received keyboard interrupt, shutting down")
     finally:
         await connector.stop()
+        if codex_auth_authority is not None:
+            await codex_auth_authority.require_system_global_pool().close()
         if db_pool is not None:
             await db_pool.close()
 

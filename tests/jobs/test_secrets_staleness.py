@@ -320,6 +320,34 @@ async def test_dispatch_probe_cli_success():
     assert outcome.family == "cli"
 
 
+async def test_dispatch_probe_codex_error_is_value_free(caplog: pytest.LogCaptureFixture) -> None:
+    """REQ-core-credentials-001: scheduled Codex diagnostics never leak provider detail."""
+    target = ProbeTarget(
+        canonical_key="c:cli-auth/codex",
+        family="cli",
+        label="cli-auth/codex",
+        state="failing",
+        last_verified=None,
+        circuit_group="cli:codex",
+        cli_provider="codex",
+    )
+    opaque_marker = "scheduled-provider-detail-marker"
+
+    with (
+        patch(
+            "butlers.api.routers.cli_auth.test_api_key",
+            new=AsyncMock(side_effect=RuntimeError(opaque_marker)),
+        ),
+        caplog.at_level(logging.WARNING, logger="butlers.jobs.secrets_staleness"),
+    ):
+        outcome = await _dispatch_probe(object(), target)
+
+    assert outcome.skipped is True
+    assert outcome.skip_reason == "error"
+    assert opaque_marker not in caplog.text
+    assert "Codex probe dispatch failed safely" in caplog.text
+
+
 async def test_dispatch_probe_rate_limited_is_skipped_not_raised():
     target = _make_target()
     with patch(

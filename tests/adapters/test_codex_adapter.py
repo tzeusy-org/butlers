@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.core.runtimes import CodexAdapter
+from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 from butlers.core.runtimes.codex import (
     _cleanup_isolated_home_tempdir,
     _extract_structured_stdout_error,
@@ -38,6 +39,46 @@ from butlers.core.runtimes.codex import (
 pytestmark = pytest.mark.unit
 
 _EXEC = "butlers.core.runtimes.codex.asyncio.create_subprocess_exec"
+
+
+@pytest.fixture(autouse=True)
+def _authorize_non_authority_command_shape_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model an already-selected authority for non-auth adapter behavior.
+
+    This module tests command construction, output parsing, and retry behavior.
+    The explicit-authority and fail-closed cases live in
+    ``test_codex_auth_sync.py``.  Keep the test snapshot opaque so this suite
+    never introduces credential-shaped fixtures.
+    """
+
+    async def _reconcile(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    async def _finalize(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        expected_store_value: str | None,
+        authority_known: bool,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del expected_store_value, authority_known, auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    monkeypatch.setattr(CodexAdapter, "_reconcile_canonical_auth", _reconcile)
+    monkeypatch.setattr(CodexAdapter, "_finalize_canonical_auth", _finalize)
 
 
 def test_binary_and_system_prompt(tmp_path: Path):
@@ -316,6 +357,43 @@ async def test_invoke_failure_does_not_mutate_caller_env() -> None:
     assert caller_env == {"PATH": "/usr/bin"}
     assert mock_sub.call_args.kwargs["env"] is not caller_env
     assert "HOME" in mock_sub.call_args.kwargs["env"]
+
+
+async def test_invoke_redacts_credential_bearing_provider_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+):
+    """REQ-core-credentials-001: Codex diagnostics never retain credential content."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    opaque_marker = "opaque-private-marker"
+    proc = AsyncMock()
+    proc.communicate = AsyncMock(
+        return_value=(
+            b"",
+            (
+                f"HTTP 401 Authorization: Bearer {opaque_marker}; "
+                f'{{"access_token":"{opaque_marker}",'
+                f'"refreshToken":"{opaque_marker}",'
+                f'"token":"{opaque_marker}",'
+                f'"sessionToken":"{opaque_marker}"}}'
+            ).encode(),
+        )
+    )
+    proc.returncode = 1
+    proc.pid = 123
+
+    with (
+        caplog.at_level(logging.DEBUG, logger="butlers.core.runtimes.codex"),
+        patch(_EXEC, return_value=proc),
+        pytest.raises(RuntimeError) as exc_info,
+    ):
+        await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
+    info = adapter.last_process_info
+    assert info is not None
+    assert opaque_marker not in caplog.text
+    assert opaque_marker not in str(exc_info.value)
+    assert opaque_marker not in str(info)
+    assert "<redacted>" in str(exc_info.value)
 
 
 async def test_invoke_prefers_home_scoped_tempdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

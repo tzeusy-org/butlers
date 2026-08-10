@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 from butlers.core.runtimes.codex import (
     _CODEX_TOKEN_EXPIRY_BUFFER_SECONDS,
     CodexAdapter,
@@ -37,6 +38,55 @@ from butlers.core.runtimes.codex import (
 pytestmark = pytest.mark.unit
 
 _EXEC = "butlers.core.runtimes.codex.asyncio.create_subprocess_exec"
+
+
+async def _allow_explicit_authority() -> bool:
+    """Represent a previously selected authority for direct pre-warm tests."""
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _authorize_non_authority_refresh_tests(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Keep lock tests focused on lock behavior after authority selection.
+
+    The one reconciliation-specific test below intentionally exercises the
+    real strict store methods.  Fail-closed authority coverage belongs in
+    ``test_codex_auth_sync.py``; this fixture never creates a local fallback.
+    """
+    if request.node.name == "test_adapter_speculative_prewarm_reconciles_before_login_status":
+        return
+
+    async def _reconcile(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    async def _finalize(
+        _self: CodexAdapter,
+        _token_path: Path | None,
+        *,
+        expected_store_value: str | None,
+        authority_known: bool,
+        auth_sync_budget: object | None = None,
+    ) -> CodexAuthSyncResult:
+        del expected_store_value, authority_known, auth_sync_budget
+        return CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
+
+    monkeypatch.setattr(CodexAdapter, "_reconcile_canonical_auth", _reconcile)
+    monkeypatch.setattr(CodexAdapter, "_finalize_canonical_auth", _finalize)
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +365,13 @@ async def test_run_codex_pre_warm_calls_login_status(tmp_path: Path) -> None:
     mock_proc.returncode = 0
 
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await run_codex_pre_warm(codex_dir, "/usr/bin/codex")
+        completed = await run_codex_pre_warm(
+            codex_dir,
+            "/usr/bin/codex",
+            authority_preflight=_allow_explicit_authority,
+        )
 
+    assert completed is True
     assert mock_sub.call_count == 1
     called_cmd = mock_sub.call_args[0]
     assert called_cmd[:3] == ("/usr/bin/codex", "login", "status")
@@ -333,7 +388,13 @@ async def test_run_codex_pre_warm_swallows_nonzero_exit(tmp_path: Path) -> None:
 
     with patch(_EXEC, return_value=mock_proc):
         # Should not raise
-        await run_codex_pre_warm(codex_dir, "/usr/bin/codex")
+        completed = await run_codex_pre_warm(
+            codex_dir,
+            "/usr/bin/codex",
+            authority_preflight=_allow_explicit_authority,
+        )
+
+    assert completed is True
 
 
 async def test_run_codex_pre_warm_swallows_timeout(tmp_path: Path) -> None:
@@ -364,7 +425,13 @@ async def test_run_codex_pre_warm_swallows_timeout(tmp_path: Path) -> None:
             side_effect=TimeoutError,
         ),
     ):
-        task = asyncio.create_task(run_codex_pre_warm(codex_dir, "/usr/bin/codex"))
+        task = asyncio.create_task(
+            run_codex_pre_warm(
+                codex_dir,
+                "/usr/bin/codex",
+                authority_preflight=_allow_explicit_authority,
+            )
+        )
         await await_event(reap_started.wait(), timeout=0.2)
         assert task.done()
         await task
@@ -393,7 +460,13 @@ async def test_run_codex_pre_warm_reaps_status_process_when_cancelled(tmp_path: 
 
     proc.communicate = AsyncMock(side_effect=_communicate)
     with patch(_EXEC, return_value=proc):
-        task = asyncio.create_task(run_codex_pre_warm(codex_dir, "/usr/bin/codex"))
+        task = asyncio.create_task(
+            run_codex_pre_warm(
+                codex_dir,
+                "/usr/bin/codex",
+                authority_preflight=_allow_explicit_authority,
+            )
+        )
         await asyncio.wait_for(entered.wait(), timeout=0.2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -430,7 +503,13 @@ async def test_run_codex_pre_warm_cancellation_does_not_wait_for_hung_reap(
     proc.communicate = AsyncMock(side_effect=_communicate)
     proc.wait = AsyncMock(side_effect=_hung_wait)
     with patch(_EXEC, return_value=proc):
-        task = asyncio.create_task(run_codex_pre_warm(codex_dir, "/usr/bin/codex"))
+        task = asyncio.create_task(
+            run_codex_pre_warm(
+                codex_dir,
+                "/usr/bin/codex",
+                authority_preflight=_allow_explicit_authority,
+            )
+        )
         await asyncio.wait_for(entered.wait(), timeout=0.2)
         task.cancel()
         # One event-loop turn is enough for the cancellation handler to kill
@@ -540,8 +619,17 @@ async def test_invoke_startup_prewarm_runs_on_first_call(
 
     prewarm_calls = []
 
-    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+    async def _mock_prewarm(
+        codex_dir_arg: Path,
+        binary: str,
+        *,
+        authority_preflight: object,
+        **_kwargs: object,
+    ) -> bool:
         prewarm_calls.append((str(codex_dir_arg), binary))
+        assert callable(authority_preflight)
+        assert await authority_preflight()
+        return True
 
     with (
         patch(_EXEC, return_value=mock_proc),
@@ -568,8 +656,10 @@ async def test_invoke_bounds_on_path_prewarm_outside_provider_execution_timeout(
     never = asyncio.Event()
     prewarm_cancelled = False
 
-    async def _hung_prewarm(*_args, **_kwargs) -> None:
+    async def _hung_prewarm(*_args: object, authority_preflight: object, **_kwargs: object) -> None:
         nonlocal prewarm_cancelled
+        assert callable(authority_preflight)
+        assert await authority_preflight()
         try:
             await never.wait()
         except asyncio.CancelledError:
@@ -669,8 +759,9 @@ async def test_invoke_startup_prewarm_skipped_on_second_call(
 
     prewarm_calls = []
 
-    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str, **_kwargs: object) -> bool:
         prewarm_calls.append((str(codex_dir_arg), binary))
+        return True
 
     with (
         patch(_EXEC, return_value=mock_proc),
@@ -703,11 +794,15 @@ async def test_speculative_prewarm_runs_when_token_stale_and_not_done(
 
     prewarm_calls = []
 
-    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str, **_kwargs: object) -> bool:
         prewarm_calls.append((str(codex_dir_arg), binary))
+        return True
 
     with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
-        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+        await _maybe_speculative_codex_prewarm(
+            "/usr/bin/codex",
+            authority_preflight=_allow_explicit_authority,
+        )
 
     assert prewarm_calls == [(prewarm_key, "/usr/bin/codex")]
     assert prewarm_key in CodexAdapter._prewarm_done
@@ -725,11 +820,15 @@ async def test_speculative_prewarm_skipped_when_already_done(
 
     prewarm_calls = []
 
-    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str, **_kwargs: object) -> bool:
         prewarm_calls.append((str(codex_dir_arg), binary))
+        return True
 
     with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
-        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+        await _maybe_speculative_codex_prewarm(
+            "/usr/bin/codex",
+            authority_preflight=_allow_explicit_authority,
+        )
 
     assert not prewarm_calls
 
@@ -743,11 +842,15 @@ async def test_speculative_prewarm_skipped_when_no_auth_json(
 
     prewarm_calls = []
 
-    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str, **_kwargs: object) -> bool:
         prewarm_calls.append((str(codex_dir_arg), binary))
+        return True
 
     with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
-        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+        await _maybe_speculative_codex_prewarm(
+            "/usr/bin/codex",
+            authority_preflight=_allow_explicit_authority,
+        )
 
     assert not prewarm_calls
 
@@ -763,11 +866,15 @@ async def test_speculative_prewarm_skipped_when_token_fresh(
 
     prewarm_calls = []
 
-    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str, **_kwargs: object) -> bool:
         prewarm_calls.append((str(codex_dir_arg), binary))
+        return True
 
     with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
-        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+        await _maybe_speculative_codex_prewarm(
+            "/usr/bin/codex",
+            authority_preflight=_allow_explicit_authority,
+        )
 
     assert not prewarm_calls
 
@@ -791,7 +898,10 @@ async def test_speculative_prewarm_never_raises_on_failure(
         "butlers.core.runtimes.codex.run_codex_pre_warm",
         side_effect=RuntimeError("boom"),
     ):
-        await _maybe_speculative_codex_prewarm("/usr/bin/codex")  # must not raise
+        await _maybe_speculative_codex_prewarm(
+            "/usr/bin/codex",
+            authority_preflight=_allow_explicit_authority,
+        )  # must not raise
 
     # A raising pre-warm must not be recorded as done -- a later attempt (speculative or
     # on-path) should still retry rather than silently giving up forever.
@@ -815,12 +925,16 @@ async def test_speculative_prewarm_makes_invoke_skip_its_own_on_path_prewarm(
 
     prewarm_calls = []
 
-    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str, **_kwargs: object) -> bool:
         prewarm_calls.append((str(codex_dir_arg), binary))
+        return True
 
     with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
         # Speculative prewarm runs first, exactly as the spawner's fire-and-forget task would.
-        await _maybe_speculative_codex_prewarm("/usr/bin/codex")
+        await _maybe_speculative_codex_prewarm(
+            "/usr/bin/codex",
+            authority_preflight=_allow_explicit_authority,
+        )
         assert len(prewarm_calls) == 1
 
         # invoke()'s own on-path pre-warm check must now find _prewarm_done already set and
@@ -847,8 +961,9 @@ async def test_adapter_speculative_prewarm_delegates_to_helper(
 
     prewarm_calls = []
 
-    async def _mock_prewarm(codex_dir_arg: Path, binary: str) -> None:
+    async def _mock_prewarm(codex_dir_arg: Path, binary: str, **_kwargs: object) -> bool:
         prewarm_calls.append((str(codex_dir_arg), binary))
+        return True
 
     adapter = CodexAdapter(codex_binary="/opt/codex/codex")
     with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_mock_prewarm):
@@ -866,21 +981,29 @@ async def test_adapter_speculative_prewarm_reconciles_before_login_status(
     monkeypatch.setenv("HOME", str(tmp_path))
     prewarm_key = str(codex_dir)
     CodexAdapter._prewarm_done.discard(prewarm_key)
-    stored = json.dumps({"expires_at": time.time() - 10, "access_token": "dashboard-token"})
+    stored = json.dumps({"expires_at": time.time() - 10, "authority": "opaque-test-value"})
     store = MagicMock()
-    store.shared_pool = MagicMock()
-    store.load_shared = AsyncMock(return_value=stored)
-    store.store_shared_if_unchanged = AsyncMock(return_value=True)
+    store.require_system_global_pool.return_value = MagicMock()
+    store.load_codex_cli_auth = AsyncMock(return_value=stored)
+    store.store_codex_cli_auth_if_unchanged = AsyncMock(return_value=True)
 
-    async def _assert_prewarm_input(codex_dir_arg: Path, binary: str) -> None:
+    async def _assert_prewarm_input(
+        codex_dir_arg: Path,
+        binary: str,
+        *,
+        authority_preflight: object,
+    ) -> bool:
         assert binary == "/opt/codex/codex"
+        assert callable(authority_preflight)
+        assert await authority_preflight()
         assert (codex_dir_arg / "auth.json").read_text(encoding="utf-8") == stored
+        return True
 
     adapter = CodexAdapter(codex_binary="/opt/codex/codex", credential_store=store)
     with patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_assert_prewarm_input):
         await adapter.speculative_prewarm()
 
-    store.load_shared.assert_awaited()
+    store.load_codex_cli_auth.assert_awaited()
 
 
 # ---------------------------------------------------------------------------

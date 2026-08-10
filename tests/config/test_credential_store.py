@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,6 +18,7 @@ from butlers.credential_store import (
     SecretMetadata,
     _ensure_utc,
     _is_missing_table_error,
+    create_system_global_credential_store_from_env,
     shared_db_name_from_env,
 )
 
@@ -194,6 +196,98 @@ async def test_record_test_result_if_unchanged_uses_shared_authority_and_value_f
     assert "secret_value = $4" in sql
     assert args == [False, "old refresh failed", "cli-auth/codex", "old-token"]
     local_pool._conn.execute.assert_not_awaited()
+
+
+async def test_codex_authority_is_explicit_and_never_falls_back_to_local_scope() -> None:
+    """REQ-core-credentials-001: Codex reads/writes use only a selected authority."""
+    local_pool = _make_pool(fetchrow_return=_make_row(secret_value="local-document"))
+    authority_pool = _make_pool(fetchrow_return=_make_row(secret_value="authority-document"))
+    store = CredentialStore(
+        local_pool,
+        fallback_pools=[authority_pool],
+        system_global_pool=authority_pool,
+    )
+
+    assert await store.load_codex_cli_auth() == "authority-document"
+    local_pool._conn.fetchrow.assert_not_awaited()
+
+    replacement_document = '{"valid": true}'
+    await store.store_codex_cli_auth(replacement_document)
+    sql, *args = authority_pool._conn.execute.call_args[0]
+    assert "INSERT INTO" in sql
+    assert args[0] == "cli-auth/codex"
+    assert args[1] == replacement_document
+    local_pool._conn.execute.assert_not_awaited()
+
+    with pytest.raises(ValueError, match="Codex CLI auth document"):
+        await store.store_codex_cli_auth("not-json")
+
+    authority_pool._conn.execute.reset_mock()
+    authority_pool._conn.execute.return_value = "DELETE 1"
+    assert await store.delete_codex_cli_auth() is True
+    delete_sql, delete_key = authority_pool._conn.execute.call_args.args
+    assert "DELETE FROM" in delete_sql
+    assert delete_key == "cli-auth/codex"
+    local_pool._conn.execute.assert_not_awaited()
+
+    without_authority = CredentialStore(local_pool, fallback_pools=[authority_pool])
+    with pytest.raises(RuntimeError, match="system-global.*authority"):
+        await without_authority.load_codex_cli_auth()
+
+    # A one-pool deployment is compatible, but must opt in explicitly rather
+    # than inheriting generic local-first behavior.
+    flat_pool = _make_pool(fetchrow_return=_make_row(secret_value="flat-authority-document"))
+    flat_store = CredentialStore(flat_pool, system_global_pool=flat_pool)
+    assert await flat_store.load_codex_cli_auth() == "flat-authority-document"
+    flat_pool._conn.fetchrow.assert_awaited_once()
+
+
+async def test_daemon_flat_topology_marks_its_pool_as_explicit_codex_authority() -> None:
+    """REQ-core-credentials-001: flat daemon topology opts in explicitly."""
+    from butlers.daemon import ButlerDaemon
+
+    local_pool = _make_pool()
+    daemon = ButlerDaemon.__new__(ButlerDaemon)
+    daemon.config = SimpleNamespace(db_schema=None, db_name="butlers")
+    daemon.db = SimpleNamespace(db_name="shared-credentials-db")
+    daemon._shared_credentials_db = None
+
+    with patch(
+        "butlers.daemon.shared_db_name_from_env",
+        return_value="shared-credentials-db",
+    ):
+        store = await daemon._build_credential_store(local_pool)
+
+    assert store.require_system_global_pool() is local_pool
+
+
+async def test_connector_global_codex_authority_uses_its_own_writable_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REQ-core-credentials-001: connector auth avoids a local/cursor pool.
+
+    ``connector_writer`` has intentionally read-only access to public
+    credentials, so the separate authority pool must retain the configured DB
+    principal for Codex's fenced rotation and health writes.  This is not a
+    fallback: the pool targets the configured shared database explicitly.
+    """
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("POSTGRES_HOST", "db-host")
+    monkeypatch.setenv("POSTGRES_PORT", "5432")
+    monkeypatch.setenv("POSTGRES_USER", "db-user")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "db-password")
+    monkeypatch.setenv("BUTLER_SHARED_DB_NAME", "shared-credentials-db")
+    created_pool = _make_pool()
+
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=created_pool)) as create_pool:
+        store = await create_system_global_credential_store_from_env()
+
+    assert store.require_system_global_pool() is created_pool
+    assert create_pool.await_args.kwargs["database"] == "shared-credentials-db"
+    assert create_pool.await_args.kwargs["server_settings"] == {"search_path": "public"}
+    # Do not downgrade the designated authority to connector_writer: that
+    # role deliberately cannot persist cli-auth/codex rotation/health state.
+    assert "setup" not in create_pool.await_args.kwargs
 
 
 async def test_load_has_delete() -> None:

@@ -399,6 +399,35 @@ def _make_config(
     )
 
 
+def test_catalog_codex_adapter_keeps_explicit_authority_despite_generic_factory_kwargs(
+    tmp_path: Path,
+) -> None:
+    """REQ-core-credentials-001: Spawner must not drop Codex authority on factory fallback."""
+    authority = MagicMock()
+    adapter = MagicMock()
+    spawner = Spawner(
+        config=_make_config(),
+        config_dir=tmp_path,
+        runtime=MockAdapter(),
+        credential_store=authority,
+    )
+
+    with patch("butlers.core.runtimes.base.create_adapter", return_value=adapter) as create:
+        assert (
+            spawner._get_or_create_adapter(
+                "codex",
+                {"openai": {"base_url": "test"}},
+            )
+            is adapter
+        )
+
+    create.assert_called_once_with(
+        "codex",
+        butler_name="test-butler",
+        credential_store=authority,
+    )
+
+
 def _dashboard_turn_result(
     outcome: str,
     *,
@@ -841,12 +870,17 @@ class TestSpawnerInvocation:
     ) -> None:
         """Repeated MCP-discovery failure must propagate as a failed session, not success."""
         from butlers.core.runtimes import CodexAdapter
+        from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
         adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+        authority_snapshot = CodexAuthSyncResult(
+            expected_store_value="<opaque-test-authority>",
+            authority_known=True,
+        )
 
         async def _mock_exec(*args, **kwargs):
             proc = AsyncMock()
@@ -889,6 +923,17 @@ class TestSpawnerInvocation:
                 side_effect=_mock_exec,
             ),
             patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0, 0)),
+            patch("butlers.core.runtimes.codex._token_needs_refresh", return_value=False),
+            patch.object(
+                CodexAdapter,
+                "_reconcile_canonical_auth",
+                new=AsyncMock(return_value=authority_snapshot),
+            ),
+            patch.object(
+                CodexAdapter,
+                "_finalize_canonical_auth",
+                new=AsyncMock(return_value=authority_snapshot),
+            ),
         ):
             result = await Spawner(
                 config=config,

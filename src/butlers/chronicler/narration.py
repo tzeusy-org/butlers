@@ -67,6 +67,7 @@ from butlers.chronicler.storage import (
 )
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity
+from butlers.core.tool_call_capture import get_current_codex_auth_authority
 
 logger = logging.getLogger(__name__)
 
@@ -387,13 +388,14 @@ async def narrate_daily_rollup(
         pool,
         butler_name=_BUTLER_NAME,
         complexity_tier=_COMPLEXITY_TIER,
+        codex_auth_authority=get_current_codex_auth_authority(),
     )
     try:
         response_text = await dispatcher.call(user_message, system_prompt=_SYSTEM_PROMPT)
     except Exception:
-        logger.warning(
-            "chronicler narration: LLM call failed for local_date=%s", local_date, exc_info=True
-        )
+        # Do not retain an adapter/provider exception: Codex-dependent direct
+        # dispatch may include credential-bearing transport context.
+        logger.warning("chronicler narration: LLM call failed safely for local_date=%s", local_date)
         return {"local_date": local_date.isoformat(), "status": "llm_unavailable"}
 
     parsed = parse_narration_response(

@@ -39,6 +39,7 @@ from butlers.core.model_routing import (
 )
 from butlers.core.runtimes.base import get_adapter
 from butlers.core.spawner import resolve_provider_config
+from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class VerifyAllResult(BaseModel):
     total: int = 0
     ok: int = 0
     failed: int = 0
+    skipped: int = 0
 
 
 class FailureEntry(BaseModel):
@@ -687,17 +689,44 @@ async def update_model_priority(
 _VERIFY_ERROR_TRUNCATE_LEN = 4096
 
 
+async def _create_verification_adapter(
+    pool: asyncpg.Pool,
+    runtime_type: str,
+    model_id: str,
+    *,
+    codex_auth_authority: CredentialStore | None,
+) -> Any:
+    """Construct a verification adapter without inferring Codex authority.
+
+    Generic provider configuration remains unchanged for every non-Codex
+    runtime. Codex deliberately receives only the explicitly supplied
+    authority, never the catalog/model-resolution pool by implication.
+    """
+    adapter_cls = get_adapter(runtime_type)
+    provider_config = await resolve_provider_config(pool, model_id)
+    if runtime_type == "codex":
+        return adapter_cls(credential_store=codex_auth_authority)
+    try:
+        return adapter_cls(provider_config=provider_config)
+    except TypeError:
+        return adapter_cls()
+
+
 async def run_verify_all_models(
     pool: asyncpg.Pool,
     *,
     audit_actor: str = "owner",
+    codex_auth_authority: CredentialStore | None = None,
 ) -> VerifyAllResult:
     """Issue a 1-token completion against every enabled model in parallel.
 
     Bounded concurrency = ``_VERIFY_ALL_CONCURRENCY``. Writes
     ``last_verified_at``, ``last_verified_latency_ms``, ``last_verified_ok``,
     and ``last_verified_error`` (cleared to ``NULL`` on success, populated
-    with the truncated exception text on failure) for each model. Calls
+    with the truncated exception text on failure) for each model. A Codex
+    entry is skipped without a catalog write when no explicit system-global
+    authority is supplied; infrastructure absence must not mark it failed and
+    exclude it from routing. Calls
     ``audit.append("models.verify_all", actor=audit_actor)`` once per run so
     the audit trail distinguishes an owner-initiated verification from the
     hourly automated sweep.
@@ -716,27 +745,36 @@ async def run_verify_all_models(
 
     if not rows:
         await audit.append(pool, audit_actor, "models.verify_all", result="success")
-        return VerifyAllResult(accepted=True, total=0, ok=0, failed=0)
+        return VerifyAllResult(accepted=True, total=0, ok=0, failed=0, skipped=0)
 
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
 
-    async def _verify_one(row: Any) -> bool:
+    async def _verify_one(row: Any) -> bool | None:
         entry_id = row["id"]
         runtime_type = row["runtime_type"]
         model_id = row["model_id"]
         extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
+
+        if runtime_type == "codex" and (
+            codex_auth_authority is None or not codex_auth_authority.has_system_global_authority
+        ):
+            logger.warning(
+                "verify-all: Codex model %s skipped because system-global authority is unavailable",
+                model_id,
+            )
+            return None
 
         async with sem:
             t0 = time.monotonic()
             ok = False
             error_text: str | None = None
             try:
-                adapter_cls = get_adapter(runtime_type)
-                provider_config = await resolve_provider_config(pool, model_id)
-                try:
-                    adapter = adapter_cls(provider_config=provider_config)
-                except TypeError:
-                    adapter = adapter_cls()
+                adapter = await _create_verification_adapter(
+                    pool,
+                    runtime_type,
+                    model_id,
+                    codex_auth_authority=codex_auth_authority,
+                )
 
                 result_text, _, _ = await adapter.invoke(
                     prompt="Reply with exactly: OK",
@@ -752,9 +790,18 @@ async def run_verify_all_models(
                 if not ok:
                     error_text = "verification returned an empty response"
             except Exception as exc:
-                logger.warning("verify-all: model %s/%s failed: %s", runtime_type, model_id, exc)
+                if runtime_type == "codex":
+                    logger.warning(
+                        "verify-all: Codex model verification failed safely (model_id=%s)",
+                        model_id,
+                    )
+                    error_text = "Codex verification failed"
+                else:
+                    logger.warning(
+                        "verify-all: model %s/%s failed: %s", runtime_type, model_id, exc
+                    )
+                    error_text = f"{type(exc).__name__}: {exc}"[:_VERIFY_ERROR_TRUNCATE_LEN]
                 ok = False
-                error_text = f"{type(exc).__name__}: {exc}"[:_VERIFY_ERROR_TRUNCATE_LEN]
 
             latency_ms = int((time.monotonic() - t0) * 1000)
             ts = datetime.now(UTC)
@@ -784,11 +831,17 @@ async def run_verify_all_models(
     results = await asyncio.gather(*[_verify_one(r) for r in rows], return_exceptions=False)
 
     ok_count = sum(1 for r in results if r is True)
-    failed_count = len(results) - ok_count
+    failed_count = sum(1 for r in results if r is False)
+    skipped_count = sum(1 for r in results if r is None)
 
     audit_result = "error" if failed_count else "success"
     audit_error = (
         f"{failed_count} of {len(results)} model verifications failed" if failed_count else None
+    )
+    audit_note = (
+        f"{skipped_count} Codex verification(s) skipped: system-global authority unavailable"
+        if skipped_count
+        else None
     )
     await audit.append(
         pool,
@@ -796,6 +849,7 @@ async def run_verify_all_models(
         "models.verify_all",
         result=audit_result,
         error=audit_error,
+        note=audit_note,
     )
 
     return VerifyAllResult(
@@ -803,6 +857,7 @@ async def run_verify_all_models(
         total=len(results),
         ok=ok_count,
         failed=failed_count,
+        skipped=skipped_count,
     )
 
 
@@ -832,7 +887,12 @@ async def verify_all_models(
     _verify_all_last_run = now
 
     pool = _shared_pool(db)
-    result = await run_verify_all_models(pool, audit_actor="owner")
+    codex_auth_authority = CredentialStore(pool, system_global_pool=pool)
+    result = await run_verify_all_models(
+        pool,
+        audit_actor="owner",
+        codex_auth_authority=codex_auth_authority,
+    )
     return ApiResponse[VerifyAllResult](data=result)
 
 
@@ -1538,14 +1598,17 @@ async def test_catalog_entry(
     runtime_type = row["runtime_type"]
     model_id = row["model_id"]
     extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
+    codex_auth_authority = (
+        CredentialStore(pool, system_global_pool=pool) if runtime_type == "codex" else None
+    )
 
     try:
-        adapter_cls = get_adapter(runtime_type)
-        provider_config = await resolve_provider_config(pool, model_id)
-        try:
-            adapter = adapter_cls(provider_config=provider_config)
-        except TypeError:
-            adapter = adapter_cls()
+        adapter = await _create_verification_adapter(
+            pool,
+            runtime_type,
+            model_id,
+            codex_auth_authority=codex_auth_authority,
+        )
     except ValueError as exc:
         return ApiResponse[ModelTestResult](data=ModelTestResult(success=False, error=str(exc)))
 
@@ -1563,6 +1626,16 @@ async def test_catalog_entry(
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
         if not result_text or not result_text.strip():
+            if runtime_type == "codex":
+                error_msg = "Codex model returned an empty response"
+                logger.warning("Model test empty response for Codex model %s", model_id)
+                return ApiResponse[ModelTestResult](
+                    data=ModelTestResult(
+                        success=False,
+                        error=error_msg,
+                        duration_ms=duration_ms,
+                    )
+                )
             # Surface process-level diagnostics for subprocess-based adapters
             proc_info = getattr(adapter, "last_process_info", None)
             stderr_hint = ""
@@ -1593,6 +1666,15 @@ async def test_catalog_entry(
         )
     except Exception as exc:
         duration_ms = int((time.monotonic() - t0) * 1000)
+        if runtime_type == "codex":
+            logger.warning("Model test failed safely for Codex model %s", model_id)
+            return ApiResponse[ModelTestResult](
+                data=ModelTestResult(
+                    success=False,
+                    error="Codex model verification failed.",
+                    duration_ms=duration_ms,
+                )
+            )
         proc_info = getattr(adapter, "last_process_info", None)
         stderr_hint = ""
         if isinstance(proc_info, dict):

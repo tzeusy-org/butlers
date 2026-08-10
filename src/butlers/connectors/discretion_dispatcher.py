@@ -9,7 +9,10 @@ a strict timeout.
 
 Usage::
 
-    dispatcher = DiscretionDispatcher(pool=db_pool)
+    dispatcher = DiscretionDispatcher(
+        pool=db_pool,
+        codex_auth_authority=system_global_codex_authority,
+    )
     response = await dispatcher.call("Is this spam?", system_prompt="Reply YES or NO.")
 
 Design notes
@@ -151,9 +154,12 @@ class DiscretionDispatcher:
         Catalog complexity tier used for model resolution. Defaults to the
         discretion tier for existing connector discretion callers.
     credential_store:
-        Optional credential authority used by runtime adapters.  Callers with
-        a schema-local model pool must provide the shared/public authority
-        explicitly; the dispatcher never guesses that a local pool is shared.
+        Optional generic credential store for non-Codex runtime adapters.
+    codex_auth_authority:
+        Explicit system-global authority for Codex runtime adapters.  This is
+        intentionally distinct from the model-resolution pool and from the
+        generic non-Codex store: the dispatcher never infers that either is
+        suitable for ``cli-auth/codex``.
     """
 
     def __init__(
@@ -165,9 +171,11 @@ class DiscretionDispatcher:
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         complexity_tier: Complexity = Complexity.SPECIALTY,
         credential_store: CredentialStore | None = None,
+        codex_auth_authority: CredentialStore | None = None,
     ) -> None:
         self._pool = pool
         self._credential_store = credential_store
+        self._codex_auth_authority = codex_auth_authority
         self._butler_name = butler_name
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._timeout_s = timeout_s
@@ -213,13 +221,23 @@ class DiscretionDispatcher:
                 return self._adapter_cache[runtime_type]
 
         constructor_kwargs: dict[str, Any] = {"butler_name": self._butler_name}
-        if self._credential_store is not None:
+        if runtime_type == "codex":
+            if self._codex_auth_authority is not None:
+                constructor_kwargs["credential_store"] = self._codex_auth_authority
+        elif self._credential_store is not None:
             constructor_kwargs["credential_store"] = self._credential_store
-        adapter = create_adapter(
-            runtime_type,
-            provider_config=provider_config,
-            **constructor_kwargs,
-        )
+        if runtime_type == "codex" and provider_config:
+            # ``provider_config`` is a generic adapter-factory argument, not
+            # a Codex constructor option. Avoid its fallback path, which
+            # would otherwise discard the explicit Codex authority together
+            # with that unsupported option.
+            adapter = create_adapter(runtime_type, **constructor_kwargs)
+        else:
+            adapter = create_adapter(
+                runtime_type,
+                provider_config=provider_config,
+                **constructor_kwargs,
+            )
         self._adapter_cache[runtime_type] = adapter
         self._adapter_cache_key[runtime_type] = cfg_str
         logger.debug(

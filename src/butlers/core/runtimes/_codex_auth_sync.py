@@ -29,10 +29,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_CODEX_AUTH_KEY = "cli-auth/codex"
-_CODEX_AUTH_CATEGORY = "cli-auth"
-_CODEX_AUTH_DESCRIPTION = "CLI auth token for Codex (OpenAI)"
-
 # Per-process file-state cache.  The digest covers the full auth document so a
 # tail-only change cannot be missed on a filesystem with a coarse mtime clock.
 _AUTH_SYNC_CACHE: dict[str, tuple[int, str]] = {}
@@ -48,10 +44,10 @@ _AUTH_SYNC_LOCKS: dict[str, asyncio.Lock] = {}
 
 _STABLE_READ_ATTEMPTS = 3
 
-# Credential authority synchronization is a best-effort pre/post-launch
-# safeguard, not part of the runtime's model-execution budget.  A blocked
-# pool checkout or row lock must leave the existing local-auth invocation
-# runnable rather than consume the session timeout.
+# Credential authority synchronization is outside the runtime's model-execution
+# budget. A blocked pool checkout or row lock leaves the local file untouched,
+# but the caller must refuse any *new* Codex subprocess rather than treating
+# that file as an authority fallback.
 _AUTH_STORE_OPERATION_TIMEOUT_S = 2.0
 
 
@@ -232,7 +228,7 @@ async def _await_auth_store_operation(awaitable: Any, *, operation: str) -> Any:
     """Bound one best-effort credential-store operation.
 
     Callers catch the resulting timeout with their normal unavailable-store
-    path, preserving local auth and withholding authority-dependent writes.
+    path, leaving local auth untouched and withholding a new subprocess.
     Do not include exception detail here: drivers may retain query bind
     context containing credential material.
     """
@@ -240,41 +236,31 @@ async def _await_auth_store_operation(awaitable: Any, *, operation: str) -> Any:
         return await asyncio.wait_for(awaitable, timeout=_AUTH_STORE_OPERATION_TIMEOUT_S)
     except TimeoutError:
         logger.warning(
-            "codex_auth_sync: credential authority %s timed out; preserving local auth",
+            "codex_auth_sync: credential authority %s timed out; leaving canonical auth unchanged",
             operation,
         )
         raise
 
 
-async def _load_authoritative_codex_auth(store: CredentialStore) -> str | None:
-    """Load Codex auth from its explicit shared-or-flat authority."""
-    from butlers.cli_auth.persistence import load_persisted_token
-    from butlers.cli_auth.registry import PROVIDERS
-
-    provider = PROVIDERS.get("codex")
-    if provider is None:
-        raise RuntimeError("codex CLI auth provider is not registered")
+async def _load_authoritative_codex_auth(authority: CredentialStore) -> str | None:
+    """Load Codex auth only from the explicitly selected authority channel."""
     return await _await_auth_store_operation(
-        load_persisted_token(provider, store),
+        authority.load_codex_cli_auth(),
         operation="load",
     )
 
 
 async def _store_rotation_if_authority_unchanged(
-    store: CredentialStore,
+    authority: CredentialStore,
     *,
     expected_store_value: str | None,
     rotated_value: str,
 ) -> bool:
     """Persist a local Codex rotation only if the launch snapshot still wins."""
     return await _await_auth_store_operation(
-        store.store_shared_if_unchanged(
-            _CODEX_AUTH_KEY,
+        authority.store_codex_cli_auth_if_unchanged(
             rotated_value,
             expected_value=expected_store_value,
-            category=_CODEX_AUTH_CATEGORY,
-            description=_CODEX_AUTH_DESCRIPTION,
-            is_sensitive=True,
         ),
         operation="conditional rotation write",
     )
@@ -282,7 +268,7 @@ async def _store_rotation_if_authority_unchanged(
 
 async def _load_and_apply_authoritative_codex_auth(
     token_path: Path,
-    store: CredentialStore,
+    authority: CredentialStore,
     *,
     local_snapshot: _AuthFileSnapshot | None,
     butler_name: str,
@@ -294,10 +280,10 @@ async def _load_and_apply_authoritative_codex_auth(
     the mutable baseline cache to write local bytes back over that authority.
     """
     try:
-        authoritative_value = await _load_authoritative_codex_auth(store)
+        authoritative_value = await _load_authoritative_codex_auth(authority)
     except Exception:
         logger.warning(
-            "codex_auth_sync: credential authority load failed; preserving local auth "
+            "codex_auth_sync: credential authority load failed; leaving canonical auth unchanged "
             "(butler=%s path=%s)",
             butler_name,
             token_path,
@@ -349,7 +335,8 @@ async def _load_and_apply_authoritative_codex_auth(
         _write_token_file_atomically(token_path, authoritative_value)
     except OSError:
         logger.warning(
-            "codex_auth_sync: failed to reconcile canonical auth file; preserving local auth "
+            "codex_auth_sync: failed to reconcile canonical auth file; "
+            "leaving canonical auth unchanged "
             "(butler=%s path=%s)",
             butler_name,
             token_path,
@@ -386,7 +373,7 @@ async def _load_and_apply_authoritative_codex_auth(
 
 async def reconcile_codex_auth(
     token_path: Path,
-    store: CredentialStore,
+    authority: CredentialStore,
     *,
     butler_name: str = "",
 ) -> CodexAuthSyncResult:
@@ -417,13 +404,14 @@ async def reconcile_codex_auth(
         ):
             try:
                 persisted = await _store_rotation_if_authority_unchanged(
-                    store,
+                    authority,
                     expected_store_value=cached_authority,
                     rotated_value=local_snapshot.value,
                 )
             except Exception:
                 logger.warning(
-                    "codex_auth_sync: local rotation flush failed; preserving local auth "
+                    "codex_auth_sync: local rotation flush failed; "
+                    "leaving canonical auth unchanged "
                     "(butler=%s path=%s)",
                     butler_name,
                     token_path,
@@ -446,16 +434,17 @@ async def reconcile_codex_auth(
                 )
             return await _load_and_apply_authoritative_codex_auth(
                 token_path,
-                store,
+                authority,
                 local_snapshot=local_snapshot,
                 butler_name=butler_name,
             )
 
         try:
-            authoritative_value = await _load_authoritative_codex_auth(store)
+            authoritative_value = await _load_authoritative_codex_auth(authority)
         except Exception:
             logger.warning(
-                "codex_auth_sync: credential authority load failed; preserving local auth "
+                "codex_auth_sync: credential authority load failed; "
+                "leaving canonical auth unchanged "
                 "(butler=%s path=%s)",
                 butler_name,
                 token_path,
@@ -515,7 +504,7 @@ async def reconcile_codex_auth(
         # a dashboard refresh between the first read and file replacement wins.
         return await _load_and_apply_authoritative_codex_auth(
             token_path,
-            store,
+            authority,
             local_snapshot=local_snapshot,
             butler_name=butler_name,
         )
@@ -523,7 +512,7 @@ async def reconcile_codex_auth(
 
 async def finalize_codex_auth_rotation(
     token_path: Path,
-    store: CredentialStore,
+    authority: CredentialStore,
     *,
     expected_store_value: str | None,
     authority_known: bool = True,
@@ -563,7 +552,7 @@ async def finalize_codex_auth_rotation(
         if local_snapshot is None:
             return await _load_and_apply_authoritative_codex_auth(
                 token_path,
-                store,
+                authority,
                 local_snapshot=None,
                 butler_name=butler_name,
             )
@@ -574,20 +563,21 @@ async def finalize_codex_auth_rotation(
             # operation is immediately applied.
             return await _load_and_apply_authoritative_codex_auth(
                 token_path,
-                store,
+                authority,
                 local_snapshot=local_snapshot,
                 butler_name=butler_name,
             )
 
         try:
             persisted = await _store_rotation_if_authority_unchanged(
-                store,
+                authority,
                 expected_store_value=expected_store_value,
                 rotated_value=local_snapshot.value,
             )
         except Exception:
             logger.warning(
-                "codex_auth_sync: operation rotation flush failed; preserving local auth "
+                "codex_auth_sync: operation rotation flush failed; "
+                "leaving canonical auth unchanged "
                 "(butler=%s path=%s)",
                 butler_name,
                 token_path,
@@ -614,7 +604,7 @@ async def finalize_codex_auth_rotation(
         # and apply the winner, never retrying local->DB persistence here.
         return await _load_and_apply_authoritative_codex_auth(
             token_path,
-            store,
+            authority,
             local_snapshot=local_snapshot,
             butler_name=butler_name,
         )
@@ -622,7 +612,7 @@ async def finalize_codex_auth_rotation(
 
 async def check_and_persist_rotation(
     token_path: Path,
-    store: CredentialStore,
+    authority: CredentialStore,
     *,
     expected_store_value: str | None,
     authority_known: bool = True,
@@ -636,7 +626,7 @@ async def check_and_persist_rotation(
     try:
         await finalize_codex_auth_rotation(
             token_path,
-            store,
+            authority,
             expected_store_value=expected_store_value,
             authority_known=authority_known,
             butler_name=butler_name,
