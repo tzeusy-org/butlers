@@ -83,7 +83,9 @@ class RuntimeAdapter(abc.ABC):
         mcp_servers:
             MCP server configurations the runtime should connect to.
         env:
-            Environment variables to pass to the runtime process.
+            Environment variables to pass to the runtime process. Adapters
+            MUST treat this mapping as caller-owned and derive a private copy
+            before adding runtime-specific subprocess variables.
         runtime_args:
             Optional additional CLI arguments configured for the runtime.
         cwd:

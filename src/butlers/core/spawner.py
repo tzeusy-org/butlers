@@ -2041,7 +2041,10 @@ class Spawner:
                     "prompt": final_prompt,
                     "system_prompt": system_prompt,
                     "mcp_servers": mcp_servers,
-                    "env": env,
+                    # Each runtime attempt gets its own view of the restricted
+                    # session environment. Adapters must not mutate it, but this
+                    # preserves the logical-session baseline across failover.
+                    "env": dict(env),
                     "max_turns": max_turns,
                     "model": model,
                     "cwd": cwd if cwd is not None else str(self._config_dir),

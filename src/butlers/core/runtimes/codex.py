@@ -1901,7 +1901,10 @@ class CodexAdapter(RuntimeAdapter):
                 )
 
         # Point HOME at the temp directory so the CLI finds ~/.codex/config.toml.
-        env["HOME"] = str(tmp_dir)
+        # The caller reuses its restricted environment across failover attempts,
+        # so this invocation-local override must not leak back into that mapping.
+        subprocess_env = dict(env)
+        subprocess_env["HOME"] = str(tmp_dir)
 
         # Pass the composed prompt via stdin with the explicit "-" sentinel.
         # Recent Codex CLI builds treat any positional prompt plus non-tty stdin
@@ -1924,7 +1927,7 @@ class CodexAdapter(RuntimeAdapter):
             subprocess_attempt_count += 1
             return await self._run_codex_subprocess(
                 cmd,
-                env,
+                subprocess_env,
                 cwd,
                 effective_timeout,
                 cmd_for_log,

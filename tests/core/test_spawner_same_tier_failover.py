@@ -500,6 +500,65 @@ class TestAC3RuntimeFailureRetry:
         # Adapter was invoked twice (once for primary, once for fallback)
         assert adapter.invoke_calls == 2
 
+    async def test_fallback_gets_pristine_env_after_mutating_failed_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """A misbehaving runtime cannot leak per-attempt state into its fallback."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+        primary = _AlwaysFailAdapter(error=RuntimeError("connection refused: provider unavailable"))
+        fallback = _SuccessAdapter(result_text="fallback-succeeded")
+        fallback_envs: list[dict[str, str]] = []
+        expected_env = {"PATH": "/test/bin", "PRESERVE_ME": "value"}
+
+        async def _mutate_then_fail(**kwargs: Any) -> tuple[str | None, list[dict[str, Any]], None]:
+            kwargs["env"]["HOME"] = "/tmp/stale-codex-home"
+            raise RuntimeError("connection refused: provider unavailable")
+
+        async def _capture_then_succeed(
+            **kwargs: Any,
+        ) -> tuple[str | None, list[dict[str, Any]], None]:
+            fallback_envs.append(dict(kwargs["env"]))
+            return "fallback-succeeded", [], None
+
+        primary.invoke = AsyncMock(side_effect=_mutate_then_fail)
+        fallback.invoke = AsyncMock(side_effect=_capture_then_succeed)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    "fallback-runtime",
+                    "fallback-model",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ),
+            patch("butlers.core.runtimes.base.create_adapter", return_value=fallback),
+        ):
+            mock_create.return_value = _SESSION_ID
+            spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=primary)
+            result = await spawner.trigger("hello", "tick", env_override=expected_env)
+
+        assert result.success is True
+        assert fallback_envs == [expected_env]
+
     async def test_eligible_failure_no_candidates_is_terminal(self, tmp_path: Path) -> None:
         """Eligible failure but no more candidates → terminal failure."""
         config_dir = tmp_path / "config"

@@ -301,6 +301,23 @@ async def test_invoke_behaviors():
     assert "MCP transport diagnostics" in str(exc_info.value)
 
 
+async def test_invoke_failure_does_not_mutate_caller_env() -> None:
+    """A failed Codex attempt must not leak its isolated HOME to a fallback."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"Error: authentication failed"))
+    mock_proc.returncode = 1
+    caller_env = {"PATH": "/usr/bin"}
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub, patch(_PREWARM):
+        with pytest.raises(RuntimeError, match="Codex CLI exited with code 1"):
+            await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env=caller_env)
+
+    assert caller_env == {"PATH": "/usr/bin"}
+    assert mock_sub.call_args.kwargs["env"] is not caller_env
+    assert "HOME" in mock_sub.call_args.kwargs["env"]
+
+
 async def test_invoke_prefers_home_scoped_tempdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """invoke() should avoid /tmp-backed HOME when a real home directory is available."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
