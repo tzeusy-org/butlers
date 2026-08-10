@@ -23,308 +23,66 @@ down_revision = "core_195"
 branch_labels = None
 depends_on = None
 
-_EXECUTOR_ROLE = "restore_drill_executor"
-_OWNER_ROLE = "restore_drill_executor_owner"
-_EXECUTOR_SCHEMA = "restore_drill_executor"
-_ADMIN_FINALIZER = "restore_drill_executor_admin.finalize_interface"
 _ADMIN_INSTALLER = "restore_drill_executor_admin.install_interface"
+
+_TRUSTED_BOOTSTRAP_INSTALLER_SQL = """
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_namespace AS admin_schema
+        JOIN pg_roles AS bootstrap_owner
+            ON bootstrap_owner.oid = admin_schema.nspowner
+        JOIN pg_proc AS installer
+            ON installer.pronamespace = admin_schema.oid
+           AND installer.proname = 'install_interface'
+           AND installer.pronargs = 0
+           AND installer.prorettype = 'void'::regtype
+        JOIN pg_proc AS finalizer
+            ON finalizer.pronamespace = admin_schema.oid
+           AND finalizer.proname = 'finalize_interface'
+           AND finalizer.pronargs = 0
+           AND finalizer.prorettype = 'void'::regtype
+        WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+          AND installer.prosecdef
+          AND finalizer.prosecdef
+          AND installer.proowner = admin_schema.nspowner
+          AND finalizer.proowner = admin_schema.nspowner
+          -- The installer is created only by init-db's trusted cluster
+          -- superuser path.  A shared database owner can create matching
+          -- objects, but cannot satisfy this provenance condition.
+          AND bootstrap_owner.rolsuper
+    )
+"""
 
 
 def upgrade() -> None:
-    # ``init-db.sql`` is the normal privileged prerequisite. The superuser-only
-    # fallback keeps fresh test databases migration-faithful without granting a
-    # shared runtime login the ability to assume the dedicated owner role.
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_executor'
-            ) THEN
-                IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
-                    RAISE EXCEPTION
-                        'run scripts/init-db.sql as the managed privileged bootstrap '
-                        'before core_196';
-                END IF;
-                CREATE ROLE restore_drill_executor
-                    NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB;
-            END IF;
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_executor_owner'
-            ) THEN
-                IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
-                    RAISE EXCEPTION
-                        'run scripts/init-db.sql as the managed privileged bootstrap '
-                        'before core_196';
-                END IF;
-                CREATE ROLE restore_drill_executor_owner
-                    NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB;
-            END IF;
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_namespace WHERE nspname = 'restore_drill_executor'
-            ) THEN
-                IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
-                    RAISE EXCEPTION
-                        'run scripts/init-db.sql as the managed privileged bootstrap '
-                        'before core_196';
-                END IF;
-                CREATE SCHEMA IF NOT EXISTS restore_drill_executor
-                    AUTHORIZATION restore_drill_executor_owner;
-            END IF;
-            IF NOT EXISTS (
-                SELECT 1
-                FROM pg_proc AS bootstrap_function
-                JOIN pg_namespace AS bootstrap_schema
-                    ON bootstrap_schema.oid = bootstrap_function.pronamespace
-                WHERE bootstrap_schema.nspname = 'restore_drill_executor_admin'
-                  AND bootstrap_function.proname = 'install_interface'
-                  AND bootstrap_function.pronargs = 0
-            )
-            AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
-                RAISE EXCEPTION
-                    'restore-drill fixed bootstrap installer is absent; '
-                    'run scripts/init-db.sql first';
-            END IF;
-        END;
-        $$;
-        """
+    """Call only an exact, bootstrap-owned installer in this transaction.
+
+    The shared migration login must never create the authority objects itself,
+    nor accept a matching function signature from an admin schema it can own.
+    ``init-db.sql`` validates/rejects that schema before it exposes the fixed
+    installer; this catalog check independently fails closed before invoking
+    the function.
+    """
+    has_trusted_bootstrap_installer = bool(
+        op.get_bind().exec_driver_sql(_TRUSTED_BOOTSTRAP_INSTALLER_SQL).scalar_one()
     )
-    has_bootstrap_installer = bool(
-        op.get_bind()
-        .exec_driver_sql(
+    if not has_trusted_bootstrap_installer:
+        op.execute(
             """
-            SELECT EXISTS (
-                SELECT 1
-                FROM pg_proc AS bootstrap_function
-                JOIN pg_namespace AS bootstrap_schema
-                    ON bootstrap_schema.oid = bootstrap_function.pronamespace
-                WHERE bootstrap_schema.nspname = 'restore_drill_executor_admin'
-                  AND bootstrap_function.proname = 'install_interface'
-                  AND bootstrap_function.pronargs = 0
-            )
+            DO $$
+            BEGIN
+                RAISE EXCEPTION
+                    'restore-drill bootstrap installer is missing or untrusted; '
+                    'run scripts/init-db.sql as the privileged bootstrap first';
+            END;
+            $$;
             """
         )
-        .scalar_one()
-    )
-    if has_bootstrap_installer:
-        # The supported path never gives the shared migration/dashboard login
-        # protected-schema CREATE or finalizer EXECUTE.  This fixed bootstrap-
-        # owned function creates the exact interface and finalizes it in this
-        # Alembic transaction, rejecting any pre-existing authority object.
-        op.execute(f"SELECT {_ADMIN_INSTALLER}()")
-        return
 
-    # ``init-db.sql`` is the supported path.  Retain the privileged direct
-    # fallback only for isolated superuser migration tests that intentionally
-    # do not install the managed bootstrap helper.
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            -- This branch is reachable only for the isolated superuser
-            -- fallback above. A pre-existing relation still fails closed: it
-            -- must never be adopted by the direct privileged fallback.
-            IF to_regclass('restore_drill_executor.restore_drill_results') IS NOT NULL THEN
-                RAISE EXCEPTION
-                    'restore-drill result authority ledger must be created by core_196';
-            END IF;
-        END;
-        $$;
-        """
-    )
-    op.execute(
-        """
-        CREATE TABLE restore_drill_executor.restore_drill_results (
-            id BIGSERIAL PRIMARY KEY,
-            recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-            result TEXT NOT NULL CHECK (result IN ('pass', 'fail')),
-            detail TEXT
-        )
-        """
-    )
-    op.execute(
-        """
-        CREATE OR REPLACE FUNCTION restore_drill_executor.is_due(
-            p_interval_seconds INTEGER
-        )
-        RETURNS BOOLEAN
-        LANGUAGE plpgsql
-        SECURITY DEFINER
-        SET search_path = pg_catalog, public
-        AS $$
-        DECLARE
-            v_last_recorded_at TIMESTAMPTZ;
-        BEGIN
-            IF p_interval_seconds IS NULL OR p_interval_seconds <= 0 THEN
-                RAISE EXCEPTION 'p_interval_seconds must be positive';
-            END IF;
-
-            SELECT max(recorded_at)
-            INTO v_last_recorded_at
-            FROM restore_drill_executor.restore_drill_results;
-
-            RETURN v_last_recorded_at IS NULL
-                OR v_last_recorded_at <= clock_timestamp()
-                    - make_interval(secs => p_interval_seconds);
-        END;
-        $$;
-        """
-    )
-    op.execute(
-        """
-        CREATE OR REPLACE FUNCTION restore_drill_executor.record_result(
-            p_backup_name TEXT,
-            p_result TEXT,
-            p_detail TEXT,
-            p_table_count INTEGER
-        )
-        RETURNS BIGINT
-        LANGUAGE plpgsql
-        SECURITY DEFINER
-        SET search_path = pg_catalog, public
-        AS $$
-        DECLARE
-            v_result_id BIGINT;
-            v_detail TEXT;
-        BEGIN
-            IF p_result IS NULL OR p_result NOT IN ('pass', 'fail') THEN
-                RAISE EXCEPTION 'p_result must be pass or fail';
-            END IF;
-
-            -- ``record_result`` is callable directly by the executor login,
-            -- so it is the final privacy and result-authority boundary. Keep
-            -- the four-argument ABI for the deployed executor, but make every
-            -- caller-controlled compatibility input except p_result inert:
-            -- direct SQL callers may otherwise persist DSNs, dump content, or
-            -- invented table counts through a trusted credential.
-            v_detail := 'restore drill diagnostic withheld';
-
-            INSERT INTO restore_drill_executor.restore_drill_results (
-                result,
-                detail
-            )
-            VALUES (
-                p_result,
-                CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END
-            )
-            RETURNING id INTO v_result_id;
-
-            -- This audit row remains useful append-only telemetry, but no
-            -- scheduler or API reader may infer restore truth from it. The
-            -- insert shares the protected ledger transaction and uses only
-            -- fixed canonical values.
-            INSERT INTO public.audit_log (
-                actor,
-                action,
-                target,
-                result,
-                error,
-                metadata
-            )
-            VALUES (
-                'restore_drill',
-                'restore_drill_result',
-                'restore_drill',
-                p_result,
-                CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END,
-                jsonb_build_object(
-                    'detail', CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END
-                )
-            );
-
-            RETURN v_result_id;
-        END;
-        $$;
-        """
-    )
-    op.execute(
-        """
-        CREATE OR REPLACE FUNCTION restore_drill_executor.latest_result()
-        RETURNS TABLE (
-            checked_at TIMESTAMPTZ,
-            result TEXT,
-            detail TEXT
-        )
-        LANGUAGE sql
-        SECURITY DEFINER
-        SET search_path = pg_catalog
-        AS $$
-            SELECT recorded_at, result, detail
-            FROM restore_drill_executor.restore_drill_results
-            ORDER BY recorded_at DESC, id DESC
-            LIMIT 1
-        $$;
-        """
-    )
-    op.execute(
-        """
-        DO $$
-        DECLARE
-            v_dashboard_role NAME := COALESCE(
-                NULLIF(current_setting('butlers.connecting_user', true), ''),
-                'butlers'
-            )::name;
-        BEGIN
-            IF to_regprocedure('restore_drill_executor_admin.finalize_interface()') IS NOT NULL THEN
-                PERFORM restore_drill_executor_admin.finalize_interface();
-            ELSIF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
-                EXECUTE 'GRANT USAGE ON SCHEMA public TO restore_drill_executor_owner';
-                EXECUTE 'GRANT SELECT, INSERT ON TABLE public.audit_log '
-                    || 'TO restore_drill_executor_owner';
-                EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.audit_log_id_seq '
-                    || 'TO restore_drill_executor_owner';
-                EXECUTE 'ALTER TABLE restore_drill_executor.restore_drill_results '
-                    || 'OWNER TO restore_drill_executor_owner';
-                EXECUTE 'ALTER SEQUENCE restore_drill_executor.restore_drill_results_id_seq '
-                    || 'OWNER TO restore_drill_executor_owner';
-                EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(INTEGER) '
-                    || 'OWNER TO restore_drill_executor_owner';
-                EXECUTE 'ALTER FUNCTION restore_drill_executor.latest_result() '
-                    || 'OWNER TO restore_drill_executor_owner';
-                EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result('
-                    || 'TEXT, TEXT, TEXT, INTEGER) OWNER TO restore_drill_executor_owner';
-                EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM PUBLIC';
-                EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor '
-                    || 'FROM restore_drill_executor';
-                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA '
-                    || 'restore_drill_executor FROM PUBLIC';
-                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA '
-                    || 'restore_drill_executor FROM restore_drill_executor';
-                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA '
-                    || 'restore_drill_executor FROM PUBLIC';
-                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA '
-                    || 'restore_drill_executor FROM restore_drill_executor';
-                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA '
-                    || 'restore_drill_executor FROM PUBLIC';
-                EXECUTE 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA '
-                    || 'restore_drill_executor FROM restore_drill_executor';
-                EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor '
-                    || 'TO restore_drill_executor';
-                EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.is_due(INTEGER) '
-                    || 'TO restore_drill_executor';
-                EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.record_result('
-                    || 'TEXT, TEXT, TEXT, INTEGER) TO restore_drill_executor';
-                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_dashboard_role) THEN
-                    EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor TO '
-                        || quote_ident(v_dashboard_role);
-                    EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.latest_result() TO '
-                        || quote_ident(v_dashboard_role);
-                    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE '
-                        || 'restore_drill_executor.restore_drill_results FROM '
-                        || quote_ident(v_dashboard_role);
-                    EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE '
-                        || 'restore_drill_executor.restore_drill_results_id_seq FROM '
-                        || quote_ident(v_dashboard_role);
-                END IF;
-            ELSE
-                RAISE EXCEPTION
-                    'restore-drill ownership finalizer is unavailable; '
-                    'run scripts/init-db.sql first';
-            END IF;
-        END;
-        $$;
-        """
-    )
+    # The fixed no-argument installer creates the exact private authority
+    # relation/functions and finalizes their ACLs in the enclosing Alembic
+    # transaction. It rejects every pre-existing authority object.
+    op.execute(f"SELECT {_ADMIN_INSTALLER}()")
 
 
 def downgrade() -> None:

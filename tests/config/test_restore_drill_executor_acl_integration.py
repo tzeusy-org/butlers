@@ -110,13 +110,10 @@ def _expect_permission_denied(engine, statement: str) -> None:
         connection.execute(text(statement))
 
 
-def _bootstrap_database(postgres_container) -> tuple[str, str, str, str, str, str]:
-    """Create a disposable database and run the managed bootstrap as admin.
-
-    The return values are ``admin_url, shared_url, host, port, admin_user,
-    admin_password``. The full core chain is intentionally not run here so the
-    invalid-secret regression can prove the provisioner transaction alone.
-    """
+def _create_database_before_restore_bootstrap(
+    postgres_container,
+) -> tuple[str, str, str, str, str, str]:
+    """Create a disposable database before its managed restore bootstrap."""
     host, port, admin_user, admin_password = _admin_params(postgres_container)
     database = migration_db_name()
     admin_url = _url(
@@ -164,12 +161,25 @@ def _bootstrap_database(postgres_container) -> tuple[str, str, str, str, str, st
         engine.dispose()
 
     bootstrap_extensions(admin_url)
+    return admin_url, shared_url, host, port, admin_user, admin_password
+
+
+def _bootstrap_database(postgres_container) -> tuple[str, str, str, str, str, str]:
+    """Create a disposable database and run the managed bootstrap as admin.
+
+    The return values are ``admin_url, shared_url, host, port, admin_user,
+    admin_password``. The full core chain is intentionally not run here so the
+    invalid-secret regression can prove the provisioner transaction alone.
+    """
+    admin_url, shared_url, host, port, admin_user, admin_password = (
+        _create_database_before_restore_bootstrap(postgres_container)
+    )
     _run_psql_file(
         host=host,
         port=port,
         user=admin_user,
         password=admin_password,
-        database=database,
+        database=_database_from_url(admin_url),
         file_path=_INIT_DB,
     )
     return admin_url, shared_url, host, port, admin_user, admin_password
@@ -293,6 +303,84 @@ def _grant_legacy_shared_authority_staging(admin_url: str) -> None:
                 text(
                     "GRANT EXECUTE ON FUNCTION "
                     "restore_drill_executor_admin.finalize_interface() TO butlers"
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def _precreate_untrusted_admin_bootstrap(shared_url: str) -> None:
+    """Model a database-owner shared login poisoning the admin bootstrap schema."""
+    engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("CREATE SCHEMA restore_drill_executor_admin"))
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION restore_drill_executor_admin.finalize_interface()
+                    RETURNS void
+                    LANGUAGE plpgsql
+                    SECURITY DEFINER
+                    SET search_path = pg_catalog
+                    AS $$
+                    BEGIN
+                        RETURN;
+                    END;
+                    $$
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION restore_drill_executor_admin.install_interface()
+                    RETURNS void
+                    LANGUAGE plpgsql
+                    SECURITY DEFINER
+                    SET search_path = pg_catalog
+                    AS $$
+                    BEGIN
+                        RETURN;
+                    END;
+                    $$
+                    """
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def _seed_untrusted_admin_migration_prerequisites(admin_url: str) -> None:
+    """Supply only the role/schema prerequisites, never a trusted bootstrap."""
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_executor'
+                        ) THEN
+                            CREATE ROLE restore_drill_executor
+                                NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB;
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_executor_owner'
+                        ) THEN
+                            CREATE ROLE restore_drill_executor_owner
+                                NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB;
+                        END IF;
+                    END;
+                    $$;
+                    CREATE SCHEMA restore_drill_executor
+                        AUTHORIZATION restore_drill_executor_owner;
+                    GRANT USAGE ON SCHEMA restore_drill_executor_admin TO butlers;
+                    GRANT EXECUTE ON FUNCTION
+                        restore_drill_executor_admin.install_interface() TO butlers;
+                    """
                 )
             )
     finally:
@@ -486,6 +574,102 @@ def _read_shared_authority_handoff_state(admin_url: str) -> dict[str, object]:
             )
     finally:
         engine.dispose()
+
+
+def test_untrusted_admin_bootstrap_cannot_supply_a_noop_core_196_installer(
+    postgres_container,
+) -> None:
+    """REQ-database-security-006: admin bootstrap provenance is fail-closed.
+
+    The shared login owns this disposable database, as it can on a fresh
+    deployment before the privileged bootstrap runs. It pre-creates the admin
+    schema plus both zero-argument SECURITY DEFINER signatures, then calls the
+    no-op installer directly. A core_196 attempt must reject that untrusted
+    provenance instead of accepting its signature, and privileged bootstrap
+    reruns must refuse to reclaim it silently.
+    """
+    admin_url, shared_url, host, port, admin_user, admin_password = (
+        _create_database_before_restore_bootstrap(postgres_container)
+    )
+    _precreate_untrusted_admin_bootstrap(shared_url)
+    _seed_untrusted_admin_migration_prerequisites(admin_url)
+
+    shared_engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
+    try:
+        with shared_engine.connect() as connection:
+            connection.execute(text("SELECT restore_drill_executor_admin.install_interface()"))
+            connection.execute(text("SELECT restore_drill_executor_admin.finalize_interface()"))
+    finally:
+        shared_engine.dispose()
+
+    config = _build_alembic_config(shared_url, chains=["core"])
+    command.stamp(config, "core_195")
+    with pytest.raises(
+        Exception, match="restore-drill bootstrap installer is missing or untrusted"
+    ):
+        command.upgrade(config, "core_196")
+
+    for _ in range(2):
+        with pytest.raises(subprocess.CalledProcessError) as bootstrap_error:
+            _run_psql_file(
+                host=host,
+                port=port,
+                user=admin_user,
+                password=admin_password,
+                database=_database_from_url(admin_url),
+                file_path=_INIT_DB,
+            )
+        assert "restore-drill admin schema is not owned by a trusted bootstrap superuser" in (
+            bootstrap_error.value.stderr
+        )
+
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            state = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            pg_get_userbyid(admin_schema.nspowner) AS admin_schema_owner,
+                            pg_get_userbyid(installer.proowner) AS installer_owner,
+                            pg_get_userbyid(finalizer.proowner) AS finalizer_owner,
+                            to_regclass('restore_drill_executor.restore_drill_results')
+                                IS NOT NULL AS trusted_ledger_exists,
+                            COALESCE(
+                                has_function_privilege(
+                                    'restore_drill_executor',
+                                    to_regprocedure('restore_drill_executor.is_due(integer)'),
+                                    'EXECUTE'
+                                ),
+                                false
+                            ) AS executor_due_execute
+                        FROM pg_namespace AS admin_schema
+                        JOIN pg_proc AS installer
+                            ON installer.pronamespace = admin_schema.oid
+                           AND installer.proname = 'install_interface'
+                           AND installer.pronargs = 0
+                        JOIN pg_proc AS finalizer
+                            ON finalizer.pronamespace = admin_schema.oid
+                           AND finalizer.proname = 'finalize_interface'
+                           AND finalizer.pronargs = 0
+                        WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        engine.dispose()
+
+    assert state == {
+        "admin_schema_owner": "butlers",
+        "installer_owner": "butlers",
+        "finalizer_owner": "butlers",
+        "trusted_ledger_exists": False,
+        "executor_due_execute": False,
+    }
 
 
 def test_shared_authority_poison_cannot_be_finalized_or_reblessed_on_bootstrap_rerun(
@@ -762,7 +946,8 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
                         'connector_writer',
                         'restore_drill_public_probe',
                         'restore_drill_executor',
-                        'restore_drill_executor_owner'
+                        'restore_drill_executor_owner',
+                        'restore_drill_executor_audit_writer'
                     )
                     """
                     )
@@ -780,7 +965,8 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
                             ('butler_general_rw'::name),
                             ('connector_writer'::name),
                             ('restore_drill_public_probe'::name),
-                            ('restore_drill_executor'::name)
+                            ('restore_drill_executor'::name),
+                            ('restore_drill_executor_audit_writer'::name)
                     )
                     SELECT
                         subject::text AS subject,
@@ -836,6 +1022,95 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
                 .mappings()
                 .all()
             )
+            audit_writer_boundary = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT
+                        pg_get_userbyid(projection_writer.proowner) AS function_owner,
+                        projection_writer.prosecdef AS security_definer,
+                        array_to_string(projection_writer.proconfig, ',') AS function_config,
+                        has_schema_privilege(
+                            'restore_drill_executor_audit_writer',
+                            'restore_drill_executor',
+                            'USAGE'
+                        ) AS private_schema_usage,
+                        has_table_privilege(
+                            'restore_drill_executor_audit_writer',
+                            'restore_drill_executor.restore_drill_results',
+                            'INSERT'
+                        ) AS ledger_insert,
+                        has_function_privilege(
+                            'restore_drill_executor_audit_writer',
+                            'restore_drill_executor.latest_result()',
+                            'EXECUTE'
+                        ) AS latest_result_execute,
+                        has_schema_privilege(
+                            'restore_drill_executor_audit_writer', 'public', 'CREATE'
+                        ) AS public_schema_create,
+                        has_table_privilege(
+                            'restore_drill_executor_audit_writer', 'public.audit_log', 'INSERT'
+                        ) AS audit_insert,
+                        has_table_privilege(
+                            'restore_drill_executor_owner', 'public.audit_log', 'INSERT'
+                        ) AS private_owner_audit_insert,
+                        pg_has_role(
+                            'restore_drill_executor_audit_writer',
+                            'restore_drill_executor_owner',
+                            'USAGE'
+                        ) AS private_owner_membership
+                    FROM pg_proc AS projection_writer
+                    WHERE projection_writer.oid =
+                        'restore_drill_executor_admin.write_audit_projection(text)'::regprocedure
+                    """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            admin_bootstrap_boundary = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT
+                        pg_get_userbyid(admin_schema.nspowner) AS schema_owner,
+                        bootstrap_owner.rolsuper AS schema_owner_is_superuser,
+                        pg_get_userbyid(installer.proowner) AS installer_owner,
+                        installer.prosecdef AS installer_security_definer,
+                        array_to_string(installer.proconfig, ',') AS installer_config,
+                        pg_get_userbyid(finalizer.proowner) AS finalizer_owner,
+                        finalizer.prosecdef AS finalizer_security_definer,
+                        array_to_string(finalizer.proconfig, ',') AS finalizer_config,
+                        has_schema_privilege(
+                            'butlers', 'restore_drill_executor_admin', 'USAGE'
+                        ) AS shared_admin_schema_usage,
+                        has_function_privilege(
+                            'butlers',
+                            'restore_drill_executor_admin.install_interface()',
+                            'EXECUTE'
+                        ) AS shared_installer_execute,
+                        has_function_privilege(
+                            'butlers',
+                            'restore_drill_executor_admin.finalize_interface()',
+                            'EXECUTE'
+                        ) AS shared_finalizer_execute
+                    FROM pg_namespace AS admin_schema
+                    JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
+                    JOIN pg_proc AS installer
+                        ON installer.pronamespace = admin_schema.oid
+                       AND installer.proname = 'install_interface'
+                       AND installer.pronargs = 0
+                    JOIN pg_proc AS finalizer
+                        ON finalizer.pronamespace = admin_schema.oid
+                       AND finalizer.proname = 'finalize_interface'
+                       AND finalizer.pronargs = 0
+                    WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+                    """
+                    )
+                )
+                .mappings()
+                .one()
+            )
     finally:
         engine.dispose()
 
@@ -847,6 +1122,11 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
     }
     assert role_flags["restore_drill_executor_owner"] == {
         "rolname": "restore_drill_executor_owner",
+        "rolcanlogin": False,
+        "rolcreatedb": False,
+    }
+    assert role_flags["restore_drill_executor_audit_writer"] == {
+        "rolname": "restore_drill_executor_audit_writer",
         "rolcanlogin": False,
         "rolcreatedb": False,
     }
@@ -885,11 +1165,46 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
         "ledger_insert": False,
         "owner_membership": False,
     }
+    assert acl["restore_drill_executor_audit_writer"] == {
+        "subject": "restore_drill_executor_audit_writer",
+        "schema_usage": False,
+        "is_due_execute": False,
+        "record_result_execute": False,
+        "latest_result_execute": False,
+        "ledger_select": False,
+        "ledger_insert": False,
+        "owner_membership": False,
+    }
     assert function_owners == [
         {"proname": "is_due", "owner": "restore_drill_executor_owner"},
         {"proname": "latest_result", "owner": "restore_drill_executor_owner"},
         {"proname": "record_result", "owner": "restore_drill_executor_owner"},
     ]
+    assert dict(audit_writer_boundary) == {
+        "function_owner": "restore_drill_executor_audit_writer",
+        "security_definer": True,
+        "function_config": "search_path=pg_catalog",
+        "private_schema_usage": False,
+        "ledger_insert": False,
+        "latest_result_execute": False,
+        "public_schema_create": False,
+        "audit_insert": True,
+        "private_owner_audit_insert": False,
+        "private_owner_membership": False,
+    }
+    assert dict(admin_bootstrap_boundary) == {
+        "schema_owner": admin_user,
+        "schema_owner_is_superuser": True,
+        "installer_owner": admin_user,
+        "installer_security_definer": True,
+        "installer_config": "search_path=pg_catalog",
+        "finalizer_owner": admin_user,
+        "finalizer_security_definer": True,
+        "finalizer_config": "search_path=pg_catalog",
+        "shared_admin_schema_usage": False,
+        "shared_installer_execute": False,
+        "shared_finalizer_execute": False,
+    }
 
     database = _database_from_url(admin_url)
     direct_engines = {
@@ -966,6 +1281,61 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
         # change the due decision.
         assert asyncio.run(_read_restore_drill_api_shape(shared_url)) is None
 
+        # A public-audit table owner can install a hostile trigger. It runs as
+        # the effective user of the INSERT statement, so it must never inherit
+        # the private-owner authority carried by record_result(). The trigger
+        # catches privilege errors to prove the allowed audit projection still
+        # completes without an extra protected result.
+        engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as connection:
+                connection.execute(
+                    text(
+                        """
+                        CREATE FUNCTION public.restore_drill_hostile_audit_trigger()
+                        RETURNS trigger
+                        LANGUAGE plpgsql
+                        AS $$
+                        DECLARE
+                            v_ledger_write TEXT := 'succeeded';
+                            v_reader_call TEXT := 'succeeded';
+                        BEGIN
+                            BEGIN
+                                INSERT INTO restore_drill_executor.restore_drill_results (
+                                    result, detail
+                                )
+                                VALUES ('pass', 'hostile audit trigger marker');
+                            EXCEPTION WHEN insufficient_privilege THEN
+                                v_ledger_write := 'denied';
+                            END;
+                            BEGIN
+                                PERFORM restore_drill_executor.latest_result();
+                            EXCEPTION WHEN insufficient_privilege THEN
+                                v_reader_call := 'denied';
+                            END;
+                            NEW.metadata := COALESCE(NEW.metadata, '{}'::jsonb)
+                                || jsonb_build_object(
+                                    'hostile_ledger_write', v_ledger_write,
+                                    'hostile_reader_call', v_reader_call,
+                                    'hostile_effective_user', current_user
+                                );
+                            IF NEW.result = 'pass' THEN
+                                RAISE EXCEPTION 'hostile audit trigger blocked projection';
+                            END IF;
+                            RETURN NEW;
+                        END;
+                        $$;
+                        CREATE TRIGGER restore_drill_hostile_audit_trigger
+                        BEFORE INSERT ON public.audit_log
+                        FOR EACH ROW
+                        WHEN (NEW.actor = 'restore_drill')
+                        EXECUTE FUNCTION public.restore_drill_hostile_audit_trigger();
+                        """
+                    )
+                )
+        finally:
+            engine.dispose()
+
         with executor_engine.connect() as connection:
             assert (
                 connection.execute(
@@ -1002,6 +1372,17 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
                         ":backup_name, CAST(NULL AS text), 'restored 1 table', 1)"
                     ),
                     {"backup_name": "null-result.sql.gz"},
+                ).scalar_one()
+            # A public-audit owner can still cause an availability failure by
+            # rejecting its projection, but the writer and ledger are one
+            # statement transaction: no unprojected authoritative result may
+            # survive that hostile trigger.
+            with pytest.raises(DBAPIError, match="hostile audit trigger blocked projection"):
+                connection.execute(
+                    text(
+                        "SELECT restore_drill_executor.record_result("
+                        "'safe-name.sql.gz', 'pass', 'safe detail', 1)"
+                    )
                 ).scalar_one()
             assert (
                 connection.execute(
@@ -1065,11 +1446,20 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
                 .mappings()
                 .one()
             )
+            authority_count = connection.execute(
+                text("SELECT count(*) FROM restore_drill_executor.restore_drill_results")
+            ).scalar_one()
             audit_projection = (
                 connection.execute(
                     text(
                         """
-                    SELECT error, target, metadata::text AS metadata_text
+                    SELECT
+                        error,
+                        target,
+                        metadata::text AS metadata_text,
+                        metadata ->> 'hostile_ledger_write' AS hostile_ledger_write,
+                        metadata ->> 'hostile_reader_call' AS hostile_reader_call,
+                        metadata ->> 'hostile_effective_user' AS hostile_effective_user
                     FROM public.audit_log
                     WHERE actor = 'restore_drill'
                       AND action = 'restore_drill_result'
@@ -1084,6 +1474,7 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
             )
             assert authority_row["result"] == "fail"
             assert authority_row["detail"] == "restore drill diagnostic withheld"
+            assert authority_count == 1
             assert "table_count" not in authority_row["row_text"]
             assert str(absurd_table_count) not in authority_row["row_text"]
             assert raw_marker not in authority_row["row_text"]
@@ -1091,6 +1482,11 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
             assert hostile_dump_marker not in authority_row["row_text"]
             assert audit_projection["error"] == "restore drill diagnostic withheld"
             assert audit_projection["target"] == "restore_drill"
+            assert audit_projection["hostile_ledger_write"] == "denied"
+            assert audit_projection["hostile_reader_call"] == "denied"
+            assert audit_projection["hostile_effective_user"] == (
+                "restore_drill_executor_audit_writer"
+            )
             assert "table_count" not in audit_projection["metadata_text"]
             assert str(absurd_table_count) not in audit_projection["metadata_text"]
             assert raw_marker not in audit_projection["metadata_text"]

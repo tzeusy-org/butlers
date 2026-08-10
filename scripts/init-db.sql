@@ -1,6 +1,6 @@
 -- init-db.sql: privileged bootstrap for Butlers runtime + migration ACLs
 --
--- Run this script as a superuser (or database owner) against the target
+-- Run this script as a cluster superuser against the target
 -- application database before the first Alembic run. It is safe to re-run.
 --
 -- Usage:
@@ -106,6 +106,7 @@ DECLARE
     ];
     _restore_drill_executor_role TEXT := 'restore_drill_executor';
     _restore_drill_executor_owner_role TEXT := 'restore_drill_executor_owner';
+    _restore_drill_audit_writer_role TEXT := 'restore_drill_executor_audit_writer';
     _restore_drill_executor_schema TEXT := 'restore_drill_executor';
     _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
     _db_name TEXT := current_database();
@@ -180,6 +181,20 @@ BEGIN
         'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
         _restore_drill_executor_owner_role
     );
+    -- The public-audit projection uses a second, purpose-bound NOLOGIN owner.
+    -- It has no private-ledger authority, so a mutable public.audit_log trigger
+    -- cannot run with the result-owner's effective privileges.
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _restore_drill_audit_writer_role) THEN
+        EXECUTE format(
+            'CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+            _restore_drill_audit_writer_role
+        );
+        RAISE NOTICE 'Created restore-drill audit projection writer "%"', _restore_drill_audit_writer_role;
+    END IF;
+    EXECUTE format(
+        'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+        _restore_drill_audit_writer_role
+    );
     EXECUTE format(
         'CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I',
         _restore_drill_executor_schema,
@@ -199,11 +214,19 @@ BEGIN
     EXECUTE format('REVOKE %I FROM %I', _migration_user, _restore_drill_executor_role);
     EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_owner_role, _migration_user);
     EXECUTE format('REVOKE %I FROM %I', _migration_user, _restore_drill_executor_owner_role);
+    EXECUTE format('REVOKE %I FROM %I', _restore_drill_audit_writer_role, _migration_user);
+    EXECUTE format('REVOKE %I FROM %I', _migration_user, _restore_drill_audit_writer_role);
+    EXECUTE format('REVOKE %I FROM %I', _restore_drill_audit_writer_role, _restore_drill_executor_role);
+    EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_role, _restore_drill_audit_writer_role);
+    EXECUTE format('REVOKE %I FROM %I', _restore_drill_audit_writer_role, _restore_drill_executor_owner_role);
+    EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_owner_role, _restore_drill_audit_writer_role);
     FOREACH _role IN ARRAY _all_runtime_roles LOOP
         EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_role, _role);
         EXECUTE format('REVOKE %I FROM %I', _role, _restore_drill_executor_role);
         EXECUTE format('REVOKE %I FROM %I', _restore_drill_executor_owner_role, _role);
         EXECUTE format('REVOKE %I FROM %I', _role, _restore_drill_executor_owner_role);
+        EXECUTE format('REVOKE %I FROM %I', _restore_drill_audit_writer_role, _role);
+        EXECUTE format('REVOKE %I FROM %I', _role, _restore_drill_audit_writer_role);
     END LOOP;
 
     -- The executor may connect but receives no general public-schema access.
@@ -217,6 +240,10 @@ BEGIN
     EXECUTE format('REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM %I', _restore_drill_executor_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', _restore_drill_executor_schema, _restore_drill_executor_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', _restore_drill_executor_schema, _migration_user);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', _restore_drill_executor_schema, _restore_drill_audit_writer_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I FROM %I', _restore_drill_executor_schema, _restore_drill_audit_writer_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I FROM %I', _restore_drill_executor_schema, _restore_drill_audit_writer_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA %I FROM %I', _restore_drill_executor_schema, _restore_drill_audit_writer_role);
     FOREACH _role IN ARRAY _all_runtime_roles LOOP
         EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', _restore_drill_executor_schema, _role);
     END LOOP;
@@ -497,25 +524,197 @@ $$;
 -- ownership bypasses EXECUTE ACLs, and an ownership finalizer cannot safely
 -- infer whether a compatible-looking relation was created by an attacker.  The
 -- bootstrap owner instead exposes one fixed no-argument SECURITY DEFINER
--- installer.  core_196 invokes it inside its migration transaction, so it
+-- installer. core_196 invokes it inside its migration transaction, so it
 -- creates the exact ledger and functions under the bootstrap owner before the
--- finalizer moves them to the isolated NOLOGIN owner.
+-- finalizer moves them to the isolated NOLOGIN owner. The schema and both
+-- canonical signatures are validated before CREATE OR REPLACE can preserve an
+-- attacker-controlled owner.
 
-CREATE SCHEMA IF NOT EXISTS restore_drill_executor_admin;
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+    v_schema_owner OID;
+    v_schema_owner_is_superuser BOOLEAN;
+BEGIN
+    IF current_user::name = v_migration_role THEN
+        RAISE EXCEPTION
+            'restore-drill admin bootstrap cannot run as the shared migration role';
+    END IF;
+    IF NOT COALESCE(
+        (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
+        false
+    ) THEN
+        RAISE EXCEPTION
+            'restore-drill admin bootstrap requires a cluster superuser';
+    END IF;
+    SELECT admin_schema.nspowner, schema_owner.rolsuper
+    INTO v_schema_owner, v_schema_owner_is_superuser
+    FROM pg_namespace AS admin_schema
+    JOIN pg_roles AS schema_owner ON schema_owner.oid = admin_schema.nspowner
+    WHERE admin_schema.nspname = 'restore_drill_executor_admin';
+
+    IF v_schema_owner IS NULL THEN
+        EXECUTE format(
+            'CREATE SCHEMA %I AUTHORIZATION %I',
+            'restore_drill_executor_admin',
+            current_user
+        );
+    ELSIF NOT COALESCE(v_schema_owner_is_superuser, false) THEN
+        RAISE EXCEPTION
+            'restore-drill admin schema is not owned by a trusted bootstrap superuser';
+    END IF;
+END;
+$$;
+
 REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor_admin FROM PUBLIC;
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+    v_bootstrap_owner OID;
+    v_bootstrap_owner_is_superuser BOOLEAN;
+BEGIN
+    SELECT admin_schema.nspowner, bootstrap_owner.rolsuper
+    INTO v_bootstrap_owner, v_bootstrap_owner_is_superuser
+    FROM pg_namespace AS admin_schema
+    JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
+    WHERE admin_schema.nspname = 'restore_drill_executor_admin';
+    IF NOT COALESCE(v_bootstrap_owner_is_superuser, false) THEN
+        RAISE EXCEPTION
+            'restore-drill admin schema is not owned by a trusted bootstrap superuser';
+    END IF;
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor_admin FROM %I',
+        v_migration_role
+    );
+    IF EXISTS (
+        SELECT 1
+        FROM pg_proc AS admin_function
+        JOIN pg_namespace AS admin_schema
+            ON admin_schema.oid = admin_function.pronamespace
+        WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+          AND admin_function.proname IN ('finalize_interface', 'install_interface')
+          AND admin_function.pronargs = 0
+          AND admin_function.proowner <> v_bootstrap_owner
+    ) THEN
+        RAISE EXCEPTION
+            'restore-drill admin interface function is not owned by the bootstrap role';
+    END IF;
+END;
+$$;
+
+DO $$
+DECLARE
+    v_bootstrap_owner OID;
+    v_table_owner OID;
+BEGIN
+    SELECT admin_schema.nspowner
+    INTO v_bootstrap_owner
+    FROM pg_namespace AS admin_schema
+    WHERE admin_schema.nspname = 'restore_drill_executor_admin';
+    SELECT admin_table.relowner INTO v_table_owner
+    FROM pg_class AS admin_table
+    JOIN pg_namespace AS admin_schema ON admin_schema.oid = admin_table.relnamespace
+    WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+      AND admin_table.relname = 'bootstrap_configuration'
+      AND admin_table.relkind = 'r';
+    IF v_table_owner IS NOT NULL AND v_table_owner <> v_bootstrap_owner THEN
+        RAISE EXCEPTION
+            'restore-drill bootstrap configuration is not owned by the bootstrap role';
+    END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS restore_drill_executor_admin.bootstrap_configuration (
     singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
-    migration_role NAME NOT NULL
+    migration_role NAME NOT NULL,
+    bootstrap_role NAME
 );
+ALTER TABLE restore_drill_executor_admin.bootstrap_configuration
+    ADD COLUMN IF NOT EXISTS bootstrap_role NAME;
+UPDATE restore_drill_executor_admin.bootstrap_configuration
+SET bootstrap_role = (
+    SELECT bootstrap_owner.rolname::name
+    FROM pg_namespace AS admin_schema
+    JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
+    WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+)
+WHERE bootstrap_role IS NULL;
+ALTER TABLE restore_drill_executor_admin.bootstrap_configuration
+    ALTER COLUMN bootstrap_role SET NOT NULL;
 REVOKE ALL PRIVILEGES ON TABLE restore_drill_executor_admin.bootstrap_configuration FROM PUBLIC;
 
-INSERT INTO restore_drill_executor_admin.bootstrap_configuration (singleton, migration_role)
+INSERT INTO restore_drill_executor_admin.bootstrap_configuration (
+    singleton,
+    migration_role,
+    bootstrap_role
+)
 VALUES (
     true,
-    COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name,
+    (
+        SELECT bootstrap_owner.rolname::name
+        FROM pg_namespace AS admin_schema
+        JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
+        WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+    )
 )
-ON CONFLICT (singleton) DO UPDATE SET migration_role = EXCLUDED.migration_role;
+ON CONFLICT (singleton) DO UPDATE SET
+    migration_role = EXCLUDED.migration_role,
+    bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- A public.audit_log trigger runs as the effective user of the INSERT. Keep
+-- that user intentionally unable to resolve or write the private authority
+-- schema. The private result owner calls this fixed projection writer only
+-- after its ledger insert, so a trigger failure rolls the enclosing result
+-- transaction back instead of committing a partial truth claim.
+CREATE OR REPLACE FUNCTION restore_drill_executor_admin.write_audit_projection(
+    p_result TEXT
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $audit_projection$
+DECLARE
+    v_detail TEXT;
+BEGIN
+    IF p_result IS NULL OR p_result NOT IN ('pass', 'fail') THEN
+        RAISE EXCEPTION 'p_result must be pass or fail';
+    END IF;
+
+    v_detail := 'restore drill diagnostic withheld';
+    INSERT INTO public.audit_log (
+        actor,
+        action,
+        target,
+        result,
+        error,
+        metadata
+    )
+    VALUES (
+        'restore_drill',
+        'restore_drill_result',
+        'restore_drill',
+        p_result,
+        CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END,
+        jsonb_build_object(
+            'detail', CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END
+        )
+    );
+END;
+$audit_projection$;
+
+ALTER FUNCTION restore_drill_executor_admin.write_audit_projection(TEXT)
+    OWNER TO restore_drill_executor_audit_writer;
+REVOKE ALL PRIVILEGES ON FUNCTION
+    restore_drill_executor_admin.write_audit_projection(TEXT) FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION restore_drill_executor_admin.finalize_interface()
 RETURNS void
@@ -528,6 +727,9 @@ DECLARE
     v_runtime_role NAME;
     v_bootstrap_owner OID;
     v_executor_owner OID;
+    v_audit_writer_owner OID;
+    v_audit_writer_function_owner OID;
+    v_audit_writer_function_definer BOOLEAN;
     v_relation_owner OID;
     v_sequence_owner OID;
     v_is_due_owner OID;
@@ -554,8 +756,20 @@ BEGIN
     INTO v_executor_owner
     FROM pg_roles
     WHERE rolname = 'restore_drill_executor_owner';
+    SELECT oid
+    INTO v_audit_writer_owner
+    FROM pg_roles
+    WHERE rolname = 'restore_drill_executor_audit_writer';
+    SELECT interface_function.proowner, interface_function.prosecdef
+    INTO v_audit_writer_function_owner, v_audit_writer_function_definer
+    FROM pg_proc AS interface_function
+    WHERE interface_function.oid =
+        'restore_drill_executor_admin.write_audit_projection(text)'::regprocedure;
 
     IF v_bootstrap_owner IS NULL OR v_executor_owner IS NULL
+       OR v_audit_writer_owner IS NULL
+       OR v_audit_writer_function_owner <> v_audit_writer_owner
+       OR NOT COALESCE(v_audit_writer_function_definer, false)
        OR to_regclass('restore_drill_executor.restore_drill_results') IS NULL
        OR to_regclass('restore_drill_executor.restore_drill_results_id_seq') IS NULL
        OR to_regprocedure('restore_drill_executor.is_due(integer)') IS NULL
@@ -623,10 +837,6 @@ BEGIN
     END IF;
 
     IF v_is_bootstrap_staged THEN
-        EXECUTE 'GRANT USAGE ON SCHEMA public TO restore_drill_executor_owner';
-        EXECUTE 'GRANT SELECT, INSERT ON TABLE public.audit_log TO restore_drill_executor_owner';
-        EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.audit_log_id_seq TO restore_drill_executor_owner';
-
         EXECUTE 'ALTER TABLE restore_drill_executor.restore_drill_results '
             || 'OWNER TO restore_drill_executor_owner';
         EXECUTE 'ALTER SEQUENCE restore_drill_executor.restore_drill_results_id_seq '
@@ -643,6 +853,25 @@ BEGIN
     EXECUTE 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA restore_drill_executor FROM restore_drill_executor';
     EXECUTE 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA restore_drill_executor FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA restore_drill_executor FROM restore_drill_executor';
+    -- The private result owner must not issue shared-audit DML itself. A
+    -- mutable audit trigger therefore never runs with its ledger privileges.
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA public FROM restore_drill_executor_owner';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.audit_log FROM restore_drill_executor_owner';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE public.audit_log_id_seq FROM restore_drill_executor_owner';
+    -- The projection writer is a NOLOGIN definer with exactly the audit insert
+    -- capability. It cannot create in public or resolve any protected object.
+    EXECUTE 'REVOKE CREATE ON SCHEMA public FROM restore_drill_executor_audit_writer';
+    EXECUTE 'GRANT USAGE ON SCHEMA public TO restore_drill_executor_audit_writer';
+    EXECUTE 'GRANT INSERT ON TABLE public.audit_log TO restore_drill_executor_audit_writer';
+    EXECUTE 'GRANT USAGE ON SEQUENCE public.audit_log_id_seq TO restore_drill_executor_audit_writer';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION restore_drill_executor_admin.write_audit_projection(text) FROM PUBLIC';
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION restore_drill_executor_admin.write_audit_projection(text) FROM %I',
+        v_migration_role
+    );
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION restore_drill_executor_admin.write_audit_projection(text) FROM restore_drill_executor';
+    EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor_admin TO restore_drill_executor_owner';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor_admin.write_audit_projection(text) TO restore_drill_executor_owner';
     EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM %I', v_migration_role);
     EXECUTE format(
         'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA restore_drill_executor FROM %I',
@@ -785,25 +1014,11 @@ BEGIN
         )
         RETURNING id INTO v_result_id;
 
-        -- Public audit is fixed telemetry, never a result authority.
-        INSERT INTO public.audit_log (
-            actor,
-            action,
-            target,
-            result,
-            error,
-            metadata
-        )
-        VALUES (
-            'restore_drill',
-            'restore_drill_result',
-            'restore_drill',
-            p_result,
-            CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END,
-            jsonb_build_object(
-                'detail', CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END
-            )
-        );
+        -- Public audit is fixed telemetry, never a result authority. Its
+        -- purpose-bound definer has no private-ledger privileges, so a hostile
+        -- public trigger can at most fail this transaction (safe availability
+        -- denial); it cannot manufacture or modify authoritative results.
+        PERFORM restore_drill_executor_admin.write_audit_projection(p_result);
 
         RETURN v_result_id;
     END;

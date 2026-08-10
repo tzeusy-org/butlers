@@ -182,42 +182,23 @@ def test_managed_provisioner_accepts_one_terminal_lf_without_passing_it_to_psql(
 
 
 def test_migration_uses_the_fixed_bootstrap_owned_executor_result_authority() -> None:
-    """The shared migration login invokes only the fixed installer surface."""
+    """The shared migration login invokes only a trusted fixed installer."""
     source = _MIGRATION.read_text(encoding="utf-8")
     init_source = _INIT_DB.read_text(encoding="utf-8")
 
-    assert "SECURITY DEFINER" in source
+    assert "_TRUSTED_BOOTSTRAP_INSTALLER_SQL" in source
     assert "restore_drill_executor_admin.install_interface" in source
     assert "SELECT {_ADMIN_INSTALLER}()" in source
-    assert "fixed bootstrap installer is absent" in source
-    assert "AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN" in source
-    assert "temporary has CREATE" not in source
-    assert "CREATE SCHEMA IF NOT EXISTS restore_drill_executor" in source
-    assert "CREATE TABLE restore_drill_executor.restore_drill_results" in source
-    assert "CREATE TABLE IF NOT EXISTS restore_drill_executor.restore_drill_results" not in source
-    assert "to_regclass('restore_drill_executor.restore_drill_results')" in source
-    assert "ledger must be created by core_196" in source
-    assert "ALTER FUNCTION restore_drill_executor.is_due(INTEGER)" in source
-    assert "ALTER FUNCTION restore_drill_executor.record_result(" in source
-    assert "ALTER FUNCTION restore_drill_executor.latest_result()" in source
-    assert "FROM restore_drill_executor.restore_drill_results" in source
-    assert "OWNER TO restore_drill_executor_owner" in source
-    assert "SET search_path = pg_catalog, public" in source
-    assert "GRANT USAGE ON SCHEMA restore_drill_executor" in source
-    assert "GRANT EXECUTE ON FUNCTION" in source
+    assert "restore-drill bootstrap installer is missing or untrusted" in source
+    assert "installer.proowner = admin_schema.nspowner" in source
+    assert "finalizer.proowner = admin_schema.nspowner" in source
+    assert "bootstrap_owner.rolsuper" in source
+    assert "bootstrap_owner.rolname <> current_user" not in source
+    assert "CREATE TABLE restore_drill_executor.restore_drill_results" not in source
+    assert "CREATE SCHEMA IF NOT EXISTS restore_drill_executor" not in source
     assert "public.restore_drill_executor_is_due" not in source
     assert "public.record_restore_drill_executor_result" not in source
-    assert "GRANT SELECT, INSERT ON TABLE public.audit_log" in source
-    assert "restore_drill_executor_owner" in source
-    assert "GRANT SELECT ON TABLE public.audit_log TO restore_drill_executor" not in source
-    assert "GRANT INSERT ON TABLE public.audit_log TO restore_drill_executor" not in source
     assert "attention_ledger" not in source
-    assert "p_result IS NULL OR p_result NOT IN ('pass', 'fail')" in source
-    assert "'restore_drill',\n                p_result" in source
-    assert "'backup_file', p_backup_name" not in source
-    assert "p_table_count must not be negative" not in source
-    assert "'table_count', p_table_count" not in source
-    assert "caller-controlled compatibility input except p_result inert" in source
     assert (
         "CREATE OR REPLACE FUNCTION restore_drill_executor_admin.install_interface()" in init_source
     )
@@ -226,10 +207,32 @@ def test_migration_uses_the_fixed_bootstrap_owned_executor_result_authority() ->
         in init_source
     )
     assert "restore-drill interface ownership is untrusted" in init_source
+    assert "restore-drill admin bootstrap requires a cluster superuser" in init_source
+    assert "restore-drill admin schema is not owned by a trusted bootstrap superuser" in init_source
+    assert (
+        "restore-drill admin interface function is not owned by the bootstrap role" in init_source
+    )
     assert "GRANT USAGE, CREATE ON SCHEMA restore_drill_executor TO %I" not in init_source
     assert (
         "GRANT EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() TO %I"
         not in init_source
+    )
+    assert "p_result IS NULL OR p_result NOT IN ('pass', 'fail')" in init_source
+    assert "'backup_file', p_backup_name" not in init_source
+    assert "p_table_count must not be negative" not in init_source
+    assert "'table_count', p_table_count" not in init_source
+    assert "compatibility input except p_result is inert" in init_source
+    assert "restore_drill_executor_audit_writer" in init_source
+    assert "write_audit_projection" in init_source
+    assert "ALTER FUNCTION restore_drill_executor_admin.write_audit_projection(TEXT)" in init_source
+    assert "OWNER TO restore_drill_executor_audit_writer" in init_source
+    assert "PERFORM restore_drill_executor_admin.write_audit_projection(p_result)" in init_source
+    assert (
+        "GRANT INSERT ON TABLE public.audit_log TO restore_drill_executor_audit_writer"
+        in init_source
+    )
+    assert (
+        "GRANT INSERT ON TABLE public.audit_log TO restore_drill_executor_owner" not in init_source
     )
 
 
@@ -256,6 +259,10 @@ def test_operations_document_the_managed_boundary_without_a_live_workaround() ->
     assert "RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE" in source
     assert "restore_drill_executor_ca.pem" in source
     assert "sslmode=require" in source
+    assert "cluster-superuser bootstrap" in source
+    assert "restore_drill_executor_audit_writer" in source
+    assert "hostile `public.audit_log` trigger" in source
+    assert "rolls back its ledger insert" in source
     assert "ALTER ROLE" not in source
     assert "CREATE DATABASE butlers_restore" not in source
     assert "pg_restore.sh" not in source

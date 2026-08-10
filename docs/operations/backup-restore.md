@@ -61,10 +61,12 @@ or `dropdb` for the drill.
 
 ### Bootstrap prerequisite
 
-Before enabling the executor, use the reviewed privileged bootstrap procedure
-to run `scripts/init-db.sql`, apply the application migrations, and invoke the
-managed `scripts/provision_restore_drill_executor.sh` provisioner. The
-provisioner expects the private file path named by this deployment setting:
+Before enabling the executor, use a reviewed cluster-superuser bootstrap
+procedure to run `scripts/init-db.sql`, apply the application migrations, and
+invoke the managed `scripts/provision_restore_drill_executor.sh` provisioner.
+The shared `butlers` database owner/migration login is not a substitute for
+this step. The provisioner expects the private file path named by this
+deployment setting:
 
 ```dotenv
 RESTORE_DRILL_EXECUTOR_PASSWORD_FILE=/secure/managed/path/restore-drill-executor-password
@@ -102,15 +104,29 @@ access. The shared dashboard/migration login receives only schema usage plus
 the fixed `latest_result()` reader; it has no writer execution, direct ledger
 access, or owner membership. Butler and connector roles receive none of those
 privileges. The public audit projection is never a due-check or API authority.
-The privileged bootstrap is the only role boundary allowed to set up that
-handoff. On the supported path, `core_196` invokes one fixed no-argument
-bootstrap-owned installer inside its transaction; the shared login gets neither
-protected-schema `CREATE` nor ownership-finalizer execution. The installer and
-finalizer reject any pre-existing ledger, trigger, or canonical interface
-signature unless it is already the clean owner-finalized interface; they do not
-trust a compatible shape or marker. That rejection occurs before ownership
-transfer or executor/reader grants, including on a privileged `init-db.sql`
-rerun. An untrusted pre-creation is not a repair path.
+The cluster-superuser bootstrap is the only role boundary allowed to set up
+that handoff. Before it exposes the fixed installer, `init-db.sql` verifies
+that `restore_drill_executor_admin`, its configuration, and the exact
+zero-argument installer/finalizer are owned by trusted bootstrap provenance.
+A shared-owned precreated schema or no-op is rejected before `CREATE OR
+REPLACE`, ownership transfer, or executor/reader grants; do not attempt to
+repair it through the shared login. `core_196` repeats the owner/definer check
+before calling the installer. The shared login gets neither protected-schema
+`CREATE` nor ownership-finalizer execution. A clean first install or retry, and
+a privileged rerun retaining that trusted admin owner, complete normally.
+
+The fixed public audit projection uses a separate
+`restore_drill_executor_audit_writer` `NOLOGIN` security-definer rather than
+allowing the private ledger owner to insert into `public.audit_log`. Its only
+effective database capability is the fixed public-audit INSERT/sequence path;
+it has no private ledger schema/table/function grant or owner membership. Thus
+a hostile `public.audit_log` trigger runs as the constrained audit writer and
+cannot create or read an authoritative result. Such a trigger can still reject
+the public projection, which is an availability denial: the enclosing
+`record_result()` statement then rolls back its ledger insert rather than
+retaining a partial or false recovery result. Repair the audited trigger through
+normal privileged database governance; never bypass the boundary by granting
+the private owner public-audit DML.
 
 Do not bypass that managed procedure. In particular, do not issue ad hoc
 database-role changes, manually pre-create the scratch database, pass a shared

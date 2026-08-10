@@ -59,9 +59,32 @@ Scope: v1-mandatory
   due-check and dashboard-read authority; the fixed `public.audit_log`
   projection is telemetry only, so a normal-role or administrative public audit
   spoof cannot manufacture an API pass or affect due state
+- **AND** the projection is written only through a separate NOLOGIN
+  `restore_drill_executor_audit_writer` security-definer with fixed
+  `pg_catalog` search path, public-audit INSERT/sequence capability, and no
+  private-ledger schema, table, function, or owner-membership privilege
+- **AND** a hostile `public.audit_log` trigger therefore runs as that constrained
+  audit writer and cannot write the ledger or call its reader; if it rejects the
+  projection, the enclosing result transaction fails and rolls back rather than
+  retaining an unprojected authoritative result
 - **AND** the executor receives only the fixed due/result-writer functions,
   the shared dashboard/migration login receives only the fixed result-reader
   function, and neither has direct private-ledger table privileges
+
+#### Scenario: Admin bootstrap provenance cannot be substituted
+- **WHEN** the shared migration/dashboard role pre-creates
+  `restore_drill_executor_admin`, zero-argument SECURITY DEFINER
+  `install_interface()`/`finalize_interface()` no-ops, and grants itself their
+  execution before the managed bootstrap
+- **THEN** privileged `init-db.sql` refuses that non-superuser-owned schema
+  before `CREATE OR REPLACE`, ownership transfer, or interface grant, and a
+  direct no-op invocation cannot produce a trusted result authority
+- **AND** `core_196` independently verifies that the admin schema and both
+  exact zero-argument definer functions share a cluster-superuser bootstrap
+  owner before it invokes the installer
+- **AND** a clean first install, retry, and privileged rerun with that trusted
+  provenance complete normally, while a shared-owned precreation remains a
+  fail-closed operator-repair condition
 
 #### Scenario: Shared authority staging cannot be blessed
 - **WHEN** a shared migration/dashboard credential retains a legacy

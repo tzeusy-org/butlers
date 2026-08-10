@@ -151,19 +151,33 @@ an assumption about the Python executor: an executor credential holder can
 call it directly. It therefore keeps its four-argument compatibility ABI but
 discards caller-supplied backup name, detail, and table-count values; validates
 only non-null `pass`/`fail`; writes the protected owner ledger; and emits only
-a fixed canonical public audit projection. Due checks and the dashboard reader
-use the protected ledger through fixed owner-side functions, never a
-`public.audit_log` row. A normal-role or even a newer administrative public
-audit spoof therefore cannot manufacture an API pass or alter scheduling.
+a fixed canonical public audit projection. The private owner never inserts into
+the shared audit table directly: it calls a second, purpose-bound NOLOGIN
+`restore_drill_executor_audit_writer` definer, with a fixed `pg_catalog` search
+path, only the required public-audit INSERT/sequence rights, and no
+private-ledger schema, table, function, or owner-membership capability. A
+hostile public-audit trigger consequently executes as that constrained writer,
+not as the private result owner. It can deny availability by rejecting its row,
+but the outer result statement then rolls back the ledger insert too; it cannot
+leave an unprojected authority result or escalate into the ledger. Due checks
+and the dashboard reader use the protected ledger through fixed owner-side
+functions, never a `public.audit_log` row. A normal-role or even a newer
+administrative public audit spoof therefore cannot manufacture an API pass or
+alter scheduling.
 The ledger relation and its canonical signatures are created inside the
 `core_196` transaction by one fixed no-argument SECURITY DEFINER installer
-owned by privileged bootstrap. The shared migration/dashboard credential gets
-neither protected-schema `CREATE` nor finalizer execution. The finalizer accepts
-only clean objects owned by that bootstrap installer or an already-finalized
-owner interface; it never infers trust from object shape or a marker. Therefore
-a legacy shared credential that pre-created a compatible table, trigger, and
-all signatures is rejected before ownership transfer or executor/reader grants,
-both on the migration and on a privileged `init-db.sql` rerun.
+owned by a cluster-superuser bootstrap. Before exposing it, `init-db.sql`
+rejects an existing admin schema, configuration, installer, or finalizer not
+owned by that trusted bootstrap provenance; it never `CREATE OR REPLACE`s a
+shared-owned no-op or silently reclaims it. `core_196` repeats the catalog
+ownership/definer check before invocation. The shared migration/dashboard
+credential gets neither protected-schema `CREATE` nor finalizer execution. The
+finalizer accepts only clean objects owned by that bootstrap installer or an
+already-finalized owner interface; it never infers trust from object shape or a
+marker. Therefore a legacy shared credential that pre-created either the admin
+bootstrap no-ops or a compatible ledger, trigger, and all signatures is
+rejected before ownership transfer or executor/reader grants, both on the
+migration and on a privileged `init-db.sql` rerun.
 A degraded ledger-read exception follows the same rule:
 the API and its log use a fixed unavailable diagnostic rather than exception
 text or traceback, because both can carry a DSN, credential, SQL, or dump
