@@ -71,9 +71,9 @@ def _normalize_notification_metadata(value: object | None) -> dict | None:
 
     ``NotificationSummary.metadata`` is an object-or-null field. Some legacy
     JSONB string scalars encode one object. Decode that one layer so their
-    provenance remains visible. Malformed strings and strings that decode to a
-    non-object retain their exact outer value under ``_raw``. Actual non-string,
-    non-object JSONB values remain ``None``.
+    provenance remains visible. Malformed strings, decoder-limit failures, and
+    strings that decode to a non-object retain their exact outer value under
+    ``_raw``. Actual non-string, non-object JSONB values remain ``None``.
     """
     if value is None:
         return None
@@ -84,7 +84,9 @@ def _normalize_notification_metadata(value: object | None) -> dict | None:
 
     try:
         decoded = json.loads(value)
-    except json.JSONDecodeError:
+    # ``JSONDecodeError`` is a ``ValueError``; valid JSON may also exceed the
+    # integer digit limit or recursion limit while decoding.
+    except (RecursionError, ValueError):
         return {"_raw": value}
 
     return dict(decoded) if isinstance(decoded, Mapping) else {"_raw": value}
