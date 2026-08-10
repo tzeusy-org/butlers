@@ -25,10 +25,15 @@ dossier from the stalled lane SHALL retain `state=stalled` in its URL.
 
 - **WHEN** the owner navigates to `/approvals/{id}?state=stalled` and the
   approval is stalled but falls outside the current bounded flat-result page
-- **THEN** the Trust Console verifies and displays that stalled dossier via
-  its existing detail endpoint
-- **AND** it does not render a pending or invalid direct id as a dossier in
-  the stalled lane.
+- **THEN** after the current stalled flat result settles, the Trust Console
+  verifies that id through a dedicated forced-fresh detail query that does not
+  reuse the ordinary dossier cache
+- **AND** it displays the dossier only when that current verifier response has
+  the exact requested id, `status = approved`, and an explicitly null
+  `execution_result`
+- **AND** it suppresses the dossier while verification is pending or fails,
+  and when the response is pending, has a non-null or missing execution
+  result, or names another id.
 
 #### Scenario: Empty stalled lane remains truthful
 

@@ -112,6 +112,12 @@ const KEYBOARD_DEFER_HOURS = 24;
 const Q = {
   flat: (state: ApprovalLane, limit: number) => ["approvals", "flat", state, limit] as const,
   detail: (id: string) => ["approvals", "detail", id] as const,
+  // An unlisted Stalled deep link needs an eligibility check that is wholly
+  // independent from the ordinary dossier cache. Include the settled flat
+  // response generation so a newly received rail result triggers a new
+  // verification rather than reusing an older direct-link result.
+  stalledRouteVerification: (id: string, flatDataUpdatedAt: number) =>
+    ["approvals", "stalled-route-verification", id, flatDataUpdatedAt] as const,
   history: () => ["approvals", "history"] as const,
   policy: () => ["approvals", "policy"] as const,
 };
@@ -468,6 +474,7 @@ function RailItem({
 
 function Dossier({
   actionId,
+  verifiedDetail,
   onApprove,
   onDeny,
   onDefer,
@@ -478,6 +485,12 @@ function Dossier({
   onCancelPending,
 }: {
   actionId: string;
+  /**
+   * A freshly verified unlisted Stalled deep link. It must take precedence
+   * over the ordinary dossier cache so stale prefetch data cannot expose an
+   * action after the verifier has established the current eligibility.
+   */
+  verifiedDetail?: ApprovalDetail;
   onApprove: () => void;
   onDeny: (reason?: string) => void;
   onDefer: (hours: number) => void;
@@ -501,7 +514,7 @@ function Dossier({
   const { data, isLoading, error } = useQuery({
     queryKey: Q.detail(actionId),
     queryFn: () => getApprovalDetail(actionId),
-    enabled: !!actionId,
+    enabled: !!actionId && !verifiedDetail,
   });
 
   function handleDefer() {
@@ -513,7 +526,7 @@ function Dossier({
     onDefer(h);
   }
 
-  if (isLoading) {
+  if (!verifiedDetail && isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
         loading…
@@ -521,7 +534,8 @@ function Dossier({
     );
   }
 
-  if (error || !data?.data) {
+  const detail = verifiedDetail ?? data?.data;
+  if ((!verifiedDetail && error) || !detail) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm font-mono">
         failed to load dossier
@@ -529,7 +543,6 @@ function Dossier({
     );
   }
 
-  const detail: ApprovalDetail = data.data;
   const isPending = detail.status === "pending";
   const canRetryDispatch =
     detail.status === "approved" && detail.execution_result === null;
@@ -1619,7 +1632,17 @@ export default function ApprovalsPage() {
   // callback for anything else. refetchInterval below is a reconciliation
   // sweep — a safety net for the rare case the bus is down, not the primary
   // update path.
-  const { data, isLoading, isFetching, isError, isSuccess, error, refetch } = useQuery({
+  const {
+    data,
+    isLoading,
+    isFetching,
+    isError,
+    isSuccess,
+    isFetchedAfterMount,
+    dataUpdatedAt,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: Q.flat(activeLane, pendingLimit),
     queryFn: () => getApprovalsFlat(activeLane, pendingLimit),
     refetchInterval: POLL_BUS_RECONCILE_MS,
@@ -1679,27 +1702,41 @@ export default function ApprovalsPage() {
   );
 
   // The stalled flat rail is bounded, while every approval URL remains a
-  // first-class deep link. Once that rail has resolved, check an unlisted
-  // route id with the existing detail endpoint before rendering its dossier:
-  // a valid out-of-window stalled item stays reachable, while a pending or
-  // invalid id never exposes pending-decision controls under this lane.
+  // first-class deep link. Once a current Stalled rail response has resolved,
+  // check an unlisted route id with a dedicated, forced-fresh detail query
+  // before rendering its dossier. This deliberately never reuses Q.detail:
+  // its ordinary dossier cache can be prefetched or stale, and must not make
+  // an approval actionable after it has left the Stalled predicate.
   const stalledRouteIsListed =
     activeLane === "stalled" &&
     isSuccess &&
+    isFetchedAfterMount &&
     routeId !== undefined &&
     data?.data?.some((summary) => summary.id === routeId) === true;
   const shouldVerifyStalledRoute =
     activeLane === "stalled" &&
     isSuccess &&
+    isFetchedAfterMount &&
     routeId !== undefined &&
     !stalledRouteIsListed;
   const {
-    data: stalledRouteDetail,
-    isSuccess: isStalledRouteDetailSuccess,
+    data: stalledRouteVerification,
+    isSuccess: isStalledRouteVerificationSuccess,
+    isFetchedAfterMount: isStalledRouteVerificationFetchedAfterMount,
+    isFetching: isStalledRouteVerificationFetching,
+    isError: isStalledRouteVerificationError,
   } = useQuery({
-    queryKey: Q.detail(routeId ?? ""),
+    queryKey: Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt),
     queryFn: () => getApprovalDetail(routeId ?? ""),
     enabled: shouldVerifyStalledRoute,
+    // A direct stalled URL is an authorization boundary, not a prefetch hint:
+    // never inherit data from the ordinary dossier key and always make a new
+    // request when this verifier mounts. The rail-generation key above also
+    // starts a new verification after a later flat response arrives.
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+    refetchOnMount: "always",
   });
 
   // Degraded fan-out (bu-jad4j.4): both approvals list endpoints fan across
@@ -1798,12 +1835,28 @@ export default function ApprovalsPage() {
   const stalledSelectionConfirmed =
     activeLane === "stalled" &&
     isSuccess &&
+    isFetchedAfterMount &&
     effectiveSelected !== null &&
     (data?.data?.some((summary) => summary.id === effectiveSelected) === true ||
       (routeId === effectiveSelected &&
-        isStalledRouteDetailSuccess &&
-        stalledRouteDetail?.data.status === "approved" &&
-        stalledRouteDetail.data.execution_result === null));
+        isStalledRouteVerificationSuccess &&
+        isStalledRouteVerificationFetchedAfterMount &&
+        !isStalledRouteVerificationFetching &&
+        !isStalledRouteVerificationError &&
+        stalledRouteVerification?.data.id === effectiveSelected &&
+        stalledRouteVerification.data.status === "approved" &&
+        stalledRouteVerification.data.execution_result === null));
+  const verifiedStalledRouteDetail =
+    routeId === effectiveSelected &&
+    isStalledRouteVerificationSuccess &&
+    isStalledRouteVerificationFetchedAfterMount &&
+    !isStalledRouteVerificationFetching &&
+    !isStalledRouteVerificationError &&
+    stalledRouteVerification?.data.id === effectiveSelected &&
+    stalledRouteVerification.data.status === "approved" &&
+    stalledRouteVerification.data.execution_result === null
+      ? stalledRouteVerification.data
+      : undefined;
   const dossierSelected =
     activeLane === "stalled"
       ? (stalledSelectionConfirmed ? effectiveSelected : null)
@@ -2142,6 +2195,7 @@ export default function ApprovalsPage() {
           <Dossier
             key={dossierSelected}
             actionId={dossierSelected}
+            verifiedDetail={verifiedStalledRouteDetail}
             onApprove={() => approve(dossierSelected)}
             onDeny={(reason) => denyMut.mutate({ id: dossierSelected, reason })}
             onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}

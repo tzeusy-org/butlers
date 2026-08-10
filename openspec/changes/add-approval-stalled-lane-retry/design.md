@@ -70,6 +70,21 @@ Alternative: optimistically remove the row or invalidate before completion.
 Rejected because dispatch can fail and an approved/null-result row must remain
 truthfully visible until the server confirms a changed result.
 
+### 5. Verify an unlisted stalled deep link through a fresh, isolated query
+
+The normal dossier key may be populated by a route prefetch or an earlier
+visit. An unlisted `?state=stalled` deep link therefore uses a separate query
+key and requires a completed request made after the active stalled rail has
+settled. The route renders only the verifier response itself when its id,
+approved status, and explicit null result satisfy the stalled predicate. A
+pending, errored, mismatched, or non-eligible verifier response leaves the
+dossier absent; cached ordinary detail data is not an eligibility authority.
+
+Alternative: reuse the ordinary detail key and inspect its current data.
+Rejected because React Query may expose an already-cached success while its
+fresh request is still pending or later fails, which could briefly reopen stale
+Retry or decision controls under the Stalled lane.
+
 ## Risks / Trade-offs
 
 - [A retry response reports no dispatch] -> retain the row, show a neutral
@@ -80,6 +95,9 @@ truthfully visible until the server confirms a changed result.
   all-clear.
 - [A bookmarked dossier carries a lane query] -> retain the query when rail
   navigation updates the dossier URL, so Back/reload remains in the same lane.
+- [An unlisted direct id has an ordinary cached dossier] -> wait for the
+  isolated verifier and render only its current eligible payload, not the
+  cached route detail.
 
 ## Migration Plan
 

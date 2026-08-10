@@ -904,6 +904,32 @@ function makePendingDetail(id: string) {
   });
 }
 
+function makeStalledDetailData(
+  id: string,
+  overrides: Partial<Record<string, unknown>> = {},
+) {
+  return {
+    id,
+    title: `Stalled ${id}`,
+    butler: "general",
+    created_at: "2026-05-17T10:00:00Z",
+    expires_at: null,
+    why: "The owner approved this.",
+    evidence: [],
+    proposed_action: {
+      tool_name: "send_email",
+      tool_args: {},
+      agent_summary: null,
+    },
+    status: "approved",
+    decided_by: "human:owner",
+    decided_at: "2026-05-17T10:05:00Z",
+    execution_result: null,
+    target_contact: null,
+    ...overrides,
+  };
+}
+
 describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -2306,6 +2332,144 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     expect(findButton(container, "Approve")).toBeUndefined();
     expect(findButton(container, "Deny")).toBeUndefined();
     expect(findButton(container, "Defer")).toBeUndefined();
+  });
+
+  it("does not trust an ordinary cached dossier while the unlisted Stalled verifier is pending", async () => {
+    const actionId = "stalled-cache-pending";
+    const freshPending = {
+      data: makeStalledDetailData(actionId, {
+        title: "Fresh pending detail",
+        status: "pending",
+      }),
+      meta: {},
+    };
+    const verification = deferred<typeof freshPending>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    // Simulate a prefetch from the ordinary dossier route. The Stalled route
+    // must not treat this stale success as its eligibility verification.
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale dossier" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+
+    // A separate fresh request begins despite the ordinary cache entry, and
+    // neither its stale title nor its Retry control becomes visible first.
+    expect(getApprovalDetail).toHaveBeenCalledWith(actionId);
+    expect(container.textContent).not.toContain("Cached stale dossier");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+
+    await act(async () => {
+      verification.resolve(freshPending);
+      await flush();
+    });
+
+    // A fresh but no-longer-stalled result remains suppressed; the ordinary
+    // cached approval cannot reopen its dossier after the verifier settles.
+    expect(container.textContent).not.toContain("Cached stale dossier");
+    expect(container.textContent).not.toContain("Fresh pending detail");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Approve")).toBeUndefined();
+  });
+
+  it("suppresses an unlisted stalled dossier when fresh verification has a result", async () => {
+    const actionId = "stalled-cache-result";
+    const freshExecuted = {
+      data: makeStalledDetailData(actionId, {
+        title: "Fresh completed detail",
+        execution_result: { dispatched: false },
+      }),
+      meta: {},
+    };
+    const verification = deferred<typeof freshExecuted>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale retry" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verification.resolve(freshExecuted);
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("Cached stale retry");
+    expect(container.textContent).not.toContain("Fresh completed detail");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
+  it("suppresses an unlisted stalled dossier when fresh verification fails", async () => {
+    const actionId = "stalled-cache-error";
+    const verification = deferred<never>();
+    // React Query consumes the rejection; prevent the deferred from being
+    // observed as unhandled before the query attaches its handler.
+    void verification.promise.catch(() => undefined);
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale error" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+    expect(container.textContent).not.toContain("Cached stale error");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+
+    await act(async () => {
+      verification.reject(new Error("fresh verifier unavailable"));
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("Cached stale error");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+    expect(findButton(container, "Approve")).toBeUndefined();
+  });
+
+  it("requires the fresh verifier response to match the direct stalled id", async () => {
+    const actionId = "stalled-cache-id";
+    const freshMismatch = {
+      data: makeStalledDetailData("different-id", { title: "Fresh wrong id" }),
+      meta: {},
+    };
+    const verification = deferred<typeof freshMismatch>();
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    qc.setQueryData(["approvals", "detail", actionId], {
+      data: makeStalledDetailData(actionId, { title: "Cached stale id" }),
+      meta: {},
+    });
+    vi.mocked(getApprovalDetail).mockReturnValue(verification.promise as AnyMock);
+
+    renderPage(`/approvals/${actionId}?state=stalled`);
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === actionId),
+    );
+
+    await act(async () => {
+      verification.resolve(freshMismatch);
+      await flush();
+    });
+
+    expect(container.textContent).not.toContain("Cached stale id");
+    expect(container.textContent).not.toContain("Fresh wrong id");
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
   });
 
   it("describes stalled rows as stalled when the flat metadata is unavailable", async () => {
