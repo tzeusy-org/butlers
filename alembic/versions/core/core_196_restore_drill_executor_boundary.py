@@ -121,6 +121,7 @@ def upgrade() -> None:
         AS $$
         DECLARE
             v_audit_id BIGINT;
+            v_detail TEXT;
         BEGIN
             IF p_backup_name IS NULL OR btrim(p_backup_name) = ''
                OR octet_length(p_backup_name) > 512 THEN
@@ -132,6 +133,16 @@ def upgrade() -> None:
             IF p_table_count IS NOT NULL AND p_table_count < 0 THEN
                 RAISE EXCEPTION 'p_table_count must not be negative';
             END IF;
+
+            -- ``record_result`` is callable directly by the executor login,
+            -- so it is the final audit/API privacy boundary. Never rely on
+            -- the Python runner to have already sanitized p_detail: a direct
+            -- SQL caller can otherwise write raw client output into both
+            -- audit_log.error and audit_log.metadata. The SQL surface keeps
+            -- no caller-supplied detail at all; the executor's structured
+            -- result/table count remains durable while a fixed safe diagnostic
+            -- is the only text that crosses this boundary.
+            v_detail := 'restore drill diagnostic withheld';
 
             INSERT INTO public.audit_log (
                 actor,
@@ -146,11 +157,11 @@ def upgrade() -> None:
                 'restore_drill_result',
                 p_backup_name,
                 p_result,
-                CASE WHEN p_result = 'fail' THEN p_detail ELSE NULL END,
+                CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END,
                 jsonb_build_object(
                     'backup_file', p_backup_name,
                     'table_count', p_table_count,
-                    'detail', p_detail
+                    'detail', v_detail
                 )
             )
             RETURNING id INTO v_audit_id;

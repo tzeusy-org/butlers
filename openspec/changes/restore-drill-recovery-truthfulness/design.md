@@ -138,6 +138,15 @@ retain a dump row. Legacy records without structured fields remain readable
 with unknown/null provenance; unsafe legacy detail is withheld and its text is
 never parsed to infer a code or cadence.
 
+The security-definer persistence function is the final enforcement point, not
+an assumption about the Python executor: an executor credential holder can
+call it directly. It therefore discards every caller-supplied detail value and
+stores only the fixed bounded withheld diagnostic alongside structured result
+and table-count data. A degraded ledger-read exception follows the same rule:
+the API and its log use a fixed unavailable diagnostic rather than exception
+text or traceback, because both can carry a DSN, credential, SQL, or dump
+fragment.
+
 `failing_since` is the timestamp of the oldest contiguous failed restore-drill
 record ending at the current failed result. It is `null` unless the current
 result is `fail`; a subsequent pass resets it to `null`. This is calculated

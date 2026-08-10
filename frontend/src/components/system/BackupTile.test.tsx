@@ -313,4 +313,22 @@ describe("BackupTile -- restore drill row (bu-9r3hd.5)", () => {
     expect(html).toContain("backup-tile-drill-problem")
     expect(html).toContain("Unavailable")
   })
+
+  it("withholds an unexpected degraded diagnostic from the UI", () => {
+    const marker = "backup-tile-private-marker"
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        restore_drill: {
+          checked_at: null,
+          result: "degraded",
+          detail: `postgresql://restore:${marker}@db.example.test/postgres`,
+        },
+      }),
+    }
+
+    const html = render()
+    expect(html).toContain("restore drill ledger unavailable")
+    expect(html).not.toContain(marker)
+  })
 })

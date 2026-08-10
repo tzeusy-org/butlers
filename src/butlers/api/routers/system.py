@@ -842,6 +842,10 @@ def latest_backup_path(backup_dir: Path) -> Path | None:
 
 
 _PENDING_RESTORE_DRILL = RestoreDrillFacts(checked_at=None, result="pending", detail=None)
+# This fixed text is intentionally safe to render in BackupTile and to log.
+# A database-driver exception can contain a password, DSN, dump fragment, or
+# other raw recovery output, so a degraded reader must never surface it.
+_RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL = "restore drill ledger unavailable"
 
 
 def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
@@ -998,14 +1002,24 @@ async def _read_restore_drill_facts(db: DatabaseManager) -> RestoreDrillFacts:
         pool = db.pool("switchboard")
     except KeyError:
         return RestoreDrillFacts(
-            checked_at=None, result="degraded", detail="switchboard pool unavailable"
+            checked_at=None,
+            result="degraded",
+            detail=_RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL,
         )
 
     try:
         row = await get_last_restore_drill(pool)
-    except Exception as exc:
-        logger.warning("backup facts: restore-drill ledger read failed", exc_info=True)
-        return RestoreDrillFacts(checked_at=None, result="degraded", detail=str(exc))
+    except Exception:
+        # Do not log exc_info or return str(exc): database exceptions often
+        # embed a DSN, credentials, SQL, or dump content and BackupTile renders
+        # this detail. The endpoint remains truthfully degraded with a fixed,
+        # operator-safe diagnostic instead.
+        logger.warning("backup facts: restore-drill ledger read unavailable")
+        return RestoreDrillFacts(
+            checked_at=None,
+            result="degraded",
+            detail=_RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL,
+        )
 
     if row is None:
         return _PENDING_RESTORE_DRILL

@@ -44,6 +44,8 @@ Scope: v1-mandatory
   pool is unavailable or its query fails
 - **THEN** `restore_drill.result` is `"degraded"` with a non-null operator-safe
   detail and null failure code, stage, and failure age
+- **AND** that detail and the corresponding server log use a fixed safe
+  unavailable diagnostic rather than the database exception text or traceback
 - **AND** every other backup fact remains unaffected
 - **AND** the response remains HTTP 200 because a ledger-read failure never
   fabricates a successful drill or fails the whole endpoint

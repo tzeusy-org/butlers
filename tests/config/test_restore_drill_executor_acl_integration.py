@@ -418,6 +418,9 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
         ),
         isolation_level="AUTOCOMMIT",
     )
+    raw_audit_id: int | None = None
+    oversized_audit_id: int | None = None
+    raw_marker = "p-detail-private-marker"
     try:
         for role_name, direct_engine in direct_engines.items():
             _expect_permission_denied(
@@ -443,10 +446,36 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
             audit_id = connection.execute(
                 text(
                     "SELECT restore_drill_executor.record_result("
-                    "'acl-proof.sql.gz', 'pass', 'verified', 1)"
+                    "'acl-proof.sql.gz', 'pass', 'restored 1 table', 1)"
                 )
             ).scalar_one()
             assert isinstance(audit_id, int)
+
+            # The executor login is permitted to invoke this narrow function,
+            # so the function itself is the final privacy boundary. Direct SQL
+            # must not bypass the Python runner's sanitizer and persist client
+            # output or a formally allowed but unbounded detail string.
+            raw_audit_id = connection.execute(
+                text(
+                    "SELECT restore_drill_executor.record_result(:backup_name, 'fail', :detail, 1)"
+                ),
+                {
+                    "backup_name": "direct-raw-detail.sql.gz",
+                    "detail": (
+                        "postgresql://restore:"
+                        f"{raw_marker}@db.example.test/postgres COPY sensitive_table"
+                    ),
+                },
+            ).scalar_one()
+            oversized_audit_id = connection.execute(
+                text(
+                    "SELECT restore_drill_executor.record_result(:backup_name, 'fail', :detail, 1)"
+                ),
+                {
+                    "backup_name": "direct-oversized-detail.sql.gz",
+                    "detail": "restored " + ("9" * 600) + " tables",
+                },
+            ).scalar_one()
         _expect_permission_denied(executor_engine, "SELECT count(*) FROM public.audit_log")
         _expect_permission_denied(
             executor_engine,
@@ -460,6 +489,37 @@ def test_real_core_chain_keeps_the_executor_interface_exclusive(
     engine = create_engine(admin_url)
     try:
         with engine.connect() as connection:
+            assert raw_audit_id is not None
+            assert oversized_audit_id is not None
+            persisted_details = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT id, error, metadata ->> 'detail' AS detail
+                    FROM public.audit_log
+                    WHERE id IN (:raw_audit_id, :oversized_audit_id)
+                    ORDER BY id
+                    """
+                    ),
+                    {
+                        "raw_audit_id": raw_audit_id,
+                        "oversized_audit_id": oversized_audit_id,
+                    },
+                )
+                .mappings()
+                .all()
+            )
+            assert len(persisted_details) == 2
+            raw_detail = next(row for row in persisted_details if row["id"] == raw_audit_id)
+            oversized_detail = next(
+                row for row in persisted_details if row["id"] == oversized_audit_id
+            )
+            assert raw_detail["error"] == "restore drill diagnostic withheld"
+            assert raw_detail["detail"] == "restore drill diagnostic withheld"
+            assert raw_marker not in raw_detail["error"]
+            assert raw_marker not in raw_detail["detail"]
+            assert len(oversized_detail["error"]) <= 512
+            assert len(oversized_detail["detail"]) <= 512
             assert (
                 connection.execute(
                     text(

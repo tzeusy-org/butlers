@@ -170,7 +170,10 @@ leftover scratch database is never reported as recovery evidence. Stored and
 API-visible diagnostic detail is at most 512 characters from a controlled safe
 vocabulary; raw PostgreSQL stdout/stderr, connection strings, passwords, and
 dump content are withheld rather than retained in audit records or rendered by
-the dashboard.
+the dashboard. The executor-facing SQL persistence function is the final
+boundary: it ignores every caller-supplied `p_detail` value and stores only its
+fixed safe diagnostic, so a direct use of the executor credential cannot bypass
+the runner's sanitizer.
 
 ### Observing a drill
 
