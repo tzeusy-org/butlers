@@ -2245,9 +2245,33 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     const stalledLink = laneNav?.querySelector<HTMLAnchorElement>(
       'a[href="/approvals?state=stalled"]',
     );
+    const waitingLink = laneNav?.querySelector<HTMLAnchorElement>('a[href="/approvals"]');
     expect(laneNav).not.toBeNull();
     expect(stalledLink?.getAttribute("aria-current")).toBe("page");
     expect(stalledLink?.className).toContain("focus-visible:outline");
+    expect(stalledLink?.className.split(" ")).toEqual(
+      expect.arrayContaining([
+        "h-7",
+        "rounded-[3px]",
+        "border",
+        "px-2.5",
+        "font-mono",
+        "text-[11px]",
+        "bg-foreground",
+        "text-background",
+      ]),
+    );
+    expect(waitingLink?.className.split(" ")).toEqual(
+      expect.arrayContaining([
+        "h-7",
+        "rounded-[3px]",
+        "border",
+        "px-2.5",
+        "font-mono",
+        "text-[11px]",
+        "bg-transparent",
+      ]),
+    );
 
     navigateCalls.length = 0;
     await act(async () => {
@@ -2258,6 +2282,43 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
       "/approvals/stalled-1?state=stalled",
       { replace: true },
     ]);
+  });
+
+  it("opens a valid stalled direct dossier beyond the current flat page", async () => {
+    const outOfWindowId = "stalled-out-of-window";
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    renderPage(`/approvals/${outOfWindowId}?state=stalled`);
+    await flushUntil(
+      () =>
+        vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === outOfWindowId),
+    );
+    await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
+
+    expect(getApprovalDetail).toHaveBeenCalledWith(outOfWindowId);
+    expect(container.textContent).toContain("Approved, awaiting dispatch.");
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+  });
+
+  it("describes stalled rows as stalled when the flat metadata is unavailable", async () => {
+    const stalled = {
+      ...makeSummary("stalled-without-radar", "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    };
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([stalled]) as AnyMock);
+
+    renderPage("/approvals?state=stalled");
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="rail-item"][data-approval-id="stalled-without-radar"]') !==
+        null,
+    );
+
+    expect(container.textContent).toContain("one stalled action never ran");
+    expect(container.textContent).not.toContain("1 waiting");
   });
 
   it("retains keyboard navigation but disables approval shortcuts in the stalled lane", async () => {
@@ -2301,7 +2362,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     expect(container.querySelector('[data-pending-verb="approve"]')).toBeNull();
   });
 
-  it("does not mount a pending direct dossier while Stalled loads or lacks its route id", async () => {
+  it("does not mount a pending direct dossier while Stalled loads or after detail rejects it", async () => {
     const pendingId = "pending-direct";
     const stalled = {
       ...makeSummary("stalled-other", "stalled_action"),
@@ -2339,7 +2400,10 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
         null,
     );
 
-    expect(getApprovalDetail).not.toHaveBeenCalled();
+    await flushUntil(
+      () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === pendingId),
+    );
+    expect(getApprovalDetail).toHaveBeenCalledWith(pendingId);
     expect(findButton(container, "Approve")).toBeUndefined();
     expect(findButton(container, "Deny")).toBeUndefined();
     expect(findButton(container, "Defer")).toBeUndefined();

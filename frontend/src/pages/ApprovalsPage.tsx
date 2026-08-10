@@ -116,6 +116,12 @@ const Q = {
   policy: () => ["approvals", "policy"] as const,
 };
 
+const APPROVAL_LANE_PILL_BASE = [
+  "inline-flex h-7 items-center justify-center rounded-[3px] border px-2.5",
+  "font-mono text-[11px] leading-none transition-colors",
+  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground",
+].join(" ");
+
 function approvalLaneHref(lane: ApprovalLane, actionId?: string): string {
   const path = actionId ? `/approvals/${actionId}` : "/approvals";
   return lane === "stalled" ? `${path}?state=stalled` : path;
@@ -1666,6 +1672,35 @@ export default function ApprovalsPage() {
       : rows;
   }, [activeLane, data]);
   const pending = rankedPending;
+  const waitingVerdictRows = activeLane === "waiting" ? pending : [];
+  const stalledVerdictCount = Math.max(
+    data?.meta?.stalled_count ?? 0,
+    activeLane === "stalled" ? pending.length : 0,
+  );
+
+  // The stalled flat rail is bounded, while every approval URL remains a
+  // first-class deep link. Once that rail has resolved, check an unlisted
+  // route id with the existing detail endpoint before rendering its dossier:
+  // a valid out-of-window stalled item stays reachable, while a pending or
+  // invalid id never exposes pending-decision controls under this lane.
+  const stalledRouteIsListed =
+    activeLane === "stalled" &&
+    isSuccess &&
+    routeId !== undefined &&
+    data?.data?.some((summary) => summary.id === routeId) === true;
+  const shouldVerifyStalledRoute =
+    activeLane === "stalled" &&
+    isSuccess &&
+    routeId !== undefined &&
+    !stalledRouteIsListed;
+  const {
+    data: stalledRouteDetail,
+    isSuccess: isStalledRouteDetailSuccess,
+  } = useQuery({
+    queryKey: Q.detail(routeId ?? ""),
+    queryFn: () => getApprovalDetail(routeId ?? ""),
+    enabled: shouldVerifyStalledRoute,
+  });
 
   // Degraded fan-out (bu-jad4j.4): both approvals list endpoints fan across
   // each butler's pool and, rather than failing the request, drop any pool
@@ -1756,16 +1791,19 @@ export default function ApprovalsPage() {
   const firstId = actionablePending[0]?.id;
   const effectiveSelected = routeId ?? firstId ?? null;
   // A Stalled direct URL must not use its route id as independent authority
-  // for a dossier. Until the successful Stalled flat response confirms that
-  // exact id, it could be a pending action from a previous URL or an invalid
-  // bookmark; mounting Dossier would fetch it and expose pending decisions
-  // under the Stalled lane. Waiting keeps its historical deep-link behavior
-  // (including decided/history records that are not in the current rail).
+  // until either the flat page or a post-page detail check proves the exact
+  // approved/null-result predicate. Waiting keeps its historical deep-link
+  // behavior (including decided/history records that are not in the current
+  // rail).
   const stalledSelectionConfirmed =
     activeLane === "stalled" &&
     isSuccess &&
     effectiveSelected !== null &&
-    data?.data?.some((summary) => summary.id === effectiveSelected) === true;
+    (data?.data?.some((summary) => summary.id === effectiveSelected) === true ||
+      (routeId === effectiveSelected &&
+        isStalledRouteDetailSuccess &&
+        stalledRouteDetail?.data.status === "approved" &&
+        stalledRouteDetail.data.execution_result === null));
   const dossierSelected =
     activeLane === "stalled"
       ? (stalledSelectionConfirmed ? effectiveSelected : null)
@@ -1922,11 +1960,11 @@ export default function ApprovalsPage() {
           line (JARVIS pursuit move 9). */}
       <div className="px-6 py-3 border-b border-border shrink-0">
         <ApprovalsVerdictOpener
-          pending={pending}
+          pending={waitingVerdictRows}
           pendingLoading={isLoading}
           pendingError={isError}
           pendingSourcesDegraded={pendingSourcesDegraded}
-          stalledCount={data?.meta?.stalled_count ?? 0}
+          stalledCount={stalledVerdictCount}
           historyLoading={historyLoading}
           historyError={historyIsError}
           historySourcesDegraded={historySourcesDegraded}
@@ -2006,11 +2044,10 @@ export default function ApprovalsPage() {
               to="/approvals"
               aria-current={activeLane === "waiting" ? "page" : undefined}
               className={[
-                "inline-flex min-h-8 items-center rounded px-2 text-xs font-mono uppercase tracking-wide",
-                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+                APPROVAL_LANE_PILL_BASE,
                 activeLane === "waiting"
-                  ? "bg-foreground/10 text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border bg-transparent text-muted-foreground hover:border-foreground hover:text-foreground",
               ].join(" ")}
             >
               Waiting
@@ -2019,11 +2056,10 @@ export default function ApprovalsPage() {
               to="/approvals?state=stalled"
               aria-current={activeLane === "stalled" ? "page" : undefined}
               className={[
-                "inline-flex min-h-8 items-center rounded px-2 text-xs font-mono uppercase tracking-wide",
-                "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground/40",
+                APPROVAL_LANE_PILL_BASE,
                 activeLane === "stalled"
-                  ? "bg-foreground/10 text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border bg-transparent text-muted-foreground hover:border-foreground hover:text-foreground",
               ].join(" ")}
             >
               Stalled

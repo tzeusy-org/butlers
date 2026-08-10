@@ -21,6 +21,15 @@ dossier from the stalled lane SHALL retain `state=stalled` in its URL.
 - **AND** the rail labels and displays only the returned stalled rows rather
   than the waiting queue.
 
+#### Scenario: Direct stalled dossier remains reachable beyond the rail page
+
+- **WHEN** the owner navigates to `/approvals/{id}?state=stalled` and the
+  approval is stalled but falls outside the current bounded flat-result page
+- **THEN** the Trust Console verifies and displays that stalled dossier via
+  its existing detail endpoint
+- **AND** it does not render a pending or invalid direct id as a dossier in
+  the stalled lane.
+
 #### Scenario: Stalled radar has a truthful drill-down destination
 
 - **WHEN** the flat response reports one or more stalled actions in
