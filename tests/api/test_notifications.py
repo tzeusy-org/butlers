@@ -10,14 +10,21 @@ payload, but only the unavailable case carries ``source_available: false``.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import asyncpg
 import httpx
 import pytest
 
+from butlers.api.briefing.cache import BriefingCache
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.notifications import _get_db_manager
+from butlers.api.routers.notifications import (
+    _get_db_manager,
+    _normalize_notification_metadata,
+    get_cache,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -37,6 +44,171 @@ def _make_available_db() -> tuple[MagicMock, AsyncMock]:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     return mock_db, pool
+
+
+_METADATA_NORMALIZATION_CASES = [
+    pytest.param({"origin": "test"}, {"origin": "test"}, id="mapping"),
+    pytest.param(None, None, id="null"),
+    pytest.param('{"origin": "legacy"}', {"origin": "legacy"}, id="encoded-object"),
+    pytest.param('{"broken":', {"_raw": '{"broken":'}, id="malformed-string"),
+    pytest.param("[]", {"_raw": "[]"}, id="encoded-array"),
+    pytest.param('"plain text"', {"_raw": '"plain text"'}, id="encoded-string"),
+    pytest.param("42", {"_raw": "42"}, id="encoded-number"),
+    pytest.param("true", {"_raw": "true"}, id="encoded-boolean"),
+    pytest.param("null", {"_raw": "null"}, id="encoded-null"),
+    pytest.param(
+        '"{\\"inner\\": \\"json\\"}"',
+        {"_raw": '"{\\"inner\\": \\"json\\"}"'},
+        id="does-not-recursively-decode",
+    ),
+    pytest.param([], None, id="actual-array"),
+    pytest.param(42, None, id="actual-number"),
+    pytest.param(True, None, id="actual-boolean"),
+]
+
+_JSON_DECODER_FAILURE_METADATA_CASES = [
+    pytest.param("1" + ("0" * 4_301), id="oversized-numeric-scalar"),
+    pytest.param("[" * 10_000 + "]" * 10_000, id="deeply-nested-array"),
+]
+
+
+def _notification_row(metadata: object) -> dict[str, object]:
+    """Build a notification row without coercing its decoded JSONB metadata."""
+    return {
+        "id": uuid4(),
+        "source_butler": "finance",
+        "channel": "telegram",
+        "recipient": "12345",
+        "message": "Notification metadata compatibility test.",
+        "metadata": metadata,
+        "status": "read",
+        "effective_status": "read",
+        "error": None,
+        "session_id": None,
+        "trace_id": None,
+        "created_at": datetime(2026, 8, 10, 12, 0, tzinfo=UTC),
+    }
+
+
+@pytest.mark.parametrize(("value", "expected"), _METADATA_NORMALIZATION_CASES)
+def test_normalize_notification_metadata_uses_one_layer_object_or_null_contract(
+    value: object, expected: dict | None
+) -> None:
+    """The API boundary preserves the exact legacy fallback matrix."""
+    normalized = _normalize_notification_metadata(value)
+
+    assert normalized == expected
+    if isinstance(value, dict):
+        assert normalized is not value
+
+
+@pytest.mark.parametrize("value", _JSON_DECODER_FAILURE_METADATA_CASES)
+def test_normalize_notification_metadata_wraps_json_decoder_failures(value: str) -> None:
+    """Valid JSON that exceeds decoder limits remains observable to API callers."""
+    normalized = _normalize_notification_metadata(value)
+
+    assert normalized is not None
+    assert set(normalized) == {"_raw"}
+    assert normalized["_raw"] == value
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/notifications", "/api/butlers/finance/notifications"], ids=["global", "scoped"]
+)
+@pytest.mark.parametrize(("metadata", "expected"), _METADATA_NORMALIZATION_CASES)
+async def test_notification_list_routes_normalize_legacy_metadata(
+    app, path: str, metadata: object, expected: dict | None
+) -> None:
+    """Global and scoped lists retain the same object-or-null metadata contract."""
+    mock_db, pool = _make_available_db()
+    pool.fetchval.return_value = 1
+    row = _notification_row(metadata)
+    row["status"] = "failed"
+    row["effective_status"] = "terminal_failed"
+    pool.fetch.return_value = [row]
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(path)
+
+    assert response.status_code == 200
+    notification = response.json()["data"][0]
+    assert notification["metadata"] == expected
+    assert notification["status"] == "failed"
+    assert notification["effective_status"] == "terminal_failed"
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/notifications", "/api/butlers/finance/notifications"], ids=["global", "scoped"]
+)
+@pytest.mark.parametrize("metadata", _JSON_DECODER_FAILURE_METADATA_CASES)
+async def test_notification_list_routes_wrap_json_decoder_failures(
+    app, path: str, metadata: str
+) -> None:
+    """Both notification lists return decoder-limit legacy values as raw metadata."""
+    mock_db, pool = _make_available_db()
+    pool.fetchval.return_value = 1
+    pool.fetch.return_value = [_notification_row(metadata)]
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        response = await client.get(path)
+
+    assert response.status_code == 200
+    response_metadata = response.json()["data"][0]["metadata"]
+    assert set(response_metadata) == {"_raw"}
+    assert response_metadata["_raw"] == metadata
+
+
+@pytest.mark.parametrize(("metadata", "expected"), _METADATA_NORMALIZATION_CASES)
+async def test_mark_notification_read_normalizes_legacy_metadata(
+    app, metadata: object, expected: dict | None
+) -> None:
+    """Mark-read returns the same normalized metadata shape as notification lists."""
+    row = _notification_row(metadata)
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[row, None])
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_cache] = lambda: BriefingCache(ttl_seconds=300)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.patch(f"/api/notifications/{row['id']}/read")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["metadata"] == expected
+    assert body["status"] == "read"
+    assert body["effective_status"] == "read"
+
+
+@pytest.mark.parametrize("metadata", _JSON_DECODER_FAILURE_METADATA_CASES)
+async def test_mark_notification_read_wraps_json_decoder_failures(app, metadata: str) -> None:
+    """Mark-read returns decoder-limit legacy values as raw metadata, not a server error."""
+    row = _notification_row(metadata)
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[row, None])
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_cache] = lambda: BriefingCache(ttl_seconds=300)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        response = await client.patch(f"/api/notifications/{row['id']}/read")
+
+    assert response.status_code == 200
+    response_metadata = response.json()["data"]["metadata"]
+    assert set(response_metadata) == {"_raw"}
+    assert response_metadata["_raw"] == metadata
 
 
 async def test_list_notifications_flags_source_unavailable_when_pool_unreachable(app):

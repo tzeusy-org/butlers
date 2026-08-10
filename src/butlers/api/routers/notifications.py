@@ -70,15 +70,26 @@ def _normalize_notification_metadata(value: object | None) -> dict | None:
     """Normalize DB metadata to the API contract shape.
 
     ``NotificationSummary.metadata`` is an object-or-null field. Some legacy
-    rows may contain non-object JSON values (for example strings, arrays, or
-    scalars). Those values are normalized to ``None`` so list endpoints remain
-    stable and never fail serialization.
+    JSONB string scalars encode one object. Decode that one layer so their
+    provenance remains visible. Malformed strings, decoder-limit failures, and
+    strings that decode to a non-object retain their exact outer value under
+    ``_raw``. Actual non-string, non-object JSONB values remain ``None``.
     """
     if value is None:
         return None
     if isinstance(value, Mapping):
         return dict(value)
-    return None
+    if not isinstance(value, str):
+        return None
+
+    try:
+        decoded = json.loads(value)
+    # ``JSONDecodeError`` is a ``ValueError``; valid JSON may also exceed the
+    # integer digit limit or recursion limit while decoding.
+    except (RecursionError, ValueError):
+        return {"_raw": value}
+
+    return dict(decoded) if isinstance(decoded, Mapping) else {"_raw": value}
 
 
 def _is_missing_notifications_table_error(exc: Exception) -> bool:

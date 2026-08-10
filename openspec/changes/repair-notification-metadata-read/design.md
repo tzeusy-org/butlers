@@ -53,7 +53,7 @@ The shared notification response normalizer is the sole reader for all three
 | mapping/object | a shallow object copy |
 | `null` | `null` |
 | string whose one JSON parse yields an object | that parsed object |
-| malformed string, or a string whose one parse yields an array, string, number, boolean, or `null` | `{"_raw": <the original outer string>}` |
+| malformed string, a string whose one parse cannot complete because of a JSON decoder safety limit, or a string whose one parse yields an array, string, number, boolean, or `null` | `{"_raw": <the original outer string>}` |
 | non-string non-object value (for example, an actual JSONB array, number, or boolean) | `null` |
 
 The normalizer never recursively parses a decoded result, manufactures
@@ -73,7 +73,8 @@ into a hidden data transformation.
 all three response paths. The API model remains object-or-null; no frontend
 display change is required for this slice. The direct normalizer and endpoint
 tests use the same cases so the global list, butler-scoped list, and mark-read
-response cannot drift apart.
+response cannot drift apart. Decoder-limit cases retain the exact outer string
+under `_raw`, just like malformed and successfully parsed non-object strings.
 
 **Alternative considered:** documenting only the list endpoint. Rejected
 because the same stored row can be returned by a butler-scoped query or
