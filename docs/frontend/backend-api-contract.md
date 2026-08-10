@@ -223,8 +223,10 @@ Required query support:
 - A mapping is returned as a shallow object copy, and `null` remains `null`.
 - A legacy JSONB string whose one JSON parse yields an object is returned as
   that object.
-- A malformed string, or a string whose one parse yields an array, string,
-  number, boolean, or `null`, is returned as `{"_raw": <original outer string>}`.
+- A malformed string, a string whose one parse cannot complete because of a
+  JSON decoder safety limit, or a string whose one parse yields an array,
+  string, number, boolean, or `null`, is returned as
+  `{"_raw": <original outer string>}`.
 - An actual non-string JSONB array, number, or boolean remains `null`; it is
   not wrapped in `_raw`.
 - The normalizer never recursively decodes a parsed string or infers missing

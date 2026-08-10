@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Notification Metadata Legacy Read Normalization
-Every `NotificationSummary` emitted by `GET /api/notifications`, `GET /api/butlers/{name}/notifications`, and `PATCH /api/notifications/{id}/read` SHALL expose `metadata` as an object or `null` through one shared, one-layer normalizer. A mapping SHALL be returned as a shallow object copy, `null` SHALL remain `null`, and a legacy JSONB string whose single JSON parse yields an object SHALL return that object. A malformed string, or a string whose single parse yields a non-object, SHALL return `{"_raw": <the original outer string>}`. An actual non-string, non-object JSONB value SHALL return `null`. The normalizer SHALL NOT recursively decode, infer provenance, or change any delivery or status field.
+Every `NotificationSummary` emitted by `GET /api/notifications`, `GET /api/butlers/{name}/notifications`, and `PATCH /api/notifications/{id}/read` SHALL expose `metadata` as an object or `null` through one shared, one-layer normalizer. A mapping SHALL be returned as a shallow object copy, `null` SHALL remain `null`, and a legacy JSONB string whose single JSON parse yields an object SHALL return that object. A malformed string, a string whose single parse cannot complete because of a JSON decoder safety limit, or a string whose single parse yields a non-object, SHALL return `{"_raw": <the original outer string>}`. An actual non-string, non-object JSONB value SHALL return `null`. The normalizer SHALL NOT recursively decode, infer provenance, or change any delivery or status field.
 
 ID: REQ-core-notify-001
 Source: heart-and-soul/vision.md #4; RFC 0007 Response Envelope; design.md D1-D2
@@ -16,11 +16,11 @@ Scope: v1-mandatory
   and the decoded object under `metadata`
 - **AND** every other response field retains its existing value and semantics
 
-#### Scenario: Every response path retains malformed and inner non-object strings
+#### Scenario: Every response path retains malformed, decoder-limited, and inner non-object strings
 
 - **WHEN** each notification response path returns a legacy metadata string
-  that is malformed JSON or whose one parse yields an array, string, number,
-  boolean, or `null`
+  that is malformed JSON, cannot complete a one-layer parse because of a JSON
+  decoder safety limit, or yields an array, string, number, boolean, or `null`
 - **THEN** its `metadata` value is exactly `{"_raw": <the original outer
   string>}`
 - **AND** the response does not fail serialization or silently return `null`
