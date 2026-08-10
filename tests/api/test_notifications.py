@@ -107,7 +107,10 @@ async def test_notification_list_routes_normalize_legacy_metadata(
     """Global and scoped lists retain the same object-or-null metadata contract."""
     mock_db, pool = _make_available_db()
     pool.fetchval.return_value = 1
-    pool.fetch.return_value = [_notification_row(metadata)]
+    row = _notification_row(metadata)
+    row["status"] = "failed"
+    row["effective_status"] = "terminal_failed"
+    pool.fetch.return_value = [row]
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     async with httpx.AsyncClient(
@@ -116,7 +119,10 @@ async def test_notification_list_routes_normalize_legacy_metadata(
         response = await client.get(path)
 
     assert response.status_code == 200
-    assert response.json()["data"][0]["metadata"] == expected
+    notification = response.json()["data"][0]
+    assert notification["metadata"] == expected
+    assert notification["status"] == "failed"
+    assert notification["effective_status"] == "terminal_failed"
 
 
 @pytest.mark.parametrize(("metadata", "expected"), _METADATA_NORMALIZATION_CASES)

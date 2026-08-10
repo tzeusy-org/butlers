@@ -1,9 +1,9 @@
 ## 1. Notification API read compatibility
 
-- [ ] 1.1 Implement the shared notification metadata normalizer in `src/butlers/api/routers/notifications.py` and route the global list, butler-scoped list, and mark-read response through its one-layer object-or-null contract (REQ-core-notify-001).
-- [ ] 1.2 Add direct and endpoint regressions in `tests/api/test_notifications.py` for mappings, `null`, encoded objects, malformed strings, every inner non-object string result, actual non-string non-objects, and no-recursive-decode behavior across all three response paths (REQ-core-notify-001).
-- [ ] 1.3 Assert the API compatibility work preserves existing effective-status, degraded-source, pagination, and mark-read behavior rather than changing delivery or status semantics.
-- [ ] 1.4 Update `docs/frontend/backend-api-contract.md` with the exact object-or-null normalization matrix, `_raw` fallback, and all three affected response paths.
+- [x] 1.1 Implement the shared notification metadata normalizer in `src/butlers/api/routers/notifications.py` and route the global list, butler-scoped list, and mark-read response through its one-layer object-or-null contract (REQ-core-notify-001).
+- [x] 1.2 Add direct and endpoint regressions in `tests/api/test_notifications.py` for mappings, `null`, encoded objects, malformed strings, every inner non-object string result, actual non-string non-objects, and no-recursive-decode behavior across all three response paths (REQ-core-notify-001).
+- [x] 1.3 Assert the API compatibility work preserves existing effective-status, degraded-source, pagination, and mark-read behavior rather than changing delivery or status semantics.
+- [x] 1.4 Update `docs/frontend/backend-api-contract.md` with the exact object-or-null normalization matrix, `_raw` fallback, and all three affected response paths.
 
 ## 2. Serving-writer deployment evidence gate
 
