@@ -63,6 +63,15 @@ Scope: v1-mandatory
   the shared dashboard/migration login receives only the fixed result-reader
   function, and neither has direct private-ledger table privileges
 
+#### Scenario: Pre-created authority relation fails closed
+- **WHEN** the shared migration/dashboard credential has pre-created a
+  compatible `restore_drill_executor.restore_drill_results` relation or trigger
+  before `core_196` runs
+- **THEN** `core_196` rejects that untrusted relation atomically before any
+  owner transfer, fixed interface grant, or trusted authority handoff
+- **AND** a first install or retry with the authority relation absent creates
+  the ledger through the migration transaction and completes normally
+
 #### Scenario: Privilege repair requires the managed bootstrap path
 - **WHEN** an operator encounters a restore-drill `CREATEDB` prerequisite failure
 - **THEN** the documented recovery path directs the operator to the managed

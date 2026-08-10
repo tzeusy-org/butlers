@@ -155,6 +155,10 @@ a fixed canonical public audit projection. Due checks and the dashboard reader
 use the protected ledger through fixed owner-side functions, never a
 `public.audit_log` row. A normal-role or even a newer administrative public
 audit spoof therefore cannot manufacture an API pass or alter scheduling.
+The ledger relation itself must be created by the migration transaction: if a
+shared migration/dashboard credential pre-created a compatible table or trigger
+while it held temporary schema-create staging access, `core_196` aborts before
+the ownership finalizer can hand that untrusted object a trusted interface.
 A degraded ledger-read exception follows the same rule:
 the API and its log use a fixed unavailable diagnostic rather than exception
 text or traceback, because both can carry a DSN, credential, SQL, or dump

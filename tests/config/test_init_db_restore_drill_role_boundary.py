@@ -173,7 +173,10 @@ def test_migration_owns_fixed_search_path_executor_result_authority() -> None:
 
     assert "SECURITY DEFINER" in source
     assert "CREATE SCHEMA IF NOT EXISTS restore_drill_executor" in source
-    assert "CREATE TABLE IF NOT EXISTS restore_drill_executor.restore_drill_results" in source
+    assert "CREATE TABLE restore_drill_executor.restore_drill_results" in source
+    assert "CREATE TABLE IF NOT EXISTS restore_drill_executor.restore_drill_results" not in source
+    assert "to_regclass('restore_drill_executor.restore_drill_results')" in source
+    assert "ledger must be created by core_196" in source
     assert "ALTER FUNCTION restore_drill_executor.is_due(INTEGER)" in source
     assert "ALTER FUNCTION restore_drill_executor.record_result(" in source
     assert "ALTER FUNCTION restore_drill_executor.latest_result()" in source

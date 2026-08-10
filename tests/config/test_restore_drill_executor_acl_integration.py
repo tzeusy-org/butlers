@@ -270,6 +270,163 @@ async def _read_restore_drill_api_shape(database_url: str) -> dict[str, object] 
         await pool.close()
 
 
+def test_precreated_shared_ledger_rejects_core_migration_without_authority_handoff(
+    postgres_container,
+) -> None:
+    """REQ-database-security-006: a shared-role precreation is never trusted.
+
+    ``init-db.sql`` grants the ordinary migration/dashboard role temporary
+    schema-create access so it can stage core_196.  A compatible table and
+    trigger created through that access must make the migration fail closed,
+    rather than letting the ownership finalizer bless an attacker-controlled
+    relation.  The failed revision must leave its trusted interface absent;
+    after an administrator removes the untrusted objects in this disposable
+    database, retrying the revision remains valid.
+    """
+    admin_url, shared_url, _host, _port, _admin_user, _admin_password = _bootstrap_database(
+        postgres_container
+    )
+
+    shared_engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
+    try:
+        with shared_engine.connect() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE restore_drill_executor.restore_drill_results (
+                        id BIGSERIAL PRIMARY KEY,
+                        recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                        result TEXT NOT NULL CHECK (result IN ('pass', 'fail')),
+                        detail TEXT
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION restore_drill_executor.precreated_result_trigger()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    AS $$
+                    BEGIN
+                        RETURN NEW;
+                    END;
+                    $$
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TRIGGER precreated_result_trigger
+                    BEFORE INSERT ON restore_drill_executor.restore_drill_results
+                    FOR EACH ROW
+                    EXECUTE FUNCTION restore_drill_executor.precreated_result_trigger()
+                    """
+                )
+            )
+    finally:
+        shared_engine.dispose()
+
+    with pytest.raises(
+        Exception,
+        match="restore-drill result authority ledger must be created by core_196",
+    ):
+        _run_real_core_chain_with_relationship_prerequisite(shared_url)
+
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            failed_state = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            pg_get_userbyid(result_ledger.relowner) AS ledger_owner,
+                            EXISTS (
+                                SELECT 1
+                                FROM pg_trigger trigger_row
+                                WHERE trigger_row.tgrelid = result_ledger.oid
+                                  AND trigger_row.tgname = 'precreated_result_trigger'
+                                  AND NOT trigger_row.tgisinternal
+                            ) AS poison_trigger_exists,
+                            to_regprocedure('restore_drill_executor.is_due(integer)')
+                                IS NOT NULL AS is_due_exists,
+                            to_regprocedure(
+                                'restore_drill_executor.record_result(text,text,text,integer)'
+                            ) IS NOT NULL AS record_result_exists,
+                            to_regprocedure('restore_drill_executor.latest_result()')
+                                IS NOT NULL AS latest_result_exists
+                        FROM pg_class AS result_ledger
+                        JOIN pg_namespace AS result_schema
+                            ON result_schema.oid = result_ledger.relnamespace
+                        WHERE result_schema.nspname = 'restore_drill_executor'
+                          AND result_ledger.relname = 'restore_drill_results'
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            assert failed_state == {
+                "ledger_owner": "butlers",
+                "poison_trigger_exists": True,
+                "is_due_exists": False,
+                "record_result_exists": False,
+                "latest_result_exists": False,
+            }
+
+            # The protected migration must not absorb a relation or trigger
+            # created by the shared role.  Removing the explicitly untrusted
+            # disposable objects restores the ordinary retry path.
+            connection.execute(text("DROP TABLE restore_drill_executor.restore_drill_results"))
+            connection.execute(
+                text("DROP FUNCTION restore_drill_executor.precreated_result_trigger()")
+            )
+    finally:
+        engine.dispose()
+
+    asyncio.run(run_migrations(shared_url, chain="core"))
+
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            repaired_state = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            pg_get_userbyid(result_ledger.relowner) AS ledger_owner,
+                            to_regprocedure('restore_drill_executor.is_due(integer)')
+                                IS NOT NULL AS is_due_exists,
+                            to_regprocedure(
+                                'restore_drill_executor.record_result(text,text,text,integer)'
+                            ) IS NOT NULL AS record_result_exists,
+                            to_regprocedure('restore_drill_executor.latest_result()')
+                                IS NOT NULL AS latest_result_exists
+                        FROM pg_class AS result_ledger
+                        JOIN pg_namespace AS result_schema
+                            ON result_schema.oid = result_ledger.relnamespace
+                        WHERE result_schema.nspname = 'restore_drill_executor'
+                          AND result_ledger.relname = 'restore_drill_results'
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        engine.dispose()
+
+    assert repaired_state == {
+        "ledger_owner": "restore_drill_executor_owner",
+        "is_due_exists": True,
+        "record_result_exists": True,
+        "latest_result_exists": True,
+    }
+
+
 def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
     postgres_container, tmp_path: Path
 ) -> None:

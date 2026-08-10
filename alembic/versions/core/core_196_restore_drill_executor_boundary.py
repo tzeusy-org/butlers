@@ -81,7 +81,26 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        CREATE TABLE IF NOT EXISTS restore_drill_executor.restore_drill_results (
+        DO $$
+        BEGIN
+            -- The shared migration login temporarily has CREATE on this schema
+            -- solely to stage this revision.  A relation it created before the
+            -- migration could carry triggers that survive an IF NOT EXISTS
+            -- table declaration and would then be trusted by the ownership
+            -- finalizer.  The authority ledger must originate in this
+            -- transaction or the migration fails before it exposes any trusted
+            -- interface.
+            IF to_regclass('restore_drill_executor.restore_drill_results') IS NOT NULL THEN
+                RAISE EXCEPTION
+                    'restore-drill result authority ledger must be created by core_196';
+            END IF;
+        END;
+        $$;
+        """
+    )
+    op.execute(
+        """
+        CREATE TABLE restore_drill_executor.restore_drill_results (
             id BIGSERIAL PRIMARY KEY,
             recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
             result TEXT NOT NULL CHECK (result IN ('pass', 'fail')),
