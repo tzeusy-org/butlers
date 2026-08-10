@@ -12,10 +12,12 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
 
+from butlers.modules.memory import MemoryModule
 from butlers.modules.memory.consolidation import (
     BASE_RETRY_SECONDS,
     MAX_CONSOLIDATION_ATTEMPTS,
@@ -221,6 +223,21 @@ class _CompletedThenReplacedSpawner:
         return completed_runtime
 
 
+class _BlockingUnsuccessfulSpawner:
+    """Hold a scheduled runtime after its claimant has acquired the lease."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def trigger(self, *, prompt: str, trigger_source: str) -> SimpleNamespace:
+        assert prompt
+        assert trigger_source == "schedule:consolidation"
+        self.started.set()
+        await self.release.wait()
+        return SimpleNamespace(success=False, output=None)
+
+
 async def _insert_episode(
     pool,
     *,
@@ -269,12 +286,13 @@ async def _episode_lifecycle(pool, episode_id: uuid.UUID):
     )
 
 
-async def test_claims_pending_and_only_retry_eligible_failed_episodes(
+async def test_scheduled_run_claims_pending_and_only_retry_eligible_failed_episodes(
     provisioned_postgres_pool,
 ) -> None:
-    """A scheduler claims due retry rows but never terminal or premature rows."""
+    """A live scheduler claims due retries but never terminal or premature rows."""
     async with provisioned_postgres_pool() as pool:
         await _install_lifecycle_schema(pool)
+        await _install_artifact_schema(pool)
         now = datetime.now(UTC)
 
         pending = await _insert_episode(pool, retry_at=now + timedelta(days=1))
@@ -324,14 +342,17 @@ async def test_claims_pending_and_only_retry_eligible_failed_episodes(
             leased_by="abandoned-worker",
         )
 
-        stats = await run_consolidation(
-            pool=pool,
-            embedding_engine=object(),
-            cc_spawner=None,
-            batch_size=20,
+        spawner = _BlockingUnsuccessfulSpawner()
+        scheduled_run = asyncio.create_task(
+            run_consolidation(
+                pool=pool,
+                embedding_engine=_StaticEmbeddingEngine(),
+                cc_spawner=spawner,
+                batch_size=20,
+            )
         )
+        await asyncio.wait_for(spawner.started.wait(), timeout=5)
 
-        assert stats["episodes_processed"] == 2
         assert (await _episode_lifecycle(pool, pending))["leased_by"]
         assert (await _episode_lifecycle(pool, failed_due))["leased_by"]
         assert (await _episode_lifecycle(pool, pending_leased))["leased_by"] == "other-worker"
@@ -347,6 +368,10 @@ async def test_claims_pending_and_only_retry_eligible_failed_episodes(
                 None,
                 "abandoned-worker",
             }
+
+        spawner.release.set()
+        stats = await scheduled_run
+        assert stats["episodes_processed"] == 2
 
 
 async def test_private_memory_claim_path_does_not_retry_failed_episodes(
@@ -377,12 +402,96 @@ async def test_private_memory_claim_path_does_not_retry_failed_episodes(
         assert (await _episode_lifecycle(pool, failed_due))["leased_by"] is None
 
 
+async def test_registered_relationship_admin_dry_run_leaves_due_failed_retry_for_scheduler(
+    provisioned_postgres_pool,
+) -> None:
+    """MCP dry runs cannot steal a due retry from the live scheduled Spawner."""
+    async with provisioned_postgres_pool() as pool:
+        await _install_lifecycle_schema(pool)
+        await _install_artifact_schema(pool)
+        episode_id = await _insert_episode(
+            pool,
+            status="failed",
+            attempts=1,
+            retry_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
+
+        module = MemoryModule()
+        module._get_embedding_engine = lambda: _StaticEmbeddingEngine()
+        mcp = MagicMock()
+        registered_tools: dict[str, object] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool.side_effect = capture_tool
+        await module.register_tools(
+            mcp=mcp,
+            config=None,
+            db=SimpleNamespace(pool=pool, schema="relationship"),
+            butler_name="relationship",
+        )
+
+        dry_run_stats = await registered_tools["memory_run_consolidation"]()
+        assert dry_run_stats["episodes_processed"] == 0
+        dry_run_row = await _episode_lifecycle(pool, episode_id)
+        assert dry_run_row["consolidation_status"] == "failed"
+        assert dry_run_row["leased_by"] is None
+        assert dry_run_row["leased_until"] is None
+
+        from butlers.core.memory_hooks import (
+            bind_memory_maintenance_dispatch,
+            register_memory_maintenance_runtime,
+            unregister_memory_maintenance_runtime,
+        )
+        from butlers.scheduled_jobs import _run_memory_consolidation_job
+
+        async def scheduled_consolidation(*, spawner, batch_size, enable_shared_catalog):
+            return await run_consolidation(
+                pool=pool,
+                embedding_engine=_StaticEmbeddingEngine(),
+                cc_spawner=spawner,
+                batch_size=batch_size,
+                enable_shared_catalog=enable_shared_catalog,
+                retry_failed=True,
+            )
+
+        spawner = _BlockingUnsuccessfulSpawner()
+        runtime = register_memory_maintenance_runtime(
+            "relationship",
+            pool_resolver=lambda: pool,
+            consolidation=scheduled_consolidation,
+        )
+        try:
+            with bind_memory_maintenance_dispatch(butler_name="relationship", spawner=spawner):
+                scheduled_run = asyncio.create_task(
+                    _run_memory_consolidation_job(pool=pool, job_args={"batch_size": 1})
+                )
+                await asyncio.wait_for(spawner.started.wait(), timeout=5)
+                scheduled_claim = await _episode_lifecycle(pool, episode_id)
+                assert scheduled_claim["consolidation_status"] == "failed"
+                assert scheduled_claim["leased_by"] is not None
+                assert scheduled_claim["leased_until"] > datetime.now(UTC)
+
+                spawner.release.set()
+                scheduled_stats = await scheduled_run
+        finally:
+            unregister_memory_maintenance_runtime("relationship", runtime)
+
+        assert scheduled_stats["episodes_processed"] == 1
+
+
 async def test_due_failed_claim_is_race_safe_between_scheduler_runs(
     provisioned_postgres_pool,
 ) -> None:
     """Concurrent runs cannot both claim one due failed episode."""
     async with provisioned_postgres_pool(max_pool_size=3) as pool:
         await _install_lifecycle_schema(pool)
+        await _install_artifact_schema(pool)
         await _insert_episode(
             pool,
             status="failed",
@@ -390,13 +499,29 @@ async def test_due_failed_claim_is_race_safe_between_scheduler_runs(
             retry_at=datetime.now(UTC) - timedelta(seconds=1),
         )
 
-        first, second = await asyncio.gather(
-            run_consolidation(pool, object(), cc_spawner=None, batch_size=1),
-            run_consolidation(pool, object(), cc_spawner=None, batch_size=1),
+        spawner = _BlockingUnsuccessfulSpawner()
+        first_run = asyncio.create_task(
+            run_consolidation(
+                pool,
+                _StaticEmbeddingEngine(),
+                cc_spawner=spawner,
+                batch_size=1,
+            )
+        )
+        await asyncio.wait_for(spawner.started.wait(), timeout=5)
+        second = await run_consolidation(
+            pool,
+            _StaticEmbeddingEngine(),
+            cc_spawner=spawner,
+            batch_size=1,
         )
 
-        assert sorted((first["episodes_processed"], second["episodes_processed"])) == [0, 1]
+        assert second["episodes_processed"] == 0
         assert await pool.fetchval("SELECT count(*) FROM episodes WHERE leased_by IS NOT NULL") == 1
+
+        spawner.release.set()
+        first = await first_run
+        assert first["episodes_processed"] == 1
 
 
 async def test_failure_transition_is_fenced_sanitized_and_retryable(

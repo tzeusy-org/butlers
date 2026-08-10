@@ -180,12 +180,14 @@ async def run_consolidation(
             ``enable_shared_catalog=True``. When omitted, ``execute_consolidation``
             resolves it from the pool's own ``current_schema()``.
         retry_failed: Whether this memory relation is eligible for automatic
-            failed-episode recovery. Dedicated private memory schemas preserve
-            their existing pending-only behavior by passing ``False``.
+            failed-episode recovery. Failed rows are claimed only when a live
+            ``cc_spawner`` can execute the recovery; a no-spawner dry run never
+            leases them. Dedicated private memory schemas preserve their
+            existing pending-only behavior by passing ``False``.
 
     Returns:
         A stats dict with keys:
-        - ``episodes_processed``: total episodes claimed (pending episodes found).
+        - ``episodes_processed``: total episodes claimed.
         - ``butlers_processed``: number of distinct (tenant_id, butler) groups.
         - ``groups``: mapping of "tenant_id/butler_name" to episode count.
         - ``groups_consolidated``: number of groups successfully processed.
@@ -200,6 +202,11 @@ async def run_consolidation(
     # that process. The per-run suffix is the opaque lease-owner fence used by
     # terminal success/failure persistence.
     worker = f"{_worker_id()}:{uuid.uuid4()}"
+
+    # Failed rows are automatic recovery work. A no-spawner invocation cannot
+    # consume that recovery lease, so it must leave the row for the live
+    # scheduled Spawner rather than suppressing a future retry.
+    claim_retry_failed = retry_failed and cc_spawner is not None
 
     # -------------------------------------------------------------------------
     # Claim pending / retry-eligible failed episodes via FOR UPDATE SKIP LOCKED
@@ -226,7 +233,7 @@ async def run_consolidation(
                 FOR UPDATE SKIP LOCKED
                 LIMIT $3
                 """,
-                retry_failed,
+                claim_retry_failed,
                 MAX_CONSOLIDATION_ATTEMPTS,
                 batch_size,
             )
