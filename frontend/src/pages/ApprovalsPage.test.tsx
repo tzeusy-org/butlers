@@ -2275,6 +2275,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     await flushUntil(
       () => container.querySelectorAll('[data-testid="rail-item"]').length === 2,
     );
+    expect(getApprovalDetail).toHaveBeenCalledWith("stalled-1");
     navigateCalls.length = 0;
     vi.mocked(toast).mockClear();
 
@@ -2298,6 +2299,83 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     expect(toast).not.toHaveBeenCalled();
     expect(approveApproval).not.toHaveBeenCalled();
     expect(container.querySelector('[data-pending-verb="approve"]')).toBeNull();
+  });
+
+  it("does not mount a pending direct dossier while Stalled loads or lacks its route id", async () => {
+    const pendingId = "pending-direct";
+    const stalled = {
+      ...makeSummary("stalled-other", "stalled_action"),
+      status: "approved",
+      execution_result: null,
+    };
+    const stalledRequest = deferred<{
+      data: (typeof stalled)[];
+      meta: Record<string, never>;
+    }>();
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        state === "stalled" ? stalledRequest.promise : makeApiResponse([])) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(makePendingDetail(pendingId) as AnyMock);
+
+    renderPage(`/approvals/${pendingId}?state=stalled`);
+    await act(async () => {
+      await flush(1);
+    });
+
+    expect(getApprovalsFlat).toHaveBeenCalledWith("stalled", 100);
+    expect(getApprovalDetail).not.toHaveBeenCalled();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+
+    await act(async () => {
+      stalledRequest.resolve({ data: [stalled], meta: {} });
+      await flush();
+    });
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="rail-item"][data-approval-id="stalled-other"]') !==
+        null,
+    );
+
+    expect(getApprovalDetail).not.toHaveBeenCalled();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
+  });
+
+  it("does not mount a pending direct dossier when the Stalled request fails", async () => {
+    const pendingId = "pending-direct-error";
+    const stalledRequest = deferred<never>();
+    // Query consumes the rejection; keep a test-side handler too so the
+    // deferred error cannot briefly register as unhandled before React does.
+    void stalledRequest.promise.catch(() => undefined);
+    vi.mocked(getApprovalsFlat).mockImplementation(
+      ((state: "waiting" | "stalled") =>
+        state === "stalled" ? stalledRequest.promise : makeApiResponse([])) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(makePendingDetail(pendingId) as AnyMock);
+
+    renderPage(`/approvals/${pendingId}?state=stalled`);
+    await act(async () => {
+      await flush(1);
+    });
+    expect(getApprovalDetail).not.toHaveBeenCalled();
+
+    await act(async () => {
+      stalledRequest.reject(new Error("stalled lane unavailable"));
+      await flush();
+    });
+    await flushUntil(
+      () =>
+        container.textContent?.includes("Couldn't reach the stalled approvals lane.") ?? false,
+    );
+
+    expect(getApprovalDetail).not.toHaveBeenCalled();
+    expect(findButton(container, "Approve")).toBeUndefined();
+    expect(findButton(container, "Deny")).toBeUndefined();
+    expect(findButton(container, "Defer")).toBeUndefined();
   });
 
   it("does not retain Waiting rows or decision controls while Stalled is loading", async () => {

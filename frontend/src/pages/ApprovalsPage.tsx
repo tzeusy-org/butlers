@@ -1613,7 +1613,7 @@ export default function ApprovalsPage() {
   // callback for anything else. refetchInterval below is a reconciliation
   // sweep — a safety net for the rare case the bus is down, not the primary
   // update path.
-  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
+  const { data, isLoading, isFetching, isError, isSuccess, error, refetch } = useQuery({
     queryKey: Q.flat(activeLane, pendingLimit),
     queryFn: () => getApprovalsFlat(activeLane, pendingLimit),
     refetchInterval: POLL_BUS_RECONCILE_MS,
@@ -1755,6 +1755,21 @@ export default function ApprovalsPage() {
   );
   const firstId = actionablePending[0]?.id;
   const effectiveSelected = routeId ?? firstId ?? null;
+  // A Stalled direct URL must not use its route id as independent authority
+  // for a dossier. Until the successful Stalled flat response confirms that
+  // exact id, it could be a pending action from a previous URL or an invalid
+  // bookmark; mounting Dossier would fetch it and expose pending decisions
+  // under the Stalled lane. Waiting keeps its historical deep-link behavior
+  // (including decided/history records that are not in the current rail).
+  const stalledSelectionConfirmed =
+    activeLane === "stalled" &&
+    isSuccess &&
+    effectiveSelected !== null &&
+    data?.data?.some((summary) => summary.id === effectiveSelected) === true;
+  const dossierSelected =
+    activeLane === "stalled"
+      ? (stalledSelectionConfirmed ? effectiveSelected : null)
+      : effectiveSelected;
   // Show "Load more" only when the last response was full (may be more results).
   const hasMore = pending.length === pendingLimit;
 
@@ -2086,22 +2101,22 @@ export default function ApprovalsPage() {
         </div>
 
         {/* Right dossier pane */}
-        {effectiveSelected ? (
+        {dossierSelected ? (
           <Dossier
-            key={effectiveSelected}
-            actionId={effectiveSelected}
-            onApprove={() => approve(effectiveSelected)}
-            onDeny={(reason) => denyMut.mutate({ id: effectiveSelected, reason })}
-            onDefer={(hours) => deferMut.mutate({ id: effectiveSelected, hours })}
+            key={dossierSelected}
+            actionId={dossierSelected}
+            onApprove={() => approve(dossierSelected)}
+            onDeny={(reason) => denyMut.mutate({ id: dossierSelected, reason })}
+            onDefer={(hours) => deferMut.mutate({ id: dossierSelected, hours })}
             // Scoped to THIS approval's id, not just "some mutation of this
             // kind is in flight" -- approving item A no longer mislabels the
             // very next dossier (item B) as already approving (JARVIS audit
             // move 9's page-global-pending finding).
-            approvePending={approveMut.isPending && approveMut.variables === effectiveSelected}
-            denyPending={denyMut.isPending && denyMut.variables?.id === effectiveSelected}
-            deferPending={deferMut.isPending && deferMut.variables?.id === effectiveSelected}
-            pendingVerb={scheduledDecisions.get(effectiveSelected)?.verb ?? null}
-            onCancelPending={() => cancelDecision(effectiveSelected)}
+            approvePending={approveMut.isPending && approveMut.variables === dossierSelected}
+            denyPending={denyMut.isPending && denyMut.variables?.id === dossierSelected}
+            deferPending={deferMut.isPending && deferMut.variables?.id === dossierSelected}
+            pendingVerb={scheduledDecisions.get(dossierSelected)?.verb ?? null}
+            onCancelPending={() => cancelDecision(dossierSelected)}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground font-mono">
