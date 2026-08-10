@@ -57,6 +57,25 @@ describe("ApprovalsVerdictOpener -- all clear", () => {
     expect(html).toContain('data-testid="approvals-verdict-all-clear"');
     expect(html).toContain("No approvals waiting.");
   });
+
+  it("uses stalled-specific all-clear copy and suppresses waiting clauses in the stalled lane", () => {
+    const html = render(
+      <ApprovalsVerdictOpener
+        lane="stalled"
+        pending={[summary({ id: "stalled-row" })]}
+        pendingLoading={false}
+        pendingError={false}
+        stalledCount={0}
+        historyLoading={false}
+        historyError={false}
+      />,
+    );
+
+    expect(html).toContain('data-testid="approvals-verdict-all-clear"');
+    expect(html).toContain("No stalled approvals.");
+    expect(html).not.toContain("No approvals waiting.");
+    expect(html).not.toContain("1 waiting");
+  });
 });
 
 describe("ApprovalsVerdictOpener -- clauses", () => {

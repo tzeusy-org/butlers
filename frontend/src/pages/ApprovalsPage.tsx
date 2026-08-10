@@ -117,7 +117,7 @@ const Q = {
 };
 
 const APPROVAL_LANE_PILL_BASE = [
-  "inline-flex h-7 items-center justify-center rounded-[3px] border px-2.5",
+  "inline-flex items-center justify-center rounded-[3px] border px-2.5 py-1",
   "font-mono text-[11px] leading-none transition-colors",
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground",
 ].join(" ");
@@ -1960,6 +1960,7 @@ export default function ApprovalsPage() {
           line (JARVIS pursuit move 9). */}
       <div className="px-6 py-3 border-b border-border shrink-0">
         <ApprovalsVerdictOpener
+          lane={activeLane}
           pending={waitingVerdictRows}
           pendingLoading={isLoading}
           pendingError={isError}
@@ -2156,7 +2157,9 @@ export default function ApprovalsPage() {
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground font-mono">
-            Select a pending approval to review.
+            {activeLane === "stalled"
+              ? "Select a stalled approval to review."
+              : "Select a pending approval to review."}
           </div>
         )}
 

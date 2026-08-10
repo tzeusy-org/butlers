@@ -2251,10 +2251,10 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     expect(stalledLink?.className).toContain("focus-visible:outline");
     expect(stalledLink?.className.split(" ")).toEqual(
       expect.arrayContaining([
-        "h-7",
         "rounded-[3px]",
         "border",
         "px-2.5",
+        "py-1",
         "font-mono",
         "text-[11px]",
         "bg-foreground",
@@ -2263,10 +2263,10 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     );
     expect(waitingLink?.className.split(" ")).toEqual(
       expect.arrayContaining([
-        "h-7",
         "rounded-[3px]",
         "border",
         "px-2.5",
+        "py-1",
         "font-mono",
         "text-[11px]",
         "bg-transparent",
@@ -2319,6 +2319,20 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
 
     expect(container.textContent).toContain("one stalled action never ran");
     expect(container.textContent).not.toContain("1 waiting");
+  });
+
+  it("keeps a settled empty stalled lane truthful", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    renderPage("/approvals?state=stalled");
+    await flushUntil(
+      () => container.querySelector('[data-testid="approvals-verdict-all-clear"]') !== null,
+    );
+
+    expect(container.textContent).toContain("No stalled approvals.");
+    expect(container.textContent).not.toContain("No approvals waiting.");
+    expect(container.textContent).toContain("Select a stalled approval to review.");
+    expect(container.textContent).not.toContain("Select a pending approval to review.");
   });
 
   it("retains keyboard navigation but disables approval shortcuts in the stalled lane", async () => {

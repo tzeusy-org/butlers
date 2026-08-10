@@ -30,6 +30,14 @@ dossier from the stalled lane SHALL retain `state=stalled` in its URL.
 - **AND** it does not render a pending or invalid direct id as a dossier in
   the stalled lane.
 
+#### Scenario: Empty stalled lane remains truthful
+
+- **WHEN** the settled stalled flat response has no rows and no degraded
+  sources
+- **THEN** the Trust Console reports that there are no stalled approvals
+- **AND** it does not claim that no approvals are waiting or prompt the owner
+  to select a pending approval.
+
 #### Scenario: Stalled radar has a truthful drill-down destination
 
 - **WHEN** the flat response reports one or more stalled actions in

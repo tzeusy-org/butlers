@@ -89,6 +89,7 @@ function buildClauses(
 }
 
 export function ApprovalsVerdictOpener({
+  lane = "waiting",
   pending,
   pendingLoading,
   pendingError,
@@ -98,6 +99,8 @@ export function ApprovalsVerdictOpener({
   historyError,
   historySourcesDegraded = [],
 }: {
+  /** The active flat lane; stalled results must never be described as waiting. */
+  lane?: "waiting" | "stalled";
   pending: ApprovalSummary[];
   pendingLoading: boolean;
   pendingError: boolean;
@@ -116,18 +119,23 @@ export function ApprovalsVerdictOpener({
   const sourcesDegraded = [
     ...new Set([...pendingSourcesDegraded, ...historySourcesDegraded]),
   ];
-  const clauses = buildClauses(pending, stalledCount, sourcesDegraded);
+  const clauses = buildClauses(
+    lane === "waiting" ? pending : [],
+    stalledCount,
+    sourcesDegraded,
+  );
+  const laneSourceLabel = lane === "stalled" ? "stalled approvals" : "approvals queue";
 
   return (
     <DispatchVerdict
       testId="approvals"
       landmarkLabel="Approvals verdict"
       sources={[
-        { label: "approvals queue", isLoading: pendingLoading, isError: pendingError },
+        { label: laneSourceLabel, isLoading: pendingLoading, isError: pendingError },
         { label: "approval history", isLoading: historyLoading, isError: historyError },
       ]}
       clauses={clauses}
-      allClear="No approvals waiting."
+      allClear={lane === "stalled" ? "No stalled approvals." : "No approvals waiting."}
     />
   );
 }
