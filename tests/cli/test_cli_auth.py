@@ -302,6 +302,45 @@ async def test_claude_health_probe_not_authenticated_or_unavailable():
     assert result2.state == AuthHealthState.unavailable
 
 
+@pytest.mark.parametrize(
+    ("canonical_model", "execution_model"),
+    [
+        ("opencode-go/minimax-m2.7", "minimax-m2.7"),
+        ("opencode-go/mimo-v2.5", "mimo-v2.5"),
+        ("opencode-go/minimax-m3", "minimax-m3"),
+    ],
+)
+async def test_opencode_go_health_command_maps_canonical_model_at_execution_boundary(
+    canonical_model, execution_model
+):
+    """REQ-runtime-opencode-001/REQ-model-catalog-002: health uses native ID only in argv."""
+    from butlers.api.routers.cli_auth import _run_provider_test
+
+    provider = replace(
+        PROVIDERS["opencode-go"],
+        test_command=[
+            "opencode",
+            "run",
+            "--model",
+            canonical_model,
+            "respond with only the word ok",
+        ],
+    )
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(
+        "butlers.api.routers.cli_auth.asyncio.create_subprocess_exec", return_value=mock_proc
+    ) as mock_exec:
+        result = await _run_provider_test(provider, None)
+
+    assert result.success is True
+    command = mock_exec.call_args.args
+    assert command[command.index("--model") + 1] == execution_model
+    assert provider.test_command[provider.test_command.index("--model") + 1] == canonical_model
+
+
 # ---------------------------------------------------------------------------
 # Codex backend probe — catches server-side refresh-token revocation that
 # `codex login status` alone can't see.

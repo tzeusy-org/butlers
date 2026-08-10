@@ -39,6 +39,7 @@ from butlers.cli_auth.session import (
     get_session,
     store_session,
 )
+from butlers.core.runtimes.opencode import canonical_to_execution_model
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -711,8 +712,14 @@ async def _run_provider_test(
     from butlers.cli_auth.session import _strip_ansi
 
     try:
+        test_command = list(provider_def.test_command)
+        if provider_def.name == "opencode-go":
+            model_index = test_command.index("--model")
+            execution_model = canonical_to_execution_model(test_command[model_index + 1])
+            if execution_model is not None:
+                test_command[model_index + 1] = execution_model
         proc = await asyncio.create_subprocess_exec(
-            *provider_def.test_command,
+            *test_command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,

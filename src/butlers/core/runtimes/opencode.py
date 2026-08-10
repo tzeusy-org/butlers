@@ -13,6 +13,13 @@ system prompt is written to a temp file and referenced in the ``instructions`` a
 
 Permission prompts are disabled by setting ``"permission": {}`` in the config.
 
+Catalog model IDs remain provider-qualified canonical identities for routing,
+pricing, spend, history, and provenance. The named
+``canonical_to_execution_model`` mapper strips the ``opencode-go/`` namespace
+only when a selected model is passed to the CLI. The current generated JSONC
+has no selected-model field, so config generation does not invent one; any
+future selected-model field must use the same mapper.
+
 If the OpenCode CLI binary is not installed on PATH, invoke() raises
 FileNotFoundError.
 """
@@ -43,6 +50,24 @@ _OPENCODE_SQLITE_MIGRATION_LINES = (
     "Database migration complete.",
 )
 _BENIGN_STDERR_LINES = frozenset(_OPENCODE_SQLITE_MIGRATION_LINES)
+_OPENCODE_GO_MODEL_PREFIX = "opencode-go/"
+
+
+def canonical_to_execution_model(model: str | None) -> str | None:
+    """Map a canonical catalog model to the OpenCode CLI execution spelling.
+
+    ``model_catalog.model_id`` is the canonical identity used by routing,
+    pricing, spend, history, and provenance.  OpenCode Go is the one profile
+    whose CLI expects the provider-native suffix without its catalog
+    namespace.  This pure mapper is intentionally applied only where an
+    OpenCode selected-model value crosses into CLI execution; all other
+    qualified and bare model IDs pass through unchanged.
+
+    REQ-runtime-opencode-001 / REQ-model-catalog-002
+    """
+    if model is not None and model.startswith(_OPENCODE_GO_MODEL_PREFIX):
+        return model.removeprefix(_OPENCODE_GO_MODEL_PREFIX)
+    return model
 
 
 def _filtered_stderr_lines(stderr: str) -> list[str]:
@@ -994,7 +1019,7 @@ class OpenCodeAdapter(RuntimeAdapter):
             ]
 
             if isinstance(model, str) and model.strip():
-                cmd.extend(["--model", model.strip()])
+                cmd.extend(["--model", canonical_to_execution_model(model.strip())])
 
             if runtime_args:
                 cmd.extend(runtime_args)

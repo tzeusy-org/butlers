@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from inspect import getsource
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -30,11 +31,49 @@ from butlers.core.runtimes.opencode import (
     _looks_like_tool_call_event,
     _parse_opencode_output,
     _select_error_detail,
+    canonical_to_execution_model,
 )
 
 pytestmark = pytest.mark.unit
 
 _EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
+
+
+@pytest.mark.parametrize(
+    ("canonical", "execution"),
+    [
+        ("opencode-go/minimax-m2.7", "minimax-m2.7"),
+        ("opencode-go/mimo-v2.5", "mimo-v2.5"),
+        ("anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"),
+        ("ollama/qwen3:8b", "ollama/qwen3:8b"),
+        ("minimax-m2.7", "minimax-m2.7"),
+        (None, None),
+    ],
+)
+def test_canonical_to_execution_model_matrix(canonical, execution):
+    """REQ-runtime-opencode-001: only OpenCode Go loses its CLI namespace."""
+    assert canonical_to_execution_model(canonical) == execution
+
+
+def test_generated_config_has_no_selected_model_field(tmp_path: Path):
+    """REQ-runtime-opencode-001: current JSONC does not invent model selection."""
+    config_path = OpenCodeAdapter().build_config_file(
+        {"switchboard": {"url": "http://localhost:9100/mcp"}}, tmp_path
+    )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "model" not in config
+    assert "selected_model" not in config
+
+
+def test_selected_model_translation_has_one_named_boundary_mapper():
+    """REQ-runtime-opencode-001: adapter and health paths converge on one mapper."""
+    from butlers.api.routers.cli_auth import _run_provider_test
+
+    adapter_source = getsource(OpenCodeAdapter.invoke)
+    health_source = getsource(_run_provider_test)
+    assert "canonical_to_execution_model(" in adapter_source
+    assert "canonical_to_execution_model(" in health_source
+    assert ".removeprefix(" not in health_source
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +491,17 @@ async def test_invoke_success_and_config():
         )
     cmd = mock_sub.call_args[0]
     assert "--model" in cmd and cmd[cmd.index("--model") + 1] == "anthropic/claude-sonnet-4-5"
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="run",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            model="opencode-go/minimax-m2.7",
+        )
+    cmd = mock_sub.call_args[0]
+    assert cmd[cmd.index("--model") + 1] == "minimax-m2.7"
 
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(prompt="run", system_prompt="", mcp_servers={}, env={}, model=None)
