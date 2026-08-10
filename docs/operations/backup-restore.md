@@ -103,9 +103,14 @@ the fixed `latest_result()` reader; it has no writer execution, direct ledger
 access, or owner membership. Butler and connector roles receive none of those
 privileges. The public audit projection is never a due-check or API authority.
 The privileged bootstrap is the only role boundary allowed to set up that
-handoff. `core_196` rejects a pre-existing private ledger relation (including
-one with a compatible shape or trigger) before it can transfer ownership or
-grant the trusted interface; an untrusted pre-creation is not a repair path.
+handoff. On the supported path, `core_196` invokes one fixed no-argument
+bootstrap-owned installer inside its transaction; the shared login gets neither
+protected-schema `CREATE` nor ownership-finalizer execution. The installer and
+finalizer reject any pre-existing ledger, trigger, or canonical interface
+signature unless it is already the clean owner-finalized interface; they do not
+trust a compatible shape or marker. That rejection occurs before ownership
+transfer or executor/reader grants, including on a privileged `init-db.sql`
+rerun. An untrusted pre-creation is not a repair path.
 
 Do not bypass that managed procedure. In particular, do not issue ad hoc
 database-role changes, manually pre-create the scratch database, pass a shared

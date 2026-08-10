@@ -41,6 +41,20 @@ def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -
     assert "ALTER TABLE restore_drill_executor.restore_drill_results" in source
     assert "GRANT EXECUTE ON FUNCTION restore_drill_executor.latest_result() TO %I" in source
     assert "REVOKE ALL PRIVILEGES ON TABLE restore_drill_executor.restore_drill_results" in source
+    assert "CREATE OR REPLACE FUNCTION restore_drill_executor_admin.install_interface()" in source
+    assert "restore-drill interface ownership is untrusted" in source
+    assert "GRANT USAGE, CREATE ON SCHEMA restore_drill_executor TO %I" not in source
+    assert (
+        "GRANT EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() TO %I"
+        not in source
+    )
+    assert (
+        "GRANT EXECUTE ON FUNCTION restore_drill_executor_admin.install_interface() TO %I" in source
+    )
+    assert (
+        "REVOKE EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() FROM %I"
+        in source
+    )
     runtime_roles_start = source.index("_all_runtime_roles TEXT[]")
     runtime_roles_end = source.index("];", runtime_roles_start)
     assert "restore_drill_executor" not in source[runtime_roles_start:runtime_roles_end]
@@ -167,11 +181,17 @@ def test_managed_provisioner_accepts_one_terminal_lf_without_passing_it_to_psql(
     assert base64.b64encode((password + "\n").encode()).decode() not in input_text
 
 
-def test_migration_owns_fixed_search_path_executor_result_authority() -> None:
-    """The executor receives functions; public audit is never result authority."""
+def test_migration_uses_the_fixed_bootstrap_owned_executor_result_authority() -> None:
+    """The shared migration login invokes only the fixed installer surface."""
     source = _MIGRATION.read_text(encoding="utf-8")
+    init_source = _INIT_DB.read_text(encoding="utf-8")
 
     assert "SECURITY DEFINER" in source
+    assert "restore_drill_executor_admin.install_interface" in source
+    assert "SELECT {_ADMIN_INSTALLER}()" in source
+    assert "fixed bootstrap installer is absent" in source
+    assert "AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN" in source
+    assert "temporary has CREATE" not in source
     assert "CREATE SCHEMA IF NOT EXISTS restore_drill_executor" in source
     assert "CREATE TABLE restore_drill_executor.restore_drill_results" in source
     assert "CREATE TABLE IF NOT EXISTS restore_drill_executor.restore_drill_results" not in source
@@ -198,6 +218,19 @@ def test_migration_owns_fixed_search_path_executor_result_authority() -> None:
     assert "p_table_count must not be negative" not in source
     assert "'table_count', p_table_count" not in source
     assert "caller-controlled compatibility input except p_result inert" in source
+    assert (
+        "CREATE OR REPLACE FUNCTION restore_drill_executor_admin.install_interface()" in init_source
+    )
+    assert (
+        "restore-drill authority interface must be absent before fixed bootstrap installation"
+        in init_source
+    )
+    assert "restore-drill interface ownership is untrusted" in init_source
+    assert "GRANT USAGE, CREATE ON SCHEMA restore_drill_executor TO %I" not in init_source
+    assert (
+        "GRANT EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() TO %I"
+        not in init_source
+    )
 
 
 def test_dashboard_has_no_restore_drill_scheduler_or_shared_credential_launch_path() -> None:

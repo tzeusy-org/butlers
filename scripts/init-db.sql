@@ -490,13 +490,16 @@ BEGIN
 END
 $$;
 
--- ── Restore-drill interface ownership handoff ──────────────────────────────
+-- ── Restore-drill interface bootstrap boundary ──────────────────────────────
 --
 -- Alembic normally runs as the same NOCREATEDB login used by dashboard-api.
--- It may create the versioned function definitions, but cannot remain their
--- owner: object ownership bypasses EXECUTE ACLs. This bootstrap-owned, fixed
--- handoff transfers only the two known functions to a NOLOGIN role, then
--- removes the temporary migration grants in the same migration transaction.
+-- That shared login must never stage arbitrary objects in the protected schema:
+-- ownership bypasses EXECUTE ACLs, and an ownership finalizer cannot safely
+-- infer whether a compatible-looking relation was created by an attacker.  The
+-- bootstrap owner instead exposes one fixed no-argument SECURITY DEFINER
+-- installer.  core_196 invokes it inside its migration transaction, so it
+-- creates the exact ledger and functions under the bootstrap owner before the
+-- finalizer moves them to the isolated NOLOGIN owner.
 
 CREATE SCHEMA IF NOT EXISTS restore_drill_executor_admin;
 REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor_admin FROM PUBLIC;
@@ -523,6 +526,16 @@ AS $$
 DECLARE
     v_migration_role NAME;
     v_runtime_role NAME;
+    v_bootstrap_owner OID;
+    v_executor_owner OID;
+    v_relation_owner OID;
+    v_sequence_owner OID;
+    v_is_due_owner OID;
+    v_record_result_owner OID;
+    v_latest_result_owner OID;
+    v_has_user_trigger BOOLEAN;
+    v_is_bootstrap_staged BOOLEAN := false;
+    v_is_finalized BOOLEAN := false;
 BEGIN
     SELECT migration_role
     INTO v_migration_role
@@ -532,23 +545,96 @@ BEGIN
     IF v_migration_role IS NULL THEN
         RAISE EXCEPTION 'restore-drill bootstrap configuration is missing';
     END IF;
-    IF to_regprocedure('restore_drill_executor.is_due(integer)') IS NULL
+    SELECT interface_function.proowner
+    INTO v_bootstrap_owner
+    FROM pg_proc AS interface_function
+    WHERE interface_function.oid =
+        'restore_drill_executor_admin.finalize_interface()'::regprocedure;
+    SELECT oid
+    INTO v_executor_owner
+    FROM pg_roles
+    WHERE rolname = 'restore_drill_executor_owner';
+
+    IF v_bootstrap_owner IS NULL OR v_executor_owner IS NULL
+       OR to_regclass('restore_drill_executor.restore_drill_results') IS NULL
+       OR to_regclass('restore_drill_executor.restore_drill_results_id_seq') IS NULL
+       OR to_regprocedure('restore_drill_executor.is_due(integer)') IS NULL
        OR to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NULL
        OR to_regprocedure('restore_drill_executor.latest_result()') IS NULL THEN
-        RAISE EXCEPTION 'restore-drill interface functions must exist before ownership finalization';
+        RAISE EXCEPTION
+            'restore-drill authority objects must be created by the fixed bootstrap installer';
     END IF;
 
-    EXECUTE 'GRANT USAGE ON SCHEMA public TO restore_drill_executor_owner';
-    EXECUTE 'GRANT SELECT, INSERT ON TABLE public.audit_log TO restore_drill_executor_owner';
-    EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.audit_log_id_seq TO restore_drill_executor_owner';
+    SELECT relation.relowner
+    INTO v_relation_owner
+    FROM pg_class AS relation
+    WHERE relation.oid = 'restore_drill_executor.restore_drill_results'::regclass
+      AND relation.relkind = 'r';
+    SELECT sequence.relowner
+    INTO v_sequence_owner
+    FROM pg_class AS sequence
+    WHERE sequence.oid = 'restore_drill_executor.restore_drill_results_id_seq'::regclass
+      AND sequence.relkind = 'S';
+    SELECT interface_function.proowner
+    INTO v_is_due_owner
+    FROM pg_proc AS interface_function
+    WHERE interface_function.oid = 'restore_drill_executor.is_due(integer)'::regprocedure;
+    SELECT interface_function.proowner
+    INTO v_record_result_owner
+    FROM pg_proc AS interface_function
+    WHERE interface_function.oid =
+        'restore_drill_executor.record_result(text,text,text,integer)'::regprocedure;
+    SELECT interface_function.proowner
+    INTO v_latest_result_owner
+    FROM pg_proc AS interface_function
+    WHERE interface_function.oid = 'restore_drill_executor.latest_result()'::regprocedure;
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_trigger AS trigger_row
+        WHERE trigger_row.tgrelid = 'restore_drill_executor.restore_drill_results'::regclass
+          AND NOT trigger_row.tgisinternal
+    )
+    INTO v_has_user_trigger;
 
-    EXECUTE 'ALTER TABLE restore_drill_executor.restore_drill_results '
-        || 'OWNER TO restore_drill_executor_owner';
-    EXECUTE 'ALTER SEQUENCE restore_drill_executor.restore_drill_results_id_seq '
-        || 'OWNER TO restore_drill_executor_owner';
-    EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(integer) OWNER TO restore_drill_executor_owner';
-    EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result(text, text, text, integer) OWNER TO restore_drill_executor_owner';
-    EXECUTE 'ALTER FUNCTION restore_drill_executor.latest_result() OWNER TO restore_drill_executor_owner';
+    v_is_bootstrap_staged := COALESCE(
+        v_relation_owner = v_bootstrap_owner
+        AND v_sequence_owner = v_bootstrap_owner
+        AND v_is_due_owner = v_bootstrap_owner
+        AND v_record_result_owner = v_bootstrap_owner
+        AND v_latest_result_owner = v_bootstrap_owner
+        AND NOT v_has_user_trigger,
+        false
+    );
+    v_is_finalized := COALESCE(
+        v_relation_owner = v_executor_owner
+        AND v_sequence_owner = v_executor_owner
+        AND v_is_due_owner = v_executor_owner
+        AND v_record_result_owner = v_executor_owner
+        AND v_latest_result_owner = v_executor_owner
+        AND NOT v_has_user_trigger,
+        false
+    );
+
+    -- Do not bless arbitrary compatible DDL.  Only exact objects made by this
+    -- bootstrap owner in install_interface(), or an already-finalized clean
+    -- interface, can reach the privilege handoff below.
+    IF NOT v_is_bootstrap_staged AND NOT v_is_finalized THEN
+        RAISE EXCEPTION 'restore-drill interface ownership is untrusted';
+    END IF;
+
+    IF v_is_bootstrap_staged THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA public TO restore_drill_executor_owner';
+        EXECUTE 'GRANT SELECT, INSERT ON TABLE public.audit_log TO restore_drill_executor_owner';
+        EXECUTE 'GRANT USAGE, SELECT ON SEQUENCE public.audit_log_id_seq TO restore_drill_executor_owner';
+
+        EXECUTE 'ALTER TABLE restore_drill_executor.restore_drill_results '
+            || 'OWNER TO restore_drill_executor_owner';
+        EXECUTE 'ALTER SEQUENCE restore_drill_executor.restore_drill_results_id_seq '
+            || 'OWNER TO restore_drill_executor_owner';
+        EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(integer) OWNER TO restore_drill_executor_owner';
+        EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result(text, text, text, integer) OWNER TO restore_drill_executor_owner';
+        EXECUTE 'ALTER FUNCTION restore_drill_executor.latest_result() OWNER TO restore_drill_executor_owner';
+    END IF;
     EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM PUBLIC';
     EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM restore_drill_executor';
     EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA restore_drill_executor FROM PUBLIC';
@@ -608,25 +694,180 @@ BEGIN
         'REVOKE EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() FROM %I',
         v_migration_role
     );
+    EXECUTE format(
+        'REVOKE EXECUTE ON FUNCTION restore_drill_executor_admin.install_interface() FROM %I',
+        v_migration_role
+    );
     EXECUTE format('REVOKE USAGE ON SCHEMA restore_drill_executor_admin FROM %I', v_migration_role);
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION restore_drill_executor_admin.install_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $installer$
+BEGIN
+    -- The installer has no caller-controlled object names or DDL input.  A
+    -- pre-existing relation or canonical signature is always an untrusted
+    -- state, rather than a shape to validate or repair.
+    IF to_regclass('restore_drill_executor.restore_drill_results') IS NOT NULL
+       OR to_regprocedure('restore_drill_executor.is_due(integer)') IS NOT NULL
+       OR to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NOT NULL
+       OR to_regprocedure('restore_drill_executor.latest_result()') IS NOT NULL THEN
+        RAISE EXCEPTION
+            'restore-drill authority interface must be absent before fixed bootstrap installation';
+    END IF;
+
+    CREATE TABLE restore_drill_executor.restore_drill_results (
+        id BIGSERIAL PRIMARY KEY,
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+        result TEXT NOT NULL CHECK (result IN ('pass', 'fail')),
+        detail TEXT
+    );
+
+    CREATE FUNCTION restore_drill_executor.is_due(
+        p_interval_seconds INTEGER
+    )
+    RETURNS BOOLEAN
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $is_due$
+    DECLARE
+        v_last_recorded_at TIMESTAMPTZ;
+    BEGIN
+        IF p_interval_seconds IS NULL OR p_interval_seconds <= 0 THEN
+            RAISE EXCEPTION 'p_interval_seconds must be positive';
+        END IF;
+
+        SELECT max(recorded_at)
+        INTO v_last_recorded_at
+        FROM restore_drill_executor.restore_drill_results;
+
+        RETURN v_last_recorded_at IS NULL
+            OR v_last_recorded_at <= clock_timestamp()
+                - make_interval(secs => p_interval_seconds);
+    END;
+    $is_due$;
+
+    CREATE FUNCTION restore_drill_executor.record_result(
+        p_backup_name TEXT,
+        p_result TEXT,
+        p_detail TEXT,
+        p_table_count INTEGER
+    )
+    RETURNS BIGINT
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $record_result$
+    DECLARE
+        v_result_id BIGINT;
+        v_detail TEXT;
+    BEGIN
+        IF p_result IS NULL OR p_result NOT IN ('pass', 'fail') THEN
+            RAISE EXCEPTION 'p_result must be pass or fail';
+        END IF;
+
+        -- Keep the deployed four-argument ABI, but every caller-controlled
+        -- compatibility input except p_result is inert at this final boundary.
+        v_detail := 'restore drill diagnostic withheld';
+
+        INSERT INTO restore_drill_executor.restore_drill_results (
+            result,
+            detail
+        )
+        VALUES (
+            p_result,
+            CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END
+        )
+        RETURNING id INTO v_result_id;
+
+        -- Public audit is fixed telemetry, never a result authority.
+        INSERT INTO public.audit_log (
+            actor,
+            action,
+            target,
+            result,
+            error,
+            metadata
+        )
+        VALUES (
+            'restore_drill',
+            'restore_drill_result',
+            'restore_drill',
+            p_result,
+            CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END,
+            jsonb_build_object(
+                'detail', CASE WHEN p_result = 'fail' THEN v_detail ELSE NULL END
+            )
+        );
+
+        RETURN v_result_id;
+    END;
+    $record_result$;
+
+    CREATE FUNCTION restore_drill_executor.latest_result()
+    RETURNS TABLE (
+        checked_at TIMESTAMPTZ,
+        result TEXT,
+        detail TEXT
+    )
+    LANGUAGE sql
+    SECURITY DEFINER
+    SET search_path = pg_catalog
+    AS $latest_result$
+        SELECT recorded_at, result, detail
+        FROM restore_drill_executor.restore_drill_results
+        ORDER BY recorded_at DESC, id DESC
+        LIMIT 1
+    $latest_result$;
+
+    PERFORM restore_drill_executor_admin.finalize_interface();
+END;
+$installer$;
+
 REVOKE ALL PRIVILEGES ON FUNCTION restore_drill_executor_admin.finalize_interface() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION restore_drill_executor_admin.install_interface() FROM PUBLIC;
 
 DO $$
 DECLARE
     _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
 BEGIN
-    IF to_regprocedure('restore_drill_executor.is_due(integer)') IS NOT NULL
-       AND to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NOT NULL
-       AND to_regprocedure('restore_drill_executor.latest_result()') IS NOT NULL THEN
+    -- Repair legacy grants before inspecting any interface object.  Shared
+    -- users receive no protected-schema CREATE and no finalizer execution.
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM %I', _migration_user);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor_admin FROM %I', _migration_user);
+    EXECUTE format(
+        'REVOKE EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() FROM %I',
+        _migration_user
+    );
+    EXECUTE format(
+        'REVOKE EXECUTE ON FUNCTION restore_drill_executor_admin.install_interface() FROM %I',
+        _migration_user
+    );
+END;
+$$;
+
+-- Keep the legacy-grant revocation in its own committed statement.  If a
+-- poisoned authority object makes the next finalization fail, that failure
+-- must not roll this repair back and leave a shared caller able to retry it.
+DO $$
+DECLARE
+    _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
+BEGIN
+    IF to_regclass('restore_drill_executor.restore_drill_results') IS NOT NULL
+       OR to_regprocedure('restore_drill_executor.is_due(integer)') IS NOT NULL
+       OR to_regprocedure('restore_drill_executor.record_result(text,text,text,integer)') IS NOT NULL
+       OR to_regprocedure('restore_drill_executor.latest_result()') IS NOT NULL THEN
         PERFORM restore_drill_executor_admin.finalize_interface();
     ELSE
-        EXECUTE format('GRANT USAGE, CREATE ON SCHEMA restore_drill_executor TO %I', _migration_user);
+        EXECUTE format('GRANT USAGE ON SCHEMA restore_drill_executor TO %I', _migration_user);
         EXECUTE format('GRANT USAGE ON SCHEMA restore_drill_executor_admin TO %I', _migration_user);
         EXECUTE format(
-            'GRANT EXECUTE ON FUNCTION restore_drill_executor_admin.finalize_interface() TO %I',
+            'GRANT EXECUTE ON FUNCTION restore_drill_executor_admin.install_interface() TO %I',
             _migration_user
         );
     END IF;

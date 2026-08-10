@@ -27,6 +27,7 @@ _EXECUTOR_ROLE = "restore_drill_executor"
 _OWNER_ROLE = "restore_drill_executor_owner"
 _EXECUTOR_SCHEMA = "restore_drill_executor"
 _ADMIN_FINALIZER = "restore_drill_executor_admin.finalize_interface"
+_ADMIN_INSTALLER = "restore_drill_executor_admin.install_interface"
 
 
 def upgrade() -> None:
@@ -70,26 +71,59 @@ def upgrade() -> None:
                 CREATE SCHEMA IF NOT EXISTS restore_drill_executor
                     AUTHORIZATION restore_drill_executor_owner;
             END IF;
-            IF NOT has_schema_privilege(current_user, 'restore_drill_executor', 'CREATE') THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_proc AS bootstrap_function
+                JOIN pg_namespace AS bootstrap_schema
+                    ON bootstrap_schema.oid = bootstrap_function.pronamespace
+                WHERE bootstrap_schema.nspname = 'restore_drill_executor_admin'
+                  AND bootstrap_function.proname = 'install_interface'
+                  AND bootstrap_function.pronargs = 0
+            )
+            AND NOT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
                 RAISE EXCEPTION
-                    'restore-drill migration staging privilege is absent; '
+                    'restore-drill fixed bootstrap installer is absent; '
                     'run scripts/init-db.sql first';
             END IF;
         END;
         $$;
         """
     )
+    has_bootstrap_installer = bool(
+        op.get_bind()
+        .exec_driver_sql(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_proc AS bootstrap_function
+                JOIN pg_namespace AS bootstrap_schema
+                    ON bootstrap_schema.oid = bootstrap_function.pronamespace
+                WHERE bootstrap_schema.nspname = 'restore_drill_executor_admin'
+                  AND bootstrap_function.proname = 'install_interface'
+                  AND bootstrap_function.pronargs = 0
+            )
+            """
+        )
+        .scalar_one()
+    )
+    if has_bootstrap_installer:
+        # The supported path never gives the shared migration/dashboard login
+        # protected-schema CREATE or finalizer EXECUTE.  This fixed bootstrap-
+        # owned function creates the exact interface and finalizes it in this
+        # Alembic transaction, rejecting any pre-existing authority object.
+        op.execute(f"SELECT {_ADMIN_INSTALLER}()")
+        return
+
+    # ``init-db.sql`` is the supported path.  Retain the privileged direct
+    # fallback only for isolated superuser migration tests that intentionally
+    # do not install the managed bootstrap helper.
     op.execute(
         """
         DO $$
         BEGIN
-            -- The shared migration login temporarily has CREATE on this schema
-            -- solely to stage this revision.  A relation it created before the
-            -- migration could carry triggers that survive an IF NOT EXISTS
-            -- table declaration and would then be trusted by the ownership
-            -- finalizer.  The authority ledger must originate in this
-            -- transaction or the migration fails before it exposes any trusted
-            -- interface.
+            -- This branch is reachable only for the isolated superuser
+            -- fallback above. A pre-existing relation still fails closed: it
+            -- must never be adopted by the direct privileged fallback.
             IF to_regclass('restore_drill_executor.restore_drill_results') IS NOT NULL THEN
                 RAISE EXCEPTION
                     'restore-drill result authority ledger must be created by core_196';

@@ -231,6 +231,14 @@ def _run_real_core_chain_with_relationship_prerequisite(shared_url: str) -> None
     asyncio.run(run_migrations(shared_url, chain="core"))
 
 
+def _run_core_chain_through_restore_drill_predecessor(shared_url: str) -> None:
+    """Reach the real core_195 state without applying core_196 itself."""
+    config = _build_alembic_config(shared_url, chains=["core"])
+    command.upgrade(config, "core_122")
+    asyncio.run(run_migrations(shared_url, chain="relationship", schema="relationship"))
+    command.upgrade(config, "core_195")
+
+
 def _provision_executor(
     *,
     host: str,
@@ -270,22 +278,291 @@ async def _read_restore_drill_api_shape(database_url: str) -> dict[str, object] 
         await pool.close()
 
 
+def _grant_legacy_shared_authority_staging(admin_url: str) -> None:
+    """Model the pre-fix grants that let the shared login poison core_196."""
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(
+                text("GRANT USAGE, CREATE ON SCHEMA restore_drill_executor TO butlers")
+            )
+            connection.execute(
+                text("GRANT USAGE ON SCHEMA restore_drill_executor_admin TO butlers")
+            )
+            connection.execute(
+                text(
+                    "GRANT EXECUTE ON FUNCTION "
+                    "restore_drill_executor_admin.finalize_interface() TO butlers"
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def _precreate_shared_authority_interface(shared_url: str) -> None:
+    """Create a compatible relation, trigger, and canonical signatures as ``butlers``."""
+    engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE restore_drill_executor.restore_drill_results (
+                        id BIGSERIAL PRIMARY KEY,
+                        recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+                        result TEXT NOT NULL CHECK (result IN ('pass', 'fail')),
+                        detail TEXT
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION restore_drill_executor.precreated_result_trigger()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    AS $$
+                    BEGIN
+                        RETURN NEW;
+                    END;
+                    $$
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TRIGGER precreated_result_trigger
+                    BEFORE INSERT ON restore_drill_executor.restore_drill_results
+                    FOR EACH ROW
+                    EXECUTE FUNCTION restore_drill_executor.precreated_result_trigger()
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION restore_drill_executor.is_due(p_interval_seconds INTEGER)
+                    RETURNS BOOLEAN
+                    LANGUAGE sql
+                    AS $$
+                        SELECT false
+                    $$
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION restore_drill_executor.record_result(
+                        p_backup_name TEXT,
+                        p_result TEXT,
+                        p_detail TEXT,
+                        p_table_count INTEGER
+                    )
+                    RETURNS BIGINT
+                    LANGUAGE sql
+                    AS $$
+                        SELECT 1::bigint
+                    $$
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION restore_drill_executor.latest_result()
+                    RETURNS TABLE (
+                        checked_at TIMESTAMPTZ,
+                        result TEXT,
+                        detail TEXT
+                    )
+                    LANGUAGE sql
+                    AS $$
+                        SELECT NULL::timestamptz, NULL::text, NULL::text WHERE false
+                    $$
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    REVOKE ALL ON FUNCTION restore_drill_executor.is_due(INTEGER) FROM PUBLIC;
+                    REVOKE ALL ON FUNCTION restore_drill_executor.record_result(
+                        TEXT, TEXT, TEXT, INTEGER
+                    ) FROM PUBLIC;
+                    REVOKE ALL ON FUNCTION restore_drill_executor.latest_result() FROM PUBLIC;
+                    """
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def _read_shared_authority_handoff_state(admin_url: str) -> dict[str, object]:
+    """Return authority ownership and effective grants after a poison attempt."""
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            return dict(
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            (
+                                SELECT pg_get_userbyid(result_ledger.relowner)
+                                FROM pg_class AS result_ledger
+                                JOIN pg_namespace AS result_schema
+                                    ON result_schema.oid = result_ledger.relnamespace
+                                WHERE result_schema.nspname = 'restore_drill_executor'
+                                  AND result_ledger.relname = 'restore_drill_results'
+                            ) AS ledger_owner,
+                            (
+                                SELECT pg_get_userbyid(interface_function.proowner)
+                                FROM pg_proc AS interface_function
+                                WHERE interface_function.oid =
+                                    'restore_drill_executor.is_due(integer)'::regprocedure
+                            ) AS is_due_owner,
+                            (
+                                SELECT pg_get_userbyid(interface_function.proowner)
+                                FROM pg_proc AS interface_function
+                                WHERE interface_function.oid =
+                                    'restore_drill_executor.record_result(text,text,text,integer)'
+                                    ::regprocedure
+                            ) AS record_result_owner,
+                            (
+                                SELECT pg_get_userbyid(interface_function.proowner)
+                                FROM pg_proc AS interface_function
+                                WHERE interface_function.oid =
+                                    'restore_drill_executor.latest_result()'::regprocedure
+                            ) AS latest_result_owner,
+                            EXISTS (
+                                SELECT 1
+                                FROM pg_trigger AS trigger_row
+                                JOIN pg_class AS result_ledger
+                                    ON result_ledger.oid = trigger_row.tgrelid
+                                JOIN pg_namespace AS result_schema
+                                    ON result_schema.oid = result_ledger.relnamespace
+                                WHERE result_schema.nspname = 'restore_drill_executor'
+                                  AND result_ledger.relname = 'restore_drill_results'
+                                  AND trigger_row.tgname = 'precreated_result_trigger'
+                                  AND NOT trigger_row.tgisinternal
+                            ) AS poison_trigger_exists,
+                            has_function_privilege(
+                                'restore_drill_executor',
+                                'restore_drill_executor.is_due(integer)',
+                                'EXECUTE'
+                            ) AS executor_is_due_execute,
+                            has_function_privilege(
+                                'restore_drill_executor',
+                                'restore_drill_executor.record_result(text,text,text,integer)',
+                                'EXECUTE'
+                            ) AS executor_record_result_execute,
+                            has_function_privilege(
+                                'restore_drill_executor',
+                                'restore_drill_executor.latest_result()',
+                                'EXECUTE'
+                            ) AS executor_latest_result_execute,
+                            has_schema_privilege(
+                                'butlers', 'restore_drill_executor', 'CREATE'
+                            ) AS shared_schema_create,
+                            has_schema_privilege(
+                                'butlers', 'restore_drill_executor', 'USAGE'
+                            ) AS shared_schema_usage,
+                            has_function_privilege(
+                                'butlers',
+                                'restore_drill_executor_admin.finalize_interface()',
+                                'EXECUTE'
+                            ) AS shared_finalizer_execute,
+                            has_table_privilege(
+                                'restore_drill_executor_owner', 'public.audit_log', 'INSERT'
+                            ) AS owner_audit_insert
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        engine.dispose()
+
+
+def test_shared_authority_poison_cannot_be_finalized_or_reblessed_on_bootstrap_rerun(
+    postgres_container,
+) -> None:
+    """REQ-database-security-006: stale shared grants cannot bless arbitrary DDL.
+
+    This models a database that retains the old shared ``CREATE`` and finalizer
+    ``EXECUTE`` grants across an upgrade.  The shared login creates every
+    canonical object plus a trigger, attempts the finalizer directly, then a
+    privileged ``init-db.sql`` rerun.  Neither route may transfer ownership or
+    grant executor capabilities to the attacker-owned interface.
+    """
+    admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
+        postgres_container
+    )
+    _run_core_chain_through_restore_drill_predecessor(shared_url)
+    _grant_legacy_shared_authority_staging(admin_url)
+    _precreate_shared_authority_interface(shared_url)
+
+    shared_engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
+    try:
+        with (
+            shared_engine.connect() as connection,
+            pytest.raises(
+                DBAPIError,
+                match="restore-drill interface ownership is untrusted",
+            ),
+        ):
+            connection.execute(text("SELECT restore_drill_executor_admin.finalize_interface()"))
+    finally:
+        shared_engine.dispose()
+
+    with pytest.raises(subprocess.CalledProcessError, match="init-db.sql") as rerun_error:
+        _run_psql_file(
+            host=host,
+            port=port,
+            user=admin_user,
+            password=admin_password,
+            database=_database_from_url(admin_url),
+            file_path=_INIT_DB,
+        )
+    assert "restore-drill interface ownership is untrusted" in rerun_error.value.stderr
+
+    assert _read_shared_authority_handoff_state(admin_url) == {
+        "ledger_owner": "butlers",
+        "is_due_owner": "butlers",
+        "record_result_owner": "butlers",
+        "latest_result_owner": "butlers",
+        "poison_trigger_exists": True,
+        "executor_is_due_execute": False,
+        "executor_record_result_execute": False,
+        "executor_latest_result_execute": False,
+        "shared_schema_create": False,
+        "shared_schema_usage": False,
+        "shared_finalizer_execute": False,
+        "owner_audit_insert": False,
+    }
+
+
 def test_precreated_shared_ledger_rejects_core_migration_without_authority_handoff(
     postgres_container,
 ) -> None:
     """REQ-database-security-006: a shared-role precreation is never trusted.
 
-    ``init-db.sql`` grants the ordinary migration/dashboard role temporary
-    schema-create access so it can stage core_196.  A compatible table and
-    trigger created through that access must make the migration fail closed,
-    rather than letting the ownership finalizer bless an attacker-controlled
-    relation.  The failed revision must leave its trusted interface absent;
-    after an administrator removes the untrusted objects in this disposable
-    database, retrying the revision remains valid.
+    A deployment upgraded from the old staging design can retain shared
+    protected-schema CREATE. A compatible table and trigger created through
+    that legacy grant must make the fixed installer fail closed, rather than
+    letting an ownership finalizer bless an attacker-controlled relation. The
+    failed revision must leave its trusted interface absent; after an
+    administrator removes the untrusted objects in this disposable database,
+    retrying the revision remains valid.
     """
-    admin_url, shared_url, _host, _port, _admin_user, _admin_password = _bootstrap_database(
+    admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
         postgres_container
     )
+    _grant_legacy_shared_authority_staging(admin_url)
 
     shared_engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
     try:
@@ -331,7 +608,7 @@ def test_precreated_shared_ledger_rejects_core_migration_without_authority_hando
 
     with pytest.raises(
         Exception,
-        match="restore-drill result authority ledger must be created by core_196",
+        match="restore-drill authority interface must be absent before fixed bootstrap installation",
     ):
         _run_real_core_chain_with_relationship_prerequisite(shared_url)
 
@@ -388,6 +665,18 @@ def test_precreated_shared_ledger_rejects_core_migration_without_authority_hando
         engine.dispose()
 
     asyncio.run(run_migrations(shared_url, chain="core"))
+
+    # A clean owner-finalized interface survives an idempotent privileged
+    # bootstrap rerun; this is distinct from the poisoned rerun above, which
+    # must fail before the handoff.
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database=_database_from_url(admin_url),
+        file_path=_INIT_DB,
+    )
 
     engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     try:
