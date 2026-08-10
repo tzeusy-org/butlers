@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -42,6 +42,9 @@ class IngestionEventListSessionSummary(BaseModel):
     butler_name: str
     duration_ms: int | None = None
     cost_usd: float | None = None
+    # ``unpriced`` is reserved for sessions with recorded token usage but no
+    # matching price. A failed launch with no usage evidence is ``no_usage``.
+    cost_evidence: Literal["priced", "unpriced", "no_usage"] = "no_usage"
     success: bool | None = None
 
 
@@ -72,6 +75,10 @@ class IngestionEventSummary(BaseModel):
     status: str = "ingested"
     filter_reason: str | None = None
     error_detail: str | None = None
+    # Server-authoritative connector policy. Defaults to false so an
+    # unavailable or unresolved policy cannot enable a replay by accident.
+    replay_safe: bool = False
+    replay_block_reason: str | None = None
     # Denormalized cost (core_126). NULL until the event's rollup is first fetched
     # OR until session-join fallback (bu-4utdw.3) computes a known-priced subtotal.
     # filtered_events rows always have NULL here (no sessions = no cost).
@@ -85,6 +92,9 @@ class IngestionEventSummary(BaseModel):
     # Sessions whose cost is not known. A numeric cost_usd with a positive count
     # is a priced subtotal, never a complete event total.
     unpriced_session_count: int = 0
+    # Sessions with no token or stored-cost evidence, such as a runtime launch
+    # failure before model usage began. These are not missing-price sessions.
+    no_usage_session_count: int = 0
     sessions: list[IngestionEventListSessionSummary] = Field(default_factory=list)
     # Contact-resolved sender display name (relationship.entity_facts via
     # resolve_contacts_by_channel_bulk), or None when unresolved. The frontend
@@ -153,6 +163,7 @@ class IngestionEventSession(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None
+    cost_evidence: Literal["priced", "unpriced", "no_usage"] = "no_usage"
     trace_id: str | None = None
     model: str | None = None
 
@@ -165,6 +176,7 @@ class ButlerRollupEntry(BaseModel):
     output_tokens: int = 0
     cost: float | None = None
     unpriced_session_count: int = 0
+    no_usage_session_count: int = 0
 
 
 class IngestionEventRollup(BaseModel):
@@ -176,6 +188,7 @@ class IngestionEventRollup(BaseModel):
     total_output_tokens: int = 0
     total_cost: float | None = None
     unpriced_session_count: int = 0
+    no_usage_session_count: int = 0
     by_butler: dict[str, ButlerRollupEntry] = Field(default_factory=dict)
 
 
@@ -197,14 +210,16 @@ class IngestionWindowRollup(BaseModel):
     """Aggregate event/session counts for the active filter window.
 
     Returned by GET /api/ingestion/rollup. ``cost`` is the known-priced
-    subtotal; ``unpriced_session_count`` makes any omitted session coverage
-    explicit instead of fabricating a zero.
+    subtotal; ``unpriced_session_count`` makes missing-price token usage
+    explicit, while ``no_usage_session_count`` identifies sessions that never
+    recorded token or stored-cost evidence.
     """
 
     events: int
     sessions: int
     cost: float | None = None
     unpriced_session_count: int = 0
+    no_usage_session_count: int = 0
     window: dict[str, str | None]
 
 

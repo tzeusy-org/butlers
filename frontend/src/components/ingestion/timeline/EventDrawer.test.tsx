@@ -88,6 +88,8 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
     status: "ingested",
     filter_reason: null,
     error_detail: null,
+    replay_safe: true,
+    replay_block_reason: null,
     cost_usd: null,
     // bu-4utdw.3: list-provided row enrichment fields (default to "no data yet").
     tokens_in: null,
@@ -213,6 +215,15 @@ describe("EventDrawer — per-session cost column", () => {
     expect(sessionBlock!.textContent).not.toContain("$");
   });
 
+  it("labels a no-usage session without calling it unpriced", () => {
+    mockSessions([makeSession({ cost_usd: null, cost_evidence: "no_usage" })]);
+    renderDrawer();
+
+    const sessionBlock = container.querySelector("[data-testid='sessions-tab-content']");
+    expect(sessionBlock!.textContent).toContain("no token usage");
+    expect(sessionBlock!.textContent).not.toContain("cost unavailable");
+  });
+
   it("renders <$0.001 for sub-mill costs", () => {
     mockSessions([makeSession({ cost_usd: 0.0005 })]);
     renderDrawer();
@@ -307,6 +318,23 @@ describe("EventDrawer — per-session cost column", () => {
     expect(empty).not.toBeNull();
     expect(empty!.textContent).toContain("Routing failed after this event was ingested");
     expect(empty!.textContent).toContain("switchboard unreachable");
+  });
+
+  it("explains when a replayable-status event is blocked by connector policy", () => {
+    mockSessions([]);
+    renderDrawer(
+      makeEvent({
+        status: "error",
+        source_channel: "email",
+        replay_safe: false,
+        replay_block_reason: "Email events cannot be replayed safely",
+      }),
+    );
+
+    expect(container.querySelector("[data-testid='drawer-replay-button']")).toBeNull();
+    expect(container.querySelector("[data-testid='drawer-replay-unavailable']")?.textContent).toContain(
+      "Email events cannot be replayed safely",
+    );
   });
 });
 

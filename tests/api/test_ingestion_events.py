@@ -630,6 +630,122 @@ async def test_replay_post_writes_audit_log(app):
     assert call_kwargs["target"] == event_id
 
 
+async def test_replay_post_rejects_email_before_mutating_event(app):
+    """The single-event endpoint shares bulk replay's fail-closed email policy."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": event_id,
+                "source_channel": "email",
+                "connector_type": "gmail",
+                "endpoint_identity": "inbox@example.com",
+                "connector_match_count": 1,
+                "replay_safe": False,
+            }
+        ]
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+            return_value={"outcome": "ok", "id": event_id, "source": "ingestion_events"},
+        ) as mock_replay,
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append",
+            new_callable=AsyncMock,
+        ) as mock_audit_append,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{event_id}/replay")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "Event is not replay-safe"
+    mock_replay.assert_not_awaited()
+    assert mock_audit_append.await_args.kwargs["action"] == "ingestion.event.replay_reject"
+
+
+async def test_replay_post_rejects_atomic_policy_change(app):
+    """A policy change between preflight and transition cannot be acknowledged."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": event_id,
+                "source_channel": "telegram_bot",
+                "endpoint_identity": "bot@example.com",
+                "connector_match_count": 1,
+                "replay_safe": True,
+            }
+        ]
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+            return_value={
+                "outcome": "unsafe",
+                "reason": "This connector is not replay-safe",
+                "source_channel": "telegram_bot",
+            },
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append",
+            new_callable=AsyncMock,
+        ) as mock_audit_append,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{event_id}/replay")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {
+        "error": "Event is not replay-safe",
+        "reason": "This connector is not replay-safe",
+    }
+    assert mock_audit_append.await_args.kwargs["action"] == "ingestion.event.replay_reject"
+
+
+async def test_replay_post_returns_503_when_atomic_policy_outcome_is_unavailable(app):
+    """A failed post-transition safety explanation is never acknowledged as replay pending."""
+    event_id = str(uuid4())
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": event_id,
+                "source_channel": "telegram_bot",
+                "endpoint_identity": "bot@example.com",
+                "connector_match_count": 1,
+                "replay_safe": True,
+            }
+        ]
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+        new_callable=AsyncMock,
+        return_value={"outcome": "policy_unavailable"},
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/ingestion/events/{event_id}/replay")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Replay safety could not be confirmed"
+
+
 # ---------------------------------------------------------------------------
 # ?q= search parameter on GET /api/ingestion/events (bu-mxtn2)
 # ---------------------------------------------------------------------------
@@ -719,7 +835,21 @@ async def test_list_events_enriches_rows_with_sessions_and_sender(app):
         "roles": [],
     }
     shared_pool = AsyncMock()
-    shared_pool.fetch = AsyncMock(return_value=[sender_row])
+    shared_pool.fetch = AsyncMock(
+        side_effect=[
+            [sender_row],
+            [
+                {
+                    "id": event_id,
+                    "source_channel": "email",
+                    "connector_type": "gmail",
+                    "endpoint_identity": "inbox@example.com",
+                    "connector_match_count": 1,
+                    "replay_safe": False,
+                }
+            ],
+        ]
+    )
     mock_db.credential_shared_pool.return_value = shared_pool
 
     with patch(
@@ -742,11 +872,38 @@ async def test_list_events_enriches_rows_with_sessions_and_sender(app):
     assert item["sessions"][0]["success"] is True
     assert item["cost_usd"] == 0.01  # fell back to session join (denormalized was None)
     assert item["sender_display"] == "Alice Smith"
+    assert item["replay_safe"] is False
+    assert item["replay_block_reason"] == "Email events cannot be replayed safely"
 
     # Exactly one grouped fan-out call for the whole page — never per row.
     assert mock_db.fan_out_with_status.await_count == 1
-    # Exactly one bulk sender-contact query for the whole page.
-    shared_pool.fetch.assert_awaited_once()
+    # One sender query plus one server-authoritative replay-policy query.
+    assert shared_pool.fetch.await_count == 2
+
+
+async def test_list_events_explains_unavailable_replay_policy(app):
+    """A policy lookup outage leaves replay disabled with an explicit reason."""
+    event_id = str(uuid4())
+    row = _make_event_row(event_id=event_id, status="ingested")
+
+    shared_pool = AsyncMock()
+    shared_pool.fetch = AsyncMock(side_effect=RuntimeError("registry unavailable"))
+    _app_with_mock_db(app, shared_pool=shared_pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_events.ingestion_events_list",
+        new_callable=AsyncMock,
+        return_value={"items": [row], "next_cursor": None, "has_more": False},
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/events")
+
+    assert resp.status_code == 200
+    item = resp.json()["data"][0]
+    assert item["replay_safe"] is False
+    assert item["replay_block_reason"] == "Replay safety could not be confirmed"
 
 
 async def test_list_events_enrichment_replaces_stale_denormalized_zero_with_unknown_coverage(app):
@@ -769,7 +926,15 @@ async def test_list_events_enrichment_replaces_stale_denormalized_zero_with_unkn
         "trace_id": None,
         "model": None,
     }
-    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": [session_row]}, []))
+    no_usage_session_row = {
+        **session_row,
+        "id": str(uuid4()),
+        "input_tokens": None,
+        "output_tokens": None,
+    }
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [session_row, no_usage_session_row]}, [])
+    )
 
     with patch(
         "butlers.api.routers.ingestion_events.ingestion_events_list",
@@ -785,6 +950,9 @@ async def test_list_events_enrichment_replaces_stale_denormalized_zero_with_unkn
     item = resp.json()["data"][0]
     assert item["cost_usd"] is None
     assert item["unpriced_session_count"] == 1
+    assert item["no_usage_session_count"] == 1
+    assert item["sessions"][0]["cost_evidence"] == "unpriced"
+    assert item["sessions"][1]["cost_evidence"] == "no_usage"
     assert item["tokens_in"] == 10  # tokens are still populated from the join
 
 
@@ -1276,6 +1444,60 @@ async def test_event_rollup_does_not_write_unknown_cost_coverage(app):
     assert resp.status_code == 200
     assert resp.json()["data"]["total_cost"] is None
     assert resp.json()["data"]["unpriced_session_count"] == 1
+    mock_set_cost.assert_not_awaited()
+
+
+async def test_event_rollup_does_not_write_partial_cost_with_no_usage_sessions(app):
+    """A launch without usage makes an otherwise numeric subtotal incomplete."""
+    request_id = str(uuid4())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = AsyncMock()
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
+
+    partial_rollup = {
+        "request_id": request_id,
+        "total_sessions": 2,
+        "total_input_tokens": 100,
+        "total_output_tokens": 50,
+        "total_cost": 0.0042,
+        "unpriced_session_count": 0,
+        "no_usage_session_count": 1,
+        "by_butler": {
+            "atlas": {
+                "sessions": 2,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cost": 0.0042,
+                "no_usage_session_count": 1,
+            }
+        },
+    }
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_sessions",
+            new_callable=AsyncMock,
+            return_value=[{"id": str(uuid4()), "butler_name": "atlas", "cost_usd": 0.0042}],
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_rollup",
+            return_value=partial_rollup,
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_set_cost_usd",
+            new_callable=AsyncMock,
+        ) as mock_set_cost,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/ingestion/events/{request_id}/rollup")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["total_cost"] == 0.0042
+    assert resp.json()["data"]["no_usage_session_count"] == 1
     mock_set_cost.assert_not_awaited()
 
 

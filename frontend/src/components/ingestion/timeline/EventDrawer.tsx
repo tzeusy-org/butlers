@@ -41,7 +41,8 @@ import { replayIngestionEvent } from '@/api/index.ts'
 import { ApiError } from '@/api/index.ts'
 import { Tip } from '@/components/ui/tip'
 import { StatusBadge } from '../StatusBadge'
-import type { IngestionEventSummary, IngestionEventStatus } from '@/api/index.ts'
+import { isReplaySafe } from '../bulkEligibility'
+import type { IngestionEventSession, IngestionEventSummary, IngestionEventStatus } from '@/api/index.ts'
 import { formatDurationTicks } from '@/lib/format-duration'
 import { formatCostUsdPrecise } from '@/lib/format-cost'
 
@@ -109,6 +110,12 @@ function formatSessionSpan(startedAt: string | null, completedAt: string | null)
 function fmtNum(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—'
   return n.toLocaleString()
+}
+
+function sessionCostLabel(session: IngestionEventSession): string {
+  if (session.cost_evidence === 'no_usage') return 'no token usage'
+  if (session.cost_evidence === 'unpriced') return 'cost unavailable'
+  return `cost ${formatCostUsdPrecise(session.cost_usd)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +334,7 @@ function DrawerSessionsTab({
             </span>
             <span className="tabular-nums text-foreground">in {fmtNum(s.input_tokens)}</span>
             <span className="tabular-nums text-foreground">out {fmtNum(s.output_tokens)}</span>
-            <span className="tabular-nums text-foreground">cost {formatCostUsdPrecise(s.cost_usd)}</span>
+            <span className="tabular-nums text-foreground">{sessionCostLabel(s)}</span>
             <span className="tabular-nums text-foreground">dur {formatSessionSpan(s.started_at, s.completed_at)}</span>
           </div>
         </div>
@@ -652,11 +659,16 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
     { id: 'replays', label: 'replay history' },
   ]
 
-  const canReplay =
+  const replayableStatus =
     event.status === 'filtered' ||
     event.status === 'error' ||
     event.status === 'failed' ||
     event.status === 'replay_failed'
+  const canReplay = replayableStatus && isReplaySafe(event)
+  const replayBlockedReason =
+    replayableStatus && !isReplaySafe(event)
+      ? (event.replay_block_reason ?? 'Replay safety has not been confirmed for this event')
+      : null
 
   const announceText = hasSessions
     ? `Event detail open: ${sessionList.length} ${sessionList.length === 1 ? 'session' : 'sessions'}`
@@ -811,6 +823,14 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
 
           {/* Footer actions */}
           <div className="flex flex-col gap-1.5 pt-2 border-t border-border">
+            {replayBlockedReason && (
+              <p
+                className="font-serif text-[12px] leading-[1.45] text-muted-foreground"
+                data-testid="drawer-replay-unavailable"
+              >
+                Replay unavailable: {replayBlockedReason}
+              </p>
+            )}
             {canReplay && (
               <Button
                 variant="outline"

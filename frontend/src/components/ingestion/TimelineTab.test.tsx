@@ -115,6 +115,8 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
     status: "ingested",
     filter_reason: null,
     error_detail: null,
+    replay_safe: true,
+    replay_block_reason: null,
     cost_usd: null,
     // bu-4utdw.3: list-provided row enrichment fields (default to "no data yet").
     tokens_in: null,
@@ -134,6 +136,8 @@ function makeInfiniteEventsResult(events: IngestionEventSummary[]) {
       pageParams: [null],
     },
     isLoading: false,
+    isFetching: false,
+    isPlaceholderData: false,
     isError: false,
     hasNextPage: false,
     isFetchingNextPage: false,
@@ -141,6 +145,65 @@ function makeInfiniteEventsResult(events: IngestionEventSummary[]) {
     refetch: vi.fn(),
   };
 }
+
+describe("TimelineTab — passive background refresh", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  function renderWithQueryState(queryState: Record<string, unknown>) {
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      ...makeInfiniteEventsResult([makeEvent({ source_sender_identity: "live@example.com" })]),
+      ...queryState,
+    } as unknown as ReturnType<typeof useIngestionEvents>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("does not dim current ledger data during a passive background refresh", () => {
+    renderWithQueryState({ isFetching: true, isPlaceholderData: false });
+
+    const ledger = container.querySelector("[data-testid='timeline-ledger']") as HTMLElement;
+    const dim = ledger.parentElement as HTMLElement;
+
+    expect(ledger.textContent).toContain("live@example.com");
+    expect(dim.getAttribute("aria-busy")).toBe("false");
+    expect(dim.className).not.toContain("opacity-60");
+  });
+
+  it("keeps the stale-data cue for a filter transition using placeholder data", () => {
+    renderWithQueryState({ isFetching: true, isPlaceholderData: true });
+
+    const ledger = container.querySelector("[data-testid='timeline-ledger']") as HTMLElement;
+    const dim = ledger.parentElement as HTMLElement;
+
+    expect(dim.getAttribute("aria-busy")).toBe("true");
+    expect(dim.className).toContain("opacity-60");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Default mock setup helpers
@@ -445,6 +508,44 @@ describe("TimelineTab — row status rendering", () => {
     const btn = container.querySelector("[data-testid='replay-button']");
     expect(btn).not.toBeNull();
     expect(btn!.getAttribute("title")).toBe("Replay");
+  });
+
+  it("does not offer Replay for an event the server marks replay-unsafe", () => {
+    const unsafeEvent = {
+      ...makeEvent({ status: "error", source_channel: "email" }),
+      replay_safe: false,
+      replay_block_reason: "Email events cannot be replayed safely",
+    } as IngestionEventSummary & {
+      replay_safe: boolean;
+      replay_block_reason: string;
+    };
+
+    render([unsafeEvent]);
+
+    expect(container.querySelector("[data-testid='replay-button']")).toBeNull();
+    const unavailable = container.querySelector("[data-testid='replay-unavailable']");
+    expect(unavailable).not.toBeNull();
+    expect(unavailable!.getAttribute("aria-label")).toBe(
+      "Replay unavailable: Email events cannot be replayed safely",
+    );
+    const checkbox = container.querySelector("[data-testid='row-checkbox-disabled']");
+    expect(checkbox).not.toBeNull();
+    expect(checkbox!.getAttribute("title")).toBe("Email events cannot be replayed safely");
+  });
+
+  it("labels a failed launch without token evidence as no usage, not unpriced", () => {
+    render([
+      makeEvent({
+        status: "error",
+        cost_usd: null,
+        unpriced_session_count: 0,
+        no_usage_session_count: 1,
+      }),
+    ]);
+
+    const row = container.querySelector("[data-testid='ledger-row']") as HTMLElement;
+    expect(row.textContent).toContain("1 no usage");
+    expect(row.textContent).not.toContain("1 unpriced");
   });
 
   it("shows Replay button for failed events (replayable straight back to ingested)", () => {

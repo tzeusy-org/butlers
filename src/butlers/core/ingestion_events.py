@@ -31,6 +31,7 @@ ingestion_event_reconcile_after_processing — shared, cancellation-safe post-pr
                                   reconciliation used by both the DurableBuffer worker and
                                   the create_task ingest fallback (bu-nqkha)
 ingestion_event_replay_request  — mark a filtered event as replay_pending
+ingestion_events_replay_policy  — resolve fail-closed connector replay policy
 ingestion_event_replay_history  — query public.audit_log for replay attempts on an event
 """
 
@@ -40,6 +41,7 @@ import asyncio
 import base64
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -156,6 +158,69 @@ _SESSION_COLUMNS = (
 # Cap on sessions embedded per event in the list-enrichment response
 # (dispatch-ticks cell only needs enough entries to render a compact strip).
 _MAX_LIST_SESSIONS_PER_EVENT = 8
+
+
+@dataclass(frozen=True)
+class IngestionEventReplayPolicy:
+    """Server-authoritative replay policy for one existing ingestion event."""
+
+    event_id: str
+    source_channel: str | None
+    replay_safe: bool
+    block_reason: str | None = None
+
+
+_INGESTED_REPLAY_POLICY_CTE = """
+WITH replay_policy AS MATERIALIZED (
+    SELECT cr.replay_safe
+    FROM public.ingestion_events AS candidate
+    JOIN switchboard.connector_registry AS cr
+      ON cr.connector_type = ANY(
+          ARRAY_REMOVE(ARRAY[candidate.source_channel, candidate.source_provider], NULL)
+      )
+     AND cr.endpoint_identity = candidate.source_endpoint_identity
+     AND cr.deleted_at IS NULL
+     AND cr.archived_at IS NULL
+    WHERE candidate.id = $1
+      AND NULLIF(BTRIM(candidate.source_endpoint_identity), '') IS NOT NULL
+    FOR SHARE OF cr
+)
+"""
+
+_FILTERED_REPLAY_POLICY_CTE = """
+WITH replay_policy AS MATERIALIZED (
+    SELECT cr.replay_safe
+    FROM connectors.filtered_events AS candidate
+    JOIN switchboard.connector_registry AS cr
+      ON cr.connector_type = ANY(
+          ARRAY_REMOVE(ARRAY[candidate.connector_type, candidate.source_channel], NULL)
+      )
+     AND cr.endpoint_identity = candidate.endpoint_identity
+     AND cr.deleted_at IS NULL
+     AND cr.archived_at IS NULL
+    WHERE candidate.id = $1
+      AND NULLIF(BTRIM(candidate.endpoint_identity), '') IS NOT NULL
+    FOR SHARE OF cr
+)
+"""
+
+_REPLAY_POLICY_SAFE_GUARD = """
+AND COALESCE(
+    (SELECT COUNT(*) = 1 AND BOOL_AND(replay_safe IS TRUE) FROM replay_policy),
+    FALSE
+)
+"""
+
+_INGESTED_REPLAY_POLICY_PREDICATE = f"""
+AND LOWER(COALESCE(ie.source_channel, '')) <> 'email'
+{_REPLAY_POLICY_SAFE_GUARD}
+"""
+
+_FILTERED_REPLAY_POLICY_PREDICATE = f"""
+AND LOWER(COALESCE(fe.source_channel, '')) <> 'email'
+{_REPLAY_POLICY_SAFE_GUARD}
+"""
+
 
 # ---------------------------------------------------------------------------
 # GET /api/ingestion/events/histogram support (bu-4utdw.6)
@@ -911,6 +976,134 @@ async def ingestion_event_reconcile_after_processing(
         return False
 
 
+async def ingestion_events_replay_policy(
+    pool: asyncpg.Pool,
+    event_ids: list[str | UUID],
+) -> dict[str, IngestionEventReplayPolicy]:
+    """Resolve connector replay policy for existing events, failing closed.
+
+    Accepted events retain both a provider and a channel, while registry
+    connector types are connector-specific (for example, provider ``telegram``
+    with channel/registry type ``telegram_bot``). Both accepted-event values
+    are candidates, and filtered events likewise use both their native
+    ``connector_type`` and source channel. Exactly one live registry row must
+    match; a missing or ambiguous identity, missing registry row, or false
+    flag is never treated as replay-safe. Email remains blocked even if a
+    stale registry row was accidentally configured otherwise.
+
+    Missing event IDs are intentionally absent from the return mapping so the
+    caller can preserve the normal 404/not-found result from the replay state
+    transition.
+    """
+    if not event_ids:
+        return {}
+
+    event_uuids = [UUID(str(event_id)) for event_id in event_ids]
+    rows = await pool.fetch(
+        """
+        WITH event_sources_raw AS (
+            SELECT
+                ie.id::text AS id,
+                ie.source_channel,
+                ARRAY_REMOVE(ARRAY[ie.source_channel, ie.source_provider], NULL) AS connector_types,
+                ie.source_endpoint_identity AS endpoint_identity,
+                0 AS source_rank
+            FROM public.ingestion_events AS ie
+            WHERE ie.id = ANY($1::uuid[])
+
+            UNION ALL
+
+            SELECT
+                fe.id::text AS id,
+                fe.source_channel,
+                ARRAY_REMOVE(ARRAY[fe.connector_type, fe.source_channel], NULL) AS connector_types,
+                fe.endpoint_identity,
+                1 AS source_rank
+            FROM connectors.filtered_events AS fe
+            WHERE fe.id = ANY($1::uuid[])
+        ),
+        event_sources AS (
+            SELECT DISTINCT ON (id)
+                id,
+                source_channel,
+                connector_types,
+                endpoint_identity
+            FROM event_sources_raw
+            ORDER BY id, source_rank ASC
+        )
+        SELECT
+            es.id,
+            es.source_channel,
+            es.endpoint_identity,
+            COUNT(cr.connector_type) AS connector_match_count,
+            BOOL_AND(cr.replay_safe IS TRUE) AS replay_safe
+        FROM event_sources AS es
+        LEFT JOIN switchboard.connector_registry AS cr
+         ON cr.connector_type = ANY(es.connector_types)
+         AND cr.endpoint_identity = es.endpoint_identity
+         AND NULLIF(BTRIM(es.endpoint_identity), '') IS NOT NULL
+         AND cr.deleted_at IS NULL
+         AND cr.archived_at IS NULL
+        GROUP BY es.id, es.source_channel, es.endpoint_identity
+        ORDER BY es.id ASC
+        """,
+        event_uuids,
+    )
+
+    policies: dict[str, IngestionEventReplayPolicy] = {}
+    for row in rows:
+        event_id = str(row["id"])
+        source_channel = row["source_channel"]
+        channel = str(source_channel or "").casefold()
+        endpoint_identity = row["endpoint_identity"]
+        connector_match_count = int(row["connector_match_count"] or 0)
+
+        if channel == "email":
+            policy = IngestionEventReplayPolicy(
+                event_id=event_id,
+                source_channel=source_channel,
+                replay_safe=False,
+                block_reason="Email events cannot be replayed safely",
+            )
+        elif (
+            not endpoint_identity
+            or not str(endpoint_identity).strip()
+            or connector_match_count == 0
+        ):
+            policy = IngestionEventReplayPolicy(
+                event_id=event_id,
+                source_channel=source_channel,
+                replay_safe=False,
+                block_reason="Replay safety is not configured for this connector",
+            )
+        elif connector_match_count != 1:
+            policy = IngestionEventReplayPolicy(
+                event_id=event_id,
+                source_channel=source_channel,
+                replay_safe=False,
+                block_reason="Replay safety is ambiguous for this connector",
+            )
+        elif row["replay_safe"] is not True:
+            policy = IngestionEventReplayPolicy(
+                event_id=event_id,
+                source_channel=source_channel,
+                replay_safe=False,
+                block_reason="This connector is not replay-safe",
+            )
+        else:
+            policy = IngestionEventReplayPolicy(
+                event_id=event_id,
+                source_channel=source_channel,
+                replay_safe=True,
+            )
+
+        # Public events take precedence in the very unlikely event an id exists
+        # in both stores, matching ingestion_event_replay_request's ordering.
+        policies.setdefault(event_id, policy)
+
+    return policies
+
+
 async def ingestion_event_replay_request(
     pool: asyncpg.Pool,
     event_id: str | UUID,
@@ -921,6 +1114,9 @@ async def ingestion_event_replay_request(
 
     Checks ``public.ingestion_events`` first (for routing-failed events), then
     falls back to ``connectors.filtered_events`` (for connector-filtered events).
+    Every transition joins and locks its source's active connector policy in
+    the same SQL statement, so a concurrent policy change cannot enqueue an
+    unsafe replay after UI/preflight policy evidence was read.
 
     For failed ingestion events, this is a status-only ``failed`` →
     ``ingested`` transition. It does not modify a corresponding
@@ -956,17 +1152,23 @@ async def ingestion_event_replay_request(
         - ``"not_found"`` → no row with that id in either table.
         - ``"conflict"``  → row exists but current status is not replayable;
                             dict also contains ``current_status``.
+        - ``"unsafe"``    → the event exists but its connector policy is not
+                            explicitly replay-safe; dict also contains ``reason``.
+        - ``"policy_unavailable"`` → status mutation did not happen and a
+                            post-transition policy explanation could not load.
     """
     if isinstance(event_id, str):
         event_id = UUID(event_id)
 
     # 1. Try public.ingestion_events first (routing-failed events).
     row = await pool.fetchrow(
-        """
-        UPDATE public.ingestion_events
+        f"""
+        {_INGESTED_REPLAY_POLICY_CTE}
+        UPDATE public.ingestion_events AS ie
         SET status = 'ingested', error_detail = NULL
-        WHERE id = $1 AND status = 'failed'
-        RETURNING id
+        WHERE ie.id = $1 AND ie.status = 'failed'
+        {_INGESTED_REPLAY_POLICY_PREDICATE}
+        RETURNING ie.id
         """,
         event_id,
     )
@@ -979,11 +1181,13 @@ async def ingestion_event_replay_request(
     # DurableBuffer scanner re-enqueues them for re-routing.
     ingestion_replayable = ("ingested", "replay_failed")
     row = await pool.fetchrow(
-        """
-        UPDATE public.ingestion_events
+        f"""
+        {_INGESTED_REPLAY_POLICY_CTE}
+        UPDATE public.ingestion_events AS ie
         SET status = 'replay_pending'
-        WHERE id = $1 AND status = ANY($2)
-        RETURNING id
+        WHERE ie.id = $1 AND ie.status = ANY($2)
+        {_INGESTED_REPLAY_POLICY_PREDICATE}
+        RETURNING ie.id
         """,
         event_id,
         list(ingestion_replayable),
@@ -1023,11 +1227,13 @@ async def ingestion_event_replay_request(
         "replay_complete",
     )
     row = await pool.fetchrow(
-        """
-        UPDATE connectors.filtered_events
+        f"""
+        {_FILTERED_REPLAY_POLICY_CTE}
+        UPDATE connectors.filtered_events AS fe
         SET status = 'replay_pending', replay_requested_at = now(), error_detail = NULL
-        WHERE id = $1 AND status = ANY($2)
-        RETURNING id
+        WHERE fe.id = $1 AND fe.status = ANY($2)
+        {_FILTERED_REPLAY_POLICY_PREDICATE}
+        RETURNING fe.id
         """,
         event_id,
         list(filtered_replayable),
@@ -1035,7 +1241,25 @@ async def ingestion_event_replay_request(
     if row is not None:
         return {"outcome": "ok", "id": str(row["id"]), "source": "filtered_events"}
 
-    # 3. Check both tables for non-replayable status.
+    # 3. A policy may have changed after the route's earlier preflight. The
+    # transition above already refused to update in that case; resolve again
+    # only to return an accurate, non-sensitive outcome.
+    try:
+        replay_policy = (await ingestion_events_replay_policy(pool, [event_id])).get(str(event_id))
+    except Exception:
+        logger.warning(
+            "replay: policy explanation lookup failed for event %s", event_id, exc_info=True
+        )
+        return {"outcome": "policy_unavailable"}
+
+    if replay_policy is not None and not replay_policy.replay_safe:
+        return {
+            "outcome": "unsafe",
+            "reason": replay_policy.block_reason,
+            "source_channel": replay_policy.source_channel,
+        }
+
+    # 4. Check both tables for non-replayable status.
     for table in ("public.ingestion_events", "connectors.filtered_events"):
         current_status = await pool.fetchval(
             f"SELECT status FROM {table} WHERE id = $1",
@@ -1104,6 +1328,36 @@ def _compute_session_cost_usd(
     return None
 
 
+def _session_has_token_usage(session: dict[str, Any]) -> bool:
+    """Return whether a session recorded any billable token usage."""
+    for field in (
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "cache_creation_tokens",
+    ):
+        value = session.get(field)
+        try:
+            if float(value or 0) != 0:
+                return True
+        except (TypeError, ValueError):
+            # A malformed token field cannot establish pricing coverage.
+            continue
+    return False
+
+
+def _classify_session_cost_evidence(
+    session: dict[str, Any],
+    session_cost_usd: float | None,
+) -> str:
+    """Classify cost evidence without calling a no-usage failure unpriced."""
+    if session_cost_usd is not None:
+        return "priced"
+    if _session_has_token_usage(session):
+        return "unpriced"
+    return "no_usage"
+
+
 async def ingestion_event_sessions(
     db: DatabaseManager,
     request_id: str,
@@ -1137,6 +1391,7 @@ async def ingestion_event_sessions(
         for row in rows:
             session = _decode_session_row(row, butler_name)
             session["cost_usd"] = _compute_session_cost_usd(session, pricing)
+            session["cost_evidence"] = _classify_session_cost_evidence(session, session["cost_usd"])
             sessions.append(session)
 
     # Sort by started_at ascending so the timeline is chronological
@@ -1259,6 +1514,7 @@ async def ingestion_events_sessions_for_ids(
             if request_id is None:
                 continue
             session["cost_usd"] = _compute_session_cost_usd(session, pricing)
+            session["cost_evidence"] = _classify_session_cost_evidence(session, session["cost_usd"])
             sessions_by_id.setdefault(str(request_id), []).append(session)
 
     for sessions in sessions_by_id.values():
@@ -1290,10 +1546,14 @@ def ingestion_events_list_enrichment(
     - ``session_cost_usd`` — known-priced session subtotal, or ``None`` when
       no session has a known price. This is intentionally distinct from an
       explicit ``0.0`` for a declared zero-marginal-cost session.
-    - ``unpriced_session_count`` — sessions omitted from that known subtotal.
+    - ``unpriced_session_count`` — sessions with token usage omitted from that
+      known subtotal because their model price is unavailable.
+    - ``no_usage_session_count`` — sessions that recorded neither a cost nor
+      token usage, such as failures before a runtime launch completed.
     - ``session_count`` — total session count (not capped).
     - ``sessions`` — compact per-session dicts (``butler_name``, ``duration_ms``,
-      ``cost_usd``, ``success``), capped at :data:`_MAX_LIST_SESSIONS_PER_EVENT`.
+      ``cost_usd``, ``cost_evidence``, ``success``), capped at
+      :data:`_MAX_LIST_SESSIONS_PER_EVENT`.
 
     Args:
         sessions_by_id: Mapping of event_id to session dicts, as returned by
@@ -1309,10 +1569,15 @@ def ingestion_events_list_enrichment(
         known_cost_total = 0.0
         known_cost_count = 0
         unpriced_session_count = 0
+        no_usage_session_count = 0
         for session in sessions:
             session_cost = session.get("cost_usd")
-            if session_cost is None:
+            cost_evidence = _classify_session_cost_evidence(session, session_cost)
+            if cost_evidence == "unpriced":
                 unpriced_session_count += 1
+                continue
+            if cost_evidence == "no_usage":
+                no_usage_session_count += 1
                 continue
             known_cost_total += float(session_cost)
             known_cost_count += 1
@@ -1323,12 +1588,14 @@ def ingestion_events_list_enrichment(
             "tokens_out": tokens_out,
             "session_cost_usd": session_cost_usd,
             "unpriced_session_count": unpriced_session_count,
+            "no_usage_session_count": no_usage_session_count,
             "session_count": len(sessions),
             "sessions": [
                 {
                     "butler_name": s.get("butler_name"),
                     "duration_ms": _session_duration_ms(s),
                     "cost_usd": s.get("cost_usd"),
+                    "cost_evidence": _classify_session_cost_evidence(s, s.get("cost_usd")),
                     "success": s.get("success"),
                 }
                 for s in sessions[:_MAX_LIST_SESSIONS_PER_EVENT]
@@ -1360,8 +1627,10 @@ def ingestion_event_rollup(
         - ``total_output_tokens`` — sum of ``output_tokens`` (NULL treated as 0)
         - ``total_cost`` — known-priced subtotal, or ``None`` when every
           session cost is unavailable
-        - ``unpriced_session_count`` — number of sessions omitted from that
-          known subtotal
+        - ``unpriced_session_count`` — number of token-using sessions omitted
+          from that known subtotal
+        - ``no_usage_session_count`` — number of sessions with no token or
+          stored-cost evidence
         - ``by_butler`` — dict mapping butler_name to per-butler breakdown
     """
     total_sessions = len(sessions)
@@ -1370,6 +1639,7 @@ def ingestion_event_rollup(
     known_cost_total = 0.0
     known_cost_count = 0
     unpriced_session_count = 0
+    no_usage_session_count = 0
     by_butler: dict[str, dict[str, Any]] = {}
 
     for session in sessions:
@@ -1381,6 +1651,7 @@ def ingestion_event_rollup(
                 "output_tokens": 0,
                 "cost": None,
                 "unpriced_session_count": 0,
+                "no_usage_session_count": 0,
             }
 
         entry = by_butler[butler]
@@ -1394,9 +1665,14 @@ def ingestion_event_rollup(
         entry["output_tokens"] += out_tok
 
         session_cost = _compute_session_cost_usd(session, pricing)
-        if session_cost is None:
+        cost_evidence = _classify_session_cost_evidence(session, session_cost)
+        if cost_evidence == "unpriced":
             unpriced_session_count += 1
             entry["unpriced_session_count"] += 1
+            continue
+        if cost_evidence == "no_usage":
+            no_usage_session_count += 1
+            entry["no_usage_session_count"] += 1
             continue
 
         known_cost_total += session_cost
@@ -1412,6 +1688,7 @@ def ingestion_event_rollup(
         "total_output_tokens": total_output_tokens,
         "total_cost": known_cost_total if known_cost_count > 0 else None,
         "unpriced_session_count": unpriced_session_count,
+        "no_usage_session_count": no_usage_session_count,
         "by_butler": by_butler,
     }
 
@@ -1440,8 +1717,10 @@ async def ingestion_window_rollup(
     each session's price inputs, so unpriced rows cannot disappear inside a
     priced model aggregate. Models absent from the pricing catalog remain
     omitted from that subtotal and are counted in ``unpriced_session_count``.
-    When ``pricing`` is ``None``, every discovered session is counted as
-    unpriced and ``cost`` is returned as ``None``.
+    Sessions with no token or stored-cost evidence are separately counted in
+    ``no_usage_session_count``. When ``pricing`` is ``None``, token-only
+    sessions without a stored cost are unpriced, while legacy stored costs
+    still contribute to the known-priced subtotal.
 
     Args:
         pool:      asyncpg pool for the shared credentials database.
@@ -1459,7 +1738,8 @@ async def ingestion_window_rollup(
         pricing:   Optional pricing config for cost estimation. When provided, cost is
                    computed from exact cost-signature groups so an unpriced
                    session can never be hidden in a priced model bucket. When
-                   ``None``, cost is returned as ``None``.
+                   ``None``, legacy stored costs still contribute while
+                   token-only sessions remain unpriced.
         event_ids: Optional explicit set of event ids to restrict the result to
                    (``id = ANY(...)``), pushed into SQL exactly like the other
                    filters. Used by the ``trace_id`` filter (see
@@ -1477,7 +1757,8 @@ async def ingestion_window_rollup(
         - ``events``:   int — total matching events
         - ``sessions``: int — total sessions linked to matching events
         - ``cost``:     float | None — known-priced USD subtotal, or None when unavailable
-        - ``unpriced_session_count``: int — sessions omitted from ``cost``
+        - ``unpriced_session_count``: int — token-using sessions omitted from ``cost``
+        - ``no_usage_session_count``: int — sessions with no token/cost evidence
         - ``window``:   dict with ``from`` (ISO str | None) and ``to`` (ISO str | None)
     """
     args: list[Any] = []
@@ -1544,6 +1825,7 @@ async def ingestion_window_rollup(
     session_count = 0
     total_cost: float | None = None
     unpriced_session_count = 0
+    no_usage_session_count = 0
     if db is not None and event_count > 0:
         id_sql = (
             f"SELECT id FROM ("
@@ -1589,10 +1871,6 @@ async def ingestion_window_rollup(
                     for row in rows:
                         row_session_count = int(row.get("cnt") or 0)
                         session_count += row_session_count
-                        if pricing is None:
-                            unpriced_session_count += row_session_count
-                            continue
-
                         raw_cost = row.get("cost")
                         if isinstance(raw_cost, str):
                             try:
@@ -1610,8 +1888,12 @@ async def ingestion_window_rollup(
                             },
                             pricing,
                         )
-                        if session_cost is None:
+                        cost_evidence = _classify_session_cost_evidence(row, session_cost)
+                        if cost_evidence == "unpriced":
                             unpriced_session_count += row_session_count
+                            continue
+                        if cost_evidence == "no_usage":
+                            no_usage_session_count += row_session_count
                             continue
                         if total_cost is None:
                             total_cost = 0.0
@@ -1624,6 +1906,7 @@ async def ingestion_window_rollup(
         "sessions": session_count,
         "cost": total_cost,
         "unpriced_session_count": unpriced_session_count,
+        "no_usage_session_count": no_usage_session_count,
         "window": {
             "from": from_dt.isoformat() if from_dt is not None else None,
             "to": to_dt.isoformat() if to_dt is not None else None,

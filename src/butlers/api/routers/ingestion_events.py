@@ -27,7 +27,7 @@ import json
 import logging
 from datetime import UTC, timedelta
 from datetime import datetime as _datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
@@ -62,6 +62,7 @@ from butlers.core.ingestion_events import (
     ingestion_events_list,
     ingestion_events_list_enrichment,
     ingestion_events_received_at_bounds,
+    ingestion_events_replay_policy,
     ingestion_events_request_ids_for_trace,
     ingestion_events_sessions_for_ids,
     ingestion_window_rollup,
@@ -77,6 +78,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ingestion/events", tags=["ingestion"])
 rollup_router = APIRouter(prefix="/api/ingestion/rollup", tags=["ingestion"])
 
+_REPLAY_SAFETY_UNAVAILABLE_REASON = "Replay safety could not be confirmed"
+
 
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
@@ -89,6 +92,32 @@ def _get_pricing_optional() -> PricingConfig | None:
         return get_pricing()
     except RuntimeError:
         return None
+
+
+async def _audit_replay_safety_rejection(
+    pool: Any,
+    *,
+    event_id: str,
+    source_channel: str | None,
+    client_host: str | None,
+) -> None:
+    """Best-effort audit for a replay prevented by authoritative policy."""
+    try:
+        await _audit_append(
+            pool,
+            actor="dashboard",
+            action="ingestion.event.replay_reject",
+            target=event_id,
+            note=json.dumps(
+                {
+                    "reason": "unsafe_replay_policy",
+                    "source_channel": source_channel,
+                }
+            ),
+            ip=client_host,
+        )
+    except Exception:
+        logger.warning("replay: failed to append rejection audit entry for %s", event_id)
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +374,21 @@ async def _enrich_list_summaries(
             )
             sender_map = {}
 
+    # Replay policy is deliberately independent of the display enrichments
+    # above: if this lookup fails, model defaults keep every replay control
+    # disabled rather than treating unknown connector state as safe.
+    replay_policies = {}
+    replay_policy_unavailable = False
+    try:
+        pool = db.credential_shared_pool()
+        replay_policies = await ingestion_events_replay_policy(pool, event_ids)
+    except Exception:
+        replay_policy_unavailable = True
+        logger.warning(
+            "_enrich_list_summaries: replay policy lookup failed; disabling replay controls",
+            exc_info=True,
+        )
+
     for summary in summaries:
         enr = enrichment.get(summary.id)
         if enr is not None:
@@ -352,6 +396,7 @@ async def _enrich_list_summaries(
             summary.tokens_out = enr["tokens_out"]
             summary.session_count = enr["session_count"]
             summary.unpriced_session_count = enr["unpriced_session_count"]
+            summary.no_usage_session_count = enr["no_usage_session_count"]
             summary.sessions = [
                 IngestionEventListSessionSummary(**sess) for sess in enr["sessions"]
             ]
@@ -360,6 +405,14 @@ async def _enrich_list_summaries(
             # whenever that lineage is all or partly unpriced.
             if enr["session_count"] > 0:
                 summary.cost_usd = enr["session_cost_usd"]
+
+        replay_policy = replay_policies.get(summary.id)
+        if replay_policy is not None:
+            summary.replay_safe = replay_policy.replay_safe
+            summary.replay_block_reason = replay_policy.block_reason
+        elif replay_policy_unavailable:
+            summary.replay_safe = False
+            summary.replay_block_reason = _REPLAY_SAFETY_UNAVAILABLE_REASON
 
         if summary.source_channel and summary.source_sender_identity:
             resolved = sender_map.get((summary.source_channel, summary.source_sender_identity))
@@ -636,6 +689,18 @@ async def get_ingestion_event(
         )
 
     detail = IngestionEventDetail(**event)
+    try:
+        replay_policy = (await ingestion_events_replay_policy(pool, [detail.id])).get(detail.id)
+        if replay_policy is not None:
+            detail.replay_safe = replay_policy.replay_safe
+            detail.replay_block_reason = replay_policy.block_reason
+    except Exception:
+        logger.warning(
+            "get_ingestion_event: replay policy lookup failed; disabling replay control",
+            exc_info=True,
+        )
+        detail.replay_safe = False
+        detail.replay_block_reason = _REPLAY_SAFETY_UNAVAILABLE_REASON
     # Gate decomposition_output: strip it unless the caller explicitly opted in.
     if not include_decomposition:
         detail.decomposition_output = None
@@ -698,6 +763,7 @@ async def get_ingestion_event_rollup(
     if (
         rollup_data["total_sessions"] > 0
         and rollup_data["unpriced_session_count"] == 0
+        and rollup_data.get("no_usage_session_count", 0) == 0
         and rollup_data["total_cost"] is not None
     ):
         try:
@@ -716,11 +782,6 @@ async def get_ingestion_event_rollup(
 # ---------------------------------------------------------------------------
 
 _MAX_BULK_RETRY_BATCH = 100
-
-# Channels that are classified as replay-unsafe per the
-# connector-replay-idempotency-policy spec.  Referenced by both /retry/bulk
-# (safety gate added in PR #2357) and kept here after /replay/bulk removal.
-_UNSAFE_CHANNELS: frozenset[str] = frozenset({"email"})
 
 
 @router.post("/retry/bulk")
@@ -743,14 +804,14 @@ async def bulk_retry_ingestion_events(
     Accepts ``{"event_ids": [...]}`` where ``event_ids`` is a list of UUID
     strings (max 100).
 
-    Email events and events with ``connector_registry.replay_safe = false`` are
-    rejected with HTTP 409 before any replay is attempted.
+    Events whose server-authoritative connector policy is not explicitly safe
+    are rejected with HTTP 409 before any replay is attempted.
 
     Returns:
         200 — ``{"results": [{event_id, status, error?}], "succeeded": N, "failed": N}``
         400 — missing/empty ``event_ids``, or batch exceeds max size
-        409 — batch contains replay-unsafe events (email or replay_safe=false)
-        503 — shared database pool unavailable
+        409 — batch contains replay-unsafe events
+        503 — shared database pool unavailable or safety pre-flight unavailable
     """
     event_ids_raw: list = body.get("event_ids", [])
 
@@ -780,51 +841,25 @@ async def bulk_retry_ingestion_events(
     client_host = getattr(request.client, "host", None) if request.client else None
 
     # ---------------------------------------------------------------------------
-    # Pre-flight safety gate: reject the entire batch if any event is unsafe.
-    #
-    # /retry/bulk covers both public.ingestion_events and connectors.filtered_events,
-    # so we query BOTH tables to identify any email (or replay_safe=false) events
-    # before touching any rows.  A single unsafe event rejects the entire batch with
-    # HTTP 409 — fail-closed semantics ensures no partial unsafe replay.
+    # Pre-flight safety gate: reject the entire batch if any known event is not
+    # explicitly safe. The shared resolver covers both event stores and never
+    # defaults an unresolved connector registry row to safe.
     # ---------------------------------------------------------------------------
     try:
-        # Collect (id, source_channel, replay_safe) from both tables in one query.
-        # ingestion_events does not have a connector_registry join, so replay_safe is
-        # treated as TRUE for those rows (only source_channel is checked).
-        channel_rows = await pool.fetch(
-            """
-            SELECT id::text, source_channel, TRUE AS replay_safe
-            FROM public.ingestion_events
-            WHERE id = ANY($1::uuid[])
-            UNION ALL
-            SELECT fe.id::text, fe.source_channel,
-                   COALESCE(cr.replay_safe, TRUE) AS replay_safe
-            FROM connectors.filtered_events fe
-            LEFT JOIN switchboard.connector_registry cr
-              ON cr.connector_type = fe.connector_type
-             AND cr.endpoint_identity = fe.endpoint_identity
-            WHERE fe.id = ANY($1::uuid[])
-            """,
-            [UUID(e) for e in event_ids],
-        )
+        replay_policies = await ingestion_events_replay_policy(pool, event_ids)
     except Exception:
-        logger.warning("bulk_retry: pre-flight channel safety check failed", exc_info=True)
-        raise HTTPException(status_code=503, detail="Database error during safety pre-flight check")
+        logger.warning("bulk_retry: replay policy pre-flight check failed", exc_info=True)
+        raise HTTPException(status_code=503, detail=_REPLAY_SAFETY_UNAVAILABLE_REASON)
 
     unsafe_events: list[dict] = []
-    for row in channel_rows:
-        channel = row["source_channel"]
-        replay_safe = row["replay_safe"]
-        if channel in _UNSAFE_CHANNELS or not replay_safe:
+    for event_id in event_ids:
+        policy = replay_policies.get(event_id)
+        if policy is not None and not policy.replay_safe:
             unsafe_events.append(
                 {
-                    "id": row["id"],
-                    "source_channel": channel,
-                    "reason": (
-                        f"source_channel='{channel}' is not replay-safe"
-                        if channel in _UNSAFE_CHANNELS
-                        else "connector_registry.replay_safe=false"
-                    ),
+                    "id": event_id,
+                    "source_channel": policy.source_channel,
+                    "reason": policy.block_reason,
                 }
             )
 
@@ -837,7 +872,7 @@ async def bulk_retry_ingestion_events(
                 target=json.dumps(event_ids),
                 note=json.dumps(
                     {
-                        "reason": "unsafe_channel",
+                        "reason": "unsafe_replay_policy",
                         "unsafe_events": unsafe_events,
                     }
                 ),
@@ -916,6 +951,30 @@ async def bulk_retry_ingestion_events(
                 }
             )
             failed += 1
+        elif outcome == "unsafe":
+            await _audit_replay_safety_rejection(
+                pool,
+                event_id=event_id,
+                source_channel=result.get("source_channel"),
+                client_host=client_host,
+            )
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "conflict",
+                    "error": result.get("reason") or "Event is not replay-safe",
+                }
+            )
+            failed += 1
+        elif outcome == "policy_unavailable":
+            results.append(
+                {
+                    "event_id": event_id,
+                    "status": "error",
+                    "error": _REPLAY_SAFETY_UNAVAILABLE_REASON,
+                }
+            )
+            failed += 1
         else:
             # outcome == "conflict" — event exists but is not in a retryable state
             results.append(
@@ -955,12 +1014,42 @@ async def replay_ingestion_event(
     Returns:
         200 — ``{"status": "replay_pending", "id": "<uuid>"}``
         404 — event not found in either table
-        409 — event exists but is not in a replayable state
+        409 — event exists but is not in a replayable state or connector-safe
+        503 — replay policy cannot be resolved safely
     """
     try:
         pool = db.credential_shared_pool()
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    from uuid import UUID
+
+    try:
+        event_id = str(UUID(event_id))
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid event_id: {exc}") from exc
+
+    try:
+        replay_policy = (await ingestion_events_replay_policy(pool, [event_id])).get(event_id)
+    except Exception as exc:
+        logger.warning("replay: replay policy lookup failed for %s", event_id, exc_info=True)
+        raise HTTPException(status_code=503, detail=_REPLAY_SAFETY_UNAVAILABLE_REASON) from exc
+
+    if replay_policy is not None and not replay_policy.replay_safe:
+        client_host = getattr(request.client, "host", None) if request.client else None
+        await _audit_replay_safety_rejection(
+            pool,
+            event_id=event_id,
+            source_channel=replay_policy.source_channel,
+            client_host=client_host,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "Event is not replay-safe",
+                "reason": replay_policy.block_reason,
+            },
+        )
 
     # Obtain the switchboard pool for resetting message_inbox on replay.
     switchboard_pool = None
@@ -969,15 +1058,29 @@ async def replay_ingestion_event(
     except (KeyError, Exception):
         pass  # Non-fatal: replay of ingested events will log a warning.
 
-    try:
-        result = await ingestion_event_replay_request(
-            pool, event_id, switchboard_pool=switchboard_pool
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid event_id: {exc}") from exc
+    result = await ingestion_event_replay_request(pool, event_id, switchboard_pool=switchboard_pool)
 
     if result["outcome"] == "not_found":
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
+
+    if result["outcome"] == "policy_unavailable":
+        raise HTTPException(status_code=503, detail=_REPLAY_SAFETY_UNAVAILABLE_REASON)
+
+    if result["outcome"] == "unsafe":
+        client_host = getattr(request.client, "host", None) if request.client else None
+        await _audit_replay_safety_rejection(
+            pool,
+            event_id=event_id,
+            source_channel=result.get("source_channel"),
+            client_host=client_host,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "Event is not replay-safe",
+                "reason": result.get("reason"),
+            },
+        )
 
     if result["outcome"] == "conflict":
         raise HTTPException(
@@ -1309,5 +1412,6 @@ async def get_ingestion_window_rollup(
         sessions=result["sessions"],
         cost=result["cost"],
         unpriced_session_count=result["unpriced_session_count"],
+        no_usage_session_count=result.get("no_usage_session_count", 0),
         window=result["window"],
     )

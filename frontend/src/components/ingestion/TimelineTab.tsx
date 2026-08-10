@@ -91,7 +91,7 @@ import type {
 import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts";
 import { Time } from "@/components/ui/time";
 import { RowStatus, ROW_STATUS_WORDS } from "./StatusBadge";
-import { isBulkEligible, bulkIneligibleReason } from "./bulkEligibility";
+import { isBulkEligible, bulkIneligibleReason, isReplaySafe } from "./bulkEligibility";
 import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { DispatchTicksCell } from "./timeline/DispatchTicksCell";
 import { EventDrawer } from "./timeline/EventDrawer";
@@ -866,15 +866,25 @@ function LedgerRow({
   onChannelClick,
   onRowNavigationKeyDown,
 }: LedgerRowProps) {
-  const eligible = isBulkEligible(event.status);
-  const ineligibleReason = bulkIneligibleReason(event.status);
+  const eligible = isBulkEligible(event);
+  const ineligibleReason = bulkIneligibleReason(event);
   // bu-4utdw.3: tokens/cost/sender are now list-provided fields (one grouped
   // fan-out for the whole page server-side) — no per-row hook mounts here.
   const resolvedName = event.sender_display ?? event.source_sender_identity ?? null;
   const unpricedSessionCount = event.unpriced_session_count ?? 0;
-  const costEvidence = formatCostEvidence(event.cost_usd, unpricedSessionCount);
+  const noUsageSessionCount = event.no_usage_session_count ?? 0;
+  const costEvidence = formatCostEvidence(
+    event.cost_usd,
+    unpricedSessionCount,
+    noUsageSessionCount,
+  );
 
   const [isReplaying, setIsReplaying] = useState(false);
+  const canReplay = isReplayable(event.status) && isReplaySafe(event);
+  const replayBlockedReason =
+    isReplayable(event.status) && !isReplaySafe(event)
+      ? (event.replay_block_reason ?? "Replay safety has not been confirmed for this event")
+      : null;
 
   // bu-4utdw.4: every row expands now — filtered/error rows used to be
   // excluded (their detail was tooltip-only). The drawer already renders an
@@ -1058,7 +1068,13 @@ function LedgerRow({
       {/* Cost */}
       <span
         className="text-right tabular-nums font-mono text-[11px]"
-        title={unpricedSessionCount > 0 ? `${unpricedSessionCount} session cost unavailable` : undefined}
+        title={
+          unpricedSessionCount > 0
+            ? `${unpricedSessionCount} session cost unavailable`
+            : noUsageSessionCount > 0
+              ? `${noUsageSessionCount} session${noUsageSessionCount === 1 ? "" : "s"} recorded no token usage`
+              : undefined
+        }
       >
         {costEvidence}
       </span>
@@ -1068,7 +1084,7 @@ function LedgerRow({
       <div className="flex items-center justify-end gap-0" onClick={(e) => e.stopPropagation()}>
         {isReplayPending(event.status) ? (
           <Loader2 className="size-3 animate-spin text-muted-foreground" data-testid="replay-pending-spinner" />
-        ) : isReplayable(event.status) ? (
+        ) : canReplay ? (
           <button
             type="button"
             onClick={handleReplay}
@@ -1083,6 +1099,16 @@ function LedgerRow({
               <RotateCw className="size-3" />
             )}
           </button>
+        ) : replayBlockedReason ? (
+          <span
+            role="img"
+            aria-label={`Replay unavailable: ${replayBlockedReason}`}
+            title={`Replay unavailable: ${replayBlockedReason}`}
+            className="inline-flex size-5 items-center justify-center text-muted-foreground"
+            data-testid="replay-unavailable"
+          >
+            <AlertTriangle className="size-3" aria-hidden />
+          </span>
         ) : (
           <span aria-hidden="true" className="font-mono text-[10px] text-muted-foreground select-none">
             {isExpanded ? "▲" : "▼"}
@@ -1350,6 +1376,7 @@ interface FooterRollupBandProps {
   sessions: number | undefined;
   cost: number | null | undefined;
   unpricedSessionCount: number | undefined;
+  noUsageSessionCount: number | undefined;
   isLoading: boolean;
   isError: boolean;
   onRetry: () => void;
@@ -1358,10 +1385,17 @@ interface FooterRollupBandProps {
 function formatCostEvidence(
   cost: number | null | undefined,
   unpricedSessionCount: number | undefined,
+  noUsageSessionCount: number | undefined,
 ): string {
   const knownSubtotal = cost !== null && cost !== undefined ? formatCostUsdPrecise(cost) : "—";
   const unpriced = unpricedSessionCount ?? 0;
-  return unpriced > 0 ? `${knownSubtotal} · ${unpriced} unpriced` : knownSubtotal;
+  const noUsage = noUsageSessionCount ?? 0;
+  const coverage = [
+    unpriced > 0 ? `${unpriced} unpriced` : null,
+    noUsage > 0 ? `${noUsage} no usage` : null,
+  ].filter((value): value is string => value !== null);
+  if (coverage.length === 0) return knownSubtotal;
+  return knownSubtotal === "—" ? coverage.join(" · ") : `${knownSubtotal} · ${coverage.join(" · ")}`;
 }
 
 function FooterRollupBand({
@@ -1369,6 +1403,7 @@ function FooterRollupBand({
   sessions,
   cost,
   unpricedSessionCount,
+  noUsageSessionCount,
   isLoading,
   isError,
   onRetry,
@@ -1411,7 +1446,7 @@ function FooterRollupBand({
       <div className="w-px h-4 bg-border/60" aria-hidden />
       {cell("sessions", sessions !== undefined ? sessions.toLocaleString() : "—")}
       <div className="w-px h-4 bg-border/60" aria-hidden />
-      {cell("cost", formatCostEvidence(cost, unpricedSessionCount))}
+      {cell("cost", formatCostEvidence(cost, unpricedSessionCount, noUsageSessionCount))}
     </div>
   );
 }
@@ -2020,6 +2055,7 @@ export function TimelineTab({
     data: infiniteData,
     isLoading,
     isFetching,
+    isPlaceholderData,
     isError,
     hasNextPage,
     isFetchingNextPage,
@@ -2183,7 +2219,7 @@ export function TimelineTab({
   const showCheckboxColumn = activeViewId === "errors" || selectedIds.size > 0;
 
   const visibleEligibleIds = useMemo(
-    () => events.filter((e) => isBulkEligible(e.status)).map((e) => e.id).slice(0, MAX_BULK_RETRY_BATCH),
+    () => events.filter((e) => isBulkEligible(e)).map((e) => e.id).slice(0, MAX_BULK_RETRY_BATCH),
     [events],
   );
 
@@ -2351,7 +2387,11 @@ export function TimelineTab({
       )}
 
       {/* Ledger */}
-      <FetchingDim isFetching={isFetching && !isLoading && !isError && !isFetchingNextPage}>
+      <FetchingDim
+        isFetching={
+          isFetching && isPlaceholderData && !isLoading && !isError && !isFetchingNextPage
+        }
+      >
       <div ref={ledgerRef} className="border border-border rounded" data-testid="timeline-ledger">
         <LedgerColumnHeaders />
 
@@ -2415,6 +2455,7 @@ export function TimelineTab({
         sessions={rollupData?.sessions}
         cost={rollupData?.cost}
         unpricedSessionCount={rollupData?.unpriced_session_count}
+        noUsageSessionCount={rollupData?.no_usage_session_count}
         isLoading={rollupLoading}
         isError={rollupError}
         onRetry={() => void refetchRollup()}

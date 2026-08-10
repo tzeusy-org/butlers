@@ -1256,7 +1256,7 @@ describe("TimelineTab — footer rollup band (bu-mxtn2)", () => {
     expect(rollup!.textContent).toContain("—");
   });
 
-  it("keeps unknown session cost coverage visible beside a null subtotal", () => {
+  it("keeps unknown session cost coverage visible when no subtotal is known", () => {
     vi.mocked(useIngestionWindowRollup).mockReturnValue({
       data: {
         events: 10,
@@ -1281,8 +1281,38 @@ describe("TimelineTab — footer rollup band (bu-mxtn2)", () => {
 
     const rollup = container.querySelector("[data-testid='footer-rollup-band']");
     expect(rollup).not.toBeNull();
-    expect(rollup!.textContent).toContain("—");
     expect(rollup!.textContent).toContain("2 unpriced");
+    expect(rollup!.textContent).not.toContain("—");
+  });
+
+  it("keeps no-usage session coverage visible when no subtotal is known", () => {
+    vi.mocked(useIngestionWindowRollup).mockReturnValue({
+      data: {
+        events: 10,
+        sessions: 2,
+        cost: null,
+        no_usage_session_count: 2,
+        window: { from: null, to: null },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIngestionWindowRollup>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const rollup = container.querySelector("[data-testid='footer-rollup-band']");
+    expect(rollup).not.toBeNull();
+    expect(rollup!.textContent).toContain("2 no usage");
+    expect(rollup!.textContent).not.toContain("—");
+    expect(rollup!.textContent).not.toContain("unpriced");
   });
 
   it("renders loading state (ellipsis) when rollup is loading", () => {

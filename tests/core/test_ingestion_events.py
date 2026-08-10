@@ -242,6 +242,94 @@ async def test_ingestion_event_get() -> None:
     assert len([c for c in pool_hit.calls if c[0] == "fetchrow"]) == 1
 
 
+async def test_ingestion_events_replay_policy_fails_closed() -> None:
+    """Only one explicit live registry policy can permit a replay."""
+    from butlers.core.ingestion_events import ingestion_events_replay_policy
+
+    email_id = str(uuid.uuid4())
+    safe_id = str(uuid.uuid4())
+    unresolved_id = str(uuid.uuid4())
+    blank_endpoint_id = str(uuid.uuid4())
+    ambiguous_id = str(uuid.uuid4())
+    pool = _FakePool(
+        fetch_results=[
+            _FakeRecord(
+                {
+                    "id": email_id,
+                    "source_channel": "email",
+                    "endpoint_identity": "inbox@example.com",
+                    "connector_match_count": 1,
+                    "replay_safe": True,
+                }
+            ),
+            _FakeRecord(
+                {
+                    "id": safe_id,
+                    # Accepted Telegram events use the provider ``telegram``
+                    # but the registry/heartbeat connector type ``telegram_bot``.
+                    "source_channel": "telegram_bot",
+                    "endpoint_identity": "bot-1",
+                    "connector_match_count": 1,
+                    "replay_safe": True,
+                }
+            ),
+            _FakeRecord(
+                {
+                    "id": unresolved_id,
+                    "source_channel": "webhook",
+                    "endpoint_identity": None,
+                    "connector_match_count": 0,
+                    "replay_safe": None,
+                }
+            ),
+            _FakeRecord(
+                {
+                    "id": blank_endpoint_id,
+                    "source_channel": "telegram_bot",
+                    "endpoint_identity": "   ",
+                    "connector_match_count": 1,
+                    "replay_safe": True,
+                }
+            ),
+            _FakeRecord(
+                {
+                    "id": ambiguous_id,
+                    "source_channel": "sms",
+                    "endpoint_identity": "owner",
+                    "connector_match_count": 2,
+                    "replay_safe": True,
+                }
+            ),
+        ]
+    )
+
+    policies = await ingestion_events_replay_policy(
+        pool, [email_id, safe_id, unresolved_id, blank_endpoint_id, ambiguous_id]
+    )
+
+    assert policies[email_id].replay_safe is False
+    assert policies[email_id].block_reason == "Email events cannot be replayed safely"
+    assert policies[safe_id].replay_safe is True
+    assert policies[unresolved_id].replay_safe is False
+    assert (
+        policies[unresolved_id].block_reason == "Replay safety is not configured for this connector"
+    )
+    assert policies[blank_endpoint_id].replay_safe is False
+    assert (
+        policies[blank_endpoint_id].block_reason
+        == "Replay safety is not configured for this connector"
+    )
+    assert policies[ambiguous_id].replay_safe is False
+    assert policies[ambiguous_id].block_reason == "Replay safety is ambiguous for this connector"
+    _, sql, _ = pool.calls[0]
+    assert "ARRAY_REMOVE(ARRAY[ie.source_channel, ie.source_provider], NULL)" in sql
+    assert "ARRAY_REMOVE(ARRAY[fe.connector_type, fe.source_channel], NULL)" in sql
+    assert "COUNT(cr.connector_type) AS connector_match_count" in sql
+    assert "cr.replay_safe" in sql
+    assert "NULLIF(BTRIM(es.endpoint_identity), '')" in sql
+    assert "COALESCE(ie.source_provider, ie.source_channel)" not in sql
+
+
 async def test_ingestion_events_list_and_sessions() -> None:
     """list returns cursor-paginated result; has_more / next_cursor set correctly;
     channel filter passed to SQL; sessions fan-out/merge/cost-decode/rollup."""
@@ -360,13 +448,15 @@ async def test_ingestion_events_list_and_sessions() -> None:
     rollup_result = ingestion_event_rollup("req-001", sessions)
     assert rollup_result["total_sessions"] == 4 and rollup_result["total_input_tokens"] == 300
     assert abs(rollup_result["total_cost"] - 0.015) < 1e-9
-    assert rollup_result["unpriced_session_count"] == 2
+    assert rollup_result["unpriced_session_count"] == 0
+    assert rollup_result["no_usage_session_count"] == 2
     assert (
         rollup_result["by_butler"]["atlas"]["sessions"] == 2
         and abs(rollup_result["by_butler"]["atlas"]["cost"] - 0.015) < 1e-9
     )
     assert rollup_result["by_butler"]["herald"]["cost"] is None
-    assert rollup_result["by_butler"]["herald"]["unpriced_session_count"] == 2
+    assert rollup_result["by_butler"]["herald"]["unpriced_session_count"] == 0
+    assert rollup_result["by_butler"]["herald"]["no_usage_session_count"] == 2
 
 
 async def test_ingestion_events_list_event_ids_filter() -> None:
@@ -648,9 +738,34 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
     event_id = uuid.uuid4()
     ok_row = _FakeRecord({"id": event_id})
 
-    # Success
-    result = await ingestion_event_replay_request(_FakePool(fetchrow_result=ok_row), event_id)
+    # Success. The policy predicate and transition live in the same statement:
+    # it locks the resolved registry row so a concurrent unsafe policy change
+    # cannot land between a successful safety read and the status update.
+    safe_transition_pool = _FakePool(fetchrow_result=ok_row)
+    result = await ingestion_event_replay_request(safe_transition_pool, event_id)
     assert result["outcome"] == "ok" and result["id"] == str(event_id)
+    public_transition_sql = safe_transition_pool.calls[0][1]
+    assert "FOR SHARE OF cr" in public_transition_sql
+    assert "BOOL_AND(replay_safe IS TRUE)" in public_transition_sql
+    assert (
+        "ARRAY_REMOVE(ARRAY[candidate.source_channel, candidate.source_provider], NULL)"
+        in public_transition_sql
+    )
+    assert (
+        "NULLIF(BTRIM(candidate.source_endpoint_identity), '') IS NOT NULL" in public_transition_sql
+    )
+
+    filtered_transition_pool = _FakePool(fetchrow_results=[None, None, ok_row])
+    filtered_result = await ingestion_event_replay_request(filtered_transition_pool, event_id)
+    assert filtered_result["outcome"] == "ok"
+    filtered_transition_sql = [
+        call[1] for call in filtered_transition_pool.calls if call[0] == "fetchrow"
+    ][2]
+    assert (
+        "ARRAY_REMOVE(ARRAY[candidate.connector_type, candidate.source_channel], NULL)"
+        in filtered_transition_sql
+    )
+    assert "NULLIF(BTRIM(candidate.endpoint_identity), '') IS NOT NULL" in filtered_transition_sql
 
     # String UUID accepted
     assert (await ingestion_event_replay_request(_FakePool(fetchrow_result=ok_row), str(event_id)))[
@@ -669,6 +784,30 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
         _FakePool(fetchrow_result=None, fetchval_result="replay_pending"), uuid.uuid4()
     )
     assert result_cf["outcome"] == "conflict" and result_cf["current_status"] == "replay_pending"
+
+    unsafe_result = await ingestion_event_replay_request(
+        _FakePool(
+            fetchrow_results=[None, None, None],
+            fetch_results=[
+                _FakeRecord(
+                    {
+                        "id": str(event_id),
+                        "source_channel": "email",
+                        "endpoint_identity": "inbox@example.com",
+                        "connector_match_count": 1,
+                        "replay_safe": False,
+                    }
+                )
+            ],
+            fetchval_result=None,
+        ),
+        event_id,
+    )
+    assert unsafe_result == {
+        "outcome": "unsafe",
+        "reason": "Email events cannot be replayed safely",
+        "source_channel": "email",
+    }
 
     # Invalid UUID raises
     with pytest.raises(ValueError):
@@ -842,6 +981,30 @@ async def test_ingestion_window_rollup_cost_null_without_pricing() -> None:
     assert result["unpriced_session_count"] == 3
 
 
+async def test_ingestion_window_rollup_preserves_stored_cost_without_pricing() -> None:
+    """A legacy stored cost is priced evidence even when catalog pricing is absent."""
+    from butlers.core.ingestion_events import ingestion_window_rollup
+
+    session_rows = [
+        {
+            "cnt": 2,
+            "model": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": {"total_usd": 0.0042},
+        }
+    ]
+    db = _FakeDatabaseManager(results={"butler1": session_rows})
+    pool = _FakePoolForRollup(event_count=2)
+
+    result = await ingestion_window_rollup(pool, db=db, pricing=None)
+
+    assert result["sessions"] == 2
+    assert result["cost"] == 0.0084
+    assert result["unpriced_session_count"] == 0
+    assert result["no_usage_session_count"] == 0
+
+
 async def test_ingestion_window_rollup_cost_null_no_sessions() -> None:
     """When no sessions exist (empty fan-out), cost is None even with pricing."""
     from butlers.core.ingestion_events import ingestion_window_rollup
@@ -882,7 +1045,7 @@ async def test_ingestion_window_rollup_cost_skips_unknown_model() -> None:
     assert result["unpriced_session_count"] == 1
 
 
-async def test_ingestion_window_rollup_preserves_unpriced_same_model_sessions() -> None:
+async def test_ingestion_window_rollup_preserves_no_usage_same_model_sessions() -> None:
     """A no-usage session must not hide inside another priced model bucket."""
     from butlers.core.ingestion_events import ingestion_window_rollup
 
@@ -907,7 +1070,8 @@ async def test_ingestion_window_rollup_preserves_unpriced_same_model_sessions() 
 
     assert result["sessions"] == 2
     assert result["cost"] == 0.002
-    assert result["unpriced_session_count"] == 1
+    assert result["unpriced_session_count"] == 0
+    assert result["no_usage_session_count"] == 1
     query = " ".join(db.fan_out_calls[-1][0].split())
     assert "GROUP BY model, COALESCE(input_tokens, 0)" in query
 
@@ -1197,6 +1361,41 @@ def test_ingestion_events_list_enrichment_preserves_unknown_and_known_zero_cost(
     )["req-3"]
     assert known_zero["session_cost_usd"] == 0.0
     assert known_zero["unpriced_session_count"] == 0
+
+
+def test_ingestion_events_list_enrichment_separates_no_usage_from_unpriced() -> None:
+    """Failed launches without token evidence are not missing-price sessions."""
+    from butlers.core.ingestion_events import ingestion_events_list_enrichment
+
+    enrichment = ingestion_events_list_enrichment(
+        {
+            "req-1": [
+                {
+                    "butler_name": "model-mismatch",
+                    "input_tokens": 12,
+                    "output_tokens": 4,
+                    "cost_usd": None,
+                    "success": False,
+                },
+                {
+                    "butler_name": "auth-failure",
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "cached_input_tokens": None,
+                    "cache_creation_tokens": None,
+                    "cost_usd": None,
+                    "success": False,
+                },
+            ]
+        }
+    )["req-1"]
+
+    assert enrichment["unpriced_session_count"] == 1
+    assert enrichment["no_usage_session_count"] == 1
+    assert [session["cost_evidence"] for session in enrichment["sessions"]] == [
+        "unpriced",
+        "no_usage",
+    ]
 
 
 def test_ingestion_events_list_enrichment_duration_none_when_incomplete() -> None:

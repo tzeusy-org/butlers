@@ -395,7 +395,15 @@ async def test_bulk_retry_audit_failure_is_nonfatal(app):
 
 def _make_db_row(**kwargs):
     """Return a minimal asyncpg-like record dict for pool.fetch() results."""
-    return kwargs
+    defaults = {
+        "source_channel": "telegram",
+        "connector_type": "telegram_bot",
+        "endpoint_identity": "bot@example.com",
+        "connector_match_count": 1,
+        "replay_safe": True,
+    }
+    defaults.update(kwargs)
+    return defaults
 
 
 async def test_bulk_retry_email_event_rejected_409(app):
@@ -483,7 +491,7 @@ async def test_bulk_retry_replay_safe_false_rejected_409(app):
     assert detail["error"] == "Batch contains replay-unsafe events"
     assert len(detail["unsafe_events"]) == 1
     assert detail["unsafe_events"][0]["id"] == unsafe_id
-    assert "replay_safe=false" in detail["unsafe_events"][0]["reason"]
+    assert detail["unsafe_events"][0]["reason"] == "This connector is not replay-safe"
     mock_replay.assert_not_called()
 
 
@@ -525,6 +533,51 @@ async def test_bulk_retry_safe_batch_passes_guard_200(app):
     body = resp.json()
     assert body["succeeded"] == 1
     assert body["failed"] == 0
+
+
+async def test_bulk_retry_reports_atomic_policy_change_as_conflict(app):
+    """A safe preflight cannot make a later unsafe transition look accepted."""
+    event_id = str(uuid4())
+    pool = _make_shared_pool()
+    pool.fetch = AsyncMock(
+        return_value=[_make_db_row(id=event_id, source_channel="telegram_bot", replay_safe=True)]
+    )
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with (
+        patch(
+            "butlers.api.routers.ingestion_events.ingestion_event_replay_request",
+            new_callable=AsyncMock,
+            return_value={
+                "outcome": "unsafe",
+                "reason": "This connector is not replay-safe",
+                "source_channel": "telegram_bot",
+            },
+        ),
+        patch(
+            "butlers.api.routers.ingestion_events._audit_append",
+            new_callable=AsyncMock,
+        ) as mock_audit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/ingestion/events/retry/bulk",
+                json={"event_ids": [event_id]},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["succeeded"] == 0
+    assert resp.json()["failed"] == 1
+    assert resp.json()["results"] == [
+        {
+            "event_id": event_id,
+            "status": "conflict",
+            "error": "This connector is not replay-safe",
+        }
+    ]
+    assert mock_audit.await_args.kwargs["action"] == "ingestion.event.replay_reject"
 
 
 async def test_bulk_retry_preflight_qualifies_connector_registry_schema(app):

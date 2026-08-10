@@ -3962,6 +3962,8 @@ export interface IngestionEventListSessionSummary {
   butler_name: string;
   duration_ms: number | null;
   cost_usd: number | null;
+  /** Whether the session was priced, lacked a price despite token usage, or recorded no usage. */
+  cost_evidence?: "priced" | "unpriced" | "no_usage";
   success: boolean | null;
 }
 
@@ -3987,6 +3989,10 @@ export interface IngestionEventSummary {
   filter_reason: string | null;
   /** Detailed error context for error-status events (e.g. exception message). */
   error_detail: string | null;
+  /** Server-authoritative connector policy; only true permits a replay action. */
+  replay_safe?: boolean;
+  /** Safe, human-readable explanation when replay_safe is false. */
+  replay_block_reason?: string | null;
   /**
    * Known-priced session subtotal across this event's linked sessions. It is
    * lazily denormalized after a complete rollup, or derived from live session
@@ -4001,8 +4007,10 @@ export interface IngestionEventSummary {
   tokens_in: number | null;
   tokens_out: number | null;
   session_count: number;
-  /** Linked sessions omitted from cost_usd because their cost is unavailable. */
+  /** Token-using sessions omitted from cost_usd because their price is unavailable. */
   unpriced_session_count?: number;
+  /** Sessions that recorded neither token usage nor a stored cost. */
+  no_usage_session_count?: number;
   sessions: IngestionEventListSessionSummary[];
   /**
    * Contact-resolved sender display name (relationship.entity_facts), or null
@@ -4053,6 +4061,8 @@ export interface IngestionEventSession {
   output_tokens: number | null;
   /** Estimated USD cost for this session. Null when pricing data is unavailable. */
   cost_usd: number | null;
+  /** Whether the session was priced, lacked a price despite token usage, or recorded no usage. */
+  cost_evidence?: "priced" | "unpriced" | "no_usage";
   trace_id: string | null;
   model: string | null;
 }
@@ -4064,8 +4074,10 @@ export interface ButlerRollupEntry {
   output_tokens: number;
   /** Known-priced subtotal for this butler, if any. */
   cost: number | null;
-  /** Sessions omitted from cost because their cost is unavailable. */
+  /** Token-using sessions omitted from cost because their price is unavailable. */
   unpriced_session_count?: number;
+  /** Sessions with no token or stored-cost evidence. */
+  no_usage_session_count?: number;
 }
 
 /** Aggregate cost/token totals for all sessions linked to one ingestion event. */
@@ -4076,8 +4088,10 @@ export interface IngestionEventRollup {
   total_output_tokens: number;
   /** Known-priced subtotal across all sessions, if any. */
   total_cost: number | null;
-  /** Sessions omitted from total_cost because their cost is unavailable. */
+  /** Token-using sessions omitted from total_cost because their price is unavailable. */
   unpriced_session_count?: number;
+  /** Sessions with no token or stored-cost evidence. */
+  no_usage_session_count?: number;
   by_butler: Record<string, ButlerRollupEntry>;
 }
 
@@ -4167,8 +4181,10 @@ export interface IngestionWindowRollup {
    * endpoint when pricing config is available; null when unavailable.
    */
   cost: number | null;
-  /** Sessions omitted from cost because their cost is unavailable. */
+  /** Token-using sessions omitted from cost because their price is unavailable. */
   unpriced_session_count?: number;
+  /** Sessions with no token or stored-cost evidence. */
+  no_usage_session_count?: number;
   /** The active filter window boundaries. */
   window: { from: string | null; to: string | null };
 }

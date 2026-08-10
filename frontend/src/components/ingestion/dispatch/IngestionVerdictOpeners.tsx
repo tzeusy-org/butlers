@@ -56,7 +56,13 @@ function timelineWindow(range: IngestionRange): { from: string; to: string } {
 function timelineAllClear(
   range: IngestionRange,
   rollup:
-    | { events: number; sessions: number; cost: number | null; unpriced_session_count?: number }
+    | {
+        events: number;
+        sessions: number;
+        cost: number | null;
+        unpriced_session_count?: number;
+        no_usage_session_count?: number;
+      }
     | undefined,
 ): string {
   if (!rollup) return "Ingestion window ready";
@@ -72,17 +78,36 @@ function timelineAllClear(
 
 function timelineCostCoverageClauses(
   rollup:
-    | { events: number; sessions: number; cost: number | null; unpriced_session_count?: number }
+    | {
+        events: number;
+        sessions: number;
+        cost: number | null;
+        unpriced_session_count?: number;
+        no_usage_session_count?: number;
+      }
     | undefined,
 ): VerdictClause[] {
   const unpriced = rollup?.unpriced_session_count ?? 0;
-  if (unpriced === 0) return [];
+  const noUsage = rollup?.no_usage_session_count ?? 0;
+  if (unpriced === 0 && noUsage === 0) return [];
 
   return [
-    {
-      key: "unpriced-session-cost",
-      text: `${plural(unpriced, "session")} cost unavailable`,
-    },
+    ...(unpriced > 0
+      ? [
+          {
+            key: "unpriced-session-cost",
+            text: `${plural(unpriced, "session")} cost unavailable`,
+          },
+        ]
+      : []),
+    ...(noUsage > 0
+      ? [
+          {
+            key: "no-usage-session-cost",
+            text: `${plural(noUsage, "session")} recorded no token usage`,
+          },
+        ]
+      : []),
   ];
 }
 
