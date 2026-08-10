@@ -1,46 +1,47 @@
-#!/usr/bin/env bash
-# Default-deny all restore-drill executor traffic except its configured
-# PostgreSQL IPv4 endpoint and port.
+#!/bin/bash
+# Install the restore-drill executor's default-deny network policy.
 #
-# This is intentionally separate from egress-firewall.sh: the ordinary egress
-# bridge is a broad application network, while restore_drill_db carries only
-# the credentialed recovery executor. scripts/compose.sh creates that service
-# without starting it, applies this policy, and only then starts the stack.
+# This checked-in source is an installation artifact only. Supported launchers
+# invoke the root-owned copy at /usr/local/libexec/butlers-restore-drill-firewall
+# after stopping/creating the executor and before allowing it to start. Never
+# grant sudo for this checkout path: see install_restore_drill_firewall_wrapper.sh.
 #
-# Usage:
-#   sudo RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=203.0.113.10 \
-#        RESTORE_DRILL_EXECUTOR_DB_PORT=5432 \
-#        ./scripts/restore-drill-firewall.sh
-#   sudo ./scripts/restore-drill-firewall.sh --remove
+# The policy has two hooks because Docker's DOCKER-USER chain covers forwarded
+# bridge traffic but not packets addressed to the Docker host/bridge gateway.
+# The INPUT hook therefore default-denies that second path too. Compose pins the
+# executor's DNS upstream to its own loopback; the terminal rules still deny
+# raw DNS packets on either host-network path.
 
 set -euo pipefail
 
-COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-butlers-dev}"
-RESTORE_DRILL_NETWORK="${COMPOSE_PROJECT}_restore_drill_db"
-CHAIN_SUFFIX="$(printf '%s' "$RESTORE_DRILL_NETWORK" | cksum | awk '{print $1}')"
-RESTORE_DRILL_CHAIN="BTRL_RD_${CHAIN_SUFFIX}"
-JUMP_COMMENT="butlers-restore-drill-default-deny"
-ALLOW_COMMENT="butlers-restore-drill-postgres-only"
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+readonly PATH
 
-resolve_bridge() {
-    local bridge net_id
-    bridge="$(docker network inspect "$RESTORE_DRILL_NETWORK" \
-        --format '{{ .Options.com.docker.network.bridge.name }}' 2>/dev/null)" || true
+readonly JUMP_COMMENT="butlers-restore-drill-default-deny"
+readonly ALLOW_COMMENT="butlers-restore-drill-postgres-only"
 
-    if [[ -z "$bridge" || "$bridge" == "<no value>" ]]; then
-        net_id="$(docker network inspect "$RESTORE_DRILL_NETWORK" --format '{{.Id}}' 2>/dev/null)" || true
-        if [[ -n "$net_id" ]]; then
-            bridge="br-${net_id:0:12}"
-        fi
-    fi
+COMPOSE_PROJECT=""
+RESTORE_DRILL_DB_HOST=""
+RESTORE_DRILL_DB_PORT=""
+DRY_RUN=false
+DRY_RUN_BRIDGE=""
+REMOVE=false
 
-    if [[ -z "$bridge" ]] || ! ip link show "$bridge" &>/dev/null; then
-        printf "ERROR: Could not resolve bridge interface for network '%s'\n" "$RESTORE_DRILL_NETWORK" >&2
-        printf '%s\n' '  Start it only through scripts/compose.sh so the isolated network is created first.' >&2
-        exit 1
-    fi
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  butlers-restore-drill-firewall --project <compose-project> --db-host <IPv4> --db-port <1..65535>
+  butlers-restore-drill-firewall --remove --project <compose-project>
 
-    printf '%s\n' "$bridge"
+The root-owned wrapper accepts only validated literal values. --dry-run and
+--bridge are test-only, unprivileged planning options and are intentionally not
+included in the sudo policy.
+EOF
+}
+
+die() {
+    printf 'ERROR: %s\n' "$1" >&2
+    exit 2
 }
 
 is_ipv4() {
@@ -54,71 +55,206 @@ is_ipv4() {
     done
 }
 
-validate_endpoint() {
-    RESTORE_DRILL_DB_HOST="${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Set RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST to the resolved PostgreSQL IPv4 endpoint}"
-    RESTORE_DRILL_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}"
+is_project_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]]
+}
 
-    if ! is_ipv4 "$RESTORE_DRILL_DB_HOST"; then
-        printf '%s\n' 'ERROR: RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST must be a resolved IPv4 address.' >&2
-        exit 2
+is_bridge_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,62}$ ]]
+}
+
+parse_args() {
+    while (($#)); do
+        case "$1" in
+            --project)
+                (($# >= 2)) || die "--project requires a value"
+                COMPOSE_PROJECT="$2"
+                shift 2
+                ;;
+            --db-host)
+                (($# >= 2)) || die "--db-host requires an IPv4 value"
+                RESTORE_DRILL_DB_HOST="$2"
+                shift 2
+                ;;
+            --db-port)
+                (($# >= 2)) || die "--db-port requires a value"
+                RESTORE_DRILL_DB_PORT="$2"
+                shift 2
+                ;;
+            --remove)
+                REMOVE=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --bridge)
+                (($# >= 2)) || die "--bridge requires a value"
+                DRY_RUN_BRIDGE="$2"
+                shift 2
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                usage
+                die "unrecognized argument: $1"
+                ;;
+        esac
+    done
+
+    [[ -n "$COMPOSE_PROJECT" ]] || die "--project is required"
+    is_project_name "$COMPOSE_PROJECT" || die "--project contains unsupported characters"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        [[ -n "$DRY_RUN_BRIDGE" ]] || die "--dry-run requires --bridge"
+        is_bridge_name "$DRY_RUN_BRIDGE" || die "--bridge contains unsupported characters"
+    elif [[ -n "$DRY_RUN_BRIDGE" ]]; then
+        die "--bridge is valid only with --dry-run"
     fi
-    if [[ ! "$RESTORE_DRILL_DB_PORT" =~ ^[0-9]+$ ]] \
-        || ((10#$RESTORE_DRILL_DB_PORT < 1 || 10#$RESTORE_DRILL_DB_PORT > 65535)); then
-        printf '%s\n' 'ERROR: RESTORE_DRILL_EXECUTOR_DB_PORT must be in the range 1..65535.' >&2
-        exit 2
+    if [[ "$REMOVE" == true && "$DRY_RUN" == true ]]; then
+        die "--dry-run cannot be combined with --remove"
+    fi
+
+    if [[ "$REMOVE" == false ]]; then
+        [[ -n "$RESTORE_DRILL_DB_HOST" ]] || die "--db-host is required"
+        [[ -n "$RESTORE_DRILL_DB_PORT" ]] || die "--db-port is required"
+        is_ipv4 "$RESTORE_DRILL_DB_HOST" || die "--db-host must be a resolved IPv4 address"
+        if [[ ! "$RESTORE_DRILL_DB_PORT" =~ ^[0-9]+$ ]] \
+            || ((10#$RESTORE_DRILL_DB_PORT < 1 || 10#$RESTORE_DRILL_DB_PORT > 65535)); then
+            die "--db-port must be in the range 1..65535"
+        fi
+    elif [[ -n "$RESTORE_DRILL_DB_HOST" || -n "$RESTORE_DRILL_DB_PORT" ]]; then
+        die "--remove accepts only --project"
+    fi
+}
+
+network_name() {
+    printf '%s_restore_drill_db\n' "$COMPOSE_PROJECT"
+}
+
+chain_suffix() {
+    network_name | cksum | awk '{print $1}'
+}
+
+resolve_bridge() {
+    if [[ "$DRY_RUN" == true ]]; then
+        printf '%s\n' "$DRY_RUN_BRIDGE"
+        return
+    fi
+
+    local bridge net_id network
+    network="$(network_name)"
+    bridge="$(docker network inspect "$network" \
+        --format '{{ .Options.com.docker.network.bridge.name }}' 2>/dev/null)" || true
+
+    if [[ -z "$bridge" || "$bridge" == "<no value>" ]]; then
+        net_id="$(docker network inspect "$network" --format '{{.Id}}' 2>/dev/null)" || true
+        if [[ -n "$net_id" ]]; then
+            bridge="br-${net_id:0:12}"
+        fi
+    fi
+
+    if [[ -z "$bridge" ]] || ! ip link show "$bridge" &>/dev/null; then
+        printf "ERROR: Could not resolve bridge interface for network '%s'\n" "$network" >&2
+        printf '%s\n' '  The supported launcher must create the isolated network before this policy.' >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$bridge"
+}
+
+emit_iptables() {
+    printf 'iptables'
+    printf ' %s' "$@"
+    printf '\n'
+}
+
+run_iptables() {
+    if [[ "$DRY_RUN" == true ]]; then
+        emit_iptables "$@"
+    else
+        iptables "$@"
+    fi
+}
+
+chain_exists() {
+    [[ "$DRY_RUN" == false ]] && iptables -nL "$1" &>/dev/null
+}
+
+jump_exists() {
+    [[ "$DRY_RUN" == false ]] && iptables -C "$@" &>/dev/null
+}
+
+ensure_chain() {
+    local chain="$1"
+    if ! chain_exists "$chain"; then
+        run_iptables -N "$chain"
+    fi
+    run_iptables -F "$chain"
+}
+
+ensure_jump() {
+    local hook="$1" bridge="$2" chain="$3"
+    if ! jump_exists "$hook" -i "$bridge" -j "$chain" -m comment --comment "$JUMP_COMMENT"; then
+        run_iptables -I "$hook" 1 -i "$bridge" -j "$chain" -m comment --comment "$JUMP_COMMENT"
     fi
 }
 
 apply_rules() {
-    local bridge
-    validate_endpoint
+    local bridge suffix forward_chain input_chain
     bridge="$(resolve_bridge)"
+    suffix="$(chain_suffix)"
+    forward_chain="BTRL_RDF_${suffix}"
+    input_chain="BTRL_RDI_${suffix}"
 
-    # A project-scoped chain keeps simultaneous dev/prod stacks independent.
-    if ! iptables -nL "$RESTORE_DRILL_CHAIN" &>/dev/null; then
-        iptables -N "$RESTORE_DRILL_CHAIN"
-    fi
-    # compose.sh calls this before starting the executor, so rebuilding this
-    # dedicated chain cannot create a live egress window.
-    iptables -F "$RESTORE_DRILL_CHAIN"
-    iptables -A "$RESTORE_DRILL_CHAIN" \
+    ensure_chain "$forward_chain"
+    run_iptables -A "$forward_chain" \
         -p tcp -d "$RESTORE_DRILL_DB_HOST" --dport "$RESTORE_DRILL_DB_PORT" \
         -j ACCEPT -m comment --comment "$ALLOW_COMMENT"
-    iptables -A "$RESTORE_DRILL_CHAIN" -j DROP -m comment --comment "$JUMP_COMMENT"
+    run_iptables -A "$forward_chain" -j DROP -m comment --comment "$JUMP_COMMENT"
+    # DOCKER-USER is Docker's earliest FORWARD hook for bridge packets.
+    ensure_jump DOCKER-USER "$bridge" "$forward_chain"
 
-    if ! iptables -C DOCKER-USER -i "$bridge" -j "$RESTORE_DRILL_CHAIN" \
-        -m comment --comment "$JUMP_COMMENT" 2>/dev/null; then
-        iptables -I DOCKER-USER 1 -i "$bridge" -j "$RESTORE_DRILL_CHAIN" \
-            -m comment --comment "$JUMP_COMMENT"
+    # Packets addressed to the host or bridge gateway never traverse FORWARD.
+    ensure_chain "$input_chain"
+    run_iptables -A "$input_chain" \
+        -p tcp -d "$RESTORE_DRILL_DB_HOST" --dport "$RESTORE_DRILL_DB_PORT" \
+        -j ACCEPT -m comment --comment "$ALLOW_COMMENT"
+    run_iptables -A "$input_chain" -j DROP -m comment --comment "$JUMP_COMMENT"
+    ensure_jump INPUT "$bridge" "$input_chain"
+
+    if [[ "$DRY_RUN" == false ]]; then
+        printf 'Restore-drill bridge: %s\n' "$bridge"
+        printf 'Allowed PostgreSQL endpoint: %s:%s\n' "$RESTORE_DRILL_DB_HOST" "$RESTORE_DRILL_DB_PORT"
+        printf '%s\n' 'All other forwarded and host/gateway restore-drill traffic is denied.'
     fi
-
-    printf 'Restore-drill bridge: %s\n' "$bridge"
-    printf 'Allowed PostgreSQL endpoint: %s:%s\n' "$RESTORE_DRILL_DB_HOST" "$RESTORE_DRILL_DB_PORT"
-    printf '%s\n' 'All other restore-drill outbound traffic is denied.'
 }
 
-remove_rules() {
-    local bridge
-    bridge="$(resolve_bridge)"
-
-    while iptables -D DOCKER-USER -i "$bridge" -j "$RESTORE_DRILL_CHAIN" \
+remove_chain() {
+    local hook="$1" bridge="$2" chain="$3"
+    while iptables -D "$hook" -i "$bridge" -j "$chain" \
         -m comment --comment "$JUMP_COMMENT" 2>/dev/null; do
         true
     done
-    iptables -F "$RESTORE_DRILL_CHAIN" 2>/dev/null || true
-    iptables -X "$RESTORE_DRILL_CHAIN" 2>/dev/null || true
+    iptables -F "$chain" 2>/dev/null || true
+    iptables -X "$chain" 2>/dev/null || true
+}
+
+remove_rules() {
+    local bridge suffix
+    bridge="$(resolve_bridge)"
+    suffix="$(chain_suffix)"
+    remove_chain DOCKER-USER "$bridge" "BTRL_RDF_${suffix}"
+    remove_chain INPUT "$bridge" "BTRL_RDI_${suffix}"
     printf 'Removed restore-drill firewall policy for bridge: %s\n' "$bridge"
 }
 
-case "${1:-}" in
-    --remove)
-        remove_rules
-        ;;
-    "")
-        apply_rules
-        ;;
-    *)
-        printf 'Usage: %s [--remove]\n' "$0" >&2
-        exit 2
-        ;;
-esac
+parse_args "$@"
+if [[ "$REMOVE" == true ]]; then
+    remove_rules
+else
+    apply_rules
+fi

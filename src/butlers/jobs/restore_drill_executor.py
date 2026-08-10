@@ -23,6 +23,7 @@ from butlers.jobs.backup_health import (
     RestoreDrillResult,
     _run_restore_drill_sync,
     latest_backup_path,
+    sanitize_restore_drill_detail,
 )
 
 logger = logging.getLogger(__name__)
@@ -198,7 +199,9 @@ async def run_restore_drill_executor_tick(
         await persistence.record_result(
             backup_name=backup_path.name,
             result="pass" if result.ok else "fail",
-            detail=result.detail,
+            # Enforce the audit/API boundary even when a future runner is
+            # swapped in: arbitrary subprocess text must never persist.
+            detail=sanitize_restore_drill_detail(result.detail),
             table_count=result.table_count,
         )
     except Exception:

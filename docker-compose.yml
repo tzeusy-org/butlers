@@ -248,8 +248,15 @@ services:
     # Its libpq/asyncpg host remains the DNS name for sslmode=verify-full.
     extra_hosts:
       - ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}=${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to resolve the PostgreSQL IPv4 firewall endpoint}
+    # Docker's embedded resolver has only this container-loopback upstream.
+    # There is no DNS listener in the executor; extra_hosts resolves the sole
+    # required database identity before the resolver is consulted.
+    dns:
+      - 127.0.0.1
     networks: [restore_drill_db]
-    restart: unless-stopped
+    # A transient host firewall fence must be installed before this credentialed
+    # service starts, including after a Docker daemon or host restart.
+    restart: "no"
 
   dashboard-api:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}

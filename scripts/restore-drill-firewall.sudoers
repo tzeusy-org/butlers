@@ -1,0 +1,11 @@
+# Install this policy only through root-controlled host configuration management
+# after installing /usr/local/libexec/butlers-restore-drill-firewall with
+# scripts/install_restore_drill_firewall_wrapper.sh. Replace the group name
+# with the deployment operator group approved for this host.
+#
+# Never grant sudo for scripts/restore-drill-firewall.sh, `env`, a shell, or a
+# wildcard checkout path. The immutable wrapper validates each literal argument
+# before it calls docker or iptables. --remove and --dry-run are deliberately
+# absent from this policy.
+Cmnd_Alias BUTLERS_RESTORE_DRILL_FIREWALL = /usr/local/libexec/butlers-restore-drill-firewall --project * --db-host * --db-port *
+%butlers-deploy ALL=(root) NOPASSWD: BUTLERS_RESTORE_DRILL_FIREWALL

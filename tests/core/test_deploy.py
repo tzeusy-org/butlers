@@ -9,7 +9,6 @@ tests/integration/test_deploy_ledger_roundtrip.py.
 from __future__ import annotations
 
 import logging
-import os
 import socket
 import subprocess
 from pathlib import Path
@@ -19,6 +18,7 @@ import httpx
 import pytest
 
 from butlers.core.deploy import (
+    RESTORE_DRILL_FIREWALL_WRAPPER,
     DeployConfig,
     DeployError,
     RestoreDrillEndpoint,
@@ -163,9 +163,6 @@ class TestRestoreDrillDeployBoundary:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        firewall_script = tmp_path / "scripts" / "restore-drill-firewall.sh"
-        firewall_script.parent.mkdir()
-        firewall_script.write_text("#!/bin/sh\n", encoding="utf-8")
         config = _config(repo_root=tmp_path)
         endpoint = RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432)
 
@@ -178,37 +175,38 @@ class TestRestoreDrillDeployBoundary:
         assert commands[2] == [
             "sudo",
             "-n",
-            "env",
-            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=198.51.100.42",
-            "RESTORE_DRILL_EXECUTOR_DB_PORT=5432",
-            "COMPOSE_PROJECT_NAME=butlers",
-            str(firewall_script),
+            RESTORE_DRILL_FIREWALL_WRAPPER,
+            "--project",
+            "butlers",
+            "--db-host",
+            "198.51.100.42",
+            "--db-port",
+            "5432",
         ]
         assert commands[3][-3:] == ["up", "-d", "--remove-orphans"]
+        assert all("restore-drill-firewall.sh" not in command for command in commands[2])
+        assert all(str(tmp_path) not in command for command in commands[2])
 
         for _command, env in (calls[0], calls[1], calls[3]):
             assert env["RESTORE_DRILL_EXECUTOR_DB_HOST"] == "postgres.example.test"
             assert env["RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST"] == "198.51.100.42"
             assert env["RESTORE_DRILL_EXECUTOR_DB_PORT"] == "5432"
-        assert calls[2][1] == {"PATH": os.environ["PATH"]}
+        assert calls[2][1] == {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
 
-    def test_firewall_failure_fails_closed_before_recreate(self, tmp_path, monkeypatch):
+    def test_firewall_failure_fails_closed_before_recreate(self, monkeypatch):
         calls: list[list[str]] = []
 
         def fake_run(cmd, cwd, env, capture_output, text):
             calls.append(cmd)
-            if cmd[:3] == ["sudo", "-n", "env"]:
+            if cmd[:3] == ["sudo", "-n", RESTORE_DRILL_FIREWALL_WRAPPER]:
                 return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="sudo denied")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        firewall_script = tmp_path / "scripts" / "restore-drill-firewall.sh"
-        firewall_script.parent.mkdir()
-        firewall_script.write_text("#!/bin/sh\n", encoding="utf-8")
         endpoint = RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432)
 
         with pytest.raises(DeployError) as exc_info:
-            prepare_restore_drill_executor(_config(repo_root=tmp_path), endpoint)
+            prepare_restore_drill_executor(_config(), endpoint)
 
         assert exc_info.value.phase == "restore-drill-firewall"
         assert not any(command[-1:] == ["up"] or "up" in command for command in calls)

@@ -220,6 +220,66 @@ def test_run_restore_drill_sync_always_drops_scratch_db_on_failure(
     assert dropdb_calls == 2
 
 
+def test_run_restore_drill_sync_post_cleanup_failure_never_reports_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-deployment-hardening-007: a leftover scratch database invalidates a pass."""
+    backup = _write_gzip_backup(tmp_path)
+    dropdb_calls = 0
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        nonlocal dropdb_calls
+        if command[0] == "dropdb":
+            dropdb_calls += 1
+            if dropdb_calls == 2:
+                return _completed(
+                    1,
+                    stderr=b"postgresql://restore:top-secret@db.example.test/postgres COPY private_data",
+                )
+            return _completed()
+        if command[0] == "psql" and "-tAc" in command:
+            return _completed(stdout=b"3\n")
+        return _completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = _run_restore_drill_sync(backup, db_params=_DB_PARAMS)
+
+    assert result.ok is False
+    assert result.table_count == 3
+    assert "scratch cleanup failed" in result.detail
+    assert "top-secret" not in result.detail
+    assert "postgresql://" not in result.detail
+    assert "COPY private_data" not in result.detail
+    assert len(result.detail) <= 512
+    assert dropdb_calls == 2
+
+
+def test_run_restore_drill_sync_never_persists_raw_client_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Client stdout/stderr may contain credentials or dump content, never audit detail."""
+    backup = _write_gzip_backup(tmp_path)
+    raw_client_output = (
+        b"postgresql://restore:top-secret@db.example.test/postgres "
+        b"COPY owner_private_data FROM stdin;\n" + b"x" * 4_000
+    )
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        if command[0] == "createdb":
+            return _completed(1, stderr=raw_client_output)
+        return _completed()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = _run_restore_drill_sync(backup, db_params=_DB_PARAMS)
+
+    assert result.ok is False
+    assert result.detail == "createdb failed: PostgreSQL client reported an error"
+    assert len(result.detail) <= 512
+    assert "top-secret" not in result.detail
+    assert "postgresql://" not in result.detail
+    assert "COPY owner_private_data" not in result.detail
+
+
 class _FakeAuditPool:
     def __init__(self, *, row: dict | None):
         self._row = row
@@ -251,3 +311,19 @@ async def test_get_last_restore_drill_naive_timestamp_treated_as_utc() -> None:
 
     assert result is not None
     assert result["checked_at"].endswith("+00:00")
+
+
+@pytest.mark.asyncio
+async def test_get_last_restore_drill_withholds_legacy_raw_client_output() -> None:
+    result = await get_last_restore_drill(
+        _FakeAuditPool(
+            row={
+                "ts": datetime(2026, 7, 10, 2, 0, tzinfo=UTC),
+                "result": "fail",
+                "error": "postgresql://restore:top-secret@db.example.test/postgres COPY private_data",
+            }
+        )
+    )
+
+    assert result is not None
+    assert result["detail"] == "restore drill diagnostic withheld"

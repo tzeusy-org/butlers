@@ -992,7 +992,7 @@ async def get_backup_facts(
 
 async def _read_restore_drill_facts(db: DatabaseManager) -> RestoreDrillFacts:
     """Read the most recent restore-drill result from the ledger. Never raises."""
-    from butlers.jobs.backup_health import get_last_restore_drill
+    from butlers.jobs.backup_health import get_last_restore_drill, sanitize_restore_drill_detail
 
     try:
         pool = db.pool("switchboard")
@@ -1013,7 +1013,9 @@ async def _read_restore_drill_facts(db: DatabaseManager) -> RestoreDrillFacts:
     return RestoreDrillFacts(
         checked_at=row["checked_at"],
         result=row["result"],
-        detail=row["detail"],
+        # Defend the API boundary as well as the executor persistence boundary:
+        # legacy or alternate readers must not revive raw client output.
+        detail=None if row["detail"] is None else sanitize_restore_drill_detail(row["detail"]),
     )
 
 

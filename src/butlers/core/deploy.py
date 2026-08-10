@@ -86,6 +86,11 @@ DEFAULT_HEALTH_URL = "http://localhost:41200/health"
 DEFAULT_HEALTH_TIMEOUT_S = 180.0
 DEFAULT_HEALTH_POLL_INTERVAL_S = 3.0
 
+# This path is intentionally not configurable. The supported deploy path may
+# elevate only the root-owned copy installed by
+# scripts/install_restore_drill_firewall_wrapper.sh, never checkout code.
+RESTORE_DRILL_FIREWALL_WRAPPER = "/usr/local/libexec/butlers-restore-drill-firewall"
+
 _RESTORE_DRILL_ENV_KEYS = frozenset(
     {
         "POSTGRES_HOST",
@@ -631,7 +636,7 @@ def prepare_restore_drill_executor(config: DeployConfig, endpoint: RestoreDrillE
     This is deliberately a deploy phase rather than a best-effort post-start
     hook.  Stopping an old executor first prevents a chain refresh from
     creating an egress window; ``create`` then materializes only its network;
-    the root-owned firewall script must succeed before the ordinary recreate
+    the root-owned immutable firewall wrapper must succeed before the ordinary recreate
     phase starts any service.
     """
     environment = endpoint.compose_environment()
@@ -647,27 +652,24 @@ def prepare_restore_drill_executor(config: DeployConfig, endpoint: RestoreDrillE
         phase="restore-drill-create",
         environment=environment,
     )
-    firewall_script = config.repo_root / "scripts" / "restore-drill-firewall.sh"
-    if not firewall_script.is_file():
-        raise DeployError(
-            "restore-drill-firewall", f"required firewall script is missing: {firewall_script}"
-        )
     _run_subprocess(
         [
             "sudo",
             "-n",
-            "env",
-            f"RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST={endpoint.firewall_ipv4}",
-            f"RESTORE_DRILL_EXECUTOR_DB_PORT={endpoint.port}",
-            f"COMPOSE_PROJECT_NAME={config.project_name}",
-            str(firewall_script),
+            RESTORE_DRILL_FIREWALL_WRAPPER,
+            "--project",
+            config.project_name,
+            "--db-host",
+            endpoint.firewall_ipv4,
+            "--db-port",
+            str(endpoint.port),
         ],
         cwd=config.repo_root,
         phase="restore-drill-firewall",
         # Do not hand ordinary deployment environment (including shared DB
-        # credentials) to an elevated subprocess. The root-owned script gets
-        # only its endpoint through literal ``env`` command arguments above.
-        environment={"PATH": os.environ.get("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")},
+        # credentials) to an elevated subprocess. The immutable wrapper gets
+        # only validated, literal endpoint arguments through its fixed path.
+        environment={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
         inherit_environment=False,
     )
 

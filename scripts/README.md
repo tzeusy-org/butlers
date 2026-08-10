@@ -66,16 +66,26 @@ for the deployment boundary and rollback rules.
 
 ## restore-drill-firewall.sh
 
-`restore-drill-firewall.sh` enforces the executor's dedicated
-`restore_drill_db` bridge as default-deny: it permits only TCP to the resolved
-PostgreSQL IPv4 endpoint and port, then drops all other outbound traffic from
-that bridge. The executor keeps a configured DNS database host as its TLS
-identity (including `verify-full`), while Compose resolves that name locally to
-the separately supplied IPv4 endpoint so the bridge has no DNS egress. Both
-`scripts/compose.sh` and `butlers deploy` stop/create the executor, install the
-policy with passwordless `sudo`, and only then start the stack; they fail closed
-when that policy cannot be installed. Do not start
-`restore-drill-executor` through a bare `docker compose up` command.
+`restore-drill-firewall.sh` is the reviewed installation source for the
+root-owned fixed runtime wrapper at
+`/usr/local/libexec/butlers-restore-drill-firewall`. It accepts only validated
+literal project, PostgreSQL IPv4, and port arguments. Its policy default-denies
+the executor bridge at both Docker's `DOCKER-USER`/`FORWARD` hook and the
+bridge-to-host `INPUT` path, allowing only TCP to the configured PostgreSQL
+endpoint. The executor keeps a configured DNS database host as its TLS identity
+(including `verify-full`), maps that name locally to the supplied IPv4, and has
+only a container-loopback DNS upstream; raw DNS and host/gateway paths remain
+denied.
+
+Use `install_restore_drill_firewall_wrapper.sh` only in a root-controlled
+deployment setup to install that immutable target. The checked-in
+`restore-drill-firewall.sudoers` template grants a deployment group access only
+to the fixed wrapper's normal three-argument form. Never grant sudo for the
+checkout script, a checkout wildcard, `env`, a shell, or the installer. Both
+`scripts/compose.sh` and `butlers deploy` stop/create the executor, invoke the
+fixed wrapper, and only then start the stack; `restart: "no"` prevents an
+unfenced daemon/host auto-start. Do not start `restore-drill-executor` through
+a bare `docker compose up` command.
 
 ## dev.sh
 

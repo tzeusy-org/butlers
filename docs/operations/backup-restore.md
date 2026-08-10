@@ -94,24 +94,52 @@ The Compose service is deliberately narrow:
 
 - It joins only the dedicated `restore_drill_db` bridge and exposes no
   listener or host port. That bridge is not marked Docker `internal` because
-  PostgreSQL is externally hosted; instead
-  `scripts/restore-drill-firewall.sh` installs a project-scoped host firewall
-  chain that allows only TCP to the resolved PostgreSQL IPv4 endpoint and port
-  and drops every other outbound packet. A configured DNS database host remains
-  the executor's connection/TLS identity (including `sslmode=verify-full`),
-  while Compose maps that name locally to the separately resolved IPv4 firewall
-  endpoint; the executor therefore has no DNS egress. IPv6 is disabled on this
-  bridge.
+  PostgreSQL is externally hosted. A root-owned fixed wrapper at
+  `/usr/local/libexec/butlers-restore-drill-firewall` installs project-scoped
+  default-deny chains at Docker's `DOCKER-USER`/`FORWARD` hook and the bridge
+  `INPUT` path. The only accepted route is TCP to the resolved PostgreSQL IPv4
+  endpoint and port; every other forwarded packet and every executor-to-host or
+  bridge-gateway packet is dropped. This second hook is required because host
+  services and the bridge gateway do not traverse `FORWARD`.
+- A configured DNS database host remains the executor's connection/TLS identity
+  (including `sslmode=verify-full`), while Compose maps that name locally to
+  the separately resolved IPv4 firewall endpoint. The service configures
+  Docker's resolver with only the executor's `127.0.0.1` loopback upstream; no
+  resolver runs in that container, and `/etc/hosts` resolves the sole required
+  database identity before DNS is consulted. Thus an embedded-DNS request has
+  no external upstream, while raw DNS packets are also denied by the two
+  firewall hooks. IPv6 is disabled on this bridge.
 - The supported launchers, `scripts/compose.sh` and `butlers deploy`, stop any
   old executor, create its network without starting the credentialed process,
-  install that default-deny policy, and only then start the stack. Do not start
-  this service through a bare `docker compose up`; either supported launcher
-  fails closed if it cannot apply the required firewall policy.
+  install that default-deny policy, and only then start the stack. The executor
+  has `restart: "no"`, so a Docker daemon or host restart cannot auto-start it
+  before the fence is recreated. Do not start this service through a bare
+  `docker compose up`; either supported launcher fails closed if it cannot
+  apply the required firewall policy.
 - It mounts `butlers_backups` read-only and has no Docker socket, `backend`,
   `frontend`, or `egress` network membership.
 - It does not inherit `x-postgres-env` and receives no `POSTGRES_USER`,
   `POSTGRES_PASSWORD`, or `DATABASE_URL` value.
 - Its only credential is the private file-secret mount described above.
+
+### Firewall wrapper prerequisite
+
+Before enabling a supported launcher on a host, a root-controlled deployment
+procedure must review the exact checkout source and install the immutable
+runtime copy with `scripts/install_restore_drill_firewall_wrapper.sh`. That
+installer writes only `/usr/local/libexec/butlers-restore-drill-firewall` with
+`root:root` ownership and mode `0755`; it does not accept an alternate target.
+The host's managed sudo policy may permit only that fixed wrapper and only its
+literal `--project`, `--db-host`, and `--db-port` invocation form. The checked-in
+`scripts/restore-drill-firewall.sudoers` is a policy template for that host
+configuration step.
+
+Never grant passwordless sudo for `scripts/restore-drill-firewall.sh`, a
+checkout wildcard, `env`, a shell, or the installer. The checkout script is an
+installation artifact, not a runtime elevated command. If the fixed wrapper or
+its narrowly scoped sudo rule is absent, leave the executor stopped and repair
+the root-controlled deployment configuration before retrying either supported
+launcher.
 
 This is a single-executor design. Do not scale `restore-drill-executor` above
 one replica until a reviewed cross-process exclusive guard protects the entire
@@ -135,6 +163,14 @@ executor performs this fixed sequence:
 The live application database is never a restore target. The executor's
 maintenance connection is used only to create or remove the fixed scratch
 database.
+
+Only a verified post-run cleanup can produce a `pass`. A failed `dropdb` makes
+the result a failed drill even after a successful restore/verification, so a
+leftover scratch database is never reported as recovery evidence. Stored and
+API-visible diagnostic detail is at most 512 characters from a controlled safe
+vocabulary; raw PostgreSQL stdout/stderr, connection strings, passwords, and
+dump content are withheld rather than retained in audit records or rendered by
+the dashboard.
 
 ### Observing a drill
 

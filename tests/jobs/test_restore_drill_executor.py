@@ -219,6 +219,39 @@ async def test_executor_tick_uses_its_narrow_persistence_boundary_for_due_and_re
 
 
 @pytest.mark.asyncio
+async def test_executor_persistence_boundary_withholds_untrusted_result_detail(
+    tmp_path: Path,
+) -> None:
+    """Audit/API readers receive bounded safe detail even if a runner misbehaves."""
+    backup = _write_gzip_backup(tmp_path)
+    config = RestoreDrillExecutorConfig(
+        host="db.example.test",
+        port=5432,
+        application_db="butlers",
+        maintenance_db="postgres",
+        user="restore_drill_executor",
+        password="file-backed-test-password",
+        backup_dir=tmp_path,
+        drill_interval_s=604800,
+        check_interval_s=3600,
+    )
+    persistence = _FakeExecutorPersistence(due=True)
+
+    def runner(_path: Path, **_kwargs: object) -> RestoreDrillResult:
+        return RestoreDrillResult(
+            ok=False,
+            detail="postgresql://restore:top-secret@db.example.test/postgres COPY private_data",
+        )
+
+    summary = await run_restore_drill_executor_tick(config, persistence, runner=runner)
+
+    assert summary == {"ok": False, "recorded": True, "backup_file": backup.name}
+    assert persistence.recorded == [
+        (backup.name, "fail", "restore drill diagnostic withheld", None)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_executor_tick_does_not_launch_a_scratch_lifecycle_before_it_is_due(
     tmp_path: Path,
 ) -> None:

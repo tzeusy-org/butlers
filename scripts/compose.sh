@@ -461,15 +461,14 @@ fi
 # default-deny PostgreSQL-only policy must exist before the privileged
 # credentialed process receives a network namespace.
 "${CMD[@]}" create restore-drill-executor
-if ! sudo -n true 2>/dev/null; then
-  echo "ERROR: restore-drill executor remains stopped because its required firewall cannot be applied without passwordless sudo." >&2
-  echo "  Configure passwordless sudo for ${SCRIPT_DIR}/restore-drill-firewall.sh, then rerun scripts/compose.sh." >&2
+if ! sudo -n /usr/local/libexec/butlers-restore-drill-firewall \
+  --project "${COMPOSE_PROJECT_NAME}" \
+  --db-host "${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}" \
+  --db-port "${RESTORE_DRILL_EXECUTOR_DB_PORT}"; then
+  echo "ERROR: restore-drill executor remains stopped because its required root-owned firewall wrapper could not be applied." >&2
+  echo "  Install /usr/local/libexec/butlers-restore-drill-firewall through the reviewed root procedure and allow only that fixed wrapper in sudoers, then rerun scripts/compose.sh." >&2
   exit 1
 fi
-sudo RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST="${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}" \
-  RESTORE_DRILL_EXECUTOR_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT}" \
-  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" \
-  "${SCRIPT_DIR}/restore-drill-firewall.sh"
 
 "${CMD[@]}" up -d "${SCALE_ARGS[@]}"
 

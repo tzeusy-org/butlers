@@ -43,11 +43,14 @@ Scope: v1-mandatory
   configuration and has no general live-schema grants
 - **AND** it joins only a dedicated restore-drill bridge whose outbound policy
   default-denies every destination except the configured PostgreSQL endpoint
-  and port, mounts backup artifacts read-only, and has no listener, Docker
-  socket, `backend`, `frontend`, or `egress` access
+  and port across both forwarded and bridge-to-host traffic, mounts backup
+  artifacts read-only, and has no listener, Docker socket, `backend`,
+  `frontend`, or `egress` access
 - **AND** its DNS connection hostname remains distinct from the resolved IPv4
   firewall endpoint so `sslmode=verify-full` verifies the intended PostgreSQL
-  identity without granting the bridge DNS egress
+  identity without granting the bridge DNS egress; the rendered resolver has
+  only a container-loopback upstream and the local host mapping resolves that
+  sole PostgreSQL identity
 
 #### Scenario: Privilege repair requires the managed bootstrap path
 - **WHEN** an operator encounters a restore-drill `CREATEDB` prerequisite failure

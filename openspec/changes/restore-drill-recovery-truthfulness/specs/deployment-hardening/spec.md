@@ -40,15 +40,20 @@ Scope: v1-mandatory
 - **WHEN** the restore-drill executor is deployed
 - **THEN** it joins only a dedicated restore-drill bridge whose outbound policy
   default-denies every destination except the configured PostgreSQL endpoint
-  and port, has a read-only backup mount and no listener, Docker socket,
+  and port at both Docker's `DOCKER-USER`/`FORWARD` hook and the bridge-to-host
+  `INPUT` path, has a read-only backup mount and no listener, Docker socket,
   `backend`, `frontend`, or `egress` access
 - **AND** both supported launchers, `scripts/compose.sh` and `butlers deploy`,
-  stop/create the executor, install that default-deny policy, and only then
-  start it; failure to install the policy prevents the executor from starting
+  stop/create the executor, invoke only a fixed root-owned firewall wrapper
+  with validated literal project/IPv4/port arguments, install that default-deny
+  policy, and only then start it; failure to install the policy prevents the
+  executor from starting, and it has no automatic restart policy that could
+  bypass a transient fence after a Docker daemon or host restart
 - **AND** when the database is configured by DNS name, that name remains the
   executor's TLS identity for `sslmode=verify-full` while a separately resolved
-  IPv4 address is used only by the firewall and local container host mapping,
-  so the isolated bridge has no DNS egress
+  IPv4 address is used only by the firewall and local container host mapping;
+  Docker's resolver has only a container-loopback upstream with no resolver,
+  and raw DNS packets are denied by the same forward and host/gateway boundary
 - **AND** it receives its credential only through the private file-secret mount,
   not the shared `POSTGRES_*`/`DATABASE_URL` environment used by dashboard-api
 - **AND** dashboard-api reads durable results but does not schedule or execute

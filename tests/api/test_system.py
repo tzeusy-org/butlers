@@ -897,7 +897,7 @@ async def test_backups_restore_drill_surfaces_last_result(
             return_value={
                 "checked_at": "2026-05-07T02-00-00+00:00",
                 "result": "fail",
-                "detail": "restore failed: relation already exists",
+                "detail": "restore failed: PostgreSQL client reported an error",
             }
         ),
     )
@@ -909,7 +909,36 @@ async def test_backups_restore_drill_surfaces_last_result(
         resp = await client.get("/api/system/backups")
     data = resp.json()["data"]
     assert data["restore_drill"]["result"] == "fail"
-    assert "relation already exists" in data["restore_drill"]["detail"]
+    assert data["restore_drill"]["detail"] == "restore failed: PostgreSQL client reported an error"
+
+
+async def test_backups_restore_drill_withholds_unsafe_detail_at_api_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An unsafe persistence return cannot be passed through to dashboard clients."""
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill",
+        AsyncMock(
+            return_value={
+                "checked_at": "2026-05-07T02-00-00+00:00",
+                "result": "fail",
+                "detail": "postgresql://restore:top-secret@db.example.test/postgres COPY private_data",
+            }
+        ),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/system/backups")
+
+    restore_drill = response.json()["data"]["restore_drill"]
+    assert restore_drill["detail"] == "restore drill diagnostic withheld"
+    assert "top-secret" not in restore_drill["detail"]
+    assert len(restore_drill["detail"]) <= 512
 
 
 async def test_backups_restore_drill_degraded_when_pool_unavailable(

@@ -76,19 +76,29 @@ backup artifact required for recovery proof. The containment is explicit: the
 executor is the sole service with that credential, joins only the dedicated
 `restore_drill_db` bridge, and a host policy default-denies all traffic from
 that bridge except TCP to its configured PostgreSQL endpoint and port. The
-bridge is intentionally not Docker `internal` because PostgreSQL is externally
-hosted; both supported launchers (`scripts/compose.sh` and `butlers deploy`)
-stop/create the executor, install the default-deny policy, and only then start
-it. When PostgreSQL is named by DNS, that hostname remains the executor's TLS
+policy hooks both Docker's `DOCKER-USER`/`FORWARD` path and the bridge `INPUT`
+path, because a host or Docker gateway destination does not traverse
+`FORWARD`. The bridge is intentionally not Docker `internal` because PostgreSQL
+is externally hosted; both supported launchers (`scripts/compose.sh` and
+`butlers deploy`) stop/create the executor, invoke only the fixed root-owned
+`/usr/local/libexec/butlers-restore-drill-firewall` wrapper, install the
+default-deny policy, and only then start it. Neither launcher may elevate a
+checkout-controlled script, broad `env`, or a shell. The executor has no
+automatic restart policy, so a Docker daemon or host restart cannot start it
+before the fence is restored.
+
+When PostgreSQL is named by DNS, that hostname remains the executor's TLS
 identity (including `verify-full`), while the host resolves a separate IPv4
-firewall endpoint and Compose maps the hostname locally so the bridge has no
-DNS egress. It mounts backups read-only, has no listener, Docker socket,
-`backend`, `frontend`, or `egress` membership, and runs no LLM session. The
-dashboard, butlers, and connectors remain `NOCREATEDB`; their shared credential
-is tested as unable to create a scratch database. Granting `CREATEDB` to that
-shared user is rejected because `SET ROLE` cannot constrain its subprocesses.
-Ad hoc `ALTER ROLE` or a manually pre-created scratch database are rejected
-because they turn a recovery proof into an untracked live mutation.
+firewall endpoint and Compose maps the hostname locally. Docker's resolver has
+only the executor's container-loopback upstream, where no resolver runs; raw
+DNS traffic is additionally covered by the two terminal-deny firewall hooks.
+It mounts backups read-only, has no listener, Docker socket, `backend`,
+`frontend`, or `egress` membership, and runs no LLM session. The dashboard,
+butlers, and connectors remain `NOCREATEDB`; their shared credential is tested
+as unable to create a scratch database. Granting `CREATEDB` to that shared user
+is rejected because `SET ROLE` cannot constrain its subprocesses. Ad hoc
+`ALTER ROLE` or a manually pre-created scratch database are rejected because
+they turn a recovery proof into an untracked live mutation.
 
 ### 2. The scratch database has an explicit, single-executor lifecycle
 
@@ -122,8 +132,11 @@ Every recorded failure carries a closed `failure_stage` and `failure_code`,
 plus a sanitized, bounded operator detail (maximum 512 characters). Raw
 stderr, passwords, connection strings, dump content, and unbounded backup
 paths must not enter the audit metadata, attention ledger, API response, logs,
-or metrics. Legacy records without structured fields remain readable with
-unknown/null provenance; their text is never parsed to infer a code or cadence.
+or metrics. Sanitization is an allowlist rather than raw-output truncation:
+unrecognized client output is withheld, so redacting a URL cannot accidentally
+retain a dump row. Legacy records without structured fields remain readable
+with unknown/null provenance; unsafe legacy detail is withheld and its text is
+never parsed to infer a code or cadence.
 
 `failing_since` is the timestamp of the oldest contiguous failed restore-drill
 record ending at the current failed result. It is `null` unless the current
