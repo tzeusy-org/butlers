@@ -16,6 +16,7 @@ from alembic import command
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    migration_bootstrap_db_url,
     migration_db_name,
     table_exists,
 )
@@ -139,28 +140,18 @@ def _role_exists(db_url: str, role_name: str) -> bool:
     return bool(exists)
 
 
-def _current_user(db_url: str) -> str:
+def _has_schema_create_privilege(db_url: str, schema_name: str) -> bool:
     engine = create_engine(db_url)
     with engine.connect() as conn:
-        result = conn.execute(text("SELECT current_user"))
-        user = result.scalar()
-    engine.dispose()
-    assert isinstance(user, str)
-    return user
-
-
-def _schema_owner(db_url: str, schema_name: str) -> str | None:
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        result = conn.execute(
+        has_privilege = conn.execute(
             text(
-                "SELECT pg_catalog.pg_get_userbyid(n.nspowner) FROM pg_namespace n WHERE n.nspname = :s"
+                "SELECT has_schema_privilege(current_user, :schema_name, 'USAGE') "
+                "AND has_schema_privilege(current_user, :schema_name, 'CREATE')"
             ),
-            {"s": schema_name},
-        )
-        owner = result.scalar()
+            {"schema_name": schema_name},
+        ).scalar_one()
     engine.dispose()
-    return owner
+    return bool(has_privilege)
 
 
 def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = False):
@@ -178,6 +169,57 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
                 conn.execute(text("RESET ROLE"))
     finally:
         engine.dispose()
+
+
+def test_create_migration_db_bootstraps_restore_drill_prerequisite(postgres_container):
+    """REQ-database-security-006: fresh test databases stage the trusted bootstrap interface."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            current_user = conn.execute(text("SELECT current_user")).scalar_one()
+            database_owner = conn.execute(
+                text(
+                    "SELECT pg_get_userbyid(datdba) "
+                    "FROM pg_database WHERE datname = current_database()"
+                )
+            ).scalar_one()
+            can_create_databases = conn.execute(
+                text("SELECT rolcreatedb FROM pg_roles WHERE rolname = current_user")
+            ).scalar_one()
+            has_trusted_installer = conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_namespace AS admin_schema
+                        JOIN pg_roles AS bootstrap_owner
+                            ON bootstrap_owner.oid = admin_schema.nspowner
+                        JOIN pg_proc AS installer
+                            ON installer.pronamespace = admin_schema.oid
+                           AND installer.proname = 'install_interface'
+                           AND installer.pronargs = 0
+                           AND installer.prosecdef
+                        JOIN pg_proc AS finalizer
+                            ON finalizer.pronamespace = admin_schema.oid
+                           AND finalizer.proname = 'finalize_interface'
+                           AND finalizer.pronargs = 0
+                           AND finalizer.prosecdef
+                        WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+                          AND installer.proowner = admin_schema.nspowner
+                          AND finalizer.proowner = admin_schema.nspowner
+                          AND bootstrap_owner.rolsuper
+                    )
+                    """
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert database_owner == current_user
+    assert can_create_databases is False
+    assert has_trusted_installer is True
 
 
 def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
@@ -212,10 +254,11 @@ def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
     asyncio.run(run_migrations(db_url, chain="core"))
     assert table_exists(db_url, "state")
 
-    # Schema owner baseline
-    expected_owner = _current_user(db_url)
+    # ``init-db.sql``'s managed bootstrap owns the schemas. The normal
+    # NOCREATEDB migration login needs explicit schema privileges, not owner
+    # bypasses, to create the migrated objects.
     for schema in REQUIRED_SCHEMAS:
-        assert _schema_owner(db_url, schema) == expected_owner
+        assert _has_schema_create_privilege(db_url, schema)
 
 
 def test_core_only_migrations_keep_session_stubs_in_sync(postgres_container):
@@ -765,10 +808,18 @@ def test_core_acl_and_relationship_chain(postgres_container):
         )
         == "seed"
     )
-    with pytest.raises(ProgrammingError, match="permission denied"):
+    # ``public`` is an explicitly shared surface: managed bootstrap grants
+    # normal runtime roles its table DML while specialist schemas remain
+    # isolated from one another.
+    _execute_as_role(
+        db_url, general_role, "INSERT INTO public.acl_shared (note) VALUES ('shared-write')"
+    )
+    assert (
         _execute_as_role(
-            db_url, general_role, "INSERT INTO public.acl_shared (note) VALUES ('blocked')"
+            db_url, general_role, "SELECT count(*) FROM public.acl_shared", scalar=True
         )
+        == 2
+    )
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(db_url, general_role, "SELECT * FROM health.acl_test")
 
@@ -801,6 +852,11 @@ def test_core_migration_smoke_empty_to_head(postgres_container):
     Confirms the migration entry-point works end-to-end.  Intentionally avoids
     re-checking individual tables or schema layout — those assertions live in
     ``test_core_migrations_tables_schemas_and_idempotency`` above.
+
+    The factory runs the managed bootstrap contract, which creates
+    ``butler_chronicler_rw`` even though this test intentionally omits the
+    specialist relationship chain. Core's cross-schema grant must consequently
+    tolerate absent ``relationship.entity_facts``.
     """
     from butlers.migrations import run_migrations
 
@@ -838,10 +894,14 @@ def test_core_migration_smoke_downgrade_upgrade_round_trip(postgres_container):
     db_url = create_migration_db(postgres_container, db_name)
     asyncio.run(run_migrations(db_url, chain="core"))
 
-    config = _build_alembic_config(db_url, chains=["core"])
-    # Step back one revision from head, then restore.
-    command.downgrade(config, "core@-1")
-    command.upgrade(config, "core@head")
+    bootstrap_config = _build_alembic_config(
+        migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
+    )
+    # core_196's rollback and reapplication are deliberately managed-bootstrap
+    # operations. The empty-to-head smoke above separately proves the ordinary
+    # NOCREATEDB migration path after bootstrap has exposed its installer.
+    command.downgrade(bootstrap_config, "core@-1")
+    command.upgrade(bootstrap_config, "core@head")
 
     engine = create_engine(db_url)
     try:
