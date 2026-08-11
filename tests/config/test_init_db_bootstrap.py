@@ -70,6 +70,7 @@ def _run_psql_file(
     file_path: Path,
     connecting_user: str | None = None,
     on_error_stop: bool = True,
+    no_psqlrc: bool = False,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -77,6 +78,8 @@ def _run_psql_file(
     if connecting_user is not None:
         env["PGOPTIONS"] = f"-c butlers.connecting_user={connecting_user}"
     command = ["psql"]
+    if no_psqlrc:
+        command.append("-X")
     if on_error_stop:
         command.extend(["-v", "ON_ERROR_STOP=1"])
     command.extend(
@@ -1229,7 +1232,7 @@ def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgr
 def test_init_db_default_psql_stops_before_extension_mutation_after_preflight_error(
     postgres_container,
 ):
-    """The documented default psql invocation must stop at a rejected preflight."""
+    """Default psql -f behavior must stop without user psqlrc state."""
     host, port, admin_user, admin_password = _admin_params(postgres_container)
     admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
     owner_role = "init_db_default_psql_owner"
@@ -1268,6 +1271,7 @@ def test_init_db_default_psql_stops_before_extension_mutation_after_preflight_er
         file_path=script_path,
         connecting_user="butlers",
         on_error_stop=False,
+        no_psqlrc=True,
         check=False,
     )
 
@@ -1293,6 +1297,9 @@ def test_init_db_default_psql_stops_before_extension_mutation_after_preflight_er
     finally:
         engine.dispose()
 
+    assert "-X" in completed.args
+    assert "-v" not in completed.args
+    assert "ON_ERROR_STOP=1" not in completed.args
     assert completed.returncode != 0, (
         "default psql -f continued after the rejected bootstrap preflight; "
         f"exit code={completed.returncode}, extensions={installed_script_extensions}"
