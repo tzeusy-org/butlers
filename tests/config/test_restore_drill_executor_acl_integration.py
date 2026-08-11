@@ -45,6 +45,8 @@ _BUTLER_PASSWORD = "butler-restore-drill-test-password"
 _CONNECTOR_PASSWORD = "connector-restore-drill-test-password"
 _PUBLIC_PASSWORD = "public-restore-drill-test-password"
 _EXECUTOR_PASSWORD = "executor-restore-drill-test-password"
+_ALTERNATE_BOOTSTRAP_ROLE = "restore_drill_alternate_bootstrap"
+_ALTERNATE_BOOTSTRAP_PASSWORD = "alternate-restore-drill-test-password"
 _PUBLIC_PROBE_ROLE = "restore_drill_public_probe"
 _NORMAL_ROLE_PASSWORDS = {
     "butlers": _SHARED_PASSWORD,
@@ -183,6 +185,36 @@ def _bootstrap_database(postgres_container) -> tuple[str, str, str, str, str, st
         file_path=_INIT_DB,
     )
     return admin_url, shared_url, host, port, admin_user, admin_password
+
+
+def _create_alternate_bootstrap_superuser(admin_url: str) -> None:
+    """Create the distinct trusted principal used by rerun provenance tests."""
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_roles WHERE rolname = 'restore_drill_alternate_bootstrap'
+                        ) THEN
+                            CREATE ROLE restore_drill_alternate_bootstrap LOGIN SUPERUSER;
+                        END IF;
+                    END;
+                    $$
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER ROLE restore_drill_alternate_bootstrap LOGIN SUPERUSER PASSWORD :password"
+                ),
+                {"password": _ALTERNATE_BOOTSTRAP_PASSWORD},
+            )
+    finally:
+        engine.dispose()
 
 
 def _configure_direct_acl_subjects(admin_url: str) -> None:
@@ -670,6 +702,95 @@ def test_untrusted_admin_bootstrap_cannot_supply_a_noop_core_196_installer(
         "trusted_ledger_exists": False,
         "executor_due_execute": False,
     }
+
+
+def test_privileged_rerun_preserves_existing_admin_interface_owner(
+    postgres_container,
+) -> None:
+    """REQ-database-security-006: trusted reruns retain core_196 provenance.
+
+    A prior privileged bootstrap can have created the trusted admin schema
+    before an interruption. A retry through a different cluster superuser must
+    create the retained admin objects under that existing schema owner,
+    otherwise core_196 fails closed despite safe provenance.
+    """
+    admin_url, shared_url, host, port, admin_user, admin_password = (
+        _create_database_before_restore_bootstrap(postgres_container)
+    )
+    _create_alternate_bootstrap_superuser(admin_url)
+    assert admin_user != _ALTERNATE_BOOTSTRAP_ROLE
+    database = _database_from_url(admin_url)
+
+    alternate_engine = create_engine(
+        _url(
+            user=_ALTERNATE_BOOTSTRAP_ROLE,
+            password=_ALTERNATE_BOOTSTRAP_PASSWORD,
+            host=host,
+            port=port,
+            database=database,
+        ),
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        with alternate_engine.connect() as connection:
+            connection.execute(text("CREATE SCHEMA restore_drill_executor_admin"))
+    finally:
+        alternate_engine.dispose()
+
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database=database,
+        file_path=_INIT_DB,
+    )
+
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            admin_interface = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            pg_get_userbyid(admin_schema.nspowner) AS schema_owner,
+                            pg_get_userbyid(bootstrap_configuration.relowner)
+                                AS bootstrap_configuration_owner,
+                            pg_get_userbyid(installer.proowner) AS installer_owner,
+                            pg_get_userbyid(finalizer.proowner) AS finalizer_owner
+                        FROM pg_namespace AS admin_schema
+                        JOIN pg_class AS bootstrap_configuration
+                            ON bootstrap_configuration.relnamespace = admin_schema.oid
+                           AND bootstrap_configuration.relname = 'bootstrap_configuration'
+                           AND bootstrap_configuration.relkind = 'r'
+                        JOIN pg_proc AS installer
+                            ON installer.pronamespace = admin_schema.oid
+                           AND installer.proname = 'install_interface'
+                           AND installer.pronargs = 0
+                        JOIN pg_proc AS finalizer
+                            ON finalizer.pronamespace = admin_schema.oid
+                           AND finalizer.proname = 'finalize_interface'
+                           AND finalizer.pronargs = 0
+                        WHERE admin_schema.nspname = 'restore_drill_executor_admin'
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        engine.dispose()
+
+    assert dict(admin_interface) == {
+        "schema_owner": _ALTERNATE_BOOTSTRAP_ROLE,
+        "bootstrap_configuration_owner": _ALTERNATE_BOOTSTRAP_ROLE,
+        "installer_owner": _ALTERNATE_BOOTSTRAP_ROLE,
+        "finalizer_owner": _ALTERNATE_BOOTSTRAP_ROLE,
+    }
+
+    _run_core_chain_through_restore_drill_predecessor(shared_url)
+    command.upgrade(_build_alembic_config(shared_url, chains=["core"]), "core_196")
 
 
 def test_shared_authority_poison_cannot_be_finalized_or_reblessed_on_bootstrap_rerun(

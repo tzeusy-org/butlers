@@ -528,7 +528,9 @@ $$;
 -- creates the exact ledger and functions under the bootstrap owner before the
 -- finalizer moves them to the isolated NOLOGIN owner. The schema and both
 -- canonical signatures are validated before CREATE OR REPLACE can preserve an
--- attacker-controlled owner.
+-- attacker-controlled owner. A safe retry can arrive through a different
+-- superuser after the trusted schema already exists; its admin objects must be
+-- created as that established schema owner rather than the retry runner.
 
 DO $$
 DECLARE
@@ -537,6 +539,7 @@ DECLARE
         'butlers'
     )::name;
     v_schema_owner OID;
+    v_schema_owner_name NAME;
     v_schema_owner_is_superuser BOOLEAN;
 BEGIN
     IF current_user::name = v_migration_role THEN
@@ -550,8 +553,8 @@ BEGIN
         RAISE EXCEPTION
             'restore-drill admin bootstrap requires a cluster superuser';
     END IF;
-    SELECT admin_schema.nspowner, schema_owner.rolsuper
-    INTO v_schema_owner, v_schema_owner_is_superuser
+    SELECT admin_schema.nspowner, schema_owner.rolname, schema_owner.rolsuper
+    INTO v_schema_owner, v_schema_owner_name, v_schema_owner_is_superuser
     FROM pg_namespace AS admin_schema
     JOIN pg_roles AS schema_owner ON schema_owner.oid = admin_schema.nspowner
     WHERE admin_schema.nspname = 'restore_drill_executor_admin';
@@ -565,6 +568,11 @@ BEGIN
     ELSIF NOT COALESCE(v_schema_owner_is_superuser, false) THEN
         RAISE EXCEPTION
             'restore-drill admin schema is not owned by a trusted bootstrap superuser';
+    ELSE
+        -- A superuser retry may safely assume the previously verified bootstrap
+        -- owner. This keeps every retained admin object aligned with the schema
+        -- provenance that core_196 independently trusts.
+        EXECUTE format('SET ROLE %I', v_schema_owner_name);
     END IF;
 END;
 $$;
@@ -1088,3 +1096,5 @@ BEGIN
     END IF;
 END;
 $$;
+
+RESET ROLE;
