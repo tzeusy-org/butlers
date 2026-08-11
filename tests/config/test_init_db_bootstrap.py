@@ -1022,7 +1022,7 @@ def test_init_db_rejects_migration_user_bootstrap_before_normal_role_mutation(po
 
 
 def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgres_container):
-    """A database owner without cluster superuser cannot partially bootstrap."""
+    """A database owner without cluster superuser cannot mutate managed catalog state."""
     host, port, admin_user, admin_password = _admin_params(postgres_container)
     admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
     owner_role = "init_db_unprivileged_owner"
@@ -1054,7 +1054,7 @@ def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgr
     control_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
 
     def catalog_state(connection) -> dict[str, object]:
-        """Read every mutable bootstrap surface without inspecting role secrets."""
+        """Read init-db-managed non-secret catalog surfaces."""
         return {
             "roles": [
                 dict(row)
@@ -1189,8 +1189,8 @@ def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgr
             )
 
             # Demonstrate that an unexpected preflight grant is visible to this
-            # complete snapshot, then restore the exact baseline before invoking
-            # the bootstrap under test.
+            # managed catalog snapshot, then restore the exact baseline before
+            # invoking the bootstrap under test.
             conn.execute(text("GRANT TEMPORARY ON DATABASE butlers TO butlers"))
             assert catalog_state(conn) != baseline
             conn.execute(text("REVOKE TEMPORARY ON DATABASE butlers FROM butlers"))

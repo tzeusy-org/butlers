@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -61,6 +62,27 @@ def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -
     runtime_roles_start = source.index("_all_runtime_roles TEXT[]")
     runtime_roles_end = source.index("];", runtime_roles_start)
     assert "restore_drill_executor" not in source[runtime_roles_start:runtime_roles_end]
+
+
+def test_initial_bootstrap_preflight_precedes_every_ddl_or_dcl_mutation() -> None:
+    """A future preflight mutation must fail static review before it can partially apply."""
+    source = _INIT_DB.read_text(encoding="utf-8")
+    marker = "INITIAL_READ_ONLY_BOOTSTRAP_PREFLIGHT"
+    marker_offset = source.index(marker)
+    assert source.count(marker) == 1
+
+    preflight_start = source.index("DO $$", marker_offset)
+    preflight_end = source.index("$$;", preflight_start) + len("$$;")
+    preflight = source[preflight_start:preflight_end]
+    assert "restore-drill admin bootstrap requires a cluster superuser" in preflight
+
+    mutator = re.compile(
+        r"^\s*(?:CREATE|ALTER|GRANT|REVOKE|DROP|UPDATE|INSERT|DELETE|TRUNCATE)\b",
+        re.MULTILINE,
+    )
+    first_mutator = mutator.search(source)
+    assert first_mutator is not None
+    assert first_mutator.start() > preflight_end
 
 
 def test_managed_provisioner_reads_the_executor_password_only_from_its_private_file() -> None:

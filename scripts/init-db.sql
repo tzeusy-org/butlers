@@ -33,6 +33,7 @@
 --   future ALTER TABLE migrations to succeed.
 
 -- ── Read-only bootstrap preflight ───────────────────────────────────────────
+-- INITIAL_READ_ONLY_BOOTSTRAP_PREFLIGHT: keep before every DDL/DCL mutation.
 
 -- Refuse an unsafe connecting-user override before extension installation or
 -- any role, membership, schema, or ACL mutation. The configured migration user
