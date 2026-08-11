@@ -15,7 +15,11 @@ import pytest
 from alembic import command
 from butlers.migrations import _build_alembic_config
 from butlers.modules.qa import _KNOWN_SOURCES
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -107,9 +111,10 @@ def test_core_migrations_accept_known_qa_sources(
 
 def test_downgrade_preserves_persisted_infra_state_findings(postgres_container) -> None:
     """One-revision rollback must not delete, relabel, or reject existing findings."""
+    db_name = migration_db_name()
     db_url = create_migrated_test_db(
         postgres_container,
-        migration_db_name(),
+        db_name,
         chains=["core"],
     )
 
@@ -144,7 +149,12 @@ def test_downgrade_preserves_persisted_infra_state_findings(postgres_container) 
             await pool.close()
 
     finding_id = asyncio.run(_insert())
-    command.downgrade(_build_alembic_config(db_url, chains=["core"]), "core_169")
+    command.downgrade(
+        _build_alembic_config(
+            migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
+        ),
+        "core_169",
+    )
 
     async def _verify() -> None:
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)

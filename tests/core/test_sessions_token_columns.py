@@ -9,12 +9,10 @@ from __future__ import annotations
 import shutil
 import uuid
 
-import asyncpg
 import pytest
 
 from butlers.core.sessions import session_complete, session_create, sessions_summary
-from butlers.db import register_jsonb_codec
-from butlers.migrations import run_migrations
+from butlers.testing.migration import create_migrated_test_pool
 
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -27,55 +25,18 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    """Generate a unique database name for test isolation."""
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
 # Use the session-scoped postgres_container from root conftest (not a local override)
 # so the event loop is shared across the whole session, avoiding asyncpg loop mismatch.
 
 
 @pytest.fixture
 async def pool_with_migrations(postgres_container):
-    """Create a fresh database with migrations run and return a pool."""
-    db_name = _unique_db_name()
-    host = postgres_container.get_container_host_ip()
-    port = int(postgres_container.get_exposed_port(5432))
-    user = postgres_container.username
-    password = postgres_container.password
-
-    # Create the database via the admin connection
-    admin_conn = await asyncpg.connect(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        database="postgres",
-    )
+    """Create a canonically bootstrapped core database and return its pool."""
+    p = await create_migrated_test_pool(postgres_container, chains=["core"])
     try:
-        safe_name = db_name.replace('"', '""')
-        await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
+        yield p
     finally:
-        await admin_conn.close()
-
-    # Run migrations on the new database
-    db_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
-    await run_migrations(db_url, chain="core")
-
-    # Connect to the database with migrations applied
-    p = await asyncpg.create_pool(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        database=db_name,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    yield p
-    await p.close()
+        await p.close()
 
 
 class TestSessionTokenColumns:

@@ -20,6 +20,7 @@ from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migration_db,
     index_exists,
+    migration_bootstrap_db_url,
     migration_db_name,
 )
 
@@ -101,6 +102,9 @@ def test_trgm_index_created_idempotent_and_downgrade_keeps_extension(postgres_co
     db_url = create_migration_db(postgres_container, db_name)
 
     core = _build_alembic_config(db_url, chains=["core"])
+    bootstrap_core = _build_alembic_config(
+        migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
+    )
 
     # Upgrade to core head (includes core_138).
     command.upgrade(core, "core@head")
@@ -129,7 +133,7 @@ def test_trgm_index_created_idempotent_and_downgrade_keeps_extension(postgres_co
     assert index_exists(db_url, "ix_calendar_events_search_trgm")
 
     # Downgrade one step: index is dropped, extension stays.
-    command.downgrade(core, "core_137")
+    command.downgrade(bootstrap_core, "core_137")
     assert not index_exists(db_url, "ix_calendar_events_search_trgm"), (
         "trigram index should be dropped on downgrade"
     )

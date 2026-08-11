@@ -17,7 +17,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from butlers.core.deploy import DeployConfig, DeployError, run_deploy
+from butlers.core.deploy import DeployConfig, DeployError, RestoreDrillEndpoint, run_deploy
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -57,7 +57,15 @@ def _patch_pipeline(monkeypatch, *, git_sha: str, fail_at: str | None = None) ->
     # Best-effort `bd export` refresh (bu-hmdqz.6) -- never touch the real
     # `bd`/Dolt server from a test process; stub as a no-op success.
     monkeypatch.setattr("butlers.core.deploy.materialize_beads_export", lambda config: True)
+    monkeypatch.setattr(
+        "butlers.core.deploy.prepare_restore_drill_executor",
+        make("restore-drill-boundary"),
+    )
     monkeypatch.setattr("butlers.core.deploy.recreate_services", make("recreate"))
+    monkeypatch.setattr(
+        "butlers.core.deploy._resolve_restore_drill_endpoint",
+        lambda config: RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432),
+    )
     monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
     monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: git_sha)
     # Preflight (linked-worktree / non-ancestor-HEAD guard) needs a real git

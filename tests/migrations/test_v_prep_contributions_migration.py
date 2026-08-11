@@ -19,7 +19,11 @@ from sqlalchemy import create_engine, text
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import (
+    create_migration_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -109,9 +113,12 @@ _CONTRIBUTING = ("messenger", "relationship", "travel")
 def test_prep_view_roundtrip_empty_and_not_updatable(postgres_container):
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_db_url = migration_bootstrap_db_url(postgres_container, db_name)
 
     core = _build_alembic_config(db_url, chains=["core"])
+    bootstrap_core = _build_alembic_config(bootstrap_db_url, chains=["core"])
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    bootstrap_engine = create_engine(bootstrap_db_url, isolation_level="AUTOCOMMIT")
 
     try:
         # Upgrade to core head (includes core_142). On a core-only DB the
@@ -128,7 +135,7 @@ def test_prep_view_roundtrip_empty_and_not_updatable(postgres_container):
 
         # Provision the specialist ``state`` tables, then rebuild the view by
         # re-running the migration step so it picks up the now-present tables.
-        command.downgrade(core, "core_141")
+        command.downgrade(bootstrap_core, "core_141")
         with engine.connect() as conn:
             for schema in _CONTRIBUTING:
                 conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
@@ -138,9 +145,14 @@ def test_prep_view_roundtrip_empty_and_not_updatable(postgres_container):
                         "(key TEXT PRIMARY KEY, value JSONB NOT NULL)"
                     )
                 )
-        command.upgrade(core, "core@head")
+        # The managed rollback revokes the ordinary migration role's access to
+        # the installer, so its paired reapplication must stay on the same
+        # privileged test-control path.
+        command.upgrade(bootstrap_core, "core@head")
 
-        with engine.connect() as conn:
+        # The privileged reapplication owns the regenerated view, so inspect
+        # its post-rollback shape with the disposable control connection.
+        with bootstrap_engine.connect() as conn:
             # Write prep + non-prep keys into two specialists.
             conn.execute(
                 text(
@@ -179,8 +191,9 @@ def test_prep_view_roundtrip_empty_and_not_updatable(postgres_container):
                     )
                 )
     finally:
+        bootstrap_engine.dispose()
         engine.dispose()
 
     # Downgrade one step: the view is dropped.
-    command.downgrade(core, "core_141")
-    assert not _view_exists(db_url), "prep view should be dropped on downgrade"
+    command.downgrade(bootstrap_core, "core_141")
+    assert not _view_exists(bootstrap_db_url), "prep view should be dropped on downgrade"

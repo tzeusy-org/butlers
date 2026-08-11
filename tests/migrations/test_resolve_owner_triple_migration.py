@@ -62,27 +62,27 @@ def migrated_db_url(postgres_container) -> str:
 
 
 @pytest.fixture(scope="module")
-async def admin_pool(migrated_db_url: str) -> asyncpg.Pool:
-    """Admin asyncpg pool to the migrated database (full superuser access)."""
+async def migration_pool(migrated_db_url: str) -> asyncpg.Pool:
+    """Migration-role asyncpg pool to the migrated disposable database."""
     pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
     yield pool
     await pool.close()
 
 
 @pytest.fixture(scope="module")
-async def seeded_data(admin_pool: asyncpg.Pool) -> dict:
+async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
     """Seed owner + non-owner entities and matching ``entity_facts`` rows.
 
     Returns a dict with the entity UUIDs and the handle values used in tests.
     Owner has two handles: one primary, one non-primary.  The non-owner has
     one handle with the same predicate (to confirm owner-only scoping).
     """
-    owner_id = await admin_pool.fetchval(
+    owner_id = await migration_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, roles) VALUES ($1, $2) RETURNING id",
         "Test Owner",
         ["owner"],
     )
-    non_owner_id = await admin_pool.fetchval(
+    non_owner_id = await migration_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, roles) VALUES ($1, $2) RETURNING id",
         "Other Person",
         [],
@@ -93,7 +93,7 @@ async def seeded_data(admin_pool: asyncpg.Pool) -> dict:
     non_owner_handle = "telegram:non-owner-99999"
 
     # Owner primary handle
-    await admin_pool.execute(
+    await migration_pool.execute(
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, "primary", validity)
@@ -103,7 +103,7 @@ async def seeded_data(admin_pool: asyncpg.Pool) -> dict:
         owner_primary_handle,
     )
     # Owner secondary (non-primary) handle
-    await admin_pool.execute(
+    await migration_pool.execute(
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, "primary", validity)
@@ -113,7 +113,7 @@ async def seeded_data(admin_pool: asyncpg.Pool) -> dict:
         owner_secondary_handle,
     )
     # Non-owner handle — same predicate, different entity (must never be returned)
-    await admin_pool.execute(
+    await migration_pool.execute(
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, "primary", validity)
@@ -136,7 +136,6 @@ async def seeded_data(admin_pool: asyncpg.Pool) -> dict:
 async def isolated_role_pool(
     postgres_container,
     migrated_db_url: str,
-    admin_pool: asyncpg.Pool,
 ) -> asyncpg.Pool:
     """Pool connected as a schema-isolated butler role.
 
@@ -156,24 +155,38 @@ async def isolated_role_pool(
     parsed = urlparse(migrated_db_url)
     db_name = parsed.path.lstrip("/")
 
-    # Create the role (idempotent — avoids failure if a prior partial run left it).
-    await admin_pool.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_ISOLATED_ROLE}') THEN
-                CREATE ROLE "{_ISOLATED_ROLE}" WITH LOGIN
-                    PASSWORD '{_ISOLATED_ROLE_PASSWORD}'
-                    NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT;
-            END IF;
-        END
-        $$
-        """
+    # The migrated DB URL deliberately authenticates as a NOCREATEROLE normal
+    # migration user. Provision this test-only isolated role through the
+    # disposable testcontainer control URL instead; the asserted runtime role
+    # remains restricted below.
+    bootstrap_conn = await asyncpg.connect(
+        host=postgres_container.get_container_host_ip(),
+        port=int(postgres_container.get_exposed_port(5432)),
+        user=postgres_container.username,
+        password=postgres_container.password,
+        database=db_name,
     )
-    await admin_pool.execute(f'GRANT CONNECT ON DATABASE "{db_name}" TO "{_ISOLATED_ROLE}"')
-    # Allow calling public.* functions (schema USAGE, no table USAGE).
-    await admin_pool.execute(f'GRANT USAGE ON SCHEMA public TO "{_ISOLATED_ROLE}"')
-    # Explicitly do NOT grant USAGE on relationship schema or SELECT on entity_facts.
+    try:
+        # Idempotent: a prior partial run may have left the cluster-global role.
+        await bootstrap_conn.execute(
+            f"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_ISOLATED_ROLE}') THEN
+                    CREATE ROLE "{_ISOLATED_ROLE}" WITH LOGIN
+                        PASSWORD '{_ISOLATED_ROLE_PASSWORD}'
+                        NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT;
+                END IF;
+            END
+            $$
+            """
+        )
+        await bootstrap_conn.execute(f'GRANT CONNECT ON DATABASE "{db_name}" TO "{_ISOLATED_ROLE}"')
+        # Allow calling public.* functions (schema USAGE, no table USAGE).
+        await bootstrap_conn.execute(f'GRANT USAGE ON SCHEMA public TO "{_ISOLATED_ROLE}"')
+        # Explicitly do NOT grant USAGE on relationship schema or SELECT on entity_facts.
+    finally:
+        await bootstrap_conn.close()
 
     pool = await asyncpg.create_pool(
         host=postgres_container.get_container_host_ip(),
@@ -196,9 +209,9 @@ async def isolated_role_pool(
 class TestFunctionExists:
     """Verify the SECURITY DEFINER function exists after core_145 migration."""
 
-    async def test_function_created_in_public_schema(self, admin_pool: asyncpg.Pool) -> None:
+    async def test_function_created_in_public_schema(self, migration_pool: asyncpg.Pool) -> None:
         """public.resolve_owner_triple must exist after the core migration chain."""
-        exists = await admin_pool.fetchval(
+        exists = await migration_pool.fetchval(
             """
             SELECT EXISTS (
                 SELECT 1
@@ -211,9 +224,9 @@ class TestFunctionExists:
         )
         assert exists, "public.resolve_owner_triple must exist after core migration chain"
 
-    async def test_function_is_security_definer(self, admin_pool: asyncpg.Pool) -> None:
+    async def test_function_is_security_definer(self, migration_pool: asyncpg.Pool) -> None:
         """The function must carry the SECURITY DEFINER attribute."""
-        is_definer = await admin_pool.fetchval(
+        is_definer = await migration_pool.fetchval(
             """
             SELECT p.prosecdef
             FROM pg_proc p
@@ -227,11 +240,11 @@ class TestFunctionExists:
             "its owner (which has relationship-schema read access)"
         )
 
-    async def test_function_returns_correct_columns(self, admin_pool: asyncpg.Pool) -> None:
+    async def test_function_returns_correct_columns(self, migration_pool: asyncpg.Pool) -> None:
         """Return type must expose entity_id (uuid) and is_primary (bool)."""
         # Call with empty candidates — returns no rows but proves the return-type
         # matches what the Python identity.py layer expects.
-        rows = await admin_pool.fetch(
+        rows = await migration_pool.fetch(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "has-handle",
             [],
@@ -243,10 +256,10 @@ class TestOwnerOnlyScoping:
     """Verify that only owner-entity facts are returned (owner-only scoping)."""
 
     async def test_owner_primary_handle_resolves(
-        self, admin_pool: asyncpg.Pool, seeded_data: dict
+        self, migration_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
         """Owner's primary handle resolves to the owner entity with is_primary=True."""
-        row = await admin_pool.fetchrow(
+        row = await migration_pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "has-handle",
             [seeded_data["owner_primary_handle"]],
@@ -256,7 +269,7 @@ class TestOwnerOnlyScoping:
         assert row["is_primary"] is True, "is_primary must be True for the primary handle"
 
     async def test_non_owner_handle_returns_nothing(
-        self, admin_pool: asyncpg.Pool, seeded_data: dict
+        self, migration_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
         """Non-owner entity's handle must NOT be returned (owner-only scoping).
 
@@ -264,7 +277,7 @@ class TestOwnerOnlyScoping:
         the owner role.  The WHERE clause ``'owner' = ANY(e.roles)`` must
         exclude it entirely.
         """
-        row = await admin_pool.fetchrow(
+        row = await migration_pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "has-handle",
             [seeded_data["non_owner_handle"]],
@@ -275,7 +288,7 @@ class TestOwnerOnlyScoping:
         )
 
     async def test_mixed_candidates_excludes_non_owner(
-        self, admin_pool: asyncpg.Pool, seeded_data: dict
+        self, migration_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
         """When the candidates list includes both owner and non-owner handles,
         only the owner handle produces a result.
@@ -284,16 +297,16 @@ class TestOwnerOnlyScoping:
         object value exists for a non-owner entity.
         """
         # Providing non-owner handle only among candidates → must return NULL
-        row = await admin_pool.fetchrow(
+        row = await migration_pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "has-handle",
             [seeded_data["non_owner_handle"]],
         )
         assert row is None, "Non-owner handle must be excluded even in a mixed candidate list"
 
-    async def test_empty_candidates_returns_nothing(self, admin_pool: asyncpg.Pool) -> None:
+    async def test_empty_candidates_returns_nothing(self, migration_pool: asyncpg.Pool) -> None:
         """Empty candidates array must return no rows."""
-        row = await admin_pool.fetchrow(
+        row = await migration_pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "has-handle",
             [],
@@ -301,14 +314,14 @@ class TestOwnerOnlyScoping:
         assert row is None, "Empty candidates must return NULL (no match possible)"
 
     async def test_unknown_predicate_returns_nothing(
-        self, admin_pool: asyncpg.Pool, seeded_data: dict
+        self, migration_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
         """Querying with an unregistered predicate must return no rows.
 
         The WHERE clause ``ef.predicate = p_predicate`` filters by exact match;
         an unknown predicate will produce zero rows regardless of the candidates.
         """
-        row = await admin_pool.fetchrow(
+        row = await migration_pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "nonexistent-predicate",
             [seeded_data["owner_primary_handle"]],
@@ -324,12 +337,12 @@ class TestIsPrimaryOrdering:
     """
 
     async def test_primary_handle_preferred_when_both_are_candidates(
-        self, admin_pool: asyncpg.Pool, seeded_data: dict
+        self, migration_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
         """When both primary and non-primary owner handles are candidates,
         the primary handle is returned (RFC 0017 §2.1).
         """
-        row = await admin_pool.fetchrow(
+        row = await migration_pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "has-handle",
             # Order in the list must not matter; SQL ORDER BY "primary" DESC wins.
@@ -343,10 +356,10 @@ class TestIsPrimaryOrdering:
         assert row["entity_id"] == seeded_data["owner_id"]
 
     async def test_secondary_handle_resolves_when_sole_candidate(
-        self, admin_pool: asyncpg.Pool, seeded_data: dict
+        self, migration_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
         """Secondary (non-primary) handle resolves correctly when it is the only candidate."""
-        row = await admin_pool.fetchrow(
+        row = await migration_pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "has-handle",
             [seeded_data["owner_secondary_handle"]],
