@@ -41,6 +41,179 @@ def _is_valid_codex_auth_document(content: str) -> bool:
     return isinstance(parsed, dict) and bool(parsed)
 
 
+class _StagedDeviceAuthDocumentError(ValueError):
+    """Raised when untrusted device-auth output cannot be projected safely."""
+
+
+def _reject_duplicate_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a JSON object only when each key appears exactly once."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _StagedDeviceAuthDocumentError("device-auth output has duplicate JSON keys")
+        result[key] = value
+    return result
+
+
+def _reject_nonstandard_json_constant(value: str) -> object:
+    """Reject NaN and infinities instead of letting Python normalize them."""
+    raise _StagedDeviceAuthDocumentError(
+        f"device-auth output has nonstandard JSON constant {value!r}"
+    )
+
+
+def _required_nonempty_string(entry: dict[str, object], field: str) -> str:
+    value = entry.get(field)
+    if not isinstance(value, str) or not value:
+        raise _StagedDeviceAuthDocumentError("device-auth output lacks OpenAI OAuth field")
+    return value
+
+
+def _parse_strict_device_auth_document(content: str) -> dict[str, object]:
+    """Parse one child-produced JSON object without lossy JSON conveniences."""
+    document = json.loads(
+        content,
+        object_pairs_hook=_reject_duplicate_json_object,
+        parse_constant=_reject_nonstandard_json_constant,
+    )
+    if not isinstance(document, dict):
+        raise _StagedDeviceAuthDocumentError("device-auth output is not a JSON object")
+    return document
+
+
+def _project_opencode_openai_device_auth_document(content: str) -> str | None:
+    """Reconstruct the one OpenAI OAuth authority allowed to leave device auth.
+
+    OpenCode stores providers together in ``auth.json``.  Its device-auth child
+    is untrusted, so this flow must not persist a peer provider, unknown JSON,
+    duplicate keys, or nonstandard numbers merely because it also contains an
+    OpenAI-shaped entry.
+    """
+    try:
+        document = _parse_strict_device_auth_document(content)
+        if set(document) != {"openai"}:
+            raise _StagedDeviceAuthDocumentError("device-auth output has an unexpected provider")
+
+        entry = document["openai"]
+        if not isinstance(entry, dict) or entry.get("type") != "oauth":
+            raise _StagedDeviceAuthDocumentError("device-auth output lacks OpenAI OAuth")
+
+        allowed_fields = {"type", "refresh", "access", "expires", "accountId", "enterpriseUrl"}
+        if (
+            not {"type", "refresh", "access", "expires"}.issubset(entry)
+            or set(entry) - allowed_fields
+        ):
+            raise _StagedDeviceAuthDocumentError("device-auth output has unexpected OpenAI fields")
+
+        expires = entry["expires"]
+        if type(expires) is not int or expires < 0:
+            raise _StagedDeviceAuthDocumentError("device-auth output has invalid OpenAI expiry")
+
+        projected_entry: dict[str, object] = {
+            "type": "oauth",
+            "refresh": _required_nonempty_string(entry, "refresh"),
+            "access": _required_nonempty_string(entry, "access"),
+            "expires": expires,
+        }
+        for field in ("accountId", "enterpriseUrl"):
+            if field in entry:
+                value = entry[field]
+                if not isinstance(value, str) or not value:
+                    raise _StagedDeviceAuthDocumentError(
+                        "device-auth output has invalid OpenAI metadata"
+                    )
+                projected_entry[field] = value
+    except (
+        _StagedDeviceAuthDocumentError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+    return json.dumps(
+        {"openai": projected_entry},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _project_codex_device_auth_document(content: str) -> str | None:
+    """Reconstruct the pinned Codex ChatGPT device-auth document exactly.
+
+    ``@openai/codex@0.144.1`` writes ChatGPT device-code output with these
+    four top-level fields and the four scalar ``tokens`` fields below.  Reject
+    every other auth mode or field before the child can change the global
+    Codex authority.
+    """
+    try:
+        document = _parse_strict_device_auth_document(content)
+        if set(document) != {"auth_mode", "OPENAI_API_KEY", "tokens", "last_refresh"}:
+            raise _StagedDeviceAuthDocumentError("device-auth output has unexpected Codex fields")
+        if document["auth_mode"] != "chatgpt":
+            raise _StagedDeviceAuthDocumentError("device-auth output is not Codex ChatGPT auth")
+
+        api_key = document["OPENAI_API_KEY"]
+        if api_key is not None and (not isinstance(api_key, str) or not api_key):
+            raise _StagedDeviceAuthDocumentError("device-auth output has invalid Codex API key")
+
+        last_refresh = document["last_refresh"]
+        if not isinstance(last_refresh, str) or not last_refresh:
+            raise _StagedDeviceAuthDocumentError(
+                "device-auth output has invalid Codex refresh time"
+            )
+
+        tokens = document["tokens"]
+        expected_token_fields = {"id_token", "access_token", "refresh_token", "account_id"}
+        if not isinstance(tokens, dict) or set(tokens) != expected_token_fields:
+            raise _StagedDeviceAuthDocumentError("device-auth output has unexpected Codex tokens")
+
+        account_id = tokens["account_id"]
+        if account_id is not None and (not isinstance(account_id, str) or not account_id):
+            raise _StagedDeviceAuthDocumentError("device-auth output has invalid Codex account")
+
+        projected_tokens = {
+            "id_token": _required_nonempty_string(tokens, "id_token"),
+            "access_token": _required_nonempty_string(tokens, "access_token"),
+            "refresh_token": _required_nonempty_string(tokens, "refresh_token"),
+            "account_id": account_id,
+        }
+    except (
+        _StagedDeviceAuthDocumentError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+    return json.dumps(
+        {
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": api_key,
+            "tokens": projected_tokens,
+            "last_refresh": last_refresh,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _project_staged_device_auth_document(provider: CLIAuthProviderDef, content: str) -> str | None:
+    """Project device-auth output to its exact provider-specific persistence form.
+
+    This deliberately accepts only the two registered device-code providers.
+    A new provider must add its exact staged-output schema here rather than
+    receiving a permissive file-copy path by default.
+    """
+    if provider.name == "codex":
+        return _project_codex_device_auth_document(content)
+    if provider.name == "opencode-openai":
+        return _project_opencode_openai_device_auth_document(content)
+    return None
+
+
 def _require_codex_authority(codex_authority: CredentialStore | None) -> CredentialStore:
     """Return the selected Codex authority or fail closed without a local fallback."""
     if codex_authority is None:
@@ -86,6 +259,179 @@ async def _store_persisted_token(
         await _require_codex_authority(codex_authority).store_codex_cli_auth(content)
         return
     await store.store(key, content, **kwargs)
+
+
+async def capture_device_auth_authority_baseline(
+    provider: CLIAuthProviderDef,
+    store: CredentialStore,
+    *,
+    codex_authority: CredentialStore | None = None,
+) -> str | None:
+    """Capture the exact authority value a later device-auth CAS will fence.
+
+    The snapshot belongs before child launch.  For OpenCode this deliberately
+    reads the same shared-or-flat authority selected by
+    :meth:`CredentialStore.store_shared_if_unchanged`, rather than using the
+    ordinary local-first lookup that could observe a different row.
+    """
+    key = _db_key(provider)
+    if provider.name == "codex":
+        return await _require_codex_authority(codex_authority).load_codex_cli_auth()
+    if store.shared_pool is not None:
+        return await store.load_shared(key)
+    return await store.load(key)
+
+
+async def _store_staged_device_auth_if_unchanged(
+    provider: CLIAuthProviderDef,
+    store: CredentialStore,
+    content: str,
+    *,
+    expected_authority_value: str | None,
+    codex_authority: CredentialStore | None = None,
+) -> bool:
+    """CAS-write one already-projected device-auth document to its authority."""
+    key = _db_key(provider)
+    kwargs = {
+        "category": _CATEGORY,
+        "description": f"CLI auth token for {provider.display_name}",
+        "is_sensitive": True,
+    }
+    if provider.name == "codex":
+        return await _require_codex_authority(codex_authority).store_codex_cli_auth_if_unchanged(
+            content,
+            expected_value=expected_authority_value,
+        )
+    return await store.store_shared_if_unchanged(
+        key,
+        content,
+        expected_value=expected_authority_value,
+        **kwargs,
+    )
+
+
+def _project_opencode_go_runtime_entry(entry: object) -> dict[str, str] | None:
+    """Return the exact OpenCode Go entry safe to retain in shared auth.json."""
+    if not isinstance(entry, dict) or set(entry) != {"type", "key"}:
+        return None
+    if entry.get("type") != "api":
+        return None
+    key = entry.get("key")
+    if not isinstance(key, str) or not key:
+        return None
+    return {"type": "api", "key": key}
+
+
+def _reconcile_device_auth_runtime_file(
+    provider: CLIAuthProviderDef,
+    projected: str,
+) -> bool:
+    """Atomically project a confirmed device authority into its runtime file.
+
+    This runs only after the authoritative compare-and-set succeeds.  OpenCode
+    device auth owns the ``openai`` entry but shares its runtime file with the
+    independently managed Go API entry, so retain that peer only when it can
+    itself be reconstructed from the pinned scalar schema.  Unknown entries
+    never ride along from a pre-existing file.
+    """
+    token_path = provider.token_path
+    if token_path is None:
+        logger.warning("CLI auth persist: provider has no canonical runtime projection path")
+        return False
+
+    try:
+        if provider.name == "opencode-openai":
+            staged_document = _parse_strict_device_auth_document(projected)
+            runtime_document: dict[str, object] = {"openai": staged_document["openai"]}
+
+            if token_path.exists():
+                existing_document = _parse_strict_device_auth_document(
+                    token_path.read_text(encoding="utf-8")
+                )
+                go_entry = _project_opencode_go_runtime_entry(existing_document.get("opencode-go"))
+                if go_entry is not None:
+                    runtime_document["opencode-go"] = go_entry
+
+            runtime_content = json.dumps(
+                runtime_document,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        elif provider.name == "codex":
+            runtime_content = projected
+        else:
+            return False
+
+        _write_token_file_atomically(token_path, runtime_content)
+    except (
+        OSError,
+        _StagedDeviceAuthDocumentError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ):
+        logger.warning("CLI auth persist: canonical runtime projection failed safely")
+        return False
+
+    return True
+
+
+async def persist_validated_staged_device_auth_bytes(
+    provider: CLIAuthProviderDef,
+    store: CredentialStore,
+    content: bytes,
+    *,
+    expected_authority_value: str | None,
+    codex_authority: CredentialStore | None = None,
+) -> bool:
+    """Persist bytes already validated through the trusted sandbox root FD.
+
+    ``persist_token`` remains the legacy canonical-file reader until all
+    callers are routed through the sandbox.  Device-auth sandbox callers must
+    use this seam: it never receives a path and therefore cannot reopen a
+    canonical credential file after child containment has been verified.
+    """
+    try:
+        decoded = content.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("CLI auth persist: staged device-auth bytes are not UTF-8")
+        return False
+
+    projected = _project_staged_device_auth_document(provider, decoded)
+    if projected is None:
+        logger.warning("CLI auth persist: refusing invalid staged device-auth document")
+        return False
+    if provider.token_path is None:
+        # A successful authority CAS without a usable runtime projection would
+        # leave the just-completed device flow unavailable until restart.
+        logger.warning("CLI auth persist: provider has no canonical runtime projection path")
+        return False
+
+    try:
+        stored = await _store_staged_device_auth_if_unchanged(
+            provider,
+            store,
+            projected,
+            expected_authority_value=expected_authority_value,
+            codex_authority=codex_authority,
+        )
+    except Exception:
+        # Never log an exception from a credential-store write: database bind
+        # context can retain the raw staged document.  Every provider maps an
+        # unavailable authority to the same value-free terminal failure.
+        logger.warning("CLI auth persist: device-auth authority write failed safely")
+        return False
+
+    if not stored:
+        logger.warning("CLI auth persist: device-auth authority changed before commit")
+        return False
+
+    if not _reconcile_device_auth_runtime_file(provider, projected):
+        return False
+
+    logger.info("CLI auth persist: stored validated staged token for %s", provider.name)
+    return True
 
 
 def _write_token_file_atomically(token_path: Path, content: str) -> None:

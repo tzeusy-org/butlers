@@ -13,6 +13,21 @@
 # Digest-pinned for full reproducibility (resolves to 3.12.13-slim-trixie).
 # To update: run `docker buildx imagetools inspect python:3.12-slim` and
 # replace the sha256 below.
+FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9 AS runtime-cli-sandbox-init-builder
+
+# Compile the namespace-PID1 helper outside the final runtime image.  Python's
+# stdlib does not expose close_range on every supported image, so this helper
+# performs the kernel close_range + post-close descriptor audit before it
+# execs any Dashboard CLI-auth payload.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/runtime_cli_sandbox_init.c /src/runtime_cli_sandbox_init.c
+RUN mkdir -p /out \
+    && gcc -O2 -Wall -Wextra -Werror -o /out/runtime-cli-sandbox-init \
+    /src/runtime_cli_sandbox_init.c
+
 FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9
 
 # System dependencies (single layer, sorted for readability)
@@ -21,6 +36,7 @@ FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e
 # stdin blocks -- asyncpg's protocol cannot do this, only the real client can.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    bubblewrap=0.11.0-2+deb13u1 \
     curl \
     gh \
     git \
@@ -28,6 +44,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     ripgrep \
     && rm -rf /var/lib/apt/lists/*
+
+# The Dashboard itself remains its existing process identity.  This immutable
+# marker reserves the outer identities that the CLI-auth sandbox leases one at
+# a time; each invocation drops to a member of 61000-61999 before bwrap.
+COPY --from=runtime-cli-sandbox-init-builder /out/runtime-cli-sandbox-init /usr/local/libexec/butlers/runtime-cli-sandbox-init
+RUN chmod 0755 /usr/local/libexec/butlers/runtime-cli-sandbox-init \
+    && mkdir -p /usr/local/share/butlers \
+    && printf '%s\n' '61000-61999' > /usr/local/share/butlers/runtime-cli-sandbox-uid-range \
+    && chmod 0444 /usr/local/share/butlers/runtime-cli-sandbox-uid-range
 
 # Node.js 22 (for LLM runtime CLIs)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -43,11 +68,21 @@ RUN --mount=type=cache,target=/root/.npm \
     @openai/codex@0.144.1 \
     opencode-ai@1.17.7
 
+# Resolve the pinned npm launchers and their exact immutable runtime closure
+# while the image is built.  Dashboard code reads this asset rather than
+# discovering a host path or mounting a broad runtime tree into Bubblewrap.
+COPY scripts/generate_runtime_cli_sandbox_manifest.py /tmp/generate_runtime_cli_sandbox_manifest.py
+RUN python /tmp/generate_runtime_cli_sandbox_manifest.py \
+        --output /usr/local/share/butlers/runtime-cli-sandbox-inputs.json \
+    && chmod 0444 /usr/local/share/butlers/runtime-cli-sandbox-inputs.json \
+    && rm /tmp/generate_runtime_cli_sandbox_manifest.py
+
 # Emit an auditable CLI version manifest — inspect with:
 #   docker run --rm <image> cat /opt/cli-versions.txt
 RUN mkdir -p /opt \
     && node --version > /opt/cli-versions.txt \
-    && (npm list -g --depth=0 2>/dev/null || true) >> /opt/cli-versions.txt
+    && (npm list -g --depth=0 2>/dev/null || true) >> /opt/cli-versions.txt \
+    && dpkg-query -W -f='bubblewrap=${Version}\n' bubblewrap >> /opt/cli-versions.txt
 
 # uv package manager. Install into /usr/local/bin and assert the binary exists so
 # a transient installer/download problem cannot produce a broken base image.

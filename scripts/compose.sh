@@ -403,30 +403,58 @@ done
 
 # ── Ensure base image is current ───────────────────────────────────────
 # The base image (butlers-base) contains system deps, Node.js, LLM CLIs,
-# and uv. Rebuild it when Dockerfile.base changes, including pinned LLM CLI
-# version bumps, so app rebuilds cannot silently inherit a stale toolchain.
+# and uv.  Fingerprint the Dockerfile plus every local source it COPYs: Docker
+# cache invalidation alone cannot make an existing tagged image stale when a
+# generator or PID1 helper changes.  This list intentionally excludes dotenv
+# and ambient deployment configuration.
+# shellcheck source=base-image-input-fingerprint.sh
+source "${SCRIPT_DIR}/base-image-input-fingerprint.sh"
+BASE_IMAGE_BUILD_INPUTS=(
+  Dockerfile.base
+  scripts/runtime_cli_sandbox_init.c
+  scripts/generate_runtime_cli_sandbox_manifest.py
+)
 if command -v sha256sum &>/dev/null; then
-  _hasher() { sha256sum; }
+  _base_dockerfile_hasher() { sha256sum; }
 else
-  _hasher() { shasum -a 256; }
+  _base_dockerfile_hasher() { shasum -a 256; }
 fi
+BASE_DOCKERFILE_SHA=$(_base_dockerfile_hasher < Dockerfile.base | awk '{print $1}')
+BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint "${BASE_IMAGE_BUILD_INPUTS[@]}")
 
-BASE_DOCKERFILE_SHA=$(_hasher < Dockerfile.base | awk '{print $1}')
-
-BASE_IMAGE_SHA=$(
-  docker image inspect butlers-base:latest     --format '{{ index .Config.Labels "butlers.base.dockerfile_sha" }}'     2>/dev/null || true
+# Keep the legacy Dockerfile-only label for existing image consumers.  The
+# input label is the authoritative freshness receipt for this broader closure;
+# images without it predate the sandbox inputs and rebuild fail closed.
+BASE_IMAGE_DOCKERFILE_SHA=$(
+  docker image inspect butlers-base:latest \
+    --format '{{ index .Config.Labels "butlers.base.dockerfile_sha" }}' \
+    2>/dev/null || true
+)
+BASE_IMAGE_INPUT_SHA=$(
+  docker image inspect butlers-base:latest \
+    --format '{{ index .Config.Labels "butlers.base.input_sha" }}' \
+    2>/dev/null || true
 )
 
-if [ -z "$BASE_IMAGE_SHA" ]; then
+if [ -z "$BASE_IMAGE_DOCKERFILE_SHA" ] || [ -z "$BASE_IMAGE_INPUT_SHA" ]; then
   echo "Building butlers-base image (~5-10 min)..."
-  docker build     --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}"     -f Dockerfile.base     -t butlers-base . || {
+  docker build \
+    --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
+    --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
+    -f Dockerfile.base \
+    -t butlers-base . || {
     echo "ERROR: Failed to build butlers-base image" >&2
     exit 1
   }
   echo ""
-elif [ "$BASE_IMAGE_SHA" != "$BASE_DOCKERFILE_SHA" ]; then
-  echo "Rebuilding butlers-base image because Dockerfile.base or pinned runtime CLI versions changed..."
-  docker build     --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}"     -f Dockerfile.base     -t butlers-base . || {
+elif [ "$BASE_IMAGE_DOCKERFILE_SHA" != "$BASE_DOCKERFILE_SHA" ] \
+  || [ "$BASE_IMAGE_INPUT_SHA" != "$BASE_INPUT_SHA" ]; then
+  echo "Rebuilding butlers-base image because its copied runtime inputs changed..."
+  docker build \
+    --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
+    --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
+    -f Dockerfile.base \
+    -t butlers-base . || {
     echo "ERROR: Failed to rebuild butlers-base image" >&2
     exit 1
   }

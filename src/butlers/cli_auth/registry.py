@@ -51,6 +51,9 @@ class CLIAuthProviderDef:
     token_path: Path | None = None
     """Path to the credential file written by the CLI on success."""
 
+    sandbox_authority_relative_path: Path | None = None
+    """Fixed child-HOME path for a disposable staged authority copy."""
+
     # -- api_key fields ------------------------------------------------------
 
     env_var: str = ""
@@ -123,6 +126,7 @@ _register(
         code_pattern=_OPENAI_DEVICE_CODE,
         success_pattern=re.compile(r"Login successful", re.IGNORECASE),
         token_path=Path.home() / ".local" / "share" / "opencode" / "auth.json",
+        sandbox_authority_relative_path=Path(".local") / "share" / "opencode" / "auth.json",
         runtime="opencode",
         # `opencode auth list` outputs "● OpenAI oauth" when authenticated
         status_command=["opencode", "auth", "list"],
@@ -139,10 +143,10 @@ _register(
         code_pattern=_OPENAI_DEVICE_CODE,
         success_pattern=re.compile(r"Successfully logged in", re.IGNORECASE),
         token_path=Path.home() / ".codex" / "auth.json",
+        sandbox_authority_relative_path=Path(".codex") / "auth.json",
         runtime="codex",
-        # `codex login status` outputs "Logged in using ChatGPT" when authenticated
-        status_command=["codex", "login", "status"],
-        status_ok_pattern=re.compile(r"Logged in", re.IGNORECASE),
+        # Dashboard health is parent-only: ``codex login status`` can rotate
+        # the authority document, so no Codex status child is declared here.
     )
 )
 
@@ -156,6 +160,7 @@ _register(
         binary_name="opencode",
         # Token is stored inside the shared opencode auth.json
         token_path=Path.home() / ".local" / "share" / "opencode" / "auth.json",
+        sandbox_authority_relative_path=Path(".local") / "share" / "opencode" / "auth.json",
         # Test: run a minimal prompt with an OpenCode Go model.
         # Plain output (no --format json): the NDJSON event stream never put
         # the model's reply in the first chars the ok-pattern is matched

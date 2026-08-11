@@ -12,7 +12,6 @@ credential store so they survive container restarts (no PV needed).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import secrets
 import time
@@ -32,8 +31,17 @@ from butlers.api.models.cli_auth import (
     CLIAuthTestResponse,
 )
 from butlers.cli_auth.health import AuthHealthState, probe_all, probe_provider
-from butlers.cli_auth.persistence import persist_token
+from butlers.cli_auth.persistence import (
+    capture_device_auth_authority_baseline,
+    persist_validated_staged_device_auth_bytes,
+)
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
+from butlers.cli_auth.sandbox import (
+    DashboardCLIAuthSandbox,
+    SandboxUnavailableError,
+    dashboard_cli_auth_sandbox,
+    load_validated_readonly_authority,
+)
 from butlers.cli_auth.session import (
     CLIAuthSession,
     get_session,
@@ -69,27 +77,61 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
     return CredentialStore(pool, system_global_pool=pool)
 
 
-def _build_on_success(db_manager: Any):
-    """Build an on_success callback that persists the token to DB.
+class _DeviceAuthAuthorityPersistence:
+    """Synchronous callback object with a prelaunch CAS-authority handshake.
 
-    For the ``codex`` provider an additional pre-warm step runs after
-    ``persist_token`` completes.  The pre-warm calls ``codex login status``
-    under the cross-process refresh lock so the newly-issued token is written
-    to disk and all concurrent butler invocations within its TTL skip the
-    server-side refresh race.
+    Both dashboard device-auth routes receive this same callable object.  The
+    session awaits :meth:`prepare_for_device_auth` before it starts the
+    Bubblewrap child, then invokes the object only after containment and
+    staged-output validation.  Keeping construction synchronous preserves the
+    ``secrets_v2`` handoff ABI without moving its route into this change.
     """
-    store = _make_credential_store(db_manager)
-    if store is None:
-        return None
 
-    async def _on_success(provider: CLIAuthProviderDef) -> None:
-        persisted = await persist_token(
-            provider,
-            store,
-            codex_authority=store if provider.name == "codex" else None,
+    requires_prelaunch_prepare = True
+
+    def __init__(self, store: CredentialStore) -> None:
+        self._store = store
+        self._provider_name: str | None = None
+        self._expected_authority_value: str | None = None
+
+    async def prepare_for_device_auth(self, provider: CLIAuthProviderDef) -> bool:
+        """Capture the authority version before this session can launch a child."""
+        if self._provider_name is not None:
+            return self._provider_name == provider.name
+        try:
+            expected_authority_value = await capture_device_auth_authority_baseline(
+                provider,
+                self._store,
+                codex_authority=self._store if provider.name == "codex" else None,
+            )
+        except Exception:
+            # Do not include DB context in logs because it can retain the
+            # credential value being fenced.
+            logger.warning("CLI auth: device-auth authority baseline is unavailable")
+            return False
+
+        self._provider_name = provider.name
+        self._expected_authority_value = expected_authority_value
+        return True
+
+    async def __call__(
+        self,
+        completed_provider: CLIAuthProviderDef,
+        *,
+        staged_output: bytes,
+    ) -> bool:
+        if completed_provider.name != self._provider_name:
+            logger.warning("CLI auth on_success: device-auth provider identity changed")
+            return False
+        persisted = await persist_validated_staged_device_auth_bytes(
+            completed_provider,
+            self._store,
+            staged_output,
+            expected_authority_value=self._expected_authority_value,
+            codex_authority=self._store if completed_provider.name == "codex" else None,
         )
 
-        if provider.name == "codex":
+        if completed_provider.name == "codex":
             if not persisted:
                 # Do not let a device-auth session report success when its
                 # local file could not be committed to the selected global
@@ -97,94 +139,21 @@ def _build_on_success(db_manager: Any):
                 # failed state without exposing provider or credential detail.
                 logger.warning("CLI auth on_success: Codex authority persistence failed safely")
                 return False
-            # Warm the freshly-issued token under the cross-process lock so
-            # all butler daemons see a valid access_token on disk before any
-            # of them start spawning Codex CLI invocations.
-            try:
-                import shutil as _shutil
-
-                from butlers.core.runtimes._codex_auth_sync import (
-                    codex_auth_file_matches_authority,
-                    finalize_codex_auth_rotation,
-                    reconcile_codex_auth,
-                )
-                from butlers.core.runtimes.codex import (
-                    CodexAdapter,
-                    _resolve_canonical_home,
-                    run_codex_pre_warm,
-                )
-
-                codex_binary = _shutil.which("codex")
-                real_home = _resolve_canonical_home(None)
-                if codex_binary and real_home:
-                    codex_dir = real_home / ".codex"
-                    token_path = codex_dir / "auth.json"
-                    # Establish the authority baseline before prewarm.  Its
-                    # exact bytes are the only safe CAS expectation for this
-                    # callback's finalization: a later dashboard refresh must
-                    # win over this older prewarm's local rotation.
-                    baseline = await reconcile_codex_auth(
-                        token_path,
-                        store,
-                        butler_name="dashboard",
-                    )
-                    if (
-                        not baseline.authority_known
-                        or baseline.expected_store_value is None
-                        or not codex_auth_file_matches_authority(
-                            token_path,
-                            baseline.expected_store_value,
-                        )
-                    ):
-                        logger.warning(
-                            "CLI auth on_success: system-global Codex authority unavailable; "
-                            "skipping login-status subprocess"
-                        )
-                        return
-
-                    prewarm_baseline = baseline
-
-                    async def _authority_preflight() -> bool:
-                        nonlocal prewarm_baseline
-                        prewarm_baseline = await reconcile_codex_auth(
-                            token_path,
-                            store,
-                            butler_name="dashboard",
-                        )
-                        return (
-                            prewarm_baseline.authority_known
-                            and prewarm_baseline.expected_store_value is not None
-                            and codex_auth_file_matches_authority(
-                                token_path,
-                                prewarm_baseline.expected_store_value,
-                            )
-                        )
-
-                    try:
-                        prewarm_completed = await run_codex_pre_warm(
-                            codex_dir,
-                            codex_binary,
-                            authority_preflight=_authority_preflight,
-                        )
-                    finally:
-                        await finalize_codex_auth_rotation(
-                            token_path,
-                            store,
-                            expected_store_value=prewarm_baseline.expected_store_value,
-                            authority_known=prewarm_baseline.authority_known,
-                            butler_name="dashboard",
-                        )
-                    # Mark pre-warm done for this process so the first spawn
-                    # takes the fast path.  A pre-warm exception skips this
-                    # line after the final reconciliation and is handled by
-                    # the outer best-effort boundary.
-                    if prewarm_completed:
-                        CodexAdapter._prewarm_done.add(str(codex_dir))
-            except Exception:
-                logger.warning("CLI auth on_success: codex pre-warm failed (non-fatal)")
             return True
+        return persisted
 
-    return _on_success
+
+def _build_on_success(db_manager: Any):
+    """Return the synchronous compatibility factory consumed by ``secrets_v2``.
+
+    ``secrets_v2`` owns an older synchronous handoff and is deliberately out
+    of this slice.  Keep that public callable shape intact while returning an
+    object whose common prelaunch hook fences every session before child spawn.
+    """
+    store = _make_credential_store(db_manager)
+    if store is None:
+        return None
+    return _DeviceAuthAuthorityPersistence(store)
 
 
 # ---------------------------------------------------------------------------
@@ -265,16 +234,19 @@ async def start_auth(
         )
 
     on_success = _build_on_success(db_manager)
-    if provider_def.name == "codex" and on_success is None:
+    if on_success is None:
         # Starting device auth writes a local canonical auth file. Without the
         # explicitly selected global authority its result could only remain a
         # stale local credential, so refuse before spawning the CLI instead of
         # discovering the failure after the owner has completed the flow.
-        logger.warning("CLI auth: Codex device auth refused without system-global authority")
-        raise HTTPException(
-            status_code=503,
-            detail="System-global Codex credential authority unavailable.",
-        )
+        if provider_def.name == "codex":
+            logger.warning("CLI auth: Codex device auth refused without system-global authority")
+            raise HTTPException(
+                status_code=503,
+                detail="System-global Codex credential authority unavailable.",
+            )
+        logger.warning("CLI auth: device auth refused without a fenced credential authority")
+        raise HTTPException(status_code=503, detail="Credential authority unavailable.")
 
     session_id = secrets.token_urlsafe(16)
     session = CLIAuthSession(
@@ -615,13 +587,13 @@ async def _prepare_codex_test_authority(
     provider_def: CLIAuthProviderDef,
     store: CredentialStore | None,
 ) -> tuple[str | None, Path | None]:
-    """Reconcile and capture the canonical bytes a Codex probe will consume.
+    """Reconcile and capture the canonical bytes a parent-only Codex probe consumes.
 
-    A Passport token save updates the shared credential row immediately, but
-    ``codex login status`` reads the local canonical file.  Reconcile first so
-    the probe tests the dashboard authority, then bind the result to those
-    exact bytes.  Failures preserve the HTTP probe response while withholding
-    durable health state rather than guessing which credential was tested.
+    A Passport token save updates the shared credential row immediately.
+    Reconcile first so the parent-only health probe tests that authority, then
+    bind the result to those exact bytes.  Failures preserve the HTTP probe
+    response while withholding durable health state rather than guessing which
+    credential was tested.
     """
     token_path = provider_def.token_path
     if store is None or token_path is None:
@@ -663,40 +635,6 @@ def _codex_test_authority_still_matches(
         return False
 
 
-async def _finalize_codex_test_rotation(
-    token_path: Path | None,
-    store: CredentialStore | None,
-    *,
-    expected_store_value: str | None,
-) -> None:
-    """Persist a status-probe auth rotation without attaching its health result.
-
-    ``codex login status`` is allowed to refresh the canonical auth document.
-    Its probe result describes the credential observed during that command, not
-    necessarily the rotated successor, so only the operation-bound CAS is
-    durable here. A concurrent Passport replacement wins that CAS and is
-    reconciled by the shared finalizer; neither outcome gets a probe log,
-    audit record, or health state from the older command.
-    """
-    if token_path is None or store is None or expected_store_value is None:
-        return
-
-    try:
-        from butlers.core.runtimes._codex_auth_sync import finalize_codex_auth_rotation
-
-        await finalize_codex_auth_rotation(
-            token_path,
-            store,
-            expected_store_value=expected_store_value,
-            authority_known=True,
-            butler_name="dashboard",
-        )
-    except Exception:  # noqa: BLE001
-        # This is best-effort durability only. Do not include exception detail:
-        # database drivers can retain credential-bearing bind context.
-        logger.warning("CLI auth test: Codex post-probe auth finalization failed")
-
-
 @router.post(
     "/{provider}/test",
     response_model=CLIAuthTestResponse,
@@ -710,11 +648,10 @@ async def test_api_key(
 
     For ``api_key`` providers this runs the provider's configured test command.
     For ``device_code`` providers (e.g. Codex) there is no API key to test
-    against — instead we run the live health probe, which executes the
-    provider's status command and (for Codex) validates the stored token
-    against the backend. The frontend "probe" button calls this endpoint for
-    every auth mode, so device_code providers must return a result rather than
-    a 400.
+    against — instead we run the live health probe.  Codex validates the
+    stored token with a parent-only backend request rather than launching a
+    status child. The frontend "probe" button calls this endpoint for every
+    auth mode, so device_code providers must return a result rather than a 400.
 
     The outcome is persisted (probe log, test-state cache, audit stamp) so the
     passport's "last test" survives a page refresh — see
@@ -731,20 +668,21 @@ async def test_api_key(
         expected_store_value, token_path = await _prepare_codex_test_authority(provider_def, store)
 
     started = time.monotonic()
-    result = await _run_provider_test(provider_def, db_manager, credential_store=store)
+    result = await _run_provider_test(
+        provider_def,
+        db_manager,
+        credential_store=store,
+        prepared_codex_authority=expected_store_value,
+        codex_authority_prepared=provider_def.name == "codex",
+    )
     latency_ms = round((time.monotonic() - started) * 1000)
     if provider_def.name == "codex" and not _codex_test_authority_still_matches(
         token_path,
         expected_store_value,
     ):
-        # A Codex status probe can itself rotate auth. Finalize that successor
-        # against the exact pre-probe authority snapshot, then deliberately
-        # withhold this probe outcome because it may describe the old bytes.
-        await _finalize_codex_test_rotation(
-            token_path,
-            store,
-            expected_store_value=expected_store_value,
-        )
+        # Parent-only Codex health never rotates credentials.  A concurrent
+        # authority update instead withholds this stale result; it is never
+        # finalized or written back from this dashboard path.
         expected_store_value = None
     await _persist_test_outcome(
         db_manager,
@@ -764,6 +702,9 @@ async def _run_provider_test(
     db_manager: Any,
     *,
     credential_store: CredentialStore | None = None,
+    prepared_codex_authority: str | None = None,
+    codex_authority_prepared: bool = False,
+    sandbox: DashboardCLIAuthSandbox | None = None,
 ) -> CLIAuthTestResponse:
     """Run the live credential check for a provider and return the outcome."""
     if provider_def.auth_mode != "api_key":
@@ -773,6 +714,8 @@ async def _run_provider_test(
             provider_def,
             store,
             codex_authority=store if provider_def.name == "codex" else None,
+            prepared_codex_authority=prepared_codex_authority,
+            codex_authority_prepared=codex_authority_prepared,
         )
         return CLIAuthTestResponse(
             provider=provider_def.name,
@@ -795,44 +738,51 @@ async def _run_provider_test(
             execution_model = canonical_to_execution_model(test_command[model_index + 1])
             if execution_model is not None:
                 test_command[model_index + 1] = execution_model
-        proc = await asyncio.create_subprocess_exec(
-            *test_command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL,
+        authority = load_validated_readonly_authority(provider_def)
+        if authority is None:
+            return CLIAuthTestResponse(
+                provider=provider_def.name,
+                success=False,
+                detail="CLI auth sandbox authority copy is unavailable; test was not run.",
+            )
+        sandbox_result = await (sandbox or dashboard_cli_auth_sandbox()).run_readonly_command(
+            provider_def,
+            command=tuple(test_command),
+            authority=authority,
+            timeout_s=30,
         )
-        raw_stdout, raw_stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-        stdout_text = _strip_ansi(raw_stdout.decode(errors="replace")).strip()
-        stderr_text = _strip_ansi(raw_stderr.decode(errors="replace")).strip()
-        # Prefer stdout for pattern matching; include stderr in detail for diagnostics
-        output = stdout_text[:200]
-        if not output and stderr_text:
-            output = stderr_text[:200]
+        output = _strip_ansi(sandbox_result.output.decode(errors="replace"))
 
-        if proc.returncode == 0:
+        if sandbox_result.returncode == 0:
             if provider_def.test_ok_pattern and provider_def.test_ok_pattern.search(output):
                 return CLIAuthTestResponse(
                     provider=provider_def.name,
                     success=True,
-                    detail=output or "Test passed.",
+                    detail="Provider CLI credential check succeeded.",
                 )
             elif not provider_def.test_ok_pattern:
                 return CLIAuthTestResponse(
                     provider=provider_def.name,
                     success=True,
-                    detail=output or "Command succeeded (exit 0).",
+                    detail="Provider CLI credential command succeeded.",
                 )
             else:
                 return CLIAuthTestResponse(
                     provider=provider_def.name,
                     success=False,
-                    detail=output or "Command succeeded but output didn't match expected pattern.",
+                    detail="Provider CLI credential check did not report success.",
                 )
 
         return CLIAuthTestResponse(
             provider=provider_def.name,
             success=False,
-            detail=output or f"Exit code {proc.returncode}.",
+            detail="Provider CLI credential check failed.",
+        )
+    except SandboxUnavailableError:
+        return CLIAuthTestResponse(
+            provider=provider_def.name,
+            success=False,
+            detail="CLI auth sandbox is unavailable; test was not run.",
         )
     except TimeoutError:
         return CLIAuthTestResponse(

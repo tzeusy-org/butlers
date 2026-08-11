@@ -191,7 +191,7 @@ scratch allowlist fail closed. All scratch content is discarded. Any
 Default and hotreload Dashboard services use the same repository-owned seccomp
 profile permitting only the namespace syscalls Bubblewrap needs plus
 `close_range` for the trusted PID1 shim, together with exact
-`apparmor:unconfined` and `systempaths:unconfined` settings. They add no
+`apparmor:unconfined` and `systempaths=unconfined` settings. They add no
 `privileged`, `cap_add`, host PID namespace, or Docker-socket access. Startup
 executes a real nested-user/mount/PID-namespace
 preflight with the exact image and policy. Unsupported user namespaces,

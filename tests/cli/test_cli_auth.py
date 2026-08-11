@@ -1,9 +1,12 @@
 """Tests for the CLI auth device-code flow."""
 
 import asyncio
+import os
 import re
 from dataclasses import replace
+from inspect import getsource
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -156,10 +159,57 @@ def _test_provider(tmp_path: Path) -> CLIAuthProviderDef:
     )
 
 
+class _TestSandboxHandle:
+    """Test-only process owner; production sessions have no direct fallback."""
+
+    def __init__(self, process: asyncio.subprocess.Process) -> None:
+        self.process = process
+
+    async def finalize(self, *, succeeded: bool) -> bytes | None:
+        if self.process.returncode is None:
+            await self.terminate()
+        return b'{"tokens":{"access_token":"test-only"}}' if succeeded else None
+
+    async def terminate(self) -> None:
+        if self.process.returncode is None:
+            self.process.terminate()
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=1.0)
+            except TimeoutError:
+                self.process.kill()
+                await self.process.wait()
+
+
+class _TestSandbox:
+    """Fixture adapter that supplies a harmless Bash child to session tests."""
+
+    async def launch_device_auth(self, provider: CLIAuthProviderDef) -> _TestSandboxHandle:
+        process = await asyncio.create_subprocess_exec(
+            *provider.command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+        return _TestSandboxHandle(process)
+
+
+async def _test_persistence_callback(
+    _provider: CLIAuthProviderDef, *, staged_output: bytes
+) -> bool:
+    """Accept harmless fake staged bytes for session parsing tests."""
+    assert staged_output == b'{"tokens":{"access_token":"test-only"}}'
+    return True
+
+
 async def test_session_lifecycle(tmp_path):
     """Session parses device code and reaches success; store/get work; timeout expires."""
     provider = _test_provider(tmp_path)
-    session = CLIAuthSession(id="test-1", provider=provider)
+    session = CLIAuthSession(
+        id="test-1",
+        provider=provider,
+        on_success=_test_persistence_callback,
+        sandbox=_TestSandbox(),
+    )
     await session.start()
     await session.wait(timeout=5.0)
 
@@ -187,11 +237,15 @@ async def test_codex_session_never_logs_device_code_or_callback_error(tmp_path, 
         ],
     )
 
-    async def _raise_with_sensitive_detail(_: CLIAuthProviderDef) -> None:
+    async def _raise_with_sensitive_detail(_: CLIAuthProviderDef, *, staged_output: bytes) -> None:
+        del staged_output
         raise RuntimeError("callback-error-marker")
 
     session = CLIAuthSession(
-        id="codex-redaction", provider=provider, on_success=_raise_with_sensitive_detail
+        id="codex-redaction",
+        provider=provider,
+        on_success=_raise_with_sensitive_detail,
+        sandbox=_TestSandbox(),
     )
     with caplog.at_level("INFO", logger="butlers.cli_auth.session"):
         await session.start()
@@ -212,11 +266,15 @@ async def test_codex_session_fails_when_global_persistence_is_not_confirmed(tmp_
         command=["bash", "-c", 'echo "Successfully logged in"'],
     )
 
-    async def _not_persisted(_: CLIAuthProviderDef) -> bool:
+    async def _not_persisted(_: CLIAuthProviderDef, *, staged_output: bytes) -> bool:
+        del staged_output
         return False
 
     session = CLIAuthSession(
-        id="codex-global-persist", provider=provider, on_success=_not_persisted
+        id="codex-global-persist",
+        provider=provider,
+        on_success=_not_persisted,
+        sandbox=_TestSandbox(),
     )
     await session.start()
     await session.wait(timeout=5.0)
@@ -243,6 +301,42 @@ async def test_codex_device_auth_refuses_to_start_without_global_authority() -> 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "System-global Codex credential authority unavailable."
     start.assert_not_awaited()
+
+
+async def test_device_auth_captures_its_authority_baseline_before_starting_the_child() -> None:
+    """REQ-core-credentials-002: a child never starts before its CAS baseline exists."""
+    from butlers.api.routers.cli_auth import start_auth
+
+    events: list[str] = []
+    store = MagicMock()
+
+    async def _capture(*_args, **_kwargs) -> str | None:
+        events.append("baseline")
+        return "authority-before-launch"
+
+    async def _start(session: CLIAuthSession) -> None:
+        assert session.on_success is not None
+        assert await session.on_success.prepare_for_device_auth(session.provider) is True
+        events.append("start")
+
+    with (
+        patch("butlers.api.routers.cli_auth._make_credential_store", return_value=store),
+        patch(
+            "butlers.api.routers.cli_auth.capture_device_auth_authority_baseline",
+            side_effect=_capture,
+        ) as capture,
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/opencode"),
+        patch("butlers.api.routers.cli_auth.CLIAuthSession.start", new=_start),
+        patch("butlers.api.routers.cli_auth.CLIAuthSession.wait", new_callable=AsyncMock),
+    ):
+        await start_auth("opencode-openai", db_manager=MagicMock())
+
+    assert events == ["baseline", "start"]
+    capture.assert_awaited_once_with(
+        PROVIDERS["opencode-openai"],
+        store,
+        codex_authority=None,
+    )
 
 
 async def test_codex_provider_listing_does_not_trust_a_local_auth_file(
@@ -298,65 +392,72 @@ async def test_session_timeout(tmp_path):
         runtime="test",
         timeout_seconds=1,
     )
-    session = CLIAuthSession(id="timeout-test", provider=provider)
+    session = CLIAuthSession(
+        id="timeout-test",
+        provider=provider,
+        on_success=_test_persistence_callback,
+        sandbox=_TestSandbox(),
+    )
     await session.start()
     await asyncio.sleep(2)
 
     assert session.state == "expired"
 
 
-async def test_codex_dashboard_success_reconciles_final_prewarm_auth(tmp_path: Path) -> None:
-    """A dashboard prewarm finalizes against its captured authority snapshot."""
+async def test_codex_dashboard_success_never_launches_a_prewarm_child(tmp_path: Path) -> None:
+    """REQ-core-credentials-002: device auth persists without a Dashboard CLI child."""
     from butlers.api.routers.cli_auth import _build_on_success
-    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
-    from butlers.core.runtimes.codex import CodexAdapter
 
     provider = replace(PROVIDERS["codex"], token_path=tmp_path / ".codex" / "auth.json")
     store = MagicMock()
-    callbacks: list[str] = []
 
     async def _persist(*_args, **_kwargs) -> bool:
-        callbacks.append("persist")
         return True
 
-    async def _reconcile(*_args, **_kwargs) -> CodexAuthSyncResult:
-        callbacks.append("reconcile")
-        return CodexAuthSyncResult(expected_store_value='{"access_token":"fresh"}')
-
-    async def _finalize(*_args, expected_store_value, **_kwargs) -> CodexAuthSyncResult:
-        assert expected_store_value == '{"access_token":"fresh"}'
-        callbacks.append("finalize")
-        return CodexAuthSyncResult(expected_store_value=expected_store_value)
-
-    async def _prewarm(*_args, authority_preflight, **_kwargs) -> bool:
-        callbacks.append("prewarm")
-        assert await authority_preflight()
-        return True
-
-    CodexAdapter._prewarm_done.discard(str(provider.token_path.parent))
     with (
         patch("butlers.api.routers.cli_auth._make_credential_store", return_value=store),
-        patch("butlers.api.routers.cli_auth.persist_token", side_effect=_persist),
         patch(
-            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth", side_effect=_reconcile
-        ),
+            "butlers.api.routers.cli_auth.capture_device_auth_authority_baseline",
+            new_callable=AsyncMock,
+            return_value="authority-before-launch",
+        ) as capture,
         patch(
-            "butlers.core.runtimes._codex_auth_sync.finalize_codex_auth_rotation",
-            side_effect=_finalize,
-        ),
+            "butlers.api.routers.cli_auth.persist_validated_staged_device_auth_bytes",
+            side_effect=_persist,
+        ) as persist,
         patch(
-            "butlers.core.runtimes._codex_auth_sync.codex_auth_file_matches_authority",
+            "butlers.core.runtimes.codex.run_codex_pre_warm",
+            new_callable=AsyncMock,
             return_value=True,
-        ),
-        patch("butlers.core.runtimes.codex._resolve_canonical_home", return_value=tmp_path),
-        patch("butlers.core.runtimes.codex.run_codex_pre_warm", side_effect=_prewarm),
-        patch("shutil.which", return_value="/usr/bin/codex"),
+        ) as prewarm,
     ):
         on_success = _build_on_success(MagicMock())
         assert on_success is not None
-        await on_success(provider)
+        assert await on_success.prepare_for_device_auth(provider) is True
+        assert (
+            await on_success(
+                provider,
+                staged_output=b'{"tokens":{"access_token":"not-a-real-token"}}',
+            )
+            is True
+        )
 
-    assert callbacks == ["persist", "reconcile", "prewarm", "reconcile", "finalize"]
+    prewarm.assert_not_awaited()
+    capture.assert_awaited_once_with(provider, store, codex_authority=store)
+    assert persist.await_args.kwargs["expected_authority_value"] == "authority-before-launch"
+
+
+def test_legacy_on_success_factory_remains_a_synchronous_callable_for_secrets_v2() -> None:
+    """REQ-core-credentials-002: the excluded secrets router never receives a coroutine."""
+    from butlers.api.routers.cli_auth import _build_on_success
+
+    store = MagicMock()
+    with patch("butlers.api.routers.cli_auth._make_credential_store", return_value=store):
+        on_success = _build_on_success(MagicMock())
+
+    assert callable(on_success)
+    assert not asyncio.iscoroutine(on_success)
+    assert callable(on_success.prepare_for_device_auth)
 
 
 # ---------------------------------------------------------------------------
@@ -427,13 +528,23 @@ async def test_claude_health_probe_not_authenticated_or_unavailable():
     ],
 )
 async def test_opencode_go_health_command_maps_canonical_model_at_execution_boundary(
-    canonical_model, execution_model
+    canonical_model, execution_model, tmp_path: Path
 ):
-    """REQ-runtime-opencode-001/REQ-model-catalog-002: health uses native ID only in argv."""
+    """REQ-runtime-opencode-001/REQ-core-credentials-002: native argv stays sandboxed."""
     from butlers.api.routers.cli_auth import _run_provider_test
 
+    auth_path = tmp_path / ".local" / "share" / "opencode" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    peer_openai_sentinel = "OPENAI-PEER-AUTHORITY-MUST-NOT-REACH-GO"
+    auth_path.write_text(
+        '{"opencode-go":{"type":"api","key":"test-only"},'
+        f'"openai":{{"type":"oauth","refresh":"{peer_openai_sentinel}"}}}}',
+        encoding="utf-8",
+    )
+    os.chmod(auth_path, 0o600)
     provider = replace(
         PROVIDERS["opencode-go"],
+        token_path=auth_path,
         test_command=[
             "opencode",
             "run",
@@ -442,25 +553,180 @@ async def test_opencode_go_health_command_maps_canonical_model_at_execution_boun
             "respond with only the word ok",
         ],
     )
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-    mock_proc.returncode = 0
+    commands: list[tuple[str, ...]] = []
 
-    with patch(
-        "butlers.api.routers.cli_auth.asyncio.create_subprocess_exec", return_value=mock_proc
-    ) as mock_exec:
-        result = await _run_provider_test(provider, None)
+    class _RecordingSandbox:
+        async def run_readonly_command(self, _provider, *, command, authority, timeout_s):
+            assert _provider is provider
+            assert authority.relative_path == Path(".local") / "share" / "opencode" / "auth.json"
+            assert authority.content == b'{"opencode-go":{"key":"test-only","type":"api"}}'
+            assert peer_openai_sentinel.encode() not in authority.content
+            assert timeout_s == 30
+            commands.append(command)
+            return SimpleNamespace(returncode=0, output=b"ok")
+
+    result = await _run_provider_test(provider, None, sandbox=_RecordingSandbox())
 
     assert result.success is True
-    command = mock_exec.call_args.args
+    command = commands[0]
     assert command[command.index("--model") + 1] == execution_model
     assert provider.test_command[provider.test_command.index("--model") + 1] == canonical_model
+    assert "create_subprocess_exec" not in getsource(_run_provider_test)
+
+
+async def test_status_probe_stages_regular_authority_copy_through_shared_sandbox(
+    tmp_path: Path,
+) -> None:
+    """REQ-core-credentials-002: health children never receive the canonical authority path."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    auth_path = tmp_path / ".local" / "share" / "opencode" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    peer_go_sentinel = "GO-PEER-AUTHORITY-MUST-NOT-REACH-OPENAI"
+    auth_path.write_text(
+        '{"openai":{"type":"oauth","refresh":"openai-refresh",'
+        '"access":"openai-access","expires":1700000000},'
+        f'"opencode-go":{{"type":"api","key":"{peer_go_sentinel}"}}}}',
+        encoding="utf-8",
+    )
+    os.chmod(auth_path, 0o600)
+    provider = replace(PROVIDERS["opencode-openai"], token_path=auth_path)
+
+    class _RecordingSandbox:
+        async def run_readonly_command(self, _provider, *, command, authority, timeout_s):
+            assert _provider is provider
+            assert command == tuple(provider.status_command or ())
+            assert authority.relative_path == Path(".local") / "share" / "opencode" / "auth.json"
+            assert authority.content == (
+                b'{"openai":{"access":"openai-access","expires":1700000000,'
+                b'"refresh":"openai-refresh","type":"oauth"}}'
+            )
+            assert peer_go_sentinel.encode() not in authority.content
+            assert timeout_s == 15
+            return SimpleNamespace(returncode=0, output=b"OpenAI oauth\n")
+
+    with (
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/opencode"),
+        patch(
+            "butlers.cli_auth.health.asyncio.create_subprocess_exec", new_callable=AsyncMock
+        ) as direct_spawn,
+    ):
+        result = await probe_provider(provider, sandbox=_RecordingSandbox())
+
+    assert result.state is AuthHealthState.authenticated
+    direct_spawn.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# Codex backend probe — catches server-side refresh-token revocation that
-# `codex login status` alone can't see.
+# Codex parent-only backend probe — catches server-side refresh-token
+# revocation without launching a credential-mutating CLI child.
 # ---------------------------------------------------------------------------
+
+
+async def test_codex_probe_is_parent_only_and_never_launches_or_finalizes(
+    tmp_path: Path,
+) -> None:
+    """REQ-core-credentials-002: Codex health never spawns a status child."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+    auth_path = _fake_codex_auth_file(tmp_path)
+    os.chmod(auth_path, 0o600)
+    expected_authority = auth_path.read_text(encoding="utf-8")
+    codex = replace(PROVIDERS["codex"], token_path=auth_path)
+
+    class _PoisonSandbox:
+        async def run_readonly_command(self, *_args, **_kwargs):
+            pytest.fail("Codex health must not launch a sandbox status child")
+
+    with (
+        patch(
+            "butlers.cli_auth.health.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as direct_spawn,
+        patch(
+            "butlers.cli_auth.health._probe_codex_backend",
+            AsyncMock(return_value=(False, None)),
+        ) as backend_probe,
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            return_value=CodexAuthSyncResult(expected_store_value=expected_authority),
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.codex_auth_file_matches_authority",
+            return_value=True,
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.finalize_codex_auth_rotation",
+            new_callable=AsyncMock,
+        ) as finalizer,
+    ):
+        result = await probe_provider(
+            codex,
+            codex_authority=MagicMock(),
+            sandbox=_PoisonSandbox(),
+        )
+
+    assert result.state is AuthHealthState.authenticated
+    direct_spawn.assert_not_awaited()
+    finalizer.assert_not_awaited()
+    backend_probe.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("authority_document", "expected_detail"),
+    [
+        ("{not json", "malformed"),
+        ("{}", "missing"),
+        ('{"tokens":{"access_token":"not-a-jwt"}}', "malformed"),
+    ],
+)
+async def test_codex_probe_rejects_malformed_or_missing_authority_before_backend_or_child(
+    tmp_path: Path,
+    authority_document: str,
+    expected_detail: str,
+) -> None:
+    """REQ-core-credentials-002: invalid parent authority fails before any child."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(authority_document, encoding="utf-8")
+    os.chmod(auth_path, 0o600)
+    codex = replace(PROVIDERS["codex"], token_path=auth_path)
+
+    class _PoisonSandbox:
+        async def run_readonly_command(self, *_args, **_kwargs):
+            pytest.fail("invalid Codex authority must not launch a child")
+
+    with (
+        patch(
+            "butlers.cli_auth.health.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as direct_spawn,
+        patch(
+            "butlers.cli_auth.health._probe_codex_backend",
+            AsyncMock(side_effect=AssertionError("backend must not receive invalid auth")),
+        ) as backend_probe,
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            return_value=CodexAuthSyncResult(expected_store_value=authority_document),
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.codex_auth_file_matches_authority",
+            return_value=True,
+        ),
+    ):
+        result = await probe_provider(
+            codex,
+            codex_authority=MagicMock(),
+            sandbox=_PoisonSandbox(),
+        )
+
+    assert result.state is AuthHealthState.not_authenticated
+    assert expected_detail in (result.detail or "").lower()
+    direct_spawn.assert_not_awaited()
+    backend_probe.assert_not_awaited()
 
 
 async def test_codex_probe_requires_explicit_system_global_authority(tmp_path: Path) -> None:
@@ -482,29 +748,27 @@ async def test_codex_probe_requires_explicit_system_global_authority(tmp_path: P
     spawn.assert_not_awaited()
 
 
-async def test_codex_probe_never_persists_raw_status_output(
+async def test_codex_probe_returns_a_value_free_parent_only_detail(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """REQ-core-credentials-001: Codex probe diagnostics stay value-free."""
+    """REQ-core-credentials-001: Codex parent-only diagnostics stay value-free."""
     from butlers.cli_auth.health import AuthHealthState, probe_provider
     from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 
     auth_path = _fake_codex_auth_file(tmp_path)
-    raw_status_detail = "raw-provider-status-must-not-be-persisted"
+    raw_authority_marker = "raw-authority-must-not-be-persisted"
+    auth_path.write_text(
+        auth_path.read_text(encoding="utf-8").replace(
+            '{"tokens"',
+            f'{{"marker":"{raw_authority_marker}","tokens"',
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(auth_path, 0o600)
     expected_authority = auth_path.read_text(encoding="utf-8")
     codex = replace(PROVIDERS["codex"], token_path=auth_path)
 
-    async def fake_subprocess(*_args, **_kwargs):
-        proc = MagicMock()
-        proc.returncode = 0
-        proc.communicate = AsyncMock(
-            return_value=(f"Logged in {raw_status_detail}\\n".encode(), b"")
-        )
-        return proc
-
     with (
-        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
-        patch("butlers.cli_auth.health.asyncio.create_subprocess_exec", fake_subprocess),
         patch(
             "butlers.cli_auth.health._probe_codex_backend", AsyncMock(return_value=(False, None))
         ),
@@ -521,8 +785,8 @@ async def test_codex_probe_never_persists_raw_status_output(
         result = await probe_provider(codex, codex_authority=MagicMock())
 
     assert result.state is AuthHealthState.authenticated
-    assert result.detail == "Codex CLI reports authenticated."
-    assert raw_status_detail not in caplog.text
+    assert result.detail == "Codex authority validated."
+    assert raw_authority_marker not in caplog.text
 
 
 def _fake_codex_auth_file(tmp_path: Path, exp_offset: int = 86400) -> Path:
@@ -548,12 +812,6 @@ async def test_codex_backend_probe_flags_revoked_token(tmp_path):
 
     auth_path = _fake_codex_auth_file(tmp_path)
 
-    async def fake_subprocess(*_args, **_kwargs):
-        proc = MagicMock()
-        proc.returncode = 0
-        proc.communicate = AsyncMock(return_value=(b"Logged in using ChatGPT\n", b""))
-        return proc
-
     class _Resp:
         status_code = 401
 
@@ -577,8 +835,6 @@ async def test_codex_backend_probe_flags_revoked_token(tmp_path):
     authority = MagicMock()
     expected_authority = auth_path.read_text(encoding="utf-8")
     with (
-        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
-        patch("butlers.cli_auth.health.asyncio.create_subprocess_exec", fake_subprocess),
         patch("butlers.cli_auth.health.httpx.AsyncClient", _FakeClient),
         patch(
             "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
@@ -602,12 +858,6 @@ async def test_codex_backend_probe_network_error_keeps_authenticated(tmp_path):
 
     auth_path = _fake_codex_auth_file(tmp_path)
 
-    async def fake_subprocess(*_args, **_kwargs):
-        proc = MagicMock()
-        proc.returncode = 0
-        proc.communicate = AsyncMock(return_value=(b"Logged in using ChatGPT\n", b""))
-        return proc
-
     class _FakeClient:
         def __init__(self, *a, **k):
             pass
@@ -630,8 +880,6 @@ async def test_codex_backend_probe_network_error_keeps_authenticated(tmp_path):
     authority = MagicMock()
     expected_authority = auth_path.read_text(encoding="utf-8")
     with (
-        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
-        patch("butlers.cli_auth.health.asyncio.create_subprocess_exec", fake_subprocess),
         patch("butlers.cli_auth.health.httpx.AsyncClient", _FakeClient),
         patch(
             "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
@@ -645,6 +893,52 @@ async def test_codex_backend_probe_network_error_keeps_authenticated(tmp_path):
         result = await probe_provider(codex, codex_authority=authority)
 
     assert result.state == AuthHealthState.authenticated
+
+
+async def test_codex_parent_probe_rejects_expired_authority_before_backend_or_child(
+    tmp_path: Path,
+) -> None:
+    """REQ-core-credentials-002: expiry is a parent-side no-child rejection."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
+
+    auth_path = _fake_codex_auth_file(tmp_path, exp_offset=-1)
+    os.chmod(auth_path, 0o600)
+    expected_authority = auth_path.read_text(encoding="utf-8")
+    codex = replace(PROVIDERS["codex"], token_path=auth_path)
+
+    class _PoisonSandbox:
+        async def run_readonly_command(self, *_args, **_kwargs):
+            pytest.fail("expired Codex authority must not launch a child")
+
+    with (
+        patch(
+            "butlers.cli_auth.health.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+        ) as direct_spawn,
+        patch(
+            "butlers.cli_auth.health._probe_codex_backend",
+            AsyncMock(side_effect=AssertionError("backend must not receive an expired token")),
+        ) as backend_probe,
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
+            return_value=CodexAuthSyncResult(expected_store_value=expected_authority),
+        ),
+        patch(
+            "butlers.core.runtimes._codex_auth_sync.codex_auth_file_matches_authority",
+            return_value=True,
+        ),
+    ):
+        result = await probe_provider(
+            codex,
+            codex_authority=MagicMock(),
+            sandbox=_PoisonSandbox(),
+        )
+
+    assert result.state is AuthHealthState.not_authenticated
+    assert "expired" in (result.detail or "").lower()
+    direct_spawn.assert_not_awaited()
+    backend_probe.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +1044,55 @@ def _make_persisting_db_manager() -> tuple[MagicMock, _RecordingPool]:
     db_manager = MagicMock()
     db_manager.credential_shared_pool = MagicMock(return_value=pool)
     return db_manager, pool
+
+
+async def test_api_key_test_never_returns_or_persists_sandbox_stdout_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """REQ-core-credentials-002: child output cannot become a response or audit secret sink."""
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.sandbox import SandboxedCommandResult
+
+    sentinel = "SANDBOXED-AUTHORITY-MUST-NOT-ESCAPE"
+    auth_path = tmp_path / ".local" / "share" / "opencode" / "auth.json"
+    auth_path.parent.mkdir(parents=True)
+    auth_path.write_text(
+        f'{{"opencode-go":{{"type":"api","key":"{sentinel}"}}}}',
+        encoding="utf-8",
+    )
+    os.chmod(auth_path, 0o600)
+    provider = replace(PROVIDERS["opencode-go"], token_path=auth_path)
+    db_manager, pool = _make_persisting_db_manager()
+    audit_notes: list[str | None] = []
+
+    class _LeakingSandbox:
+        async def run_readonly_command(self, *_args, **_kwargs) -> SandboxedCommandResult:
+            return SandboxedCommandResult(returncode=0, output=f"ok {sentinel}".encode())
+
+    async def _audit(_conn, *, action, credential_id, note=None) -> None:
+        assert action == "verified"
+        assert credential_id == "cli-auth/opencode-go"
+        audit_notes.append(note)
+
+    import butlers.api.routers.secrets_v2 as secrets_v2
+
+    monkeypatch.setitem(PROVIDERS, "opencode-go", provider)
+    monkeypatch.setattr("butlers.api.routers.cli_auth.dashboard_cli_auth_sandbox", _LeakingSandbox)
+    monkeypatch.setattr(secrets_v2, "_write_cli_audit", _audit)
+
+    response = await test_api_key("opencode-go", db_manager=db_manager)
+
+    assert response.success is True
+    assert response.detail == "Provider CLI credential check succeeded."
+    persisted_or_returned = "\n".join(
+        [
+            response.detail,
+            repr(pool.execute_calls),
+            repr(audit_notes),
+        ]
+    )
+    assert sentinel not in persisted_or_returned
 
 
 async def test_test_endpoint_persists_successful_probe(monkeypatch):
@@ -1006,11 +1349,11 @@ async def test_test_endpoint_reconciles_codex_auth_before_fencing_probe_result(
     audit.assert_not_awaited()
 
 
-async def test_test_endpoint_finalizes_codex_status_probe_rotation_without_health(
+async def test_test_endpoint_withholds_result_when_codex_authority_changes_during_parent_probe(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    """A status probe durably finalizes B->B-prime but withholds its result."""
+    """A concurrent Codex update withholds a stale parent-only health result."""
     from butlers.api.routers.cli_auth import test_api_key
     from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
     from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
@@ -1018,7 +1361,7 @@ async def test_test_endpoint_finalizes_codex_status_probe_rotation_without_healt
     auth_path = tmp_path / ".codex" / "auth.json"
     auth_path.parent.mkdir()
     authority_b = '{"refresh_token":"dashboard-B"}'
-    rotated_c = '{"refresh_token":"rotation-C"}'
+    authority_c = '{"refresh_token":"dashboard-C"}'
     provider = replace(PROVIDERS["codex"], token_path=auth_path)
     store = MagicMock()
     store.pool = MagicMock()
@@ -1032,28 +1375,12 @@ async def test_test_endpoint_finalizes_codex_status_probe_rotation_without_healt
 
     async def _probe(*_args, **_kwargs) -> AuthHealthResult:
         events.append("probe")
-        auth_path.write_text(rotated_c, encoding="utf-8")
+        auth_path.write_text(authority_c, encoding="utf-8")
         return AuthHealthResult(
             provider="codex",
             state=AuthHealthState.authenticated,
-            detail="Logged in using ChatGPT",
+            detail="Codex authority validated.",
         )
-
-    async def _finalize(
-        token_path: Path,
-        passed_store,
-        *,
-        expected_store_value: str,
-        authority_known: bool,
-        butler_name: str,
-    ) -> CodexAuthSyncResult:
-        assert token_path == auth_path
-        assert passed_store is store
-        assert expected_store_value == authority_b
-        assert authority_known is True
-        assert butler_name == "dashboard"
-        events.append("finalize")
-        return CodexAuthSyncResult(expected_store_value=rotated_c)
 
     monkeypatch.setitem(PROVIDERS, "codex", provider)
     with (
@@ -1062,69 +1389,17 @@ async def test_test_endpoint_finalizes_codex_status_probe_rotation_without_healt
             "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
             side_effect=_reconcile,
         ),
+        patch("butlers.api.routers.cli_auth.probe_provider", side_effect=_probe),
         patch(
             "butlers.core.runtimes._codex_auth_sync.finalize_codex_auth_rotation",
-            side_effect=_finalize,
-        ),
-        patch("butlers.api.routers.cli_auth.probe_provider", side_effect=_probe),
+            new_callable=AsyncMock,
+        ) as finalizer,
     ):
         response = await test_api_key("codex", db_manager=MagicMock())
 
     assert response.success is True
-    assert events == ["reconcile", "probe", "finalize"]
-    store.pool.execute.assert_not_awaited()
-
-
-async def test_test_endpoint_probe_rotation_cannot_overwrite_newer_dashboard_authority(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """A concurrent B->C Passport replacement wins a probe's B->prime CAS."""
-    from butlers.api.routers.cli_auth import test_api_key
-    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
-    from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
-
-    auth_path = tmp_path / ".codex" / "auth.json"
-    auth_path.parent.mkdir()
-    authority_b = '{"refresh_token":"dashboard-B"}'
-    authority_c = '{"refresh_token":"dashboard-C"}'
-    provider = replace(PROVIDERS["codex"], token_path=auth_path)
-    store = MagicMock()
-    store.store_codex_cli_auth_if_unchanged = AsyncMock(return_value=False)
-    store.load_codex_cli_auth = AsyncMock(return_value=authority_c)
-    store.pool = MagicMock()
-    store.pool.execute = AsyncMock()
-
-    async def _reconcile(token_path: Path, *_args, **_kwargs) -> CodexAuthSyncResult:
-        token_path.write_text(authority_b, encoding="utf-8")
-        return CodexAuthSyncResult(expected_store_value=authority_b)
-
-    async def _probe(*_args, **_kwargs) -> AuthHealthResult:
-        # The probe itself sees a local successor while an owner refresh has
-        # already committed C to shared authority.
-        auth_path.write_text('{"refresh_token":"probe-B-prime"}', encoding="utf-8")
-        return AuthHealthResult(
-            provider="codex",
-            state=AuthHealthState.authenticated,
-            detail="Logged in using ChatGPT",
-        )
-
-    monkeypatch.setitem(PROVIDERS, "codex", provider)
-    with (
-        patch("butlers.api.routers.cli_auth._make_credential_store", return_value=store),
-        patch(
-            "butlers.core.runtimes._codex_auth_sync.reconcile_codex_auth",
-            side_effect=_reconcile,
-        ),
-        patch("butlers.api.routers.cli_auth.probe_provider", side_effect=_probe),
-    ):
-        response = await test_api_key("codex", db_manager=MagicMock())
-
-    assert response.success is True
-    store.store_codex_cli_auth_if_unchanged.assert_awaited_once()
-    _, kwargs = store.store_codex_cli_auth_if_unchanged.call_args
-    assert kwargs["expected_value"] == authority_b
-    assert auth_path.read_text(encoding="utf-8") == authority_c
+    assert events == ["reconcile", "probe"]
+    finalizer.assert_not_awaited()
     store.pool.execute.assert_not_awaited()
 
 

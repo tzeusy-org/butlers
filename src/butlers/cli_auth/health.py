@@ -1,7 +1,9 @@
 """CLI auth health probes.
 
-Runs each provider's status command to check whether stored credentials
-are still valid (not just present on disk).
+Most providers use a disposable sandboxed status command.  Codex is an
+explicit exception: its status command can refresh credentials, so Dashboard
+health validates the reconciled authority document and backend response in the
+trusted parent without launching a Codex child.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -19,6 +22,12 @@ from pathlib import Path
 import httpx
 
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
+from butlers.cli_auth.sandbox import (
+    DashboardCLIAuthSandbox,
+    SandboxUnavailableError,
+    dashboard_cli_auth_sandbox,
+    load_validated_readonly_authority,
+)
 from butlers.cli_auth.session import _strip_ansi
 from butlers.credential_store import CredentialStore
 
@@ -26,50 +35,85 @@ logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT = 15  # seconds
 
-# `codex login status` only inspects the file on disk, so it reports
-# "Logged in" even after OpenAI has revoked the refresh token server-side
-# (e.g. refresh_token_reused). Hitting the models endpoint with the stored
-# access token is the cheapest way to catch that: a 401 here means the next
-# real Codex invocation will also 401 — which is the state the dashboard
-# needs to surface.
+# Dashboard must not use ``codex login status``: it can rotate the canonical
+# authority document.  Hitting the models endpoint with the strictly parsed
+# access token is the parent-only read-only check.  A 401 means the next real
+# Codex invocation will also 401 — which is the state the dashboard needs to
+# surface.
 _CODEX_BACKEND_PROBE_URL = "https://chatgpt.com/backend-api/codex/models?client_version=0.118.0"
 _CODEX_BACKEND_PROBE_TIMEOUT = 5.0  # seconds
 
 
-def _check_jwt_expiry(token_path: Path) -> tuple[bool, str | None]:
-    """Check if the access token JWT in an auth file has expired.
+def _parse_unexpired_codex_access_token(authority_document: str) -> tuple[str | None, str | None]:
+    """Return an unexpired access token only from a strict authority document.
 
-    Returns (is_expired, detail_message).  Returns (False, None) if the
-    token cannot be parsed (optimistic — let the status command decide).
+    The backend probe is read-only but still credential-sensitive.  Reject
+    malformed JSON, missing tokens, malformed JWT payloads, and missing or
+    expired expiry claims before making any network request.
+    """
+    try:
+        document = json.loads(authority_document)
+    except (TypeError, json.JSONDecodeError):
+        return None, "Codex authority document is malformed."
+    if not isinstance(document, dict):
+        return None, "Codex authority document is malformed."
+    tokens = document.get("tokens")
+    if not isinstance(tokens, dict):
+        return None, "Codex access token is missing."
+    access_token = tokens.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        return None, "Codex access token is missing."
+
+    parts = access_token.split(".")
+    if len(parts) != 3 or not parts[1]:
+        return None, "Codex access token is malformed."
+    try:
+        payload_segment = parts[1].encode("ascii")
+        payload_segment += b"=" * (-len(payload_segment) % 4)
+        payload_bytes = base64.b64decode(payload_segment, altchars=b"-_", validate=True)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return None, "Codex access token is malformed."
+    if not isinstance(payload, dict):
+        return None, "Codex access token is malformed."
+    expiry = payload.get("exp")
+    if isinstance(expiry, bool) or not isinstance(expiry, int | float) or not math.isfinite(expiry):
+        return None, "Codex access token expiry is missing or malformed."
+    if time.time() >= expiry:
+        return None, "Access token expired — re-login required."
+    return access_token, None
+
+
+def _check_optional_jwt_expiry(token_path: Path) -> tuple[bool, str | None]:
+    """Retain the permissive legacy expiry signal for non-Codex CLI providers.
+
+    Those providers still use their own sandboxed status commands as the
+    authority check, so an absent or non-JWT token is not itself a failure.
+    Codex deliberately does not call this helper; its parent-only path above
+    requires a complete, strict JWT parse before the backend request.
     """
     try:
         data = json.loads(token_path.read_text(encoding="utf-8"))
         access_token = (data.get("tokens") or {}).get("access_token", "")
-        if not access_token:
+        if not isinstance(access_token, str) or not access_token:
             return False, None
-
-        # Decode JWT payload (second segment) without signature verification
         parts = access_token.split(".")
         if len(parts) < 2:
             return False, None
-
-        # JWT base64url → standard base64 with padding
         payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        exp = payload.get("exp")
-        if not isinstance(exp, int | float):
+        expiry = payload.get("exp")
+        if isinstance(expiry, bool) or not isinstance(expiry, int | float):
             return False, None
-
-        if time.time() > exp:
+        if time.time() >= expiry:
             return True, "Access token expired — re-login required."
-        return False, None
     except Exception:
-        # Can't parse → don't block the probe
         return False, None
+    return False, None
 
 
-async def _probe_codex_backend(token_path: Path) -> tuple[bool, str | None]:
-    """Validate the stored Codex access token against OpenAI's backend.
+async def _probe_codex_backend(access_token: str) -> tuple[bool, str | None]:
+    """Validate a strictly parsed Codex access token against OpenAI's backend.
 
     Returns ``(revoked, detail)``. ``revoked=True`` means OpenAI rejected the
     token with 401 — the local file is stale and re-login is required.
@@ -77,15 +121,6 @@ async def _probe_codex_backend(token_path: Path) -> tuple[bool, str | None]:
     blips, non-401 HTTP errors) — we don't want a flaky probe to red-flag a
     provider that's actually fine.
     """
-    try:
-        data = json.loads(token_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False, None
-
-    access_token = (data.get("tokens") or {}).get("access_token")
-    if not access_token:
-        return False, None
-
     try:
         async with httpx.AsyncClient(timeout=_CODEX_BACKEND_PROBE_TIMEOUT) as client:
             resp = await client.get(
@@ -108,13 +143,7 @@ async def _prepare_codex_probe_authority(
     provider: CLIAuthProviderDef,
     codex_authority: CredentialStore | None,
 ) -> str | None:
-    """Reconcile and verify the global Codex authority before a status child.
-
-    ``codex login status`` only reads the canonical file.  It must therefore
-    never run merely because a schema-local process happens to have a usable
-    file; an explicit global store snapshot and an exact file match are both
-    required immediately before spawning the command.
-    """
+    """Reconcile and verify the global Codex authority before parent-only health."""
     token_path = provider.token_path
     if codex_authority is None or token_path is None:
         return None
@@ -145,35 +174,6 @@ async def _prepare_codex_probe_authority(
         return None
 
 
-async def _finalize_codex_probe_if_rotated(
-    provider: CLIAuthProviderDef,
-    codex_authority: CredentialStore | None,
-    expected_store_value: str | None,
-) -> bool:
-    """Fence a status-probe rotation and report whether its old result is safe."""
-    token_path = provider.token_path
-    if token_path is None or codex_authority is None or expected_store_value is None:
-        return False
-    try:
-        from butlers.core.runtimes._codex_auth_sync import (
-            codex_auth_file_matches_authority,
-            finalize_codex_auth_rotation,
-        )
-
-        if codex_auth_file_matches_authority(token_path, expected_store_value):
-            return True
-        await finalize_codex_auth_rotation(
-            token_path,
-            codex_authority,
-            expected_store_value=expected_store_value,
-            authority_known=True,
-            butler_name="cli-auth-probe",
-        )
-    except Exception:
-        logger.warning("Codex probe: system-global authority finalization failed")
-    return False
-
-
 class AuthHealthState(StrEnum):
     """Health state of a CLI auth provider."""
 
@@ -202,8 +202,70 @@ async def probe_provider(
     credential_store: CredentialStore | None = None,
     *,
     codex_authority: CredentialStore | None = None,
+    prepared_codex_authority: str | None = None,
+    codex_authority_prepared: bool = False,
+    sandbox: DashboardCLIAuthSandbox | None = None,
 ) -> AuthHealthResult:
     """Run a provider's status command and determine auth health."""
+    if provider.name == "codex":
+        if codex_authority_prepared:
+            expected_codex_authority = prepared_codex_authority
+            token_path = provider.token_path
+            if expected_codex_authority is None or token_path is None:
+                return AuthHealthResult(
+                    provider=provider.name,
+                    state=AuthHealthState.probe_failed,
+                    detail="System-global Codex authority unavailable; probe was not run.",
+                )
+            try:
+                from butlers.core.runtimes._codex_auth_sync import codex_auth_file_matches_authority
+
+                authority_matches = codex_auth_file_matches_authority(
+                    token_path,
+                    expected_codex_authority,
+                )
+            except Exception:
+                authority_matches = False
+            if not authority_matches:
+                return AuthHealthResult(
+                    provider=provider.name,
+                    state=AuthHealthState.probe_failed,
+                    detail="System-global Codex authority changed; probe was not run.",
+                )
+        else:
+            expected_codex_authority = await _prepare_codex_probe_authority(
+                provider,
+                codex_authority,
+            )
+            if expected_codex_authority is None:
+                return AuthHealthResult(
+                    provider=provider.name,
+                    state=AuthHealthState.probe_failed,
+                    detail="System-global Codex authority unavailable; probe was not run.",
+                )
+
+        access_token, invalid_detail = _parse_unexpired_codex_access_token(
+            expected_codex_authority,
+        )
+        if access_token is None:
+            return AuthHealthResult(
+                provider=provider.name,
+                state=AuthHealthState.not_authenticated,
+                detail=invalid_detail or "Codex authority is invalid.",
+            )
+        revoked, revoked_detail = await _probe_codex_backend(access_token)
+        if revoked:
+            return AuthHealthResult(
+                provider=provider.name,
+                state=AuthHealthState.not_authenticated,
+                detail=revoked_detail or "Backend rejected stored token.",
+            )
+        return AuthHealthResult(
+            provider=provider.name,
+            state=AuthHealthState.authenticated,
+            detail="Codex authority validated.",
+        )
+
     if not provider.is_available():
         return AuthHealthResult(
             provider=provider.name,
@@ -270,29 +332,7 @@ async def probe_provider(
             detail="No API key configured.",
         )
 
-    expected_codex_authority: str | None = None
-    if provider.name == "codex":
-        expected_codex_authority = await _prepare_codex_probe_authority(
-            provider,
-            codex_authority,
-        )
-        if expected_codex_authority is None:
-            return AuthHealthResult(
-                provider=provider.name,
-                state=AuthHealthState.probe_failed,
-                detail="System-global Codex authority unavailable; probe was not run.",
-            )
-
     if provider.status_command is None or provider.status_ok_pattern is None:
-        # Codex must never replace its explicit authority check with a local
-        # auth-file presence signal, even if a future registry entry loses its
-        # status command metadata.
-        if provider.name == "codex":
-            return AuthHealthResult(
-                provider=provider.name,
-                state=AuthHealthState.probe_failed,
-                detail="Codex status probe is not configured; probe was not run.",
-            )
         # No status command — retain file existence behavior for other CLI
         # providers, whose credentials are not this system-global identity.
         if provider.is_authenticated():
@@ -307,79 +347,56 @@ async def probe_provider(
             detail="Token file not found.",
         )
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *provider.status_command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            stdin=asyncio.subprocess.DEVNULL,
+    authority = load_validated_readonly_authority(
+        provider,
+        expected_content=None,
+    )
+    if authority is None:
+        return AuthHealthResult(
+            provider=provider.name,
+            state=AuthHealthState.probe_failed,
+            detail="CLI auth sandbox authority copy is unavailable; probe was not run.",
         )
-        raw_output, _ = await asyncio.wait_for(proc.communicate(), timeout=_PROBE_TIMEOUT)
-        output = _strip_ansi(raw_output.decode(errors="replace"))
 
-        if provider.name == "codex" and not await _finalize_codex_probe_if_rotated(
+    try:
+        sandbox_result = await (sandbox or dashboard_cli_auth_sandbox()).run_readonly_command(
             provider,
-            codex_authority,
-            expected_codex_authority,
-        ):
-            return AuthHealthResult(
-                provider=provider.name,
-                state=AuthHealthState.probe_failed,
-                detail="System-global Codex authority changed during probe; outcome withheld.",
-            )
+            command=tuple(provider.status_command),
+            authority=authority,
+            timeout_s=_PROBE_TIMEOUT,
+        )
+        output = _strip_ansi(sandbox_result.output.decode(errors="replace"))
 
-        if proc.returncode == 0 and provider.status_ok_pattern.search(output):
+        if sandbox_result.returncode == 0 and provider.status_ok_pattern.search(output):
             # Status command says authenticated — verify the JWT hasn't expired.
             # The CLI's status check often only inspects the file, not the token.
             if provider.token_path is not None:
-                expired, expiry_detail = _check_jwt_expiry(provider.token_path)
+                expired, expiry_detail = _check_optional_jwt_expiry(provider.token_path)
                 if expired:
                     return AuthHealthResult(
                         provider=provider.name,
                         state=AuthHealthState.not_authenticated,
                         detail=expiry_detail or "Token expired.",
                     )
-            # For Codex, also validate the token against OpenAI's backend —
-            # `codex login status` is file-only and misses server-side refresh
-            # token revocation.
-            if provider.name == "codex" and provider.token_path is not None:
-                revoked, revoked_detail = await _probe_codex_backend(provider.token_path)
-                if revoked:
-                    return AuthHealthResult(
-                        provider=provider.name,
-                        state=AuthHealthState.not_authenticated,
-                        detail=revoked_detail or "Backend rejected stored token.",
-                    )
             return AuthHealthResult(
                 provider=provider.name,
                 state=AuthHealthState.authenticated,
-                # The Codex CLI can include provider diagnostics in its
-                # status output.  This result is persisted to the dashboard
-                # probe history, so retain only a fixed value-free outcome.
-                detail=(
-                    "Codex CLI reports authenticated."
-                    if provider.name == "codex"
-                    else output.strip()[:200]
-                ),
+                detail="Provider CLI status check succeeded.",
             )
 
         return AuthHealthResult(
             provider=provider.name,
             state=AuthHealthState.not_authenticated,
-            detail=(
-                f"Codex login status exited with code {proc.returncode}."
-                if provider.name == "codex"
-                else output.strip()[:200] or f"Exit code {proc.returncode}."
-            ),
+            detail="Provider CLI status check failed.",
         )
 
+    except SandboxUnavailableError:
+        return AuthHealthResult(
+            provider=provider.name,
+            state=AuthHealthState.probe_failed,
+            detail="CLI auth sandbox is unavailable; probe was not run.",
+        )
     except TimeoutError:
-        if provider.name == "codex":
-            await _finalize_codex_probe_if_rotated(
-                provider,
-                codex_authority,
-                expected_codex_authority,
-            )
         logger.warning("CLI auth health probe timed out for %s", provider.name)
         return AuthHealthResult(
             provider=provider.name,
@@ -387,17 +404,7 @@ async def probe_provider(
             detail=f"Status command timed out after {_PROBE_TIMEOUT}s.",
         )
     except Exception:
-        if provider.name == "codex":
-            await _finalize_codex_probe_if_rotated(
-                provider,
-                codex_authority,
-                expected_codex_authority,
-            )
-            # Codex driver/process errors can carry auth details; retain only
-            # the fixed safe diagnostic for this authority-sensitive path.
-            logger.warning("Codex CLI auth health probe failed safely")
-        else:
-            logger.exception("CLI auth health probe failed for %s", provider.name)
+        logger.exception("CLI auth health probe failed for %s", provider.name)
         return AuthHealthResult(
             provider=provider.name,
             state=AuthHealthState.probe_failed,

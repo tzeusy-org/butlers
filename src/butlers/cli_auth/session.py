@@ -11,12 +11,31 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from butlers.cli_auth.registry import CLIAuthProviderDef
+from butlers.cli_auth.sandbox import (
+    DashboardCLIAuthSandbox,
+    DeviceAuthSandboxHandle,
+    SandboxedChildProcess,
+    SandboxUnavailableError,
+    dashboard_cli_auth_sandbox,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class DeviceAuthSuccessCallback(Protocol):
+    """Persist exactly the child bytes validated by the sandbox handle."""
+
+    def __call__(
+        self,
+        provider: CLIAuthProviderDef,
+        *,
+        staged_output: bytes,
+    ) -> Awaitable[bool | None]: ...
 
 
 @dataclass
@@ -33,12 +52,18 @@ class CLIAuthSession:
     # Optional callback invoked after successful auth (e.g. persist token to DB).
     # A Codex callback returns ``False`` only when the device-auth result was
     # not durably saved through the explicit system-global authority.
-    on_success: Callable[[CLIAuthProviderDef], Awaitable[bool | None]] | None = field(
-        default=None, repr=False
+    on_success: DeviceAuthSuccessCallback | None = field(default=None, repr=False)
+
+    sandbox: DashboardCLIAuthSandbox = field(
+        default_factory=dashboard_cli_auth_sandbox,
+        repr=False,
     )
 
-    _process: asyncio.subprocess.Process | None = field(default=None, repr=False)
+    _process: SandboxedChildProcess | None = field(default=None, repr=False)
+    _sandbox_handle: DeviceAuthSandboxHandle | None = field(default=None, repr=False)
     _stdout_buffer: str = field(default="", repr=False)
+    _success_observed: bool = field(default=False, repr=False)
+    _timeout_fenced: bool = field(default=False, repr=False)
     _started_at: float = field(default_factory=time.monotonic, repr=False)
     _reader_task: asyncio.Task | None = field(default=None, repr=False)  # type: ignore[type-arg]
     _timeout_task: asyncio.Task | None = field(default=None, repr=False)  # type: ignore[type-arg]
@@ -48,64 +73,162 @@ class CLIAuthSession:
         """Spawn the CLI login subprocess and begin reading stdout."""
         logger.info("CLI auth session %s: starting %s", self.id, self.provider.name)
 
-        self._process = await asyncio.create_subprocess_exec(
-            *self.provider.command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            stdin=asyncio.subprocess.DEVNULL,
-        )
+        if not await self._prepare_persistence_authority_before_launch():
+            return
+
+        try:
+            self._sandbox_handle = await self.sandbox.launch_device_auth(self.provider)
+        except SandboxUnavailableError:
+            self.state = "failed"
+            self.message = "CLI authentication sandbox is unavailable."
+            logger.warning("CLI auth session %s: sandbox unavailable", self.id)
+            self._done_event.set()
+            return
+
+        self._process = self._sandbox_handle.process
 
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._timeout_task = asyncio.create_task(self._watch_timeout())
 
-    async def _read_stdout(self) -> None:
-        """Read subprocess stdout line-by-line, parsing for patterns."""
-        assert self._process is not None
-        assert self._process.stdout is not None
+    async def _prepare_persistence_authority_before_launch(self) -> bool:
+        """Fail closed before child spawn when its authority fence is unavailable."""
+        if self.on_success is None:
+            self.state = "failed"
+            self.message = "Credential authority unavailable."
+            logger.warning("CLI auth session %s: no persistence authority callback", self.id)
+            self._done_event.set()
+            return False
+
+        callback_type = type(self.on_success)
+        if not getattr(callback_type, "requires_prelaunch_prepare", False):
+            # Plain callbacks remain useful for isolated session tests and do
+            # not represent an application credential authority.  All
+            # production factories return the explicit preparable object.
+            return True
+
+        prepare = getattr(self.on_success, "prepare_for_device_auth", None)
+        if not callable(prepare):
+            self.state = "failed"
+            self.message = "Credential authority unavailable."
+            logger.warning("CLI auth session %s: persistence authority is malformed", self.id)
+            self._done_event.set()
+            return False
 
         try:
-            while True:
-                raw = await self._process.stdout.readline()
-                if not raw:
-                    break
-                line = _strip_ansi(raw.decode(errors="replace"))
-                self._stdout_buffer += line
-                self._parse_line(line)
+            prepared = await prepare(self.provider)
+        except Exception:
+            prepared = False
+
+        if prepared is True:
+            return True
+
+        self.state = "failed"
+        self.message = "Credential authority unavailable."
+        logger.warning("CLI auth session %s: persistence authority is unavailable", self.id)
+        self._done_event.set()
+        return False
+
+    async def _read_stdout(self) -> None:
+        """Own cancellation-safe session completion around all child phases."""
+        try:
+            await self._read_stdout_until_terminal()
         except asyncio.CancelledError:
-            return
-
-        # Process exited — determine final state
-        returncode = await self._process.wait()
-
-        if self.state == "success":
-            pass  # Already set by _parse_line
-        elif returncode == 0 and self.provider.is_authenticated():
-            self.state = "success"
-            self.message = "Authentication successful."
-            logger.info("CLI auth session %s: success (exit 0 + token exists)", self.id)
-        elif self.state != "expired":
+            # Cancellation may arrive while stdout is open, during PID1
+            # finalization, or while persistence awaits.  In every phase the
+            # shared handle owns domain termination before this task yields.
+            await self._terminate_sandbox_handle()
+            if self.state not in ("expired", "failed"):
+                self.state = "failed"
+                self.message = "CLI authentication was cancelled."
+            self._done_event.set()
+            raise
+        except ValueError:
+            # StreamReader raises ValueError when untrusted stdout exceeds its
+            # configured line limit without a separator.  Treat it exactly as
+            # a malformed child receipt: do not expose its text, terminate the
+            # sandbox handle, and make the session terminal without calling
+            # persistence.
+            await self._terminate_sandbox_handle()
             self.state = "failed"
-            self.message = f"Process exited with code {returncode}."
-            logger.warning("CLI auth session %s: failed (exit %d)", self.id, returncode)
+            self.message = "CLI authentication output was invalid."
+            logger.warning("CLI auth session %s: sandboxed stdout was invalid", self.id)
+            self._done_event.set()
 
-        # Fire post-success callback (e.g. persist token to DB)
-        if self.state == "success" and self.on_success is not None:
+    async def _read_stdout_until_terminal(self) -> None:
+        """Read sandboxed provider output and finalize its containment handle."""
+        assert self._process is not None
+        assert isinstance(self._process.stdout, asyncio.StreamReader)
+
+        while True:
+            raw = await self._process.stdout.readline()
+            if not raw:
+                break
+            line = _strip_ansi(raw.decode(errors="replace"))
+            self._stdout_buffer += line
+            self._parse_line(line)
+
+        # A matching provider success line is only a provisional receipt.  The
+        # sandbox handle—not this session—must terminate namespace PID1 and
+        # wait for its direct Bubblewrap child before staged output can make
+        # this session terminal.  Waiting here would reverse that ordering.
+        if not self._success_observed and self.state != "expired":
+            self.state = "failed"
+            self.message = "CLI authentication did not report success."
+            logger.warning("CLI auth session %s: no sandboxed success receipt", self.id)
+
+        staged_output: bytes | None = None
+        if self._sandbox_handle is None:
+            self.state = "failed"
+            self.message = "CLI authentication sandbox did not return a containment handle."
+        else:
             try:
-                persisted = await self.on_success(self.provider)
-                if self.provider.name == "codex" and persisted is False:
-                    # The CLI may have written a local auth.json, but without
-                    # a durable system-global write it is not an authorized
-                    # Codex session and must not be presented as one.
-                    self.state = "failed"
-                    self.message = "Codex authentication was not saved to the system authority."
-                    logger.warning(
-                        "CLI auth session %s: Codex authority persistence failed safely",
-                        self.id,
-                    )
+                staged_output = await self._sandbox_handle.finalize(
+                    succeeded=self._success_observed and self.state != "expired"
+                )
             except Exception:
-                # The Codex callback persists and reconciles an auth document.
-                # Its exception text can contain provider diagnostics, so do not
-                # pass it through the session logger.
+                self.state = "failed"
+                self.message = "CLI authentication sandbox cleanup failed."
+                logger.warning("CLI auth session %s: sandbox cleanup failed safely", self.id)
+
+        # Fire post-success callback only after the sandbox has terminated the
+        # complete PID namespace and exposed validated staged bytes.  At this
+        # point timeout no longer owns the outcome: its purpose is to bound a
+        # live child domain, not to interrupt a fenced credential commit.
+        if self._success_observed and self.state != "expired" and staged_output is not None:
+            self._fence_timeout_after_containment()
+
+        if self._success_observed and self.state != "expired" and staged_output is None:
+            self.state = "failed"
+            self.message = "CLI authentication result could not be validated safely."
+            logger.warning("CLI auth session %s: sandbox output validation failed", self.id)
+        elif self._success_observed and self.state != "expired" and self.on_success is None:
+            self.state = "failed"
+            self.message = "Authentication was not saved to the credential authority."
+            logger.warning("CLI auth session %s: no persistence callback", self.id)
+        elif self._success_observed and self.state != "expired" and self.on_success is not None:
+            try:
+                persisted = await self.on_success(self.provider, staged_output=staged_output)
+                if persisted is False:
+                    # A parsed provider receipt is provisional.  Every
+                    # device-auth provider needs its explicit authority write
+                    # to confirm the session; only Codex has a more specific
+                    # system-global authority message.
+                    self.state = "failed"
+                    if self.provider.name == "codex":
+                        self.message = "Codex authentication was not saved to the system authority."
+                        logger.warning(
+                            "CLI auth session %s: Codex authority persistence failed safely",
+                            self.id,
+                        )
+                    else:
+                        self.message = "Authentication was not saved to the credential authority."
+                        logger.warning(
+                            "CLI auth session %s: persistence did not confirm authority safely",
+                            self.id,
+                        )
+            except Exception:
+                # Callback exceptions can retain staged provider diagnostics.
+                # Never log a traceback or exception text from any provider.
                 if self.provider.name == "codex":
                     self.state = "failed"
                     self.message = "Codex authentication was not saved to the system authority."
@@ -114,7 +237,17 @@ class CLIAuthSession:
                         self.id,
                     )
                 else:
-                    logger.exception("CLI auth session %s: on_success callback failed", self.id)
+                    self.state = "failed"
+                    self.message = "Authentication was not saved to the credential authority."
+                    logger.warning(
+                        "CLI auth session %s: on_success callback failed safely",
+                        self.id,
+                    )
+            else:
+                if self.state != "failed":
+                    self.state = "success"
+                    self.message = "Authentication successful."
+                    logger.info("CLI auth session %s: sandboxed result persisted", self.id)
 
         self._done_event.set()
 
@@ -138,9 +271,9 @@ class CLIAuthSession:
                 logger.info("CLI auth session %s: parsed device code", self.id)
 
         if self.provider.success_pattern.search(line):
-            self.state = "success"
-            self.message = "Authentication successful."
-            logger.info("CLI auth session %s: success detected in stdout", self.id)
+            self._success_observed = True
+            self.message = "Finalizing authentication safely."
+            logger.info("CLI auth session %s: provisional success detected in stdout", self.id)
 
     async def _watch_timeout(self) -> None:
         """Cancel the session if it exceeds the provider timeout."""
@@ -149,7 +282,7 @@ class CLIAuthSession:
         except asyncio.CancelledError:
             return
 
-        if self.state not in ("success", "failed"):
+        if not self._done_event.is_set() and not self._timeout_fenced and self.state != "failed":
             self.state = "expired"
             self.message = "Authorization timed out."
             logger.warning(
@@ -161,21 +294,38 @@ class CLIAuthSession:
 
     async def kill(self) -> None:
         """Terminate the subprocess and cancel background tasks."""
-        if self._process is not None and self._process.returncode is None:
-            try:
-                self._process.terminate()
-                try:
-                    await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                except TimeoutError:
-                    self._process.kill()
-            except ProcessLookupError:
-                pass
+        await self._terminate_sandbox_handle()
 
         for task in (self._reader_task, self._timeout_task):
             if task is not None and not task.done():
                 task.cancel()
 
         self._done_event.set()
+
+    def _fence_timeout_after_containment(self) -> None:
+        """Stop the watchdog before persistence can cross its old deadline."""
+        self._timeout_fenced = True
+        task = self._timeout_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    async def _terminate_sandbox_handle(self) -> None:
+        """Let the handle own cleanup even when this task is being cancelled."""
+        if self._sandbox_handle is None:
+            return
+        cleanup_task = asyncio.create_task(self._sandbox_handle.terminate())
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            # A second cancellation does not cancel the cleanup task.  It will
+            # retain the UID lease on any failure rather than permit reuse.
+            logger.warning(
+                "CLI auth session %s: sandbox cleanup continues after cancellation",
+                self.id,
+            )
+            raise
+        except Exception:
+            logger.warning("CLI auth session %s: sandbox termination failed safely", self.id)
 
     async def wait(self, timeout: float = 5.0) -> None:
         """Wait for the session to reach a terminal state."""

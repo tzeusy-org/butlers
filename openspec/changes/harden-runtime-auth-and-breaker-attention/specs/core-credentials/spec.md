@@ -237,7 +237,7 @@ shared child UID, directory permissions, global serialization, or
 process-group/`setsid` handling alone SHALL NOT satisfy the boundary. Default
 and hotreload Dashboard services SHALL use the same repository-owned
 namespace-capable seccomp profile plus
-`apparmor:unconfined` and `systempaths:unconfined` in default and hotreload
+`apparmor:unconfined` and `systempaths=unconfined` in default and hotreload
 Dashboard, with no `privileged`, `cap_add`, host PID, or Docker socket. Exact-
 image namespace/pidfd preflight failure SHALL disable CLI-auth launch and
 signer activation without a direct-subprocess fallback. The signer
