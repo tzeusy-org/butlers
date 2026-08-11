@@ -7,7 +7,7 @@ import { useBreadcrumbsControl } from '../ui/breadcrumbs-control'
 import { useDarkMode } from '../../hooks/useDarkMode'
 import { dispatchOpenEntityFinder } from '../../lib/entity-finder'
 import { LiveIndicator } from './LiveIndicator'
-import type { EventStreamStatus } from '@/hooks/use-event-stream'
+import type { EventBusHealth, EventStreamStatus } from '@/hooks/use-event-stream'
 
 interface Breadcrumb {
   label: string
@@ -21,7 +21,7 @@ interface PageHeaderProps {
    *  the single RootLayout-level useEventStream() call so the whole app
    *  shares one socket instead of one per header render. Omitted in tests
    *  that render PageHeader standalone. */
-  liveStatus?: EventStreamStatus
+  liveStatus?: EventStreamStatus | EventBusHealth
 }
 
 // Known acronyms that should render fully uppercased rather than title-cased.

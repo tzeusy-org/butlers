@@ -713,8 +713,9 @@ Pages whose data is invalidated by the fleet event bus (`event-cache-registry.ts
 #### Scenario: Bus-aware polling cadence
 
 - **WHEN** a query hook whose cache key is bus-covered (see `event-cache-manifest.ts`) calls `useBusAwarePollInterval`
-- **THEN** it polls at `POLL_BUS_RECONCILE_MS` (5 minutes) while the shared `EventBusProvider` connection status is `"open"` — a reconciliation safety net behind live bus invalidation, not the primary update path
-- **AND** it polls at `POLL_BUS_DOWN_FALLBACK_MS` (30 seconds) while the connection is `"connecting"`, `"reconnecting"`, or `"closed"` — a fast fallback so the surface degrades to honest polling instead of silently going stale for the full reconciliation window
+- **THEN** it polls at `POLL_BUS_RECONCILE_MS` (5 minutes) while the shared `EventBusProvider` freshness health is `"healthy"` — a reconciliation safety net behind live bus invalidation, not the primary update path
+- **AND** it polls at `POLL_BUS_DOWN_FALLBACK_MS` (30 seconds) while freshness health is `"late"` or `"down"` — a fast fallback so the surface degrades to honest polling instead of silently going stale for the full reconciliation window
+- **AND** a parseable but malformed fleet frame never establishes or extends `"healthy"` freshness; only a valid event or snapshot envelope may do so
 - **AND** no user-facing toggle exists to pause or override this cadence; it is fully automatic (the prior `AutoRefreshToggle`/`useAutoRefresh` mechanism retired — bu-01r64.3)
 
 ### Requirement: Settings Console Page

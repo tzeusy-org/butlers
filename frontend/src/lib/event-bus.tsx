@@ -42,7 +42,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { useEventStream, type EventStreamStatus } from "@/hooks/use-event-stream";
+import { useEventStream, type EventBusHealth, type EventStreamStatus } from "@/hooks/use-event-stream";
 import type { FleetEvent } from "@/hooks/event-cache-registry";
 
 /** Metadata delivered alongside every event handed to a bus listener. */
@@ -62,6 +62,7 @@ export type BusListener = (event: FleetEvent, meta: BusEventMeta) => void;
 export interface EventBusContextValue {
   /** Actual socket health -- see useEventStream's EventStreamStatus. */
   status: EventStreamStatus;
+  health: EventBusHealth;
   /** Wall-clock ms timestamp of the last message received, or null before
    *  the first one. */
   lastEventAt: number | null;
@@ -98,7 +99,7 @@ export function EventBusProvider({ apiKey, children }: EventBusProviderProps) {
     for (const listener of listeners) listener(event, meta);
   }, []);
 
-  const { status, lastEventAt } = useEventStream({
+  const { status, lastEventAt, health } = useEventStream({
     apiKey,
     onEvent: dispatch,
   });
@@ -116,8 +117,8 @@ export function EventBusProvider({ apiKey, children }: EventBusProviderProps) {
   }, []);
 
   const value = useMemo<EventBusContextValue>(
-    () => ({ status, lastEventAt, subscribe }),
-    [status, lastEventAt, subscribe],
+    () => ({ status, health, lastEventAt, subscribe }),
+    [status, health, lastEventAt, subscribe],
   );
 
   return <EventBusContext.Provider value={value}>{children}</EventBusContext.Provider>;

@@ -11,16 +11,24 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, cleanup } from "@testing-library/react";
 import type { ReactNode } from "react";
+import type { EventBusHealth } from "@/hooks/use-event-stream";
 
 let mockStatus: "connecting" | "open" | "reconnecting" | "closed" = "open";
+let mockHealth: EventBusHealth = "healthy";
 
 vi.mock("@/hooks/use-event-stream", () => ({
-  useEventStream: () => ({ status: mockStatus, lastEventAt: null, disconnect: vi.fn() }),
+  useEventStream: () => ({
+    status: mockStatus,
+    health: mockHealth,
+    lastEventAt: null,
+    disconnect: vi.fn(),
+  }),
 }));
 
 afterEach(() => {
   cleanup();
   mockStatus = "open";
+  mockHealth = "healthy";
 });
 
 // Import AFTER mocks are in place.
@@ -33,38 +41,30 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("useBusAwarePollInterval", () => {
-  it("returns POLL_BUS_RECONCILE_MS while the bus is connected (open)", () => {
+  it("returns POLL_BUS_RECONCILE_MS while the shared health is healthy", () => {
     mockStatus = "open";
+    mockHealth = "healthy";
     const { result } = renderHook(() => useBusAwarePollInterval(), { wrapper });
     expect(result.current).toBe(POLL_BUS_RECONCILE_MS);
   });
 
-  it("returns the default fallback while connecting (cold start)", () => {
-    mockStatus = "connecting";
-    const { result } = renderHook(() => useBusAwarePollInterval(), { wrapper });
-    expect(result.current).toBe(POLL_BUS_DOWN_FALLBACK_MS);
-  });
-
-  it("returns the default fallback while reconnecting", () => {
-    mockStatus = "reconnecting";
-    const { result } = renderHook(() => useBusAwarePollInterval(), { wrapper });
-    expect(result.current).toBe(POLL_BUS_DOWN_FALLBACK_MS);
-  });
-
-  it("returns the default fallback once closed", () => {
-    mockStatus = "closed";
+  it.each(["late", "down"] as const)("returns the default fallback while health is %s", (health) => {
+    mockStatus = "open";
+    mockHealth = health;
     const { result } = renderHook(() => useBusAwarePollInterval(), { wrapper });
     expect(result.current).toBe(POLL_BUS_DOWN_FALLBACK_MS);
   });
 
   it("honors a caller-supplied fallback while the bus is down", () => {
-    mockStatus = "reconnecting";
+    mockStatus = "open";
+    mockHealth = "late";
     const { result } = renderHook(() => useBusAwarePollInterval(5_000), { wrapper });
     expect(result.current).toBe(5_000);
   });
 
-  it("ignores the caller-supplied fallback while the bus is connected", () => {
+  it("ignores the caller-supplied fallback while the bus is healthy", () => {
     mockStatus = "open";
+    mockHealth = "healthy";
     const { result } = renderHook(() => useBusAwarePollInterval(5_000), { wrapper });
     expect(result.current).toBe(POLL_BUS_RECONCILE_MS);
   });

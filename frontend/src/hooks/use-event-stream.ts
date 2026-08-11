@@ -22,6 +22,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { applyFleetEvent, type FleetEvent } from "@/hooks/event-cache-registry";
 
 export type EventStreamStatus = "connecting" | "open" | "reconnecting" | "closed";
+export type EventBusHealth = "healthy" | "late" | "down";
+
+/** The API emits a heartbeat every 20 seconds; allow one delayed beat. */
+export const EVENT_HEARTBEAT_DEADLINE_MS = 45_000;
 
 export interface UseEventStreamOptions {
   /** Optional DASHBOARD_API_KEY for query-param auth. Leave undefined when
@@ -29,8 +33,8 @@ export interface UseEventStreamOptions {
   apiKey?: string;
   /** Disable the hook (no-op when false). Defaults to true. */
   enabled?: boolean;
-  /** Called for every incoming event, including snapshot-replayed ones and
-   *  heartbeats. Cache patching happens regardless of whether this is set.
+  /** Called for every valid incoming event, including snapshot-replayed ones
+   *  and heartbeats. Cache patching happens regardless of whether this is set.
    *  `meta.replayed` is true for events replayed from the server's
    *  ring-buffer snapshot on (re)connect rather than observed live -- see
    *  EventBusProvider (src/lib/event-bus.tsx), the primary consumer of this
@@ -43,10 +47,13 @@ export interface UseEventStreamResult {
    *  "reconnecting" (was connected, currently retrying), or "closed"
    *  (intentionally disabled/unmounted). */
   status: EventStreamStatus;
-  /** Wall-clock ms timestamp of the last message received (including
-   *  heartbeats), or null before the first message. Useful for staleness
-   *  checks that must decay on a clock rather than freeze on last-fetch. */
+  /** Wall-clock ms timestamp of the last valid envelope received (including
+   *  heartbeats), or null before the first valid envelope. Useful for
+   *  staleness checks that must decay on a clock rather than freeze on
+   *  last-fetch. */
   lastEventAt: number | null;
+  /** One clock-driven health value for every event-bus consumer. */
+  health: EventBusHealth;
   disconnect: () => void;
 }
 
@@ -82,8 +89,34 @@ interface SnapshotMessage {
   events: FleetEvent[];
 }
 
-function isSnapshot(payload: FleetEvent | SnapshotMessage): payload is SnapshotMessage {
-  return payload.type === "snapshot";
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isFleetEvent(payload: unknown): payload is FleetEvent {
+  // `snapshot` is a reserved control envelope and cannot fall through as an
+  // otherwise unknown future event when its snapshot shape is malformed.
+  return (
+    isRecord(payload) &&
+    typeof payload.type === "string" &&
+    payload.type !== "snapshot" &&
+    typeof payload.ts === "number" &&
+    isRecord(payload.data)
+  );
+}
+
+function isSnapshot(payload: unknown): payload is SnapshotMessage {
+  return (
+    isRecord(payload) &&
+    payload.type === "snapshot" &&
+    typeof payload.ts === "number" &&
+    Array.isArray(payload.events) &&
+    payload.events.every(isFleetEvent)
+  );
+}
+
+function isFleetEnvelope(payload: unknown): payload is FleetEvent | SnapshotMessage {
+  return isSnapshot(payload) || isFleetEvent(payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +132,7 @@ export function useEventStream({
 
   const [status, setStatus] = useState<EventStreamStatus>("connecting");
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
+  const [health, setHealth] = useState<EventBusHealth>("down");
 
   const socketRef = useRef<WebSocket | null>(null);
   const retryDelayRef = useRef<number>(1000);
@@ -108,8 +142,11 @@ export function useEventStream({
   // first connection attempt ("connecting") from a retry after a drop
   // ("reconnecting"), matching the shell's connected/reconnecting/down states.
   const everConnectedRef = useRef(false);
+  const connectedAtRef = useRef<number | null>(null);
+  const currentSocketMessageAtRef = useRef<number | null>(null);
   const onEventRef = useRef(onEvent);
   const connectRef = useRef<() => void>(() => undefined);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const disconnect = useCallback(() => {
     mountedRef.current = false;
@@ -117,12 +154,35 @@ export function useEventStream({
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
     }
+    if (heartbeatTimerRef.current !== null) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
     if (socketRef.current) {
       socketRef.current.onclose = null; // prevent reconnect loop
       socketRef.current.close();
       socketRef.current = null;
     }
     setStatus("closed");
+    setHealth("down");
+  }, []);
+
+  const reconnectStaleSocket = useCallback(() => {
+    const staleSocket = socketRef.current;
+    if (!mountedRef.current || !staleSocket) return;
+
+    // A half-open socket can ignore close() and never emit onclose. Detach
+    // it before creating its successor so a delayed old callback cannot
+    // overwrite the new connection's state or schedule a second retry.
+    staleSocket.onopen = null;
+    staleSocket.onmessage = null;
+    staleSocket.onerror = null;
+    staleSocket.onclose = null;
+    socketRef.current = null;
+    staleSocket.close();
+
+    setStatus("reconnecting");
+    connectRef.current();
   }, []);
 
   const connect = useCallback(() => {
@@ -139,20 +199,33 @@ export function useEventStream({
     socketRef.current = ws;
 
     ws.onopen = () => {
+      if (socketRef.current !== ws) return;
       retryDelayRef.current = 1000; // reset back-off on successful connect
       everConnectedRef.current = true;
+      connectedAtRef.current = Date.now();
+      currentSocketMessageAtRef.current = null;
       setStatus("open");
+      // An open transport alone does not prove that this socket is receiving
+      // data. It becomes healthy only after the first valid envelope.
+      setHealth("late");
     };
 
     ws.onmessage = (ev) => {
-      let payload: FleetEvent | SnapshotMessage;
+      if (socketRef.current !== ws) return;
+      let payload: unknown;
       try {
         payload = JSON.parse(ev.data);
       } catch {
         return;
       }
+      if (!isFleetEnvelope(payload)) return;
 
-      setLastEventAt(Date.now());
+      // The backend emits heartbeats only after an idle queue timeout, so a
+      // snapshot or ordinary event is equally valid evidence of freshness.
+      const receivedAt = Date.now();
+      currentSocketMessageAtRef.current = receivedAt;
+      setLastEventAt(receivedAt);
+      setHealth("healthy");
 
       if (isSnapshot(payload)) {
         // Replay each buffered event through the registry too — a reconnect's
@@ -173,11 +246,14 @@ export function useEventStream({
     };
 
     ws.onclose = () => {
+      if (socketRef.current !== ws) return;
       socketRef.current = null;
       if (!mountedRef.current) return;
       setStatus(everConnectedRef.current ? "reconnecting" : "connecting");
+      setHealth("down");
       // Exponential back-off: 1 s → 2 s → 4 s → … capped at 30 s
       retryTimerRef.current = setTimeout(() => {
+        retryTimerRef.current = null;
         if (mountedRef.current) connectRef.current();
       }, retryDelayRef.current);
       retryDelayRef.current = Math.min(retryDelayRef.current * 2, 30_000);
@@ -202,5 +278,31 @@ export function useEventStream({
     };
   }, [connect, disconnect, enabled]);
 
-  return { status, lastEventAt, disconnect };
+  // Health must decay while the socket remains open. An interval is used
+  // instead of deriving from render time so a half-open socket cannot freeze
+  // at a falsely healthy value. The first valid envelope is required
+  // explicitly, whether it is a heartbeat, snapshot, or ordinary event.
+  useEffect(() => {
+    if (!enabled || status !== "open") return;
+    const refreshHealth = () => {
+      const currentSocketMessageAt = currentSocketMessageAtRef.current;
+      const freshnessAt = currentSocketMessageAt ?? connectedAtRef.current;
+      const freshnessAge = freshnessAt === null ? Infinity : Date.now() - freshnessAt;
+      if (freshnessAge >= EVENT_HEARTBEAT_DEADLINE_MS) {
+        setHealth("late");
+        reconnectStaleSocket();
+      } else {
+        setHealth(currentSocketMessageAt === null ? "late" : "healthy");
+      }
+    };
+    heartbeatTimerRef.current = setInterval(refreshHealth, 1_000);
+    return () => {
+      if (heartbeatTimerRef.current !== null) {
+        clearInterval(heartbeatTimerRef.current);
+        heartbeatTimerRef.current = null;
+      }
+    };
+  }, [enabled, reconnectStaleSocket, status]);
+
+  return { status, lastEventAt, health, disconnect };
 }

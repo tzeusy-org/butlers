@@ -30,6 +30,10 @@ import { POLL_BUS_DOWN_FALLBACK_MS, POLL_BUS_RECONCILE_MS } from "@/lib/poll-pol
 export function useBusAwarePollInterval(
   fallbackMs: number = POLL_BUS_DOWN_FALLBACK_MS,
 ): number {
-  const { status } = useEventBus();
-  return status === "open" ? POLL_BUS_RECONCILE_MS : fallbackMs;
+  const { health, status } = useEventBus();
+  // `status` remains a compatibility fallback for isolated legacy test
+  // doubles; the provider's health is the production authority.
+  return (health ?? (status === "open" ? "healthy" : "down")) === "healthy"
+    ? POLL_BUS_RECONCILE_MS
+    : fallbackMs;
 }

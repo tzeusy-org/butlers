@@ -21,10 +21,10 @@
  * below the `sm` breakpoint.
  */
 
-import type { EventStreamStatus } from '@/hooks/use-event-stream'
+import type { EventBusHealth, EventStreamStatus } from '@/hooks/use-event-stream'
 
 export interface LiveIndicatorProps {
-  status: EventStreamStatus
+  status: EventStreamStatus | EventBusHealth
 }
 
 const STATE_META: Record<
@@ -48,7 +48,9 @@ const STATE_META: Record<
   },
 }
 
-function toDisplayState(status: EventStreamStatus): 'connected' | 'reconnecting' | 'down' {
+function toDisplayState(status: EventStreamStatus | EventBusHealth): 'connected' | 'reconnecting' | 'down' {
+  if (status === 'healthy') return 'connected'
+  if (status === 'late') return 'reconnecting'
   if (status === 'open') return 'connected'
   if (status === 'reconnecting') return 'reconnecting'
   return 'down' // "connecting" (first attempt) or "closed" (intentionally torn down)

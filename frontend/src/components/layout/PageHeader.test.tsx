@@ -305,6 +305,19 @@ describe("PageHeader", () => {
     expect(indicator?.getAttribute("data-live-state")).toBe("reconnecting");
   });
 
+  it("renders the Live indicator as reconnecting when shared health is late", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <PageHeader liveStatus="late" />
+        </MemoryRouter>,
+      );
+    });
+    expect(
+      container.querySelector('[data-testid="shell-live-indicator"]')?.getAttribute("data-live-state"),
+    ).toBe("reconnecting");
+  });
+
   it("renders the Live indicator as down for both 'connecting' and 'closed' statuses", () => {
     act(() => {
       root.render(

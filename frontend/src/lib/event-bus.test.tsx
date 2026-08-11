@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
 import type { ReactNode } from "react";
+import type { EventBusHealth } from "@/hooks/use-event-stream";
 
 // ---------------------------------------------------------------------------
 // Mock useEventStream — capture the onEvent callback so tests can drive it
@@ -25,10 +26,11 @@ type CapturedEvent = { type: string; ts: number; data: Record<string, unknown> }
 type CapturedMeta = { replayed: boolean };
 
 let capturedOnEvent: ((event: CapturedEvent, meta: CapturedMeta) => void) | null = null;
+let mockHealth: EventBusHealth = "healthy";
 
 const mockUseEventStream = vi.fn((opts?: { onEvent?: typeof capturedOnEvent }) => {
   capturedOnEvent = opts?.onEvent ?? null;
-  return { status: "open", lastEventAt: 123, disconnect: vi.fn() };
+  return { status: "open", health: mockHealth, lastEventAt: 123, disconnect: vi.fn() };
 });
 
 vi.mock("@/hooks/use-event-stream", () => ({
@@ -38,6 +40,7 @@ vi.mock("@/hooks/use-event-stream", () => ({
 afterEach(() => {
   cleanup();
   capturedOnEvent = null;
+  mockHealth = "healthy";
 });
 
 // ---------------------------------------------------------------------------
@@ -51,9 +54,11 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("EventBusProvider / useEventBus", () => {
-  it("exposes status and lastEventAt from the underlying useEventStream", () => {
+  it("exposes status, health, and lastEventAt from the underlying useEventStream", () => {
+    mockHealth = "late";
     const { result } = renderHook(() => useEventBus(), { wrapper });
     expect(result.current.status).toBe("open");
+    expect(result.current.health).toBe("late");
     expect(result.current.lastEventAt).toBe(123);
   });
 
