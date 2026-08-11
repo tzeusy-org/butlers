@@ -40,6 +40,7 @@ _RESTORE_DRILL_AUTHORITY_ROLES = (
     "restore_drill_executor_owner",
     "restore_drill_executor_audit_writer",
 )
+_SCRIPT_EXTENSIONS = ("pgcrypto", "pg_trgm", "uuid-ossp", "vector")
 
 
 @pytest.fixture(scope="module")
@@ -1051,12 +1052,149 @@ def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgr
         engine.dispose()
 
     control_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+
+    def catalog_state(connection) -> dict[str, object]:
+        """Read every mutable bootstrap surface without inspecting role secrets."""
+        return {
+            "roles": [
+                dict(row)
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT oid, rolname, rolsuper, rolinherit, rolcreaterole,
+                               rolcreatedb, rolcanlogin, rolreplication, rolbypassrls,
+                               rolconnlimit, rolvaliduntil::text AS rolvaliduntil,
+                               COALESCE(rolconfig::text, '') AS rolconfig
+                        FROM pg_roles
+                        ORDER BY oid
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            ],
+            "memberships": [
+                dict(row)
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT roleid, member, grantor, admin_option,
+                               inherit_option, set_option
+                        FROM pg_auth_members
+                        ORDER BY roleid, member
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            ],
+            "schemas": [
+                dict(row)
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT oid, nspname, nspowner, COALESCE(nspacl::text, '') AS nspacl
+                        FROM pg_namespace
+                        ORDER BY oid
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            ],
+            "database_acl": dict(
+                connection.execute(
+                    text(
+                        """
+                        SELECT oid, datname, datdba, datallowconn, datconnlimit,
+                               COALESCE(datacl::text, '') AS datacl
+                        FROM pg_database
+                        WHERE datname = current_database()
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            ),
+            "database_privileges": dict(
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            has_database_privilege('butlers', current_database(), 'CONNECT')
+                                AS migration_connect,
+                            has_database_privilege('butlers', current_database(), 'CREATE')
+                                AS migration_create,
+                            has_database_privilege('butlers', current_database(), 'TEMPORARY')
+                                AS migration_temporary,
+                            has_schema_privilege('butlers', 'public', 'USAGE')
+                                AS public_usage,
+                            has_schema_privilege('butlers', 'public', 'CREATE')
+                                AS public_create
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            ),
+            "default_acls": [
+                dict(row)
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT defaclrole, defaclnamespace, defaclobjtype,
+                               COALESCE(defaclacl::text, '') AS defaclacl
+                        FROM pg_default_acl
+                        ORDER BY defaclrole, defaclnamespace, defaclobjtype
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            ],
+            "extensions": [
+                dict(row)
+                for row in connection.execute(
+                    text(
+                        """
+                        SELECT extname, extowner, extnamespace, extrelocatable,
+                               extversion, COALESCE(extconfig::text, '') AS extconfig,
+                               COALESCE(extcondition::text, '') AS extcondition
+                        FROM pg_extension
+                        ORDER BY extname
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            ],
+        }
+
     engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
-            conn.execute(text("REVOKE CONNECT ON DATABASE butlers FROM PUBLIC"))
-            conn.execute(text("REVOKE CONNECT ON DATABASE butlers FROM butlers"))
+            conn.execute(text("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE butlers FROM PUBLIC"))
+            conn.execute(text("REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE butlers FROM butlers"))
             conn.execute(text("REVOKE ALL PRIVILEGES ON SCHEMA public FROM butlers"))
+            baseline = catalog_state(conn)
+            assert baseline["database_privileges"] == {
+                "migration_connect": False,
+                "migration_create": False,
+                "migration_temporary": False,
+                "public_usage": True,
+                "public_create": False,
+            }
+            assert not {extension["extname"] for extension in baseline["extensions"]}.intersection(
+                _SCRIPT_EXTENSIONS
+            )
+
+            # Demonstrate that an unexpected preflight grant is visible to this
+            # complete snapshot, then restore the exact baseline before invoking
+            # the bootstrap under test.
+            conn.execute(text("GRANT TEMPORARY ON DATABASE butlers TO butlers"))
+            assert catalog_state(conn) != baseline
+            conn.execute(text("REVOKE TEMPORARY ON DATABASE butlers FROM butlers"))
+            assert catalog_state(conn) == baseline
     finally:
         engine.dispose()
 
@@ -1077,116 +1215,10 @@ def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgr
     engine = create_engine(control_url)
     try:
         with engine.connect() as conn:
-            migration_role = dict(
-                conn.execute(
-                    text(
-                        """
-                        SELECT rolcanlogin, rolinherit, rolsuper, rolcreaterole,
-                               rolcreatedb, rolreplication
-                        FROM pg_roles
-                        WHERE rolname = 'butlers'
-                        """
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            created_roles = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT rolname
-                        FROM pg_roles
-                        WHERE rolname = ANY(:role_names)
-                        ORDER BY rolname
-                        """
-                    ),
-                    {
-                        "role_names": [
-                            *_NORMAL_RUNTIME_ROLES,
-                            *_RESTORE_DRILL_AUTHORITY_ROLES,
-                        ]
-                    },
-                )
-                .scalars()
-                .all()
-            )
-            migration_membership_count = conn.execute(
-                text(
-                    """
-                    SELECT count(*)
-                    FROM pg_auth_members AS membership
-                    JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
-                    JOIN pg_roles AS member_role ON member_role.oid = membership.member
-                    WHERE granted_role.rolname = 'butlers'
-                       OR member_role.rolname = 'butlers'
-                    """
-                )
-            ).scalar_one()
-            acl_state = dict(
-                conn.execute(
-                    text(
-                        """
-                        SELECT
-                            has_database_privilege('butlers', current_database(), 'CONNECT')
-                                AS migration_connect,
-                            has_schema_privilege('butlers', 'public', 'CREATE')
-                                AS public_create,
-                            to_regnamespace('chronicler') IS NULL AS chronicler_absent,
-                            to_regnamespace('restore_drill_executor') IS NULL
-                                AS restore_drill_absent,
-                            to_regnamespace('restore_drill_executor_admin') IS NULL
-                                AS restore_drill_admin_absent,
-                            (
-                                SELECT count(*)
-                                FROM pg_default_acl
-                                WHERE defaclrole = (
-                                    SELECT oid FROM pg_roles WHERE rolname = 'butlers'
-                                )
-                            ) AS migration_default_acl_count
-                        """
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            installed_script_extensions = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT extname
-                        FROM pg_extension
-                        WHERE extname = ANY(:extension_names)
-                        ORDER BY extname
-                        """
-                    ),
-                    {"extension_names": ["pgcrypto", "pg_trgm", "uuid-ossp", "vector"]},
-                )
-                .scalars()
-                .all()
-            )
+            assert catalog_state(conn) == baseline
     finally:
         engine.dispose()
 
-    assert migration_role == {
-        "rolcanlogin": True,
-        "rolinherit": True,
-        "rolsuper": False,
-        "rolcreaterole": False,
-        "rolcreatedb": False,
-        "rolreplication": False,
-    }
-    assert created_roles == []
-    assert migration_membership_count == 0
-    assert acl_state == {
-        "migration_connect": False,
-        "public_create": False,
-        "chronicler_absent": True,
-        "restore_drill_absent": True,
-        "restore_drill_admin_absent": True,
-        "migration_default_acl_count": 0,
-    }
-    assert installed_script_extensions == []
     assert "restore-drill admin bootstrap requires a cluster superuser" in completed.stderr
 
 
