@@ -307,9 +307,9 @@ def deploy(
     ``docker compose up -d`` reruns migrations, eyeball that things came back
     up) with one verb: builds the ``butlers-app`` image stamped with the
     current git SHA, force-reruns the one-shot migrations service (never
-    trusts a stale exited container — see bu-zhfd0), recreates services under
-    the mandatory restore-drill profile plus only explicitly-requested
-    ``--profile`` flags (never an ambient ``COMPOSE_PROFILES=hotreload``
+    trusts a stale exited container — see bu-zhfd0), prepares the protected
+    restore-drill Compose overlay plus only explicitly-requested ``--profile``
+    flags (never an ambient ``COMPOSE_PROFILES=hotreload``
     leftover from a dev shell, and never ``hotreload`` itself, which
     bind-mounts source instead of using the baked image — see bu-hmdqz.1),
     polls ``/health``, and records the outcome to

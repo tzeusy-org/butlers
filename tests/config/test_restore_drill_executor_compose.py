@@ -167,6 +167,8 @@ def test_supported_launchers_include_the_protected_restore_drill_compose_file() 
 
     assert DEFAULT_COMPOSE_FILES == (_BASE_COMPOSE_FILE, _RESTORE_DRILL_COMPOSE_FILE)
     assert protected_command in launcher
+    assert "PROFILES=(dev)" in launcher
+    assert "PROFILES=(dev restore-drill)" not in launcher
     assert launcher.index(protected_command) < launcher.index(
         '"${CMD[@]}" create restore-drill-postgres-proxy restore-drill-executor'
     )
