@@ -9,7 +9,9 @@ import asyncio
 import logging
 import shutil
 import uuid
+from urllib.parse import urlparse
 
+import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
@@ -43,17 +45,17 @@ def _unique_db_name() -> str:
 
 
 def _create_db(postgres_container, db_name: str) -> str:
-    """Create a core-migrated DB and return its privileged test-control URL.
+    """Create a core-migrated DB and return its normal migration URL.
 
-    The normal migration login stays NOCREATEDB/NOCREATEROLE.  These ACL tests
-    intentionally need the testcontainer control user afterward to create probe
-    roles and to exercise ``SET ROLE`` from a privileged session.
+    The normal migration login stays NOCREATEDB/NOCREATEROLE and must exercise
+    the Database ``SET ROLE`` lifecycle. Tests needing privileged setup or
+    rollback derive the disposable control URL explicitly.
     """
     from butlers.migrations import run_migrations
 
     migration_url = create_migration_db(postgres_container, db_name)
     asyncio.run(run_migrations(migration_url, chain="core"))
-    return migration_bootstrap_db_url(postgres_container, db_name)
+    return migration_url
 
 
 def _role_exists(db_url: str, role_name: str) -> bool:
@@ -126,7 +128,7 @@ def _execute_as_role_via_session_auth(
 
 
 def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
-    """Each runtime role can write own schema, read shared, and cannot read another schema."""
+    """Each runtime role can write own schema and public data, but not another schema."""
     db_url = _create_db(postgres_container, _unique_db_name())
     _require_runtime_acl(db_url)
 
@@ -149,7 +151,7 @@ def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
     finally:
         setup_engine.dispose()
 
-    for owned_schema, runtime_role in _RUNTIME_ROLES.items():
+    for probe_id, (owned_schema, runtime_role) in enumerate(_RUNTIME_ROLES.items(), start=2):
         _execute_as_role(
             db_url,
             runtime_role,
@@ -176,12 +178,18 @@ def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
         )
         assert shared_note == "shared-ok"
 
-        with pytest.raises(ProgrammingError, match="permission denied"):
-            _execute_as_role(
-                db_url,
-                runtime_role,
-                "INSERT INTO public.acl_probe_shared (id, note) VALUES (2, 'blocked')",
-            )
+        _execute_as_role(
+            db_url,
+            runtime_role,
+            f"INSERT INTO public.acl_probe_shared (id, note) VALUES ({probe_id}, 'shared-write-ok')",
+        )
+        shared_write_note = _execute_as_role(
+            db_url,
+            runtime_role,
+            f"SELECT note FROM public.acl_probe_shared WHERE id = {probe_id}",
+            scalar=True,
+        )
+        assert shared_write_note == "shared-write-ok"
 
         blocked_schema = next(schema for schema in _BUTLER_SCHEMAS if schema != owned_schema)
         with pytest.raises(ProgrammingError, match="permission denied"):
@@ -501,13 +509,15 @@ def test_connector_writer_role_enforcement(postgres_container):
 
     Verifies that connector_writer cannot write to a butler runtime schema.
     """
-    db_url = _create_db(postgres_container, _unique_db_name())
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
     _require_runtime_acl(db_url)
     _require_connector_writer(db_url)
 
     session_role = "connector_probe"
 
-    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    control_db_url = migration_bootstrap_db_url(postgres_container, db_name)
+    setup_engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
     try:
         with setup_engine.connect() as conn:
             conn.execute(
@@ -522,13 +532,13 @@ def test_connector_writer_role_enforcement(postgres_container):
     # the partition exists.  Use the partition-ensuring function if available,
     # or insert a probe into the table directly.
     _execute_as_role_via_session_auth(
-        db_url,
+        control_db_url,
         session_role,
         "connector_writer",
         "SELECT connectors.connectors_filtered_events_ensure_partition(now())",
     )
     _execute_as_role_via_session_auth(
-        db_url,
+        control_db_url,
         session_role,
         "connector_writer",
         "INSERT INTO connectors.filtered_events"
@@ -540,7 +550,7 @@ def test_connector_writer_role_enforcement(postgres_container):
 
     # connector_writer can INSERT into public.ingestion_events (in the write matrix).
     _execute_as_role_via_session_auth(
-        db_url,
+        control_db_url,
         session_role,
         "connector_writer",
         "INSERT INTO public.ingestion_events"
@@ -560,7 +570,7 @@ def test_connector_writer_role_enforcement(postgres_container):
     # connector_writer cannot INSERT into a butler runtime schema.
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role_via_session_auth(
-            db_url,
+            control_db_url,
             session_role,
             "connector_writer",
             "INSERT INTO general.acl_probe_connector_block (key, value)"
@@ -575,8 +585,6 @@ def test_role_fallback_when_absent(postgres_container, caplog):
     rather than raising an exception.
     """
     db_url = _create_db(postgres_container, _unique_db_name())
-
-    from urllib.parse import urlparse
 
     from butlers.db import Database
 
@@ -625,8 +633,6 @@ def test_role_reset_on_connection_return(postgres_container):
     db_url = _create_db(postgres_container, _unique_db_name())
     _require_runtime_acl(db_url)
 
-    from urllib.parse import urlparse
-
     from butlers.db import Database
 
     parsed = urlparse(db_url)
@@ -662,6 +668,67 @@ def test_role_reset_on_connection_return(postgres_container):
                     f"Expected role {role!r} after re-acquire (post-RESET ALL), "
                     f"got {current_role_after_reset!r}"
                 )
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+def test_role_reset_requires_normal_migration_login_membership(postgres_container):
+    """Database SET ROLE fails when the normal login loses its membership."""
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
+    _require_runtime_acl(db_url)
+
+    role = _RUNTIME_ROLES["general"]
+    parsed = urlparse(db_url)
+    migration_user = parsed.username
+    assert migration_user is not None
+
+    login_engine = create_engine(db_url)
+    try:
+        with login_engine.connect() as conn:
+            login_attributes = conn.execute(
+                text(
+                    "SELECT rolsuper, rolcreatedb, rolcreaterole "
+                    "FROM pg_roles WHERE rolname = current_user"
+                )
+            ).one()
+    finally:
+        login_engine.dispose()
+
+    assert login_attributes == (False, False, False)
+
+    control_engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, db_name), isolation_level="AUTOCOMMIT"
+    )
+    try:
+        with control_engine.connect() as conn:
+            conn.execute(text(f"REVOKE {_quote_ident(role)} FROM {_quote_ident(migration_user)}"))
+    finally:
+        control_engine.dispose()
+
+    from butlers.db import Database
+
+    db = Database(
+        db_name=parsed.path.lstrip("/"),
+        role=role,
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        user=migration_user,
+        password=parsed.password or "postgres",
+        min_pool_size=1,
+        max_pool_size=2,
+    )
+
+    async def _run() -> None:
+        pool = await db.connect()
+        try:
+            with pytest.raises(
+                asyncpg.exceptions.InsufficientPrivilegeError, match="permission denied"
+            ):
+                async with pool.acquire():
+                    pass
         finally:
             await db.close()
 
