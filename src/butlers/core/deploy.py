@@ -61,8 +61,11 @@ see the accompanying bead follow-up for host verification.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
+import re
+import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,13 +78,58 @@ from butlers.db import db_params_from_env
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_COMPOSE_FILES: tuple[str, ...] = ("docker-compose.yml",)
+DEFAULT_COMPOSE_FILES: tuple[str, ...] = (
+    "docker-compose.yml",
+    "docker-compose.restore-drill.yml",
+)
 DEFAULT_PROJECT_NAME = "butlers"
 DEFAULT_ENV_FILE = ".env.prod"
 DEFAULT_IMAGE_TAG = "latest"
 DEFAULT_HEALTH_URL = "http://localhost:41200/health"
 DEFAULT_HEALTH_TIMEOUT_S = 180.0
 DEFAULT_HEALTH_POLL_INTERVAL_S = 3.0
+
+# This path is intentionally not configurable. The supported deploy path may
+# elevate only the root-owned copy installed by
+# scripts/install_restore_drill_firewall_wrapper.sh, never checkout code.
+RESTORE_DRILL_FIREWALL_WRAPPER = "/usr/local/libexec/butlers-restore-drill-firewall"
+_FIREWALL_CAPABILITY_NONCE = re.compile(r"^[a-f0-9]{64}$")
+
+_RESTORE_DRILL_ENV_KEYS = frozenset(
+    {
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+        "RESTORE_DRILL_EXECUTOR_DB_HOST",
+        "RESTORE_DRILL_EXECUTOR_DB_PORT",
+        "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST",
+    }
+)
+_DOTENV_ASSIGNMENT = re.compile(r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_DNS_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_LEGACY_NUMERIC_IPV4 = re.compile(
+    r"^(?:0[xX][0-9A-Fa-f]+|[0-9]+)(?:\.(?:0[xX][0-9A-Fa-f]+|[0-9]+)){0,3}$"
+)
+_CANONICAL_PORT = re.compile(r"^[1-9][0-9]{0,4}$")
+_LOOPBACK_DNS_IDENTITIES = frozenset({"localhost", "localhost.localdomain"})
+_NON_REMOTE_IPV4_NETWORKS = tuple(
+    ipaddress.IPv4Network(network)
+    for network in (
+        "0.0.0.0/8",  # "this" network and unspecified
+        "127.0.0.0/8",  # loopback
+        "169.254.0.0/16",  # link-local
+        "192.0.0.0/24",  # IETF protocol assignments
+        "192.0.2.0/24",  # TEST-NET-1 documentation
+        "192.31.196.0/24",  # AS112-v4
+        "192.52.193.0/24",  # AMT
+        "192.88.99.0/24",  # deprecated 6to4 relay
+        "192.175.48.0/24",  # Direct Delegation AS112
+        "198.18.0.0/15",  # benchmarking
+        "198.51.100.0/24",  # TEST-NET-2 documentation
+        "203.0.113.0/24",  # TEST-NET-3 documentation
+        "224.0.0.0/4",  # multicast
+        "240.0.0.0/4",  # reserved and limited broadcast
+    )
+)
 
 
 class DeployError(RuntimeError):
@@ -97,6 +145,58 @@ class DeployError(RuntimeError):
         self.phase = phase
 
 
+@dataclass(frozen=True)
+class RestoreDrillEndpoint:
+    """Connection identity and firewall address for the isolated executor.
+
+    ``connection_host`` intentionally remains the PostgreSQL DNS/TLS identity
+    when the operator configured one.  The executor reaches that name only as
+    an alias for its internal relay; the relay alone dials ``firewall_ipv4``.
+    That preserves ``sslmode=verify-full`` without giving the executor a
+    direct route to the remote database.
+    """
+
+    connection_host: str
+    firewall_ipv4: str
+    port: int
+
+    def compose_environment(self) -> dict[str, str]:
+        """Return only the non-secret endpoint values Compose must render."""
+        return {
+            "RESTORE_DRILL_EXECUTOR_DB_HOST": self.connection_host,
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": self.firewall_ipv4,
+            "RESTORE_DRILL_EXECUTOR_DB_PORT": str(self.port),
+        }
+
+
+@dataclass(frozen=True)
+class RestoreDrillFirewallCapability:
+    """Per-created-generation nonce returned by the root-owned firewall wrapper."""
+
+    nonce: str
+
+
+def _restore_drill_compose_environment(
+    config: DeployConfig,
+    endpoint: RestoreDrillEndpoint,
+    capability: RestoreDrillFirewallCapability | None = None,
+) -> dict[str, str]:
+    """Return the only non-secret values Compose may use for this boundary.
+
+    The nonce is explicit rather than inherited so an ambient shell value can
+    never authorize a later executor container. Before preparation, Compose
+    receives the deliberate invalid placeholder and the executor fails closed
+    if someone tries to start it directly.
+    """
+    return {
+        **endpoint.compose_environment(),
+        "COMPOSE_PROJECT_NAME": config.project_name,
+        "RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE": (
+            capability.nonce if capability is not None else "unprepared"
+        ),
+    }
+
+
 #: Profiles this pipeline must never activate. ``hotreload`` bind-mounts
 #: source (``./src``, ``./roster``, ...) from the deploy host's working tree
 #: into the running containers instead of the baked image -- exactly the
@@ -109,9 +209,10 @@ _FORBIDDEN_PROFILES = frozenset({"hotreload"})
 class DeployConfig:
     """Everything one ``butlers deploy`` invocation needs, explicitly.
 
-    ``compose_files`` defaults to the single base file; there is no separate
-    "prod" overlay file because the base file's default (profile-less)
-    services already are the baked-image, no-bind-mount prod set.
+    ``compose_files`` defaults to the ordinary base file plus the protected
+    restore-drill fragment. The base file alone deliberately omits the
+    credentialed executor; this deploy path prepares its default-deny firewall
+    before it can start the merged service set.
 
     ``profiles`` lets a caller opt into compose profiles the target project
     actually needs (e.g. ``("dev",)`` for the ``butlers-dev`` project's
@@ -146,6 +247,160 @@ class DeployConfig:
                 "(possibly a stale .worktrees/ checkout) instead of the baked "
                 "image; see the module docstring."
             )
+
+
+def _endpoint_values_from_env_file(config: DeployConfig) -> dict[str, str]:
+    """Read only endpoint keys from Compose's env file without sourcing it.
+
+    A deploy process must resolve the firewall address before Compose creates
+    the credentialed executor.  Shell-sourcing ``.env.prod`` to obtain that
+    host would execute operator-controlled syntax, so this intentionally
+    narrow parser accepts simple ``KEY=value`` or ``export KEY=value``
+    assignments with optional leading spaces/tabs and retains only the five
+    non-secret endpoint keys needed below. Compose still owns all other
+    interpolation semantics.
+    """
+    env_path = config.repo_root / config.env_file
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DeployError(
+            "restore-drill-endpoint",
+            f"cannot read the Compose env file {env_path} for the restore-drill endpoint",
+        ) from exc
+
+    values: dict[str, str] = {}
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = _DOTENV_ASSIGNMENT.match(line)
+        if match is None or match.group(1) not in _RESTORE_DRILL_ENV_KEYS:
+            continue
+        # Preserve endpoint values exactly.  In particular, port validation
+        # must see and reject surrounding whitespace rather than normalizing a
+        # noncanonical string before it reaches the firewall wrapper.
+        value = match.group(2)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[match.group(1)] = value
+    return values
+
+
+def _is_ipv4(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value).version == 4
+    except ValueError:
+        return False
+
+
+def _is_remote_ipv4(value: str) -> bool:
+    """Accept a unicast remote IPv4 address, including private/tailnet space.
+
+    The firewall-target policy excludes local, documentation, benchmark, and
+    other special-purpose networks that are never meaningful remote PostgreSQL
+    targets. RFC1918, tailnet/CGNAT, and valid public unicast remain allowed.
+    """
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError:
+        return False
+    return not any(address in network for network in _NON_REMOTE_IPV4_NETWORKS)
+
+
+def _is_dns_name(value: str) -> bool:
+    """Accept a conventional DNS identity, including a single Compose label."""
+    if not value or len(value) > 253 or value.endswith("."):
+        return False
+    return all(_DNS_LABEL.fullmatch(label) for label in value.split("."))
+
+
+def _is_noncanonical_numeric_ipv4(value: str) -> bool:
+    """Reject every legacy ``inet_aton`` spelling before DNS can resolve it."""
+    return bool(_LEGACY_NUMERIC_IPV4.fullmatch(value)) and not _is_ipv4(value)
+
+
+def _resolve_restore_drill_endpoint(config: DeployConfig) -> RestoreDrillEndpoint:
+    """Resolve the executor's TLS identity and separately constrained IPv4.
+
+    Environment values override the Compose env file exactly as they do for
+    Compose interpolation. A supplied firewall override is accepted only as
+    IPv4; otherwise the required DNS connection identity is resolved on the
+    deploy host.
+    The executor itself never resolves DNS after its bridge is created.
+    """
+    values = _endpoint_values_from_env_file(config)
+    values.update(
+        {name: os.environ[name] for name in _RESTORE_DRILL_ENV_KEYS if name in os.environ}
+    )
+
+    connection_host = (
+        values.get("RESTORE_DRILL_EXECUTOR_DB_HOST") or values.get("POSTGRES_HOST") or ""
+    )
+    if _is_noncanonical_numeric_ipv4(connection_host) or _is_ipv4(connection_host):
+        raise DeployError(
+            "restore-drill-endpoint",
+            "RESTORE_DRILL_EXECUTOR_DB_HOST must be a DNS hostname for the internal relay; "
+            "numeric IPv4 literals are not supported",
+        )
+    if not _is_dns_name(connection_host):
+        raise DeployError(
+            "restore-drill-endpoint",
+            "RESTORE_DRILL_EXECUTOR_DB_HOST (or POSTGRES_HOST) must be a DNS hostname "
+            "for the internal relay",
+        )
+    if connection_host.casefold() in _LOOPBACK_DNS_IDENTITIES:
+        raise DeployError(
+            "restore-drill-endpoint",
+            "RESTORE_DRILL_EXECUTOR_DB_HOST must not be localhost",
+        )
+    raw_port = values.get("RESTORE_DRILL_EXECUTOR_DB_PORT") or values.get("POSTGRES_PORT") or "5432"
+    if not _CANONICAL_PORT.fullmatch(raw_port):
+        raise DeployError(
+            "restore-drill-endpoint",
+            "RESTORE_DRILL_EXECUTOR_DB_PORT must use canonical decimal 1..65535",
+        )
+    port = int(raw_port)
+    if not 1 <= port <= 65535:
+        raise DeployError(
+            "restore-drill-endpoint",
+            "RESTORE_DRILL_EXECUTOR_DB_PORT must use canonical decimal 1..65535",
+        )
+
+    configured_firewall_ipv4 = values.get("RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST", "")
+    if configured_firewall_ipv4:
+        if not _is_remote_ipv4(configured_firewall_ipv4):
+            raise DeployError(
+                "restore-drill-endpoint",
+                "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST must be a remote IPv4 address",
+            )
+        firewall_ipv4 = configured_firewall_ipv4
+    else:
+        try:
+            addresses = socket.getaddrinfo(
+                connection_host,
+                None,
+                family=socket.AF_INET,
+                type=socket.SOCK_STREAM,
+            )
+        except socket.gaierror as exc:
+            raise DeployError(
+                "restore-drill-endpoint",
+                f"could not resolve an IPv4 PostgreSQL endpoint for {connection_host}",
+            ) from exc
+        firewall_ipv4 = next(
+            (address[4][0] for address in addresses if _is_remote_ipv4(address[4][0])), ""
+        )
+        if not firewall_ipv4:
+            raise DeployError(
+                "restore-drill-endpoint",
+                f"could not resolve a remote IPv4 PostgreSQL endpoint for {connection_host}",
+            )
+
+    return RestoreDrillEndpoint(
+        connection_host=connection_host,
+        firewall_ipv4=firewall_ipv4,
+        port=port,
+    )
 
 
 def resolve_git_sha(repo_root: Path) -> str:
@@ -353,11 +608,22 @@ def _clean_compose_env() -> dict[str, str]:
     return env
 
 
-def _run_subprocess(cmd: list[str], *, cwd: Path, phase: str) -> None:
-    proc = subprocess.run(cmd, cwd=cwd, env=_clean_compose_env(), capture_output=True, text=True)
+def _run_subprocess(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    phase: str,
+    environment: dict[str, str] | None = None,
+    inherit_environment: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    env = _clean_compose_env() if inherit_environment else {}
+    if environment is not None:
+        env.update(environment)
+    proc = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise DeployError(phase, detail[-4000:] or f"exit code {proc.returncode}")
+    return proc
 
 
 def build_image(config: DeployConfig, git_sha: str) -> None:
@@ -374,7 +640,7 @@ def build_image(config: DeployConfig, git_sha: str) -> None:
     _run_subprocess(cmd, cwd=config.repo_root, phase="build")
 
 
-def run_migrations(config: DeployConfig) -> None:
+def run_migrations(config: DeployConfig, endpoint: RestoreDrillEndpoint | None = None) -> None:
     """Force-rerun the one-shot ``migrations`` service against the freshly built image.
 
     Uses ``run --rm`` (not ``up -d``) so a prior exited ``migrations``
@@ -383,7 +649,14 @@ def run_migrations(config: DeployConfig) -> None:
     see the module docstring (bu-zhfd0).
     """
     cmd = [*_compose_base_args(config), "run", "--rm", "migrations"]
-    _run_subprocess(cmd, cwd=config.repo_root, phase="migrate")
+    _run_subprocess(
+        cmd,
+        cwd=config.repo_root,
+        phase="migrate",
+        environment=(
+            _restore_drill_compose_environment(config, endpoint) if endpoint is not None else None
+        ),
+    )
 
 
 def materialize_beads_export(config: DeployConfig) -> bool:
@@ -447,10 +720,117 @@ def materialize_beads_export(config: DeployConfig) -> bool:
     return True
 
 
-def recreate_services(config: DeployConfig) -> None:
-    """Recreate all prod services. Never passes ``--profile``; see module docstring."""
+def prepare_restore_drill_executor(
+    config: DeployConfig, endpoint: RestoreDrillEndpoint
+) -> RestoreDrillFirewallCapability:
+    """Install the executor's default-deny policy before any ``up`` can run it.
+
+    This is deliberately a deploy phase rather than a best-effort post-start
+    hook.  Stopping the old relay and executor first prevents a chain refresh
+    from creating an egress window; ``create`` then materializes their
+    networks without starting either service. The root-owned immutable firewall
+    wrapper must succeed before the ordinary recreate phase starts any service.
+    """
+    unprepared_environment = _restore_drill_compose_environment(config, endpoint)
+    _run_subprocess(
+        [
+            *_compose_base_args(config),
+            "stop",
+            "restore-drill-postgres-proxy",
+            "restore-drill-executor",
+        ],
+        cwd=config.repo_root,
+        phase="restore-drill-stop",
+        environment=unprepared_environment,
+    )
+    prepared = _run_subprocess(
+        [
+            "sudo",
+            "-n",
+            RESTORE_DRILL_FIREWALL_WRAPPER,
+            "--prepare-executor-capability-v1",
+            "--project",
+            config.project_name,
+        ],
+        cwd=config.repo_root,
+        phase="restore-drill-firewall",
+        # Do not hand ordinary deployment environment (including shared DB
+        # credentials) to an elevated subprocess. The immutable wrapper gets
+        # only its fixed root-owned preparation verb and project literal.
+        environment={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+        inherit_environment=False,
+    )
+    nonce = prepared.stdout.strip()
+    if not _FIREWALL_CAPABILITY_NONCE.fullmatch(nonce):
+        raise DeployError(
+            "restore-drill-firewall",
+            "root-owned firewall wrapper returned an invalid prepared capability",
+        )
+    capability = RestoreDrillFirewallCapability(nonce=nonce)
+    prepared_environment = _restore_drill_compose_environment(config, endpoint, capability)
+    _run_subprocess(
+        [
+            *_compose_base_args(config),
+            "create",
+            "restore-drill-postgres-proxy",
+            "restore-drill-executor",
+        ],
+        cwd=config.repo_root,
+        phase="restore-drill-create",
+        environment=prepared_environment,
+    )
+    _run_subprocess(
+        [
+            "sudo",
+            "-n",
+            RESTORE_DRILL_FIREWALL_WRAPPER,
+            "--project",
+            config.project_name,
+            "--db-host",
+            endpoint.firewall_ipv4,
+            "--db-port",
+            str(endpoint.port),
+            "--require-executor-capability-v1",
+        ],
+        cwd=config.repo_root,
+        phase="restore-drill-firewall",
+        # Do not hand ordinary deployment environment (including shared DB
+        # credentials) to an elevated subprocess. The immutable wrapper gets
+        # only validated, literal endpoint arguments through its fixed path.
+        environment={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+        inherit_environment=False,
+    )
+    return capability
+
+
+def recreate_services(
+    config: DeployConfig,
+    endpoint: RestoreDrillEndpoint,
+    capability: RestoreDrillFirewallCapability | None = None,
+) -> None:
+    """Recreate all prod services using the already-resolved restore endpoint.
+
+    The endpoint is intentionally mandatory: callers cannot invoke the merged
+    Compose input without the same validated route used by the preceding
+    relay-firewall preparation phase.
+    """
+    if (
+        endpoint is None
+        or capability is None
+        or not _FIREWALL_CAPABILITY_NONCE.fullmatch(capability.nonce)
+    ):
+        raise DeployError(
+            "restore-drill-endpoint",
+            "a resolved restore-drill endpoint and prepared firewall capability are required "
+            "before recreate",
+        )
     cmd = [*_compose_base_args(config), "up", "-d", "--remove-orphans"]
-    _run_subprocess(cmd, cwd=config.repo_root, phase="recreate")
+    _run_subprocess(
+        cmd,
+        cwd=config.repo_root,
+        phase="recreate",
+        environment=_restore_drill_compose_environment(config, endpoint, capability),
+    )
 
 
 async def wait_for_health(config: DeployConfig) -> None:
@@ -534,10 +914,12 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
         pool = await _make_pool()
     try:
         try:
+            endpoint = _resolve_restore_drill_endpoint(config)
             build_image(config, git_sha)
-            run_migrations(config)
+            run_migrations(config, endpoint)
             materialize_beads_export(config)
-            recreate_services(config)
+            capability = prepare_restore_drill_executor(config, endpoint)
+            recreate_services(config, endpoint, capability)
             await wait_for_health(config)
         except DeployError as exc:
             migration_head = await _best_effort_migration_head(pool)

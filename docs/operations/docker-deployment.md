@@ -33,7 +33,25 @@ sets the per-mode host ports, and configures Tailscale serve:
 (`butlers` vs `butlers-dev`) and different host ports (see
 [Environment Variables](#environment-variables)), so both stacks can run on the
 same machine at once. For production **redeploys**, prefer `butlers deploy` over
-a bare `docker compose up -d` -- see [Production Deploys](#production-deploys-butlers-deploy).
+any direct Compose lifecycle command -- see [Production Deploys](#production-deploys-butlers-deploy).
+
+## Read-only protected-topology inspection
+
+The ordinary `docker-compose.yml` deliberately omits the restore-drill executor.
+To inspect the complete protected topology without starting, stopping, creating,
+or restarting any container, use the verb-restricted helper:
+
+```bash
+./scripts/restore-drill-compose-inspect.sh ps
+./scripts/restore-drill-compose-inspect.sh logs restore-drill-executor --tail=100
+./scripts/restore-drill-compose-inspect.sh config --services
+```
+
+It merges the base and protected Compose files but accepts only read-only
+`config`, `ps`, and `logs` operations. Never use those merged files with `up`;
+`scripts/compose.sh` and `butlers deploy` perform the required stop, versioned
+root preparation, create, exact-topology firewall attestation, and only then
+start either restore-drill service.
 
 ## Images
 
@@ -151,16 +169,20 @@ uv run butlers deploy --dir /path/to/repo --timeout 180
 It runs, in order:
 
 1. **Build** — `docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t butlers-app:latest .`
-2. **Migrate** — `docker compose run --rm migrations`, always a fresh
-   container. A plain `docker compose up -d` only reruns the one-shot
+2. **Migrate** — runs the merged Compose input with `run --rm migrations`,
+   always a fresh container. A direct Compose lifecycle command only reruns the one-shot
    `migrations` service if its `service_completed_successfully` condition
    isn't already satisfied — once that container has exited 0 *once*, compose
    treats it as permanently satisfied even after the image is rebuilt with
    new migrations baked in (bd bu-zhfd0: core_155..161 sat unrun in prod for
    six days this way). `run --rm` sidesteps that entirely.
-3. **Recreate** — `docker compose up -d --remove-orphans`, with **no**
-   `--profile` flag ever passed and `COMPOSE_PROFILES` stripped from the
-   subprocess environment, so a leftover dev-shell
+3. **Prepare and recreate** — stops the restore relay/executor, obtains the
+   root-owned generation-bound capability, creates the protected containers,
+   performs root-side attestation and applies both default-deny firewall
+   policies, then runs the
+   protected base-plus-restore-drill Compose overlay with `up -d --remove-orphans`,
+   with **no** `--profile` flag ever passed and
+   `COMPOSE_PROFILES` stripped from the subprocess environment, so a leftover dev-shell
    `COMPOSE_PROFILES=hotreload` cannot silently pull the bind-mounted
    hotreload services into a prod recreate.
 4. **Verify** — polls `GET /health` until `status: "ok"` or the `--timeout`

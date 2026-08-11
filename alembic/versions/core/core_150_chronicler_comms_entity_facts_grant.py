@@ -46,13 +46,16 @@ def _quote_literal(value: str) -> str:
 
 
 def _execute_best_effort(statement: str, *, role_name: str) -> None:
-    """Execute a DDL statement only when the prerequisite role exists.
+    """Execute a DDL statement only when its role and relation exist.
 
-    Silently skips if the role is missing (non-prod DB without all roles).
-    Mirrors the guard used by core_079/core_081/core_084 for the same
-    ``butler_chronicler_rw`` evidence-surface grant pattern.
+    Core can run before the specialist relationship chain. ``init-db.sql``
+    creates the chronicler role independently, so role existence alone does
+    not establish that the cross-schema relation is available to grant.
     """
-    condition = f"EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role_name)})"
+    condition = (
+        f"EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(role_name)}) "
+        f"AND to_regclass({_quote_literal(_TABLE)}) IS NOT NULL"
+    )
     op.execute(
         f"""
         DO $$

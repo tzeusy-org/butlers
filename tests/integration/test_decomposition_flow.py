@@ -32,72 +32,21 @@ pytestmark = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Shared fixtures
-# ---------------------------------------------------------------------------
-
-
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
 @pytest.fixture
 async def pool(postgres_container):
-    """Provision a fresh Switchboard database with real Alembic migrations.
+    """Provision a trusted core + Switchboard migration topology."""
+    from butlers.testing.migration import create_migrated_test_pool
 
-    Installs required PostgreSQL extensions (pgvector, pg_trgm, pgcrypto)
-    before running migrations, mirroring the production provisioning playbook.
-    The pgvector/pgvector:pg17 image ships the extension as a loadable module;
-    it still needs to be activated via CREATE EXTENSION before migrations run.
-    """
-    import asyncpg as _asyncpg
-
-    from butlers.db import Database
-    from butlers.migrations import run_migrations
-
-    # Scoped to the real ``switchboard`` schema (bu-nz1wx) so the pool's
-    # search_path is ``switchboard,public`` and production's schema-qualified
-    # ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
-    # one-db/multi-schema topology.
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-        schema="switchboard",
-    )
-    await db.provision()
-
-    # Install required extensions before migrations (must run as superuser /
-    # schema owner on the target database — testcontainer user has superuser).
-    bootstrap_conn = await _asyncpg.connect(
-        host=db.host,
-        port=db.port,
-        user=db.user,
-        password=db.password,
-        database=db.db_name,
+    p = await create_migrated_test_pool(
+        postgres_container,
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+        pool_schema="switchboard",
     )
     try:
-        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
-        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
-        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
-        await bootstrap_conn.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
+        yield p
     finally:
-        await bootstrap_conn.close()
-
-    p = await db.connect()
-
-    db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
-    await run_migrations(db_url, chain="core")
-    await run_migrations(db_url, chain="switchboard", schema="switchboard")
-
-    yield p
-
-    await p.close()
-    await db.close()
+        await p.close()
 
 
 # ---------------------------------------------------------------------------

@@ -35,8 +35,9 @@ and reads (never writes) the first-detected/escalated debounce markers the
 background sentinel loop persists to public.audit_log. /api/system/backups is
 similarly read-only: artifact integrity (gzip decompression, size floor) is
 computed live per request (memoized per file), while the restore-drill result
-is read (never written) from the ledger butlers.jobs.backup_health's weekly
-background loop maintains in public.audit_log.
+is read (never written) from the ledger maintained by the isolated
+``restore-drill-executor`` service through its fixed security-definer reader.
+The corresponding public audit row is telemetry, not result authority.
 
 Operation names assumed in the actor registry for /api/system/egress
 (documented here for the bu-n28xh audit):
@@ -252,11 +253,10 @@ class BackupEvent(BaseModel):
 class RestoreDrillFacts(BaseModel):
     """Result of the most recent weekly restore-drill attempt (bu-9r3hd.5).
 
-    Populated from ``public.audit_log`` (action ``restore_drill_result``,
-    written by ``butlers.jobs.backup_health.run_restore_drill_loop``) -- this
-    router only reads it. ``result="pending"`` means the drill has never run
-    yet (a fresh deploy, or the loop hasn't reached its weekly tick), which
-    is a real "we don't know" state, not a fabricated pass.
+    Populated through the isolated executor owner's fixed result reader --
+    never from ``public.audit_log``, whose broad-DML telemetry rows are not
+    authoritative. ``result="pending"`` means the drill has never run yet,
+    which is a real "we don't know" state, not a fabricated pass.
     """
 
     checked_at: str | None
@@ -824,8 +824,8 @@ def _verify_backup_artifact(path: Path, stat: os.stat_result) -> tuple[str, str 
 def latest_backup_path(backup_dir: Path) -> Path | None:
     """Return the most recent ``butlers_*.sql.gz`` file in *backup_dir*, or None.
 
-    Shared with ``butlers.jobs.backup_health`` so the weekly restore drill
-    targets the exact same "most recent dump" this endpoint reports on.
+    The isolated executor uses the same candidate rule without importing the
+    dashboard API package.
     """
     try:
         candidates = list(backup_dir.glob("butlers_*.sql.gz"))
@@ -843,6 +843,10 @@ def latest_backup_path(backup_dir: Path) -> Path | None:
 
 
 _PENDING_RESTORE_DRILL = RestoreDrillFacts(checked_at=None, result="pending", detail=None)
+# This fixed text is intentionally safe to render in BackupTile and to log.
+# A database-driver exception can contain a password, DSN, dump fragment, or
+# other raw recovery output, so a degraded reader must never surface it.
+_RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL = "restore drill ledger unavailable"
 
 
 def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
@@ -959,9 +963,10 @@ async def get_backup_facts(
     integrity (gzip decompression, size floor) is cheap enough to check live
     on every request and is memoized per (path, mtime, size) so an unchanged
     file is never re-verified. ``restore_drill`` is read from the ledger
-    ``butlers.jobs.backup_health`` maintains in ``public.audit_log`` --
-    actually attempting a restore is expensive and mutates state, so it only
-    happens on the weekly background loop, never inline with this request.
+    through its private result authority and fixed reader -- actually
+    attempting a restore is expensive and mutates state, so it never happens
+    inline with this dashboard request. A public audit projection cannot
+    influence this response.
 
     When ``BUTLERS_BACKUP_DIR`` is not set or the directory is absent, the
     endpoint returns ``backup_source_reachable=false`` with null fields.
@@ -993,20 +998,30 @@ async def get_backup_facts(
 
 async def _read_restore_drill_facts(db: DatabaseManager) -> RestoreDrillFacts:
     """Read the most recent restore-drill result from the ledger. Never raises."""
-    from butlers.jobs.backup_health import get_last_restore_drill
+    from butlers.jobs.backup_health import get_last_restore_drill, sanitize_restore_drill_detail
 
     try:
         pool = db.pool("switchboard")
     except KeyError:
         return RestoreDrillFacts(
-            checked_at=None, result="degraded", detail="switchboard pool unavailable"
+            checked_at=None,
+            result="degraded",
+            detail=_RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL,
         )
 
     try:
         row = await get_last_restore_drill(pool)
-    except Exception as exc:
-        logger.warning("backup facts: restore-drill ledger read failed", exc_info=True)
-        return RestoreDrillFacts(checked_at=None, result="degraded", detail=str(exc))
+    except Exception:
+        # Do not log exc_info or return str(exc): database exceptions often
+        # embed a DSN, credentials, SQL, or dump content and BackupTile renders
+        # this detail. The endpoint remains truthfully degraded with a fixed,
+        # operator-safe diagnostic instead.
+        logger.warning("backup facts: restore-drill ledger read unavailable")
+        return RestoreDrillFacts(
+            checked_at=None,
+            result="degraded",
+            detail=_RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL,
+        )
 
     if row is None:
         return _PENDING_RESTORE_DRILL
@@ -1014,7 +1029,9 @@ async def _read_restore_drill_facts(db: DatabaseManager) -> RestoreDrillFacts:
     return RestoreDrillFacts(
         checked_at=row["checked_at"],
         result=row["result"],
-        detail=row["detail"],
+        # Defend the API boundary as well as the executor persistence boundary:
+        # legacy or alternate readers must not revive raw client output.
+        detail=None if row["detail"] is None else sanitize_restore_drill_detail(row["detail"]),
     )
 
 

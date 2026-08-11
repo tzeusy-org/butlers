@@ -6,8 +6,10 @@
 #   ./scripts/compose.sh --hotreload               # with live code reload
 #   ./scripts/compose.sh --prod                    # production database
 #
-# NOTE: compose.sh pre-builds the shared butlers-app image. If running
-# docker compose directly, build it first:
+# NOTE: compose.sh pre-builds the shared butlers-app image. A bare direct
+# Compose invocation with this non-privileged base file deliberately excludes
+# the restore-drill executor and its secret/network contract. If running the
+# ordinary stack through docker compose directly, build the image first:
 #   docker build -t butlers-app:latest .
 #
 # PROFILES:
@@ -27,19 +29,21 @@
 #   — see bu-zhfd0), recreate services, poll /health, record to
 #   public.deployments. It NEVER passes --profile and always strips an
 #   inherited COMPOSE_PROFILES from its own subprocess env, so the merged
-#   config for a deploy is always exactly the default (profile-less)
-#   baked-image service set above — the hotreload/dev profiles below cannot
-#   leak into a prod deploy, by construction, regardless of ambient shell
-#   state. Do not tag prod-relevant services with `profiles: [prod]` without
-#   updating both scripts/compose.sh and src/butlers/core/deploy.py in lockstep.
+#   config for a deploy is always the profile-less baked-image base set plus
+#   the protected restore-drill fragment — the hotreload/dev profiles below
+#   cannot leak into a prod deploy, regardless of ambient shell state. Do not
+#   tag prod-relevant services with `profiles: [prod]` without updating both
+#   scripts/compose.sh and src/butlers/core/deploy.py in lockstep.
 #
 # NETWORK MODEL (see RFC 0008):
 #   db        (internal) — minio, migrations (external postgres via tailnet)
 #
 # DATABASE PROVISIONING:
 #   Before first use, run scripts/init-db.sql against your PostgreSQL server
-#   as a superuser to install extensions, create/grant managed schemas + roles,
-#   and configure default privileges for the migration user:
+#   as a privileged cluster superuser. The normal POSTGRES_USER /
+#   butlers.connecting_user must not be the active bootstrap identity; it
+#   installs extensions, creates/grants managed schemas + roles, and configures
+#   default privileges for the migration user:
 #
 #     psql -h <POSTGRES_HOST> -U <superuser> -d butlers \
 #         -f scripts/init-db.sql
@@ -856,11 +860,12 @@ volumes:
 # ── Networks ────────────────────────────────────────────────────────────
 
 networks:
-  # NOTE: We intentionally do NOT use `internal: true` on any network.
-  # Docker's DOCKER-ISOLATION-STAGE-1 rules for multiple internal networks
-  # interfere with each other, breaking inter-container communication.
-  # Network isolation is enforced by the egress firewall instead
-  # (scripts/egress-firewall.sh), which uses per-bridge iptables rules.
+  # NOTE: The ordinary application stack intentionally uses no `internal: true`
+  # network: Docker's DOCKER-ISOLATION-STAGE-1 rules for multiple internal
+  # networks interfere with its normal inter-container communication. The
+  # protected restore-drill fragment is the deliberate exception: its
+  # credentialed executor has one internal-only relay network, while the relay
+  # egress bridge remains fenced by scripts/restore-drill-firewall.sh.
   db:
     driver: bridge
   backend:

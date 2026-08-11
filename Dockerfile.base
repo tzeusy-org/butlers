@@ -16,10 +16,9 @@
 FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9
 
 # System dependencies (single layer, sorted for readability)
-# postgresql-client (psql, createdb, dropdb): the weekly restore drill
-# (bu-9r3hd.5, butlers.jobs.backup_health) shells out to psql to replay a
-# plain-format pg_dump's COPY...FROM stdin blocks -- asyncpg's protocol
-# cannot do this, only the real client can.
+# postgresql-client (psql, createdb, dropdb): the isolated restore-drill
+# executor shells out to psql to replay a plain-format pg_dump's COPY...FROM
+# stdin blocks -- asyncpg's protocol cannot do this, only the real client can.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \

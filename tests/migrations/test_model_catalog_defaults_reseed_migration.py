@@ -38,6 +38,7 @@ from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    migration_bootstrap_db_url,
     migration_db_name,
 )
 
@@ -276,6 +277,9 @@ def test_downgrade_and_reupgrade_real_alembic_roundtrip(postgres_container) -> N
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     core = _build_alembic_config(db_url, chains=["core"])
+    bootstrap_core = _build_alembic_config(
+        migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
+    )
 
     command.upgrade(core, "core@head")
 
@@ -293,7 +297,10 @@ def test_downgrade_and_reupgrade_real_alembic_roundtrip(postgres_container) -> N
         assert seeded == len(aliases), "upgrade() should have seeded every toml alias"
 
         # Real downgrade(): must delete exactly the toml-derived aliases via op.get_bind().
-        command.downgrade(core, "core_157")
+        # core_196 rollback/reapplication is managed-bootstrap-only.  The
+        # ordinary migration login remains NOCREATEDB/NOCREATEROLE for the
+        # initial empty-to-head upgrade above.
+        command.downgrade(bootstrap_core, "core_157")
         with engine.connect() as conn:
             after_downgrade = conn.execute(
                 text("SELECT COUNT(*) FROM public.model_catalog WHERE alias = ANY(:aliases)"),
@@ -305,7 +312,7 @@ def test_downgrade_and_reupgrade_real_alembic_roundtrip(postgres_container) -> N
         # works standalone through op.get_bind(), not just via hand-reproduced SQL.
         # Target "core@head" (not a hardcoded revision id) so this test survives
         # this migration being renumbered again by a parallel lane.
-        command.upgrade(core, "core@head")
+        command.upgrade(bootstrap_core, "core@head")
         with engine.connect() as conn:
             after_reupgrade = conn.execute(
                 text("SELECT COUNT(*) FROM public.model_catalog WHERE alias = ANY(:aliases)"),

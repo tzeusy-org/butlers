@@ -32,10 +32,6 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
 async def _make_pool(postgres_container, *chains: str):
     """Create a fresh database, run real Alembic migrations, and return a pool.
 
@@ -47,10 +43,7 @@ async def _make_pool(postgres_container, *chains: str):
         *chains: One or more Alembic chain names to run (e.g. ``"core"``,
             ``"switchboard"``). Defaults to just ``"core"`` when omitted.
     """
-    import asyncpg as _asyncpg
-
-    from butlers.db import Database
-    from butlers.migrations import run_migrations
+    from butlers.testing.migration import create_migrated_test_pool
 
     if not chains:
         chains = ("core",)
@@ -62,26 +55,34 @@ async def _make_pool(postgres_container, *chains: str):
     # references disagree on where the tables live.
     schema = "switchboard" if "switchboard" in chains else None
 
-    db = Database(
-        db_name=_unique_db_name(),
-        schema=schema,
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
+    return await create_migrated_test_pool(
+        postgres_container,
+        chains=list(chains),
+        schemas={"switchboard": "switchboard"} if schema is not None else None,
+        pool_schema=schema,
         min_pool_size=1,
         max_pool_size=3,
     )
-    await db.provision()
 
-    db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
-    for chain in chains:
-        await run_migrations(
-            db_url, chain=chain, schema="switchboard" if chain == "switchboard" else None
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_generic_core_pool_stages_trusted_restore_bootstrap(postgres_container) -> None:
+    """The generic migration fixture must stage the privileged bootstrap first."""
+    pool = await _make_pool(postgres_container, "core")
+    try:
+        assert (
+            await pool.fetchval("SELECT rolcreatedb FROM pg_roles WHERE rolname = current_user")
+            is False
         )
-
-    pool: _asyncpg.Pool = await db.connect()
-    return pool
+        assert await pool.fetchval("SELECT restore_drill_executor.latest_result()") is None
+        assert (
+            await pool.fetchval(
+                "SELECT has_schema_privilege(current_user, 'restore_drill_executor_admin', 'USAGE')"
+            )
+            is False
+        )
+    finally:
+        await pool.close()
 
 
 # ---------------------------------------------------------------------------

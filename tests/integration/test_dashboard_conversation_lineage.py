@@ -54,6 +54,7 @@ import json
 import shutil
 from typing import Any
 from unittest.mock import AsyncMock, patch
+from urllib.parse import urlparse
 from uuid import UUID
 
 import asyncpg
@@ -78,7 +79,11 @@ from butlers.core_tools._conversation_reply import _best_effort_request_id
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
 from butlers.modules.pipeline import MessagePipeline
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 # The whole file needs a real database; skip cleanly where Docker is absent.
 pytestmark = [
@@ -150,6 +155,13 @@ def migrated_db_url(postgres_container) -> str:
 
 
 @pytest.fixture
+def bootstrap_db_url(postgres_container, migrated_db_url: str) -> str:
+    """Return the disposable control URL for privileged rollback only."""
+    db_name = urlparse(migrated_db_url).path.lstrip("/")
+    return migration_bootstrap_db_url(postgres_container, db_name)
+
+
+@pytest.fixture
 async def pool(migrated_db_url: str):
     """asyncpg pool over the migrated database.
 
@@ -183,6 +195,7 @@ async def pool(migrated_db_url: str):
 
 async def test_migrated_dashboard_conversation_schema_omits_dead_aggregates(
     migrated_db_url: str,
+    bootstrap_db_url: str,
     pool: asyncpg.Pool,
 ) -> None:
     """core_175 drops only dead aggregates and restores their prior shape on rollback."""
@@ -210,7 +223,7 @@ async def test_migrated_dashboard_conversation_schema_omits_dead_aggregates(
     assert _RETAINED_DASHBOARD_CONVERSATION_COLUMNS <= current_columns
     assert _RETIRED_DASHBOARD_CONVERSATION_AGGREGATES.isdisjoint(current_columns)
 
-    command.downgrade(_build_alembic_config(migrated_db_url, chains=["core"]), "core_174")
+    command.downgrade(_build_alembic_config(bootstrap_db_url, chains=["core"]), "core_174")
 
     restored_columns = {
         row["column_name"]: row

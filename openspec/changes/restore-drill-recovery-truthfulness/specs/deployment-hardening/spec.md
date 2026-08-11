@@ -38,12 +38,83 @@ Scope: v1-mandatory
 
 #### Scenario: Executor deployment boundary stays narrow
 - **WHEN** the restore-drill executor is deployed
-- **THEN** it joins only the `db` network, has a read-only backup mount and no
-  listener, Docker socket, `backend`, `frontend`, or `egress` access
+- **THEN** it joins only a dedicated Docker `internal` relay network, has a
+  read-only backup mount and no listener, Docker socket, `backend`, `frontend`,
+  or `egress` access, and can reach PostgreSQL only through an uncredentialed
+  relay on that network; the prepared executor-bridge policy default-denies
+  every forward or host/gateway route except TCP to that created relay peer at
+  the configured port (because Docker `internal` alone limits membership but
+  does not deny host/gateway traffic)
+- **AND** the relay alone joins the non-internal restore-drill egress bridge,
+  receives only a required resolved PostgreSQL IPv4 and port (not a recovery
+  secret, shared `POSTGRES_*`, or `DATABASE_URL`), and its outbound policy
+  default-denies every destination except that endpoint at both Docker's
+  `DOCKER-USER`/`FORWARD` hook and the bridge-to-host `INPUT` path; the
+  root-owned wrapper derives both bridge interfaces and the created relay peer
+  rather than accepting those executor-topology values from a caller
+- **AND** the launcher, deploy path, and executor require an untrimmed DNS
+  hostname (not `localhost` or any numeric IPv4 spelling) for the executor
+  connection/TLS identity, while the firewall wrapper and relay require only
+  the separately supplied/resolved canonical dotted-decimal remote-unicast IPv4
+  target and canonical ASCII-decimal port matching `[1-9][0-9]{0,4}` in
+  `1..65535`,
+  rejecting noncanonical, loopback, unspecified, link-local, multicast,
+  documentation, and policy-reserved routes while allowing RFC1918,
+  CGNAT/tailnet, and valid public unicast; legacy decimal, octal, hexadecimal,
+  and abbreviated `inet_aton` spellings are rejected before DNS resolution.
+  The pre-source endpoint-literal grammar supports simple `KEY=value` or
+  `export KEY=value` with optional leading spaces/tabs; raw RHS whitespace is
+  rejected before sourcing. Other Bash command forms are outside this
+  pre-source endpoint-literal grammar; their resulting endpoint values are
+  validated without trimming or reinterpretation
+- **AND** the relay immediately closes over-cap clients before any upstream
+  dial, uses a bounded listener backlog, and bounds upstream connect, idle, and
+  total session lifetime with cancellation-safe cleanup; each side gets at most
+  one second for graceful close before forced transport abort
+- **AND** both supported launchers, `scripts/compose.sh` and `butlers deploy`,
+  treat stop/down failure as terminal before create, invoke only a fixed
+  root-owned firewall wrapper's versioned prepare verb, inject its
+  per-created-generation nonce into the created executor, then require the
+  wrapper to discover and fence the exact executor/relay containers and
+  networks, then bind that nonce in a post-policy marker to the current boot,
+  project, executor container generation, executor IPv4/gateway, and relay-
+  alias IPv4 before either service starts. The socketless executor verifies
+  only those observable marker dimensions; a stale wrapper or same-boot manual
+  down/recreate must fail before secret use, and neither protected service has
+  an automatic restart policy that could bypass a transient fence after a
+  Docker daemon or host restart
+- **AND** a direct stop/start of the unchanged, already-fenced container
+  generation is not treated as a new authorization; any down/recreate or
+  topology change must repeat the canonical prepare/create/fence sequence
+- **AND** the database is configured with a DNS hostname that remains the
+  executor's TLS/SNI identity for `sslmode=verify-full` while it resolves only
+  as the relay's internal-network alias; a separately resolved IPv4 address is
+  used only by the relay and firewall, never as an executor direct route
+- **AND** `sslmode=verify-ca` and `sslmode=verify-full` receive one dedicated
+  noncredential CA-root file through a read-only executor-only mount; libpq and
+  asyncpg use that same root, missing or invalid roots fail closed before a
+  connection, and ordinary `sslmode=require` does not require that file
 - **AND** it receives its credential only through the private file-secret mount,
   not the shared `POSTGRES_*`/`DATABASE_URL` environment used by dashboard-api
 - **AND** dashboard-api reads durable results but does not schedule or execute
   the scratch lifecycle
+
+#### Scenario: Direct Compose preserves the executor network boundary
+- **WHEN** an operator renders the protected base-plus-restore-drill Compose
+  files directly
+- **THEN** the ordinary base file alone omits both protected services, their
+  dedicated networks, the private secret, and the CA-root config
+- **AND** the merged executor still joins only the Docker `internal` relay
+  network, has no direct firewall IPv4 mapping or external bridge attachment,
+  and reaches its TLS identity only as the relay alias; rendering itself is not
+  a launch authorization or a substitute for the prepared executor-bridge
+  default-deny policy
+- **AND** only `scripts/compose.sh` and `butlers deploy` prepare both relay
+  egress and executor-bridge default-deny policies before they start either
+  protected service
+- **AND** the documented merged-file inspection helper accepts only read-only
+  `config`, `ps`, and `logs` operations and rejects lifecycle commands such as
+  `up`
 
 #### Scenario: Scratch lifecycle never targets live application data
 - **WHEN** a scheduled or documented restore drill runs with an available backup
@@ -67,7 +138,8 @@ Scope: v1-mandatory
 - **WHEN** the restore-drill implementation or its attention-source migration is
   rolled back
 - **THEN** rollback does not restore a dump into the live database, delete backup
-  artifacts, or manually erase the audit result that recorded a failure
+  artifacts, or manually erase the executor-owner result authority that recorded
+  a failure (or its fixed public audit projection)
 - **AND** a source-constraint downgrade removes only records that the older
   constraint cannot represent before narrowing the constraint
 - **AND** role remediation, if needed, is performed only through the managed

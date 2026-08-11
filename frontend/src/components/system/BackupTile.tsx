@@ -115,6 +115,8 @@ function BackupStatusBadge({ facts }: { facts: BackupFacts }) {
   )
 }
 
+const RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL = "restore drill ledger unavailable"
+
 function RestoreDrillRow({ drill }: { drill: RestoreDrillFacts | undefined }) {
   if (!drill || drill.result === "pending") {
     return (
@@ -145,6 +147,11 @@ function RestoreDrillRow({ drill }: { drill: RestoreDrillFacts | undefined }) {
   }
 
   // "fail" or "degraded" -- both are real problems, never silently dropped.
+  // A degraded value originates in an exception boundary. Keep a second UI
+  // guard here because this field is rendered directly and a malformed API
+  // response must not turn a database exception into dashboard-visible text.
+  const problemDetail =
+    drill.result === "degraded" ? RESTORE_DRILL_LEDGER_UNAVAILABLE_DETAIL : drill.detail
   return (
     <div>
       <dt className="text-muted-foreground text-xs">Restore drill</dt>
@@ -152,7 +159,7 @@ function RestoreDrillRow({ drill }: { drill: RestoreDrillFacts | undefined }) {
         <span className="text-[var(--red-text)]">
           {drill.result === "fail" ? "Failed" : "Unavailable"}
         </span>
-        {drill.detail ? <span className="text-muted-foreground"> -- {drill.detail}</span> : null}
+        {problemDetail ? <span className="text-muted-foreground"> -- {problemDetail}</span> : null}
       </dd>
     </div>
   )

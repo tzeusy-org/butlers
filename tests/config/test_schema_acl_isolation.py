@@ -9,12 +9,18 @@ import asyncio
 import logging
 import shutil
 import uuid
+from urllib.parse import urlparse
 
+import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
-from butlers.testing.migration import bootstrap_extensions
+from butlers.testing.migration import (
+    create_migration_db,
+    init_db_sql_for_dbapi,
+    migration_bootstrap_db_url,
+)
 
 # Skip all tests if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -31,6 +37,21 @@ _RUNTIME_ROLES = {
     "relationship": "butler_relationship_rw",
     "switchboard": "butler_switchboard_rw",
 }
+_RESTORE_DRILL_DENIED_ROLES = (
+    "butler_chronicler_rw",
+    "butler_education_rw",
+    "butler_finance_rw",
+    "butler_general_rw",
+    "butler_health_rw",
+    "butler_home_rw",
+    "butler_lifestyle_rw",
+    "butler_messenger_rw",
+    "butler_qa_rw",
+    "butler_relationship_rw",
+    "butler_switchboard_rw",
+    "butler_travel_rw",
+    "connector_writer",
+)
 
 
 def _quote_ident(identifier: str) -> str:
@@ -43,19 +64,17 @@ def _unique_db_name() -> str:
 
 
 def _create_db(postgres_container, db_name: str) -> str:
-    """Create a fresh database and return its SQLAlchemy URL."""
-    admin_url = postgres_container.get_connection_url()
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        safe = db_name.replace('"', '""')
-        conn.execute(text(f'CREATE DATABASE "{safe}"'))
-    engine.dispose()
+    """Create a core-migrated DB and return its normal migration URL.
 
-    host = postgres_container.get_container_host_ip()
-    port = postgres_container.get_exposed_port(5432)
-    user = postgres_container.username
-    password = postgres_container.password
-    return f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
+    The normal migration login stays NOCREATEDB/NOCREATEROLE and must exercise
+    the Database ``SET ROLE`` lifecycle. Tests needing privileged setup or
+    rollback derive the disposable control URL explicitly.
+    """
+    from butlers.migrations import run_migrations
+
+    migration_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(migration_url, chain="core"))
+    return migration_url
 
 
 def _role_exists(db_url: str, role_name: str) -> bool:
@@ -99,6 +118,80 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
         engine.dispose()
 
 
+def _restore_drill_ledger_effective_privileges(db_url: str, role_name: str) -> dict[str, bool]:
+    """Return protected-schema/table privileges through the normal SET ROLE path."""
+    quoted_role = _quote_ident(role_name)
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f"SET ROLE {quoted_role}"))
+            try:
+                return dict(
+                    conn.execute(
+                        text(
+                            """
+                            SELECT
+                                has_schema_privilege(
+                                    current_user,
+                                    'restore_drill_executor',
+                                    'USAGE'
+                                ) AS schema_usage,
+                                has_table_privilege(
+                                    current_user,
+                                    (
+                                        SELECT ledger.oid
+                                        FROM pg_catalog.pg_class AS ledger
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = ledger.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND ledger.relname = 'restore_drill_results'
+                                          AND ledger.relkind = 'r'
+                                    ),
+                                    'SELECT'
+                                ) AS ledger_select,
+                                has_table_privilege(
+                                    current_user,
+                                    (
+                                        SELECT ledger.oid
+                                        FROM pg_catalog.pg_class AS ledger
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = ledger.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND ledger.relname = 'restore_drill_results'
+                                          AND ledger.relkind = 'r'
+                                    ),
+                                    'INSERT'
+                                ) AS ledger_insert
+                            """
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            finally:
+                conn.execute(text("RESET ROLE"))
+    finally:
+        engine.dispose()
+
+
+def _rerun_init_db_as_control(control_db_url: str, migration_user: str) -> None:
+    """Run the trusted bootstrap as the disposable privileged control user."""
+    source = init_db_sql_for_dbapi()
+    engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
+    raw_connection = engine.raw_connection()
+    try:
+        raw_connection.autocommit = True
+        with raw_connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)",
+                (migration_user,),
+            )
+            cursor.execute(source)
+    finally:
+        raw_connection.close()
+        engine.dispose()
+
+
 def _execute_as_role_via_session_auth(
     db_url: str,
     session_role: str,
@@ -128,31 +221,35 @@ def _execute_as_role_via_session_auth(
 
 
 def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
-    """Each runtime role can write own schema, read shared, and cannot read another schema."""
-    from butlers.migrations import run_migrations
-
+    """Each runtime role can write own schema and public data, but not another schema."""
     db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
     setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with setup_engine.connect() as conn:
-            for schema in _BUTLER_SCHEMAS:
-                conn.execute(
-                    text(f"CREATE TABLE {schema}.acl_probe (id INT PRIMARY KEY, note TEXT)")
-                )
             conn.execute(
                 text("CREATE TABLE public.acl_probe_shared (id INT PRIMARY KEY, note TEXT)")
             )
             conn.execute(
                 text("INSERT INTO public.acl_probe_shared (id, note) VALUES (1, 'shared-ok')")
             )
+            for runtime_role in _RUNTIME_ROLES.values():
+                conn.execute(
+                    text(
+                        f"GRANT SELECT ON TABLE public.acl_probe_shared "
+                        f"TO {_quote_ident(runtime_role)}"
+                    )
+                )
     finally:
         setup_engine.dispose()
 
-    for owned_schema, runtime_role in _RUNTIME_ROLES.items():
+    for probe_id, (owned_schema, runtime_role) in enumerate(_RUNTIME_ROLES.items(), start=2):
+        _execute_as_role(
+            db_url,
+            runtime_role,
+            f"CREATE TABLE {owned_schema}.acl_probe (id INT PRIMARY KEY, note TEXT)",
+        )
         _execute_as_role(
             db_url,
             runtime_role,
@@ -174,12 +271,18 @@ def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
         )
         assert shared_note == "shared-ok"
 
-        with pytest.raises(ProgrammingError, match="permission denied"):
-            _execute_as_role(
-                db_url,
-                runtime_role,
-                "INSERT INTO public.acl_probe_shared (id, note) VALUES (2, 'blocked')",
-            )
+        _execute_as_role(
+            db_url,
+            runtime_role,
+            f"INSERT INTO public.acl_probe_shared (id, note) VALUES ({probe_id}, 'shared-write-ok')",
+        )
+        shared_write_note = _execute_as_role(
+            db_url,
+            runtime_role,
+            f"SELECT note FROM public.acl_probe_shared WHERE id = {probe_id}",
+            scalar=True,
+        )
+        assert shared_write_note == "shared-write-ok"
 
         blocked_schema = next(schema for schema in _BUTLER_SCHEMAS if schema != owned_schema)
         with pytest.raises(ProgrammingError, match="permission denied"):
@@ -192,22 +295,29 @@ def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
 
 def test_privileged_cross_schema_aggregate_reads_are_allowed(postgres_container):
     """Privileged connections can aggregate across butler schemas intentionally."""
-    from butlers.migrations import run_migrations
-
     db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
-    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with setup_engine.connect() as conn:
-            conn.execute(text("CREATE TABLE general.acl_fanout (id INT PRIMARY KEY)"))
-            conn.execute(text("CREATE TABLE health.acl_fanout (id INT PRIMARY KEY)"))
-            conn.execute(text("INSERT INTO general.acl_fanout (id) VALUES (1), (2)"))
-            conn.execute(text("INSERT INTO health.acl_fanout (id) VALUES (1)"))
-    finally:
-        setup_engine.dispose()
+    _execute_as_role(
+        db_url,
+        _RUNTIME_ROLES["general"],
+        "CREATE TABLE general.acl_fanout (id INT PRIMARY KEY)",
+    )
+    _execute_as_role(
+        db_url,
+        _RUNTIME_ROLES["health"],
+        "CREATE TABLE health.acl_fanout (id INT PRIMARY KEY)",
+    )
+    _execute_as_role(
+        db_url,
+        _RUNTIME_ROLES["general"],
+        "INSERT INTO general.acl_fanout (id) VALUES (1), (2)",
+    )
+    _execute_as_role(
+        db_url,
+        _RUNTIME_ROLES["health"],
+        "INSERT INTO health.acl_fanout (id) VALUES (1)",
+    )
 
     admin_engine = create_engine(db_url)
     try:
@@ -380,24 +490,15 @@ def _require_connector_writer(db_url: str) -> None:
 
 def test_set_role_enforces_own_schema_write(postgres_container):
     """SET ROLE butler_general_rw: INSERT into an own-schema table succeeds."""
-    from butlers.migrations import run_migrations
-
     db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
-    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with setup_engine.connect() as conn:
-            conn.execute(
-                text(
-                    "CREATE TABLE IF NOT EXISTS general.acl_probe_own_write "
-                    "(key TEXT PRIMARY KEY, value JSONB NOT NULL)"
-                )
-            )
-    finally:
-        setup_engine.dispose()
+    _execute_as_role(
+        db_url,
+        _RUNTIME_ROLES["general"],
+        "CREATE TABLE IF NOT EXISTS general.acl_probe_own_write "
+        "(key TEXT PRIMARY KEY, value JSONB NOT NULL)",
+    )
 
     _execute_as_role(
         db_url,
@@ -417,24 +518,15 @@ def test_set_role_enforces_own_schema_write(postgres_container):
 
 def test_set_role_blocks_cross_schema_write(postgres_container):
     """SET ROLE butler_general_rw: INSERT into another schema table is denied."""
-    from butlers.migrations import run_migrations
-
     db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
-    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with setup_engine.connect() as conn:
-            conn.execute(
-                text(
-                    "CREATE TABLE IF NOT EXISTS health.acl_probe_cross_write "
-                    "(key TEXT PRIMARY KEY, value JSONB NOT NULL)"
-                )
-            )
-    finally:
-        setup_engine.dispose()
+    _execute_as_role(
+        db_url,
+        _RUNTIME_ROLES["health"],
+        "CREATE TABLE IF NOT EXISTS health.acl_probe_cross_write "
+        "(key TEXT PRIMARY KEY, value JSONB NOT NULL)",
+    )
 
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(
@@ -455,11 +547,7 @@ def test_set_role_allows_public_table_writes(postgres_container):
     Note: qa_repo_config is only UPDATE-granted (not INSERT), so a seed row is
     pre-inserted via the admin connection before the role loop runs.
     """
-    from butlers.migrations import run_migrations
-
     db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
     # Pre-seed the qa_repo_config row that the role will UPDATE (no INSERT grant).
@@ -490,26 +578,58 @@ def test_set_role_allows_public_table_writes(postgres_container):
         pytest.fail(f"SET ROLE {role!r} write failed for {len(failed)} public tables:\n{lines}")
 
 
-def test_set_role_blocks_public_table_not_in_matrix(postgres_container):
-    """SET ROLE butler_general_rw: INSERT into migration-owned public tables is denied.
+def test_set_role_blocks_private_restore_drill_ledger_for_every_runtime_role(postgres_container):
+    """Trusted bootstrap removes role-specific ledger grants from every runtime role.
 
-    alembic_version is migration-owned metadata and must never be writable by a
-    runtime role. (The former public.contact_info probe was removed: that table is
-    dropped by migration bead 10 / core_115, bu-e2ja9.)
+    The canonical bootstrap intentionally grants runtime roles DML on shared
+    ``public`` tables, including migration-created metadata.  The restore-drill
+    ledger is the relevant protected authority boundary: ordinary runtime roles
+    must not receive schema usage or ledger SELECT/INSERT. The test first
+    reproduces the legacy role-specific grant escape, then runs the actual
+    privileged bootstrap repair; ordinary assertions remain under the normal
+    NOCREATEDB migration login's ``SET ROLE`` lifecycle.
     """
-    from butlers.migrations import run_migrations
-
-    db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
     _require_runtime_acl(db_url)
+    assert all(_role_exists(db_url, role) for role in _RESTORE_DRILL_DENIED_ROLES)
 
-    with pytest.raises(ProgrammingError, match="permission denied"):
-        _execute_as_role(
-            db_url,
-            _RUNTIME_ROLES["general"],
-            "INSERT INTO public.alembic_version (version_num) VALUES ('acl-probe-version')",
-        )
+    migration_user = urlparse(db_url).username
+    assert migration_user is not None
+    control_db_url = migration_bootstrap_db_url(postgres_container, db_name)
+    control_engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with control_engine.connect() as conn:
+            for role in _RESTORE_DRILL_DENIED_ROLES:
+                quoted_role = _quote_ident(role)
+                conn.execute(text(f"GRANT USAGE ON SCHEMA restore_drill_executor TO {quoted_role}"))
+                conn.execute(
+                    text(
+                        "GRANT SELECT, INSERT ON TABLE "
+                        "restore_drill_executor.restore_drill_results "
+                        f"TO {quoted_role}"
+                    )
+                )
+    finally:
+        control_engine.dispose()
+
+    expected_legacy_grant = {
+        "schema_usage": True,
+        "ledger_select": True,
+        "ledger_insert": True,
+    }
+    for role in _RESTORE_DRILL_DENIED_ROLES:
+        assert _restore_drill_ledger_effective_privileges(db_url, role) == expected_legacy_grant
+
+    _rerun_init_db_as_control(control_db_url, migration_user)
+
+    expected_denial = {
+        "schema_usage": False,
+        "ledger_select": False,
+        "ledger_insert": False,
+    }
+    for role in _RESTORE_DRILL_DENIED_ROLES:
+        assert _restore_drill_ledger_effective_privileges(db_url, role) == expected_denial
 
 
 def test_connector_writer_role_enforcement(postgres_container):
@@ -517,17 +637,15 @@ def test_connector_writer_role_enforcement(postgres_container):
 
     Verifies that connector_writer cannot write to a butler runtime schema.
     """
-    from butlers.migrations import run_migrations
-
-    db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
     _require_runtime_acl(db_url)
     _require_connector_writer(db_url)
 
     session_role = "connector_probe"
 
-    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    control_db_url = migration_bootstrap_db_url(postgres_container, db_name)
+    setup_engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
     try:
         with setup_engine.connect() as conn:
             conn.execute(
@@ -542,13 +660,13 @@ def test_connector_writer_role_enforcement(postgres_container):
     # the partition exists.  Use the partition-ensuring function if available,
     # or insert a probe into the table directly.
     _execute_as_role_via_session_auth(
-        db_url,
+        control_db_url,
         session_role,
         "connector_writer",
         "SELECT connectors.connectors_filtered_events_ensure_partition(now())",
     )
     _execute_as_role_via_session_auth(
-        db_url,
+        control_db_url,
         session_role,
         "connector_writer",
         "INSERT INTO connectors.filtered_events"
@@ -560,7 +678,7 @@ def test_connector_writer_role_enforcement(postgres_container):
 
     # connector_writer can INSERT into public.ingestion_events (in the write matrix).
     _execute_as_role_via_session_auth(
-        db_url,
+        control_db_url,
         session_role,
         "connector_writer",
         "INSERT INTO public.ingestion_events"
@@ -570,22 +688,17 @@ def test_connector_writer_role_enforcement(postgres_container):
         "  'ext-2', 'dk-connector-probe-1', 'hash', 'full', 'standard')",
     )
 
-    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with setup_engine.connect() as conn:
-            conn.execute(
-                text(
-                    "CREATE TABLE IF NOT EXISTS general.acl_probe_connector_block "
-                    "(key TEXT PRIMARY KEY, value JSONB NOT NULL)"
-                )
-            )
-    finally:
-        setup_engine.dispose()
+    _execute_as_role(
+        db_url,
+        _RUNTIME_ROLES["general"],
+        "CREATE TABLE IF NOT EXISTS general.acl_probe_connector_block "
+        "(key TEXT PRIMARY KEY, value JSONB NOT NULL)",
+    )
 
     # connector_writer cannot INSERT into a butler runtime schema.
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role_via_session_auth(
-            db_url,
+            control_db_url,
             session_role,
             "connector_writer",
             "INSERT INTO general.acl_probe_connector_block (key, value)"
@@ -599,13 +712,7 @@ def test_role_fallback_when_absent(postgres_container, caplog):
     The butler should operate normally (shared-user privileges) and log a warning
     rather than raising an exception.
     """
-    from butlers.migrations import run_migrations
-
     db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
-
-    from urllib.parse import urlparse
 
     from butlers.db import Database
 
@@ -651,14 +758,8 @@ def test_role_reset_on_connection_return(postgres_container):
     releases the connection back to the pool, then re-acquires and verifies the
     role is re-set by the setup callback (not lost after RESET ALL).
     """
-    from butlers.migrations import run_migrations
-
     db_url = _create_db(postgres_container, _unique_db_name())
-    bootstrap_extensions(db_url)
-    asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
-
-    from urllib.parse import urlparse
 
     from butlers.db import Database
 
@@ -695,6 +796,67 @@ def test_role_reset_on_connection_return(postgres_container):
                     f"Expected role {role!r} after re-acquire (post-RESET ALL), "
                     f"got {current_role_after_reset!r}"
                 )
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
+
+
+def test_role_reset_requires_normal_migration_login_membership(postgres_container):
+    """Database SET ROLE fails when the normal login loses its membership."""
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
+    _require_runtime_acl(db_url)
+
+    role = _RUNTIME_ROLES["general"]
+    parsed = urlparse(db_url)
+    migration_user = parsed.username
+    assert migration_user is not None
+
+    login_engine = create_engine(db_url)
+    try:
+        with login_engine.connect() as conn:
+            login_attributes = conn.execute(
+                text(
+                    "SELECT rolsuper, rolcreatedb, rolcreaterole "
+                    "FROM pg_roles WHERE rolname = current_user"
+                )
+            ).one()
+    finally:
+        login_engine.dispose()
+
+    assert login_attributes == (False, False, False)
+
+    control_engine = create_engine(
+        migration_bootstrap_db_url(postgres_container, db_name), isolation_level="AUTOCOMMIT"
+    )
+    try:
+        with control_engine.connect() as conn:
+            conn.execute(text(f"REVOKE {_quote_ident(role)} FROM {_quote_ident(migration_user)}"))
+    finally:
+        control_engine.dispose()
+
+    from butlers.db import Database
+
+    db = Database(
+        db_name=parsed.path.lstrip("/"),
+        role=role,
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        user=migration_user,
+        password=parsed.password or "postgres",
+        min_pool_size=1,
+        max_pool_size=2,
+    )
+
+    async def _run() -> None:
+        pool = await db.connect()
+        try:
+            with pytest.raises(
+                asyncpg.exceptions.InsufficientPrivilegeError, match="permission denied"
+            ):
+                async with pool.acquire():
+                    pass
         finally:
             await db.close()
 

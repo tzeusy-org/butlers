@@ -2,51 +2,42 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-
 from tests.integration.conftest import migrated_core_postgres_pool
 
 
 class _FakePool:
-    async def fetchval(self, query: str) -> str:
-        assert query == "SELECT current_database()"
-        return "fixture_db"
+    closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
-class _FakePostgresContainer:
-    username = "user@name"
-    password = "pa:ss/word?with#percent% and+plus"
-
-    def get_container_host_ip(self) -> str:
-        return "127.0.0.1"
-
-    def get_exposed_port(self, port: int) -> str:
-        assert port == 5432
-        return "54321"
+class _FakePostgresContainer: ...
 
 
-async def test_migrated_core_pool_url_encodes_container_credentials(monkeypatch) -> None:
-    """Reserved credential characters must not alter the migration URL structure."""
-    migration_urls: list[str] = []
+async def test_migrated_core_pool_uses_schema_accurate_bootstrap(monkeypatch) -> None:
+    """The wrapper delegates both bootstrap staging and migration to the shared factory."""
+    calls: list[dict[str, object]] = []
+    pool = _FakePool()
 
-    async def _record_migration(url: str, **_kwargs: object) -> None:
-        migration_urls.append(url)
+    async def _create_pool(*args: object, **kwargs: object) -> _FakePool:
+        calls.append({"postgres_container": args[0], **kwargs})
+        return pool
 
-    @asynccontextmanager
-    async def _provisioned_postgres_pool() -> AsyncIterator[_FakePool]:
-        yield _FakePool()
+    monkeypatch.setattr("butlers.testing.migration.create_migrated_test_pool", _create_pool)
+    container = _FakePostgresContainer()
+    provision = migrated_core_postgres_pool.__wrapped__(container)
 
-    monkeypatch.setattr("butlers.migrations.run_migrations", _record_migration)
-    provision = migrated_core_postgres_pool.__wrapped__(
-        _provisioned_postgres_pool,
-        _FakePostgresContainer(),
-    )
+    async with provision(min_pool_size=2, max_pool_size=4, schema="switchboard") as yielded_pool:
+        assert yielded_pool is pool
 
-    async with provision():
-        pass
-
-    assert migration_urls == [
-        "postgresql://user%40name:pa%3Ass%2Fword%3Fwith%23percent%25%20and%2Bplus"
-        "@127.0.0.1:54321/fixture_db"
+    assert calls == [
+        {
+            "postgres_container": container,
+            "chains": ["core"],
+            "pool_schema": "switchboard",
+            "min_pool_size": 2,
+            "max_pool_size": 4,
+        }
     ]
+    assert pool.closed is True

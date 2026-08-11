@@ -33,10 +33,15 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from urllib.parse import urlparse
+from pathlib import Path
+from urllib.parse import quote, urlparse
 
 import asyncpg
 from sqlalchemy import create_engine, text
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
+_PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
 
 
 def migration_db_name() -> str:
@@ -44,8 +49,19 @@ def migration_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
 
+def migration_bootstrap_db_url(postgres_container: object, db_name: str) -> str:
+    """Return the disposable database URL for managed bootstrap operations.
+
+    This is intentionally limited to testcontainers' privileged control login.
+    Ordinary migration tests should use :func:`create_migration_db`'s returned
+    normal NOCREATEDB login instead.
+    """
+    parsed = urlparse(postgres_container.get_connection_url())  # type: ignore[attr-defined]
+    return parsed._replace(path=f"/{quote(db_name, safe='')}").geturl()
+
+
 def create_migration_db(postgres_container: object, db_name: str) -> str:
-    """Provision a fresh database on *postgres_container* and return its SQLAlchemy URL.
+    """Provision a fresh bootstrapped database on *postgres_container*.
 
     Parameters
     ----------
@@ -56,22 +72,87 @@ def create_migration_db(postgres_container: object, db_name: str) -> str:
         Name of the database to create.  Must be a valid PostgreSQL identifier.
     """
     admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        safe = db_name.replace('"', '""')
-        conn.execute(text(f'CREATE DATABASE "{safe}"'))
-    engine.dispose()
+    migration_user = f"migration_{db_name}"
+    migration_password = uuid.uuid4().hex
+    _create_test_migration_role(admin_url, migration_user, migration_password)
 
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            safe_db_name = db_name.replace('"', '""')
+            safe_migration_user = migration_user.replace('"', '""')
+            conn.execute(text(f'CREATE DATABASE "{safe_db_name}" OWNER "{safe_migration_user}"'))
+    finally:
+        engine.dispose()
+
+    bootstrap_db_url = migration_bootstrap_db_url(postgres_container, db_name)
     host = postgres_container.get_container_host_ip()  # type: ignore[attr-defined]
     port = postgres_container.get_exposed_port(5432)  # type: ignore[attr-defined]
-    user = postgres_container.username  # type: ignore[attr-defined]
-    password = postgres_container.password  # type: ignore[attr-defined]
-    db_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
+    db_url = (
+        f"postgresql://{quote(migration_user, safe='')}:{quote(migration_password, safe='')}"
+        f"@{host}:{port}/{db_name}"
+    )
 
     # Activate required extensions before any migration chain runs.
-    bootstrap_extensions(db_url)
+    bootstrap_extensions(bootstrap_db_url)
+    _bootstrap_migration_prerequisites(bootstrap_db_url, migration_user)
 
     return db_url
+
+
+def _create_test_migration_role(admin_url: str, role: str, password: str) -> None:
+    """Create a unique normal login for one disposable migration database."""
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    f'CREATE ROLE "{role}" LOGIN NOINHERIT NOSUPERUSER NOCREATEROLE '
+                    "NOCREATEDB NOREPLICATION PASSWORD :password"
+                ),
+                {"password": password},
+            )
+    finally:
+        engine.dispose()
+
+
+def init_db_sql_for_dbapi() -> str:
+    """Return init-db SQL for disposable fixtures that execute through DBAPI.
+
+    The checked-in script owns fail-fast behavior for its documented ``psql -f``
+    invocation. DBAPI cursors cannot parse psql client commands, so fixtures
+    remove only that exact client-only directive and fail if it drifts.
+    """
+    source = _INIT_DB.read_text(encoding="utf-8")
+    if source.count(_PSQL_ON_ERROR_STOP_DIRECTIVE) != 1:
+        raise RuntimeError("init-db.sql must contain exactly one psql fail-fast directive")
+    return source.replace(_PSQL_ON_ERROR_STOP_DIRECTIVE, "", 1)
+
+
+def _bootstrap_migration_prerequisites(bootstrap_db_url: str, migration_user: str) -> None:
+    """Stage the production bootstrap contract in a disposable migration database.
+
+    ``core_196`` deliberately invokes only the installer provisioned by
+    ``scripts/init-db.sql``.  Migration tests use a fresh testcontainer database,
+    so they must stage that trusted bootstrap boundary before exercising the
+    ordinary, non-privileged migration path.
+    """
+    source = init_db_sql_for_dbapi()
+    engine = create_engine(bootstrap_db_url, isolation_level="AUTOCOMMIT")
+    raw_connection = engine.raw_connection()
+    try:
+        raw_connection.autocommit = True
+        with raw_connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)",
+                (migration_user,),
+            )
+            # Do not pass an empty parameter mapping: PostgreSQL's SQL-format
+            # placeholders in init-db.sql are not DBAPI bind parameters.
+            cursor.execute(source)
+    finally:
+        raw_connection.close()
+        engine.dispose()
 
 
 def bootstrap_extensions(db_url: str) -> None:
@@ -266,3 +347,42 @@ def create_migrated_test_db(
         asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
 
     return db_url
+
+
+async def create_migrated_test_pool(
+    postgres_container: object,
+    *,
+    chains: list[str],
+    schemas: dict[str, str] | None = None,
+    pool_schema: str | None = None,
+    min_pool_size: int = 1,
+    max_pool_size: int = 3,
+) -> asyncpg.Pool:
+    """Create a schema-accurate asyncpg pool without blocking an active event loop.
+
+    The synchronous migration factory deliberately owns disposable database
+    creation, privileged ``init-db.sql`` staging, and ordinary NOCREATEDB
+    migrations.  Async integration fixtures must use it in a worker thread,
+    then connect their pool with the same JSONB and search-path behavior as the
+    production :class:`butlers.db.Database` wrapper.
+    """
+    from butlers.db import register_jsonb_codec, schema_search_path
+
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        chains,
+        schemas,
+    )
+    pool_kwargs: dict[str, object] = {
+        "min_size": min_pool_size,
+        "max_size": max_pool_size,
+        "init": register_jsonb_codec,
+    }
+    if pool_schema is not None:
+        search_path = schema_search_path(pool_schema)
+        assert search_path is not None
+        pool_kwargs["server_settings"] = {"search_path": search_path}
+
+    return await asyncpg.create_pool(db_url, **pool_kwargs)

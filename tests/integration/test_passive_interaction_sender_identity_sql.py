@@ -24,7 +24,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 import pytest_asyncio
-from sqlalchemy import create_engine, text
 
 from butlers.identity import _resolve_entity_by_phone_digits
 
@@ -44,26 +43,13 @@ def migrated_dsn(postgres_container) -> str:
     place ``message_inbox`` in ``public`` here, so it is referenced unqualified
     — this asserts SQL semantics (fan-out safety), not schema placement.
     """
-    from alembic import command
-    from butlers.migrations import _bootstrap_extensions, _build_alembic_config
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
-    db_name = f"test_{uuid.uuid4().hex[:12]}"
-    engine = create_engine(postgres_container.get_connection_url(), isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        conn.execute(text(f'CREATE DATABASE "{db_name}"'))
-    engine.dispose()
-
-    host = postgres_container.get_container_host_ip()
-    port = postgres_container.get_exposed_port(5432)
-    user = postgres_container.username
-    password = postgres_container.password
-    sa_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
-
-    _bootstrap_extensions(sa_url)
-    for chain in ("core", "switchboard", "relationship"):
-        command.upgrade(_build_alembic_config(sa_url, chains=[chain]), f"{chain}@head")
-
-    return f"postgres://{user}:{password}@{host}:{port}/{db_name}"
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard", "relationship"],
+    )
 
 
 @pytest_asyncio.fixture(loop_scope="function")

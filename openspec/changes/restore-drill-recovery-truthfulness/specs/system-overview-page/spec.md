@@ -39,11 +39,14 @@ Scope: v1-mandatory
 - **AND** the frontend renders a backup-status-unavailable indicator rather than
   an error state or a passing backup verdict
 
-#### Scenario: Restore-drill ledger read failure degrades only drill facts
-- **WHEN** the restore-drill audit ledger cannot be read because the switchboard
-  pool is unavailable or its query fails
+#### Scenario: Restore-drill authority read failure degrades only drill facts
+- **WHEN** the restore-drill executor-owner authority ledger cannot be read
+  through its fixed reader because the switchboard pool is unavailable or its
+  query fails
 - **THEN** `restore_drill.result` is `"degraded"` with a non-null operator-safe
   detail and null failure code, stage, and failure age
+- **AND** that detail and the corresponding server log use a fixed safe
+  unavailable diagnostic rather than the database exception text or traceback
 - **AND** every other backup fact remains unaffected
 - **AND** the response remains HTTP 200 because a ledger-read failure never
   fabricates a successful drill or fails the whole endpoint
@@ -82,8 +85,10 @@ Scope: v1-mandatory
 - **WHEN** a due restore-drill tick finds a backup file and the scratch lifecycle
   completes its cleanup, creation, real-`psql` restore, and non-system-table
   verification stages
-- **THEN** it records `result="pass"` in `public.audit_log` with null failure
-  code, stage, and failure age
+- **THEN** it records `result="pass"` in the executor-owner result authority
+  ledger with null failure code, stage, and failure age
+- **AND** it may emit a fixed public audit telemetry projection that is not
+  consulted for due state or API facts
 - **AND** `GET /api/system/backups` exposes the passing result
 - **AND** a prior contiguous sequence of failures no longer appears as a current
   failure epoch
@@ -105,14 +110,15 @@ Scope: v1-mandatory
   stderr, credentials, connection strings, dump content, or an unbounded path
 
 #### Scenario: Failed drill creates truthful attention provenance
-- **WHEN** a failed restore-drill result has been durably written to
-  `public.audit_log`
+- **WHEN** a failed restore-drill result has been durably written to the
+  executor-owner result authority ledger
 - **THEN** the job makes a best-effort attention-ledger write with
   `source="restore_drill"`, `outcome="failed"`, no channel or intent, and
   `notification_ref=null`
 - **AND** the ledger reason is the stable failure code and its metadata carries
   only the stage, code, bounded sanitized detail, and recorded-at reference
-- **AND** a ledger-write failure does not erase or downgrade the audit result
+- **AND** an attention-ledger-write failure does not erase or downgrade the
+  authoritative result
   and does not stop the next 24-hour retry
 
 #### Scenario: No backup file remains a no-result state

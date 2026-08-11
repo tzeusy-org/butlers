@@ -1,333 +1,301 @@
 # Backup and Restore
 
-> **Purpose:** Document the backup cadence, storage location, and the
-> step-by-step restore drill for the Butlers PostgreSQL data plane.
-> **Audience:** The owner/operator performing data recovery or verifying
-> backup health.
-> **Prerequisites:** [Environment Config](environment-config.md),
-> [Docker Deployment](docker-deployment.md), `psql`/`createdb`/`dropdb`
-> on PATH.
+> **Purpose:** Document the backup cadence and the managed proof that a recent
+> PostgreSQL backup can be restored without touching the live application
+> database.
+> **Audience:** The owner/operator responsible for recovery readiness.
 
 ---
 
 ## Overview
 
-Butlers stores all personal data in a single PostgreSQL database.  The
-backup-cron sidecar (running inside the compose stack) writes a
-timestamped, gzip-compressed plain-SQL dump to the `butlers_backups`
-Docker volume every night at 02:00 UTC.  The dashboard `/system` page
-shows the recency and size of the most-recent backup so you can confirm
-the automated job is running.
+Butlers writes a timestamped, gzip-compressed plain-SQL dump to the
+`butlers_backups` Docker volume each night. The dashboard reports backup
+recency, artifact integrity, and the durable result of the managed restore
+drill; it never launches a restore itself.
 
 | What | Where |
-|------|-------|
-| Backup script | `deploy/backup/pg_dump.sh` (runs inside container) |
-| Restore script | `scripts/pg_restore.sh` (run on the host) |
-| Verify script | `scripts/pg_verify_restore.sh` (run on the host) |
-| Backup volume | `butlers_backups` Docker volume |
-| Host-accessible path | `docker volume inspect butlers_backups` → Mountpoint |
-| Default schedule | 02:00 UTC daily (`BACKUP_CRON` env var) |
-| Default retention | 14 days (`BACKUP_RETAIN_DAYS` env var) |
-| Dump format | Plain SQL, gzip-compressed (`butlers_YYYY-MM-DDTHH-MM-SS.sql.gz`) |
+|---|---|
+| Backup producer | `backup-cron` / `deploy/backup/pg_dump.sh` |
+| Restore-drill executor | Protected `restore-drill-executor` Compose service |
+| Executor bootstrap contract | `scripts/init-db.sql` and `scripts/provision_restore_drill_executor.sh` |
+| Backup volume | `butlers_backups` |
+| Default backup schedule | 02:00 UTC daily (`BACKUP_CRON`) |
+| Default backup retention | 14 days (`BACKUP_RETAIN_DAYS`) |
+| Restore scratch database | `butlers_restore_drill` (never the live application database) |
 
----
+## Automated backups
 
-## How Backups Are Created
+The `backup-cron` service mounts `deploy/backup/pg_dump.sh` into a
+`postgres:17-alpine` container. Each run writes to a temporary file, verifies
+that the write completes, atomically publishes a `.sql.gz` artifact, and
+prunes artifacts beyond `BACKUP_RETAIN_DAYS`.
 
-The `backup-cron` service in `docker-compose.yml` mounts
-`deploy/backup/pg_dump.sh` into a `postgres:17-alpine` container and
-runs it on a cron schedule.  The script:
+Configure the cadence in the deployment environment:
 
-1. Calls `pg_dump --format=plain` against the Postgres host.
-2. Streams output through `gzip` to a `.tmp` file so partial dumps are
-   never visible.
-3. Atomically renames the `.tmp` file to the final timestamped name.
-4. Prunes files older than `BACKUP_RETAIN_DAYS`.
-
-The compose volume `butlers_backups` is shared read-only into
-`dashboard-api` so the `/api/system/backups` endpoint can surface backup
-recency.
-
-### Configuring the backup job
-
-In `.env.dev` / `.env.prod`:
-
-```
-# Daily at 02:00 UTC (default)
+```dotenv
 BACKUP_CRON=0 2 * * *
-
-# Keep 14 days of dumps (default)
 BACKUP_RETAIN_DAYS=14
 ```
 
-You do **not** need to restart the stack to change the schedule — the
-cron is re-read on `backup-cron` container restart only.
+The `butlers_backups` volume remains the local recovery artifact store. Keep a
+separate, owner-controlled off-host copy for disaster recovery: a host failure
+can otherwise destroy both the database and the volume that holds its dumps.
 
----
+## Managed restore drill
 
-## Triggering a Manual Backup
+The `restore-drill-executor` is the only process allowed to perform the
+scratch-database lifecycle. It holds a distinct `restore_drill_executor`
+database login, which is intentionally more capable than the dashboard,
+butlers, and connectors only for creating and removing the fixed scratch
+database. The normal `POSTGRES_USER`, every `butler_*_rw` role, and
+`connector_writer` remain `NOCREATEDB`.
 
-To produce an on-demand dump without waiting for the scheduled job:
+Dashboard-api has a read-only role in this flow: it calls the fixed
+`restore_drill_executor.latest_result()` reader for `GET /api/system/backups`.
+That reader exposes only the latest executor-owner ledger result; the matching
+`public.audit_log` row is an unauthoritative telemetry projection because normal
+application roles can write public audit events. Dashboard-api receives neither
+the executor credential nor a process path that can launch `createdb`, `psql`,
+or `dropdb` for the drill.
+
+### Bootstrap prerequisite
+
+Before enabling the executor, use a reviewed cluster-superuser bootstrap
+procedure to run `scripts/init-db.sql`, apply the application migrations, and
+invoke the managed `scripts/provision_restore_drill_executor.sh` provisioner.
+The shared `butlers` database owner/migration login is not a substitute for
+this step. The provisioner expects the private file path named by this
+deployment setting:
+
+```dotenv
+RESTORE_DRILL_EXECUTOR_PASSWORD_FILE=/secure/managed/path/restore-drill-executor-password
+```
+
+The file is a Tier-0 deployment secret. It is created and retained outside the
+repository, is never copied into `.env` as a value, and is mounted by Compose
+only at `/run/secrets/restore_drill_executor_password` in the executor
+container. Its content is UTF-8 with at most one terminal LF; embedded/multiple
+LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the distinct login with
+`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION` and maintains
+the normal-role `NOCREATEDB` boundary.
+
+When the executor uses `RESTORE_DRILL_EXECUTOR_SSLMODE=verify-ca` or
+`verify-full`, configure a separate, noncredential CA-root source file as
+well:
+
+```dotenv
+RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE=/secure/managed/path/postgresql-ca-root.pem
+```
+
+Compose mounts that file read-only at
+`/run/configs/restore_drill_executor_ca.pem`; it is not a password secret and
+is visible only to the executor. Both `psql`/`createdb`/`dropdb` and asyncpg
+use that same mounted root. A missing, unreadable, or invalid CA root makes a
+verification-mode executor fail before it connects. Ordinary
+`sslmode=require` still uses TLS without requiring this CA-file setting.
+
+The ownership handoff is also deliberate: the private
+`restore_drill_executor.restore_drill_results` ledger and its three constrained
+functions live in the `restore_drill_executor` schema and are owned by a
+separate `restore_drill_executor_owner` `NOLOGIN` role. The executor receives
+only `is_due()` and `record_result()` execution; it has no direct ledger table
+access. The shared dashboard/migration login receives only schema usage plus
+the fixed `latest_result()` reader; it has no writer execution, direct ledger
+access, or owner membership. Butler and connector roles receive none of those
+privileges. The public audit projection is never a due-check or API authority.
+The cluster-superuser bootstrap is the only role boundary allowed to set up
+that handoff. Before it exposes the fixed installer, `init-db.sql` verifies
+that `restore_drill_executor_admin`, its configuration, and the exact
+zero-argument installer/finalizer are owned by trusted bootstrap provenance.
+A shared-owned precreated schema or no-op is rejected before `CREATE OR
+REPLACE`, ownership transfer, or executor/reader grants; do not attempt to
+repair it through the shared login. `core_196` repeats the owner/definer check
+before calling the installer. The shared login gets neither protected-schema
+`CREATE` nor ownership-finalizer execution. A clean first install or retry, and
+a privileged rerun retaining that trusted admin owner, complete normally.
+
+The fixed public audit projection uses a separate
+`restore_drill_executor_audit_writer` `NOLOGIN` security-definer rather than
+allowing the private ledger owner to insert into `public.audit_log`. Its only
+effective database capability is the fixed public-audit INSERT/sequence path;
+it has no private ledger schema/table/function grant or owner membership. Thus
+a hostile `public.audit_log` trigger runs as the constrained audit writer and
+cannot create or read an authoritative result. Such a trigger can still reject
+the public projection, which is an availability denial: the enclosing
+`record_result()` statement then rolls back its ledger insert rather than
+retaining a partial or false recovery result. Repair the audited trigger through
+normal privileged database governance; never bypass the boundary by granting
+the private owner public-audit DML.
+
+Do not bypass that managed procedure. In particular, do not issue ad hoc
+database-role changes, manually pre-create the scratch database, pass a shared
+application credential to client tools, or make a live application database
+mutation to force a drill through.
+
+### Deployment boundary
+
+The Compose services are deliberately narrow:
+
+- The credentialed executor joins only the dedicated Docker `internal`
+  `restore_drill_executor` network and exposes no listener or host port. Its
+  network membership excludes the ordinary service and external relay bridges,
+  but an internal network alone does not deny bridge-gateway or host traffic.
+  The prepared root-owned executor bridge policy is default-denied except for
+  its created relay peer at the configured PostgreSQL port, so it cannot route
+  directly to PostgreSQL, the host, or ordinary service networks.
+- The executor connection identity MUST be an untrimmed DNS hostname (including
+  `sslmode=verify-full`), never `localhost` or a numeric IPv4 spelling. Docker
+  resolves that name only as an alias for the internal relay. The relay carries no private secret,
+  `POSTGRES_*`, or `DATABASE_URL`; it alone joins the non-internal
+  `restore_drill_db` egress bridge and accepts only the separately resolved
+  PostgreSQL IPv4 and port. Verification modes additionally use the dedicated
+  read-only CA-root mount described above; `verify-full` verifies the retained
+  DNS hostname, never the relay's IPv4 target.
+- Only the separately supplied/resolved relay/firewall target may be a
+  canonical dotted-decimal remote-unicast IPv4, with a canonical ASCII-decimal port
+  matching `[1-9][0-9]{0,4}` in `1..65535`. Every boundary rejects
+  noncanonical, loopback,
+  unspecified, link-local, multicast, documentation, and policy-reserved
+  addresses while retaining RFC1918, CGNAT/tailnet, and valid public unicast
+  database routes. Legacy decimal, octal, hexadecimal, and abbreviated
+  `inet_aton` spellings are rejected before DNS resolution. The pre-source
+  endpoint-literal grammar supports simple `KEY=value` or `export KEY=value`
+  with optional leading spaces/tabs; raw RHS whitespace is rejected before
+  sourcing. Other Bash command forms are outside this pre-source
+  endpoint-literal grammar; their resulting endpoint values are validated
+  without trimming or reinterpretation.
+  The executor hostname is not that route: it resolves
+  only to the relay alias on the internal network.
+- The uncredentialed relay immediately rejects a client when its fixed two-slot
+  admission cap is full, uses a bounded listener backlog, and closes both sides
+  on a 10-second upstream-connect deadline, a two-hour idle deadline, or a
+  six-hour total-session deadline. Each close has at most one second to flush;
+  the relay then aborts the transport so a non-reading peer cannot pin a slot.
+  It never queues accepted client sockets or exposes a host port.
+- A root-owned fixed wrapper at
+  `/usr/local/libexec/butlers-restore-drill-firewall` derives both project
+  bridges and the created relay's internal address before installing two
+  default-deny policies. The relay egress bridge accepts only TCP to the
+  resolved PostgreSQL IPv4 endpoint and port; the executor bridge is
+  default-denied except for TCP to that created relay peer at the same port.
+  Both policies hook Docker's `DOCKER-USER`/`FORWARD` path and their bridge
+  `INPUT` paths, so every other forwarded packet and every host or
+  bridge-gateway packet is dropped. This second hook is required because host
+  services and the bridge gateway do not traverse `FORWARD`. IPv6 is disabled
+  on both dedicated networks.
+- The ordinary `docker-compose.yml` deliberately omits the executor, its
+  bridge, its CA config, and its private secret. The supported launchers,
+  `scripts/compose.sh` and `butlers deploy`, are the only paths that add
+  `docker-compose.restore-drill.yml`; they stop the old relay and executor,
+  call a versioned root-owned preparation verb before `create`, inject its
+  generation-bound nonce into the created executor, attest and fence that exact
+  container/relay topology, and only then start the merged stack. The wrapper
+  discovers that host-side topology while fencing it; the post-fence marker
+  binds the current host boot, project, nonce, executor generation, executor
+  IPv4/gateway, and relay-alias IPv4, which the socketless executor can verify
+  before reading its secret. A same-boot manual down/recreate cannot replay a
+  prior authorization. An older installed wrapper rejects the
+  preparation verb before `create`/`up`. The services have `restart: "no"`, so
+  a Docker daemon or host restart cannot auto-start them before the fence is
+  recreated. A direct merged invocation has no valid prepared marker for its
+  new executor generation and fails before reading the secret. A failed checked
+  stop/down phase also ends the launcher before preparation, `create`, firewall
+  invocation, or `up`.
+- It mounts `butlers_backups` read-only and has no Docker socket, `backend`,
+  `frontend`, or `egress` network membership.
+- It does not inherit `x-postgres-env` and receives no `POSTGRES_USER`,
+  `POSTGRES_PASSWORD`, or `DATABASE_URL` value.
+- Its only credential is the private file-secret mount described above.
+
+### Firewall wrapper prerequisite
+
+Before enabling a supported launcher on a host, a root-controlled deployment
+procedure must review the exact checkout source and install the immutable
+runtime copy with `scripts/install_restore_drill_firewall_wrapper.sh`. That
+installer writes only `/usr/local/libexec/butlers-restore-drill-firewall` with
+`root:root` ownership and mode `0755`; it does not accept an alternate target.
+The host's managed sudo policy may permit only that fixed wrapper and its two
+literal versioned forms: `--prepare-executor-capability-v1 --project`, then
+`--project --db-host --db-port --require-executor-capability-v1`. The checked-in
+`scripts/restore-drill-firewall.sudoers` is a policy template for that host
+configuration step. These attest the supported launch sequence against stale
+wrappers and stale container generations; a root-level firewall/Docker reset
+still requires the canonical launcher to prepare and fence a fresh topology.
+
+Never grant passwordless sudo for `scripts/restore-drill-firewall.sh`, a
+checkout wildcard, `env`, a shell, or the installer. The checkout script is an
+installation artifact, not a runtime elevated command. If the fixed wrapper or
+its narrowly scoped sudo rule is absent, leave the executor stopped and repair
+the root-controlled deployment configuration before retrying either supported
+launcher.
+
+This is a single-executor design. Do not scale `restore-drill-executor` above
+one replica until a reviewed cross-process exclusive guard protects the entire
+fixed-scratch lifecycle.
+
+### Scratch lifecycle and cadence
+
+On an hourly check, the executor consults its migration-owned database
+interface. A missing durable result or a result older than seven days is due;
+an absent backup produces no fabricated success record. For a due backup, the
+executor performs this fixed sequence:
+
+1. Remove any stale `butlers_restore_drill` database through the explicit
+   maintenance database.
+2. Create a fresh scratch database through that same maintenance database.
+3. Restore the selected gzip/plain-SQL artifact with the PostgreSQL client.
+4. Verify that non-system tables exist in the scratch database.
+5. Attempt post-run cleanup of the scratch database and persist the result via
+   the constrained executor interface.
+
+The live application database is never a restore target. The executor's
+maintenance connection is used only to create or remove the fixed scratch
+database.
+
+Only a verified post-run cleanup can produce a `pass`. A failed `dropdb` makes
+the result a failed drill even after a successful restore/verification, so a
+leftover scratch database is never reported as recovery evidence. Stored and
+API-visible diagnostic detail is at most 512 characters from a controlled safe
+vocabulary; raw PostgreSQL stdout/stderr, connection strings, passwords, and
+dump content are withheld rather than retained in the protected result ledger,
+its fixed audit projection, or rendered by the dashboard. The executor-facing
+SQL persistence function is the final boundary: it ignores every
+caller-supplied `p_detail`, `p_backup_name`, and `p_table_count`, uses a fixed
+canonical audit target with no backup-path or count metadata, and accepts only
+a non-null `pass` or `fail` result. It stores only its fixed safe diagnostic,
+so a direct use of the executor credential cannot bypass the runner's sanitizer
+or influence the durable/API-visible result shape.
+
+### Observing a drill
+
+Use normal deployment observation surfaces; none should display the secret:
 
 ```bash
-# Run the backup script inside the backup-cron container
-docker compose exec backup-cron sh /backup/pg_dump.sh
+# Read-only merged-topology inspection; this helper rejects `up` and other lifecycle verbs.
+./scripts/restore-drill-compose-inspect.sh ps
+./scripts/restore-drill-compose-inspect.sh logs --tail=100 restore-drill-executor
 ```
 
-Or directly on the host (requires `pg_dump` installed locally):
+Its rendered Compose output is inspection only: use a supported launcher or
+`butlers deploy` to validate the endpoint and prepare the firewall before any
+protected service starts.
 
-```bash
-# Load connection params from your env file
-source .env.dev        # or .env.prod for production
+The System page and `GET /api/system/backups` surface the most recently
+recorded pass, failure, pending state, or a degraded read. A present backup is
+not a restore proof by itself: the recorded executor result is the recovery
+evidence.
 
-TIMESTAMP="$(date -u +%Y-%m-%dT%H-%M-%S)"
-PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
-  --host="$POSTGRES_HOST" \
-  --port="${POSTGRES_PORT:-5432}" \
-  --username="${POSTGRES_USER:-butlers}" \
-  --dbname="${POSTGRES_DB:-butlers}" \
-  --format=plain \
-  --no-password \
-  | gzip > "butlers_${TIMESTAMP}.sql.gz"
-```
+## Failure and rollback boundary
 
----
+If the executor cannot create its scratch database or cannot persist a result,
+preserve the backup artifact, protected result ledger, and audit history.
+Investigate the managed bootstrap/deployment configuration; do not grant
+recovery capability to the dashboard, a butler, or a connector, and do not
+create scratch state by hand.
 
-## Locating Backup Files
-
-The `butlers_backups` Docker volume holds all automated backups:
-
-```bash
-# List recent backups (sorted, newest last)
-docker run --rm \
-  -v butlers_backups:/backups:ro \
-  busybox:latest \
-  find /backups -name "butlers_*.sql.gz" | sort
-
-# Copy the most-recent backup to the current directory
-LATEST=$(docker run --rm \
-  -v butlers_backups:/backups:ro \
-  busybox:latest \
-  find /backups -name "butlers_*.sql.gz" | sort | tail -1)
-
-docker run --rm \
-  -v butlers_backups:/backups:ro \
-  -v "$(pwd):/out" \
-  busybox:latest \
-  cp "$LATEST" /out/
-```
-
----
-
-## Restore Drill
-
-Run this drill periodically (suggested: monthly) to prove that a backup
-can actually be restored and that data is intact.  The drill restores
-into a scratch database (`butlers_restore_verify`) so the production
-database is **never touched**.
-
-### Prerequisites
-
-- `psql`, `createdb`, `dropdb`, and `gunzip` available on the host.
-- The Postgres server is reachable (the live stack can be running).
-- A backup file on disk (copy it out of the Docker volume as shown
-  above, or use a manual dump from the previous section).
-
-### Step 1 — Obtain the backup file
-
-```bash
-# Extract the most-recent backup from the Docker volume
-LATEST=$(docker run --rm \
-  -v butlers_backups:/backups:ro \
-  busybox:latest \
-  sh -c 'find /backups -name "butlers_*.sql.gz" | sort | tail -1')
-
-docker run --rm \
-  -v butlers_backups:/backups:ro \
-  -v "$(pwd):/out" \
-  busybox:latest \
-  cp "$LATEST" /out/
-
-BACKUP_FILE="$(basename "$LATEST")"
-echo "Working with: $BACKUP_FILE"
-```
-
-Expected output example:
-```
-Working with: butlers_2026-06-18T02-00-01.sql.gz
-```
-
-Confirm the file is non-empty:
-```bash
-ls -lh "$BACKUP_FILE"
-# Expected: a .sql.gz file of several KB to MB depending on data volume
-gunzip -t "$BACKUP_FILE" && echo "gzip integrity: OK"
-```
-
-### Step 2 — Restore into a scratch database
-
-```bash
-./scripts/pg_restore.sh "$BACKUP_FILE" --drop-existing
-```
-
-The script auto-detects `.env.dev` (or `.env.prod`) for connection
-parameters.  Pass `--env-file <path>` to use a different env file, or
-use `--host`/`--port`/`--user`/`--password` flags directly.
-
-Expected output:
-```
-[restore] Loading connection params from .env.dev
-[restore] backup:    butlers_2026-06-18T02-00-01.sql.gz
-[restore] target db: butlers_restore_verify
-[restore] host:      butlers-db-dev.your-tailnet.ts.net:5432
-[restore] user:      butlers
-
-WARNING: This restore targets 'butlers_restore_verify', NOT the production database.
-         The production database is left untouched.
-
-[restore] Dropping existing database 'butlers_restore_verify' (--drop-existing)
-[restore] Creating target database 'butlers_restore_verify' (if it does not exist)...
-[restore] Restoring butlers_2026-06-18T02-00-01.sql.gz → butlers_restore_verify ...
-[restore] (This may take a minute for large databases)
-[restore] done — 'butlers_restore_verify' is populated
-```
-
-### Step 3 — Verify integrity
-
-```bash
-./scripts/pg_verify_restore.sh
-```
-
-Expected output (all checks pass):
-```
-[verify] target database: butlers_restore_verify
-[verify] host:            butlers-db-dev.your-tailnet.ts.net:5432
-[verify] user:            butlers
-
-── Check 1: Database connectivity ──
-  [PASS] Connected to 'butlers_restore_verify'
-
-── Check 2: Core schema presence ──
-  [PASS] Schema 'public' present
-  [PASS] Schema 'switchboard' present
-  [PASS] Schema 'general' present
-
-── Check 3: Core tables present ──
-  [PASS] Table 'public.contacts' present
-  [PASS] Table 'public.contact_info' present
-  [PASS] Table 'public.model_catalog' present
-
-── Check 4: Owner row in public.contacts ──
-  [PASS] public.contacts has 1 row(s) (at least owner row present)
-
-── Check 5: model_catalog populated ──
-  [PASS] public.model_catalog has 3 row(s)
-
-── Check 6: Row-count parity vs live 'butlers' ──
-  [PASS] public.contacts: 1 rows (matches live)
-  [WARN] public.contact_info: restored=12, live=14 (backup predates 14 - 12 new rows — expected)
-
-══════════════════════════════════════════════
-RESULT: 11 checks — 11 passed, 0 failed  ✓  RESTORE VERIFIED
-```
-
-A `[WARN]` on row counts is expected: the backup was taken before new
-rows were added to the live system.  It is only a `[FAIL]` if the
-restored count *exceeds* the live count (which would indicate corruption
-or the wrong database being compared).
-
-The drill is **complete** once you see `RESTORE VERIFIED`.
-
-### Step 4 — Optional: manual inspection
-
-If you want to spot-check data beyond the automated checks:
-
-```bash
-source .env.dev
-PGPASSWORD="$POSTGRES_PASSWORD" psql \
-  -h "$POSTGRES_HOST" -U "${POSTGRES_USER:-butlers}" \
-  -d butlers_restore_verify
-
--- Inside psql:
-\dn                           -- list schemas
-\dt public.*                  -- list public tables
-SELECT id, name FROM public.contacts LIMIT 5;
-SELECT type, value FROM public.contact_info LIMIT 10;
-\q
-```
-
-### Step 5 — Clean up the scratch database
-
-```bash
-source .env.dev
-PGPASSWORD="$POSTGRES_PASSWORD" dropdb \
-  -h "$POSTGRES_HOST" -U "${POSTGRES_USER:-butlers}" \
-  butlers_restore_verify
-echo "Scratch database dropped"
-```
-
----
-
-## Drill Cadence and Storage
-
-| What | Recommendation |
-|------|---------------|
-| Drill frequency | Monthly (or after any significant data-volume change) |
-| Backup storage | `butlers_backups` Docker volume (on the host running the stack) |
-| Off-site copy | Manually copy dumps to an external drive or cloud storage; Butlers does not currently automate off-site transfer |
-| Retention | 14 days automated; keep at least one monthly snapshot off-site |
-
-> **Note on off-site backups:** The `butlers_backups` volume lives on the
-> same host as the database.  A disk failure that destroys the DB would
-> also destroy the volume.  For true disaster recovery, periodically copy
-> a dump file to a separate physical location or cloud storage.
-
----
-
-## Troubleshooting
-
-### `pg_restore.sh` fails with "connection refused"
-
-- Is the Postgres host reachable?  `ping $POSTGRES_HOST`
-- Is the port open?  `nc -zv $POSTGRES_HOST 5432`
-- Did you source the right env file?  Try `--env-file .env.dev` explicitly.
-
-### `createdb` fails with "permission denied"
-
-The `butlers` user may not have `CREATEDB` privilege.  Run as the
-superuser:
-
-```bash
-psql -h "$POSTGRES_HOST" -U postgres -c \
-  "ALTER USER butlers CREATEDB;"
-```
-
-Or create the scratch database manually before running `pg_restore.sh`:
-
-```bash
-source .env.dev
-PGPASSWORD="$POSTGRES_PASSWORD" psql \
-  -h "$POSTGRES_HOST" -U "${POSTGRES_USER:-butlers}" \
-  -d postgres -c "CREATE DATABASE butlers_restore_verify;"
-```
-
-Then run `pg_restore.sh` *without* `--drop-existing` (so it skips the
-createdb step):
-
-```bash
-./scripts/pg_restore.sh "$BACKUP_FILE"
-```
-
-### `pg_verify_restore.sh` reports schema missing
-
-The restore may have completed but the schemas were not created because
-the dump predates `scripts/init-db.sql` being run.  The plain-SQL dump
-format includes `CREATE SCHEMA` statements if the schema existed at dump
-time.  If the dump is from a correctly provisioned database, all schemas
-should be present.
-
-### Backup dashboard shows "no backup recorded"
-
-- Is the `backup-cron` container running?  `docker compose ps backup-cron`
-- Check logs: `docker compose logs backup-cron --tail=50`
-- Is `BUTLERS_BACKUP_DIR` set in `dashboard-api`?  Check `docker compose config`.
+To roll back this feature, remove or stop the executor deployment only after
+it is no longer running, preserve the authoritative ledger, audit projection,
+and backup volume, and use the reviewed migration and managed bootstrap
+procedures for any privilege remediation. A rollback must never restore a dump
+into the live application database or manually erase recovery evidence.

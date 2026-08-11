@@ -28,7 +28,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$PROJECT_DIR"
 
-# Always include "dev" profile (activates frontend-dev from base compose)
+# The protected restore-drill services live in a separate Compose fragment,
+# which this launcher includes only after it has prepared their firewall
+# capability. The ordinary profile list therefore starts with the dev frontend.
 PROFILES=(dev)
 COMPOSE_ENV=()
 SKIP_TAILSCALE=false
@@ -77,11 +79,135 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "  Create it with POSTGRES_HOST, POSTGRES_PASSWORD, etc." >&2
   exit 1
 fi
+
+# Shell ``source`` normalizes unquoted trailing whitespace in assignments.
+# Endpoint literals flow to the root-owned firewall unchanged, so reject raw
+# whitespace before sourcing rather than letting the shell silently rewrite it.
+_restore_drill_reject_raw_endpoint_whitespace() {
+  local line name raw_value
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(POSTGRES_HOST|POSTGRES_PORT|RESTORE_DRILL_EXECUTOR_DB_HOST|RESTORE_DRILL_EXECUTOR_DB_PORT|RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST)= ]]; then
+      name="${BASH_REMATCH[2]}"
+      raw_value="${line#*=}"
+      if [[ "$raw_value" =~ [[:space:]] ]]; then
+        echo "ERROR: ${name} in ${ENV_FILE} must not contain whitespace; endpoint literals are not trimmed." >&2
+        exit 1
+      fi
+    fi
+  done < "$ENV_FILE"
+}
+
+_restore_drill_reject_raw_endpoint_whitespace
 set -a
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
 echo "Database: ${BUTLERS_MODE} (${POSTGRES_HOST}:${POSTGRES_PORT:-5432})"
+
+# The restore-drill executor has an internal-only network and reaches the
+# database through an uncredentialed, default-deny egress relay. Resolve the
+# relay's firewall endpoint on the host before Compose creates either service.
+# Keep a DNS connection host intact: verify-full needs it to check the
+# PostgreSQL certificate identity, while Docker resolves that name only to the
+# internal relay alias and the relay alone dials the resolved IPv4.
+_restore_drill_is_ipv4() {
+  local ip="$1" octet
+  local -a octets
+  [[ "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || return 1
+  IFS='.' read -r -a octets <<< "$ip"
+  [ "${#octets[@]}" -eq 4 ] || return 1
+  for octet in "${octets[@]}"; do
+    # Keep the literal canonical before it reaches the root-owned firewall:
+    # iptables treats a leading-zero octet as octal and changes the target.
+    [[ "$octet" =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+    ((10#$octet <= 255)) || return 1
+  done
+}
+
+_restore_drill_is_remote_ipv4() {
+  local ip="$1" first_octet second_octet third_octet
+  _restore_drill_is_ipv4 "$ip" || return 1
+  IFS='.' read -r first_octet second_octet third_octet _ <<< "$ip"
+  first_octet=$((10#$first_octet))
+  second_octet=$((10#$second_octet))
+  third_octet=$((10#$third_octet))
+
+  # This must remain in parity with the root firewall and proxy policy. Reject
+  # local, documentation, benchmark, and special-purpose addresses while
+  # allowing RFC1918, tailnet/CGNAT, and valid public unicast targets.
+  ((first_octet != 0 && first_octet != 127 && first_octet < 224)) \
+    && ! ((first_octet == 169 && second_octet == 254)) \
+    && ! ((first_octet == 192 && second_octet == 0 && third_octet == 0)) \
+    && ! ((first_octet == 192 && second_octet == 0 && third_octet == 2)) \
+    && ! ((first_octet == 192 && second_octet == 31 && third_octet == 196)) \
+    && ! ((first_octet == 192 && second_octet == 52 && third_octet == 193)) \
+    && ! ((first_octet == 192 && second_octet == 88 && third_octet == 99)) \
+    && ! ((first_octet == 192 && second_octet == 175 && third_octet == 48)) \
+    && ! ((first_octet == 198 && (second_octet == 18 || second_octet == 19))) \
+    && ! ((first_octet == 198 && second_octet == 51 && third_octet == 100)) \
+    && ! ((first_octet == 203 && second_octet == 0 && third_octet == 113))
+}
+
+_restore_drill_is_dns_name() {
+  local host="$1" label
+  local -a labels
+  [[ -n "$host" && ${#host} -le 253 && "$host" != *"." ]] || return 1
+  IFS='.' read -r -a labels <<< "$host"
+  for label in "${labels[@]}"; do
+    [[ ${#label} -le 63 ]] || return 1
+    [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+}
+
+_restore_drill_is_legacy_numeric_ipv4() {
+  # libc accepts inet_aton-compatible decimal, octal, and hexadecimal forms
+  # (including abbreviated dotted forms) as numeric addresses before DNS.
+  # Treat every noncanonical form as invalid rather than letting it become a
+  # misleading TLS hostname or a different resolved firewall endpoint.
+  [[ "$1" =~ ^(0[xX][0-9A-Fa-f]+|[0-9]+)(\.(0[xX][0-9A-Fa-f]+|[0-9]+)){0,3}$ ]]
+}
+
+_restore_drill_is_loopback_dns_identity() {
+  case "${1,,}" in
+    localhost|localhost.localdomain) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_restore_drill_source_host="${RESTORE_DRILL_EXECUTOR_DB_HOST:-${POSTGRES_HOST:?Set POSTGRES_HOST in ${ENV_FILE}}}"
+if _restore_drill_is_legacy_numeric_ipv4 "$_restore_drill_source_host"; then
+  echo "ERROR: RESTORE_DRILL_EXECUTOR_DB_HOST must be a DNS hostname for the internal relay; numeric IPv4 literals are not supported." >&2
+  exit 1
+fi
+if ! _restore_drill_is_dns_name "$_restore_drill_source_host"; then
+  echo "ERROR: RESTORE_DRILL_EXECUTOR_DB_HOST must be a DNS hostname for the internal relay." >&2
+  exit 1
+fi
+if _restore_drill_is_loopback_dns_identity "$_restore_drill_source_host"; then
+  echo "ERROR: RESTORE_DRILL_EXECUTOR_DB_HOST must not be localhost." >&2
+  exit 1
+fi
+RESTORE_DRILL_EXECUTOR_DB_HOST="$_restore_drill_source_host"
+if [ -n "${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:-}" ]; then
+  if ! _restore_drill_is_remote_ipv4 "$RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST"; then
+    echo "ERROR: RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST must be a remote IPv4 PostgreSQL endpoint." >&2
+    exit 1
+  fi
+else
+  RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST="$(getent ahostsv4 "$_restore_drill_source_host" | awk 'NR == 1 {print $1}')"
+  if ! _restore_drill_is_remote_ipv4 "$RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST"; then
+    echo "ERROR: Could not resolve a remote IPv4 PostgreSQL endpoint for restore-drill executor: $_restore_drill_source_host" >&2
+    exit 1
+  fi
+fi
+RESTORE_DRILL_EXECUTOR_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT:-${POSTGRES_PORT:-5432}}"
+if [[ ! "$RESTORE_DRILL_EXECUTOR_DB_PORT" =~ ^[1-9][0-9]{0,4}$ ]] \
+  || ((10#$RESTORE_DRILL_EXECUTOR_DB_PORT < 1 || 10#$RESTORE_DRILL_EXECUTOR_DB_PORT > 65535)); then
+  echo "ERROR: RESTORE_DRILL_EXECUTOR_DB_PORT must use canonical decimal 1..65535." >&2
+  exit 1
+fi
+export RESTORE_DRILL_EXECUTOR_DB_HOST RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST RESTORE_DRILL_EXECUTOR_DB_PORT
+echo "Restore-drill endpoint: ${RESTORE_DRILL_EXECUTOR_DB_HOST}:${RESTORE_DRILL_EXECUTOR_DB_PORT} (TLS identity; relay firewall IPv4 ${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST})"
 
 # ── Mode-dependent configuration ────────────────────────────────────────
 # Prod and dev use different URL prefixes, host ports, and project names
@@ -252,7 +378,11 @@ if [ "$OBSERVABILITY" = "true" ]; then
 fi
 
 # ── Build compose command ─────────────────────────────────────────────
-CMD=(docker compose)
+# The protected fragment is intentionally absent from bare Compose. This
+# launcher stops/creates the executor, installs its firewall, then starts the
+# merged service set below, so it is the only supported dev/prod command that
+# includes the credentialed executor contract.
+CMD=(docker compose -f docker-compose.yml -f docker-compose.restore-drill.yml)
 for p in "${PROFILES[@]}"; do
   CMD+=(--profile "$p")
 done
@@ -409,8 +539,41 @@ fi
 
 # ── Swap: stop old containers, start new ones ─────────────────────────
 # --remove-orphans clears containers from renamed/removed services.
-"${CMD[@]}" down --remove-orphans 2>/dev/null || true
+if ! "${CMD[@]}" down --remove-orphans; then
+  echo "ERROR: restore-drill executor remains stopped because the prior Compose stack could not be stopped." >&2
+  exit 1
+fi
+
+# A versioned root-owned preparation both rejects an old installed wrapper and
+# emits an unguessable generation-bound nonce. Compose injects it only into the
+# not-yet-started executor; the wrapper independently confirms that exact
+# created container carries it before it writes the post-fence capability.
+if ! RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE="$(sudo -n /usr/local/libexec/butlers-restore-drill-firewall \
+  --prepare-executor-capability-v1 \
+  --project "${COMPOSE_PROJECT_NAME}")" \
+  || ! [[ "$RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE" =~ ^[a-f0-9]{64}$ ]]; then
+  echo "ERROR: restore-drill executor remains stopped because its required prepared firewall capability could not be created." >&2
+  echo "  Install the current reviewed /usr/local/libexec/butlers-restore-drill-firewall wrapper and matching sudoers policy, then rerun scripts/compose.sh." >&2
+  exit 1
+fi
+export RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE
+
+# Create the relay and executor without starting either. The relay's external
+# PostgreSQL bridge must be fenced before the credentialed process can reach
+# it through its separate internal-only network.
+"${CMD[@]}" create restore-drill-postgres-proxy restore-drill-executor
+if ! sudo -n /usr/local/libexec/butlers-restore-drill-firewall \
+  --project "${COMPOSE_PROJECT_NAME}" \
+  --db-host "${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}" \
+  --db-port "${RESTORE_DRILL_EXECUTOR_DB_PORT}" \
+  --require-executor-capability-v1; then
+  echo "ERROR: restore-drill executor remains stopped because its required root-owned firewall wrapper could not be applied." >&2
+  echo "  Install the current reviewed /usr/local/libexec/butlers-restore-drill-firewall wrapper and matching sudoers policy, then rerun scripts/compose.sh." >&2
+  exit 1
+fi
+
 "${CMD[@]}" up -d "${SCALE_ARGS[@]}"
+unset RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE
 
 # ── Apply egress firewall (blocks private subnet access from containers) ─
 if sudo -n true 2>/dev/null; then

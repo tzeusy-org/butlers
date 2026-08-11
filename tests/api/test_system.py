@@ -12,6 +12,7 @@ dir empty (reachable, no history), dir with files (reachable, history populated)
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import UTC, datetime
@@ -897,7 +898,7 @@ async def test_backups_restore_drill_surfaces_last_result(
             return_value={
                 "checked_at": "2026-05-07T02-00-00+00:00",
                 "result": "fail",
-                "detail": "restore failed: relation already exists",
+                "detail": "restore failed: PostgreSQL client reported an error",
             }
         ),
     )
@@ -909,7 +910,36 @@ async def test_backups_restore_drill_surfaces_last_result(
         resp = await client.get("/api/system/backups")
     data = resp.json()["data"]
     assert data["restore_drill"]["result"] == "fail"
-    assert "relation already exists" in data["restore_drill"]["detail"]
+    assert data["restore_drill"]["detail"] == "restore failed: PostgreSQL client reported an error"
+
+
+async def test_backups_restore_drill_withholds_unsafe_detail_at_api_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An unsafe persistence return cannot be passed through to dashboard clients."""
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill",
+        AsyncMock(
+            return_value={
+                "checked_at": "2026-05-07T02-00-00+00:00",
+                "result": "fail",
+                "detail": "postgresql://restore:top-secret@db.example.test/postgres COPY private_data",
+            }
+        ),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/system/backups")
+
+    restore_drill = response.json()["data"]["restore_drill"]
+    assert restore_drill["detail"] == "restore drill diagnostic withheld"
+    assert "top-secret" not in restore_drill["detail"]
+    assert len(restore_drill["detail"]) <= 512
 
 
 async def test_backups_restore_drill_degraded_when_pool_unavailable(
@@ -926,6 +956,43 @@ async def test_backups_restore_drill_degraded_when_pool_unavailable(
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["restore_drill"]["result"] == "degraded"
+
+
+async def test_backups_restore_drill_ledger_failure_withholds_hostile_exception_from_api_and_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """A degraded ledger read cannot disclose its driver exception through BackupTile."""
+    marker = "ledger-read-private-marker"
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill",
+        AsyncMock(
+            side_effect=RuntimeError(
+                f"postgresql://restore:{marker}@db.example.test/postgres COPY sensitive_table"
+            )
+        ),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+
+    with caplog.at_level(logging.WARNING, logger="butlers.api.routers.system"):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/system/backups")
+
+    assert response.status_code == 200
+    restore_drill = response.json()["data"]["restore_drill"]
+    assert restore_drill == {
+        "checked_at": None,
+        "result": "degraded",
+        "detail": "restore drill ledger unavailable",
+    }
+    # BackupTile renders this API field verbatim, so both the public response
+    # and the logger must be free of the hostile driver/connection text.
+    assert marker not in response.text
+    assert marker not in caplog.text
+    assert "restore-drill ledger read unavailable" in caplog.text
 
 
 # ---------------------------------------------------------------------------

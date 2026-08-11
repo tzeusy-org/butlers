@@ -5,9 +5,10 @@ Utility scripts for repository maintenance and fixes.
 ## init-db.sql
 
 Privileged PostgreSQL bootstrap script to run **before** the first Alembic
-migration on a fresh database. Must be executed by a superuser (or the
-database owner). It is safe to re-run later if the managed schema/role surface
-expands.
+migration on a fresh database. It must be executed by a privileged cluster
+superuser. Supply the normal connecting/migration user separately through the
+`butlers.connecting_user` GUC; it must not be the active bootstrap identity.
+It is safe to re-run later if the managed schema/role surface expands.
 
 **Prerequisites:** The PostgreSQL server must have the `pgvector` binary
 installed.  The standard `postgres` Docker image does not include it; use
@@ -29,13 +30,13 @@ What it does:
 
 **Why this is privileged:** Database-level grants, schema ownership/ACLs, and
 `ALTER DEFAULT PRIVILEGES FOR ROLE <connecting user>` require a privileged
-bootstrap role. After this script runs once, normal `docker compose` /
+cluster-superuser bootstrap role. After this script runs once, normal `docker compose` /
 Alembic flows can continue using the lower-privilege `butlers` user.
 
 ### Usage
 
 ```bash
-# Typical dev: run as superuser, grants to 'butlers' (default connecting user)
+# Typical dev: run as a cluster superuser; grants to 'butlers' (default connecting user)
 psql -h localhost -U postgres -d butlers -f scripts/init-db.sql
 
 # Targeting a different connecting user
@@ -52,6 +53,88 @@ The script is idempotent — safe to re-run on an already-provisioned database.
 - You should not need a post-migration privileged grant pass for new objects
   created by the connecting user; re-run the bootstrap only when the managed
   schema/role surface itself changes.
+
+## provision_restore_drill_executor.sh
+
+The managed one-shot provisioner enables the distinct
+`restore_drill_executor` login after `init-db.sql` has reserved it and the
+restore-drill migration has installed its constrained persistence functions.
+It reads the executor password only from the private path named by
+`RESTORE_DRILL_EXECUTOR_PASSWORD_FILE`; do not pass that value through shared
+database environment variables or tracked configuration. See
+[`docs/operations/backup-restore.md`](../docs/operations/backup-restore.md)
+for the deployment boundary and rollback rules.
+
+## restore-drill-firewall.sh
+
+`restore-drill-firewall.sh` is the reviewed installation source for the
+root-owned fixed runtime wrapper at
+`/usr/local/libexec/butlers-restore-drill-firewall`. It accepts only validated
+literal project, PostgreSQL IPv4, and port arguments. Its policy default-denies
+the relay's external bridge at both Docker's `DOCKER-USER`/`FORWARD` hook and
+the bridge-to-host `INPUT` path, allowing only TCP to the configured PostgreSQL
+endpoint. The credentialed executor sits on a separate Docker `internal`
+network; its configured database host MUST be an untrimmed DNS hostname and is
+TLS/SNI identity only (including `verify-full`), resolving there to the
+uncredentialed relay. It must not be `localhost` or any numeric IPv4 spelling.
+The relay alone uses the separately resolved IPv4, with no shared database
+credential. That relay/firewall IPv4 must be canonical dotted-decimal remote
+unicast and the port must be canonical ASCII decimal matching `[1-9][0-9]{0,4}`
+in `1..65535`: loopback,
+unspecified, link-local, multicast, documentation,
+and policy-reserved targets are rejected, while RFC1918, CGNAT/tailnet,
+and valid public unicast remain supported. Legacy decimal, octal, hexadecimal,
+and abbreviated `inet_aton` spellings are rejected before DNS resolution. The
+pre-source endpoint-literal grammar supports simple `KEY=value` or
+`export KEY=value` with optional leading spaces/tabs; raw RHS whitespace is
+rejected before sourcing. Other Bash command forms are outside this pre-source
+endpoint-literal grammar; their resulting endpoint values are validated without
+trimming or reinterpretation.
+The relay admits at most two clients without a queue and closes both relay sides on
+its finite connect, idle, or session deadlines. A close has at most one second
+to flush before the relay aborts the transport, so a non-reading peer cannot
+pin the bounded admission slot.
+
+Use `install_restore_drill_firewall_wrapper.sh` only in a root-controlled
+deployment setup to install that immutable target. The checked-in
+`restore-drill-firewall.sudoers` template grants a deployment group access only
+to two fixed wrapper forms: `--prepare-executor-capability-v1 --project` and
+the version-gated `--project --db-host --db-port
+--require-executor-capability-v1` apply form. Never grant sudo for the checkout
+script, a checkout wildcard, `env`, a shell, or the installer.
+`scripts/compose.sh` and `butlers deploy` are the only supported paths that
+include `docker-compose.restore-drill.yml`: they stop, call the root-owned
+prepare verb, create the relay and executor with its generation-bound nonce, attest
+and fence that exact created topology, and only then start the merged stack.
+An older installed wrapper rejects the prepare verb before `create`/`up`.
+The post-fence root marker is boot-, project-, nonce-, executor-container/IP/
+gateway-, and relay-alias/IP-bound. The wrapper separately discovers the
+created relay/container/network topology while it fences both bridges, so a
+same-boot manual down/recreate cannot replay it. A stop/start of that
+unchanged, already-fenced container generation is not a new authorization; it
+retains the same container, network, marker, and host
+policy. It is still not a supported operational path. Any `down`, topology
+recreation, or root Docker/firewall intervention requires the canonical
+prepare/create/fence sequence again.
+A bare `docker compose up` uses `docker-compose.yml` alone and therefore omits
+the executor, its internal relay network, its external relay bridge, and its
+private secret mount; a direct merged invocation lacks a valid prepared marker
+and executor generation, so it fails before reading the secret. `restart:
+"no"` also prevents an unfenced daemon/host auto-start. Do not compose the
+protected fragment to start services directly.
+The wrapper derives both created bridge interfaces and the relay's internal
+peer address from the Compose project: its relay egress policy permits only the
+configured PostgreSQL endpoint, and its executor bridge policy is
+default-denied except for the created relay peer at that same configured port.
+An `internal` Docker network limits membership but alone does not deny
+bridge-gateway or host traffic; the wrapper's bridge `INPUT` and
+`DOCKER-USER` rules provide that boundary.
+
+For read-only status, logs, or rendered configuration that includes the
+protected topology, use `scripts/restore-drill-compose-inspect.sh`. It accepts
+only `config`, `ps`, and `logs`; it never accepts `up` or another lifecycle
+verb, so it cannot replace the prepared-launch sequence. Rendered config is a
+read-only inspection artifact, not endpoint validation.
 
 ## dev.sh
 

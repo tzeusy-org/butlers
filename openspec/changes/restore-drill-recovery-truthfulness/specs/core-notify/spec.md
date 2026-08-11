@@ -13,7 +13,8 @@ Source: RFC 0005 § Workflow and Recovery Telemetry; RFC 0011 Amendment 1; syste
 Scope: v1-mandatory
 
 #### Scenario: Durable failed drill gets a truthful ledger event
-- **WHEN** a restore-drill failure has been durably written to its audit record
+- **WHEN** a restore-drill failure has been durably written to its
+  executor-owner result authority ledger
 - **THEN** the job attempts a `public.attention_ledger` insert with
   `source="restore_drill"`, `outcome="failed"`, a stable failure-code reason,
   and null channel, intent, and notification reference
@@ -27,9 +28,9 @@ Scope: v1-mandatory
 - **AND** it does not write a synthetic `notify` event or notification reference
 
 #### Scenario: Ledger failure preserves the recorded restore result
-- **WHEN** the restore-drill audit result is durable but the attention-ledger
-  write fails
-- **THEN** the audit result and its result-aware retry cadence remain intact
+- **WHEN** the restore-drill authoritative result is durable but the
+  attention-ledger write fails
+- **THEN** the authoritative result and its result-aware retry cadence remain intact
 - **AND** the ledger failure is logged as an observability failure without
   changing the drill result or claiming an owner notification
 
