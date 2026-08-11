@@ -1,16 +1,17 @@
 #!/bin/bash
-# Install the restore-drill executor's default-deny network policy.
+# Install the restore-drill relay's default-deny egress network policy.
 #
 # This checked-in source is an installation artifact only. Supported launchers
 # invoke the root-owned copy at /usr/local/libexec/butlers-restore-drill-firewall
-# after stopping/creating the executor and before allowing it to start. Never
-# grant sudo for this checkout path: see install_restore_drill_firewall_wrapper.sh.
+# after stopping/creating the relay and executor and before allowing either to
+# start. Never grant sudo for this checkout path: see
+# install_restore_drill_firewall_wrapper.sh.
 #
 # The policy has two hooks because Docker's DOCKER-USER chain covers forwarded
 # bridge traffic but not packets addressed to the Docker host/bridge gateway.
-# The INPUT hook therefore default-denies that second path too. Compose pins the
-# executor's DNS upstream to its own loopback; the terminal rules still deny
-# raw DNS packets on either host-network path.
+# The INPUT hook therefore default-denies that second path too. The credentialed
+# executor uses a separate internal-only bridge and can reach only the
+# uncredentialed relay on this egress bridge.
 
 set -euo pipefail
 
@@ -227,7 +228,7 @@ apply_rules() {
     ensure_jump INPUT "$bridge" "$input_chain"
 
     if [[ "$DRY_RUN" == false ]]; then
-        printf 'Restore-drill bridge: %s\n' "$bridge"
+        printf 'Restore-drill relay egress bridge: %s\n' "$bridge"
         printf 'Allowed PostgreSQL endpoint: %s:%s\n' "$RESTORE_DRILL_DB_HOST" "$RESTORE_DRILL_DB_PORT"
         printf '%s\n' 'All other forwarded and host/gateway restore-drill traffic is denied.'
     fi

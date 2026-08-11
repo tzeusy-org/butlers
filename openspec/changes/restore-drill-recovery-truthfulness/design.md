@@ -76,33 +76,35 @@ path ends in explicit `pg_temp` (`pg_catalog, pg_temp`, or
 This is deliberately a privileged *runtime* boundary, not a bootstrap-only
 claim: compromise of the executor can create scratch databases and read the
 backup artifact required for recovery proof. The containment is explicit: the
-executor is the sole service with that credential, joins only the dedicated
-`restore_drill_db` bridge, and a host policy default-denies all traffic from
-that bridge except TCP to its configured PostgreSQL endpoint and port. The
-policy hooks both Docker's `DOCKER-USER`/`FORWARD` path and the bridge `INPUT`
-path, because a host or Docker gateway destination does not traverse
-`FORWARD`. The ordinary `docker-compose.yml` deliberately omits the executor,
-its bridge, and its secret/config mounts; a bare Compose invocation therefore
-cannot start the privileged process. The bridge is intentionally not Docker
-`internal` because PostgreSQL is externally hosted. Both supported launchers
-(`scripts/compose.sh` and `butlers deploy`) add the protected
-`docker-compose.restore-drill.yml` fragment, stop/create the executor, invoke
-only the fixed root-owned `/usr/local/libexec/butlers-restore-drill-firewall`
-wrapper, install the default-deny policy, and only then start it. Neither
-launcher may elevate a checkout-controlled script, broad `env`, or a shell.
-The executor has no automatic restart policy, so a Docker daemon or host
-restart cannot start it before the fence is restored.
+executor is the sole service with that credential and joins only the dedicated
+Docker `internal` `restore_drill_executor` network. Its sole peer is an
+uncredentialed raw-TCP relay. That relay joins the internal network plus the
+non-internal `restore_drill_db` egress bridge; the host policy default-denies
+all relay egress except TCP to its configured PostgreSQL endpoint and port.
+The policy hooks both Docker's `DOCKER-USER`/`FORWARD` path and the bridge
+`INPUT` path, because a host or Docker gateway destination does not traverse
+`FORWARD`. The ordinary `docker-compose.yml` deliberately omits both protected
+services, their bridges, and their secret/config mounts; a bare Compose
+invocation therefore cannot start the privileged process. Both supported
+launchers (`scripts/compose.sh` and `butlers deploy`) add the protected
+`docker-compose.restore-drill.yml` fragment, stop/create the relay and
+executor, invoke only the fixed root-owned
+`/usr/local/libexec/butlers-restore-drill-firewall` wrapper, install the
+default-deny policy, and only then start them. Neither launcher may elevate a
+checkout-controlled script, broad `env`, or a shell. Neither protected service
+has an automatic restart policy, so a Docker daemon or host restart cannot
+start it before the fence is restored.
 
-When PostgreSQL is named by DNS, that hostname remains the executor's TLS
-identity (including `verify-full`), while the host resolves a separate IPv4
-firewall endpoint and Compose maps the hostname locally. Docker's resolver has
-only the executor's container-loopback upstream, where no resolver runs; raw
-DNS traffic is additionally covered by the two terminal-deny firewall hooks.
-It mounts backups read-only, has no listener, Docker socket, `backend`,
-`frontend`, or `egress` membership, and runs no LLM session. The dashboard,
-butlers, and connectors remain `NOCREATEDB`; their shared credential is tested
-as unable to create a scratch database. Granting `CREATEDB` to that shared user
-is rejected because `SET ROLE` cannot constrain its subprocesses. Ad hoc
+When PostgreSQL is named by DNS, that hostname remains the executor's TLS/SNI
+identity (including `verify-full`) but resolves only to the relay's internal
+network alias, never to a firewall IPv4 or direct external route. The relay
+accepts the separately resolved IPv4 and port only; it has no recovery secret,
+shared `POSTGRES_*` values, or `DATABASE_URL`. The executor mounts backups
+read-only, has no listener, Docker socket, `backend`, `frontend`, or `egress`
+membership, and runs no LLM session. The dashboard, butlers, and connectors
+remain `NOCREATEDB`; their shared credential is tested as unable to create a
+scratch database. Granting `CREATEDB` to that shared user is rejected because
+`SET ROLE` cannot constrain its subprocesses. Ad hoc
 `ALTER ROLE` or a manually pre-created scratch database are rejected because
 they turn a recovery proof into an untracked live mutation.
 

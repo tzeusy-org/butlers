@@ -1,15 +1,41 @@
 # Protected restore-drill Compose fragment.
 #
 # This file is intentionally absent from bare `docker compose` invocations.
-# Only scripts/compose.sh and `butlers deploy` include it, after they have
-# stopped the prior executor, created its dedicated bridge, and installed the
-# root-owned PostgreSQL-only default-deny firewall. Do not compose this file
-# directly: it is an explicit protected-launch contract, not a profile.
+# Only scripts/compose.sh and `butlers deploy` are supported launchers for it;
+# they include it after they have
+# stopped the prior executor and relay, created the relay's egress bridge, and
+# installed the root-owned PostgreSQL-only default-deny firewall. The executor
+# itself is structurally confined to the internal relay network even if this
+# fragment is composed directly; do not use it to start services manually.
 
 services:
+  # This uncredentialed raw-TCP relay is the only service with a route from
+  # the executor's internal network to the firewall-controlled PostgreSQL
+  # bridge. It dials a required, resolved IPv4 endpoint only; it never reads
+  # the recovery password, shared POSTGRES_* variables, or a DATABASE_URL.
+  restore-drill-postgres-proxy:
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    entrypoint: ["python", "/app/scripts/restore_drill_tcp_proxy.py"]
+    command: []
+    environment:
+      RESTORE_DRILL_PROXY_DB_HOST: ${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to provide the resolved PostgreSQL IPv4 endpoint}
+      RESTORE_DRILL_PROXY_DB_PORT: ${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}
+    networks:
+      # The firewall script keys this non-internal bridge by project name and
+      # permits this uncredentialed relay only to the resolved PostgreSQL IP.
+      restore_drill_db:
+      # The executor's DNS/TLS hostname resolves to this relay only inside the
+      # internal network. Raw TLS then reaches PostgreSQL unchanged.
+      restore_drill_executor:
+        aliases:
+          - ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}
+    restart: "no"
+
   # The sole holder of the recovery-only database credential. It has no HTTP
   # listener and deliberately does not inherit x-postgres-env: dashboard-api,
-  # butlers, and connectors remain unable to create the scratch database.
+  # butlers, and connectors remain unable to create the scratch database. Its
+  # only network is internal; its configured TLS name reaches the relay above,
+  # never the external PostgreSQL address directly.
   restore-drill-executor:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
@@ -39,16 +65,9 @@ services:
     depends_on:
       migrations:
         condition: service_completed_successfully
-    # The executor resolves this identity through /etc/hosts rather than DNS.
-    # Its libpq/asyncpg host remains the DNS name for sslmode=verify-full.
-    extra_hosts:
-      - ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}=${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to resolve the PostgreSQL IPv4 firewall endpoint}
-    # Docker's embedded resolver has only this container-loopback upstream.
-    # There is no DNS listener in the executor; extra_hosts resolves the sole
-    # required database identity before the resolver is consulted.
-    dns:
-      - 127.0.0.1
-    networks: [restore_drill_db]
+      restore-drill-postgres-proxy:
+        condition: service_started
+    networks: [restore_drill_executor]
     # A transient host firewall fence must be installed before this credentialed
     # service starts, including after a Docker daemon or host restart.
     restart: "no"
@@ -67,9 +86,14 @@ configs:
     file: "${RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE:-./deploy/restore-drill-ca-unconfigured.pem}"
 
 networks:
-  # A dedicated bridge is required because the application `db` network is
-  # intentionally non-internal for remote PostgreSQL. IPv6 is disabled so the
+  # Only the uncredentialed relay joins this bridge. IPv6 is disabled so the
   # host's IPv4-only PostgreSQL allowlist remains a complete default deny.
   restore_drill_db:
     driver: bridge
+    enable_ipv6: false
+  # The credentialed executor cannot leave this network. Its only peer is the
+  # relay, whose scoped alias preserves PostgreSQL's TLS hostname.
+  restore_drill_executor:
+    driver: bridge
+    internal: true
     enable_ipv6: false

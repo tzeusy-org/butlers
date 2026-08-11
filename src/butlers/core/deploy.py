@@ -124,10 +124,11 @@ class DeployError(RuntimeError):
 class RestoreDrillEndpoint:
     """Connection identity and firewall address for the isolated executor.
 
-    ``connection_host`` intentionally remains a DNS name when the operator
-    configured one.  The executor's ``extra_hosts`` entry resolves that name
-    locally to ``firewall_ipv4``, so libpq/asyncpg retain the TLS identity for
-    ``sslmode=verify-full`` without giving the default-deny bridge DNS egress.
+    ``connection_host`` intentionally remains the PostgreSQL DNS/TLS identity
+    when the operator configured one.  The executor reaches that name only as
+    an alias for its internal relay; the relay alone dials ``firewall_ipv4``.
+    That preserves ``sslmode=verify-full`` without giving the executor a
+    direct route to the remote database.
     """
 
     connection_host: str
@@ -638,20 +639,30 @@ def prepare_restore_drill_executor(config: DeployConfig, endpoint: RestoreDrillE
     """Install the executor's default-deny policy before any ``up`` can run it.
 
     This is deliberately a deploy phase rather than a best-effort post-start
-    hook.  Stopping an old executor first prevents a chain refresh from
-    creating an egress window; ``create`` then materializes only its network;
-    the root-owned immutable firewall wrapper must succeed before the ordinary recreate
-    phase starts any service.
+    hook.  Stopping the old relay and executor first prevents a chain refresh
+    from creating an egress window; ``create`` then materializes their
+    networks without starting either service. The root-owned immutable firewall
+    wrapper must succeed before the ordinary recreate phase starts any service.
     """
     environment = endpoint.compose_environment()
     _run_subprocess(
-        [*_compose_base_args(config), "stop", "restore-drill-executor"],
+        [
+            *_compose_base_args(config),
+            "stop",
+            "restore-drill-postgres-proxy",
+            "restore-drill-executor",
+        ],
         cwd=config.repo_root,
         phase="restore-drill-stop",
         environment=environment,
     )
     _run_subprocess(
-        [*_compose_base_args(config), "create", "restore-drill-executor"],
+        [
+            *_compose_base_args(config),
+            "create",
+            "restore-drill-postgres-proxy",
+            "restore-drill-executor",
+        ],
         cwd=config.repo_root,
         phase="restore-drill-create",
         environment=environment,
@@ -678,14 +689,24 @@ def prepare_restore_drill_executor(config: DeployConfig, endpoint: RestoreDrillE
     )
 
 
-def recreate_services(config: DeployConfig, endpoint: RestoreDrillEndpoint | None = None) -> None:
-    """Recreate all prod services. Never passes ``--profile``; see module docstring."""
+def recreate_services(config: DeployConfig, endpoint: RestoreDrillEndpoint) -> None:
+    """Recreate all prod services using the already-resolved restore endpoint.
+
+    The endpoint is intentionally mandatory: callers cannot invoke the merged
+    Compose input without the same validated route used by the preceding
+    relay-firewall preparation phase.
+    """
+    if endpoint is None:
+        raise DeployError(
+            "restore-drill-endpoint",
+            "a resolved restore-drill endpoint is required before recreate",
+        )
     cmd = [*_compose_base_args(config), "up", "-d", "--remove-orphans"]
     _run_subprocess(
         cmd,
         cwd=config.repo_root,
         phase="recreate",
-        environment=endpoint.compose_environment() if endpoint is not None else None,
+        environment=endpoint.compose_environment(),
     )
 
 

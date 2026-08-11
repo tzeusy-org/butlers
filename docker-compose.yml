@@ -6,9 +6,9 @@
 #   ./scripts/compose.sh --hotreload               # with live code reload
 #   ./scripts/compose.sh --prod                    # production database
 #
-# NOTE: compose.sh pre-builds the shared butlers-app image. Direct Compose
-# uses this non-privileged base file only; it deliberately excludes the
-# restore-drill executor and its secret/network contract. If running the
+# NOTE: compose.sh pre-builds the shared butlers-app image. A bare direct
+# Compose invocation with this non-privileged base file deliberately excludes
+# the restore-drill executor and its secret/network contract. If running the
 # ordinary stack through docker compose directly, build the image first:
 #   docker build -t butlers-app:latest .
 #
@@ -860,11 +860,12 @@ volumes:
 # ── Networks ────────────────────────────────────────────────────────────
 
 networks:
-  # NOTE: We intentionally do NOT use `internal: true` on any network.
-  # Docker's DOCKER-ISOLATION-STAGE-1 rules for multiple internal networks
-  # interfere with each other, breaking inter-container communication.
-  # Network isolation is enforced by the egress firewall instead
-  # (scripts/egress-firewall.sh), which uses per-bridge iptables rules.
+  # NOTE: The ordinary application stack intentionally uses no `internal: true`
+  # network: Docker's DOCKER-ISOLATION-STAGE-1 rules for multiple internal
+  # networks interfere with its normal inter-container communication. The
+  # protected restore-drill fragment is the deliberate exception: its
+  # credentialed executor has one internal-only relay network, while the relay
+  # egress bridge remains fenced by scripts/restore-drill-firewall.sh.
   db:
     driver: bridge
   backend:

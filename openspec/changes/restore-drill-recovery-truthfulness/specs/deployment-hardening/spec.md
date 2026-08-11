@@ -38,26 +38,30 @@ Scope: v1-mandatory
 
 #### Scenario: Executor deployment boundary stays narrow
 - **WHEN** the restore-drill executor is deployed
-- **THEN** it joins only a dedicated restore-drill bridge whose outbound policy
-  default-denies every destination except the configured PostgreSQL endpoint
-  and port at both Docker's `DOCKER-USER`/`FORWARD` hook and the bridge-to-host
-  `INPUT` path, has a read-only backup mount and no listener, Docker socket,
-  `backend`, `frontend`, or `egress` access
+- **THEN** it joins only a dedicated Docker `internal` relay network, has a
+  read-only backup mount and no listener, Docker socket, `backend`, `frontend`,
+  or `egress` access, and can reach PostgreSQL only through an uncredentialed
+  relay on that network
+- **AND** the relay alone joins the non-internal restore-drill egress bridge,
+  receives only a required resolved PostgreSQL IPv4 and port (not a recovery
+  secret, shared `POSTGRES_*`, or `DATABASE_URL`), and its outbound policy
+  default-denies every destination except that endpoint at both Docker's
+  `DOCKER-USER`/`FORWARD` hook and the bridge-to-host `INPUT` path
 - **AND** both supported launchers, `scripts/compose.sh` and `butlers deploy`,
-  treat stop/down failure as terminal before create, invoke only a fixed root-owned firewall wrapper
-  with validated literal project/IPv4/port arguments, install that default-deny
-  policy, and only then start it; failure to install the policy prevents the
-  executor from starting, and it has no automatic restart policy that could
-  bypass a transient fence after a Docker daemon or host restart
-- **AND** the credentialed executor is omitted from the default unprofiled
-  Compose service set behind a dedicated `restore-drill` profile; only the
-  supported launchers select that profile after their firewall preparation, so
-  a bare `docker compose up` cannot start it
+  treat stop/down failure as terminal before create, invoke only a fixed
+  root-owned firewall wrapper with validated literal project/IPv4/port
+  arguments, install that default-deny policy, and only then start the relay
+  and executor; failure to install the policy prevents either protected service
+  from starting, and neither has an automatic restart policy that could bypass
+  a transient fence after a Docker daemon or host restart
+- **AND** the ordinary `docker-compose.yml` omits both protected services and
+  their private fragment; only the supported launchers include
+  `docker-compose.restore-drill.yml` after firewall preparation, so bare base
+  Compose cannot start the credentialed executor
 - **AND** when the database is configured by DNS name, that name remains the
-  executor's TLS identity for `sslmode=verify-full` while a separately resolved
-  IPv4 address is used only by the firewall and local container host mapping;
-  Docker's resolver has only a container-loopback upstream with no resolver,
-  and raw DNS packets are denied by the same forward and host/gateway boundary
+  executor's TLS/SNI identity for `sslmode=verify-full` while it resolves only
+  as the relay's internal-network alias; a separately resolved IPv4 address is
+  used only by the relay and firewall, never as an executor direct route
 - **AND** `sslmode=verify-ca` and `sslmode=verify-full` receive one dedicated
   noncredential CA-root file through a read-only executor-only mount; libpq and
   asyncpg use that same root, missing or invalid roots fail closed before a
@@ -67,14 +71,19 @@ Scope: v1-mandatory
 - **AND** dashboard-api reads durable results but does not schedule or execute
   the scratch lifecycle
 
-#### Scenario: Bare Compose cannot start an unfenced executor
-- **WHEN** an operator renders or starts the ordinary `docker-compose.yml`
-  directly
-- **THEN** that base service set omits `restore-drill-executor`, its dedicated
-  bridge, its private secret, and its CA-root config
-- **AND** only `scripts/compose.sh` and `butlers deploy` include the protected
-  `docker-compose.restore-drill.yml` fragment after their existing
-  stop/create/firewall preparation succeeds
+#### Scenario: Direct Compose preserves the executor network boundary
+- **WHEN** an operator renders the protected base-plus-restore-drill Compose
+  files directly
+- **THEN** the ordinary base file alone omits both protected services, their
+  dedicated networks, the private secret, and the CA-root config
+- **AND** the merged executor still joins only the Docker `internal` relay
+  network, has no direct firewall IPv4 mapping or external bridge attachment,
+  and reaches its TLS identity only as the relay alias
+- **AND** only `scripts/compose.sh` and `butlers deploy` prepare the relay's
+  egress firewall before they start either protected service
+- **AND** the documented merged-file inspection helper accepts only read-only
+  `config`, `ps`, and `logs` operations and rejects lifecycle commands such as
+  `up`
 
 #### Scenario: Scratch lifecycle never targets live application data
 - **WHEN** a scheduled or documented restore drill runs with an available backup

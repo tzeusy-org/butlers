@@ -1,9 +1,8 @@
 """Compose boundary coverage for the isolated restore-drill executor.
 
 REQ-database-security-006 requires the privileged recovery credential to be
-mounted only into the db-only executor.  These are configuration tests: they
-do not render or start a Compose stack and therefore cannot read a deployment
-secret or mutate a live runtime.
+mounted only into the db-only executor. These tests render Compose only; they
+never start a stack, read a deployment secret, or mutate a live runtime.
 """
 
 from __future__ import annotations
@@ -26,8 +25,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FIREWALL = _REPO_ROOT / "scripts" / "restore-drill-firewall.sh"
 _FIREWALL_INSTALLER = _REPO_ROOT / "scripts" / "install_restore_drill_firewall_wrapper.sh"
 _COMPOSE_LAUNCHER = _REPO_ROOT / "scripts" / "compose.sh"
+_INSPECT_HELPER = _REPO_ROOT / "scripts" / "restore-drill-compose-inspect.sh"
 _SCRIPTS_README = _REPO_ROOT / "scripts" / "README.md"
 _BACKUP_RESTORE_DOC = _REPO_ROOT / "docs" / "operations" / "backup-restore.md"
+_DOCKER_DEPLOYMENT_DOC = _REPO_ROOT / "docs" / "operations" / "docker-deployment.md"
+_TROUBLESHOOTING_DOC = _REPO_ROOT / "docs" / "operations" / "troubleshooting.md"
 _FIREWALL_WRAPPER = "/usr/local/libexec/butlers-restore-drill-firewall"
 _CA_CONFIG_SOURCE = "restore_drill_executor_ca"
 _CA_CONTAINER_PATH = "/run/configs/restore_drill_executor_ca.pem"
@@ -83,13 +85,6 @@ def _rendered_compose(*compose_files: str) -> dict:
     return json.loads(completed.stdout)
 
 
-def _rendered_executor() -> dict:
-    """Render the protected executor contract without starting containers."""
-    return _rendered_compose(_BASE_COMPOSE_FILE, _RESTORE_DRILL_COMPOSE_FILE)["services"][
-        "restore-drill-executor"
-    ]
-
-
 def test_direct_compose_render_omits_the_privileged_restore_executor() -> None:
     """Bare Compose must not be able to start the credentialed executor unfenced."""
     direct = _rendered_compose(_BASE_COMPOSE_FILE)
@@ -98,6 +93,36 @@ def test_direct_compose_render_omits_the_privileged_restore_executor() -> None:
     assert direct["networks"].get("restore_drill_db") is None
     assert direct.get("secrets", {}).get("restore_drill_executor_password") is None
     assert direct.get("configs", {}).get(_CA_CONFIG_SOURCE) is None
+
+
+def test_direct_merged_compose_keeps_the_executor_on_an_internal_relay_network() -> None:
+    """Even a manually merged overlay must leave the credentialed process non-routable."""
+    merged = _rendered_compose(_BASE_COMPOSE_FILE, _RESTORE_DRILL_COMPOSE_FILE)
+    executor = merged["services"]["restore-drill-executor"]
+    relay = merged["services"]["restore-drill-postgres-proxy"]
+
+    assert executor["networks"] == {"restore_drill_executor": None}
+    assert "restore_drill_db" not in executor["networks"]
+    assert merged["networks"]["restore_drill_executor"]["internal"] is True
+    internal_members = {
+        name
+        for name, service in merged["services"].items()
+        if "restore_drill_executor" in service.get("networks", {})
+    }
+    assert internal_members == {"restore-drill-executor", "restore-drill-postgres-proxy"}
+    assert "ports" not in executor
+    assert "expose" not in executor
+    assert "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST" not in executor["environment"]
+    assert not any(key.startswith("POSTGRES_") for key in executor["environment"])
+    assert "DATABASE_URL" not in executor["environment"]
+    assert relay["networks"]["restore_drill_executor"]["aliases"] == ["postgres.example.test"]
+    assert "restore_drill_db" in relay["networks"]
+    assert "secrets" not in relay
+    assert "configs" not in relay
+    assert "volumes" not in relay
+    assert "ports" not in relay
+    assert "expose" not in relay
+    assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in _environment_keys(relay)
 
 
 def test_supported_launchers_include_the_protected_restore_drill_compose_file() -> None:
@@ -110,30 +135,94 @@ def test_supported_launchers_include_the_protected_restore_drill_compose_file() 
     assert DEFAULT_COMPOSE_FILES == (_BASE_COMPOSE_FILE, _RESTORE_DRILL_COMPOSE_FILE)
     assert protected_command in launcher
     assert launcher.index(protected_command) < launcher.index(
-        '"${CMD[@]}" create restore-drill-executor'
+        '"${CMD[@]}" create restore-drill-postgres-proxy restore-drill-executor'
     )
     assert launcher.index(_FIREWALL_WRAPPER) < launcher.index('"${CMD[@]}" up -d')
 
 
 def test_operator_guidance_keeps_the_protected_fragment_out_of_direct_compose() -> None:
-    """Direct Compose guidance must describe the base-only fail-closed path."""
+    """Guidance must retain the fail-closed launch and read-only inspection boundary."""
     compose = (_REPO_ROOT / _BASE_COMPOSE_FILE).read_text(encoding="utf-8")
     scripts_readme = _SCRIPTS_README.read_text(encoding="utf-8")
     backup_restore = _BACKUP_RESTORE_DOC.read_text(encoding="utf-8")
+    docker_deployment = _DOCKER_DEPLOYMENT_DOC.read_text(encoding="utf-8")
+    troubleshooting = _TROUBLESHOOTING_DOC.read_text(encoding="utf-8")
 
-    assert "Direct Compose\n# uses this non-privileged base file only" in compose
-    assert "Do not compose the protected\nfragment directly." in scripts_readme
-    assert "a bare `docker compose up` fails\n  closed by omitting the executor" in backup_restore
+    assert "A bare direct\n# Compose invocation with this non-privileged base file" in compose
+    assert "restore-drill-compose-inspect.sh" in scripts_readme
+    assert "fails closed by omitting the executor" in backup_restore
+    assert "restore-drill-compose-inspect.sh" in backup_restore
+    assert "restore-drill-compose-inspect.sh ps" in docker_deployment
+    assert "restore-drill-compose-inspect.sh logs" in troubleshooting
 
 
-def test_restore_drill_executor_has_a_dedicated_database_network_and_private_secret() -> None:
+def test_restore_drill_inspection_helper_allows_only_read_only_merged_commands(
+    tmp_path: Path,
+) -> None:
+    """Operator inspection must include the overlay but never invoke Compose `up`."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    docker_probe = bin_dir / "docker"
+    docker_probe.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$RESTORE_DRILL_INSPECT_CALLS"\n',
+        encoding="utf-8",
+    )
+    docker_probe.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "RESTORE_DRILL_INSPECT_CALLS": str(calls),
+    }
+
+    allowed = [
+        subprocess.run(
+            [_INSPECT_HELPER, *arguments],
+            cwd=_REPO_ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        for arguments in (
+            ("config", "--services"),
+            ("ps",),
+            ("logs", "restore-drill-executor", "--tail=100"),
+        )
+    ]
+    rejected = subprocess.run(
+        [_INSPECT_HELPER, "up", "-d"],
+        cwd=_REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert all(result.returncode == 0 for result in allowed)
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "compose -f docker-compose.yml -f docker-compose.restore-drill.yml config --services",
+        "compose -f docker-compose.yml -f docker-compose.restore-drill.yml ps",
+        "compose -f docker-compose.yml -f docker-compose.restore-drill.yml logs restore-drill-executor --tail=100",
+    ]
+    assert rejected.returncode != 0
+    assert "read-only" in rejected.stderr
+
+
+def test_restore_drill_executor_has_an_internal_relay_network_and_private_secret() -> None:
     """REQ-database-security-006: the recovery credential has one narrow path."""
     compose = _compose(_RESTORE_DRILL_COMPOSE_FILE)
     service = compose["services"]["restore-drill-executor"]
+    relay = compose["services"]["restore-drill-postgres-proxy"]
 
-    assert service["networks"] == ["restore_drill_db"]
+    assert service["networks"] == ["restore_drill_executor"]
     assert compose["networks"]["restore_drill_db"] == {
         "driver": "bridge",
+        "enable_ipv6": False,
+    }
+    assert compose["networks"]["restore_drill_executor"] == {
+        "driver": "bridge",
+        "internal": True,
         "enable_ipv6": False,
     }
     assert "ports" not in service
@@ -142,7 +231,8 @@ def test_restore_drill_executor_has_a_dedicated_database_network_and_private_sec
     assert "cap_add" not in service
     assert "security_opt" not in service
     assert service["restart"] == "no"
-    assert service["dns"] == ["127.0.0.1"]
+    assert "dns" not in service
+    assert "extra_hosts" not in service
     assert "butlers_backups:/backups:ro" in service["volumes"]
     assert service["secrets"] == [
         {
@@ -164,9 +254,7 @@ def test_restore_drill_executor_has_a_dedicated_database_network_and_private_sec
         "${RESTORE_DRILL_EXECUTOR_DB_HOST:?"
     )
     assert "resolved PostgreSQL IPv4" not in environment["RESTORE_DRILL_EXECUTOR_DB_HOST"]
-    assert service["extra_hosts"] == [
-        "${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}=${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to resolve the PostgreSQL IPv4 firewall endpoint}"
-    ]
+    assert "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST" not in environment
     assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in environment
     assert environment["RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE"] == _CA_CONTAINER_PATH
     assert not any(key.startswith("POSTGRES_") for key in environment)
@@ -181,22 +269,51 @@ def test_restore_drill_executor_has_a_dedicated_database_network_and_private_sec
         "./deploy/restore-drill-ca-unconfigured.pem}"
     )
 
+    assert relay["entrypoint"] == ["python", "/app/scripts/restore_drill_tcp_proxy.py"]
+    assert relay["networks"] == {
+        "restore_drill_db": None,
+        "restore_drill_executor": {
+            "aliases": [
+                "${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}"
+            ]
+        },
+    }
+    relay_environment = _environment(relay)
+    assert relay_environment == {
+        "RESTORE_DRILL_PROXY_DB_HOST": "${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to provide the resolved PostgreSQL IPv4 endpoint}",
+        "RESTORE_DRILL_PROXY_DB_PORT": "${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}",
+    }
+    assert "secrets" not in relay
+    assert "configs" not in relay
+    assert "volumes" not in relay
+    assert "ports" not in relay
+    assert "expose" not in relay
+    assert not any(key.startswith("POSTGRES_") for key in relay_environment)
+    assert "DATABASE_URL" not in relay_environment
 
-def test_rendered_executor_keeps_tls_host_but_has_only_loopback_dns() -> None:
-    """Rendered Compose config cannot delegate resolver traffic off-container.
 
-    This is deliberately a Compose rendering check rather than a text search:
-    Docker receives a loopback-only DNS upstream while the PostgreSQL TLS name
-    is resolved through the concrete /etc/hosts mapping.
-    """
-    service = _rendered_executor()
+def test_rendered_executor_keeps_tls_host_only_through_the_internal_relay() -> None:
+    """The TLS identity resolves to the relay, never a direct external route."""
+    rendered = _rendered_compose(_BASE_COMPOSE_FILE, _RESTORE_DRILL_COMPOSE_FILE)
+    service = rendered["services"]["restore-drill-executor"]
+    relay = rendered["services"]["restore-drill-postgres-proxy"]
 
-    assert service["dns"] == ["127.0.0.1"]
-    assert service["extra_hosts"] == ["postgres.example.test=198.51.100.42"]
+    assert service["networks"] == {"restore_drill_executor": None}
+    assert "dns" not in service
+    assert "extra_hosts" not in service
     assert service["restart"] == "no"
+    assert "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST" not in service["environment"]
     assert service["environment"]["RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE"] == _CA_CONTAINER_PATH
     rendered_configs = {config["target"]: config for config in service["configs"]}
     assert rendered_configs[_CA_CONTAINER_PATH]["source"] == _CA_CONFIG_SOURCE
+    assert relay["networks"] == {
+        "restore_drill_db": None,
+        "restore_drill_executor": {"aliases": ["postgres.example.test"]},
+    }
+    assert relay["environment"] == {
+        "RESTORE_DRILL_PROXY_DB_HOST": "198.51.100.42",
+        "RESTORE_DRILL_PROXY_DB_PORT": "5432",
+    }
 
 
 def test_restore_drill_firewall_dry_run_default_denies_forward_and_host_paths() -> None:
@@ -251,12 +368,14 @@ def test_restore_drill_launcher_uses_only_fixed_root_wrapper_before_startup() ->
     """No passwordless sudo path may execute checkout-controlled firewall code."""
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     boundary = launcher[
-        launcher.index("Create the executor and its dedicated network") : launcher.index(
+        launcher.index("Create the relay and executor without starting either") : launcher.index(
             '"${CMD[@]}" up -d'
         )
     ]
 
-    assert boundary.index("create restore-drill-executor") < boundary.index(_FIREWALL_WRAPPER)
+    assert boundary.index(
+        "create restore-drill-postgres-proxy restore-drill-executor"
+    ) < boundary.index(_FIREWALL_WRAPPER)
     assert _FIREWALL.name not in boundary
     assert "sudo -n true" not in boundary
     normalized_boundary = " ".join(boundary.replace("\\\n", " ").split())

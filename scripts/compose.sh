@@ -85,11 +85,12 @@ source "$ENV_FILE"
 set +a
 echo "Database: ${BUTLERS_MODE} (${POSTGRES_HOST}:${POSTGRES_PORT:-5432})"
 
-# The restore-drill executor has a distinct, default-deny bridge. Resolve its
-# firewall endpoint on the host before Compose creates the container so the
-# executor never needs DNS or any non-PostgreSQL egress. Keep a DNS connection
-# host intact, though: verify-full needs it to check the PostgreSQL certificate
-# identity, while Compose's extra_hosts maps it to the resolved IPv4 locally.
+# The restore-drill executor has an internal-only network and reaches the
+# database through an uncredentialed, default-deny egress relay. Resolve the
+# relay's firewall endpoint on the host before Compose creates either service.
+# Keep a DNS connection host intact, though: verify-full needs it to check the
+# PostgreSQL certificate identity, while the internal relay aliases that name
+# and alone dials the resolved IPv4.
 _restore_drill_is_ipv4() {
   local ip="$1" octet
   local -a octets
@@ -129,7 +130,7 @@ else
 fi
 RESTORE_DRILL_EXECUTOR_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT:-${POSTGRES_PORT:-5432}}"
 export RESTORE_DRILL_EXECUTOR_DB_HOST RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST RESTORE_DRILL_EXECUTOR_DB_PORT
-echo "Restore-drill endpoint: ${RESTORE_DRILL_EXECUTOR_DB_HOST}:${RESTORE_DRILL_EXECUTOR_DB_PORT} (TLS identity; firewall IPv4 ${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}, default-deny bridge)"
+echo "Restore-drill endpoint: ${RESTORE_DRILL_EXECUTOR_DB_HOST}:${RESTORE_DRILL_EXECUTOR_DB_PORT} (TLS identity; relay firewall IPv4 ${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST})"
 
 # ── Mode-dependent configuration ────────────────────────────────────────
 # Prod and dev use different URL prefixes, host ports, and project names
@@ -466,10 +467,10 @@ if ! "${CMD[@]}" down --remove-orphans; then
   exit 1
 fi
 
-# Create the executor and its dedicated network without starting it. The
-# default-deny PostgreSQL-only policy must exist before the privileged
-# credentialed process receives a network namespace.
-"${CMD[@]}" create restore-drill-executor
+# Create the relay and executor without starting either. The relay's external
+# PostgreSQL bridge must be fenced before the credentialed process can reach
+# it through its separate internal-only network.
+"${CMD[@]}" create restore-drill-postgres-proxy restore-drill-executor
 if ! sudo -n /usr/local/libexec/butlers-restore-drill-firewall \
   --project "${COMPOSE_PROJECT_NAME}" \
   --db-host "${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}" \

@@ -135,38 +135,39 @@ mutation to force a drill through.
 
 ### Deployment boundary
 
-The Compose service is deliberately narrow:
+The Compose services are deliberately narrow:
 
-- It joins only the dedicated `restore_drill_db` bridge and exposes no
-  listener or host port. That bridge is not marked Docker `internal` because
-  PostgreSQL is externally hosted. A root-owned fixed wrapper at
+- The credentialed executor joins only the dedicated Docker `internal`
+  `restore_drill_executor` network and exposes no listener or host port. It
+  cannot directly route to PostgreSQL, the host, or ordinary service networks.
+  Its sole peer is an uncredentialed raw-TCP relay.
+- A configured DNS database host remains the executor's TLS/SNI identity
+  (including `sslmode=verify-full`), but Docker resolves that name only as an
+  alias for the internal relay. The relay carries no private secret,
+  `POSTGRES_*`, or `DATABASE_URL`; it alone joins the non-internal
+  `restore_drill_db` egress bridge and accepts only the separately resolved
+  PostgreSQL IPv4 and port. Verification modes additionally use the dedicated
+  read-only CA-root mount described above; `verify-full` verifies the retained
+  DNS hostname, never the relay's IPv4 target.
+- A root-owned fixed wrapper at
   `/usr/local/libexec/butlers-restore-drill-firewall` installs project-scoped
-  default-deny chains at Docker's `DOCKER-USER`/`FORWARD` hook and the bridge
-  `INPUT` path. The only accepted route is TCP to the resolved PostgreSQL IPv4
-  endpoint and port; every other forwarded packet and every executor-to-host or
-  bridge-gateway packet is dropped. This second hook is required because host
-  services and the bridge gateway do not traverse `FORWARD`.
-- A configured DNS database host remains the executor's connection/TLS identity
-  (including `sslmode=verify-full`), while Compose maps that name locally to
-  the separately resolved IPv4 firewall endpoint. The service configures
-  Docker's resolver with only the executor's `127.0.0.1` loopback upstream; no
-  resolver runs in that container, and `/etc/hosts` resolves the sole required
-  database identity before DNS is consulted. Thus an embedded-DNS request has
-  no external upstream, while raw DNS packets are also denied by the two
-  firewall hooks. IPv6 is disabled on this bridge. Verification modes
-  additionally use the dedicated read-only CA-root mount described above;
-  `verify-full` verifies the retained DNS hostname, never the firewall IPv4
-  address.
+  default-deny chains for that relay egress bridge at Docker's
+  `DOCKER-USER`/`FORWARD` hook and the bridge `INPUT` path. The only accepted
+  route is TCP to the resolved PostgreSQL IPv4 endpoint and port; every other
+  forwarded packet and every relay-to-host or bridge-gateway packet is dropped.
+  This second hook is required because host services and the bridge gateway do
+  not traverse `FORWARD`. IPv6 is disabled on both dedicated networks.
 - The ordinary `docker-compose.yml` deliberately omits the executor, its
   bridge, its CA config, and its private secret. The supported launchers,
   `scripts/compose.sh` and `butlers deploy`, are the only paths that add
-  `docker-compose.restore-drill.yml`; they stop any old executor, create its
-  network without starting the credentialed process, install that default-deny
-  policy, and only then start the merged stack. The executor has `restart: "no"`,
-  so a Docker daemon or host restart cannot auto-start it before the fence is
-  recreated. A failed checked stop/down phase also ends the launcher before
-  `create`, firewall invocation, or `up`. Thus a bare `docker compose up` fails
-  closed by omitting the executor rather than relying on a warning comment.
+  `docker-compose.restore-drill.yml`; they stop the old relay and executor,
+  create their networks without starting either process, install that
+  default-deny policy, and only then start the merged stack. The services have
+  `restart: "no"`, so a Docker daemon or host restart cannot auto-start them
+  before the fence is recreated. A failed checked stop/down phase also ends the
+  launcher before `create`, firewall invocation, or `up`. Thus a bare `docker
+  compose up` fails closed by omitting the executor rather than relying on a
+  warning comment.
 - It mounts `butlers_backups` read-only and has no Docker socket, `backend`,
   `frontend`, or `egress` network membership.
 - It does not inherit `x-postgres-env` and receives no `POSTGRES_USER`,
@@ -234,8 +235,9 @@ or influence the durable/API-visible result shape.
 Use normal deployment observation surfaces; none should display the secret:
 
 ```bash
-docker compose ps backup-cron restore-drill-executor
-docker compose logs --tail=100 restore-drill-executor
+# Read-only merged-topology inspection; this helper rejects `up` and other lifecycle verbs.
+./scripts/restore-drill-compose-inspect.sh ps
+./scripts/restore-drill-compose-inspect.sh logs --tail=100 restore-drill-executor
 ```
 
 The System page and `GET /api/system/backups` surface the most recently

@@ -83,23 +83,20 @@ class TestComposeArgsAndEnv:
             "butlers",
             "--env-file",
             ".env.prod",
-            "--profile",
-            "restore-drill",
         ]
 
-    def test_default_deploy_explicitly_enables_restore_drill_profile(self):
-        """The supported deploy path alone can launch the credentialed executor."""
+    def test_no_profile_flag_appears_by_default(self):
+        """Structural guard: a default (prod) deploy must never request a compose profile."""
         args = _compose_base_args(_config())
-        assert args[args.index("--profile") + 1] == "restore-drill"
+        assert "--profile" not in args
 
     def test_explicit_profiles_are_threaded_into_compose_args(self):
         """bu-hmdqz.1: an explicitly-requested profile (e.g. 'dev' for the
         butlers-dev project's profile-gated frontend-dev service) must reach
         the actual compose invocation."""
         args = _compose_base_args(_config(profiles=("dev",)))
-        assert args.count("--profile") == 2
+        assert "--profile" in args
         assert args[args.index("--profile") + 1] == "dev"
-        assert args[args.index("--profile", args.index("--profile") + 1) + 1] == "restore-drill"
 
     def test_hotreload_profile_is_rejected_at_config_construction(self):
         """The hotreload profile bind-mounts source instead of the baked
@@ -196,8 +193,16 @@ class TestRestoreDrillDeployBoundary:
         assert commands[0][: len(protected_compose_prefix)] == protected_compose_prefix
         assert commands[1][: len(protected_compose_prefix)] == protected_compose_prefix
         assert commands[3][: len(protected_compose_prefix)] == protected_compose_prefix
-        assert commands[0][-2:] == ["stop", "restore-drill-executor"]
-        assert commands[1][-2:] == ["create", "restore-drill-executor"]
+        assert commands[0][-3:] == [
+            "stop",
+            "restore-drill-postgres-proxy",
+            "restore-drill-executor",
+        ]
+        assert commands[1][-3:] == [
+            "create",
+            "restore-drill-postgres-proxy",
+            "restore-drill-executor",
+        ]
         assert commands[2] == [
             "sudo",
             "-n",
@@ -378,7 +383,22 @@ class TestMaterializeBeadsExport:
 
 
 class TestRecreateServices:
-    def test_up_dash_d_remove_orphans_with_restore_drill_profile(self, monkeypatch):
+    def test_rejects_missing_restore_drill_endpoint_before_compose_up(self, monkeypatch):
+        """No direct caller may bypass the prepared endpoint/firewall boundary."""
+        calls = []
+
+        def fake_run(cmd, cwd, env, capture_output, text):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(DeployError, match="restore-drill.*endpoint"):
+            recreate_services(_config(), None)
+
+        assert calls == []
+
+    def test_up_dash_d_remove_orphans_no_profile(self, monkeypatch):
         captured = {}
 
         def fake_run(cmd, cwd, env, capture_output, text):
@@ -386,12 +406,14 @@ class TestRecreateServices:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        recreate_services(_config())
+        recreate_services(
+            _config(), RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432)
+        )
         cmd = captured["cmd"]
         assert "up" in cmd
         assert "-d" in cmd
         assert "--remove-orphans" in cmd
-        assert cmd[cmd.index("--profile") + 1] == "restore-drill"
+        assert "--profile" not in cmd
         assert "--scale" not in cmd
 
     def test_failure_raises_deploy_error_with_recreate_phase(self, monkeypatch):
@@ -400,7 +422,9 @@ class TestRecreateServices:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(DeployError) as exc_info:
-            recreate_services(_config())
+            recreate_services(
+                _config(), RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432)
+            )
         assert exc_info.value.phase == "recreate"
 
 

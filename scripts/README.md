@@ -71,12 +71,12 @@ for the deployment boundary and rollback rules.
 root-owned fixed runtime wrapper at
 `/usr/local/libexec/butlers-restore-drill-firewall`. It accepts only validated
 literal project, PostgreSQL IPv4, and port arguments. Its policy default-denies
-the executor bridge at both Docker's `DOCKER-USER`/`FORWARD` hook and the
-bridge-to-host `INPUT` path, allowing only TCP to the configured PostgreSQL
-endpoint. The executor keeps a configured DNS database host as its TLS identity
-(including `verify-full`), maps that name locally to the supplied IPv4, and has
-only a container-loopback DNS upstream; raw DNS and host/gateway paths remain
-denied.
+the relay's external bridge at both Docker's `DOCKER-USER`/`FORWARD` hook and
+the bridge-to-host `INPUT` path, allowing only TCP to the configured PostgreSQL
+endpoint. The credentialed executor sits on a separate Docker `internal`
+network; its configured DNS database host is TLS/SNI identity only (including
+`verify-full`) and resolves there to the uncredentialed relay. The relay alone
+uses the separately resolved IPv4, with no shared database credential.
 
 Use `install_restore_drill_firewall_wrapper.sh` only in a root-controlled
 deployment setup to install that immutable target. The checked-in
@@ -84,12 +84,17 @@ deployment setup to install that immutable target. The checked-in
 to the fixed wrapper's normal three-argument form. Never grant sudo for the
 checkout script, a checkout wildcard, `env`, a shell, or the installer.
 `scripts/compose.sh` and `butlers deploy` are the only supported paths that
-include `docker-compose.restore-drill.yml`: they stop/create the executor,
-invoke the fixed wrapper, and only then start the merged stack. A bare
-`docker compose up` uses `docker-compose.yml` alone and therefore omits the
-executor, its dedicated bridge, and its private secret mount; `restart: "no"`
-also prevents an unfenced daemon/host auto-start. Do not compose the protected
-fragment directly.
+include `docker-compose.restore-drill.yml`: they stop/create the relay and
+executor, invoke the fixed wrapper, and only then start the merged stack. A
+bare `docker compose up` uses `docker-compose.yml` alone and therefore omits
+the executor, its internal relay network, its external relay bridge, and its
+private secret mount; `restart: "no"` also prevents an unfenced daemon/host
+auto-start. Do not compose the protected fragment to start services directly.
+
+For read-only status, logs, or rendered configuration that includes the
+protected topology, use `scripts/restore-drill-compose-inspect.sh`. It accepts
+only `config`, `ps`, and `logs`; it never accepts `up` or another lifecycle
+verb, so it cannot replace the prepared-launch sequence.
 
 ## dev.sh
 
