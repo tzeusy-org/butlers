@@ -62,10 +62,12 @@ This allows modules to reference `entities` without schema-qualifying it -- the 
 
 ## Database Provisioning
 
-### Pre-migration setup (superuser required)
+### Pre-migration setup (privileged cluster superuser required)
 
 Before running Alembic migrations on a fresh database, run
-`scripts/init-db.sql` as a superuser or the database owner:
+`scripts/init-db.sql` as a privileged cluster superuser. Supply the normal
+connecting/migration user through the `butlers.connecting_user` GUC; it must
+not be the active bootstrap identity:
 
 ```bash
 psql -h <host> -U <superuser> -d <dbname> -f scripts/init-db.sql

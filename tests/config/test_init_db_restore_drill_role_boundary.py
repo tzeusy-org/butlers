@@ -24,6 +24,8 @@ _MIGRATION = (
 _DASHBOARD_APP = _REPO_ROOT / "src" / "butlers" / "api" / "app.py"
 _EXECUTOR = _REPO_ROOT / "src" / "butlers" / "jobs" / "restore_drill_executor.py"
 _OPERATIONS_DOC = _REPO_ROOT / "docs" / "operations" / "backup-restore.md"
+_SCRIPTS_README = _REPO_ROOT / "scripts" / "README.md"
+_SCHEMA_TOPOLOGY_DOC = _REPO_ROOT / "docs" / "data_and_storage" / "schema-topology.md"
 
 
 def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -> None:
@@ -271,3 +273,16 @@ def test_operations_document_the_managed_boundary_without_a_live_workaround() ->
     assert "ALTER ROLE" not in source
     assert "CREATE DATABASE butlers_restore" not in source
     assert "pg_restore.sh" not in source
+
+
+def test_bootstrap_docs_require_a_cluster_superuser_distinct_from_the_migration_user() -> None:
+    """Operator docs cannot resurrect the shared-owner bootstrap escape hatch."""
+    for source in (
+        _SCRIPTS_README.read_text(encoding="utf-8"),
+        _SCHEMA_TOPOLOGY_DOC.read_text(encoding="utf-8"),
+    ):
+        normalized_source = " ".join(source.split())
+        assert "privileged cluster superuser" in normalized_source
+        assert "butlers.connecting_user" in source
+        assert "must not be the active bootstrap identity" in normalized_source
+        assert "or the database owner" not in source

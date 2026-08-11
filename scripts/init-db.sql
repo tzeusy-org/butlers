@@ -131,6 +131,7 @@ DECLARE
     _restore_drill_executor_owner_role TEXT := 'restore_drill_executor_owner';
     _restore_drill_audit_writer_role TEXT := 'restore_drill_executor_audit_writer';
     _restore_drill_executor_schema TEXT := 'restore_drill_executor';
+    _optional_calendar_role TEXT := 'butler_calendar_rw';
     _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
     _db_name TEXT := current_database();
     _schema TEXT;
@@ -181,6 +182,16 @@ BEGIN
             _role
         );
     END LOOP;
+
+    -- Calendar is an optional module role created best-effort by core_140/142.
+    -- Do not create it or grant it to the migration user here; when it exists,
+    -- it remains a normal login with no cluster-level recovery capability.
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _optional_calendar_role) THEN
+        EXECUTE format(
+            'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+            _optional_calendar_role
+        );
+    END IF;
 
     -- Reserve a distinct executor role without making it a normal runtime
     -- login. The one-shot managed provisioner is the only path that enables
@@ -260,6 +271,38 @@ BEGIN
         EXECUTE format('REVOKE %I FROM %I', _restore_drill_audit_writer_role, _role);
         EXECUTE format('REVOKE %I FROM %I', _role, _restore_drill_audit_writer_role);
     END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _optional_calendar_role) THEN
+        EXECUTE format(
+            'REVOKE %I FROM %I',
+            _restore_drill_executor_role,
+            _optional_calendar_role
+        );
+        EXECUTE format(
+            'REVOKE %I FROM %I',
+            _optional_calendar_role,
+            _restore_drill_executor_role
+        );
+        EXECUTE format(
+            'REVOKE %I FROM %I',
+            _restore_drill_executor_owner_role,
+            _optional_calendar_role
+        );
+        EXECUTE format(
+            'REVOKE %I FROM %I',
+            _optional_calendar_role,
+            _restore_drill_executor_owner_role
+        );
+        EXECUTE format(
+            'REVOKE %I FROM %I',
+            _restore_drill_audit_writer_role,
+            _optional_calendar_role
+        );
+        EXECUTE format(
+            'REVOKE %I FROM %I',
+            _optional_calendar_role,
+            _restore_drill_audit_writer_role
+        );
+    END IF;
 
     -- The executor may connect but receives no general public-schema access.
     -- The post-migration fixed ownership finalizer grants only its dedicated
@@ -279,6 +322,13 @@ BEGIN
     FOREACH _role IN ARRAY _all_runtime_roles LOOP
         EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', _restore_drill_executor_schema, _role);
     END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _optional_calendar_role) THEN
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I',
+            _restore_drill_executor_schema,
+            _optional_calendar_role
+        );
+    END IF;
 
     -- Allow the migration/runtime user to SET ROLE into each runtime role.
     -- On PostgreSQL 16+, bare membership is not sufficient if the membership
@@ -768,6 +818,7 @@ AS $$
 DECLARE
     v_migration_role NAME;
     v_runtime_role NAME;
+    v_optional_calendar_role NAME := 'butler_calendar_rw';
     v_bootstrap_owner OID;
     v_executor_owner OID;
     v_audit_writer_owner OID;
@@ -969,6 +1020,20 @@ BEGIN
             );
         END IF;
     END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_optional_calendar_role) THEN
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM %I',
+            v_optional_calendar_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE restore_drill_executor.restore_drill_results FROM %I',
+            v_optional_calendar_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON SEQUENCE restore_drill_executor.restore_drill_results_id_seq FROM %I',
+            v_optional_calendar_role
+        );
+    END IF;
     EXECUTE 'GRANT USAGE ON SCHEMA restore_drill_executor TO restore_drill_executor';
     EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.is_due(integer) TO restore_drill_executor';
     EXECUTE 'GRANT EXECUTE ON FUNCTION restore_drill_executor.record_result(text, text, text, integer) TO restore_drill_executor';

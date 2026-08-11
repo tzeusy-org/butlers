@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -32,6 +33,12 @@ _NORMAL_RUNTIME_ROLES = (
     "butler_switchboard_rw",
     "butler_travel_rw",
     "connector_writer",
+)
+_OPTIONAL_CALENDAR_RUNTIME_ROLE = "butler_calendar_rw"
+_RESTORE_DRILL_AUTHORITY_ROLES = (
+    "restore_drill_executor",
+    "restore_drill_executor_owner",
+    "restore_drill_executor_audit_writer",
 )
 
 
@@ -459,6 +466,442 @@ def test_init_db_bootstrap_normalizes_existing_normal_role_privileges(postgres_c
         {"rolname": role, "inherit_option": True, "set_option": True}
         for role in sorted(_NORMAL_RUNTIME_ROLES)
     ]
+
+
+def test_init_db_bootstrap_hardens_existing_optional_calendar_role(postgres_container):
+    """An existing optional calendar login cannot retain restore-drill authority."""
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    calendar_password = "calendar-test-password"
+    calendar_url = (
+        f"postgresql://{_OPTIONAL_CALENDAR_RUNTIME_ROLE}:{calendar_password}@{host}:{port}/butlers"
+    )
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            conn.execute(text(f"DROP ROLE IF EXISTS {_OPTIONAL_CALENDAR_RUNTIME_ROLE}"))
+            conn.execute(text("DROP ROLE IF EXISTS butlers"))
+            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
+            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    from butlers.migrations import run_migrations
+
+    migration_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
+    asyncio.run(run_migrations(migration_url, chain="core"))
+
+    control_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE ROLE butler_calendar_rw LOGIN SUPERUSER CREATEROLE "
+                    "CREATEDB REPLICATION PASSWORD 'calendar-test-password'"
+                )
+            )
+            conn.execute(text("GRANT USAGE ON SCHEMA calendar TO butler_calendar_rw"))
+            for authority_role in _RESTORE_DRILL_AUTHORITY_ROLES:
+                conn.execute(text(f"GRANT {authority_role} TO {_OPTIONAL_CALENDAR_RUNTIME_ROLE}"))
+            conn.execute(text("GRANT USAGE ON SCHEMA restore_drill_executor TO butler_calendar_rw"))
+            conn.execute(
+                text(
+                    "GRANT SELECT, INSERT ON TABLE "
+                    "restore_drill_executor.restore_drill_results TO butler_calendar_rw"
+                )
+            )
+            conn.execute(
+                text(
+                    "GRANT USAGE, SELECT, UPDATE ON SEQUENCE "
+                    "restore_drill_executor.restore_drill_results_id_seq TO butler_calendar_rw"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    def membership_pairs(connection) -> set[tuple[str, str]]:
+        rows = (
+            connection.execute(
+                text(
+                    """
+                    SELECT granted_role.rolname, member_role.rolname
+                    FROM pg_auth_members AS membership
+                    JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+                    JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                    WHERE (
+                        granted_role.rolname = ANY(:authority_roles)
+                        AND member_role.rolname = :calendar_role
+                    ) OR (
+                        granted_role.rolname = :calendar_role
+                        AND member_role.rolname = ANY(:authority_roles)
+                    )
+                    """
+                ),
+                {
+                    "authority_roles": list(_RESTORE_DRILL_AUTHORITY_ROLES),
+                    "calendar_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
+                },
+            )
+            .tuples()
+            .all()
+        )
+        return set(rows)
+
+    def calendar_role_attributes(connection) -> dict[str, bool]:
+        return dict(
+            connection.execute(
+                text(
+                    """
+                    SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication
+                    FROM pg_roles
+                    WHERE rolname = :calendar_role
+                    """
+                ),
+                {"calendar_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE},
+            )
+            .mappings()
+            .one()
+        )
+
+    def direct_calendar_effective_privileges() -> dict[str, bool | str]:
+        calendar_engine = create_engine(calendar_url)
+        try:
+            with calendar_engine.connect() as conn:
+                return dict(
+                    conn.execute(
+                        text(
+                            """
+                            SELECT
+                                current_user AS current_role,
+                                (
+                                    SELECT rolsuper
+                                    FROM pg_roles
+                                    WHERE rolname = current_user
+                                ) AS is_superuser,
+                                (
+                                    SELECT rolcreaterole
+                                    FROM pg_roles
+                                    WHERE rolname = current_user
+                                ) AS can_create_role,
+                                (
+                                    SELECT rolcreatedb
+                                    FROM pg_roles
+                                    WHERE rolname = current_user
+                                ) AS can_create_database,
+                                (
+                                    SELECT rolreplication
+                                    FROM pg_roles
+                                    WHERE rolname = current_user
+                                ) AS can_replicate,
+                                has_schema_privilege(
+                                    current_user,
+                                    'restore_drill_executor',
+                                    'USAGE'
+                                ) AS schema_usage,
+                                has_schema_privilege(
+                                    current_user,
+                                    'calendar',
+                                    'USAGE'
+                                ) AS calendar_schema_usage,
+                                has_table_privilege(
+                                    current_user,
+                                    (
+                                        SELECT ledger.oid
+                                        FROM pg_catalog.pg_class AS ledger
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = ledger.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND ledger.relname = 'restore_drill_results'
+                                          AND ledger.relkind = 'r'
+                                    ),
+                                    'SELECT'
+                                ) AS ledger_select,
+                                has_table_privilege(
+                                    current_user,
+                                    (
+                                        SELECT ledger.oid
+                                        FROM pg_catalog.pg_class AS ledger
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = ledger.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND ledger.relname = 'restore_drill_results'
+                                          AND ledger.relkind = 'r'
+                                    ),
+                                    'INSERT'
+                                ) AS ledger_insert,
+                                has_sequence_privilege(
+                                    current_user,
+                                    (
+                                        SELECT sequence.oid
+                                        FROM pg_catalog.pg_class AS sequence
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = sequence.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND sequence.relname = 'restore_drill_results_id_seq'
+                                          AND sequence.relkind = 'S'
+                                    ),
+                                    'USAGE'
+                                ) AS ledger_sequence_usage,
+                                has_sequence_privilege(
+                                    current_user,
+                                    (
+                                        SELECT sequence.oid
+                                        FROM pg_catalog.pg_class AS sequence
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = sequence.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND sequence.relname = 'restore_drill_results_id_seq'
+                                          AND sequence.relkind = 'S'
+                                    ),
+                                    'SELECT'
+                                ) AS ledger_sequence_select,
+                                has_sequence_privilege(
+                                    current_user,
+                                    (
+                                        SELECT sequence.oid
+                                        FROM pg_catalog.pg_class AS sequence
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = sequence.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND sequence.relname = 'restore_drill_results_id_seq'
+                                          AND sequence.relkind = 'S'
+                                    ),
+                                    'UPDATE'
+                                ) AS ledger_sequence_update,
+                                pg_has_role(
+                                    current_user,
+                                    'restore_drill_executor',
+                                    'MEMBER'
+                                ) AS has_executor_membership,
+                                pg_has_role(
+                                    current_user,
+                                    'restore_drill_executor_owner',
+                                    'MEMBER'
+                                ) AS has_owner_membership,
+                                pg_has_role(
+                                    current_user,
+                                    'restore_drill_executor_audit_writer',
+                                    'MEMBER'
+                                ) AS has_audit_writer_membership,
+                                pg_has_role(
+                                    'restore_drill_executor',
+                                    current_user,
+                                    'MEMBER'
+                                ) AS executor_has_calendar_membership,
+                                pg_has_role(
+                                    'restore_drill_executor_owner',
+                                    current_user,
+                                    'MEMBER'
+                                ) AS owner_has_calendar_membership,
+                                pg_has_role(
+                                    'restore_drill_executor_audit_writer',
+                                    current_user,
+                                    'MEMBER'
+                                ) AS audit_writer_has_calendar_membership
+                            """
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+        finally:
+            calendar_engine.dispose()
+
+    engine = create_engine(control_url)
+    try:
+        with engine.connect() as conn:
+            assert calendar_role_attributes(conn) == {
+                "rolsuper": True,
+                "rolcreaterole": True,
+                "rolcreatedb": True,
+                "rolreplication": True,
+            }
+            assert membership_pairs(conn) == {
+                (authority_role, _OPTIONAL_CALENDAR_RUNTIME_ROLE)
+                for authority_role in _RESTORE_DRILL_AUTHORITY_ROLES
+            }
+    finally:
+        engine.dispose()
+    assert direct_calendar_effective_privileges() == {
+        "current_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
+        "is_superuser": True,
+        "can_create_role": True,
+        "can_create_database": True,
+        "can_replicate": True,
+        "schema_usage": True,
+        "calendar_schema_usage": True,
+        "ledger_select": True,
+        "ledger_insert": True,
+        "ledger_sequence_usage": True,
+        "ledger_sequence_select": True,
+        "ledger_sequence_update": True,
+        "has_executor_membership": True,
+        "has_owner_membership": True,
+        "has_audit_writer_membership": True,
+        "executor_has_calendar_membership": False,
+        "owner_has_calendar_membership": False,
+        "audit_writer_has_calendar_membership": False,
+    }
+
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    engine = create_engine(control_url)
+    try:
+        with engine.connect() as conn:
+            assert calendar_role_attributes(conn) == {
+                "rolsuper": False,
+                "rolcreaterole": False,
+                "rolcreatedb": False,
+                "rolreplication": False,
+            }
+            assert membership_pairs(conn) == set()
+            has_migration_membership = conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_auth_members AS membership
+                        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+                        JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                        WHERE granted_role.rolname = :calendar_role
+                          AND member_role.rolname = 'butlers'
+                    )
+                    """
+                ),
+                {"calendar_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE},
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert has_migration_membership is False
+    # The optional calendar role intentionally receives no persistent CONNECT
+    # grant from init-db. This control-only harness grant makes its direct
+    # LOGIN identity observable after SUPERUSER removal without changing the
+    # production calendar ACL or membership topology.
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("GRANT CONNECT ON DATABASE butlers TO butler_calendar_rw"))
+    finally:
+        engine.dispose()
+    assert direct_calendar_effective_privileges() == {
+        "current_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
+        "is_superuser": False,
+        "can_create_role": False,
+        "can_create_database": False,
+        "can_replicate": False,
+        "schema_usage": False,
+        "calendar_schema_usage": True,
+        "ledger_select": False,
+        "ledger_insert": False,
+        "ledger_sequence_usage": False,
+        "ledger_sequence_select": False,
+        "ledger_sequence_update": False,
+        "has_executor_membership": False,
+        "has_owner_membership": False,
+        "has_audit_writer_membership": False,
+        "executor_has_calendar_membership": False,
+        "owner_has_calendar_membership": False,
+        "audit_writer_has_calendar_membership": False,
+    }
+
+    # PostgreSQL rejects reciprocal memberships as a cycle, so exercise the
+    # inverse authority direction after the first rerun has removed the grants
+    # above. This proves both executor-is-member-of-calendar and
+    # calendar-is-member-of-executor repair paths without inventing a topology
+    # PostgreSQL cannot represent.
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            for authority_role in _RESTORE_DRILL_AUTHORITY_ROLES:
+                conn.execute(text(f"GRANT {_OPTIONAL_CALENDAR_RUNTIME_ROLE} TO {authority_role}"))
+    finally:
+        engine.dispose()
+
+    engine = create_engine(control_url)
+    try:
+        with engine.connect() as conn:
+            assert membership_pairs(conn) == {
+                (_OPTIONAL_CALENDAR_RUNTIME_ROLE, authority_role)
+                for authority_role in _RESTORE_DRILL_AUTHORITY_ROLES
+            }
+    finally:
+        engine.dispose()
+    assert direct_calendar_effective_privileges() == {
+        "current_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
+        "is_superuser": False,
+        "can_create_role": False,
+        "can_create_database": False,
+        "can_replicate": False,
+        "schema_usage": False,
+        "calendar_schema_usage": True,
+        "ledger_select": False,
+        "ledger_insert": False,
+        "ledger_sequence_usage": False,
+        "ledger_sequence_select": False,
+        "ledger_sequence_update": False,
+        "has_executor_membership": False,
+        "has_owner_membership": False,
+        "has_audit_writer_membership": False,
+        "executor_has_calendar_membership": True,
+        "owner_has_calendar_membership": True,
+        "audit_writer_has_calendar_membership": True,
+    }
+
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    engine = create_engine(control_url)
+    try:
+        with engine.connect() as conn:
+            assert membership_pairs(conn) == set()
+    finally:
+        engine.dispose()
+    assert direct_calendar_effective_privileges() == {
+        "current_role": _OPTIONAL_CALENDAR_RUNTIME_ROLE,
+        "is_superuser": False,
+        "can_create_role": False,
+        "can_create_database": False,
+        "can_replicate": False,
+        "schema_usage": False,
+        "calendar_schema_usage": True,
+        "ledger_select": False,
+        "ledger_insert": False,
+        "ledger_sequence_usage": False,
+        "ledger_sequence_select": False,
+        "ledger_sequence_update": False,
+        "has_executor_membership": False,
+        "has_owner_membership": False,
+        "has_audit_writer_membership": False,
+        "executor_has_calendar_membership": False,
+        "owner_has_calendar_membership": False,
+        "audit_writer_has_calendar_membership": False,
+    }
 
 
 def test_init_db_rejects_migration_user_bootstrap_before_normal_role_mutation(postgres_container):

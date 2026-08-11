@@ -5,9 +5,10 @@ Utility scripts for repository maintenance and fixes.
 ## init-db.sql
 
 Privileged PostgreSQL bootstrap script to run **before** the first Alembic
-migration on a fresh database. Must be executed by a superuser (or the
-database owner). It is safe to re-run later if the managed schema/role surface
-expands.
+migration on a fresh database. It must be executed by a privileged cluster
+superuser. Supply the normal connecting/migration user separately through the
+`butlers.connecting_user` GUC; it must not be the active bootstrap identity.
+It is safe to re-run later if the managed schema/role surface expands.
 
 **Prerequisites:** The PostgreSQL server must have the `pgvector` binary
 installed.  The standard `postgres` Docker image does not include it; use
@@ -29,13 +30,13 @@ What it does:
 
 **Why this is privileged:** Database-level grants, schema ownership/ACLs, and
 `ALTER DEFAULT PRIVILEGES FOR ROLE <connecting user>` require a privileged
-bootstrap role. After this script runs once, normal `docker compose` /
+cluster-superuser bootstrap role. After this script runs once, normal `docker compose` /
 Alembic flows can continue using the lower-privilege `butlers` user.
 
 ### Usage
 
 ```bash
-# Typical dev: run as superuser, grants to 'butlers' (default connecting user)
+# Typical dev: run as a cluster superuser; grants to 'butlers' (default connecting user)
 psql -h localhost -U postgres -d butlers -f scripts/init-db.sql
 
 # Targeting a different connecting user
