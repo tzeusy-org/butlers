@@ -333,3 +333,42 @@ def create_migrated_test_db(
         asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
 
     return db_url
+
+
+async def create_migrated_test_pool(
+    postgres_container: object,
+    *,
+    chains: list[str],
+    schemas: dict[str, str] | None = None,
+    pool_schema: str | None = None,
+    min_pool_size: int = 1,
+    max_pool_size: int = 3,
+) -> asyncpg.Pool:
+    """Create a schema-accurate asyncpg pool without blocking an active event loop.
+
+    The synchronous migration factory deliberately owns disposable database
+    creation, privileged ``init-db.sql`` staging, and ordinary NOCREATEDB
+    migrations.  Async integration fixtures must use it in a worker thread,
+    then connect their pool with the same JSONB and search-path behavior as the
+    production :class:`butlers.db.Database` wrapper.
+    """
+    from butlers.db import register_jsonb_codec, schema_search_path
+
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        chains,
+        schemas,
+    )
+    pool_kwargs: dict[str, object] = {
+        "min_size": min_pool_size,
+        "max_size": max_pool_size,
+        "init": register_jsonb_codec,
+    }
+    if pool_schema is not None:
+        search_path = schema_search_path(pool_schema)
+        assert search_path is not None
+        pool_kwargs["server_settings"] = {"search_path": search_path}
+
+    return await asyncpg.create_pool(db_url, **pool_kwargs)

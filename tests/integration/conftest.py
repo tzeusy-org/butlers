@@ -3,34 +3,35 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from urllib.parse import quote
 
 import pytest
 
 
 @pytest.fixture
-def migrated_core_postgres_pool(provisioned_postgres_pool, postgres_container):
+def migrated_core_postgres_pool(postgres_container):
     """Provision a fresh database with the production core schema.
 
-    ``provisioned_postgres_pool`` owns isolated database creation and pool
-    lifecycle. This wrapper runs the core Alembic chain before yielding that
-    same pool, so integration tests exercise migrations rather than local DDL
-    copies that can drift from production.
+    The schema-accurate factory stages ``init-db.sql`` through the disposable
+    testcontainer control login before it runs the core Alembic chain as its
+    normal NOCREATEDB migration login. This keeps integration fixtures aligned
+    with the trusted restore-drill bootstrap contract.
     """
-    from butlers.migrations import run_migrations
+    from butlers.testing.migration import create_migrated_test_pool
 
     @asynccontextmanager
-    async def _provision(**kwargs):
-        async with provisioned_postgres_pool(**kwargs) as pool:
-            db_name = await pool.fetchval("SELECT current_database()")
-            user = quote(postgres_container.username, safe="")
-            password = quote(postgres_container.password, safe="")
-            db_url = (
-                f"postgresql://{user}:{password}"
-                f"@{postgres_container.get_container_host_ip()}:"
-                f"{postgres_container.get_exposed_port(5432)}/{db_name}"
-            )
-            await run_migrations(db_url, chain="core")
+    async def _provision(
+        *, min_pool_size: int = 1, max_pool_size: int = 3, schema: str | None = None
+    ):
+        pool = await create_migrated_test_pool(
+            postgres_container,
+            chains=["core"],
+            pool_schema=schema,
+            min_pool_size=min_pool_size,
+            max_pool_size=max_pool_size,
+        )
+        try:
             yield pool
+        finally:
+            await pool.close()
 
     return _provision

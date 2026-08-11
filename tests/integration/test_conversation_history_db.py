@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
-from sqlalchemy import create_engine, text
 
 from butlers.modules.pipeline import (
     _load_conversation_history,
@@ -29,37 +28,16 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
 @pytest.fixture(scope="module")
 def switchboard_dsn(postgres_container):
-    """Create a database, run switchboard migrations, return asyncpg DSN."""
-    from alembic import command
-    from butlers.migrations import _bootstrap_extensions, _build_alembic_config
+    """Create a trusted core + Switchboard migration database."""
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
-    db_name = _unique_db_name()
-    admin_url = postgres_container.get_connection_url()
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        conn.execute(text(f'CREATE DATABASE "{db_name}"'))
-    engine.dispose()
-
-    host = postgres_container.get_container_host_ip()
-    port = postgres_container.get_exposed_port(5432)
-    user = postgres_container.username
-    password = postgres_container.password
-    sa_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
-
-    _bootstrap_extensions(sa_url)
-
-    config = _build_alembic_config(sa_url, chains=["core"])
-    command.upgrade(config, "core@head")
-    config = _build_alembic_config(sa_url, chains=["switchboard"])
-    command.upgrade(config, "switchboard@head")
-
-    return f"postgres://{user}:{password}@{host}:{port}/{db_name}"
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+    )
 
 
 async def _insert_message(

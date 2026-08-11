@@ -18,41 +18,21 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
 @pytest.fixture
 async def pool(postgres_container):
-    """Provision a fresh Switchboard database and return a pool."""
-    from butlers.db import Database
-    from butlers.migrations import run_migrations
+    """Provision a trusted core + Switchboard migration topology."""
+    from butlers.testing.migration import create_migrated_test_pool
 
-    # Scoped to the real ``switchboard`` schema (bu-nz1wx) so the pool's
-    # search_path is ``switchboard,public`` and production's schema-qualified
-    # ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
-    # one-db/multi-schema topology.
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-        schema="switchboard",
+    p = await create_migrated_test_pool(
+        postgres_container,
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+        pool_schema="switchboard",
     )
-    await db.provision()
-    p = await db.connect()
-
-    db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
-    await run_migrations(db_url, chain="core")
-    await run_migrations(db_url, chain="switchboard", schema="switchboard")
-
-    yield p
-
-    await p.close()
-    await db.close()
+    try:
+        yield p
+    finally:
+        await p.close()
 
 
 def _build_ingest_envelope(
