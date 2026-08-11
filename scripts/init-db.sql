@@ -52,6 +52,12 @@ BEGIN
     IF current_user::name = _migration_user THEN
         RAISE EXCEPTION 'restore-drill admin bootstrap cannot run as the shared migration role';
     END IF;
+    IF NOT COALESCE(
+        (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
+        false
+    ) THEN
+        RAISE EXCEPTION 'restore-drill admin bootstrap requires a cluster superuser';
+    END IF;
 END;
 $$;
 

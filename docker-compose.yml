@@ -38,8 +38,10 @@
 #
 # DATABASE PROVISIONING:
 #   Before first use, run scripts/init-db.sql against your PostgreSQL server
-#   as a superuser to install extensions, create/grant managed schemas + roles,
-#   and configure default privileges for the migration user:
+#   as a privileged cluster superuser. The normal POSTGRES_USER /
+#   butlers.connecting_user must not be the active bootstrap identity; it
+#   installs extensions, creates/grants managed schemas + roles, and configures
+#   default privileges for the migration user:
 #
 #     psql -h <POSTGRES_HOST> -U <superuser> -d butlers \
 #         -f scripts/init-db.sql

@@ -26,6 +26,7 @@ _EXECUTOR = _REPO_ROOT / "src" / "butlers" / "jobs" / "restore_drill_executor.py
 _OPERATIONS_DOC = _REPO_ROOT / "docs" / "operations" / "backup-restore.md"
 _SCRIPTS_README = _REPO_ROOT / "scripts" / "README.md"
 _SCHEMA_TOPOLOGY_DOC = _REPO_ROOT / "docs" / "data_and_storage" / "schema-topology.md"
+_COMPOSE_FILE = _REPO_ROOT / "docker-compose.yml"
 
 
 def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -> None:
@@ -280,6 +281,7 @@ def test_bootstrap_docs_require_a_cluster_superuser_distinct_from_the_migration_
     for source in (
         _SCRIPTS_README.read_text(encoding="utf-8"),
         _SCHEMA_TOPOLOGY_DOC.read_text(encoding="utf-8"),
+        _COMPOSE_FILE.read_text(encoding="utf-8"),
     ):
         normalized_source = " ".join(source.split())
         assert "privileged cluster superuser" in normalized_source

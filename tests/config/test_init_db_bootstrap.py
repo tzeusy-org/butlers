@@ -1020,6 +1020,176 @@ def test_init_db_rejects_migration_user_bootstrap_before_normal_role_mutation(po
     )
 
 
+def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgres_container):
+    """A database owner without cluster superuser cannot partially bootstrap."""
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    owner_role = "init_db_unprivileged_owner"
+    managed_roles = (
+        owner_role,
+        "butlers",
+        _OPTIONAL_CALENDAR_RUNTIME_ROLE,
+        *_RESTORE_DRILL_AUTHORITY_ROLES,
+        *_NORMAL_RUNTIME_ROLES,
+    )
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            for role in managed_roles:
+                conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
+            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
+            conn.execute(
+                text(
+                    "CREATE ROLE init_db_unprivileged_owner LOGIN "
+                    "NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION "
+                    "PASSWORD 'unprivileged-owner'"
+                )
+            )
+            conn.execute(text("CREATE DATABASE butlers OWNER init_db_unprivileged_owner"))
+    finally:
+        engine.dispose()
+
+    control_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+    engine = create_engine(control_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("REVOKE CONNECT ON DATABASE butlers FROM PUBLIC"))
+            conn.execute(text("REVOKE CONNECT ON DATABASE butlers FROM butlers"))
+            conn.execute(text("REVOKE ALL PRIVILEGES ON SCHEMA public FROM butlers"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    completed = _run_psql_file(
+        host=host,
+        port=port,
+        user=owner_role,
+        password="unprivileged-owner",
+        database="butlers",
+        file_path=script_path,
+        connecting_user="butlers",
+        check=False,
+    )
+
+    assert completed.returncode != 0
+
+    engine = create_engine(control_url)
+    try:
+        with engine.connect() as conn:
+            migration_role = dict(
+                conn.execute(
+                    text(
+                        """
+                        SELECT rolcanlogin, rolinherit, rolsuper, rolcreaterole,
+                               rolcreatedb, rolreplication
+                        FROM pg_roles
+                        WHERE rolname = 'butlers'
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            created_roles = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT rolname
+                        FROM pg_roles
+                        WHERE rolname = ANY(:role_names)
+                        ORDER BY rolname
+                        """
+                    ),
+                    {
+                        "role_names": [
+                            *_NORMAL_RUNTIME_ROLES,
+                            *_RESTORE_DRILL_AUTHORITY_ROLES,
+                        ]
+                    },
+                )
+                .scalars()
+                .all()
+            )
+            migration_membership_count = conn.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM pg_auth_members AS membership
+                    JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid
+                    JOIN pg_roles AS member_role ON member_role.oid = membership.member
+                    WHERE granted_role.rolname = 'butlers'
+                       OR member_role.rolname = 'butlers'
+                    """
+                )
+            ).scalar_one()
+            acl_state = dict(
+                conn.execute(
+                    text(
+                        """
+                        SELECT
+                            has_database_privilege('butlers', current_database(), 'CONNECT')
+                                AS migration_connect,
+                            has_schema_privilege('butlers', 'public', 'CREATE')
+                                AS public_create,
+                            to_regnamespace('chronicler') IS NULL AS chronicler_absent,
+                            to_regnamespace('restore_drill_executor') IS NULL
+                                AS restore_drill_absent,
+                            to_regnamespace('restore_drill_executor_admin') IS NULL
+                                AS restore_drill_admin_absent,
+                            (
+                                SELECT count(*)
+                                FROM pg_default_acl
+                                WHERE defaclrole = (
+                                    SELECT oid FROM pg_roles WHERE rolname = 'butlers'
+                                )
+                            ) AS migration_default_acl_count
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            installed_script_extensions = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT extname
+                        FROM pg_extension
+                        WHERE extname = ANY(:extension_names)
+                        ORDER BY extname
+                        """
+                    ),
+                    {"extension_names": ["pgcrypto", "pg_trgm", "uuid-ossp", "vector"]},
+                )
+                .scalars()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    assert migration_role == {
+        "rolcanlogin": True,
+        "rolinherit": True,
+        "rolsuper": False,
+        "rolcreaterole": False,
+        "rolcreatedb": False,
+        "rolreplication": False,
+    }
+    assert created_roles == []
+    assert migration_membership_count == 0
+    assert acl_state == {
+        "migration_connect": False,
+        "public_create": False,
+        "chronicler_absent": True,
+        "restore_drill_absent": True,
+        "restore_drill_admin_absent": True,
+        "migration_default_acl_count": 0,
+    }
+    assert installed_script_extensions == []
+    assert "restore-drill admin bootstrap requires a cluster superuser" in completed.stderr
+
+
 def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
     """butler_chronicler_rw can SELECT sessions but not other butler schema tables.
 
