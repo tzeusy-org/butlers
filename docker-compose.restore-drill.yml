@@ -3,10 +3,12 @@
 # This file is intentionally absent from bare `docker compose` invocations.
 # Only scripts/compose.sh and `butlers deploy` are supported launchers for it;
 # they include it after they have
-# stopped the prior executor and relay, created the relay's egress bridge, and
-# installed the root-owned PostgreSQL-only default-deny firewall. The executor
-# itself is structurally confined to the internal relay network even if this
-# fragment is composed directly; do not use it to start services manually.
+# stopped the prior executor and relay, obtained a root-owned generation-bound
+# capability, created the protected topology, and installed the relay and
+# executor-bridge default-deny policies before either service starts.
+# The internal network limits membership, but only the prepared firewall also
+# denies its Docker gateway and host paths. Direct rendering is inspection
+# only; do not use this fragment to start services manually.
 
 services:
   # This uncredentialed raw-TCP relay is the only service with a route from
@@ -24,11 +26,12 @@ services:
       # The firewall script keys this non-internal bridge by project name and
       # permits this uncredentialed relay only to the resolved PostgreSQL IP.
       restore_drill_db:
-      # The executor's DNS/TLS hostname resolves to this relay only inside the
-      # internal network. Raw TLS then reaches PostgreSQL unchanged.
+      # The executor's DNS/TLS hostname (never a numeric literal) resolves to
+      # this relay only inside the internal network. Raw TLS then reaches
+      # PostgreSQL unchanged.
       restore_drill_executor:
         aliases:
-          - ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}
+          - ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to provide the PostgreSQL TLS DNS hostname}
     restart: "no"
 
   # The sole holder of the recovery-only database credential. It has no HTTP
@@ -41,8 +44,13 @@ services:
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
     command: []
     environment:
-      RESTORE_DRILL_EXECUTOR_DB_HOST: ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}
+      RESTORE_DRILL_EXECUTOR_DB_HOST: ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to provide the PostgreSQL TLS DNS hostname}
       RESTORE_DRILL_EXECUTOR_DB_PORT: ${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}
+      RESTORE_DRILL_EXECUTOR_FIREWALL_PROJECT: ${COMPOSE_PROJECT_NAME:?Run a supported launcher to prepare the executor firewall}
+      # The root-owned prepare verb generates this for each `compose create`.
+      # Its post-fence marker binds the nonce to this exact container generation;
+      # the invalid default makes a direct merged invocation fail before secret use.
+      RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE: ${RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE:-unprepared}
       RESTORE_DRILL_EXECUTOR_SSLMODE: ${POSTGRES_SSLMODE:-}
       # This is a container path, never the host-config source path. The
       # noncredential CA root is required only when sslmode verifies it.
@@ -54,6 +62,16 @@ services:
       RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S: ${RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S:-3600}
     volumes:
       - butlers_backups:/backups:ro
+      # The root-owned wrapper prepares this directory before Compose creates
+      # the executor, then writes the exact capability only after both bridge
+      # policies are installed. A direct overlay launch cannot create a
+      # runnable executor without that marker.
+      - type: bind
+        source: /run/butlers/restore-drill-firewall
+        target: /run/butlers/restore-drill-firewall
+        read_only: true
+        bind:
+          create_host_path: false
     secrets:
       - source: restore_drill_executor_password
         target: restore_drill_executor_password
@@ -91,8 +109,9 @@ networks:
   restore_drill_db:
     driver: bridge
     enable_ipv6: false
-  # The credentialed executor cannot leave this network. Its only peer is the
-  # relay, whose scoped alias preserves PostgreSQL's TLS hostname.
+  # This limits the credentialed executor's network membership. The prepared
+  # root-owned executor bridge policy allows only the created relay peer and
+  # denies Docker-gateway and host traffic.
   restore_drill_executor:
     driver: bridge
     internal: true

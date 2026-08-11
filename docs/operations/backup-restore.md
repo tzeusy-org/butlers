@@ -138,36 +138,68 @@ mutation to force a drill through.
 The Compose services are deliberately narrow:
 
 - The credentialed executor joins only the dedicated Docker `internal`
-  `restore_drill_executor` network and exposes no listener or host port. It
-  cannot directly route to PostgreSQL, the host, or ordinary service networks.
-  Its sole peer is an uncredentialed raw-TCP relay.
-- A configured DNS database host remains the executor's TLS/SNI identity
-  (including `sslmode=verify-full`), but Docker resolves that name only as an
-  alias for the internal relay. The relay carries no private secret,
+  `restore_drill_executor` network and exposes no listener or host port. Its
+  network membership excludes the ordinary service and external relay bridges,
+  but an internal network alone does not deny bridge-gateway or host traffic.
+  The prepared root-owned executor bridge policy is default-denied except for
+  its created relay peer at the configured PostgreSQL port, so it cannot route
+  directly to PostgreSQL, the host, or ordinary service networks.
+- The executor connection identity MUST be an untrimmed DNS hostname (including
+  `sslmode=verify-full`), never `localhost` or a numeric IPv4 spelling. Docker
+  resolves that name only as an alias for the internal relay. The relay carries no private secret,
   `POSTGRES_*`, or `DATABASE_URL`; it alone joins the non-internal
   `restore_drill_db` egress bridge and accepts only the separately resolved
   PostgreSQL IPv4 and port. Verification modes additionally use the dedicated
   read-only CA-root mount described above; `verify-full` verifies the retained
   DNS hostname, never the relay's IPv4 target.
+- Only the separately supplied/resolved relay/firewall target may be a
+  canonical dotted-decimal remote-unicast IPv4, with a canonical ASCII-decimal port
+  matching `[1-9][0-9]{0,4}` in `1..65535`. Every boundary rejects
+  noncanonical, loopback,
+  unspecified, link-local, multicast, documentation, and policy-reserved
+  addresses while retaining RFC1918, CGNAT/tailnet, and valid public unicast
+  database routes. Legacy decimal, octal, hexadecimal, and abbreviated
+  `inet_aton` spellings are rejected before DNS resolution. The pre-source
+  endpoint-literal grammar supports simple `KEY=value` or `export KEY=value`
+  with optional leading spaces/tabs; raw RHS whitespace is rejected before
+  sourcing. Other Bash command forms are outside this pre-source
+  endpoint-literal grammar; their resulting endpoint values are validated
+  without trimming or reinterpretation.
+  The executor hostname is not that route: it resolves
+  only to the relay alias on the internal network.
+- The uncredentialed relay immediately rejects a client when its fixed two-slot
+  admission cap is full, uses a bounded listener backlog, and closes both sides
+  on a 10-second upstream-connect deadline, a two-hour idle deadline, or a
+  six-hour total-session deadline. Each close has at most one second to flush;
+  the relay then aborts the transport so a non-reading peer cannot pin a slot.
+  It never queues accepted client sockets or exposes a host port.
 - A root-owned fixed wrapper at
-  `/usr/local/libexec/butlers-restore-drill-firewall` installs project-scoped
-  default-deny chains for that relay egress bridge at Docker's
-  `DOCKER-USER`/`FORWARD` hook and the bridge `INPUT` path. The only accepted
-  route is TCP to the resolved PostgreSQL IPv4 endpoint and port; every other
-  forwarded packet and every relay-to-host or bridge-gateway packet is dropped.
-  This second hook is required because host services and the bridge gateway do
-  not traverse `FORWARD`. IPv6 is disabled on both dedicated networks.
+  `/usr/local/libexec/butlers-restore-drill-firewall` derives both project
+  bridges and the created relay's internal address before installing two
+  default-deny policies. The relay egress bridge accepts only TCP to the
+  resolved PostgreSQL IPv4 endpoint and port; the executor bridge is
+  default-denied except for TCP to that created relay peer at the same port.
+  Both policies hook Docker's `DOCKER-USER`/`FORWARD` path and their bridge
+  `INPUT` paths, so every other forwarded packet and every host or
+  bridge-gateway packet is dropped. This second hook is required because host
+  services and the bridge gateway do not traverse `FORWARD`. IPv6 is disabled
+  on both dedicated networks.
 - The ordinary `docker-compose.yml` deliberately omits the executor, its
   bridge, its CA config, and its private secret. The supported launchers,
   `scripts/compose.sh` and `butlers deploy`, are the only paths that add
   `docker-compose.restore-drill.yml`; they stop the old relay and executor,
-  create their networks without starting either process, install that
-  default-deny policy, and only then start the merged stack. The services have
-  `restart: "no"`, so a Docker daemon or host restart cannot auto-start them
-  before the fence is recreated. A failed checked stop/down phase also ends the
-  launcher before `create`, firewall invocation, or `up`. Thus a bare `docker
-  compose up` fails closed by omitting the executor rather than relying on a
-  warning comment.
+  call a versioned root-owned preparation verb before `create`, inject its
+  generation-bound nonce into the created executor, attest and fence that exact
+  container/relay topology, and only then start the merged stack. The
+  post-fence marker binds the current host boot, project, nonce, executor
+  generation, and relay topology, so a same-boot manual down/recreate cannot
+  replay a prior authorization. An older installed wrapper rejects the
+  preparation verb before `create`/`up`. The services have `restart: "no"`, so
+  a Docker daemon or host restart cannot auto-start them before the fence is
+  recreated. A direct merged invocation has no valid prepared marker for its
+  new executor generation and fails before reading the secret. A failed checked
+  stop/down phase also ends the launcher before preparation, `create`, firewall
+  invocation, or `up`.
 - It mounts `butlers_backups` read-only and has no Docker socket, `backend`,
   `frontend`, or `egress` network membership.
 - It does not inherit `x-postgres-env` and receives no `POSTGRES_USER`,
@@ -181,10 +213,13 @@ procedure must review the exact checkout source and install the immutable
 runtime copy with `scripts/install_restore_drill_firewall_wrapper.sh`. That
 installer writes only `/usr/local/libexec/butlers-restore-drill-firewall` with
 `root:root` ownership and mode `0755`; it does not accept an alternate target.
-The host's managed sudo policy may permit only that fixed wrapper and only its
-literal `--project`, `--db-host`, and `--db-port` invocation form. The checked-in
+The host's managed sudo policy may permit only that fixed wrapper and its two
+literal versioned forms: `--prepare-executor-capability-v1 --project`, then
+`--project --db-host --db-port --require-executor-capability-v1`. The checked-in
 `scripts/restore-drill-firewall.sudoers` is a policy template for that host
-configuration step.
+configuration step. These attest the supported launch sequence against stale
+wrappers and stale container generations; a root-level firewall/Docker reset
+still requires the canonical launcher to prepare and fence a fresh topology.
 
 Never grant passwordless sudo for `scripts/restore-drill-firewall.sh`, a
 checkout wildcard, `env`, a shell, or the installer. The checkout script is an
@@ -239,6 +274,10 @@ Use normal deployment observation surfaces; none should display the secret:
 ./scripts/restore-drill-compose-inspect.sh ps
 ./scripts/restore-drill-compose-inspect.sh logs --tail=100 restore-drill-executor
 ```
+
+Its rendered Compose output is inspection only: use a supported launcher or
+`butlers deploy` to validate the endpoint and prepare the firewall before any
+protected service starts.
 
 The System page and `GET /api/system/backups` surface the most recently
 recorded pass, failure, pending state, or a degraded read. A present backup is

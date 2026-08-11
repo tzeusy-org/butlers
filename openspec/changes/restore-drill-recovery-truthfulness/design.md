@@ -77,23 +77,43 @@ This is deliberately a privileged *runtime* boundary, not a bootstrap-only
 claim: compromise of the executor can create scratch databases and read the
 backup artifact required for recovery proof. The containment is explicit: the
 executor is the sole service with that credential and joins only the dedicated
-Docker `internal` `restore_drill_executor` network. Its sole peer is an
-uncredentialed raw-TCP relay. That relay joins the internal network plus the
-non-internal `restore_drill_db` egress bridge; the host policy default-denies
+Docker `internal` `restore_drill_executor` network. The prepared policy permits
+it to reach only its created uncredentialed raw-TCP relay. That relay joins the
+internal network plus the non-internal `restore_drill_db` egress bridge; the
+host policy default-denies
 all relay egress except TCP to its configured PostgreSQL endpoint and port.
-The policy hooks both Docker's `DOCKER-USER`/`FORWARD` path and the bridge
-`INPUT` path, because a host or Docker gateway destination does not traverse
-`FORWARD`. The ordinary `docker-compose.yml` deliberately omits both protected
-services, their bridges, and their secret/config mounts; a bare Compose
-invocation therefore cannot start the privileged process. Both supported
-launchers (`scripts/compose.sh` and `butlers deploy`) add the protected
+Docker `internal` limits membership but does not itself deny bridge-gateway or
+host traffic, so the same host policy also default-denies the executor bridge
+except for TCP to the created relay peer at that port. Both bridge policies hook
+Docker's `DOCKER-USER`/`FORWARD` path and the bridge `INPUT` path, because a
+host or Docker gateway destination does not traverse `FORWARD`. The ordinary
+`docker-compose.yml` deliberately omits both protected services, their
+bridges, and their secret/config mounts; a bare Compose invocation therefore
+cannot start the privileged process. Both supported launchers
+(`scripts/compose.sh` and `butlers deploy`) add the protected
 `docker-compose.restore-drill.yml` fragment, stop/create the relay and
 executor, invoke only the fixed root-owned
-`/usr/local/libexec/butlers-restore-drill-firewall` wrapper, install the
-default-deny policy, and only then start them. Neither launcher may elevate a
+`/usr/local/libexec/butlers-restore-drill-firewall` wrapper, and use its
+versioned prepare verb before `create`. That verb emits a
+per-created-generation nonce; the created executor carries it, and the
+post-fence marker binds it to the
+current boot, project, exact executor container generation, relay container,
+network identities, and internal endpoints. The executor verifies its own
+generation and current internal relay topology before reading its secret. A
+same-boot manual down/recreate therefore cannot replay a marker tied to old
+bridges, and an old installed wrapper rejects the new preparation verb before
+any protected container is created. Neither launcher may elevate a
 checkout-controlled script, broad `env`, or a shell. Neither protected service
 has an automatic restart policy, so a Docker daemon or host restart cannot
-start it before the fence is restored.
+start it before the fence is restored. Root-level Docker/firewall intervention
+is outside this unprivileged launch attestation and requires rerunning the
+canonical launcher.
+
+A direct stop/start of that unchanged, already-fenced container generation
+does not create a new authorization: it retains the exact container, network,
+marker, and host policy that the post-fence attestation verified. It remains an
+unsupported operational path. A `down` or any topology recreation creates a
+new generation and must repeat the canonical prepare/create/fence sequence.
 
 When PostgreSQL is named by DNS, that hostname remains the executor's TLS/SNI
 identity (including `verify-full`) but resolves only to the relay's internal
@@ -107,6 +127,28 @@ scratch database. Granting `CREATEDB` to that shared user is rejected because
 `SET ROLE` cannot constrain its subprocesses. Ad hoc
 `ALTER ROLE` or a manually pre-created scratch database are rejected because
 they turn a recovery proof into an untracked live mutation.
+
+The endpoint is fail-closed at every boundary: the executor connection identity
+MUST be an untrimmed DNS hostname, not `localhost` or any numeric IPv4 spelling,
+so Docker resolves it only to the internal relay alias. The separately resolved
+relay/firewall target must be remote unicast IPv4 with a canonical ASCII-decimal
+port matching `[1-9][0-9]{0,4}` in `1..65535`. Loopback,
+unspecified, link-local, multicast, documentation, and
+policy-reserved ranges are rejected; RFC1918, CGNAT/tailnet, and valid
+public unicast routes remain usable. Legacy decimal, octal, hexadecimal, and
+abbreviated `inet_aton` spellings are rejected before DNS resolution. The
+pre-source endpoint-literal grammar supports simple `KEY=value` or
+`export KEY=value` with optional leading spaces/tabs; raw RHS whitespace is
+rejected before sourcing. Other Bash command forms are outside this pre-source
+endpoint-literal grammar; their resulting endpoint values are validated without
+trimming or reinterpretation. The
+uncredentialed relay admits at most
+two clients with no waiting queue and a bounded listener backlog; it bounds an
+upstream connection to 10 seconds, an idle stream to two hours, and every
+session to six hours. It closes both sides and releases its slot on every
+failure, timeout, cancellation, or shutdown. Each side receives at most one
+second for a graceful close before the relay aborts its transport, so buffered
+data toward a non-reading peer cannot pin admission or listener shutdown.
 
 `verify-ca` and `verify-full` additionally require one dedicated,
 noncredential CA-root source file. Compose mounts it read-only only into the
@@ -252,23 +294,27 @@ depending on color alone.
 
 ## Migration Plan
 
-1. Add the checked-in privileged bootstrap provisioner and idempotent bootstrap
-   SQL support for the distinct executor login, its file-backed deployment
-   secret contract, and its narrow restore-drill database interface. The shared
-   migration/connecting user and all runtime roles remain `NOCREATEDB`; update
-   the operator procedure before enabling the executor.
-2. Add `core_180_restore_drill_executor_contract.py` from the current
-   `core_179` head. It expands the `attention_ledger` source vocabulary to
-   `restore_drill`, preserves existing rows, and creates/grants the bounded
-   restore-drill persistence interface. Immediately before creating that
-   migration, rebase and inspect the core chain: use its sole current head as
-   `down_revision` and the next unclaimed `core_<n>` identifier. If the chain
-   has advanced or has multiple heads, update/reconcile it first; never create a
-   duplicate revision ID or attach to a stale head.
-3. Ship the isolated executor/service, structured result writing,
-   result-aware scheduling, attention recording, API/types/UI updates, and
-   focused tests together after the prerequisite migration is available.
-4. Roll back application code and the executor deployment without restoring a dump into the live database.
+1. **Completed by `bu-kqnum.8.3`:** add the checked-in privileged bootstrap
+   provisioner and idempotent bootstrap SQL support for the distinct executor
+   login, its file-backed deployment secret contract, and its narrow
+   restore-drill database interface. The shared migration/connecting user and
+   all runtime roles remain `NOCREATEDB`; update the operator procedure before
+   enabling the executor.
+2. **Completed by `bu-kqnum.8.3`:** add
+   `core_196_restore_drill_executor_boundary.py` from the live `core_195` head.
+   It creates/grants the bounded executor persistence interface and preserves
+   the result ledger as the sole due/API authority. It deliberately does not
+   add the later attention-ledger `restore_drill` source vocabulary.
+3. **Allocated to `bu-kqnum.8.4` and `bu-kqnum.8.5`:** extend the current core
+   chain with its next unclaimed revision for structured result writing,
+   result-aware scheduling, attention recording, and API/types/UI truthfulness.
+   Before that migration is created, inspect the sole live head and reconcile a
+   multi-head chain rather than attaching to a stale revision.
+4. **Allocated to `bu-kqnum.8.6`:** add real PostgreSQL-client/testcontainer
+   proof for `pg_dump`, gzip, `createdb`, `psql`, `dropdb`, classified
+   `NOCREATEDB` failure, and scratch cleanup. This proof is intentionally not
+   substituted with mocks or implemented in the boundary slice.
+5. Roll back application code and the executor deployment without restoring a dump into the live database.
    If the source-constraint migration is downgraded, remove only
    `source="restore_drill"` attention observations before narrowing the
    constraint and revoke the executor's bounded interface before removing its

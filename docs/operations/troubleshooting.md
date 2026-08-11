@@ -127,7 +127,7 @@ go install github.com/opencode-ai/opencode@latest
 **Diagnosis:**
 ```bash
 docker compose build --no-cache <service>
-./scripts/restore-drill-compose-inspect.sh logs <service> --tail=100
+docker compose logs <service> --tail=100
 ```
 
 ## Butler Communication Failures
@@ -138,11 +138,11 @@ docker compose build --no-cache <service>
 
 **Diagnosis:**
 ```bash
-# Check the full protected topology without starting anything
-./scripts/restore-drill-compose-inspect.sh ps
+# Check if the butler process is running
+docker compose ps
 
-# Check butler logs through the same read-only merged input
-./scripts/restore-drill-compose-inspect.sh logs <butler-name> --tail=100
+# Check butler logs
+docker compose logs <butler-name> --tail=100
 
 # Test MCP endpoint
 curl http://localhost:<port>/health
@@ -170,11 +170,11 @@ curl http://localhost:41200/api/health
 # PostgreSQL health
 pg_isready -h localhost -p 54320 -U butlers
 
-# All services status, including the protected restore-drill topology (read only)
-./scripts/restore-drill-compose-inspect.sh ps
+# All services status
+docker compose ps
 
-# Butler-specific logs (read only)
-./scripts/restore-drill-compose-inspect.sh logs <butler-name> --tail=50 --follow
+# Butler-specific logs
+docker compose logs <butler-name> --tail=50 --follow
 
 # CLI auth status for all providers
 curl http://localhost:41200/api/cli-auth/health

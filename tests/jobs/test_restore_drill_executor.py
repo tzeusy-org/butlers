@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import butlers.jobs.restore_drill_executor as restore_drill_executor
 from butlers.jobs.backup_health import RestoreDrillResult, _run_restore_drill_sync
 from butlers.jobs.restore_drill_executor import (
     RestoreDrillExecutorConfig,
@@ -23,8 +24,74 @@ from butlers.jobs.restore_drill_executor import (
     run_restore_drill_executor_loop,
     run_restore_drill_executor_tick,
 )
+from tests.restore_drill_endpoint_policy import (
+    EXECUTOR_NUMERIC_IDENTITIES_REJECTED,
+    NONCANONICAL_PORT_REJECTED,
+)
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _prepared_firewall_capability(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provide a current root-marker shape to unrelated config tests."""
+    project = "butlers"
+    nonce = "a" * 64
+    executor_id = "1" * 64
+    relay_id = "2" * 64
+    executor_network_id = "3" * 64
+    relay_network_id = "4" * 64
+    capability_directory = tmp_path / "restore-drill-firewall"
+    capability_directory.mkdir()
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_FIREWALL_CAPABILITY_DIRECTORY",
+        capability_directory,
+    )
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_read_host_boot_id",
+        lambda: "test-boot-id",
+    )
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_read_current_container_identity",
+        lambda: executor_id,
+    )
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_read_current_executor_ipv4",
+        lambda: "172.30.0.3",
+    )
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_current_executor_network_contains",
+        lambda executor_ip, gateway: executor_ip == "172.30.0.3" and gateway == "172.30.0.1",
+    )
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_resolve_internal_relay_ipv4",
+        lambda _host, _port: "172.30.0.2",
+    )
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_FIREWALL_PROJECT", project)
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE", nonce)
+    capability_path = capability_directory / f"{project}.executor-capability-v1"
+    capability_path.write_text(
+        "butlers-restore-drill-firewall-v1\n"
+        "project=butlers\n"
+        "port=5432\n"
+        "boot_id=test-boot-id\n"
+        f"nonce={nonce}\n"
+        f"executor_container_id={executor_id}\n"
+        f"executor_network_id={executor_network_id}\n"
+        "executor_ip=172.30.0.3\n"
+        "executor_gateway=172.30.0.1\n"
+        f"relay_container_id={relay_id}\n"
+        f"relay_network_id={relay_network_id}\n"
+        "relay_ip=172.30.0.2\n",
+        encoding="utf-8",
+    )
+    capability_path.chmod(0o400)
 
 
 def _completed(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""):
@@ -53,6 +120,7 @@ def test_executor_configuration_reads_its_password_from_a_file_not_shared_enviro
     password_file = tmp_path / "restore-drill-password"
     password_file.write_text("file-backed-test-password\n", encoding="utf-8")
     monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
     monkeypatch.setenv("POSTGRES_USER", "shared-dashboard-user")
     monkeypatch.setenv("POSTGRES_PASSWORD", "shared-dashboard-password")
     monkeypatch.setenv("POSTGRES_SSLMODE", "require")
@@ -82,6 +150,129 @@ def test_executor_configuration_reads_its_password_from_a_file_not_shared_enviro
     assert require_context.verify_mode == ssl.CERT_NONE
 
 
+def test_executor_rejects_missing_prepared_firewall_capability_before_reading_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A direct merged Compose start must fail before using its credential."""
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_FIREWALL_CAPABILITY_DIRECTORY",
+        tmp_path / "missing-capabilities",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_read_host_boot_id",
+        lambda: "test-boot-id",
+        raising=False,
+    )
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_PORT", "5432")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_FIREWALL_PROJECT", "butlers")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+
+    with pytest.raises(ValueError, match="prepared firewall capability"):
+        load_restore_drill_executor_config()
+
+
+def test_executor_rejects_a_stale_capability_from_another_container_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manual down/recreate cannot replay a prior boot/project/port marker."""
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_PORT", "5432")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    monkeypatch.setattr(
+        restore_drill_executor,
+        "_read_current_container_identity",
+        lambda: "9" * 64,
+    )
+
+    with pytest.raises(ValueError, match="prepared firewall capability"):
+        load_restore_drill_executor_config()
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "nonce",
+        "executor_container_id",
+        "executor_network_id",
+        "executor_ip",
+        "executor_gateway",
+        "relay_container_id",
+        "relay_network_id",
+        "relay_ip",
+        "relay_alias",
+    ),
+)
+def test_executor_rejects_tampered_capability_topology_before_reading_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    """Every executor-observable capability field fails closed before secret I/O."""
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_PORT", "5432")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    capability_path = tmp_path / "restore-drill-firewall" / "butlers.executor-capability-v1"
+
+    replacements = {
+        "nonce": ("nonce=" + "a" * 64, "nonce=" + "b" * 64),
+        "executor_container_id": (
+            "executor_container_id=" + "1" * 64,
+            "executor_container_id=" + "9" * 64,
+        ),
+        "executor_network_id": ("executor_network_id=" + "3" * 64, "executor_network_id=bad"),
+        "executor_ip": ("executor_ip=172.30.0.3", "executor_ip=172.30.0.9"),
+        "executor_gateway": ("executor_gateway=172.30.0.1", "executor_gateway=172.30.0.9"),
+        "relay_container_id": ("relay_container_id=" + "2" * 64, "relay_container_id=bad"),
+        "relay_network_id": ("relay_network_id=" + "4" * 64, "relay_network_id=bad"),
+        "relay_ip": ("relay_ip=172.30.0.2", "relay_ip=172.30.0.9"),
+    }
+    if tamper == "relay_alias":
+        monkeypatch.setattr(
+            restore_drill_executor,
+            "_resolve_internal_relay_ipv4",
+            lambda _host, _port: "172.30.0.9",
+        )
+    else:
+        before, after = replacements[tamper]
+        content = capability_path.read_text(encoding="utf-8")
+        assert before in content
+        capability_path.chmod(0o600)
+        capability_path.write_text(content.replace(before, after), encoding="utf-8")
+        capability_path.chmod(0o400)
+
+    def password_must_not_be_read(_path: Path) -> str:
+        pytest.fail("capability rejection read the restore-drill password")
+
+    monkeypatch.setattr(
+        restore_drill_executor, "_read_executor_password", password_must_not_be_read
+    )
+
+    with pytest.raises(ValueError, match="prepared firewall capability"):
+        load_restore_drill_executor_config()
+
+
+def test_executor_attestation_accepts_an_internal_connected_route_without_default_route() -> None:
+    """Docker `internal` networks deliberately omit a default route."""
+    routes = "\n".join(
+        (
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask",
+            "eth0\t00001EAC\t00000000\t0001\t0\t0\t0\t0000FFFF",
+        )
+    )
+
+    assert restore_drill_executor._has_connected_route_for(  # noqa: SLF001
+        "172.30.0.3", "172.30.0.1", routes
+    )
+
+
 def test_executor_keeps_dns_tls_identity_for_verify_full_and_strips_one_terminal_lf(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -106,6 +297,21 @@ def test_executor_keeps_dns_tls_identity_for_verify_full_and_strips_one_terminal
     assert context.verify_mode == ssl.CERT_REQUIRED
 
 
+@pytest.mark.parametrize("port", ["0", "65536", "not-a-port", *NONCANONICAL_PORT_REJECTED])
+def test_executor_rejects_out_of_range_or_invalid_database_ports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, port: str
+) -> None:
+    """The executor must never accept a port its relay/firewall cannot serve."""
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_PORT", port)
+
+    with pytest.raises(ValueError, match="positive integer|1..65535"):
+        load_restore_drill_executor_config()
+
+
 @pytest.mark.parametrize(
     ("sslmode", "expected_hostname_check"),
     [("verify-ca", False), ("verify-full", True)],
@@ -120,6 +326,7 @@ def test_executor_verification_modes_require_a_valid_dedicated_ca_root_file(
     password_file = tmp_path / "restore-drill-password"
     password_file.write_text("file-backed-test-password\n", encoding="utf-8")
     monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
     monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_SSLMODE", sslmode)
     monkeypatch.delenv("RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE", raising=False)
 
@@ -142,6 +349,20 @@ def test_executor_verification_modes_require_a_valid_dedicated_ca_root_file(
     context = _asyncpg_ssl_context(config)
     assert context.verify_mode == ssl.CERT_REQUIRED
     assert context.check_hostname is expected_hostname_check
+
+
+@pytest.mark.parametrize("host", EXECUTOR_NUMERIC_IDENTITIES_REJECTED)
+def test_executor_rejects_numeric_connection_identities_before_opening_a_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """Only Docker-resolvable DNS identities can reach the internal relay alias."""
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", host)
+
+    with pytest.raises(ValueError, match="DNS hostname"):
+        load_restore_drill_executor_config()
 
 
 @pytest.mark.parametrize("secret", ["one\ntwo", "one\r", "one\n\n", "\x00"])

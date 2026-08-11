@@ -49,8 +49,9 @@ or restarting any container, use the verb-restricted helper:
 
 It merges the base and protected Compose files but accepts only read-only
 `config`, `ps`, and `logs` operations. Never use those merged files with `up`;
-`scripts/compose.sh` and `butlers deploy` perform the required stop/create/
-firewall preparation before either restore-drill service can start.
+`scripts/compose.sh` and `butlers deploy` perform the required stop, versioned
+root preparation, create, exact-topology firewall attestation, and only then
+start either restore-drill service.
 
 ## Images
 
@@ -175,10 +176,11 @@ It runs, in order:
    treats it as permanently satisfied even after the image is rebuilt with
    new migrations baked in (bd bu-zhfd0: core_155..161 sat unrun in prod for
    six days this way). `run --rm` sidesteps that entirely.
-3. **Prepare and recreate** — stops and creates the restore relay/executor,
-   applies the root-owned default-deny firewall, then runs the protected
-   base-plus-restore-drill Compose overlay with `up -d --remove-orphans`, with
-   **no** `--profile` flag ever passed and
+3. **Prepare and recreate** — stops the restore relay/executor, obtains the
+   root-owned generation-bound capability, creates the protected containers, attests
+   and applies both root-owned default-deny firewall policies, then runs the
+   protected base-plus-restore-drill Compose overlay with `up -d --remove-orphans`,
+   with **no** `--profile` flag ever passed and
    `COMPOSE_PROFILES` stripped from the subprocess environment, so a leftover dev-shell
    `COMPOSE_PROFILES=hotreload` cannot silently pull the bind-mounted
    hotreload services into a prod recreate.

@@ -5,7 +5,11 @@
 #
 # Never grant sudo for scripts/restore-drill-firewall.sh, `env`, a shell, or a
 # wildcard checkout path. The immutable wrapper validates each literal argument
-# before it calls docker or iptables. --remove and --dry-run are deliberately
-# absent from this policy.
-Cmnd_Alias BUTLERS_RESTORE_DRILL_FIREWALL = /usr/local/libexec/butlers-restore-drill-firewall --project * --db-host * --db-port *
+# before it calls docker or iptables. The versioned prepare verb is deliberately
+# separate from the gated apply verb: an older installed wrapper rejects it
+# before Compose can create a credentialed executor. --remove and --dry-run
+# are deliberately absent from this policy.
+Cmnd_Alias BUTLERS_RESTORE_DRILL_FIREWALL = \
+    /usr/local/libexec/butlers-restore-drill-firewall --prepare-executor-capability-v1 --project *, \
+    /usr/local/libexec/butlers-restore-drill-firewall --project * --db-host * --db-port * --require-executor-capability-v1
 %butlers-deploy ALL=(root) NOPASSWD: BUTLERS_RESTORE_DRILL_FIREWALL

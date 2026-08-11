@@ -41,19 +41,45 @@ Scope: v1-mandatory
   purpose-specific endpoint configuration
 - **AND** the executor does not inherit shared `POSTGRES_*`/`DATABASE_URL`
   configuration and has no general live-schema grants
-- **AND** it is omitted from the default unprofiled Compose service set behind
-  the dedicated `restore-drill` profile, which only the firewall-preparing
-  supported launchers select
-- **AND** it joins only a dedicated restore-drill bridge whose outbound policy
-  default-denies every destination except the configured PostgreSQL endpoint
-  and port across both forwarded and bridge-to-host traffic, mounts backup
-  artifacts read-only, and has no listener, Docker socket, `backend`,
-  `frontend`, or `egress` access
-- **AND** its DNS connection hostname remains distinct from the resolved IPv4
-  firewall endpoint so `sslmode=verify-full` verifies the intended PostgreSQL
-  identity without granting the bridge DNS egress; the rendered resolver has
-  only a container-loopback upstream and the local host mapping resolves that
-  sole PostgreSQL identity
+- **AND** it joins only a dedicated Docker `internal` relay network whose sole
+  peer is an uncredentialed relay; it mounts backup artifacts read-only and has
+  no listener, Docker socket, `backend`, `frontend`, or `egress` access; the
+  root-owned executor-bridge policy default-denies every non-relay peer,
+  including Docker gateway and host traffic, because `internal` alone does not
+  supply that host boundary
+- **AND** the relay alone joins the separate non-internal restore-drill egress
+  bridge, whose outbound policy default-denies every destination except the
+  configured PostgreSQL endpoint and port across both forwarded and
+  bridge-to-host traffic; the same wrapper derives and fences the executor
+  bridge so the credentialed process may reach only that created relay peer
+- **AND** the executor reads its credential only after a root-owned,
+  per-created-generation prepared capability binds the current boot, project,
+  nonce, executor
+  container generation, and relay/network topology; stale wrapper versions or
+  same-boot manual down/recreate state cannot replay that capability
+- **AND** direct stop/start of that unchanged, already-fenced generation is
+  not a new authorization; a down/recreate or topology change must repeat the
+  canonical prepare/create/fence sequence
+- **AND** its connection identity is an untrimmed DNS hostname, never
+  `localhost` or a numeric IPv4 spelling, and remains the executor's TLS/SNI
+  identity while resolving only to the relay's internal-network alias; the
+  separately resolved IPv4 is a relay/firewall route only, never an executor
+  direct route
+- **AND** only that separately supplied/resolved relay/firewall target accepts
+  canonical dotted-decimal remote-unicast IPv4 and canonical ASCII-decimal port
+  matching `[1-9][0-9]{0,4}` in `1..65535`, rejecting noncanonical, loopback,
+  unspecified, link-local, multicast, documentation, and policy-reserved
+  routes while allowing RFC1918, CGNAT/tailnet, and valid public unicast;
+  legacy decimal, octal, hexadecimal, and abbreviated `inet_aton` spellings
+  are rejected before DNS resolution. The pre-source endpoint-literal grammar
+  supports simple `KEY=value` or `export KEY=value` with optional leading
+  spaces/tabs; raw RHS whitespace is rejected before sourcing. Other Bash
+  command forms are outside this pre-source endpoint-literal grammar; their
+  resulting endpoint values are validated without trimming or reinterpretation
+- **AND** the relay immediately rejects admission beyond its fixed small cap,
+  keeps a bounded listener backlog, and has finite connect, idle, and total
+  session deadlines with cancellation-safe cleanup; each side gets at most one
+  second for graceful close before forced transport abort
 - **AND** its security-definer result writer discards caller-supplied backup
   names, free-form diagnostics, and table-count compatibility values before
   durable or audit/API-visible persistence, and rejects null or non-`pass`/
