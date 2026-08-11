@@ -28,8 +28,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$PROJECT_DIR"
 
-# Always include "dev" profile (activates frontend-dev from base compose)
-PROFILES=(dev)
+# Always include the dev frontend and the restore-drill executor profiles. The
+# latter is selected only by this launcher, after it has installed the
+# executor's default-deny firewall below.
+PROFILES=(dev restore-drill)
 COMPOSE_ENV=()
 SKIP_TAILSCALE=false
 OBSERVABILITY=false

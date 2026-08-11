@@ -158,11 +158,12 @@ It runs, in order:
    treats it as permanently satisfied even after the image is rebuilt with
    new migrations baked in (bd bu-zhfd0: core_155..161 sat unrun in prod for
    six days this way). `run --rm` sidesteps that entirely.
-3. **Recreate** — `docker compose up -d --remove-orphans`, with **no**
-   `--profile` flag ever passed and `COMPOSE_PROFILES` stripped from the
-   subprocess environment, so a leftover dev-shell
+3. **Recreate** — invokes Compose with the mandatory `restore-drill` profile
+   and no ambient `COMPOSE_PROFILES`; a leftover dev-shell
    `COMPOSE_PROFILES=hotreload` cannot silently pull the bind-mounted
-   hotreload services into a prod recreate.
+   hotreload services into a prod recreate. The deploy pipeline installs the
+   executor's host firewall before this phase can start its credentialed
+   service.
 4. **Verify** — polls `GET /health` until `status: "ok"` or the `--timeout`
    elapses.
 5. **Record** — writes one row to `public.deployments` (git SHA, migration

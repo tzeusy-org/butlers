@@ -308,10 +308,11 @@ def deploy(
     up) with one verb: builds the ``butlers-app`` image stamped with the
     current git SHA, force-reruns the one-shot migrations service (never
     trusts a stale exited container — see bu-zhfd0), recreates services under
-    only the explicitly-requested ``--profile`` flags (never an ambient
-    ``COMPOSE_PROFILES=hotreload`` leftover from a dev shell, and never
-    ``hotreload`` itself, which bind-mounts source instead of using the baked
-    image — see bu-hmdqz.1), polls ``/health``, and records the outcome to
+    the mandatory restore-drill profile plus only explicitly-requested
+    ``--profile`` flags (never an ambient ``COMPOSE_PROFILES=hotreload``
+    leftover from a dev shell, and never ``hotreload`` itself, which
+    bind-mounts source instead of using the baked image — see bu-hmdqz.1),
+    polls ``/health``, and records the outcome to
     ``public.deployments`` whether it succeeds or fails.
 
     ``--project-name``/``--env-file``/``--health-url`` default to the

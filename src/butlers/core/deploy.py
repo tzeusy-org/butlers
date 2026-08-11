@@ -7,8 +7,9 @@ build`` + ``docker compose up -d``) by hand — with one idempotent verb:
 
 Pipeline: build the ``butlers-app`` image stamped with the current git SHA →
 force-rerun the one-shot ``migrations`` service → refresh the bind-mounted
-beads export → recreate services under an explicit, hotreload/dev-profile-free
-compose invocation → poll ``/health`` → record the outcome to
+beads export → prepare the restore-drill firewall → recreate services under an
+explicit compose invocation (including the mandatory restore-drill profile,
+but no ambient hotreload/dev profile) → poll ``/health`` → record the outcome to
 ``public.deployments`` (success **or** failed — a failed deploy is recorded
 too, so it is visible in the ledger rather than silent; see
 ``butlers.core.deployments``).
@@ -38,6 +39,10 @@ bu-zhfd0, the incident where core_155..161 sat unrun in prod for six days):
   raises), so this pipeline can never recreate services under the
   bind-mounted, working-tree-sourced containers that motivated this bead in
   the first place — see the "PROD DEPLOYS" note atop ``docker-compose.yml``.
+- **Restore-drill startup bypass.** The credentialed executor is excluded from
+  Compose's default service set. :func:`_compose_base_args` adds its dedicated
+  profile only to this supported deploy path, which prepares the required
+  default-deny firewall before the executor can start.
 - **Beads export missing/stale in the compose project directory.** bu-hmdqz.6.
   ``docker-compose.yml`` bind-mounts ``./.beads/issues.export.jsonl:ro`` (a
   relative host path, resolved against ``config.repo_root``) into
@@ -90,6 +95,7 @@ DEFAULT_HEALTH_POLL_INTERVAL_S = 3.0
 # elevate only the root-owned copy installed by
 # scripts/install_restore_drill_firewall_wrapper.sh, never checkout code.
 RESTORE_DRILL_FIREWALL_WRAPPER = "/usr/local/libexec/butlers-restore-drill-firewall"
+RESTORE_DRILL_COMPOSE_PROFILE = "restore-drill"
 
 _RESTORE_DRILL_ENV_KEYS = frozenset(
     {
@@ -153,8 +159,8 @@ class DeployConfig:
     """Everything one ``butlers deploy`` invocation needs, explicitly.
 
     ``compose_files`` defaults to the single base file; there is no separate
-    "prod" overlay file because the base file's default (profile-less)
-    services already are the baked-image, no-bind-mount prod set.
+    "prod" overlay file because its default services, plus the mandatory
+    restore-drill profile, are the baked-image, no-bind-mount prod set.
 
     ``profiles`` lets a caller opt into compose profiles the target project
     actually needs (e.g. ``("dev",)`` for the ``butlers-dev`` project's
@@ -162,7 +168,9 @@ class DeployConfig:
     ``_FORBIDDEN_PROFILES``; enforced in ``__post_init__``). This is
     deliberately different from ambient ``COMPOSE_PROFILES`` leakage, which
     ``_clean_compose_env`` strips unconditionally: profiles here are always
-    explicit, passed via ``--profile``, never inherited from the shell.
+    explicit, passed via ``--profile``, never inherited from the shell. The
+    restore-drill profile is added independently for the supported deploy path;
+    callers cannot remove that executor safety boundary.
     """
 
     repo_root: Path
@@ -504,7 +512,7 @@ def _compose_base_args(config: DeployConfig) -> list[str]:
     for compose_file in config.compose_files:
         args += ["-f", compose_file]
     args += ["-p", config.project_name, "--env-file", config.env_file]
-    for profile in config.profiles:
+    for profile in dict.fromkeys((*config.profiles, RESTORE_DRILL_COMPOSE_PROFILE)):
         args += ["--profile", profile]
     return args
 
@@ -675,7 +683,7 @@ def prepare_restore_drill_executor(config: DeployConfig, endpoint: RestoreDrillE
 
 
 def recreate_services(config: DeployConfig, endpoint: RestoreDrillEndpoint | None = None) -> None:
-    """Recreate all prod services. Never passes ``--profile``; see module docstring."""
+    """Recreate prod services, including the firewall-prepared executor profile."""
     cmd = [*_compose_base_args(config), "up", "-d", "--remove-orphans"]
     _run_subprocess(
         cmd,

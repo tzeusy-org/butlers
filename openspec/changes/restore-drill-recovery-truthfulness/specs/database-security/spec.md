@@ -41,6 +41,9 @@ Scope: v1-mandatory
   purpose-specific endpoint configuration
 - **AND** the executor does not inherit shared `POSTGRES_*`/`DATABASE_URL`
   configuration and has no general live-schema grants
+- **AND** it is omitted from the default unprofiled Compose service set behind
+  the dedicated `restore-drill` profile, which only the firewall-preparing
+  supported launchers select
 - **AND** it joins only a dedicated restore-drill bridge whose outbound policy
   default-denies every destination except the configured PostgreSQL endpoint
   and port across both forwarded and bridge-to-host traffic, mounts backup

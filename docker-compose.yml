@@ -19,19 +19,20 @@
 #                and dashboard-api, replaces with *-hotreload variants)
 #   audio      — + live-listener connector (requires /dev/snd)
 #   minio      — + local S3-compatible storage (production uses Garage on tailnet)
+#   restore-drill — + the credentialed restore-drill executor. This is selected
+#                   only by the supported launchers after their host firewall
+#                   preparation succeeds; do not select it directly.
 #
 # PROD DEPLOYS:
 #   `butlers deploy` (src/butlers/core/deploy.py) is the one-command idempotent
 #   path: build the image with GIT_SHA, force-rerun `migrations` via `run --rm`
 #   (never trust a stale exited container's `service_completed_successfully`
 #   — see bu-zhfd0), recreate services, poll /health, record to
-#   public.deployments. It NEVER passes --profile and always strips an
-#   inherited COMPOSE_PROFILES from its own subprocess env, so the merged
-#   config for a deploy is always exactly the default (profile-less)
-#   baked-image service set above — the hotreload/dev profiles below cannot
-#   leak into a prod deploy, by construction, regardless of ambient shell
-#   state. Do not tag prod-relevant services with `profiles: [prod]` without
-#   updating both scripts/compose.sh and src/butlers/core/deploy.py in lockstep.
+#   public.deployments. It explicitly selects the restore-drill profile only
+#   after the executor's firewall preparation, and always strips inherited
+#   COMPOSE_PROFILES so hotreload/dev profiles cannot leak into a prod deploy.
+#   Do not tag prod-relevant services with profiles without updating both
+#   scripts/compose.sh and src/butlers/core/deploy.py in lockstep.
 #
 # NETWORK MODEL (see RFC 0008):
 #   db        (internal) — minio, migrations (external postgres via tailnet)
@@ -223,8 +224,9 @@ services:
   # Supported launchers retain the purpose-specific hostname for TLS identity,
   # map it locally to a resolved IPv4, and apply the bridge's PostgreSQL-only
   # default-deny firewall before starting this service. Do not start this
-  # service through bare `docker compose up`.
+  # service through bare `docker compose --profile restore-drill up`.
   restore-drill-executor:
+    profiles: [restore-drill]
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
     command: []

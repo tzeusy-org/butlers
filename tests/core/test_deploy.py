@@ -75,20 +75,23 @@ class TestComposeArgsAndEnv:
             "butlers",
             "--env-file",
             ".env.prod",
+            "--profile",
+            "restore-drill",
         ]
 
-    def test_no_profile_flag_appears_by_default(self):
-        """Structural guard: a default (prod) deploy must never request a compose profile."""
+    def test_default_deploy_explicitly_enables_restore_drill_profile(self):
+        """The supported deploy path alone can launch the credentialed executor."""
         args = _compose_base_args(_config())
-        assert "--profile" not in args
+        assert args[args.index("--profile") + 1] == "restore-drill"
 
     def test_explicit_profiles_are_threaded_into_compose_args(self):
         """bu-hmdqz.1: an explicitly-requested profile (e.g. 'dev' for the
         butlers-dev project's profile-gated frontend-dev service) must reach
         the actual compose invocation."""
         args = _compose_base_args(_config(profiles=("dev",)))
-        assert "--profile" in args
+        assert args.count("--profile") == 2
         assert args[args.index("--profile") + 1] == "dev"
+        assert args[args.index("--profile", args.index("--profile") + 1) + 1] == "restore-drill"
 
     def test_hotreload_profile_is_rejected_at_config_construction(self):
         """The hotreload profile bind-mounts source instead of the baked
@@ -352,7 +355,7 @@ class TestMaterializeBeadsExport:
 
 
 class TestRecreateServices:
-    def test_up_dash_d_remove_orphans_no_profile(self, monkeypatch):
+    def test_up_dash_d_remove_orphans_with_restore_drill_profile(self, monkeypatch):
         captured = {}
 
         def fake_run(cmd, cwd, env, capture_output, text):
@@ -365,7 +368,7 @@ class TestRecreateServices:
         assert "up" in cmd
         assert "-d" in cmd
         assert "--remove-orphans" in cmd
-        assert "--profile" not in cmd
+        assert cmd[cmd.index("--profile") + 1] == "restore-drill"
         assert "--scale" not in cmd
 
     def test_failure_raises_deploy_error_with_recreate_phase(self, monkeypatch):

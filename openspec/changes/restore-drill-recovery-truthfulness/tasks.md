@@ -33,13 +33,17 @@
   listener, Docker socket, `backend`, `frontend`, or `egress` membership, and a
   private secret-file mount. It MUST NOT inherit `x-postgres-env`, receive
   `POSTGRES_USER`/`POSTGRES_PASSWORD`/`DATABASE_URL`, or expose the executor
-  credential to dashboard-api; dashboard-api only reads recorded results.
+  credential to dashboard-api; dashboard-api only reads recorded results. The
+  credentialed executor MUST be omitted from bare default Compose behind a
+  dedicated profile that only the firewall-preparing supported launchers select.
 - [ ] 1.4 Add configuration, bootstrap, compose, and role-boundary tests that
   prove the executor role is isolated, dashboard/butler/connector credentials
   remain `NOCREATEDB`, a dashboard-style shared credential cannot create the
   scratch database, an effective full-core-chain ACL matrix denies both narrow
   functions to shared/butler/connector/PUBLIC subjects, and no rendered dashboard service receives the private
-  executor secret. Cite `REQ-database-security-006` in the test.
+  executor secret. Include a rendered unprofiled-Compose regression proving
+  the executor is absent while its supported profile renders it. Cite
+  `REQ-database-security-006` in the test.
 - [ ] 1.5 Update `docs/operations/backup-restore.md` to name the managed
   executor bootstrap prerequisite, file-secret boundary, fixed scratch
   lifecycle, single-executor assumption, no-live-database-mutation rule, and

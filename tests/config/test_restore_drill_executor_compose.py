@@ -47,30 +47,50 @@ def _environment_keys(service: dict) -> set[str]:
     return {entry.split("=", 1)[0] for entry in environment}
 
 
-def _rendered_executor() -> dict:
-    """Render the executor through Compose without starting any containers."""
+def _rendered_services(*, profiles: tuple[str, ...] = ()) -> dict[str, dict]:
+    """Render Compose without starting any containers or reading a secret."""
     docker = shutil.which("docker")
     if docker is None:
         pytest.skip("Docker Compose CLI is required to render this deployment contract")
 
+    command = [docker, "compose", "-f", "docker-compose.yml"]
+    for profile in profiles:
+        command.extend(["--profile", profile])
+    command.extend(["config", "--format", "json"])
+
+    environment = {
+        **os.environ,
+        "POSTGRES_HOST": "198.51.100.42",
+        "POSTGRES_PASSWORD": "non-secret-test-password",
+        "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
+        "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "198.51.100.42",
+        "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": "/tmp/restore-drill-test-secret",
+        "RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE": "/tmp/restore-drill-test-ca.pem",
+    }
+    environment.pop("COMPOSE_PROFILES", None)
     completed = subprocess.run(
-        [docker, "compose", "-f", "docker-compose.yml", "config", "--format", "json"],
+        command,
         check=False,
         cwd=_REPO_ROOT,
         capture_output=True,
-        env={
-            **os.environ,
-            "POSTGRES_HOST": "198.51.100.42",
-            "POSTGRES_PASSWORD": "non-secret-test-password",
-            "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
-            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "198.51.100.42",
-            "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": "/tmp/restore-drill-test-secret",
-            "RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE": "/tmp/restore-drill-test-ca.pem",
-        },
+        env=environment,
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    return json.loads(completed.stdout)["services"]["restore-drill-executor"]
+    return json.loads(completed.stdout)["services"]
+
+
+def _rendered_executor() -> dict:
+    """Render the executor only through its supported explicit profile."""
+    return _rendered_services(profiles=("restore-drill",))["restore-drill-executor"]
+
+
+def test_default_rendered_compose_omits_unfenced_restore_drill_executor() -> None:
+    """Bare Compose must not create the credentialed executor before the fence."""
+    default_services = _rendered_services()
+
+    assert "restore-drill-executor" not in default_services
+    assert "restore-drill-executor" in _rendered_services(profiles=("restore-drill",))
 
 
 def test_restore_drill_executor_has_a_dedicated_database_network_and_private_secret() -> None:
@@ -210,6 +230,13 @@ def test_restore_drill_launcher_uses_only_fixed_root_wrapper_before_startup() ->
     assert f"sudo -n {_FIREWALL_WRAPPER} --project" in normalized_boundary
     assert '--db-host "${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST}"' in boundary
     assert '--db-port "${RESTORE_DRILL_EXECUTOR_DB_PORT}"' in boundary
+
+
+def test_restore_drill_launcher_explicitly_enables_executor_profile() -> None:
+    """The supported launcher, not a bare Compose default, enables the executor."""
+    launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "PROFILES=(dev restore-drill)" in launcher
 
 
 def test_restore_drill_launcher_stops_if_down_fails_before_create_wrapper_or_up(

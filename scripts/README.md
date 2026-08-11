@@ -83,10 +83,11 @@ deployment setup to install that immutable target. The checked-in
 `restore-drill-firewall.sudoers` template grants a deployment group access only
 to the fixed wrapper's normal three-argument form. Never grant sudo for the
 checkout script, a checkout wildcard, `env`, a shell, or the installer. Both
-`scripts/compose.sh` and `butlers deploy` stop/create the executor, invoke the
-fixed wrapper, and only then start the stack; `restart: "no"` prevents an
-unfenced daemon/host auto-start. Do not start `restore-drill-executor` through
-a bare `docker compose up` command.
+`restore-drill-executor` is omitted from bare Compose through its dedicated
+`restore-drill` profile. `scripts/compose.sh` and `butlers deploy` select that
+profile, stop/create the executor, invoke the fixed wrapper, and only then
+start the stack; `restart: "no"` prevents an unfenced daemon/host auto-start.
+Do not invoke `docker compose --profile restore-drill` directly.
 
 ## dev.sh
 

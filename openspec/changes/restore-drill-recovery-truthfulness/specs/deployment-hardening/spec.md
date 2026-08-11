@@ -49,6 +49,10 @@ Scope: v1-mandatory
   policy, and only then start it; failure to install the policy prevents the
   executor from starting, and it has no automatic restart policy that could
   bypass a transient fence after a Docker daemon or host restart
+- **AND** the credentialed executor is omitted from the default unprofiled
+  Compose service set behind a dedicated `restore-drill` profile; only the
+  supported launchers select that profile after their firewall preparation, so
+  a bare `docker compose up` cannot start it
 - **AND** when the database is configured by DNS name, that name remains the
   executor's TLS identity for `sslmode=verify-full` while a separately resolved
   IPv4 address is used only by the firewall and local container host mapping;
