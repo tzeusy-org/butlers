@@ -35,7 +35,7 @@ def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -
         "CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB"
         in source
     )
-    assert "ALTER ROLE %I NOCREATEDB" in source
+    assert "ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB" in source
     assert "GRANT USAGE ON SCHEMA public TO %I" in source
     assert "GRANT %I TO %I WITH SET TRUE" in source
     assert "ALTER TABLE restore_drill_executor.restore_drill_results" in source
@@ -193,6 +193,9 @@ def test_migration_uses_the_fixed_bootstrap_owned_executor_result_authority() ->
     assert "installer.proowner = admin_schema.nspowner" in source
     assert "finalizer.proowner = admin_schema.nspowner" in source
     assert "bootstrap_owner.rolsuper" in source
+    assert "installer.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]" in source
+    assert "finalizer.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]" in source
+    assert "audit_projection.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]" in source
     assert "bootstrap_owner.rolname <> current_user" not in source
     assert "CREATE TABLE restore_drill_executor.restore_drill_results" not in source
     assert "CREATE SCHEMA IF NOT EXISTS restore_drill_executor" not in source
@@ -223,6 +226,8 @@ def test_migration_uses_the_fixed_bootstrap_owned_executor_result_authority() ->
     assert "'table_count', p_table_count" not in init_source
     assert "compatibility input except p_result is inert" in init_source
     assert "restore_drill_executor_audit_writer" in init_source
+    assert "SET search_path = pg_catalog, pg_temp" in init_source
+    assert "SET search_path = pg_catalog, public, pg_temp" in init_source
     assert "write_audit_projection" in init_source
     assert "ALTER FUNCTION restore_drill_executor_admin.write_audit_projection(TEXT)" in init_source
     assert "OWNER TO restore_drill_executor_audit_writer" in init_source

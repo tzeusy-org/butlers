@@ -61,7 +61,7 @@ Scope: v1-mandatory
   spoof cannot manufacture an API pass or affect due state
 - **AND** the projection is written only through a separate NOLOGIN
   `restore_drill_executor_audit_writer` security-definer with fixed
-  `pg_catalog` search path, public-audit INSERT/sequence capability, and no
+  `pg_catalog, pg_temp` search path, public-audit INSERT/sequence capability, and no
   private-ledger schema, table, function, or owner-membership privilege
 - **AND** a hostile `public.audit_log` trigger therefore runs as that constrained
   audit writer and cannot write the ledger or call its reader; if it rejects the

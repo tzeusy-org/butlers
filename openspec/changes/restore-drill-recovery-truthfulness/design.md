@@ -68,8 +68,10 @@ in git, a dashboard/API response, `DATABASE_URL`, or the shared
 only non-secret endpoint configuration plus that secret file, uses an explicit
 maintenance database for `createdb`/`dropdb`, and has no general live-schema
 grants. Its only live-database interface is a narrow migration-owned,
-fixed-`search_path` security-definer read/write surface for restore-drill
-schedule state, result persistence, and truthful attention provenance.
+fixed-safe-search-path security-definer read/write surface for restore-drill
+schedule state, result persistence, and truthful attention provenance: each
+path ends in explicit `pg_temp` (`pg_catalog, pg_temp`, or
+`pg_catalog, public, pg_temp` where public resolution is required).
 
 This is deliberately a privileged *runtime* boundary, not a bootstrap-only
 claim: compromise of the executor can create scratch databases and read the
@@ -153,8 +155,9 @@ discards caller-supplied backup name, detail, and table-count values; validates
 only non-null `pass`/`fail`; writes the protected owner ledger; and emits only
 a fixed canonical public audit projection. The private owner never inserts into
 the shared audit table directly: it calls a second, purpose-bound NOLOGIN
-`restore_drill_executor_audit_writer` definer, with a fixed `pg_catalog` search
-path, only the required public-audit INSERT/sequence rights, and no
+`restore_drill_executor_audit_writer` definer, with a fixed
+`pg_catalog, pg_temp` search path, only the required public-audit
+INSERT/sequence rights, and no
 private-ledger schema, table, function, or owner-membership capability. A
 hostile public-audit trigger consequently executes as that constrained writer,
 not as the private result owner. It can deny availability by rejecting its row,

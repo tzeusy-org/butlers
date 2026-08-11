@@ -32,6 +32,29 @@
 --   migration user (typically "butlers"), which is required for non-privileged
 --   future ALTER TABLE migrations to succeed.
 
+-- ── Read-only bootstrap preflight ───────────────────────────────────────────
+
+-- Refuse an unsafe connecting-user override before extension installation or
+-- any role, membership, schema, or ACL mutation. The configured migration user
+-- is deliberately a normal role and must never bootstrap its own privileges.
+DO $$
+DECLARE
+    _migration_user NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _migration_user) THEN
+        RAISE EXCEPTION
+            'Migration/runtime user "%" does not exist. Create it first or set PGOPTIONS="-c butlers.connecting_user=<existing role>".',
+            _migration_user;
+    END IF;
+    IF current_user::name = _migration_user THEN
+        RAISE EXCEPTION 'restore-drill admin bootstrap cannot run as the shared migration role';
+    END IF;
+END;
+$$;
+
 -- ── Extensions ────────────────────────────────────────────────────────────────
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -122,9 +145,12 @@ BEGIN
     END IF;
 
     -- The migration/connecting user is shared by migrations and normal
-    -- dashboard/runtime processes. It must never inherit the recovery-only
-    -- database-creation capability.
-    EXECUTE format('ALTER ROLE %I NOCREATEDB', _migration_user);
+    -- dashboard/runtime processes. It must never retain a privileged recovery
+    -- capability that could bypass the isolated executor boundary.
+    EXECUTE format(
+        'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+        _migration_user
+    );
 
     -- Ensure the migration/runtime user can connect and create objects in the
     -- schemas it manages. Tables/functions created later remain owned by that
@@ -147,7 +173,13 @@ BEGIN
             EXECUTE format('CREATE ROLE %I LOGIN NOCREATEDB', _role);
             RAISE NOTICE 'Created role "%"', _role;
         END IF;
-        EXECUTE format('ALTER ROLE %I NOCREATEDB', _role);
+        -- Existing normal runtime roles may predate this bootstrap. Normalize
+        -- every cluster-level privilege while preserving their LOGIN and
+        -- INHERIT semantics and the migration user's explicit memberships.
+        EXECUTE format(
+            'ALTER ROLE %I NOSUPERUSER NOCREATEROLE NOREPLICATION NOCREATEDB',
+            _role
+        );
     END LOOP;
 
     -- Reserve a distinct executor role without making it a normal runtime
@@ -542,6 +574,9 @@ DECLARE
     v_schema_owner_name NAME;
     v_schema_owner_is_superuser BOOLEAN;
 BEGIN
+    -- The read-only preflight rejects this before all mutations. Keep the
+    -- boundary-local check so this privileged installer remains fail-closed if
+    -- future bootstrap staging changes its call order.
     IF current_user::name = v_migration_role THEN
         RAISE EXCEPTION
             'restore-drill admin bootstrap cannot run as the shared migration role';
@@ -688,7 +723,7 @@ CREATE OR REPLACE FUNCTION restore_drill_executor_admin.write_audit_projection(
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog
+SET search_path = pg_catalog, pg_temp
 AS $audit_projection$
 DECLARE
     v_detail TEXT;
@@ -728,7 +763,7 @@ CREATE OR REPLACE FUNCTION restore_drill_executor_admin.finalize_interface()
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog
+SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
     v_migration_role NAME;
@@ -844,6 +879,17 @@ BEGIN
         RAISE EXCEPTION 'restore-drill interface ownership is untrusted';
     END IF;
 
+    -- The nested executor functions are created only by install_interface().
+    -- Once their exact signatures and trusted ownership have been proved,
+    -- privileged bootstrap reruns repair legacy search paths without accepting
+    -- arbitrary caller-controlled objects.
+    EXECUTE 'ALTER FUNCTION restore_drill_executor.is_due(integer) '
+        || 'SET search_path = pg_catalog, public, pg_temp';
+    EXECUTE 'ALTER FUNCTION restore_drill_executor.record_result(text, text, text, integer) '
+        || 'SET search_path = pg_catalog, public, pg_temp';
+    EXECUTE 'ALTER FUNCTION restore_drill_executor.latest_result() '
+        || 'SET search_path = pg_catalog, pg_temp';
+
     IF v_is_bootstrap_staged THEN
         EXECUTE 'ALTER TABLE restore_drill_executor.restore_drill_results '
             || 'OWNER TO restore_drill_executor_owner';
@@ -910,6 +956,10 @@ BEGIN
     ]::name[] LOOP
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
             EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON SCHEMA restore_drill_executor FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format(
                 'REVOKE ALL PRIVILEGES ON TABLE restore_drill_executor.restore_drill_results FROM %I',
                 v_runtime_role
             );
@@ -943,7 +993,7 @@ CREATE OR REPLACE FUNCTION restore_drill_executor_admin.install_interface()
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog
+SET search_path = pg_catalog, pg_temp
 AS $installer$
 BEGIN
     -- The installer has no caller-controlled object names or DDL input.  A
@@ -970,7 +1020,7 @@ BEGIN
     RETURNS BOOLEAN
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public
+    SET search_path = pg_catalog, public, pg_temp
     AS $is_due$
     DECLARE
         v_last_recorded_at TIMESTAMPTZ;
@@ -998,7 +1048,7 @@ BEGIN
     RETURNS BIGINT
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public
+    SET search_path = pg_catalog, public, pg_temp
     AS $record_result$
     DECLARE
         v_result_id BIGINT;
@@ -1040,7 +1090,7 @@ BEGIN
     )
     LANGUAGE sql
     SECURITY DEFINER
-    SET search_path = pg_catalog
+    SET search_path = pg_catalog, pg_temp
     AS $latest_result$
         SELECT recorded_at, result, detail
         FROM restore_drill_executor.restore_drill_results

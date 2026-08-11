@@ -9,6 +9,7 @@ import asyncio
 import logging
 import shutil
 import uuid
+from pathlib import Path
 from urllib.parse import urlparse
 
 import asyncpg
@@ -33,6 +34,22 @@ _RUNTIME_ROLES = {
     "relationship": "butler_relationship_rw",
     "switchboard": "butler_switchboard_rw",
 }
+_RESTORE_DRILL_DENIED_ROLES = (
+    "butler_chronicler_rw",
+    "butler_education_rw",
+    "butler_finance_rw",
+    "butler_general_rw",
+    "butler_health_rw",
+    "butler_home_rw",
+    "butler_lifestyle_rw",
+    "butler_messenger_rw",
+    "butler_qa_rw",
+    "butler_relationship_rw",
+    "butler_switchboard_rw",
+    "butler_travel_rw",
+    "connector_writer",
+)
+_INIT_DB = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
 
 
 def _quote_ident(identifier: str) -> str:
@@ -96,6 +113,80 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
             finally:
                 conn.execute(text("RESET ROLE"))
     finally:
+        engine.dispose()
+
+
+def _restore_drill_ledger_effective_privileges(db_url: str, role_name: str) -> dict[str, bool]:
+    """Return protected-schema/table privileges through the normal SET ROLE path."""
+    quoted_role = _quote_ident(role_name)
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f"SET ROLE {quoted_role}"))
+            try:
+                return dict(
+                    conn.execute(
+                        text(
+                            """
+                            SELECT
+                                has_schema_privilege(
+                                    current_user,
+                                    'restore_drill_executor',
+                                    'USAGE'
+                                ) AS schema_usage,
+                                has_table_privilege(
+                                    current_user,
+                                    (
+                                        SELECT ledger.oid
+                                        FROM pg_catalog.pg_class AS ledger
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = ledger.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND ledger.relname = 'restore_drill_results'
+                                          AND ledger.relkind = 'r'
+                                    ),
+                                    'SELECT'
+                                ) AS ledger_select,
+                                has_table_privilege(
+                                    current_user,
+                                    (
+                                        SELECT ledger.oid
+                                        FROM pg_catalog.pg_class AS ledger
+                                        JOIN pg_catalog.pg_namespace AS result_schema
+                                            ON result_schema.oid = ledger.relnamespace
+                                        WHERE result_schema.nspname = 'restore_drill_executor'
+                                          AND ledger.relname = 'restore_drill_results'
+                                          AND ledger.relkind = 'r'
+                                    ),
+                                    'INSERT'
+                                ) AS ledger_insert
+                            """
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            finally:
+                conn.execute(text("RESET ROLE"))
+    finally:
+        engine.dispose()
+
+
+def _rerun_init_db_as_control(control_db_url: str, migration_user: str) -> None:
+    """Run the trusted bootstrap as the disposable privileged control user."""
+    source = _INIT_DB.read_text(encoding="utf-8")
+    engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
+    raw_connection = engine.raw_connection()
+    try:
+        raw_connection.autocommit = True
+        with raw_connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)",
+                (migration_user,),
+            )
+            cursor.execute(source)
+    finally:
+        raw_connection.close()
         engine.dispose()
 
 
@@ -485,23 +576,58 @@ def test_set_role_allows_public_table_writes(postgres_container):
         pytest.fail(f"SET ROLE {role!r} write failed for {len(failed)} public tables:\n{lines}")
 
 
-def test_set_role_blocks_private_restore_drill_ledger_write(postgres_container):
-    """SET ROLE butler_general_rw cannot write the private restore-drill ledger.
+def test_set_role_blocks_private_restore_drill_ledger_for_every_runtime_role(postgres_container):
+    """Trusted bootstrap removes role-specific ledger grants from every runtime role.
 
     The canonical bootstrap intentionally grants runtime roles DML on shared
     ``public`` tables, including migration-created metadata.  The restore-drill
     ledger is the relevant protected authority boundary: ordinary runtime roles
-    must not receive schema or table access to it.
+    must not receive schema usage or ledger SELECT/INSERT. The test first
+    reproduces the legacy role-specific grant escape, then runs the actual
+    privileged bootstrap repair; ordinary assertions remain under the normal
+    NOCREATEDB migration login's ``SET ROLE`` lifecycle.
     """
-    db_url = _create_db(postgres_container, _unique_db_name())
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
     _require_runtime_acl(db_url)
+    assert all(_role_exists(db_url, role) for role in _RESTORE_DRILL_DENIED_ROLES)
 
-    with pytest.raises(ProgrammingError, match="permission denied"):
-        _execute_as_role(
-            db_url,
-            _RUNTIME_ROLES["general"],
-            "INSERT INTO restore_drill_executor.restore_drill_results (result) VALUES ('pass')",
-        )
+    migration_user = urlparse(db_url).username
+    assert migration_user is not None
+    control_db_url = migration_bootstrap_db_url(postgres_container, db_name)
+    control_engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with control_engine.connect() as conn:
+            for role in _RESTORE_DRILL_DENIED_ROLES:
+                quoted_role = _quote_ident(role)
+                conn.execute(text(f"GRANT USAGE ON SCHEMA restore_drill_executor TO {quoted_role}"))
+                conn.execute(
+                    text(
+                        "GRANT SELECT, INSERT ON TABLE "
+                        "restore_drill_executor.restore_drill_results "
+                        f"TO {quoted_role}"
+                    )
+                )
+    finally:
+        control_engine.dispose()
+
+    expected_legacy_grant = {
+        "schema_usage": True,
+        "ledger_select": True,
+        "ledger_insert": True,
+    }
+    for role in _RESTORE_DRILL_DENIED_ROLES:
+        assert _restore_drill_ledger_effective_privileges(db_url, role) == expected_legacy_grant
+
+    _rerun_init_db_as_control(control_db_url, migration_user)
+
+    expected_denial = {
+        "schema_usage": False,
+        "ledger_select": False,
+        "ledger_insert": False,
+    }
+    for role in _RESTORE_DRILL_DENIED_ROLES:
+        assert _restore_drill_ledger_effective_privileges(db_url, role) == expected_denial
 
 
 def test_connector_writer_role_enforcement(postgres_container):

@@ -793,6 +793,189 @@ def test_privileged_rerun_preserves_existing_admin_interface_owner(
     command.upgrade(_build_alembic_config(shared_url, chains=["core"]), "core_196")
 
 
+def test_normal_migration_role_temp_catalog_shadow_cannot_subvert_restore_installer(
+    postgres_container,
+) -> None:
+    """The normal migration role's temporary ``pg_proc`` cannot shadow catalog checks."""
+    admin_url, shared_url, *_ = _bootstrap_database(postgres_container)
+    _run_core_chain_through_restore_drill_predecessor(shared_url)
+
+    shared_engine = create_engine(shared_url, isolation_level="AUTOCOMMIT")
+    try:
+        with shared_engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT has_database_privilege(current_user, current_database(), 'TEMPORARY')")
+            ).scalar_one()
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION pg_temp.catalog_shadow_membership_marker()
+                    RETURNS integer
+                    LANGUAGE plpgsql
+                    AS $$
+                    BEGIN
+                        GRANT restore_drill_executor_owner TO butlers WITH SET TRUE;
+                        RETURN 0;
+                    END;
+                    $$
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TEMPORARY VIEW pg_proc AS
+                    SELECT
+                        catalog_proc.oid,
+                        (
+                            catalog_proc.proowner::integer
+                            + pg_temp.catalog_shadow_membership_marker()
+                        )::oid AS proowner,
+                        catalog_proc.prosecdef
+                    FROM pg_catalog.pg_proc AS catalog_proc
+                    """
+                )
+            )
+            connection.execute(text("SELECT restore_drill_executor_admin.install_interface()"))
+            gained_owner_membership = connection.execute(
+                text("SELECT pg_has_role('butlers', 'restore_drill_executor_owner', 'USAGE')")
+            ).scalar_one()
+    finally:
+        shared_engine.dispose()
+
+    admin_engine = create_engine(admin_url)
+    try:
+        with admin_engine.connect() as connection:
+            state = dict(
+                connection.execute(
+                    text(
+                        """
+                        SELECT
+                            pg_get_userbyid(ledger.relowner) AS ledger_owner,
+                            has_function_privilege(
+                                'butlers',
+                                'restore_drill_executor_admin.install_interface()',
+                                'EXECUTE'
+                            ) AS shared_installer_execute,
+                            has_function_privilege(
+                                'butlers',
+                                'restore_drill_executor_admin.finalize_interface()',
+                                'EXECUTE'
+                            ) AS shared_finalizer_execute
+                        FROM pg_class AS ledger
+                        JOIN pg_namespace AS result_schema
+                            ON result_schema.oid = ledger.relnamespace
+                        WHERE result_schema.nspname = 'restore_drill_executor'
+                          AND ledger.relname = 'restore_drill_results'
+                          AND ledger.relkind = 'r'
+                        """
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        admin_engine.dispose()
+
+    assert state == {
+        "ledger_owner": "restore_drill_executor_owner",
+        "shared_installer_execute": False,
+        "shared_finalizer_execute": False,
+    }
+    assert gained_owner_membership is False
+
+
+def test_privileged_rerun_repairs_legacy_executor_interface_search_paths(
+    postgres_container,
+) -> None:
+    """A trusted rerun upgrades the nested executor functions' legacy configs."""
+    admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
+        postgres_container
+    )
+    _run_real_core_chain_with_relationship_prerequisite(shared_url)
+
+    procedures = (
+        "restore_drill_executor.is_due(integer)",
+        "restore_drill_executor.record_result(text,text,text,integer)",
+        "restore_drill_executor.latest_result()",
+    )
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            for procedure in procedures:
+                connection.execute(text(f"ALTER FUNCTION {procedure} SET search_path = pg_catalog"))
+            legacy_configs = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT p.proname, array_to_string(p.proconfig, ',') AS function_config
+                        FROM pg_proc AS p
+                        JOIN pg_namespace AS n ON n.oid = p.pronamespace
+                        WHERE n.nspname = 'restore_drill_executor'
+                          AND p.proname IN ('is_due', 'latest_result', 'record_result')
+                        ORDER BY p.proname
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    assert [dict(row) for row in legacy_configs] == [
+        {"proname": "is_due", "function_config": "search_path=pg_catalog"},
+        {"proname": "latest_result", "function_config": "search_path=pg_catalog"},
+        {"proname": "record_result", "function_config": "search_path=pg_catalog"},
+    ]
+
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database=_database_from_url(admin_url),
+        file_path=_INIT_DB,
+    )
+
+    engine = create_engine(admin_url)
+    try:
+        with engine.connect() as connection:
+            repaired_configs = (
+                connection.execute(
+                    text(
+                        """
+                        SELECT p.proname, array_to_string(p.proconfig, ',') AS function_config
+                        FROM pg_proc AS p
+                        JOIN pg_namespace AS n ON n.oid = p.pronamespace
+                        WHERE n.nspname = 'restore_drill_executor'
+                          AND p.proname IN ('is_due', 'latest_result', 'record_result')
+                        ORDER BY p.proname
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    assert [dict(row) for row in repaired_configs] == [
+        {
+            "proname": "is_due",
+            "function_config": "search_path=pg_catalog, public, pg_temp",
+        },
+        {
+            "proname": "latest_result",
+            "function_config": "search_path=pg_catalog, pg_temp",
+        },
+        {
+            "proname": "record_result",
+            "function_config": "search_path=pg_catalog, public, pg_temp",
+        },
+    ]
+
+
 def test_shared_authority_poison_cannot_be_finalized_or_reblessed_on_bootstrap_rerun(
     postgres_container,
 ) -> None:
@@ -1131,7 +1314,10 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
                 connection.execute(
                     text(
                         """
-                    SELECT p.proname, pg_get_userbyid(p.proowner) AS owner
+                    SELECT
+                        p.proname,
+                        pg_get_userbyid(p.proowner) AS owner,
+                        array_to_string(p.proconfig, ',') AS function_config
                     FROM pg_proc p
                     JOIN pg_namespace n ON n.oid = p.pronamespace
                     WHERE n.nspname = 'restore_drill_executor'
@@ -1297,14 +1483,26 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
         "owner_membership": False,
     }
     assert function_owners == [
-        {"proname": "is_due", "owner": "restore_drill_executor_owner"},
-        {"proname": "latest_result", "owner": "restore_drill_executor_owner"},
-        {"proname": "record_result", "owner": "restore_drill_executor_owner"},
+        {
+            "proname": "is_due",
+            "owner": "restore_drill_executor_owner",
+            "function_config": "search_path=pg_catalog, public, pg_temp",
+        },
+        {
+            "proname": "latest_result",
+            "owner": "restore_drill_executor_owner",
+            "function_config": "search_path=pg_catalog, pg_temp",
+        },
+        {
+            "proname": "record_result",
+            "owner": "restore_drill_executor_owner",
+            "function_config": "search_path=pg_catalog, public, pg_temp",
+        },
     ]
     assert dict(audit_writer_boundary) == {
         "function_owner": "restore_drill_executor_audit_writer",
         "security_definer": True,
-        "function_config": "search_path=pg_catalog",
+        "function_config": "search_path=pg_catalog, pg_temp",
         "private_schema_usage": False,
         "ledger_insert": False,
         "latest_result_execute": False,
@@ -1318,10 +1516,10 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
         "schema_owner_is_superuser": True,
         "installer_owner": admin_user,
         "installer_security_definer": True,
-        "installer_config": "search_path=pg_catalog",
+        "installer_config": "search_path=pg_catalog, pg_temp",
         "finalizer_owner": admin_user,
         "finalizer_security_definer": True,
-        "finalizer_config": "search_path=pg_catalog",
+        "finalizer_config": "search_path=pg_catalog, pg_temp",
         "shared_admin_schema_usage": False,
         "shared_installer_execute": False,
         "shared_finalizer_execute": False,

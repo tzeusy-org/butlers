@@ -18,6 +18,22 @@ pytestmark = [
     pytest.mark.skipif(not psql_available, reason="psql not available"),
 ]
 
+_NORMAL_RUNTIME_ROLES = (
+    "butler_chronicler_rw",
+    "butler_education_rw",
+    "butler_finance_rw",
+    "butler_general_rw",
+    "butler_health_rw",
+    "butler_home_rw",
+    "butler_lifestyle_rw",
+    "butler_messenger_rw",
+    "butler_qa_rw",
+    "butler_relationship_rw",
+    "butler_switchboard_rw",
+    "butler_travel_rw",
+    "connector_writer",
+)
+
 
 @pytest.fixture(scope="module")
 def postgres_container():
@@ -44,10 +60,14 @@ def _run_psql_file(
     password: str,
     database: str,
     file_path: Path,
-) -> None:
+    connecting_user: str | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PGPASSWORD"] = password
-    subprocess.run(
+    if connecting_user is not None:
+        env["PGOPTIONS"] = f"-c butlers.connecting_user={connecting_user}"
+    return subprocess.run(
         [
             "psql",
             "-v",
@@ -63,7 +83,7 @@ def _run_psql_file(
             "-f",
             str(file_path),
         ],
-        check=True,
+        check=check,
         env=env,
         capture_output=True,
         text=True,
@@ -340,6 +360,221 @@ def test_init_db_bootstrap_repairs_membership_set_option_for_qa(postgres_contain
     assert row["inherit_option"] is True
     assert row["set_option"] is True
     assert current_user == "butler_qa_rw"
+
+
+def test_init_db_bootstrap_normalizes_existing_normal_role_privileges(postgres_container):
+    """Rerun strips every recovery-capable flag without changing normal role semantics."""
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    normal_roles = ("butlers", *_NORMAL_RUNTIME_ROLES)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            for role in reversed(normal_roles):
+                conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
+            conn.execute(
+                text(
+                    "CREATE ROLE butlers LOGIN SUPERUSER CREATEROLE CREATEDB REPLICATION "
+                    "PASSWORD 'butlers'"
+                )
+            )
+            for role in _NORMAL_RUNTIME_ROLES:
+                conn.execute(
+                    text(f"CREATE ROLE {role} LOGIN SUPERUSER CREATEROLE CREATEDB REPLICATION")
+                )
+            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+    engine = create_engine(butlers_url)
+    try:
+        with engine.connect() as conn:
+            role_rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT
+                            rolname,
+                            rolcanlogin,
+                            rolinherit,
+                            rolsuper,
+                            rolcreaterole,
+                            rolcreatedb,
+                            rolreplication
+                        FROM pg_roles
+                        WHERE rolname = ANY(:normal_roles)
+                        ORDER BY rolname
+                        """
+                    ),
+                    {"normal_roles": list(normal_roles)},
+                )
+                .mappings()
+                .all()
+            )
+            membership_rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT role_r.rolname, member.inherit_option, member.set_option
+                        FROM pg_auth_members AS member
+                        JOIN pg_roles AS role_r ON role_r.oid = member.roleid
+                        JOIN pg_roles AS member_r ON member_r.oid = member.member
+                        WHERE member_r.rolname = 'butlers'
+                          AND role_r.rolname = ANY(:runtime_roles)
+                        ORDER BY role_r.rolname
+                        """
+                    ),
+                    {"runtime_roles": list(_NORMAL_RUNTIME_ROLES)},
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    assert {row["rolname"] for row in role_rows} == set(normal_roles)
+    for row in role_rows:
+        assert dict(row) == {
+            "rolname": row["rolname"],
+            "rolcanlogin": True,
+            "rolinherit": True,
+            "rolsuper": False,
+            "rolcreaterole": False,
+            "rolcreatedb": False,
+            "rolreplication": False,
+        }
+    assert [dict(row) for row in membership_rows] == [
+        {"rolname": role, "inherit_option": True, "set_option": True}
+        for role in sorted(_NORMAL_RUNTIME_ROLES)
+    ]
+
+
+def test_init_db_rejects_migration_user_bootstrap_before_normal_role_mutation(postgres_container):
+    """A configured migration user cannot self-demote while running privileged bootstrap."""
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    normal_roles = ("butlers", *_NORMAL_RUNTIME_ROLES)
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            for role in reversed(normal_roles):
+                conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
+            conn.execute(
+                text(
+                    "CREATE ROLE butlers LOGIN SUPERUSER CREATEROLE CREATEDB REPLICATION "
+                    "PASSWORD 'butlers'"
+                )
+            )
+            for role in _NORMAL_RUNTIME_ROLES:
+                conn.execute(
+                    text(f"CREATE ROLE {role} LOGIN SUPERUSER CREATEROLE CREATEDB REPLICATION")
+                )
+            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    completed = _run_psql_file(
+        host=host,
+        port=port,
+        user="butlers",
+        password="butlers",
+        database="butlers",
+        file_path=script_path,
+        connecting_user="butlers",
+        check=False,
+    )
+
+    assert completed.returncode != 0
+
+    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+    engine = create_engine(butlers_url)
+    try:
+        with engine.connect() as conn:
+            role_rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT
+                            rolname,
+                            rolcanlogin,
+                            rolinherit,
+                            rolsuper,
+                            rolcreaterole,
+                            rolcreatedb,
+                            rolreplication
+                        FROM pg_roles
+                        WHERE rolname = ANY(:normal_roles)
+                        ORDER BY rolname
+                        """
+                    ),
+                    {"normal_roles": list(normal_roles)},
+                )
+                .mappings()
+                .all()
+            )
+            membership_count = conn.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM pg_auth_members AS member
+                    JOIN pg_roles AS member_r ON member_r.oid = member.member
+                    WHERE member_r.rolname = 'butlers'
+                      AND member.roleid = ANY(
+                          SELECT oid FROM pg_roles WHERE rolname = ANY(:runtime_roles)
+                      )
+                    """
+                ),
+                {"runtime_roles": list(_NORMAL_RUNTIME_ROLES)},
+            ).scalar_one()
+            installed_script_extensions = (
+                conn.execute(
+                    text(
+                        """
+                    SELECT extname
+                    FROM pg_extension
+                    WHERE extname = ANY(:extension_names)
+                    ORDER BY extname
+                    """
+                    ),
+                    {"extension_names": ["pgcrypto", "pg_trgm", "uuid-ossp", "vector"]},
+                )
+                .scalars()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    assert [dict(row) for row in role_rows] == [
+        {
+            "rolname": role,
+            "rolcanlogin": True,
+            "rolinherit": True,
+            "rolsuper": True,
+            "rolcreaterole": True,
+            "rolcreatedb": True,
+            "rolreplication": True,
+        }
+        for role in sorted(normal_roles)
+    ]
+    assert membership_count == 0
+    assert installed_script_extensions == []
+    assert (
+        "restore-drill admin bootstrap cannot run as the shared migration role" in completed.stderr
+    )
 
 
 def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):

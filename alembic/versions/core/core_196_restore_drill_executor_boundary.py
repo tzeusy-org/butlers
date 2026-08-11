@@ -63,6 +63,13 @@ _TRUSTED_FINALIZED_INTERFACE_SQL = """
            AND finalizer.proname = 'finalize_interface'
            AND finalizer.pronargs = 0
            AND finalizer.prorettype = 'void'::regtype
+        JOIN pg_roles AS audit_writer_owner
+            ON audit_writer_owner.rolname = 'restore_drill_executor_audit_writer'
+        JOIN pg_proc AS audit_projection
+            ON audit_projection.pronamespace = admin_schema.oid
+           AND audit_projection.proname = 'write_audit_projection'
+           AND audit_projection.pronargs = 1
+           AND audit_projection.proargtypes = '25'::oidvector
         WHERE result_schema.nspname = 'restore_drill_executor'
           AND result_owner.rolname = 'restore_drill_executor_owner'
           AND NOT result_owner.rolcanlogin
@@ -77,11 +84,19 @@ _TRUSTED_FINALIZED_INTERFACE_SQL = """
           AND is_due.prosecdef
           AND record_result.prosecdef
           AND latest_result.prosecdef
+          AND is_due.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']::text[]
+          AND record_result.proconfig = ARRAY['search_path=pg_catalog, public, pg_temp']::text[]
+          AND latest_result.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
           AND bootstrap_owner.rolsuper
           AND installer.prosecdef
           AND finalizer.prosecdef
           AND installer.proowner = admin_schema.nspowner
           AND finalizer.proowner = admin_schema.nspowner
+          AND installer.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
+          AND finalizer.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
+          AND audit_projection.proowner = audit_writer_owner.oid
+          AND audit_projection.prosecdef
+          AND audit_projection.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
           -- A finalized interface grants the shared migration caller only its
           -- read projection; it must retain neither owner membership nor any
           -- direct ledger, executor-writer, or bootstrap-admin authority.
@@ -120,6 +135,8 @@ _TRUSTED_BOOTSTRAP_INSTALLER_SQL = """
           AND finalizer.prosecdef
           AND installer.proowner = admin_schema.nspowner
           AND finalizer.proowner = admin_schema.nspowner
+          AND installer.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
+          AND finalizer.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
           -- The installer is created only by init-db's trusted cluster
           -- superuser path.  A shared database owner can create matching
           -- objects, but cannot satisfy this provenance condition.
