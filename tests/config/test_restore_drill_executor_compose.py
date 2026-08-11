@@ -18,19 +18,25 @@ from pathlib import Path
 import pytest
 import yaml
 
+from butlers.core.deploy import DEFAULT_COMPOSE_FILES
+
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FIREWALL = _REPO_ROOT / "scripts" / "restore-drill-firewall.sh"
 _FIREWALL_INSTALLER = _REPO_ROOT / "scripts" / "install_restore_drill_firewall_wrapper.sh"
 _COMPOSE_LAUNCHER = _REPO_ROOT / "scripts" / "compose.sh"
+_SCRIPTS_README = _REPO_ROOT / "scripts" / "README.md"
+_BACKUP_RESTORE_DOC = _REPO_ROOT / "docs" / "operations" / "backup-restore.md"
 _FIREWALL_WRAPPER = "/usr/local/libexec/butlers-restore-drill-firewall"
 _CA_CONFIG_SOURCE = "restore_drill_executor_ca"
 _CA_CONTAINER_PATH = "/run/configs/restore_drill_executor_ca.pem"
+_BASE_COMPOSE_FILE = "docker-compose.yml"
+_RESTORE_DRILL_COMPOSE_FILE = "docker-compose.restore-drill.yml"
 
 
-def _compose() -> dict:
-    return yaml.safe_load((_REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+def _compose(compose_file: str) -> dict:
+    return yaml.safe_load((_REPO_ROOT / compose_file).read_text(encoding="utf-8"))
 
 
 def _environment(service: dict) -> dict:
@@ -47,55 +53,82 @@ def _environment_keys(service: dict) -> set[str]:
     return {entry.split("=", 1)[0] for entry in environment}
 
 
-def _rendered_services(*, profiles: tuple[str, ...] = ()) -> dict[str, dict]:
-    """Render Compose without starting any containers or reading a secret."""
+def _rendered_compose(*compose_files: str) -> dict:
+    """Render selected Compose files without starting any containers."""
     docker = shutil.which("docker")
     if docker is None:
         pytest.skip("Docker Compose CLI is required to render this deployment contract")
 
-    command = [docker, "compose", "-f", "docker-compose.yml"]
-    for profile in profiles:
-        command.extend(["--profile", profile])
+    command = [docker, "compose"]
+    for compose_file in compose_files:
+        command.extend(["-f", compose_file])
     command.extend(["config", "--format", "json"])
-
-    environment = {
-        **os.environ,
-        "POSTGRES_HOST": "198.51.100.42",
-        "POSTGRES_PASSWORD": "non-secret-test-password",
-        "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
-        "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "198.51.100.42",
-        "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": "/tmp/restore-drill-test-secret",
-        "RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE": "/tmp/restore-drill-test-ca.pem",
-    }
-    environment.pop("COMPOSE_PROFILES", None)
     completed = subprocess.run(
         command,
         check=False,
         cwd=_REPO_ROOT,
         capture_output=True,
-        env=environment,
+        env={
+            **os.environ,
+            "POSTGRES_HOST": "198.51.100.42",
+            "POSTGRES_PASSWORD": "non-secret-test-password",
+            "RESTORE_DRILL_EXECUTOR_DB_HOST": "postgres.example.test",
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "198.51.100.42",
+            "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": "/tmp/restore-drill-test-secret",
+            "RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE": "/tmp/restore-drill-test-ca.pem",
+        },
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    return json.loads(completed.stdout)["services"]
+    return json.loads(completed.stdout)
 
 
 def _rendered_executor() -> dict:
-    """Render the executor only through its supported explicit profile."""
-    return _rendered_services(profiles=("restore-drill",))["restore-drill-executor"]
+    """Render the protected executor contract without starting containers."""
+    return _rendered_compose(_BASE_COMPOSE_FILE, _RESTORE_DRILL_COMPOSE_FILE)["services"][
+        "restore-drill-executor"
+    ]
 
 
-def test_default_rendered_compose_omits_unfenced_restore_drill_executor() -> None:
-    """Bare Compose must not create the credentialed executor before the fence."""
-    default_services = _rendered_services()
+def test_direct_compose_render_omits_the_privileged_restore_executor() -> None:
+    """Bare Compose must not be able to start the credentialed executor unfenced."""
+    direct = _rendered_compose(_BASE_COMPOSE_FILE)
 
-    assert "restore-drill-executor" not in default_services
-    assert "restore-drill-executor" in _rendered_services(profiles=("restore-drill",))
+    assert direct["services"].get("restore-drill-executor") is None
+    assert direct["networks"].get("restore_drill_db") is None
+    assert direct.get("secrets", {}).get("restore_drill_executor_password") is None
+    assert direct.get("configs", {}).get(_CA_CONFIG_SOURCE) is None
+
+
+def test_supported_launchers_include_the_protected_restore_drill_compose_file() -> None:
+    """Only launchers that install the firewall may include the executor overlay."""
+    launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
+    protected_command = (
+        "CMD=(docker compose -f docker-compose.yml -f docker-compose.restore-drill.yml)"
+    )
+
+    assert DEFAULT_COMPOSE_FILES == (_BASE_COMPOSE_FILE, _RESTORE_DRILL_COMPOSE_FILE)
+    assert protected_command in launcher
+    assert launcher.index(protected_command) < launcher.index(
+        '"${CMD[@]}" create restore-drill-executor'
+    )
+    assert launcher.index(_FIREWALL_WRAPPER) < launcher.index('"${CMD[@]}" up -d')
+
+
+def test_operator_guidance_keeps_the_protected_fragment_out_of_direct_compose() -> None:
+    """Direct Compose guidance must describe the base-only fail-closed path."""
+    compose = (_REPO_ROOT / _BASE_COMPOSE_FILE).read_text(encoding="utf-8")
+    scripts_readme = _SCRIPTS_README.read_text(encoding="utf-8")
+    backup_restore = _BACKUP_RESTORE_DOC.read_text(encoding="utf-8")
+
+    assert "Direct Compose\n# uses this non-privileged base file only" in compose
+    assert "Do not compose the protected\nfragment directly." in scripts_readme
+    assert "a bare `docker compose up` fails\n  closed by omitting the executor" in backup_restore
 
 
 def test_restore_drill_executor_has_a_dedicated_database_network_and_private_secret() -> None:
     """REQ-database-security-006: the recovery credential has one narrow path."""
-    compose = _compose()
+    compose = _compose(_RESTORE_DRILL_COMPOSE_FILE)
     service = compose["services"]["restore-drill-executor"]
 
     assert service["networks"] == ["restore_drill_db"]
@@ -232,13 +265,6 @@ def test_restore_drill_launcher_uses_only_fixed_root_wrapper_before_startup() ->
     assert '--db-port "${RESTORE_DRILL_EXECUTOR_DB_PORT}"' in boundary
 
 
-def test_restore_drill_launcher_explicitly_enables_executor_profile() -> None:
-    """The supported launcher, not a bare Compose default, enables the executor."""
-    launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "PROFILES=(dev restore-drill)" in launcher
-
-
 def test_restore_drill_launcher_stops_if_down_fails_before_create_wrapper_or_up(
     tmp_path: Path,
 ) -> None:
@@ -359,11 +385,9 @@ def test_restore_drill_firewall_rejects_untrusted_wrapper_arguments() -> None:
 
 def test_private_executor_secret_is_absent_from_every_normal_runtime_service() -> None:
     """The secret mount belongs only to the deterministic executor service."""
-    compose = _compose()
+    compose = _compose(_BASE_COMPOSE_FILE)
 
     for name, service in compose["services"].items():
-        if name == "restore-drill-executor":
-            continue
         assert "restore_drill_executor_password" not in repr(service.get("secrets", []))
         assert _CA_CONFIG_SOURCE not in repr(service.get("configs", []))
         assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in _environment_keys(service)

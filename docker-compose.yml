@@ -6,8 +6,10 @@
 #   ./scripts/compose.sh --hotreload               # with live code reload
 #   ./scripts/compose.sh --prod                    # production database
 #
-# NOTE: compose.sh pre-builds the shared butlers-app image. If running
-# docker compose directly, build it first:
+# NOTE: compose.sh pre-builds the shared butlers-app image. Direct Compose
+# uses this non-privileged base file only; it deliberately excludes the
+# restore-drill executor and its secret/network contract. If running the
+# ordinary stack through docker compose directly, build the image first:
 #   docker build -t butlers-app:latest .
 #
 # PROFILES:
@@ -19,19 +21,18 @@
 #                and dashboard-api, replaces with *-hotreload variants)
 #   audio      — + live-listener connector (requires /dev/snd)
 #   minio      — + local S3-compatible storage (production uses Garage on tailnet)
-#   restore-drill — + the credentialed restore-drill executor. This is selected
-#                   only by the supported launchers after their host firewall
-#                   preparation succeeds; do not select it directly.
 #
 # PROD DEPLOYS:
 #   `butlers deploy` (src/butlers/core/deploy.py) is the one-command idempotent
 #   path: build the image with GIT_SHA, force-rerun `migrations` via `run --rm`
 #   (never trust a stale exited container's `service_completed_successfully`
 #   — see bu-zhfd0), recreate services, poll /health, record to
-#   public.deployments. It explicitly selects the restore-drill profile only
-#   after the executor's firewall preparation, and always strips inherited
-#   COMPOSE_PROFILES so hotreload/dev profiles cannot leak into a prod deploy.
-#   Do not tag prod-relevant services with profiles without updating both
+#   public.deployments. It NEVER passes --profile and always strips an
+#   inherited COMPOSE_PROFILES from its own subprocess env, so the merged
+#   config for a deploy is always the profile-less baked-image base set plus
+#   the protected restore-drill fragment — the hotreload/dev profiles below
+#   cannot leak into a prod deploy, regardless of ambient shell state. Do not
+#   tag prod-relevant services with `profiles: [prod]` without updating both
 #   scripts/compose.sh and src/butlers/core/deploy.py in lockstep.
 #
 # NETWORK MODEL (see RFC 0008):
@@ -217,57 +218,6 @@ services:
         condition: service_completed_successfully
     networks: [db]
     restart: unless-stopped
-
-  # The sole holder of the recovery-only database credential. It has no HTTP
-  # listener and deliberately does not inherit x-postgres-env: dashboard-api,
-  # butlers, and connectors remain unable to create the scratch database.
-  # Supported launchers retain the purpose-specific hostname for TLS identity,
-  # map it locally to a resolved IPv4, and apply the bridge's PostgreSQL-only
-  # default-deny firewall before starting this service. Do not start this
-  # service through bare `docker compose --profile restore-drill up`.
-  restore-drill-executor:
-    profiles: [restore-drill]
-    image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
-    command: []
-    environment:
-      RESTORE_DRILL_EXECUTOR_DB_HOST: ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}
-      RESTORE_DRILL_EXECUTOR_DB_PORT: ${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}
-      RESTORE_DRILL_EXECUTOR_SSLMODE: ${POSTGRES_SSLMODE:-}
-      # This is a container path, never the host-config source path. The
-      # noncredential CA root is required only when sslmode verifies it.
-      RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE: /run/configs/restore_drill_executor_ca.pem
-      RESTORE_DRILL_EXECUTOR_APPLICATION_DB: ${POSTGRES_DB:-butlers}
-      RESTORE_DRILL_EXECUTOR_MAINTENANCE_DB: ${RESTORE_DRILL_EXECUTOR_MAINTENANCE_DB:-postgres}
-      RESTORE_DRILL_EXECUTOR_BACKUP_DIR: /backups
-      RESTORE_DRILL_EXECUTOR_INTERVAL_S: ${RESTORE_DRILL_EXECUTOR_INTERVAL_S:-604800}
-      RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S: ${RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S:-3600}
-    volumes:
-      - butlers_backups:/backups:ro
-    secrets:
-      - source: restore_drill_executor_password
-        target: restore_drill_executor_password
-        mode: 0400
-    configs:
-      - source: restore_drill_executor_ca
-        target: /run/configs/restore_drill_executor_ca.pem
-        mode: 0444
-    depends_on:
-      migrations:
-        condition: service_completed_successfully
-    # The executor resolves this identity through /etc/hosts rather than DNS.
-    # Its libpq/asyncpg host remains the DNS name for sslmode=verify-full.
-    extra_hosts:
-      - ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}=${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to resolve the PostgreSQL IPv4 firewall endpoint}
-    # Docker's embedded resolver has only this container-loopback upstream.
-    # There is no DNS listener in the executor; extra_hosts resolves the sole
-    # required database identity before the resolver is consulted.
-    dns:
-      - 127.0.0.1
-    networks: [restore_drill_db]
-    # A transient host firewall fence must be installed before this credentialed
-    # service starts, including after a Docker daemon or host restart.
-    restart: "no"
 
   dashboard-api:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
@@ -907,19 +857,6 @@ volumes:
   wa_bridge_socket:
   butlers_backups:
 
-secrets:
-  # A host path is configuration, not the secret value. The private file is
-  # provisioned outside git and mounted only by restore-drill-executor.
-  restore_drill_executor_password:
-    file: "${RESTORE_DRILL_EXECUTOR_PASSWORD_FILE:?Set RESTORE_DRILL_EXECUTOR_PASSWORD_FILE to the private secret file}"
-
-configs:
-  # This is not a credential. A deployment supplies a CA root through the
-  # source-file setting only when it uses verify-ca or verify-full. The tracked
-  # default is deliberately not a valid CA, so verification modes fail closed.
-  restore_drill_executor_ca:
-    file: "${RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE:-./deploy/restore-drill-ca-unconfigured.pem}"
-
 # ── Networks ────────────────────────────────────────────────────────────
 
 networks:
@@ -938,9 +875,3 @@ networks:
     # Services on this network can reach the internet (for LLM APIs, OAuth, etc.).
     # Private subnets blocked by scripts/egress-firewall.sh.
     driver: bridge
-  # A dedicated bridge is required because the application `db` network is
-  # intentionally non-internal for remote PostgreSQL. IPv6 is disabled so the
-  # host's IPv4-only PostgreSQL allowlist remains a complete default deny.
-  restore_drill_db:
-    driver: bridge
-    enable_ipv6: false

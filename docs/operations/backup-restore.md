@@ -17,7 +17,7 @@ drill; it never launches a restore itself.
 | What | Where |
 |---|---|
 | Backup producer | `backup-cron` / `deploy/backup/pg_dump.sh` |
-| Restore-drill executor | `restore-drill-executor` Compose service |
+| Restore-drill executor | Protected `restore-drill-executor` Compose service |
 | Executor bootstrap contract | `scripts/init-db.sql` and `scripts/provision_restore_drill_executor.sh` |
 | Backup volume | `butlers_backups` |
 | Default backup schedule | 02:00 UTC daily (`BACKUP_CRON`) |
@@ -157,17 +157,16 @@ The Compose service is deliberately narrow:
   additionally use the dedicated read-only CA-root mount described above;
   `verify-full` verifies the retained DNS hostname, never the firewall IPv4
   address.
-- The executor is omitted from Compose's default service set behind the
-  `restore-drill` profile, so a bare `docker compose up` cannot start it. The
-  supported launchers, `scripts/compose.sh` and `butlers deploy`, explicitly
-  select that profile, stop any old executor, create its network without
-  starting the credentialed process, install the default-deny policy, and only
-  then start the stack. The executor has `restart: "no"`, so a Docker daemon
-  or host restart cannot auto-start it before the fence is recreated. A failed
-  checked stop/down phase also ends the launcher before `create`, firewall
-  invocation, or `up`. Do not invoke `docker compose --profile restore-drill`
-  directly; either supported launcher fails closed if it cannot stop the old
-  executor or apply the required firewall policy.
+- The ordinary `docker-compose.yml` deliberately omits the executor, its
+  bridge, its CA config, and its private secret. The supported launchers,
+  `scripts/compose.sh` and `butlers deploy`, are the only paths that add
+  `docker-compose.restore-drill.yml`; they stop any old executor, create its
+  network without starting the credentialed process, install that default-deny
+  policy, and only then start the merged stack. The executor has `restart: "no"`,
+  so a Docker daemon or host restart cannot auto-start it before the fence is
+  recreated. A failed checked stop/down phase also ends the launcher before
+  `create`, firewall invocation, or `up`. Thus a bare `docker compose up` fails
+  closed by omitting the executor rather than relying on a warning comment.
 - It mounts `butlers_backups` read-only and has no Docker socket, `backend`,
   `frontend`, or `egress` network membership.
 - It does not inherit `x-postgres-env` and receives no `POSTGRES_USER`,

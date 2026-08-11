@@ -81,14 +81,17 @@ executor is the sole service with that credential, joins only the dedicated
 that bridge except TCP to its configured PostgreSQL endpoint and port. The
 policy hooks both Docker's `DOCKER-USER`/`FORWARD` path and the bridge `INPUT`
 path, because a host or Docker gateway destination does not traverse
-`FORWARD`. The bridge is intentionally not Docker `internal` because PostgreSQL
-is externally hosted; both supported launchers (`scripts/compose.sh` and
-`butlers deploy`) stop/create the executor, invoke only the fixed root-owned
-`/usr/local/libexec/butlers-restore-drill-firewall` wrapper, install the
-default-deny policy, and only then start it. Neither launcher may elevate a
-checkout-controlled script, broad `env`, or a shell. The executor has no
-automatic restart policy, so a Docker daemon or host restart cannot start it
-before the fence is restored.
+`FORWARD`. The ordinary `docker-compose.yml` deliberately omits the executor,
+its bridge, and its secret/config mounts; a bare Compose invocation therefore
+cannot start the privileged process. The bridge is intentionally not Docker
+`internal` because PostgreSQL is externally hosted. Both supported launchers
+(`scripts/compose.sh` and `butlers deploy`) add the protected
+`docker-compose.restore-drill.yml` fragment, stop/create the executor, invoke
+only the fixed root-owned `/usr/local/libexec/butlers-restore-drill-firewall`
+wrapper, install the default-deny policy, and only then start it. Neither
+launcher may elevate a checkout-controlled script, broad `env`, or a shell.
+The executor has no automatic restart policy, so a Docker daemon or host
+restart cannot start it before the fence is restored.
 
 When PostgreSQL is named by DNS, that hostname remains the executor's TLS
 identity (including `verify-full`), while the host resolves a separate IPv4

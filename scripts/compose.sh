@@ -300,7 +300,11 @@ if [ "$OBSERVABILITY" = "true" ]; then
 fi
 
 # ── Build compose command ─────────────────────────────────────────────
-CMD=(docker compose)
+# The protected fragment is intentionally absent from bare Compose. This
+# launcher stops/creates the executor, installs its firewall, then starts the
+# merged service set below, so it is the only supported dev/prod command that
+# includes the credentialed executor contract.
+CMD=(docker compose -f docker-compose.yml -f docker-compose.restore-drill.yml)
 for p in "${PROFILES[@]}"; do
   CMD+=(--profile "$p")
 done

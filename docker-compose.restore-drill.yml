@@ -1,0 +1,75 @@
+# Protected restore-drill Compose fragment.
+#
+# This file is intentionally absent from bare `docker compose` invocations.
+# Only scripts/compose.sh and `butlers deploy` include it, after they have
+# stopped the prior executor, created its dedicated bridge, and installed the
+# root-owned PostgreSQL-only default-deny firewall. Do not compose this file
+# directly: it is an explicit protected-launch contract, not a profile.
+
+services:
+  # The sole holder of the recovery-only database credential. It has no HTTP
+  # listener and deliberately does not inherit x-postgres-env: dashboard-api,
+  # butlers, and connectors remain unable to create the scratch database.
+  restore-drill-executor:
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
+    command: []
+    environment:
+      RESTORE_DRILL_EXECUTOR_DB_HOST: ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}
+      RESTORE_DRILL_EXECUTOR_DB_PORT: ${RESTORE_DRILL_EXECUTOR_DB_PORT:-5432}
+      RESTORE_DRILL_EXECUTOR_SSLMODE: ${POSTGRES_SSLMODE:-}
+      # This is a container path, never the host-config source path. The
+      # noncredential CA root is required only when sslmode verifies it.
+      RESTORE_DRILL_EXECUTOR_SSLROOTCERT_FILE: /run/configs/restore_drill_executor_ca.pem
+      RESTORE_DRILL_EXECUTOR_APPLICATION_DB: ${POSTGRES_DB:-butlers}
+      RESTORE_DRILL_EXECUTOR_MAINTENANCE_DB: ${RESTORE_DRILL_EXECUTOR_MAINTENANCE_DB:-postgres}
+      RESTORE_DRILL_EXECUTOR_BACKUP_DIR: /backups
+      RESTORE_DRILL_EXECUTOR_INTERVAL_S: ${RESTORE_DRILL_EXECUTOR_INTERVAL_S:-604800}
+      RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S: ${RESTORE_DRILL_EXECUTOR_CHECK_INTERVAL_S:-3600}
+    volumes:
+      - butlers_backups:/backups:ro
+    secrets:
+      - source: restore_drill_executor_password
+        target: restore_drill_executor_password
+        mode: 0400
+    configs:
+      - source: restore_drill_executor_ca
+        target: /run/configs/restore_drill_executor_ca.pem
+        mode: 0444
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    # The executor resolves this identity through /etc/hosts rather than DNS.
+    # Its libpq/asyncpg host remains the DNS name for sslmode=verify-full.
+    extra_hosts:
+      - ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to retain the PostgreSQL TLS hostname}=${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST:?Run a supported launcher to resolve the PostgreSQL IPv4 firewall endpoint}
+    # Docker's embedded resolver has only this container-loopback upstream.
+    # There is no DNS listener in the executor; extra_hosts resolves the sole
+    # required database identity before the resolver is consulted.
+    dns:
+      - 127.0.0.1
+    networks: [restore_drill_db]
+    # A transient host firewall fence must be installed before this credentialed
+    # service starts, including after a Docker daemon or host restart.
+    restart: "no"
+
+secrets:
+  # A host path is configuration, not the secret value. The private file is
+  # provisioned outside git and mounted only by restore-drill-executor.
+  restore_drill_executor_password:
+    file: "${RESTORE_DRILL_EXECUTOR_PASSWORD_FILE:?Set RESTORE_DRILL_EXECUTOR_PASSWORD_FILE to the private secret file}"
+
+configs:
+  # This is not a credential. A deployment supplies a CA root through the
+  # source-file setting only when it uses verify-ca or verify-full. The tracked
+  # default is deliberately not a valid CA, so verification modes fail closed.
+  restore_drill_executor_ca:
+    file: "${RESTORE_DRILL_EXECUTOR_SSLROOTCERT_SOURCE_FILE:-./deploy/restore-drill-ca-unconfigured.pem}"
+
+networks:
+  # A dedicated bridge is required because the application `db` network is
+  # intentionally non-internal for remote PostgreSQL. IPv6 is disabled so the
+  # host's IPv4-only PostgreSQL allowlist remains a complete default deny.
+  restore_drill_db:
+    driver: bridge
+    enable_ipv6: false

@@ -67,6 +67,15 @@ Scope: v1-mandatory
 - **AND** dashboard-api reads durable results but does not schedule or execute
   the scratch lifecycle
 
+#### Scenario: Bare Compose cannot start an unfenced executor
+- **WHEN** an operator renders or starts the ordinary `docker-compose.yml`
+  directly
+- **THEN** that base service set omits `restore-drill-executor`, its dedicated
+  bridge, its private secret, and its CA-root config
+- **AND** only `scripts/compose.sh` and `butlers deploy` include the protected
+  `docker-compose.restore-drill.yml` fragment after their existing
+  stop/create/firewall preparation succeeds
+
 #### Scenario: Scratch lifecycle never targets live application data
 - **WHEN** a scheduled or documented restore drill runs with an available backup
 - **THEN** it performs stale-scratch cleanup, creates a fresh scratch database,

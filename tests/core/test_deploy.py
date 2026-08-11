@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from butlers.core.deploy import (
+    DEFAULT_COMPOSE_FILES,
     RESTORE_DRILL_FIREWALL_WRAPPER,
     DeployConfig,
     DeployError,
@@ -63,6 +64,13 @@ class TestResolveGitSha:
 
 
 class TestComposeArgsAndEnv:
+    def test_default_deploy_includes_the_protected_restore_drill_overlay(self):
+        """Prod deploy must render the executor only through its prepared Compose input."""
+        assert DEFAULT_COMPOSE_FILES == (
+            "docker-compose.yml",
+            "docker-compose.restore-drill.yml",
+        )
+
     def test_compose_base_args_includes_files_project_and_env_file(self):
         config = _config(compose_files=("docker-compose.yml",), project_name="butlers")
         args = _compose_base_args(config)
@@ -173,6 +181,21 @@ class TestRestoreDrillDeployBoundary:
         recreate_services(config, endpoint)
 
         commands = [command for command, _env in calls]
+        protected_compose_prefix = [
+            "docker",
+            "compose",
+            "-f",
+            "docker-compose.yml",
+            "-f",
+            "docker-compose.restore-drill.yml",
+            "-p",
+            "butlers",
+            "--env-file",
+            ".env.prod",
+        ]
+        assert commands[0][: len(protected_compose_prefix)] == protected_compose_prefix
+        assert commands[1][: len(protected_compose_prefix)] == protected_compose_prefix
+        assert commands[3][: len(protected_compose_prefix)] == protected_compose_prefix
         assert commands[0][-2:] == ["stop", "restore-drill-executor"]
         assert commands[1][-2:] == ["create", "restore-drill-executor"]
         assert commands[2] == [
