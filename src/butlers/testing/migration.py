@@ -41,6 +41,7 @@ from sqlalchemy import create_engine, text
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
+_PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
 
 
 def migration_db_name() -> str:
@@ -115,6 +116,19 @@ def _create_test_migration_role(admin_url: str, role: str, password: str) -> Non
         engine.dispose()
 
 
+def init_db_sql_for_dbapi() -> str:
+    """Return init-db SQL for disposable fixtures that execute through DBAPI.
+
+    The checked-in script owns fail-fast behavior for its documented ``psql -f``
+    invocation. DBAPI cursors cannot parse psql client commands, so fixtures
+    remove only that exact client-only directive and fail if it drifts.
+    """
+    source = _INIT_DB.read_text(encoding="utf-8")
+    if source.count(_PSQL_ON_ERROR_STOP_DIRECTIVE) != 1:
+        raise RuntimeError("init-db.sql must contain exactly one psql fail-fast directive")
+    return source.replace(_PSQL_ON_ERROR_STOP_DIRECTIVE, "", 1)
+
+
 def _bootstrap_migration_prerequisites(bootstrap_db_url: str, migration_user: str) -> None:
     """Stage the production bootstrap contract in a disposable migration database.
 
@@ -123,7 +137,7 @@ def _bootstrap_migration_prerequisites(bootstrap_db_url: str, migration_user: st
     so they must stage that trusted bootstrap boundary before exercising the
     ordinary, non-privileged migration path.
     """
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = init_db_sql_for_dbapi()
     engine = create_engine(bootstrap_db_url, isolation_level="AUTOCOMMIT")
     raw_connection = engine.raw_connection()
     try:

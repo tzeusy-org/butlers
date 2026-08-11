@@ -32,6 +32,9 @@
 --   migration user (typically "butlers"), which is required for non-privileged
 --   future ALTER TABLE migrations to succeed.
 
+-- Stop the documented psql -f invocation at the first rejected safety check.
+\set ON_ERROR_STOP on
+
 -- ── Read-only bootstrap preflight ───────────────────────────────────────────
 -- INITIAL_READ_ONLY_BOOTSTRAP_PREFLIGHT: keep before every DDL/DCL mutation.
 

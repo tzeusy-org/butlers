@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.migration import init_db_sql_for_dbapi
+
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +78,11 @@ def test_initial_bootstrap_preflight_precedes_every_ddl_or_dcl_mutation() -> Non
     preflight = source[preflight_start:preflight_end]
     assert "restore-drill admin bootstrap requires a cluster superuser" in preflight
 
+    first_psql_directive = re.search(r"^\s*\\\S+.*$", source, re.MULTILINE)
+    assert first_psql_directive is not None
+    assert first_psql_directive.group().strip() == r"\set ON_ERROR_STOP on"
+    assert first_psql_directive.start() < preflight_start
+
     mutator = re.compile(
         r"^\s*(?:CREATE|ALTER|GRANT|REVOKE|DROP|UPDATE|INSERT|DELETE|TRUNCATE)\b",
         re.MULTILINE,
@@ -83,6 +90,13 @@ def test_initial_bootstrap_preflight_precedes_every_ddl_or_dcl_mutation() -> Non
     first_mutator = mutator.search(source)
     assert first_mutator is not None
     assert first_mutator.start() > preflight_end
+
+
+def test_dbapi_bootstrap_source_removes_only_the_psql_fail_fast_directive() -> None:
+    """Testcontainers' direct cursor path cannot receive psql-only commands."""
+    source = _INIT_DB.read_text(encoding="utf-8")
+
+    assert init_db_sql_for_dbapi() == source.replace(r"\set ON_ERROR_STOP on" + "\n", "", 1)
 
 
 def test_managed_provisioner_reads_the_executor_password_only_from_its_private_file() -> None:

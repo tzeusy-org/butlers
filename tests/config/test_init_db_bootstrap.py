@@ -69,17 +69,18 @@ def _run_psql_file(
     database: str,
     file_path: Path,
     connecting_user: str | None = None,
+    on_error_stop: bool = True,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PGPASSWORD"] = password
     if connecting_user is not None:
         env["PGOPTIONS"] = f"-c butlers.connecting_user={connecting_user}"
-    return subprocess.run(
+    command = ["psql"]
+    if on_error_stop:
+        command.extend(["-v", "ON_ERROR_STOP=1"])
+    command.extend(
         [
-            "psql",
-            "-v",
-            "ON_ERROR_STOP=1",
             "-h",
             host,
             "-p",
@@ -90,7 +91,10 @@ def _run_psql_file(
             database,
             "-f",
             str(file_path),
-        ],
+        ]
+    )
+    return subprocess.run(
+        command,
         check=check,
         env=env,
         capture_output=True,
@@ -1219,6 +1223,81 @@ def test_init_db_rejects_distinct_non_superuser_owner_before_any_mutation(postgr
     finally:
         engine.dispose()
 
+    assert "restore-drill admin bootstrap requires a cluster superuser" in completed.stderr
+
+
+def test_init_db_default_psql_stops_before_extension_mutation_after_preflight_error(
+    postgres_container,
+):
+    """The documented default psql invocation must stop at a rejected preflight."""
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    owner_role = "init_db_default_psql_owner"
+    managed_roles = (
+        owner_role,
+        "butlers",
+        _OPTIONAL_CALENDAR_RUNTIME_ROLE,
+        *_RESTORE_DRILL_AUTHORITY_ROLES,
+        *_NORMAL_RUNTIME_ROLES,
+    )
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            for role in managed_roles:
+                conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
+            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
+            conn.execute(
+                text(
+                    "CREATE ROLE init_db_default_psql_owner LOGIN "
+                    "NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION "
+                    "PASSWORD 'unprivileged-owner'"
+                )
+            )
+            conn.execute(text("CREATE DATABASE butlers OWNER init_db_default_psql_owner"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    completed = _run_psql_file(
+        host=host,
+        port=port,
+        user=owner_role,
+        password="unprivileged-owner",
+        database="butlers",
+        file_path=script_path,
+        connecting_user="butlers",
+        on_error_stop=False,
+        check=False,
+    )
+
+    control_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+    engine = create_engine(control_url)
+    try:
+        with engine.connect() as conn:
+            installed_script_extensions = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT extname
+                        FROM pg_extension
+                        WHERE extname = ANY(:extension_names)
+                        ORDER BY extname
+                        """
+                    ),
+                    {"extension_names": list(_SCRIPT_EXTENSIONS)},
+                )
+                .scalars()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    assert completed.returncode != 0, (
+        "default psql -f continued after the rejected bootstrap preflight; "
+        f"exit code={completed.returncode}, extensions={installed_script_extensions}"
+    )
+    assert installed_script_extensions == []
     assert "restore-drill admin bootstrap requires a cluster superuser" in completed.stderr
 
 

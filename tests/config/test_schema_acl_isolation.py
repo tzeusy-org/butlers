@@ -9,7 +9,6 @@ import asyncio
 import logging
 import shutil
 import uuid
-from pathlib import Path
 from urllib.parse import urlparse
 
 import asyncpg
@@ -17,7 +16,11 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
-from butlers.testing.migration import create_migration_db, migration_bootstrap_db_url
+from butlers.testing.migration import (
+    create_migration_db,
+    init_db_sql_for_dbapi,
+    migration_bootstrap_db_url,
+)
 
 # Skip all tests if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -49,7 +52,6 @@ _RESTORE_DRILL_DENIED_ROLES = (
     "butler_travel_rw",
     "connector_writer",
 )
-_INIT_DB = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
 
 
 def _quote_ident(identifier: str) -> str:
@@ -174,7 +176,7 @@ def _restore_drill_ledger_effective_privileges(db_url: str, role_name: str) -> d
 
 def _rerun_init_db_as_control(control_db_url: str, migration_user: str) -> None:
     """Run the trusted bootstrap as the disposable privileged control user."""
-    source = _INIT_DB.read_text(encoding="utf-8")
+    source = init_db_sql_for_dbapi()
     engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
     raw_connection = engine.raw_connection()
     try:
