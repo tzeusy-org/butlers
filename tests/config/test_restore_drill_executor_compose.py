@@ -545,8 +545,6 @@ def test_restore_drill_firewall_writes_capability_only_after_gated_policy_succes
 
     executor_id = "1" * 64
     relay_id = "2" * 64
-    executor_network_id = "3" * 64
-    relay_network_id = "4" * 64
     iptables_log = tmp_path / "iptables.log"
 
     (fake_bin / "install").write_text(
@@ -594,7 +592,6 @@ def test_restore_drill_firewall_writes_capability_only_after_gated_policy_succes
         '  case "$template" in\n'
         '    *bridge.name*) [[ "$network" == *_restore_drill_db ]] && echo br-relay || echo br-executor ;;\n'
         "    *Gateway*) echo 172.30.0.1 ;;\n"
-        '    *Id*) [[ "$network" == *_restore_drill_db ]] && echo "$FAKE_RELAY_NETWORK_ID" || echo "$FAKE_EXECUTOR_NETWORK_ID" ;;\n'
         "  esac\n"
         "  exit 0\n"
         "fi\n"
@@ -621,8 +618,6 @@ def test_restore_drill_firewall_writes_capability_only_after_gated_policy_succes
         "FAKE_CAPABILITY_PATH": str(capability_path),
         "FAKE_EXECUTOR_ID": executor_id,
         "FAKE_RELAY_ID": relay_id,
-        "FAKE_EXECUTOR_NETWORK_ID": executor_network_id,
-        "FAKE_RELAY_NETWORK_ID": relay_network_id,
         "FAKE_IPTABLES_LOG": str(iptables_log),
         "FAKE_PREPARATION_PATH": str(preparation_path),
     }
@@ -683,12 +678,12 @@ def test_restore_drill_firewall_writes_capability_only_after_gated_policy_succes
     capability = capability_path.read_text(encoding="utf-8")
     assert f"nonce={nonce}" in capability
     assert f"executor_container_id={executor_id}" in capability
-    assert f"executor_network_id={executor_network_id}" in capability
     assert "executor_ip=172.30.0.3" in capability
     assert "executor_gateway=172.30.0.1" in capability
-    assert f"relay_container_id={relay_id}" in capability
-    assert f"relay_network_id={relay_network_id}" in capability
     assert "relay_ip=172.30.0.2" in capability
+    assert "executor_network_id=" not in capability
+    assert "relay_container_id=" not in capability
+    assert "relay_network_id=" not in capability
     assert iptables_log.read_text(encoding="utf-8")
 
 

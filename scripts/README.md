@@ -107,10 +107,12 @@ include `docker-compose.restore-drill.yml`: they stop, call the root-owned
 prepare verb, create the relay and executor with its generation-bound nonce, attest
 and fence that exact created topology, and only then start the merged stack.
 An older installed wrapper rejects the prepare verb before `create`/`up`.
-The post-fence root marker is boot-, project-, nonce-, container-, and
-relay-topology-bound, so a same-boot manual down/recreate cannot replay it.
-A stop/start of that unchanged, already-fenced container generation is not a
-new authorization; it retains the same container, network, marker, and host
+The post-fence root marker is boot-, project-, nonce-, executor-container/IP/
+gateway-, and relay-alias/IP-bound. The wrapper separately discovers the
+created relay/container/network topology while it fences both bridges, so a
+same-boot manual down/recreate cannot replay it. A stop/start of that
+unchanged, already-fenced container generation is not a new authorization; it
+retains the same container, network, marker, and host
 policy. It is still not a supported operational path. Any `down`, topology
 recreation, or root Docker/firewall intervention requires the canonical
 prepare/create/fence sequence again.

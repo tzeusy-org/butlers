@@ -97,13 +97,15 @@ executor, invoke only the fixed root-owned
 versioned prepare verb before `create`. That verb emits a
 per-created-generation nonce; the created executor carries it, and the
 post-fence marker binds it to the
-current boot, project, exact executor container generation, relay container,
-network identities, and internal endpoints. The executor verifies its own
-generation and current internal relay topology before reading its secret. A
-same-boot manual down/recreate therefore cannot replay a marker tied to old
-bridges, and an old installed wrapper rejects the new preparation verb before
-any protected container is created. Neither launcher may elevate a
-checkout-controlled script, broad `env`, or a shell. Neither protected service
+current boot, project, nonce, exact executor container generation, executor
+IPv4/gateway, and relay-alias IPv4. The wrapper independently discovers the
+created relay/container/network topology while it fences both bridges; the
+socketless executor verifies only the marker dimensions it can observe before
+reading its secret. A same-boot manual down/recreate therefore cannot replay a
+marker tied to old bridges, and an old installed wrapper rejects the new
+preparation verb before any protected container is created. Neither launcher
+may elevate a checkout-controlled script, broad `env`, or a shell. Neither
+protected service
 has an automatic restart policy, so a Docker daemon or host restart cannot
 start it before the fence is restored. Root-level Docker/firewall intervention
 is outside this unprivileged launch attestation and requires rerunning the

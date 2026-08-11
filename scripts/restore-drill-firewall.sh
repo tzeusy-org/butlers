@@ -44,11 +44,8 @@ REMOVE=false
 # policies succeed. They deliberately are not caller-provided arguments.
 PREPARED_CAPABILITY_NONCE=""
 PREPARED_EXECUTOR_CONTAINER_ID=""
-PREPARED_EXECUTOR_NETWORK_ID=""
 PREPARED_EXECUTOR_IP=""
 PREPARED_EXECUTOR_GATEWAY=""
-PREPARED_RELAY_CONTAINER_ID=""
-PREPARED_RELAY_NETWORK_ID=""
 PREPARED_RELAY_IP=""
 
 usage() {
@@ -340,12 +337,14 @@ write_executor_capability() {
     boot_id="$(read_host_boot_id)"
     temporary_path="$(mktemp "${EXECUTOR_CAPABILITY_DIRECTORY}/.${COMPOSE_PROJECT}.XXXXXX")" \
         || die "could not create executor capability"
-    printf '%s\nproject=%s\nport=%s\nboot_id=%s\nnonce=%s\nexecutor_container_id=%s\nexecutor_network_id=%s\nexecutor_ip=%s\nexecutor_gateway=%s\nrelay_container_id=%s\nrelay_network_id=%s\nrelay_ip=%s\n' \
+    # Persist only values the socketless executor can independently observe.
+    # The wrapper still discovers Docker container/network identities while it
+    # installs policy, but those host-only IDs must not masquerade as executor
+    # attestation inputs.
+    printf '%s\nproject=%s\nport=%s\nboot_id=%s\nnonce=%s\nexecutor_container_id=%s\nexecutor_ip=%s\nexecutor_gateway=%s\nrelay_ip=%s\n' \
         "$EXECUTOR_CAPABILITY_VERSION" "$COMPOSE_PROJECT" "$RESTORE_DRILL_DB_PORT" "$boot_id" \
         "$PREPARED_CAPABILITY_NONCE" "$PREPARED_EXECUTOR_CONTAINER_ID" \
-        "$PREPARED_EXECUTOR_NETWORK_ID" "$PREPARED_EXECUTOR_IP" \
-        "$PREPARED_EXECUTOR_GATEWAY" "$PREPARED_RELAY_CONTAINER_ID" \
-        "$PREPARED_RELAY_NETWORK_ID" "$PREPARED_RELAY_IP" > "$temporary_path"
+        "$PREPARED_EXECUTOR_IP" "$PREPARED_EXECUTOR_GATEWAY" "$PREPARED_RELAY_IP" > "$temporary_path"
     chown root:root "$temporary_path"
     chmod 0400 "$temporary_path"
     mv -f -- "$temporary_path" "$path"
@@ -402,14 +401,6 @@ resolve_bridge() {
     printf '%s\n' "$bridge"
 }
 
-resolve_network_id() {
-    local network_id
-    network_id="$(docker network inspect "$1" --format '{{.Id}}' 2>/dev/null)" || true
-    [[ "$network_id" =~ ^[a-f0-9]{64}$ ]] \
-        || die "could not resolve a Docker network identity for '$1'"
-    printf '%s\n' "$network_id"
-}
-
 resolve_network_gateway() {
     local gateway
     gateway="$(docker network inspect "$1" \
@@ -459,11 +450,11 @@ read_container_environment_value() {
 }
 
 attest_prepared_executor_topology() {
-    local relay_network="$1" executor_network="$2"
-    local executor_nonce executor_project relay_gateway
+    local executor_network="$1"
+    local executor_nonce executor_project relay_container_id relay_gateway
     PREPARED_CAPABILITY_NONCE="$(read_prepared_executor_nonce)"
     PREPARED_EXECUTOR_CONTAINER_ID="$(resolve_created_service_container restore-drill-executor)"
-    PREPARED_RELAY_CONTAINER_ID="$(resolve_created_service_container restore-drill-postgres-proxy)"
+    relay_container_id="$(resolve_created_service_container restore-drill-postgres-proxy)"
     executor_nonce="$(read_container_environment_value \
         "$PREPARED_EXECUTOR_CONTAINER_ID" RESTORE_DRILL_EXECUTOR_FIREWALL_CAPABILITY_NONCE)"
     [[ "$executor_nonce" == "$PREPARED_CAPABILITY_NONCE" ]] \
@@ -472,12 +463,10 @@ attest_prepared_executor_topology() {
         "$PREPARED_EXECUTOR_CONTAINER_ID" RESTORE_DRILL_EXECUTOR_FIREWALL_PROJECT)"
     [[ "$executor_project" == "$COMPOSE_PROJECT" ]] \
         || die "created executor does not carry the prepared project identity"
-    PREPARED_EXECUTOR_NETWORK_ID="$(resolve_network_id "$executor_network")"
-    PREPARED_RELAY_NETWORK_ID="$(resolve_network_id "$relay_network")"
     PREPARED_EXECUTOR_IP="$(resolve_container_network_ipv4 \
         "$PREPARED_EXECUTOR_CONTAINER_ID" "$executor_network" executor)"
     PREPARED_RELAY_IP="$(resolve_container_network_ipv4 \
-        "$PREPARED_RELAY_CONTAINER_ID" "$executor_network" relay)"
+        "$relay_container_id" "$executor_network" relay)"
     relay_gateway="$(resolve_network_gateway "$executor_network")"
     [[ "$PREPARED_RELAY_IP" != "$relay_gateway" ]] \
         || die "created restore-drill relay resolves to the internal network gateway"
@@ -547,7 +536,7 @@ apply_rules() {
     if [[ "$REQUIRE_EXECUTOR_CAPABILITY" == true && "$DRY_RUN" == false ]]; then
         ensure_executor_capability_directory
         remove_executor_capability
-        attest_prepared_executor_topology "$relay_network" "$executor_network"
+        attest_prepared_executor_topology "$executor_network"
     fi
     relay_bridge="$(resolve_bridge restore_drill_db)"
     executor_bridge="$(resolve_bridge restore_drill_executor)"

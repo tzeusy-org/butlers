@@ -75,12 +75,14 @@ Scope: v1-mandatory
   treat stop/down failure as terminal before create, invoke only a fixed
   root-owned firewall wrapper's versioned prepare verb, inject its
   per-created-generation nonce into the created executor, then require the
-  wrapper to bind that nonce
-  to the current boot, exact executor/relay containers, networks, and internal
-  endpoints after installing the default-deny policy and before either service
-  starts; a stale wrapper or same-boot manual down/recreate must fail before
-  secret use, and neither protected service has an automatic restart policy
-  that could bypass a transient fence after a Docker daemon or host restart
+  wrapper to discover and fence the exact executor/relay containers and
+  networks, then bind that nonce in a post-policy marker to the current boot,
+  project, executor container generation, executor IPv4/gateway, and relay-
+  alias IPv4 before either service starts. The socketless executor verifies
+  only those observable marker dimensions; a stale wrapper or same-boot manual
+  down/recreate must fail before secret use, and neither protected service has
+  an automatic restart policy that could bypass a transient fence after a
+  Docker daemon or host restart
 - **AND** a direct stop/start of the unchanged, already-fenced container
   generation is not treated as a new authorization; any down/recreate or
   topology change must repeat the canonical prepare/create/fence sequence

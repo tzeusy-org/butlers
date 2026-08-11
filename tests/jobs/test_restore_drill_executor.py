@@ -38,9 +38,6 @@ def _prepared_firewall_capability(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     project = "butlers"
     nonce = "a" * 64
     executor_id = "1" * 64
-    relay_id = "2" * 64
-    executor_network_id = "3" * 64
-    relay_network_id = "4" * 64
     capability_directory = tmp_path / "restore-drill-firewall"
     capability_directory.mkdir()
     monkeypatch.setattr(
@@ -83,11 +80,8 @@ def _prepared_firewall_capability(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         "boot_id=test-boot-id\n"
         f"nonce={nonce}\n"
         f"executor_container_id={executor_id}\n"
-        f"executor_network_id={executor_network_id}\n"
         "executor_ip=172.30.0.3\n"
         "executor_gateway=172.30.0.1\n"
-        f"relay_container_id={relay_id}\n"
-        f"relay_network_id={relay_network_id}\n"
         "relay_ip=172.30.0.2\n",
         encoding="utf-8",
     )
@@ -201,11 +195,8 @@ def test_executor_rejects_a_stale_capability_from_another_container_generation(
     (
         "nonce",
         "executor_container_id",
-        "executor_network_id",
         "executor_ip",
         "executor_gateway",
-        "relay_container_id",
-        "relay_network_id",
         "relay_ip",
         "relay_alias",
     ),
@@ -227,11 +218,8 @@ def test_executor_rejects_tampered_capability_topology_before_reading_password(
             "executor_container_id=" + "1" * 64,
             "executor_container_id=" + "9" * 64,
         ),
-        "executor_network_id": ("executor_network_id=" + "3" * 64, "executor_network_id=bad"),
         "executor_ip": ("executor_ip=172.30.0.3", "executor_ip=172.30.0.9"),
         "executor_gateway": ("executor_gateway=172.30.0.1", "executor_gateway=172.30.0.9"),
-        "relay_container_id": ("relay_container_id=" + "2" * 64, "relay_container_id=bad"),
-        "relay_network_id": ("relay_network_id=" + "4" * 64, "relay_network_id=bad"),
         "relay_ip": ("relay_ip=172.30.0.2", "relay_ip=172.30.0.9"),
     }
     if tamper == "relay_alias":
@@ -247,6 +235,43 @@ def test_executor_rejects_tampered_capability_topology_before_reading_password(
         capability_path.chmod(0o600)
         capability_path.write_text(content.replace(before, after), encoding="utf-8")
         capability_path.chmod(0o400)
+
+    def password_must_not_be_read(_path: Path) -> str:
+        pytest.fail("capability rejection read the restore-drill password")
+
+    monkeypatch.setattr(
+        restore_drill_executor, "_read_executor_password", password_must_not_be_read
+    )
+
+    with pytest.raises(ValueError, match="prepared firewall capability"):
+        load_restore_drill_executor_config()
+
+
+def test_executor_rejects_marker_claiming_unattestable_docker_ids_before_reading_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Host-only Docker IDs must not reach executor-side secret authorization."""
+    password_file = tmp_path / "restore-drill-password"
+    password_file.write_text("file-backed-test-password\n", encoding="utf-8")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_HOST", "postgres.example.test")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_DB_PORT", "5432")
+    monkeypatch.setenv("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", str(password_file))
+    capability_path = tmp_path / "restore-drill-firewall" / "butlers.executor-capability-v1"
+    content = capability_path.read_text(encoding="utf-8")
+    legacy_marker = content.replace(
+        "executor_ip=172.30.0.3\n",
+        "executor_network_id=" + "9" * 64 + "\nexecutor_ip=172.30.0.3\n",
+    ).replace(
+        "relay_ip=172.30.0.2\n",
+        "relay_container_id="
+        + "8" * 64
+        + "\nrelay_network_id="
+        + "7" * 64
+        + "\nrelay_ip=172.30.0.2\n",
+    )
+    capability_path.chmod(0o600)
+    capability_path.write_text(legacy_marker, encoding="utf-8")
+    capability_path.chmod(0o400)
 
     def password_must_not_be_read(_path: Path) -> str:
         pytest.fail("capability rejection read the restore-drill password")

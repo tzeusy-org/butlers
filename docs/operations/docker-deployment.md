@@ -177,8 +177,9 @@ It runs, in order:
    new migrations baked in (bd bu-zhfd0: core_155..161 sat unrun in prod for
    six days this way). `run --rm` sidesteps that entirely.
 3. **Prepare and recreate** — stops the restore relay/executor, obtains the
-   root-owned generation-bound capability, creates the protected containers, attests
-   and applies both root-owned default-deny firewall policies, then runs the
+   root-owned generation-bound capability, creates the protected containers,
+   performs root-side attestation and applies both default-deny firewall
+   policies, then runs the
    protected base-plus-restore-drill Compose overlay with `up -d --remove-orphans`,
    with **no** `--profile` flag ever passed and
    `COMPOSE_PROFILES` stripped from the subprocess environment, so a leftover dev-shell

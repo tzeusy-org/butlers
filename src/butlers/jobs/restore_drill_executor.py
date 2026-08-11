@@ -280,10 +280,10 @@ def _resolve_internal_relay_ipv4(host: str, port: int) -> str:
 def _require_prepared_firewall_capability(host: str, port: int) -> None:
     """Require a current root attestation before reading the executor secret.
 
-    The marker is written only after the wrapper fenced both bridges.  Its
-    nonce and container/topology fields prevent a same-boot manual
-    ``compose down``/``up`` from replaying an authorization for the prior
-    Docker generation.
+    The marker is written only after the wrapper fenced both bridges. Its
+    nonce, executor generation/IP/subnet, and relay-alias/IP fields are all
+    independently observable here, so a same-boot manual ``compose down``/
+    ``up`` cannot replay an authorization for the prior Docker generation.
     """
     project = os.environ.get("RESTORE_DRILL_EXECUTOR_FIREWALL_PROJECT", "")
     if not _COMPOSE_PROJECT_NAME.fullmatch(project):
@@ -302,7 +302,7 @@ def _require_prepared_firewall_capability(host: str, port: int) -> None:
         raise _prepared_firewall_capability_error() from exc
 
     lines = content.splitlines()
-    if len(lines) != 12:
+    if len(lines) != 9:
         raise _prepared_firewall_capability_error()
     expected_keys = (
         "project",
@@ -310,11 +310,8 @@ def _require_prepared_firewall_capability(host: str, port: int) -> None:
         "boot_id",
         "nonce",
         "executor_container_id",
-        "executor_network_id",
         "executor_ip",
         "executor_gateway",
-        "relay_container_id",
-        "relay_network_id",
         "relay_ip",
     )
     if lines[0] != _FIREWALL_CAPABILITY_VERSION:
@@ -333,20 +330,11 @@ def _require_prepared_firewall_capability(host: str, port: int) -> None:
         f"boot_id={_read_host_boot_id()}\n"
         f"nonce={nonce}\n"
         f"executor_container_id={values['executor_container_id']}\n"
-        f"executor_network_id={values['executor_network_id']}\n"
         f"executor_ip={values['executor_ip']}\n"
         f"executor_gateway={values['executor_gateway']}\n"
-        f"relay_container_id={values['relay_container_id']}\n"
-        f"relay_network_id={values['relay_network_id']}\n"
         f"relay_ip={values['relay_ip']}\n"
     )
-    if (
-        content != expected
-        or not _DOCKER_ID.fullmatch(values["executor_container_id"])
-        or not _DOCKER_ID.fullmatch(values["executor_network_id"])
-        or not _DOCKER_ID.fullmatch(values["relay_container_id"])
-        or not _DOCKER_ID.fullmatch(values["relay_network_id"])
-    ):
+    if content != expected or not _DOCKER_ID.fullmatch(values["executor_container_id"]):
         raise _prepared_firewall_capability_error()
 
     container_identity = _read_current_container_identity()

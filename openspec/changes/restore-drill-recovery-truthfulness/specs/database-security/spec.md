@@ -54,9 +54,11 @@ Scope: v1-mandatory
   bridge so the credentialed process may reach only that created relay peer
 - **AND** the executor reads its credential only after a root-owned,
   per-created-generation prepared capability binds the current boot, project,
-  nonce, executor
-  container generation, and relay/network topology; stale wrapper versions or
-  same-boot manual down/recreate state cannot replay that capability
+  nonce, executor container generation, executor IPv4/gateway, and relay-alias
+  IPv4. The wrapper separately discovers and fences the exact relay/container/
+  network topology; the socketless executor checks only the marker dimensions
+  it can observe. Stale wrapper versions or same-boot manual down/recreate
+  state cannot replay that capability
 - **AND** direct stop/start of that unchanged, already-fenced generation is
   not a new authorization; a down/recreate or topology change must repeat the
   canonical prepare/create/fence sequence

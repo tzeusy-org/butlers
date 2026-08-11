@@ -190,10 +190,12 @@ The Compose services are deliberately narrow:
   `docker-compose.restore-drill.yml`; they stop the old relay and executor,
   call a versioned root-owned preparation verb before `create`, inject its
   generation-bound nonce into the created executor, attest and fence that exact
-  container/relay topology, and only then start the merged stack. The
-  post-fence marker binds the current host boot, project, nonce, executor
-  generation, and relay topology, so a same-boot manual down/recreate cannot
-  replay a prior authorization. An older installed wrapper rejects the
+  container/relay topology, and only then start the merged stack. The wrapper
+  discovers that host-side topology while fencing it; the post-fence marker
+  binds the current host boot, project, nonce, executor generation, executor
+  IPv4/gateway, and relay-alias IPv4, which the socketless executor can verify
+  before reading its secret. A same-boot manual down/recreate cannot replay a
+  prior authorization. An older installed wrapper rejects the
   preparation verb before `create`/`up`. The services have `restart: "no"`, so
   a Docker daemon or host restart cannot auto-start them before the fence is
   recreated. A direct merged invocation has no valid prepared marker for its

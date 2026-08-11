@@ -34,10 +34,12 @@
   `scripts/compose.sh` and `butlers deploy` paths must treat stop/down failure
   as terminal before they create the executor,
   invoke only a fixed root-owned firewall wrapper with validated literal
-  arguments and a versioned pre-create capability preparation, bind its
-  per-created-generation nonce to the exact created executor/relay topology only after both
-  policies install, reject stale installed wrappers and stale same-boot
-  down/recreate markers before secret use, then start the protected services;
+  arguments and a versioned pre-create capability preparation, discover the
+  exact created executor/relay topology, install both policies, then bind its
+  per-created-generation nonce in the executor marker to the observable
+  executor generation/IP/gateway and relay-alias IP; reject
+  stale installed wrappers and stale same-boot down/recreate markers before
+  secret use, then start the protected services;
   disable executor
   auto-restart while retaining an untrimmed DNS `verify-full` TLS identity (not
   `localhost` or any numeric IPv4 spelling) separately from the resolved IPv4
