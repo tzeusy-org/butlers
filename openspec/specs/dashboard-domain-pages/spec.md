@@ -1695,7 +1695,7 @@ Scope: v1-mandatory
 - `frontend/src/index.css` — `--severity-low`, `--severity-medium`,
   `--severity-high` token definitions; `--categorical-1` through `--categorical-12`
   definitions (extended from 8 slots by bu-86c4c.6). Both sets are also
-  aliased into Tailwind via `--color-severity-*` and `--color-category-*`.
+  aliased into Tailwind via `--color-severity-*` and `--color-categorical-*`.
 - Epic bu-v1tt2 (Vertical C) — token system migration that introduced the named
   CSS tokens; this spec change closes the remaining spec-code drift.
 - `about/heart-and-soul/design-language.md` — token exemption for `--chart-*`

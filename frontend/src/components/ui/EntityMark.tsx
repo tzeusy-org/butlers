@@ -7,8 +7,8 @@
 //
 // Brief §2: "Build new EntityMark with tone (fill/neutral), size, person
 //            initials vs. org/place/product glyph, ownership/state borders."
-// Amendment 9: Reuses --category-1..8, --role-owner, --amber, --fg, --border-strong
-//              tokens only. No new tokens.
+// Amendment 9: Reuses --categorical-1..8, --role-owner, --amber, --fg,
+//              --border-strong tokens only. No new tokens.
 //
 // Distinct from ButlerMark (butler letter-marks, colored by butler hue) —
 // EntityMark is for entities in the entity graph.
@@ -63,7 +63,7 @@ function typeGlyph(entityType: string): string {
 // Color mapping
 // Maps entity type to a --categorical-N slot. Fixed assignments so entity
 // types always render consistently regardless of order. Reuses the
-// existing --category-1..8 token pool (Amendment 9: no new tokens).
+// existing --categorical-1..8 token pool (Amendment 9: no new tokens).
 //
 // Slots are distinct from ButlerMark identity slots.
 // ---------------------------------------------------------------------------
