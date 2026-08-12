@@ -48,10 +48,10 @@ const TREND_WINDOWS: { value: MeasurementTrendWindowDays; label: string }[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the health butler's hue to a literal color string for Recharts.
- * Recharts cannot consume a CSS custom property directly, so we read the live
- * computed value of the chart-series token used by the measurement plot.
- * The diastolic line reuses the same hue at reduced opacity.
+ * Resolve a chart-series role to a literal color string for Recharts.
+ * `index=0` is the primary `--chart-1` series and `index=1` is the secondary
+ * `--chart-2` series. Recharts cannot consume a CSS custom property directly,
+ * so we read the live computed value of each chart-series token.
  */
 function useChartColor(index: number): string {
   const token = chartColor(index);

@@ -431,6 +431,33 @@ const VISUAL_ROLE_SELECTORS = [
       'role helper instead of embedding an identity token.',
   },
   {
+    selector: 'Literal[value=/var\\(--(?:category|color-category)-\\d+\\)/]',
+    message:
+      'Butler identity aliases are private to ButlerMark (bu-6jv4m.15). Do not use ' +
+      'var(--color-category-N) or another raw identity alias; use a typed semantic role helper.',
+  },
+  {
+    selector:
+      'TemplateElement[value.raw=/var\\(--(?:category|color-category)-\\d+\\)/]',
+    message:
+      'Butler identity aliases are private to ButlerMark (bu-6jv4m.15). Do not use ' +
+      'var(--color-category-N) or another raw identity alias; use a typed semantic role helper.',
+  },
+  {
+    selector:
+      'Literal[value=/\\b(?:bg|text|decoration|border|divide|outline|ring|shadow|inset|accent|caret|fill|stroke|from|via|to|placeholder|prose)-category-\\d+\\b/]',
+    message:
+      'Butler identity Tailwind aliases are private to ButlerMark (bu-6jv4m.15). Use a typed ' +
+      'semantic role helper instead of a category utility.',
+  },
+  {
+    selector:
+      'TemplateElement[value.raw=/\\b(?:bg|text|decoration|border|divide|outline|ring|shadow|inset|accent|caret|fill|stroke|from|via|to|placeholder|prose)-category-\\d+\\b/]',
+    message:
+      'Butler identity Tailwind aliases are private to ButlerMark (bu-6jv4m.15). Use a typed ' +
+      'semantic role helper instead of a category utility.',
+  },
+  {
     selector:
       'ImportDeclaration[source.value="@/components/ui/ButlerMark"] ImportSpecifier[imported.name=/^(?:butlerHueVar|categoryHueVar)$/]',
     message:

@@ -62,6 +62,10 @@ describe("categorical token ramp", () => {
     }
   });
 
+  it("does not publish Butler identity slots as Tailwind color aliases", () => {
+    expect(CSS_SOURCE).not.toMatch(/--color-category-\d+\s*:/);
+  });
+
   it("keeps the domain spec on the local-category Tailwind alias", () => {
     expect(DOMAIN_SPEC).toContain("--color-categorical-*");
     expect(DOMAIN_SPEC).not.toContain("--color-category-*");

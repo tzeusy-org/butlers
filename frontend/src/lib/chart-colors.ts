@@ -34,15 +34,10 @@
 // ---------------------------------------------------------------------------
 
 import { oklchToSrgb255, type Oklch } from "@/lib/contrast";
-import type { ChartSeriesColor } from "@/lib/visual-token-roles";
-
-const CHART_COLOR_VARS = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
-] as const;
+import {
+  visualRoleToken,
+  type ChartSeriesColor,
+} from "@/lib/visual-token-roles";
 
 /**
  * Returns the CSS var() reference for chart series `index` (0-based),
@@ -53,8 +48,7 @@ const CHART_COLOR_VARS = [
  * same first palette color.
  */
 export function chartSeriesColor(index = 0): ChartSeriesColor {
-  const len = CHART_COLOR_VARS.length;
-  return CHART_COLOR_VARS[((index % len) + len) % len] as ChartSeriesColor;
+  return visualRoleToken("chart-series", index) as ChartSeriesColor;
 }
 
 /**

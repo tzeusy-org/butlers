@@ -88,18 +88,15 @@ function hashName(name: string): number {
 }
 
 /**
-/**
  * Resolve the CSS variable string for the butler's identity hue.
  *
  * Known butlers use their roster-index slot (stable across all renders).
  * Unknown butlers use a hash-derived slot (stable for a given name, but not
  * guaranteed to be unique across all unknown names).
  *
- * Use this helper in chart code (recharts, stripe charts) that needs the
- * raw CSS variable string without rendering a React component.
- *
- * @example
- *   fill={butlerHueVar("health")}
+ * This private helper is intentionally used only by ButlerMark. Non-identity
+ * callers must use the typed semantic role helpers from
+ * `@/lib/visual-token-roles` instead.
  */
 function butlerHueVar(name: string): string {
   const idx = KNOWN_BUTLERS.indexOf(name)

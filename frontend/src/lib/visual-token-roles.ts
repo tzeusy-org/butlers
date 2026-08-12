@@ -6,27 +6,36 @@
  * absent: resolving a butler's identity belongs only to ButlerMark.
  */
 
+const STATE_TOKENS = [
+  "--red",
+  "--amber",
+  "--green",
+  "--dim",
+  "--state-unidentified",
+  "--muted-foreground",
+] as const;
+
+const LOCAL_CATEGORY_TOKENS = Array.from(
+  { length: 12 },
+  (_, index) => `--categorical-${index + 1}`,
+);
+
+const CHART_SERIES_TOKENS = Array.from(
+  { length: 5 },
+  (_, index) => `--chart-${index + 1}`,
+);
+
 export const VISUAL_TOKEN_ROLE_REGISTRY = {
   state: {
-    tokens: [
-      "--red",
-      "--amber",
-      "--green",
-      "--dim",
-      "--state-unidentified",
-      "--muted-foreground",
-    ],
+    tokens: STATE_TOKENS,
     legendRequired: false,
   },
   "local-category": {
-    tokens: Array.from(
-      { length: 12 },
-      (_, index) => `--categorical-${index + 1}`,
-    ),
+    tokens: LOCAL_CATEGORY_TOKENS,
     legendRequired: true,
   },
   "chart-series": {
-    tokens: Array.from({ length: 5 }, (_, index) => `--chart-${index + 1}`),
+    tokens: CHART_SERIES_TOKENS,
     legendRequired: true,
   },
   "owner-custom-color": {
@@ -56,11 +65,6 @@ export type OwnerCustomColor = string & {
   readonly __visualRole: "owner-custom-color";
 };
 
-const CATEGORICAL_VARS = Array.from(
-  { length: 12 },
-  (_, index) => `var(--categorical-${index + 1})`,
-);
-
 const STATE_COLORS: Record<StateColorRole, string> = {
   healthy: "var(--green)",
   ok: "var(--green)",
@@ -81,19 +85,24 @@ function hashName(name: string): number {
   return Math.abs(hash);
 }
 
+/** Resolve a slot from an executable non-state role registry. */
+export function visualRoleToken(
+  role: "local-category" | "chart-series",
+  index: number,
+): string {
+  const tokens = VISUAL_TOKEN_ROLE_REGISTRY[role].tokens;
+  const slot = ((index % tokens.length) + tokens.length) % tokens.length;
+  return `var(${tokens[slot]})`;
+}
+
 /** Resolve a local taxonomy value through the non-identity categorical ramp. */
 export function categoricalHueVar(value: string): CategoricalColor {
-  return CATEGORICAL_VARS[
-    hashName(value) % CATEGORICAL_VARS.length
-  ] as CategoricalColor;
+  return visualRoleToken("local-category", hashName(value)) as CategoricalColor;
 }
 
 /** Resolve a stable categorical slot for registries with fixed positions. */
 export function categoricalColor(index: number): CategoricalColor {
-  const slot =
-    ((index % CATEGORICAL_VARS.length) + CATEGORICAL_VARS.length) %
-    CATEGORICAL_VARS.length;
-  return CATEGORICAL_VARS[slot] as CategoricalColor;
+  return visualRoleToken("local-category", index) as CategoricalColor;
 }
 
 /** Resolve a state through the three-state semantic palette. */
@@ -116,4 +125,5 @@ export function ownerCustomColor(
   return value.trim() as OwnerCustomColor;
 }
 
-export const CATEGORICAL_TOKEN_COUNT = CATEGORICAL_VARS.length;
+export const CATEGORICAL_TOKEN_COUNT =
+  VISUAL_TOKEN_ROLE_REGISTRY["local-category"].tokens.length;

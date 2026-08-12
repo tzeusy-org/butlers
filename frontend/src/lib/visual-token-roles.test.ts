@@ -11,6 +11,7 @@ import {
   ownerCustomColor,
   stateColorVar,
 } from "./visual-token-roles";
+import { chartSeriesColor } from "./chart-colors";
 import type { StateColorRole } from "./visual-token-roles";
 
 const SPEC_PATH = fileURLToPath(
@@ -34,7 +35,7 @@ const STATE_ROLES: readonly StateColorRole[] = [
 ];
 
 function tokenName(cssVariable: string): string {
-  const match = cssVariable.match(/^var\((--[a-z-]+)\)$/);
+  const match = cssVariable.match(/^var\((--[a-z0-9-]+)\)$/);
   if (!match) throw new Error(`Unexpected CSS variable: ${cssVariable}`);
   return match[1];
 }
@@ -46,6 +47,21 @@ function specStateTokens(): Set<string> {
   if (!row) throw new Error("Could not find the operational-state role row");
   return new Set(
     [...row.matchAll(/`(--[a-z-]+)`/g)].map((match) => match[1]),
+  );
+}
+
+function specRoleTokens(role: "Local category" | "Chart series"): Set<string> {
+  const row = SPEC.split("\n").find((line) => line.startsWith(`| ${role} |`));
+  if (!row) throw new Error(`Could not find the ${role} role row`);
+
+  return new Set(
+    [...row.matchAll(/`(--[a-z-]+)-(\d+)\.\.(\d+)`/g)].flatMap(
+      ([, prefix, first, last]) =>
+        Array.from(
+          { length: Number(last) - Number(first) + 1 },
+          (_, index) => `${prefix}-${Number(first) + index}`,
+        ),
+    ),
   );
 }
 
@@ -76,6 +92,54 @@ describe("semantic visual role registry", () => {
 
   it("keeps state resolver tokens aligned with the binding spec", () => {
     expect(new Set(VISUAL_TOKEN_ROLE_REGISTRY.state.tokens)).toEqual(specStateTokens());
+  });
+
+  it("keeps categorical and chart helpers aligned with registry and spec sets", () => {
+    const localCategoryTokens = new Set(
+      VISUAL_TOKEN_ROLE_REGISTRY["local-category"].tokens,
+    );
+    const chartSeriesTokens = new Set(
+      VISUAL_TOKEN_ROLE_REGISTRY["chart-series"].tokens,
+    );
+
+    expect(localCategoryTokens).toEqual(specRoleTokens("Local category"));
+    expect(chartSeriesTokens).toEqual(specRoleTokens("Chart series"));
+    expect(
+      new Set(
+        Array.from({ length: localCategoryTokens.size }, (_, index) =>
+          tokenName(categoricalColor(index)),
+        ),
+      ),
+    ).toEqual(localCategoryTokens);
+    expect(
+      new Set(
+        Array.from({ length: chartSeriesTokens.size }, (_, index) =>
+          tokenName(chartSeriesColor(index)),
+        ),
+      ),
+    ).toEqual(chartSeriesTokens);
+  });
+
+  it("derives helper slot selection from the executable registry", () => {
+    const localCategoryTokens = VISUAL_TOKEN_ROLE_REGISTRY[
+      "local-category"
+    ].tokens as unknown as string[];
+    const chartSeriesTokens = VISUAL_TOKEN_ROLE_REGISTRY["chart-series"]
+      .tokens as unknown as string[];
+    localCategoryTokens.push("--categorical-13");
+    chartSeriesTokens.push("--chart-6");
+
+    try {
+      expect(categoricalColor(localCategoryTokens.length - 1)).toBe(
+        "var(--categorical-13)",
+      );
+      expect(chartSeriesColor(chartSeriesTokens.length - 1)).toBe(
+        "var(--chart-6)",
+      );
+    } finally {
+      localCategoryTokens.pop();
+      chartSeriesTokens.pop();
+    }
   });
 
   it("keeps typed helpers in their declared namespaces", () => {
