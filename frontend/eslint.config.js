@@ -446,6 +446,34 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         type: 'problem',
       },
       create(context) {
+        function stringConstructionValue(node) {
+          if (node.type === 'Literal') {
+            return typeof node.value === 'string' ? node.value : DYNAMIC_VALUE_MARKER
+          }
+          if (node.type === 'TemplateLiteral') {
+            return node.quasis.reduce(
+              (value, quasi, index) =>
+                value +
+                (quasi.value.cooked ?? quasi.value.raw) +
+                (index < node.expressions.length
+                  ? stringConstructionValue(node.expressions[index])
+                  : ''),
+              '',
+            )
+          }
+          if (node.type === 'BinaryExpression' && node.operator === '+') {
+            return stringConstructionValue(node.left) + stringConstructionValue(node.right)
+          }
+          return DYNAMIC_VALUE_MARKER
+        }
+
+        function isNestedStringConstruction(node) {
+          return (
+            (node.parent?.type === 'BinaryExpression' && node.parent.operator === '+') ||
+            node.parent?.type === 'TemplateLiteral'
+          )
+        }
+
         function reportPrivateIdentityReferences(value, node) {
           for (const reference of findPrivateIdentityReferences(value)) {
             context.report({
@@ -458,15 +486,19 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
 
         return {
           Literal(node) {
-            if (typeof node.value === 'string') {
-              reportPrivateIdentityReferences(node.value, node)
+            if (typeof node.value === 'string' && !isNestedStringConstruction(node)) {
+              reportPrivateIdentityReferences(stringConstructionValue(node), node)
             }
           },
           TemplateLiteral(node) {
-            const value = node.quasis
-              .map((quasi) => quasi.value.cooked ?? quasi.value.raw)
-              .join(DYNAMIC_VALUE_MARKER)
-            reportPrivateIdentityReferences(value, node)
+            if (!isNestedStringConstruction(node)) {
+              reportPrivateIdentityReferences(stringConstructionValue(node), node)
+            }
+          },
+          BinaryExpression(node) {
+            if (node.operator === '+' && !isNestedStringConstruction(node)) {
+              reportPrivateIdentityReferences(stringConstructionValue(node), node)
+            }
           },
         }
       },

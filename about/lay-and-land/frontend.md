@@ -1163,13 +1163,20 @@ longer collides). The canonical component is
 `openspec/specs/dashboard-design-language/spec.md` § Requirement: Butler
 Category Hues for the current butler→token mapping.
 
-`ButlerMark`'s public surface is intentionally small:
+`ButlerMark`'s color-role-facing subset of its public surface is intentionally
+small:
 - `<ButlerMark name="..." tone="fill|neutral" />`: 16px squircle with
   butler initial. `fill` = solid hue background + white initial (active
   state). `neutral` = transparent background + hue initial + hairline
   border (default).
 - `KNOWN_BUTLERS`: the canonical roster order that determines permanent
   color slots for known butlers.
+
+For the complete public prop contract, see `ButlerMarkProps` in
+`frontend/src/components/ui/ButlerMark.tsx`. Its `size`, `className`,
+`showNameOnHover`, and `type` props shape geometry, caller styling, hover
+labels, and the staffer circle respectively; they do not expand the identity
+color-role surface documented here.
 
 The identity-slot resolver is private to ButlerMark. It is not a public API:
 no chart, tag, badge, or other caller may resolve `--category-N` (or its

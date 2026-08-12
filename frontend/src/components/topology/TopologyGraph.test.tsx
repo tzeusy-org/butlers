@@ -11,17 +11,25 @@
 //   - Loading skeleton / empty state
 //   - Canonical tone coloring (green/amber/red/neutral) wins over the legacy
 //     status-string mapping when `tone` is present
-//   - Staffer nodes get the blue-hued tone variant
+//   - Switchboard retains a neutral surface while state color stays on its
+//     foreground and border
 //   - Legend renders (colors are otherwise unexplained -- audit finding)
 //   - Connectors-source degraded note (#2873 review): a failed connectors
 //     fetch renders a named degraded note, never a silently emptier map
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import TopologyGraph from "./TopologyGraph";
+
+const DASHBOARD_VISIBILITY_SPEC = readFileSync(
+  resolve(process.cwd(), "../openspec/specs/dashboard-visibility/spec.md"),
+  "utf8",
+);
 
 // ---------------------------------------------------------------------------
 // Mock @xyflow/react -- render nodes as plain DOM elements carrying their
@@ -78,46 +86,46 @@ describe("TopologyGraph -- loading and empty states", () => {
 
 describe("TopologyGraph -- canonical liveness tone coloring", () => {
   it("colors a running butler green from its canonical tone", () => {
-    const html = render({ butlers: [{ name: "finance", status: "ok", type: "butler", tone: "green" }] });
+    const html = render({ butlers: [{ name: "finance", status: "ok", tone: "green" }] });
     expect(html).toContain("var(--green)");
   });
 
   it("colors an overdue butler amber from its canonical tone", () => {
-    const html = render({ butlers: [{ name: "chronicler", status: "ok", type: "butler", tone: "amber" }] });
+    const html = render({ butlers: [{ name: "chronicler", status: "ok", tone: "amber" }] });
     expect(html).toContain("var(--amber)");
   });
 
   it("colors an offline/quarantined butler red from its canonical tone", () => {
-    const html = render({ butlers: [{ name: "qa", status: "down", type: "butler", tone: "red" }] });
+    const html = render({ butlers: [{ name: "qa", status: "down", tone: "red" }] });
     expect(html).toContain("var(--red)");
   });
 
   it("colors an idle/unknown butler neutral gray from its canonical tone", () => {
-    const html = render({ butlers: [{ name: "general", status: "ok", type: "butler", tone: "neutral" }] });
+    const html = render({ butlers: [{ name: "general", status: "ok", tone: "neutral" }] });
     expect(html).toContain("var(--dim)");
   });
 
-  it("uses the canonical green running tone for staffers", () => {
+  it("keeps Switchboard neutral while applying its canonical tone to foreground and border", () => {
     const html = render({
-      butlers: [{ name: "switchboard", status: "ok", type: "staffer", tone: "green" }],
+      butlers: [{ name: "switchboard", status: "ok", tone: "green" }],
     });
-    // The legend always shows the green swatch, so scope the assertion to
-    // the switchboard node itself rather than the whole page.
     const nodeMatch = html.match(/<div data-testid="node-switchboard"[^>]*>/);
     expect(nodeMatch).not.toBeNull();
+    expect(nodeMatch![0]).toContain("background:var(--bg-deep)");
     expect(nodeMatch![0]).toContain("var(--green)");
+    expect(nodeMatch![0]).toContain("border:2px solid var(--green)");
   });
 
   it("falls back to the legacy status-string color when tone is absent", () => {
-    const html = render({ butlers: [{ name: "legacy-caller", status: "ok", type: "butler" }] });
+    const html = render({ butlers: [{ name: "legacy-caller", status: "ok" }] });
     expect(html).toContain("var(--green)");
   });
 
   it("animates the switchboard edge only when the butler's tone is green (running)", () => {
     const html = render({
       butlers: [
-        { name: "switchboard", status: "ok", type: "staffer", tone: "green" },
-        { name: "idle-butler", status: "ok", type: "butler", tone: "neutral" },
+        { name: "switchboard", status: "ok", tone: "green" },
+        { name: "idle-butler", status: "ok", tone: "neutral" },
       ],
     });
     expect(html).toContain('data-testid="edge-sw-idle-butler" data-animated="false"');
@@ -130,11 +138,19 @@ describe("TopologyGraph -- canonical liveness tone coloring", () => {
 
 describe("TopologyGraph -- legend", () => {
   it("renders a legend explaining the canonical liveness colors", () => {
-    const html = render({ butlers: [{ name: "general", status: "ok", type: "butler", tone: "neutral" }] });
+    const html = render({ butlers: [{ name: "general", status: "ok", tone: "neutral" }] });
     expect(html).toContain("Running");
     expect(html).toContain("Overdue");
     expect(html).toContain("Offline");
-    expect(html).toContain("Staffer");
+    expect(html).not.toContain("Staffer");
+  });
+
+  it("keeps the topology requirement aligned with State Color Discipline", () => {
+    expect(DASHBOARD_VISIBILITY_SPEC).toContain("neutral background");
+    expect(DASHBOARD_VISIBILITY_SPEC).toContain("state-colored border and foreground");
+    expect(DASHBOARD_VISIBILITY_SPEC).not.toContain(
+      "Switchboard node's background is the status color",
+    );
   });
 });
 
@@ -145,7 +161,7 @@ describe("TopologyGraph -- legend", () => {
 describe("TopologyGraph -- connectors-source degraded note", () => {
   it("renders a named degraded note when connectorsError is true, not a silently emptier map", () => {
     const html = render({
-      butlers: [{ name: "general", status: "ok", type: "butler", tone: "neutral" }],
+      butlers: [{ name: "general", status: "ok", tone: "neutral" }],
       connectors: [],
       connectorsError: true,
     });
@@ -156,7 +172,7 @@ describe("TopologyGraph -- connectors-source degraded note", () => {
 
   it("renders no degraded note when connectorsError is false", () => {
     const html = render({
-      butlers: [{ name: "general", status: "ok", type: "butler", tone: "neutral" }],
+      butlers: [{ name: "general", status: "ok", tone: "neutral" }],
       connectors: [],
       connectorsError: false,
     });
@@ -165,7 +181,7 @@ describe("TopologyGraph -- connectors-source degraded note", () => {
 
   it("still renders the graph itself alongside the degraded note (detect AND diagnose)", () => {
     const html = render({
-      butlers: [{ name: "general", status: "ok", type: "butler", tone: "neutral" }],
+      butlers: [{ name: "general", status: "ok", tone: "neutral" }],
       connectorsError: true,
     });
     expect(html).toContain('data-testid="reactflow"');

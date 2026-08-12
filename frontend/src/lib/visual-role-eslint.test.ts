@@ -117,6 +117,19 @@ const DYNAMIC_IDENTITY_TEMPLATE_SOURCE = [
   "export const named = `focus:ring-color-category-${slot}`;",
 ].join("\n");
 
+const DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE = [
+  'const identity = "category-1";',
+  'export const fromConstant = `var(--${identity})`;',
+  'export const splitStatic = `var(--${"category"}-1)`;',
+  'export const typeHinted = `bg-(color:--${identity})`;',
+].join("\n");
+
+const DYNAMIC_CUSTOM_PROPERTY_LITERAL_SOURCE = [
+  'const identity = "category-1";',
+  'export const fromConstant = "var(--" + identity + ")";',
+  'export const splitStatic = "var(--" + "category" + "-1)";',
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -197,6 +210,20 @@ describe("semantic visual-role lint", () => {
 
     expect(malformedMessages).toHaveLength(2);
     expect(dynamicMessages).toHaveLength(3);
+  });
+
+  it("rejects dynamically constructed custom properties through template and literal paths", async () => {
+    const templateMessages = await visualRoleMessages(
+      DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE,
+      "src/components/ui/IdentityDynamicTemplateLeak.tsx",
+    );
+    const literalMessages = await visualRoleMessages(
+      DYNAMIC_CUSTOM_PROPERTY_LITERAL_SOURCE,
+      "src/components/ui/IdentityDynamicLiteralLeak.tsx",
+    );
+
+    expect(templateMessages).toHaveLength(3);
+    expect(literalMessages).toHaveLength(2);
   });
 
   it("keeps the canonical ButlerMark exemption narrow", async () => {

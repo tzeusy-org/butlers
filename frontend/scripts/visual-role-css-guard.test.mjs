@@ -89,7 +89,7 @@ describe("visual-role CSS custom-property grammar", () => {
     ]);
   });
 
-  it("fails closed only after a dynamic value enters a private namespace", () => {
+  it("fails closed for dynamic custom-property names while preserving dynamic utility aliases", () => {
     expect(references(`var(--category-${DYNAMIC_VALUE_MARKER})`)).toEqual([
       { form: "css-var", property: "--category-", ambiguous: true },
     ]);
@@ -100,7 +100,19 @@ describe("visual-role CSS custom-property grammar", () => {
         ambiguous: true,
       },
     ]);
-    expect(references(`var(--${DYNAMIC_VALUE_MARKER})`)).toEqual([]);
+    expect(references(`var(--${DYNAMIC_VALUE_MARKER})`)).toEqual([
+      { form: "css-var", property: "--", ambiguous: true },
+    ]);
+    expect(references(`var(--${DYNAMIC_VALUE_MARKER}-1)`)).toEqual([
+      { form: "css-var", property: "--", ambiguous: true },
+    ]);
+    expect(references(`text-(color:--${DYNAMIC_VALUE_MARKER})`)).toEqual([
+      {
+        form: "tailwind-parenthesized",
+        property: "--",
+        ambiguous: true,
+      },
+    ]);
     expect(references(`border-${DYNAMIC_VALUE_MARKER}`)).toEqual([]);
   });
 

@@ -353,12 +353,12 @@ The `TopologyGraph` component SHALL render a force-directed graph of butler node
 
 #### Scenario: Health status coloring
 - **WHEN** a butler has status "ok" or "online"
-- **THEN** its node or border is green (`#22c55e`)
+- **THEN** its state border or foreground is green (`--green`)
 - **WHEN** status is "down" or "offline"
-- **THEN** its color is red (`#ef4444`)
+- **THEN** its state border or foreground is red (`--red`)
 - **WHEN** status is "degraded"
-- **THEN** its color is yellow (`#eab308`)
-- **AND** the Switchboard node's background is the status color; other butlers have dark backgrounds with colored borders
+- **THEN** its state border or foreground is amber (`--amber`)
+- **AND** the Switchboard node retains a neutral background and exposes its live state through a state-colored border and foreground; other ordinary butlers have dark backgrounds with colored borders
 
 #### Scenario: Edge visualization
 - **WHEN** the Switchboard butler is present

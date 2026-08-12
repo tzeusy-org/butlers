@@ -217,11 +217,15 @@ function readCssCustomProperty(value, start) {
   };
 }
 
-function isPotentialPrivateIdentityPrefix(property) {
-  // A dynamic value can be fail-closed once its static prefix has entered an
-  // identity namespace. Do not treat bare `--` (or `utility-${value}`) as a
-  // private reference: that would reject ordinary dynamic semantic-role
-  // classes without enough evidence of an identity token.
+function isPotentialPrivateIdentityPrefix(property, form) {
+  // A dynamically assembled custom property can resolve to any private
+  // identity token. Outside ButlerMark, fail closed as soon as its static
+  // prefix is `--`; static, known semantic-role custom properties remain
+  // allowed. A named Tailwind alias is not itself a custom-property
+  // construction, so retain its narrower private-namespace check.
+  if (form !== "tailwind-named-alias") {
+    return property.startsWith("--");
+  }
   return property === "--category-" || property === "--color-category-";
 }
 
@@ -229,7 +233,7 @@ function privateReference(property, form, start, ambiguous = false) {
   if (PRIVATE_IDENTITY_CUSTOM_PROPERTIES.has(property)) {
     return { ambiguous, form, property, start };
   }
-  if (ambiguous && isPotentialPrivateIdentityPrefix(property)) {
+  if (ambiguous && isPotentialPrivateIdentityPrefix(property, form)) {
     return { ambiguous: true, form, property, start };
   }
   return null;

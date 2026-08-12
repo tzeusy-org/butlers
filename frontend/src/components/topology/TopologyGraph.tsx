@@ -19,7 +19,6 @@ interface ButlerNode {
   status: string;
   /** Unused by the graph itself; kept optional for callers that already have it. */
   port?: number;
-  type?: "butler" | "staffer";
   /**
    * Canonical liveness tone from useButlerStatusBoard (bu-86c4c.17) -- the
    * SAME verdict rendered by the roster board and the heartbeat tile. When
@@ -95,14 +94,15 @@ function buildNodes(
   const centerY = 250;
 
   if (switchboard) {
+    const stateColor = getStatusColor(switchboard.status, switchboard.tone);
     nodes.push({
       id: switchboard.name,
       position: { x: centerX - 70, y: centerY - 20 },
       data: { label: switchboard.name },
       style: {
-        background: getStatusColor(switchboard.status, switchboard.tone),
-        color: "white",
-        border: "2px solid var(--bg-deep)",
+        background: "var(--bg-deep)",
+        color: stateColor,
+        border: `2px solid ${stateColor}`,
         borderRadius: "12px",
         padding: "16px 24px",
         fontWeight: 700,
@@ -347,10 +347,6 @@ export default function TopologyGraph({
           <span className="flex items-center gap-1.5">
             <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.red }} aria-hidden="true" />
             Offline / Quarantined
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.green }} aria-hidden="true" />
-            Staffer
           </span>
         </div>
         {/* Connectors-source degraded note -- a failed connectors fetch must
