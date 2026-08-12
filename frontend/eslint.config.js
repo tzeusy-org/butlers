@@ -638,8 +638,11 @@ export default defineConfig([
   {
     // components/ui/ and the passport composition wrapper: still theme-token
     // and hex clean, but exempt from the redeclaration ban (they ARE the
-    // canonical declaration / the accepted wrapper pattern).
+    // canonical declaration / the accepted wrapper pattern). The semantic
+    // identity guard remains active here; only ButlerMark and its identity-
+    // mapping fixture are exempt because they are the canonical identity home.
     files: ['src/components/ui/**/*.tsx', 'src/components/secrets/passport/atoms.tsx'],
+    ignores: ['src/components/ui/ButlerMark.tsx'],
     rules: {
       'no-restricted-syntax': [
         'error',
@@ -652,6 +655,7 @@ export default defineConfig([
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...VISUAL_ROLE_SELECTORS,
       ],
     },
   },

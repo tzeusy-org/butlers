@@ -15,6 +15,8 @@ import { renderToStaticMarkup } from "react-dom/server"
 
 import { ButlerMark, KNOWN_BUTLERS } from "./ButlerMark"
 
+const categoryToken = (slot: number) => `var(--category-${slot})`
+
 // ---------------------------------------------------------------------------
 // Identity resolution is private to ButlerMark; exercise it through the
 // component's rendered public contract.
@@ -23,20 +25,9 @@ import { ButlerMark, KNOWN_BUTLERS } from "./ButlerMark"
 describe("ButlerMark: known butler identity mapping", () => {
   // Verify that each known butler maps to one of the twelve canonical tokens
   // and that the mapping is stable (idempotent calls return the same value).
-  const VALID_TOKENS = new Set([
-    "var(--category-1)",
-    "var(--category-2)",
-    "var(--category-3)",
-    "var(--category-4)",
-    "var(--category-5)",
-    "var(--category-6)",
-    "var(--category-7)",
-    "var(--category-8)",
-    "var(--category-9)",
-    "var(--category-10)",
-    "var(--category-11)",
-    "var(--category-12)",
-  ])
+  const VALID_TOKENS = new Set(
+    Array.from({ length: 12 }, (_, index) => categoryToken(index + 1)),
+  )
 
   for (const name of KNOWN_BUTLERS) {
     it(`${name} maps to a valid --category-N token`, () => {
@@ -133,7 +124,7 @@ describe("ButlerMark: tone=fill", () => {
     const html = renderToStaticMarkup(<ButlerMark name="chronicler" tone="fill" />)
     // The fill tone sets backgroundColor to the hue and color to white.
     expect(html).toContain("white")
-    expect(html).toContain("var(--category-1)")
+    expect(html).toContain(categoryToken(1))
   })
 })
 
@@ -142,7 +133,7 @@ describe("ButlerMark: tone=neutral (default)", () => {
     const html = renderToStaticMarkup(<ButlerMark name="chronicler" />)
     // Neutral tone has transparent background and uses hue as text + border color.
     expect(html).toContain("transparent")
-    expect(html).toContain("var(--category-1)")
+    expect(html).toContain(categoryToken(1))
   })
 })
 

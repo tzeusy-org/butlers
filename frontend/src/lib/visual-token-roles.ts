@@ -8,7 +8,14 @@
 
 export const VISUAL_TOKEN_ROLE_REGISTRY = {
   state: {
-    tokens: ["--red", "--amber", "--green", "--dim"],
+    tokens: [
+      "--red",
+      "--amber",
+      "--green",
+      "--dim",
+      "--state-unidentified",
+      "--muted-foreground",
+    ],
     legendRequired: false,
   },
   "local-category": {

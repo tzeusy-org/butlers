@@ -11,6 +11,7 @@ import {
   ownerCustomColor,
   stateColorVar,
 } from "./visual-token-roles";
+import type { StateColorRole } from "./visual-token-roles";
 
 const SPEC_PATH = fileURLToPath(
   new URL(
@@ -19,6 +20,34 @@ const SPEC_PATH = fileURLToPath(
   ),
 );
 const SPEC = readFileSync(SPEC_PATH, "utf8");
+
+const STATE_ROLES: readonly StateColorRole[] = [
+  "healthy",
+  "ok",
+  "degraded",
+  "error",
+  "waiting",
+  "unidentified",
+  "duplicate-candidate",
+  "stale",
+  "archived",
+];
+
+function tokenName(cssVariable: string): string {
+  const match = cssVariable.match(/^var\((--[a-z-]+)\)$/);
+  if (!match) throw new Error(`Unexpected CSS variable: ${cssVariable}`);
+  return match[1];
+}
+
+function specStateTokens(): Set<string> {
+  const row = SPEC.split("\n").find((line) =>
+    line.startsWith("| Operational state |"),
+  );
+  if (!row) throw new Error("Could not find the operational-state role row");
+  return new Set(
+    [...row.matchAll(/`(--[a-z-]+)`/g)].map((match) => match[1]),
+  );
+}
 
 describe("semantic visual role registry", () => {
   it("keeps the executable registry and binding spec table aligned", () => {
@@ -37,6 +66,16 @@ describe("semantic visual role registry", () => {
       12,
     );
     expect(VISUAL_TOKEN_ROLE_REGISTRY["chart-series"].tokens).toHaveLength(5);
+  });
+
+  it("covers every stateColorVar output in the executable registry", () => {
+    const resolverTokens = new Set(STATE_ROLES.map((role) => tokenName(stateColorVar(role))));
+
+    expect(new Set(VISUAL_TOKEN_ROLE_REGISTRY.state.tokens)).toEqual(resolverTokens);
+  });
+
+  it("keeps state resolver tokens aligned with the binding spec", () => {
+    expect(new Set(VISUAL_TOKEN_ROLE_REGISTRY.state.tokens)).toEqual(specStateTokens());
   });
 
   it("keeps typed helpers in their declared namespaces", () => {
