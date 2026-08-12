@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model"
+import { categoricalColor } from "@/lib/visual-token-roles"
 
 // ---------------------------------------------------------------------------
 // Type-glyph catalog
@@ -60,32 +61,31 @@ function typeGlyph(entityType: string): string {
 
 // ---------------------------------------------------------------------------
 // Color mapping
-// Maps entity type to a --category-N slot. Fixed assignments so entity
+// Maps entity type to a --categorical-N slot. Fixed assignments so entity
 // types always render consistently regardless of order. Reuses the
 // existing --category-1..8 token pool (Amendment 9: no new tokens).
 //
-// Slots are distinct from butler-hue slots; entity type and butler name
-// share the same token pool but are in separate domains.
+// Slots are distinct from ButlerMark identity slots.
 // ---------------------------------------------------------------------------
 
 const TYPE_COLOR_SLOTS: Record<string, string> = {
-  person: "var(--category-1)", // blue
-  organization: "var(--category-4)", // teal
-  place: "var(--category-7)", // cyan
-  product: "var(--category-3)", // amber
-  account: "var(--category-6)", // mauve
-  email: "var(--category-6)", // mauve — alias of "account"
-  event: "var(--category-2)", // violet
-  group: "var(--category-8)", // orange
-  other: "var(--category-5)", // rose
+  person: categoricalColor(0),
+  organization: categoricalColor(3),
+  place: categoricalColor(6),
+  product: categoricalColor(2),
+  account: categoricalColor(5),
+  email: categoricalColor(5),
+  event: categoricalColor(1),
+  group: categoricalColor(7),
+  other: categoricalColor(4),
 } as const
 
 /**
- * Map an entity type to its CSS category color token.
+ * Map an entity type to its typed local-category color token.
  * Uses fixed slot assignments — stable across renders and sessions.
  *
  * @example
- *   style={{ color: entityTypeColor("person") }}  // "var(--category-1)"
+ *   style={{ color: entityTypeColor("person") }}  // "var(--categorical-N)"
  */
 export function entityTypeColor(entityType: string): string {
   return TYPE_COLOR_SLOTS[entityType] ?? "var(--fg)"

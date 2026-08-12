@@ -10,17 +10,9 @@
 //                        charts with no inherent categorical meaning. Routes
 //                        through the theme's tuned --chart-1..5 palette.
 //                        chartColor() / chartColorAlpha() below.
-//   butler-identity      A specific named butler's identity hue (stable,
-//                        roster-indexed). Reserved for the ButlerMark
-//                        letter-mark per design-language.md — re-exported
-//                        here (butlerHueVar) only so chart code that colors
-//                        a series *by butler* (e.g. a per-butler spend line)
-//                        has one documented entry point instead of reaching
-//                        into ui/ButlerMark directly.
-//   category             Non-butler categorical coloring (tags, contact
+//   local-category       Non-butler categorical coloring (tags, contact
 //                        labels, arbitrary group-by dimensions) — hash-slotted
-//                        across the same --category-1..12 ramp. Re-exported
-//                        here as categoryHueVar.
+//                        across the dedicated --categorical-1..12 ramp.
 //   neutral-density-ramp A single achromatic intensity ramp (not a state/
 //                        severity color) for density/heatmap visualizations
 //                        where "more" is the only signal — e.g. the
@@ -41,14 +33,8 @@
 // so this regression cannot come back silently.
 // ---------------------------------------------------------------------------
 
-import { butlerHueVar, categoryHueVar } from "@/components/ui/ButlerMark";
 import { oklchToSrgb255, type Oklch } from "@/lib/contrast";
-
-// Re-exported so chart code that colors series by butler or category has one
-// documented import (`@/lib/chart-colors`) covering all four channels. The
-// canonical implementations still live in ui/ButlerMark — see that module's
-// doc comment for the butler->hue mapping's single source of truth.
-export { butlerHueVar, categoryHueVar };
+import type { ChartSeriesColor } from "@/lib/visual-token-roles";
 
 const CHART_COLOR_VARS = [
   "var(--chart-1)",
@@ -66,10 +52,13 @@ const CHART_COLOR_VARS = [
  * --chart-1) so every small trend/sparkline chart in the app draws from the
  * same first palette color.
  */
-export function chartColor(index = 0): string {
+export function chartSeriesColor(index = 0): ChartSeriesColor {
   const len = CHART_COLOR_VARS.length;
-  return CHART_COLOR_VARS[((index % len) + len) % len];
+  return CHART_COLOR_VARS[((index % len) + len) % len] as ChartSeriesColor;
 }
+
+/** Backwards-compatible name for the typed chart-series helper. */
+export const chartColor = chartSeriesColor;
 
 /**
  * Returns a translucent variant of a chart series color for gradient stops

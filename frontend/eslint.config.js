@@ -412,6 +412,38 @@ const BLUE_PURPLE_STATUS_SELECTORS = [
   },
 ]
 
+// bu-6jv4m.15: semantic role guard. Butler identity tokens belong only to
+// ButlerMark; every other local taxonomy must use the dedicated categorical
+// ramp. This is intentionally repo-wide (the old file allowlists certified
+// unaudited consumers by path).
+const VISUAL_ROLE_SELECTORS = [
+  {
+    selector: 'Literal[value=/var\\(--category-\\d+\\)/]',
+    message:
+      'Butler identity tokens are private to ButlerMark (bu-6jv4m.15). Use ' +
+      'categoricalHueVar/categoricalColor for local categories, chartColor for chart series, ' +
+      'or stateColorVar/StateDot for operational state.',
+  },
+  {
+    selector: 'TemplateElement[value.raw=/var\\(--category-\\d+\\)/]',
+    message:
+      'Butler identity tokens are private to ButlerMark (bu-6jv4m.15). Use a typed semantic ' +
+      'role helper instead of embedding an identity token.',
+  },
+  {
+    selector:
+      'ImportDeclaration[source.value="@/components/ui/ButlerMark"] ImportSpecifier[imported.name=/^(?:butlerHueVar|categoryHueVar)$/]',
+    message:
+      'Butler identity resolution is private to ButlerMark. Import a typed helper from ' +
+      '@/lib/visual-token-roles instead.',
+  },
+  {
+    selector: 'CallExpression[callee.name=/^(?:butlerHueVar|categoryHueVar)$/]',
+    message:
+      'Butler identity resolution is private to ButlerMark. Use a typed semantic role helper.',
+  },
+]
+
 // bu-ep4ks.15: every raw <th> must declare a `scope` attribute (jsx-a11y has
 // no built-in rule for this -- it only validates `scope` when present, not
 // its absence). A screen reader announcing a data table with unscoped
@@ -576,6 +608,7 @@ export default defineConfig([
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...VISUAL_ROLE_SELECTORS,
       ],
     },
   },
@@ -598,6 +631,7 @@ export default defineConfig([
         ...KEYDOWN_LISTENER_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
+        ...VISUAL_ROLE_SELECTORS,
       ],
     },
   },
@@ -702,6 +736,7 @@ export default defineConfig([
         ...FORMAT_CLONE_SELECTORS,
         ...KEYDOWN_LISTENER_SELECTORS,
         ...NO_CATEGORICAL_STATUS_SELECTORS,
+        ...VISUAL_ROLE_SELECTORS,
         ...TH_SCOPE_SELECTORS,
         ...NO_WINDOW_CONFIRM_SELECTORS,
       ],

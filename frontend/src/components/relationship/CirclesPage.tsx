@@ -42,7 +42,7 @@ import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { categoryHueVar } from "@/components/ui/ButlerMark";
+import { categoricalHueVar, ownerCustomColor } from "@/lib/visual-token-roles";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import {
   useAssignGroupLabel,
@@ -70,7 +70,7 @@ const FETCH_LIMIT = 200;
 const BADGE_TEXT = "white";
 
 function labelBg(label: Label): string {
-  return label.color ?? categoryHueVar(label.name);
+  return ownerCustomColor(label.color) ?? categoricalHueVar(label.name);
 }
 
 // ---------------------------------------------------------------------------

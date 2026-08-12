@@ -45,7 +45,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { categoryHueVar } from "@/components/ui/ButlerMark";
+import { categoricalHueVar, ownerCustomColor } from "@/lib/visual-token-roles";
 import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
 import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret, useSetPreferredChannel, useClearPreferredChannel } from "@/hooks/use-entities";
 import { sortChannelsPrimaryFirst } from "./contact-channel-utils";
@@ -118,7 +118,7 @@ function sanitizePhoneHref(phone: string): string {
 }
 
 function labelStyle(label: Label): string {
-  return label.color ?? categoryHueVar(label.name);
+  return ownerCustomColor(label.color) ?? categoricalHueVar(label.name);
 }
 
 // ---------------------------------------------------------------------------

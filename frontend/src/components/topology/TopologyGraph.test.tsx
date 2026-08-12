@@ -97,7 +97,7 @@ describe("TopologyGraph -- canonical liveness tone coloring", () => {
     expect(html).toContain("var(--dim)");
   });
 
-  it("gives staffers the blue-hued running tone (butler/staffer distinction preserved)", () => {
+  it("uses the canonical green running tone for staffers", () => {
     const html = render({
       butlers: [{ name: "switchboard", status: "ok", type: "staffer", tone: "green" }],
     });
@@ -105,8 +105,7 @@ describe("TopologyGraph -- canonical liveness tone coloring", () => {
     // the switchboard node itself rather than the whole page.
     const nodeMatch = html.match(/<div data-testid="node-switchboard"[^>]*>/);
     expect(nodeMatch).not.toBeNull();
-    expect(nodeMatch![0]).toContain("var(--category-1)");
-    expect(nodeMatch![0]).not.toContain("var(--green)");
+    expect(nodeMatch![0]).toContain("var(--green)");
   });
 
   it("falls back to the legacy status-string color when tone is absent", () => {

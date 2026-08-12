@@ -13,13 +13,14 @@
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
-import { ButlerMark, butlerHueVar, KNOWN_BUTLERS } from "./ButlerMark"
+import { ButlerMark, KNOWN_BUTLERS } from "./ButlerMark"
 
 // ---------------------------------------------------------------------------
-// butlerHueVar: known butlers
+// Identity resolution is private to ButlerMark; exercise it through the
+// component's rendered public contract.
 // ---------------------------------------------------------------------------
 
-describe("butlerHueVar: known butlers", () => {
+describe("ButlerMark: known butler identity mapping", () => {
   // Verify that each known butler maps to one of the twelve canonical tokens
   // and that the mapping is stable (idempotent calls return the same value).
   const VALID_TOKENS = new Set([
@@ -39,12 +40,14 @@ describe("butlerHueVar: known butlers", () => {
 
   for (const name of KNOWN_BUTLERS) {
     it(`${name} maps to a valid --category-N token`, () => {
-      const token = butlerHueVar(name)
-      expect(VALID_TOKENS.has(token)).toBe(true)
+      const html = renderToStaticMarkup(<ButlerMark name={name} />)
+      expect([...VALID_TOKENS].some((token) => html.includes(token))).toBe(true)
     })
 
     it(`${name} mapping is stable across repeated calls`, () => {
-      expect(butlerHueVar(name)).toBe(butlerHueVar(name))
+      expect(renderToStaticMarkup(<ButlerMark name={name} />)).toBe(
+        renderToStaticMarkup(<ButlerMark name={name} />),
+      )
     })
   }
 
@@ -54,41 +57,46 @@ describe("butlerHueVar: known butlers", () => {
     // silently reused the 1st-3rd butler's hue (chronicler, education,
     // finance). With 12 slots and 11 known butlers, every entry must now
     // get its own distinct token.
-    const tokens = KNOWN_BUTLERS.map((n) => butlerHueVar(n))
+    const tokens = KNOWN_BUTLERS.map((name) => {
+      const html = renderToStaticMarkup(<ButlerMark name={name} />)
+      return [...VALID_TOKENS].find((token) => html.includes(token))
+    })
     const uniqueTokens = new Set(tokens)
     expect(uniqueTokens.size).toBe(KNOWN_BUTLERS.length)
   })
 })
 
 // ---------------------------------------------------------------------------
-// butlerHueVar: unknown butlers
+// unknown butlers
 // ---------------------------------------------------------------------------
 
-describe("butlerHueVar: unknown butler names", () => {
+describe("ButlerMark: unknown butler names", () => {
   it("returns a valid --category-N token for an unknown name", () => {
-    const token = butlerHueVar("definitely-unknown-butler")
-    expect(token).toMatch(/^var\(--category-(?:[1-9]|1[0-2])\)$/)
+    const html = renderToStaticMarkup(<ButlerMark name="definitely-unknown-butler" />)
+    expect(html).toMatch(/var\(--category-(?:[1-9]|1[0-2])\)/)
   })
 
   it("the same unknown name always resolves to the same token (deterministic multiplier-31 hash)", () => {
-    expect(butlerHueVar("mystery")).toBe(butlerHueVar("mystery"))
+    expect(renderToStaticMarkup(<ButlerMark name="mystery" />)).toBe(
+      renderToStaticMarkup(<ButlerMark name="mystery" />),
+    )
   })
 
   it("two different unknown names may resolve to different tokens", () => {
     // This is a probabilistic check: pick two names that have different hashes.
     // If they collide we get a false pass, but the names below are chosen to
     // differ in their hash slot based on the djb2-like algorithm used.
-    const a = butlerHueVar("alpha-x")
-    const b = butlerHueVar("omega-z")
+    const a = renderToStaticMarkup(<ButlerMark name="alpha-x" />)
+    const b = renderToStaticMarkup(<ButlerMark name="omega-z" />)
     // We cannot guarantee they differ (12 slots, many names), but we CAN assert
     // that both are valid tokens, which is the real invariant.
-    expect(a).toMatch(/^var\(--category-(?:[1-9]|1[0-2])\)$/)
-    expect(b).toMatch(/^var\(--category-(?:[1-9]|1[0-2])\)$/)
+    expect(a).toMatch(/var\(--category-(?:[1-9]|1[0-2])\)/)
+    expect(b).toMatch(/var\(--category-(?:[1-9]|1[0-2])\)/)
   })
 
   it("empty string falls back deterministically", () => {
-    const token = butlerHueVar("")
-    expect(token).toMatch(/^var\(--category-(?:[1-9]|1[0-2])\)$/)
+    const html = renderToStaticMarkup(<ButlerMark name="" />)
+    expect(html).toMatch(/var\(--category-(?:[1-9]|1[0-2])\)/)
   })
 })
 

@@ -20,7 +20,7 @@ import {
 
 import { ChartSkeleton } from "@/components/skeletons"
 import type { ButlerSummary } from "@/api/types"
-import { butlerHueVar } from "@/components/ui/ButlerMark"
+import { categoricalHueVar } from "@/lib/visual-token-roles"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import {
   bucketUnit,
@@ -235,7 +235,7 @@ export function SessionStripeChart({
               key={name}
               dataKey={name}
               stackId="bucket"
-              fill={butlerHueVar(name)}
+              fill={categoricalHueVar(name)}
               isAnimationActive={false}
             />
           ))}

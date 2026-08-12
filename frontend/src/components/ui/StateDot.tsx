@@ -17,6 +17,7 @@
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
+import { stateColorVar } from "@/lib/visual-token-roles"
 import type { CellTone } from "@/hooks/use-butler-status-board"
 
 /**
@@ -61,16 +62,16 @@ export interface StateDotProps extends React.HTMLAttributes<HTMLSpanElement> {
  */
 export const STATE_COLORS: Record<AnyDotState, string> = {
   // Entity curation states
-  unidentified: "var(--state-unidentified)",
-  "duplicate-candidate": "var(--amber)",
-  stale: "var(--red)",
-  healthy: "var(--green)",
-  archived: "var(--muted-foreground)",
+  unidentified: stateColorVar("unidentified"),
+  "duplicate-candidate": stateColorVar("duplicate-candidate"),
+  stale: stateColorVar("stale"),
+  healthy: stateColorVar("healthy"),
+  archived: stateColorVar("archived"),
   // Dispatch §4e system states
-  ok: "var(--green)",
-  degraded: "var(--amber)",
-  error: "var(--red)",
-  waiting: "var(--dim,oklch(0.55_0_0))",
+  ok: stateColorVar("ok"),
+  degraded: stateColorVar("degraded"),
+  error: stateColorVar("error"),
+  waiting: stateColorVar("waiting"),
 }
 
 /**

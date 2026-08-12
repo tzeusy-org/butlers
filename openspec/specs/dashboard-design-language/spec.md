@@ -157,6 +157,27 @@ system.
 - **THEN** it appears only on the category mark, label, border, or data visualization it differentiates
 - **AND** it does not become a page background, generic hover color, button treatment, or status indicator
 
+### Requirement: Semantic Visual Role Matrix
+Every visual color request SHALL resolve through exactly one semantic role:
+
+| Role | Resolver | Token family | Required signal |
+|------|----------|--------------|-----------------|
+| Butler identity | `ButlerMark` (private) | `--category-1..12` | letter-mark only |
+| Operational state | `StateDot` / `stateColorVar` | `--red`, `--amber`, `--green`, neutral | state affordance |
+| Local category | `categoricalHueVar` / `categoricalColor` | `--categorical-1..12` | label, icon, position, or legend |
+| Chart series | `chartSeriesColor` / `chartColor` | `--chart-1..5` | series label or legend |
+| Owner custom color | `ownerCustomColor` | owner-provided value | owner label or legend |
+
+Identity resolvers SHALL NOT be exported for general consumers. A local
+category, chart series, or state SHALL never request a Butler identity token.
+The registry in `frontend/src/lib/visual-token-roles.ts` is the executable
+source for this table; the table and registry MUST be checked for parity.
+
+#### Scenario: Every categorical and chart use is labeled
+- **WHEN** a surface renders a local category or chart series
+- **THEN** it provides a text label, icon, stable position, direct data label, or legend
+- **AND** color is not the sole carrier of meaning
+
 ### Requirement: Type System
 Pages SHALL use only the three type families — no page invents a fourth: **Inter Tight** (everything UI —
 display, body, labels, interface numbers), **Source Serif 4** (the system's *voice* — LLM-written

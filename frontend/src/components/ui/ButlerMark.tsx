@@ -7,16 +7,15 @@
 //   "neutral" — transparent background, category-hue initial, hairline border.
 //
 // This module is also the single source of truth for the butler-name to
-// CSS category token mapping. Chart code that only needs the CSS variable
-// string should use the exported `butlerHueVar(name)` helper instead of
-// importing the component itself.
+// CSS identity token mapping. Identity resolution is deliberately private to
+// this component; non-identity callers use typed helpers from
+// `@/lib/visual-token-roles` instead.
 //
 // Doctrine: each butler's hue from --category-1..12 appears only on the butler
 // letter-mark (colored squircle with initial). Never on backgrounds, borders,
 // buttons, headers, or other chrome. This rule applies to butler hues.
-// The categoryHueVar() helper uses the same token pool for non-butler entity
-// coloring (contact labels, tags) — that is a documented exception, not a
-// violation of the butler-hue rule.
+// Local categories use the separate --categorical-* ramp. They never share
+// this identity pool.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -89,20 +88,8 @@ function hashName(name: string): number {
 }
 
 /**
- * Map any arbitrary string to a deterministic `--category-N` CSS variable.
- * Uses the same hash algorithm as `butlerHueVar` but without the roster
- * index lookup. Useful for coloring non-butler entities (contact labels,
- * tags, etc.) where positional slot stability is not required.
- *
- * @example
- *   style={{ backgroundColor: categoryHueVar(label.name) }}
- */
-export function categoryHueVar(name: string): string {
-  return CATEGORY_VARS[hashName(name) % CATEGORY_VARS.length]
-}
-
 /**
- * Return the CSS variable string for the butler's category hue.
+ * Resolve the CSS variable string for the butler's identity hue.
  *
  * Known butlers use their roster-index slot (stable across all renders).
  * Unknown butlers use a hash-derived slot (stable for a given name, but not
@@ -114,7 +101,7 @@ export function categoryHueVar(name: string): string {
  * @example
  *   fill={butlerHueVar("health")}
  */
-export function butlerHueVar(name: string): string {
+function butlerHueVar(name: string): string {
   const idx = KNOWN_BUTLERS.indexOf(name)
   if (idx !== -1) return CATEGORY_VARS[idx % CATEGORY_VARS.length]
   return CATEGORY_VARS[hashName(name) % CATEGORY_VARS.length]
