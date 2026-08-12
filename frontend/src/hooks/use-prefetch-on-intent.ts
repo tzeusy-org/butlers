@@ -38,6 +38,9 @@ export interface PrefetchIntentHandlers {
   onPointerLeave: () => void;
   onFocus: () => void;
   onBlur: () => void;
+  /** Warm immediately for keyboard activation or a click before navigation. */
+  warmNow?: () => void;
+  onActivate?: () => void;
 }
 
 /**
@@ -86,6 +89,14 @@ export function usePrefetchOnIntent(
     }, delayMs);
   }, [cancel, delayMs, queryClient]);
 
+  const warmNow = useCallback(() => {
+    cancel();
+    if (!queryClient) return;
+    const target = toRef.current ? resolvePrefetchTarget(toRef.current) : null;
+    if (!target) return;
+    void queryClient.prefetchQuery(target);
+  }, [cancel, queryClient]);
+
   // A row unmounted mid-hover (e.g. list re-sorts/filters out from under the
   // cursor) must not fire a prefetch for a target no longer in view.
   useEffect(() => cancel, [cancel]);
@@ -95,7 +106,11 @@ export function usePrefetchOnIntent(
     cancel,
     onPointerEnter: schedule,
     onPointerLeave: cancel,
-    onFocus: schedule,
+    // Focus is the keyboard-intent signal. Pointer hover remains debounced;
+    // starting here also means focus-then-activate cannot cancel the warmup.
+    onFocus: warmNow,
     onBlur: cancel,
+    warmNow,
+    onActivate: warmNow,
   };
 }

@@ -32,6 +32,9 @@ export interface RouteChunkPrefetchIntentHandlers {
   onPointerLeave: () => void;
   onFocus: () => void;
   onBlur: () => void;
+  /** Warm immediately for keyboard activation or a click before navigation. */
+  warmNow?: () => void;
+  onActivate?: () => void;
 }
 
 /**
@@ -73,6 +76,13 @@ export function useRouteChunkPrefetchOnIntent(
     }, delayMs);
   }, [cancel, delayMs]);
 
+  const warmNow = useCallback(() => {
+    cancel();
+    const loader = pathRef.current ? resolveRouteChunkLoader(pathRef.current) : null;
+    if (!loader) return;
+    loader().catch(() => {});
+  }, [cancel]);
+
   useEffect(() => cancel, [cancel]);
 
   return {
@@ -80,7 +90,12 @@ export function useRouteChunkPrefetchOnIntent(
     cancel,
     onPointerEnter: schedule,
     onPointerLeave: cancel,
-    onFocus: schedule,
+    // Focus represents keyboard intent and should never wait for the pointer
+    // debounce. `warmNow` also survives the subsequent navigation because it
+    // starts the module request before the link unmounts.
+    onFocus: warmNow,
     onBlur: cancel,
+    warmNow,
+    onActivate: warmNow,
   };
 }

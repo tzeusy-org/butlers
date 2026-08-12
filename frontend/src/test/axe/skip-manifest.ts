@@ -27,4 +27,15 @@ export interface AxeSkipEntry {
   reason: string;
 }
 
-export const AXE_SKIP_MANIFEST: AxeSkipEntry[] = [];
+export const AXE_SKIP_MANIFEST: AxeSkipEntry[] = [
+  {
+    path: "/ingestion/connectors",
+    reason:
+      "The connector roster has a dedicated route contract suite, but its provider and credential states still require isolated axe fixtures before joining this sweep.",
+  },
+  {
+    path: "/ingestion/filters",
+    reason:
+      "The filters pipeline has a dedicated route contract suite, but its editor and server-state permutations still require isolated axe fixtures before joining this sweep.",
+  },
+];

@@ -50,6 +50,29 @@ describe("useRouteChunkPrefetchOnIntent", () => {
     expect(loader).toHaveBeenCalledTimes(1);
   });
 
+  it("loads immediately for keyboard focus", () => {
+    const loader = vi.fn(() => Promise.resolve({ default: () => null }));
+    mockResolveRouteChunkLoader.mockReturnValue(loader);
+    const { result } = renderHook(() => useRouteChunkPrefetchOnIntent("/keyboard"));
+
+    act(() => result.current.onFocus());
+
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a pending pointer warmup when activation wins the race", () => {
+    const loader = vi.fn(() => Promise.resolve({ default: () => null }));
+    mockResolveRouteChunkLoader.mockReturnValue(loader);
+    const { result } = renderHook(() => useRouteChunkPrefetchOnIntent("/activate"));
+
+    act(() => {
+      result.current.onPointerEnter();
+      result.current.onActivate?.();
+    });
+
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels the pending load if intent ends before the delay elapses", () => {
     const loader = vi.fn(() => Promise.resolve({ default: () => null }));
     mockResolveRouteChunkLoader.mockReturnValue(loader);

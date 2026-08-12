@@ -13,12 +13,16 @@
  */
 
 import { NavLink } from 'react-router'
+import { SHELL_CAPABILITIES } from '@/lib/shell-capability'
 
-const NAV_ITEMS = [
-  { label: 'Timeline', to: '/ingestion', end: true },
-  { label: 'Connectors', to: '/ingestion/connectors', end: false },
-  { label: 'Filters', to: '/ingestion/filters', end: false },
-] as const
+const NAV_ITEMS = SHELL_CAPABILITIES
+  .filter((capability) => capability.subnav)
+  .sort((a, b) => (a.subnav?.order ?? 0) - (b.subnav?.order ?? 0))
+  .map((capability) => ({
+    label: capability.subnav?.label ?? capability.label,
+    to: capability.path,
+    end: capability.subnav?.end,
+  }))
 
 interface IngestionSubNavProps {
   className?: string

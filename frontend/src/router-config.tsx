@@ -14,6 +14,7 @@ import { lazy, type ReactNode } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router'
 import { RouteSuspense } from './components/layout/RouteSuspense.tsx'
 import RootLayout from './layouts/RootLayout.tsx'
+import { getShellCapability } from './lib/shell-capability'
 import {
   ColumnsToPlexRedirect,
   ConnectorDetailRedirect,
@@ -25,52 +26,54 @@ import {
 
 // Every page belongs to its own route chunk. The shell stays mounted while a
 // chunk resolves, and routeElement gives every route the same in-place frame.
-const DashboardPage = lazy(() => import('./pages/DashboardPage.tsx'))
-const ButlersPage = lazy(() => import('./pages/ButlersPage.tsx'))
-const ButlerDetailPage = lazy(() => import('./pages/ButlerDetailPage.tsx'))
-const SessionsPage = lazy(() => import('./pages/SessionsPage.tsx'))
-const SessionDetailPage = lazy(() => import('./pages/SessionDetailPage.tsx'))
-const TimelinePage = lazy(() => import('./pages/TimelinePage.tsx'))
-const NotificationsPage = lazy(() => import('./pages/NotificationsPage.tsx'))
-const IssuesPage = lazy(() => import('./pages/IssuesPage.tsx'))
-const SpendPage = lazy(() => import('./pages/SpendPage.tsx'))
-const MemoryPage = lazy(() => import('./pages/MemoryPage.tsx'))
-const FactDetailPage = lazy(() => import('./pages/FactDetailPage.tsx'))
-const RuleDetailPage = lazy(() => import('./pages/RuleDetailPage.tsx'))
-const EpisodeDetailPage = lazy(() => import('./pages/EpisodeDetailPage.tsx'))
-const SettingsConsolePage = lazy(() => import('./pages/SettingsConsolePage.tsx'))
-const SettingsPermissionsPage = lazy(() => import('./pages/SettingsPermissionsPage.tsx'))
-const SettingsModelsPage = lazy(() => import('./pages/SettingsModelsPage.tsx'))
-const AuditLogPage = lazy(() => import('./pages/AuditLogPage.tsx'))
-const HealthOverviewPage = lazy(() => import('./pages/HealthOverviewPage.tsx'))
-const MeasurementsPage = lazy(() => import('./pages/MeasurementsPage.tsx'))
-const MedicationsPage = lazy(() => import('./pages/MedicationsPage.tsx'))
-const ConditionsPage = lazy(() => import('./pages/ConditionsPage.tsx'))
-const SymptomsPage = lazy(() => import('./pages/SymptomsPage.tsx'))
-const MealsPage = lazy(() => import('./pages/MealsPage.tsx'))
-const ResearchPage = lazy(() => import('./pages/ResearchPage.tsx'))
-const ApprovalsPage = lazy(() => import('./pages/ApprovalsPage.tsx'))
-const DecisionsPage = lazy(() => import('./pages/DecisionsPage.tsx'))
-const SecretsPage = lazy(() => import('./pages/SecretsPage.tsx'))
-const EducationPage = lazy(() => import('./pages/EducationPage.tsx'))
-const EntitiesIndexPage = lazy(() =>
-  import('./components/relationship/EntitiesIndexPage.tsx').then(({ EntitiesIndexPage }) => ({
-    default: EntitiesIndexPage,
-  })),
-)
-const PlexPage = lazy(() => import('./components/relationship/PlexPage.tsx'))
-const EntityDetailPage = lazy(() => import('./pages/EntityDetailPage.tsx'))
-const ConcentrationPage = lazy(() => import('./components/relationship/ConcentrationPage.tsx'))
-const CirclesPage = lazy(() => import('./components/relationship/CirclesPage.tsx'))
-const IngestionConnectorsPage = lazy(() => import('./pages/IngestionConnectorsPage.tsx'))
-const IngestionFiltersPage = lazy(() => import('./pages/IngestionFiltersPage.tsx'))
-const ConnectorDetailPage = lazy(() => import('./pages/ConnectorDetailPage.tsx'))
-const QaOverviewPage = lazy(() => import('./pages/QaOverviewPage.tsx'))
-const QaPatrolDetailPage = lazy(() => import('./pages/QaPatrolDetailPage.tsx'))
-const QaInvestigationDetailPage = lazy(() => import('./pages/QaInvestigationDetailPage.tsx'))
-const CalendarWorkspacePage = lazy(() => import('./pages/CalendarWorkspacePage.tsx'))
-const ChroniclesPage = lazy(() => import('./pages/ChroniclesPage.tsx'))
-const SystemPage = lazy(() => import('./pages/SystemPage.tsx'))
+function shellPage(path: string) {
+  const capability = getShellCapability(path)
+  if (!capability) throw new Error(`Missing shell capability for ${path}`)
+  return lazy(capability.loader)
+}
+
+const DashboardPage = shellPage('/')
+const ButlersPage = shellPage('/butlers')
+const ButlerDetailPage = shellPage('/butlers/:name')
+const SessionsPage = shellPage('/sessions')
+const SessionDetailPage = shellPage('/sessions/:id')
+const TimelinePage = shellPage('/timeline')
+const NotificationsPage = shellPage('/notifications')
+const IssuesPage = shellPage('/issues')
+const SpendPage = shellPage('/spend')
+const MemoryPage = shellPage('/memory')
+const FactDetailPage = shellPage('/memory/facts/:factId')
+const RuleDetailPage = shellPage('/memory/rules/:ruleId')
+const EpisodeDetailPage = shellPage('/memory/episodes/:episodeId')
+const SettingsConsolePage = shellPage('/settings')
+const SettingsPermissionsPage = shellPage('/settings/permissions')
+const SettingsModelsPage = shellPage('/settings/models')
+const AuditLogPage = shellPage('/audit-log')
+const HealthOverviewPage = shellPage('/health')
+const MeasurementsPage = shellPage('/health/measurements')
+const MedicationsPage = shellPage('/health/medications')
+const ConditionsPage = shellPage('/health/conditions')
+const SymptomsPage = shellPage('/health/symptoms')
+const MealsPage = shellPage('/health/meals')
+const ResearchPage = shellPage('/health/research')
+const ApprovalsPage = shellPage('/approvals')
+const DecisionsPage = shellPage('/decisions')
+const SecretsPage = shellPage('/secrets')
+const EducationPage = shellPage('/education')
+const EntitiesIndexPage = shellPage('/entities/index')
+const PlexPage = shellPage('/entities')
+const EntityDetailPage = shellPage('/entities/:entityId')
+const ConcentrationPage = shellPage('/entities/concentration')
+const CirclesPage = shellPage('/entities/circles')
+const IngestionConnectorsPage = shellPage('/ingestion/connectors')
+const IngestionFiltersPage = shellPage('/ingestion/filters')
+const ConnectorDetailPage = shellPage('/ingestion/connectors/:connectorType/:endpointIdentity')
+const QaOverviewPage = shellPage('/qa')
+const QaPatrolDetailPage = shellPage('/qa/patrols/:patrolId')
+const QaInvestigationDetailPage = shellPage('/qa/investigations/:attemptId')
+const CalendarWorkspacePage = shellPage('/calendar')
+const ChroniclesPage = shellPage('/chronicles')
+const SystemPage = shellPage('/system')
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 

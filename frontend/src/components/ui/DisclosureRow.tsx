@@ -90,6 +90,7 @@ export const DisclosureRow = React.forwardRef<HTMLDivElement, DisclosureRowProps
     function handleClick(e: React.MouseEvent<HTMLDivElement>) {
       onClick?.(e)
       if (e.defaultPrevented || disabled) return
+      prefetch.onActivate?.()
       onToggle()
     }
 
@@ -101,6 +102,7 @@ export const DisclosureRow = React.forwardRef<HTMLDivElement, DisclosureRowProps
       if (e.target !== e.currentTarget) return
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault()
+        prefetch.onActivate?.()
         onToggle()
       }
     }

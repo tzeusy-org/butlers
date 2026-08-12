@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { navSections } from "@/components/layout/nav-config";
+import { SHELL_CAPABILITIES } from "@/lib/shell-capability";
 import { ROUTE_CHUNK_LOADERS, resolveRouteChunkLoader } from "./route-chunk-registry";
 
 /** Every path the Sidebar can actually navigate to, flat vs. group children. */
@@ -28,10 +29,11 @@ describe("ROUTE_CHUNK_LOADERS", () => {
     expect(missing).toEqual([]);
   });
 
-  it("has no entry for a path the Sidebar does not actually render", () => {
-    const sidebarPaths = new Set(allSidebarPaths());
-    const extra = Object.keys(ROUTE_CHUNK_LOADERS).filter((p) => !sidebarPaths.has(p));
-    expect(extra).toEqual([]);
+  it("includes every static globally discoverable capability, including contextual subroutes", () => {
+    const expected = SHELL_CAPABILITIES.filter((capability) => !capability.dynamic).map(
+      (capability) => capability.path,
+    );
+    expect(Object.keys(ROUTE_CHUNK_LOADERS).sort()).toEqual(expected.sort());
   });
 
   it(
@@ -54,8 +56,8 @@ describe("resolveRouteChunkLoader", () => {
     expect(resolveRouteChunkLoader("/butlers")).toBe(ROUTE_CHUNK_LOADERS["/butlers"]);
   });
 
-  it("returns null for an unmapped path (detail routes are out of scope)", () => {
-    expect(resolveRouteChunkLoader("/butlers/some-butler")).toBeNull();
+  it("resolves contextual detail routes while rejecting unknown paths", () => {
+    expect(resolveRouteChunkLoader("/butlers/some-butler")).toEqual(expect.any(Function));
     expect(resolveRouteChunkLoader("/not-a-real-route")).toBeNull();
   });
 });

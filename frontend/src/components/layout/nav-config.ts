@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { NavIconName } from './NavIcon'
+import { SHELL_CAPABILITIES, type ShellCapability } from '@/lib/shell-capability'
 
 /** A flat navigation link. */
 export interface NavFlatItem {
@@ -60,67 +61,48 @@ export interface NavSection {
 }
 
 // ---------------------------------------------------------------------------
-// Nav sections configuration
+// Navigation projection
 // ---------------------------------------------------------------------------
 
-export const navSections: NavSection[] = [
-  {
-    title: 'Main',
-    items: [
-      { path: '/', label: 'Overview', end: true, icon: 'overview', chord: 'o' },
-      { path: '/butlers', label: 'Butlers', icon: 'butlers', chord: 'b' },
-      { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-escalations', badgeVariant: 'red', icon: 'qa' },
-      { path: '/ingestion', label: 'Ingestion', icon: 'ingestion', chord: 'e' },
-      // g-chords added (bu-ep4ks.12): these two badged, high-traffic pages
-      // had no chord while several lower-traffic pages did.
-      { path: '/approvals', label: 'Approvals', badgeKey: 'approvals-pending', badgeVariant: 'amber', icon: 'approvals', chord: 'p' },
-      { path: '/decisions', label: 'Decisions', badgeKey: 'decisions-open', badgeVariant: 'amber', icon: 'decisions', chord: 'd' },
-      { path: '/memory', label: 'Memory', icon: 'memory', chord: 'm' },
-      { path: '/entities', label: 'Entities', icon: 'entities' },
-      { path: '/secrets', label: 'Secrets', icon: 'secrets' },
-      { path: '/settings', label: 'Settings', icon: 'settings' },
-    ],
-  },
-  {
-    title: 'Dedicated Butlers',
-    items: [
-      { path: '/education', label: 'Education', butler: 'education' },
-      // chord: 'h' — fixed bu-86c4c.7 drift (used to point g-h at the
-      // pre-redesign /health/measurements route; now points at the actual
-      // Health overview page it is declared on). The child routes are the
-      // stable Health ledger surfaces exposed from that overview.
-      {
-        kind: 'group',
-        label: 'Health',
-        butler: 'health',
-        children: [
-          { path: '/health', label: 'Overview', end: true, chord: 'h' },
-          { path: '/health/measurements', label: 'Measurements' },
-          { path: '/health/medications', label: 'Medications' },
-          { path: '/health/conditions', label: 'Conditions' },
-          { path: '/health/symptoms', label: 'Symptoms' },
-          { path: '/health/meals', label: 'Meals' },
-          { path: '/health/research', label: 'Research' },
-        ],
-      },
-      { path: '/calendar', label: 'Calendar' },
-      { path: '/chronicles', label: 'Chronicles', butler: 'chronicler', tooltip: 'Retrospective lived-time reconstruction' },
-    ],
-  },
-  {
-    title: 'Telemetry',
-    defaultExpanded: false,
-    items: [
-      { path: '/timeline', label: 'Timeline', icon: 'timeline', chord: 't' },
-      { path: '/notifications', label: 'Notifications', icon: 'notifications', chord: 'n' },
-      { path: '/issues', label: 'Issues', icon: 'issues', chord: 'i' },
-      { path: '/sessions', label: 'Sessions', icon: 'sessions', chord: 's' },
-      // JARVIS audit move 8 (bu-86c4c.11): the merged /costs +
-      // /settings/spend surface, now nav-visible in both sidebar and
-      // command palette (was reachable from neither).
-      { path: '/spend', label: 'Spend', icon: 'spend' },
-      { path: '/audit-log', label: 'Audit Log', icon: 'audit', chord: 'a' },
-      { path: '/system', label: 'System', icon: 'system', tooltip: 'Instance ownership and runtime facts' },
-    ],
-  },
-]
+function toNavItem(capability: ShellCapability): NavFlatItem {
+  const placement = capability.placement
+  if (!placement) throw new Error(`Navigation projection received ${capability.path} without placement`)
+  return {
+    path: capability.path,
+    label: capability.label,
+    end: placement.end,
+    butler: placement.butler,
+    icon: placement.icon,
+    badgeKey: placement.badgeKey,
+    badgeVariant: placement.badgeVariant,
+    tooltip: placement.tooltip,
+    chord: capability.chord,
+  }
+}
+
+const NAV_SECTIONS: NavSection['title'][] = ['Main', 'Dedicated Butlers', 'Telemetry']
+
+/** Sidebar/subnavigation projection; capability metadata remains authoritative. */
+export const navSections: NavSection[] = NAV_SECTIONS.map((title) => {
+  const capabilities = SHELL_CAPABILITIES
+    .filter((capability) => capability.placement?.section === title)
+    .sort((a, b) => (a.placement?.order ?? 0) - (b.placement?.order ?? 0))
+  const items: NavItem[] = []
+  const groups = new Map<string, NavGroupItem>()
+  for (const capability of capabilities) {
+    const placement = capability.placement
+    if (!placement) continue
+    if (!placement.group) {
+      items.push(toNavItem(capability))
+      continue
+    }
+    let group = groups.get(placement.group)
+    if (!group) {
+      group = { kind: 'group', label: placement.group, butler: placement.butler, children: [] }
+      groups.set(placement.group, group)
+      items.push(group)
+    }
+    group.children.push(toNavItem(capability))
+  }
+  return { title, items, defaultExpanded: title !== 'Telemetry' }
+})

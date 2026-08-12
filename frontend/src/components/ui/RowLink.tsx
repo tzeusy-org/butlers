@@ -77,7 +77,7 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
       // intent handlers are typed against LinkProps' anchor element (this
       // branch renders a div instead) -- recast to the div's handler shape,
       // same as the trailing `divProps` spread already does below.
-      const { to, onPointerEnter, onPointerLeave, onFocus, onBlur, ...divProps } = props as Omit<
+      const { to, onPointerEnter, onPointerLeave, onFocus, onBlur, onClick, ...divProps } = props as Omit<
         RowLinkProps,
         "hasNestedInteractive" | "onActivate" | "className" | "children"
       > &
@@ -92,11 +92,16 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
             className,
           )}
-          onClick={() => onActivate?.()}
+          onClick={(event) => {
+            prefetch.onActivate?.()
+            onClick?.(event)
+            onActivate?.()
+          }}
           onKeyDown={(e) => {
             if (e.target !== e.currentTarget) return
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault()
+              prefetch.onActivate?.()
               onActivate?.()
             }
           }}
@@ -111,7 +116,7 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
       )
     }
 
-    const { onPointerEnter, onPointerLeave, onFocus, onBlur, ...linkProps } = props
+    const { onPointerEnter, onPointerLeave, onFocus, onBlur, onClick, ...linkProps } = props
     return (
       <Link
         ref={ref as React.Ref<HTMLAnchorElement>}
@@ -120,6 +125,10 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
         onPointerLeave={composeHandlers(prefetch.onPointerLeave, onPointerLeave)}
         onFocus={composeHandlers(prefetch.onFocus, onFocus)}
         onBlur={composeHandlers(prefetch.onBlur, onBlur)}
+        onClick={(event) => {
+          prefetch.onActivate?.()
+          onClick?.(event)
+        }}
         {...linkProps}
       >
         {children}

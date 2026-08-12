@@ -63,6 +63,7 @@ import { addRecent, getRecents, type RecentEntry } from "@/lib/recents-store";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
 import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
+import { resolveRouteChunkLoader } from "@/lib/route-chunk-registry";
 import { EntityMark } from "@/components/ui/EntityMark";
 import {
   Dialog,
@@ -455,7 +456,12 @@ export default function EntityFinder() {
 
   const highlightPrefetch = usePrefetchOnIntent(highlightedPath);
   useEffect(() => {
-    highlightPrefetch.schedule();
+    // Highlighting is command/keyboard intent, so both the lazy chunk and
+    // matching query cache start immediately. A pending pointer timer cannot
+    // be cancelled by activation because `warmNow` clears it first.
+    highlightPrefetch.warmNow?.();
+    const loader = highlightedPath ? resolveRouteChunkLoader(highlightedPath) : null;
+    loader?.().catch(() => {});
     return highlightPrefetch.cancel;
     // highlightPrefetch reads its target via a ref (stable identity across
     // `to` changes) -- only the resolved path itself should retrigger this.

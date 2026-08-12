@@ -68,6 +68,43 @@ describe("usePrefetchOnIntent", () => {
     expect(queryFn).toHaveBeenCalledTimes(1);
   });
 
+  it("warms immediately for keyboard focus", () => {
+    const queryFn = vi.fn(() => Promise.resolve("data"));
+    mockResolvePrefetchTarget.mockReturnValue({
+      queryKey: ["keyboard"],
+      queryFn,
+      staleTime: 60_000,
+    });
+    const client = new QueryClient();
+    const { result } = renderHook(() => usePrefetchOnIntent("/keyboard"), {
+      wrapper: makeWrapper(client),
+    });
+
+    act(() => result.current.onFocus());
+
+    expect(queryFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a pending pointer warmup when activation wins the race", () => {
+    const queryFn = vi.fn(() => Promise.resolve("data"));
+    mockResolvePrefetchTarget.mockReturnValue({
+      queryKey: ["activate"],
+      queryFn,
+      staleTime: 60_000,
+    });
+    const client = new QueryClient();
+    const { result } = renderHook(() => usePrefetchOnIntent("/activate"), {
+      wrapper: makeWrapper(client),
+    });
+
+    act(() => {
+      result.current.onPointerEnter();
+      result.current.onActivate?.();
+    });
+
+    expect(queryFn).toHaveBeenCalledTimes(1);
+  });
+
   it("cancel before the delay elapses skips the fetch entirely (pointer-sweep case)", () => {
     const queryFn = vi.fn(() => Promise.resolve("data"));
     mockResolvePrefetchTarget.mockReturnValue({

@@ -256,7 +256,11 @@ function FlatNavLink({
         <NavLink
           to={item.path}
           end={item.end}
-          onClick={onNavClick}
+          onClick={() => {
+            chunkPrefetch.onActivate?.()
+            dataPrefetch.onActivate?.()
+            onNavClick?.()
+          }}
           onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
           onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
           onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
@@ -395,7 +399,11 @@ function NavGroupChildLink({
         <NavLink
           to={path}
           end={end}
-          onClick={onNavClick}
+          onClick={() => {
+            chunkPrefetch.onActivate?.()
+            dataPrefetch.onActivate?.()
+            onNavClick?.()
+          }}
           onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
           onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
           onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
@@ -766,7 +774,11 @@ function MobileFlatLink({
     <NavLink
       to={item.path}
       end={item.end}
-      onClick={onNavClick}
+      onClick={() => {
+        chunkPrefetch.onActivate?.()
+        dataPrefetch.onActivate?.()
+        onNavClick?.()
+      }}
       onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
       onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
       onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
@@ -908,7 +920,11 @@ function MobileNavGroupChildLink({
     <NavLink
       to={path}
       end={end}
-      onClick={onNavClick}
+      onClick={() => {
+        chunkPrefetch.onActivate?.()
+        dataPrefetch.onActivate?.()
+        onNavClick?.()
+      }}
       onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
       onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
       onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
