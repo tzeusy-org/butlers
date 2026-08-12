@@ -44,24 +44,82 @@ const IDENTITY_VARIABLES = IDENTITY_SLOTS.flatMap((slot) => [
   `category-${slot}`,
   `color-category-${slot}`,
 ]);
-const IDENTITY_UTILITY_VALUES = [
-  ...IDENTITY_VARIABLES.map((variable) => `var(--${variable})`),
+// The supported grammar is deliberately exercised as a matrix rather than a
+// handful of examples. Every listed utility accepts both Tailwind v4 forms:
+//
+//   utility-(--custom-property)
+//   utility-(color:--custom-property)
+//
+// Direct CSS references additionally admit CSS whitespace/comments before the
+// property name and CSS escapes anywhere in that name. The guard must compare
+// canonical property names, not their source spelling.
+const IDENTITY_TAILWIND_UTILITY_MATRIX = [
+  ...IDENTITY_COLOR_UTILITY_SPELLINGS.flatMap((utility) =>
+    IDENTITY_VARIABLES.flatMap((variable) => [
+      `${utility}-(--${variable})`,
+      `${utility}-(color:--${variable})`,
+    ]),
+  ),
+];
+const IDENTITY_NAMED_TAILWIND_ALIAS_MATRIX = [
   ...IDENTITY_COLOR_UTILITY_SPELLINGS.flatMap((utility) =>
     IDENTITY_VARIABLES.map((variable) => `${utility}-${variable}`),
   ),
-  ...IDENTITY_COLOR_UTILITY_SPELLINGS.flatMap((utility) =>
-    IDENTITY_VARIABLES.map((variable) => `${utility}-(--${variable})`),
-  ),
+];
+const IDENTITY_CSS_VARIABLE_REFERENCE_MATRIX = [
+  ...IDENTITY_VARIABLES.map((variable) => `var(--${variable})`),
+  "var( --category-1)",
+  "var(\n--color-category-12)",
+  "var(\t/* identity trivia */\n--category-1)",
+  "var(/* identity trivia */ --color-category-12)",
+  "var(--\\63 ategory-1)",
+  "var(--color-\\63 ategory-12)",
+  "var(\\2d\\2d category-1)",
+  "var(--category-\\31)",
+  "\\76 ar(--category-1)",
+];
+const IDENTITY_ESCAPED_TAILWIND_MATRIX = [
+  "bg-(--\\63 ategory-1)",
+  "text-(color:--color-\\63 ategory-12)",
+  "fill-(\\2d\\2d category-1)",
+  "stroke-(color:\\2d\\2d color-category-12)",
+];
+const IDENTITY_UTILITY_VALUES = [
+  ...IDENTITY_CSS_VARIABLE_REFERENCE_MATRIX,
+  ...IDENTITY_NAMED_TAILWIND_ALIAS_MATRIX,
+  ...IDENTITY_TAILWIND_UTILITY_MATRIX,
+  ...IDENTITY_ESCAPED_TAILWIND_MATRIX,
 ];
 const BUTLER_MARK_IDENTITY_UTILITY_VALUES = [
   `bg-(--${["category", 1].join("-")})`,
   `text-(--${["color", "category", 12].join("-")})`,
+  "fill-(color:--category-1)",
+  "var(/* canonical identity component */ --color-category-12)",
+  "stroke-(--\\63 ategory-1)",
 ];
 const SEMANTIC_ROLE_SOURCE = [
   'import { categoricalColor, categoricalHueVar, stateColorVar } from "@/lib/visual-token-roles";',
   'import { chartSeriesColor } from "@/lib/chart-colors";',
   'export const colors = [categoricalColor(0), categoricalHueVar("family"), stateColorVar("healthy"), chartSeriesColor(0)];',
   'export const className = "bg-(--categorical-1)";',
+  'export const typeHintedClassName = "text-(color:--categorical-1)";',
+  'export const semanticCss = "var(/* semantic role */ --categorical-1)";',
+  'export const outOfRangeIdentityNamespace = "bg-(--category-13)";',
+  'export const legacyOutOfRangeIdentityNamespace = "var(--color-category-13)";',
+  'const categoryTone = "categorical-1";',
+  'export const dynamicSemanticRole = `border-${categoryTone}`;',
+].join("\n");
+
+const DYNAMIC_IDENTITY_TEMPLATE_SOURCE = [
+  "const slot = 1;",
+  "export const direct = `var(--category-${slot})`;",
+  "export const utility = `hover:bg-(color:--color-category-${slot})`;",
+  "export const named = `focus:ring-color-category-${slot}`;",
+].join("\n");
+
+const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
+  'export const direct = "var(--category-1";',
+  'export const utility = "bg-(color:--color-category-12";',
 ].join("\n");
 
 function sourceWithStringLiterals(values: readonly string[]): string {
@@ -72,7 +130,13 @@ function sourceWithStringLiterals(values: readonly string[]): string {
 
 function sourceWithTemplateLiterals(values: readonly string[]): string {
   return values
-    .map((value, index) => `export const value${index} = \`${value}\`;`)
+    .map((value, index) => {
+      const escaped = value
+        .replaceAll("\\", "\\\\")
+        .replaceAll("`", "\\`")
+        .replaceAll("${", "\\${");
+      return `export const value${index} = \`${escaped}\`;`;
+    })
     .join("\n");
 }
 
@@ -80,7 +144,9 @@ async function visualRoleMessages(source: string, filePath: string) {
   const [result] = await new ESLint().lintText(source, { filePath });
   return result.messages.filter(
     (message) =>
-      message.ruleId === "no-restricted-syntax" &&
+      ["no-restricted-syntax", "visual-role/no-private-identity-token"].includes(
+        message.ruleId ?? "",
+      ) &&
       message.message.includes("Butler identity"),
   );
 }
@@ -95,9 +161,9 @@ describe("semantic visual-role lint", () => {
     expect(result.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          ruleId: "no-restricted-syntax",
+          ruleId: "visual-role/no-private-identity-token",
           message: expect.stringContaining(
-            "Butler identity tokens are private to ButlerMark",
+            "Butler identity token --category-1 is private to ButlerMark",
           ),
         }),
       ]),
@@ -118,6 +184,20 @@ describe("semantic visual-role lint", () => {
       expect(roleMessages).toHaveLength(IDENTITY_UTILITY_VALUES.length);
     },
   );
+
+  it("fails closed for malformed and dynamically ambiguous private identity forms", async () => {
+    const malformedMessages = await visualRoleMessages(
+      MALFORMED_PRIVATE_IDENTITY_SOURCE,
+      "src/components/ui/IdentityMalformedLeak.tsx",
+    );
+    const dynamicMessages = await visualRoleMessages(
+      DYNAMIC_IDENTITY_TEMPLATE_SOURCE,
+      "src/components/ui/IdentityDynamicLeak.tsx",
+    );
+
+    expect(malformedMessages).toHaveLength(2);
+    expect(dynamicMessages).toHaveLength(3);
+  });
 
   it("keeps the canonical ButlerMark exemption narrow", async () => {
     const roleMessages = await visualRoleMessages(

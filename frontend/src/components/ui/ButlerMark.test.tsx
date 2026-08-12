@@ -15,6 +15,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 
 import { ButlerMark, KNOWN_BUTLERS } from "./ButlerMark"
 
+// eslint-disable-next-line visual-role/no-private-identity-token -- Verifies the identity owner's rendered public contract.
 const categoryToken = (slot: number) => `var(--category-${slot})`
 
 // ---------------------------------------------------------------------------

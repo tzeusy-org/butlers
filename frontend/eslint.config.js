@@ -6,6 +6,11 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
+import {
+  DYNAMIC_VALUE_MARKER,
+  findPrivateIdentityReferences,
+} from './scripts/visual-role-css-guard.mjs'
+
 // ---------------------------------------------------------------------------
 // Dispatch one-visual-language guards (bu-86c4c.6)
 //
@@ -416,57 +421,60 @@ const BLUE_PURPLE_STATUS_SELECTORS = [
 // ButlerMark; every other local taxonomy must use the dedicated categorical
 // ramp. This is intentionally repo-wide (the old file allowlists certified
 // unaudited consumers by path).
-const IDENTITY_TOKEN_SLOT_PATTERN = "(?:[1-9]|1[0-2])"
-const IDENTITY_VARIABLE_PATTERN = `--(?:color-)?category-${IDENTITY_TOKEN_SLOT_PATTERN}`
-const IDENTITY_VARIABLE_REFERENCE_PATTERN = `var\\(${IDENTITY_VARIABLE_PATTERN}\\)`
-const IDENTITY_TAILWIND_ALIAS_PATTERN =
-  `(?:^|[^a-z-])[a-z][a-z-]*-category-${IDENTITY_TOKEN_SLOT_PATTERN}\\b`
-// Tailwind v4's `utility-(--token)` shorthand applies to more color utilities
-// than a finite prefix list (including directional borders, offset rings, and
-// inset shadows). Any hyphenated utility carrying a private identity variable
-// is a boundary breach, so fail closed rather than maintain an incomplete list.
-const IDENTITY_TAILWIND_CSS_VARIABLE_PATTERN =
-  `\\b[a-z][a-z-]*-\\(${IDENTITY_VARIABLE_PATTERN}\\)`
+//
+// Private CSS-variable detection is a custom semantic rule instead of an
+// ESTree raw-text selector. CSS custom properties can legally contain escape
+// sequences, and var() permits whitespace/comments before the property name;
+// Tailwind v4 also supports both utility-(--token) and
+// utility-(color:--token). The owned normalizer understands that bounded
+// grammar and compares canonical property names. The remaining selectors
+// enforce the separately typed public API boundary.
+const VISUAL_ROLE_GUARD_PLUGIN = {
+  rules: {
+    'no-private-identity-token': {
+      meta: {
+        docs: {
+          description:
+            'forbid private ButlerMark identity custom properties outside ButlerMark',
+        },
+        messages: {
+          privateIdentity:
+            'Butler identity token {{property}} is private to ButlerMark (bu-6jv4m.15). Use a typed ' +
+            'semantic role helper instead of embedding an identity token.',
+        },
+        schema: [],
+        type: 'problem',
+      },
+      create(context) {
+        function reportPrivateIdentityReferences(value, node) {
+          for (const reference of findPrivateIdentityReferences(value)) {
+            context.report({
+              data: { property: reference.property },
+              messageId: 'privateIdentity',
+              node,
+            })
+          }
+        }
+
+        return {
+          Literal(node) {
+            if (typeof node.value === 'string') {
+              reportPrivateIdentityReferences(node.value, node)
+            }
+          },
+          TemplateLiteral(node) {
+            const value = node.quasis
+              .map((quasi) => quasi.value.cooked ?? quasi.value.raw)
+              .join(DYNAMIC_VALUE_MARKER)
+            reportPrivateIdentityReferences(value, node)
+          },
+        }
+      },
+    },
+  },
+}
 
 const VISUAL_ROLE_SELECTORS = [
-  {
-    selector: `Literal[value=/${IDENTITY_VARIABLE_REFERENCE_PATTERN}/]`,
-    message:
-      'Butler identity tokens are private to ButlerMark (bu-6jv4m.15). Use ' +
-      'categoricalHueVar/categoricalColor for local categories, chartSeriesColor/chartColor for ' +
-      'chart series, or stateColorVar/StateDot for operational state.',
-  },
-  {
-    selector: `TemplateElement[value.raw=/${IDENTITY_VARIABLE_REFERENCE_PATTERN}/]`,
-    message:
-      'Butler identity tokens are private to ButlerMark (bu-6jv4m.15). Use a typed semantic ' +
-      'role helper instead of embedding an identity token.',
-  },
-  {
-    selector: `Literal[value=/${IDENTITY_TAILWIND_ALIAS_PATTERN}/]`,
-    message:
-      'Butler identity Tailwind aliases are private to ButlerMark (bu-6jv4m.15). Use a typed ' +
-      'semantic role helper instead of a category utility.',
-  },
-  {
-    selector: `TemplateElement[value.raw=/${IDENTITY_TAILWIND_ALIAS_PATTERN}/]`,
-    message:
-      'Butler identity Tailwind aliases are private to ButlerMark (bu-6jv4m.15). Use a typed ' +
-      'semantic role helper instead of a category utility.',
-  },
-  {
-    selector: `Literal[value=/${IDENTITY_TAILWIND_CSS_VARIABLE_PATTERN}/]`,
-    message:
-      'Butler identity CSS-variable utilities are private to ButlerMark (bu-6jv4m.15). Do not ' +
-      'use utility-(--category-N) or utility-(--color-category-N); use a typed semantic role helper.',
-  },
-  {
-    selector:
-      `TemplateElement[value.raw=/${IDENTITY_TAILWIND_CSS_VARIABLE_PATTERN}/]`,
-    message:
-      'Butler identity CSS-variable utilities are private to ButlerMark (bu-6jv4m.15). Do not ' +
-      'use utility-(--category-N) or utility-(--color-category-N); use a typed semantic role helper.',
-  },
   {
     selector:
       'ImportDeclaration[source.value="@/components/ui/ButlerMark"] ImportSpecifier[imported.name=/^(?:butlerHueVar|categoryHueVar)$/]',
@@ -544,6 +552,20 @@ const NO_UNGUARDED_OUTLINE_NONE_SELECTORS = [
 
 export default defineConfig([
   globalIgnores(['dist']),
+  {
+    // The identity component is the one canonical owner of this private
+    // surface. The lint test itself is a deliberately malicious source
+    // fixture; its virtual files remain checked by this rule through ESLint's
+    // lintText API, while this on-disk harness stays readable.
+    files: ['**/*.{ts,tsx}'],
+    ignores: ['src/components/ui/ButlerMark.tsx', 'src/lib/visual-role-eslint.test.ts'],
+    plugins: {
+      'visual-role': VISUAL_ROLE_GUARD_PLUGIN,
+    },
+    rules: {
+      'visual-role/no-private-identity-token': 'error',
+    },
+  },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
