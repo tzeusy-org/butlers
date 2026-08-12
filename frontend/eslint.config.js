@@ -416,46 +416,56 @@ const BLUE_PURPLE_STATUS_SELECTORS = [
 // ButlerMark; every other local taxonomy must use the dedicated categorical
 // ramp. This is intentionally repo-wide (the old file allowlists certified
 // unaudited consumers by path).
+const IDENTITY_TOKEN_SLOT_PATTERN = "(?:[1-9]|1[0-2])"
+const IDENTITY_VARIABLE_PATTERN = `--(?:color-)?category-${IDENTITY_TOKEN_SLOT_PATTERN}`
+const IDENTITY_VARIABLE_REFERENCE_PATTERN = `var\\(${IDENTITY_VARIABLE_PATTERN}\\)`
+const IDENTITY_TAILWIND_ALIAS_PATTERN =
+  `(?:^|[^a-z-])[a-z][a-z-]*-category-${IDENTITY_TOKEN_SLOT_PATTERN}\\b`
+// Tailwind v4's `utility-(--token)` shorthand applies to more color utilities
+// than a finite prefix list (including directional borders, offset rings, and
+// inset shadows). Any hyphenated utility carrying a private identity variable
+// is a boundary breach, so fail closed rather than maintain an incomplete list.
+const IDENTITY_TAILWIND_CSS_VARIABLE_PATTERN =
+  `\\b[a-z][a-z-]*-\\(${IDENTITY_VARIABLE_PATTERN}\\)`
+
 const VISUAL_ROLE_SELECTORS = [
   {
-    selector: 'Literal[value=/var\\(--category-\\d+\\)/]',
+    selector: `Literal[value=/${IDENTITY_VARIABLE_REFERENCE_PATTERN}/]`,
     message:
       'Butler identity tokens are private to ButlerMark (bu-6jv4m.15). Use ' +
-      'categoricalHueVar/categoricalColor for local categories, chartColor for chart series, ' +
-      'or stateColorVar/StateDot for operational state.',
+      'categoricalHueVar/categoricalColor for local categories, chartSeriesColor/chartColor for ' +
+      'chart series, or stateColorVar/StateDot for operational state.',
   },
   {
-    selector: 'TemplateElement[value.raw=/var\\(--category-\\d+\\)/]',
+    selector: `TemplateElement[value.raw=/${IDENTITY_VARIABLE_REFERENCE_PATTERN}/]`,
     message:
       'Butler identity tokens are private to ButlerMark (bu-6jv4m.15). Use a typed semantic ' +
       'role helper instead of embedding an identity token.',
   },
   {
-    selector: 'Literal[value=/var\\(--(?:category|color-category)-\\d+\\)/]',
-    message:
-      'Butler identity aliases are private to ButlerMark (bu-6jv4m.15). Do not use ' +
-      'var(--color-category-N) or another raw identity alias; use a typed semantic role helper.',
-  },
-  {
-    selector:
-      'TemplateElement[value.raw=/var\\(--(?:category|color-category)-\\d+\\)/]',
-    message:
-      'Butler identity aliases are private to ButlerMark (bu-6jv4m.15). Do not use ' +
-      'var(--color-category-N) or another raw identity alias; use a typed semantic role helper.',
-  },
-  {
-    selector:
-      'Literal[value=/\\b(?:bg|text|decoration|border|divide|outline|ring|shadow|inset|accent|caret|fill|stroke|from|via|to|placeholder|prose)-category-\\d+\\b/]',
+    selector: `Literal[value=/${IDENTITY_TAILWIND_ALIAS_PATTERN}/]`,
     message:
       'Butler identity Tailwind aliases are private to ButlerMark (bu-6jv4m.15). Use a typed ' +
       'semantic role helper instead of a category utility.',
   },
   {
-    selector:
-      'TemplateElement[value.raw=/\\b(?:bg|text|decoration|border|divide|outline|ring|shadow|inset|accent|caret|fill|stroke|from|via|to|placeholder|prose)-category-\\d+\\b/]',
+    selector: `TemplateElement[value.raw=/${IDENTITY_TAILWIND_ALIAS_PATTERN}/]`,
     message:
       'Butler identity Tailwind aliases are private to ButlerMark (bu-6jv4m.15). Use a typed ' +
       'semantic role helper instead of a category utility.',
+  },
+  {
+    selector: `Literal[value=/${IDENTITY_TAILWIND_CSS_VARIABLE_PATTERN}/]`,
+    message:
+      'Butler identity CSS-variable utilities are private to ButlerMark (bu-6jv4m.15). Do not ' +
+      'use utility-(--category-N) or utility-(--color-category-N); use a typed semantic role helper.',
+  },
+  {
+    selector:
+      `TemplateElement[value.raw=/${IDENTITY_TAILWIND_CSS_VARIABLE_PATTERN}/]`,
+    message:
+      'Butler identity CSS-variable utilities are private to ButlerMark (bu-6jv4m.15). Do not ' +
+      'use utility-(--category-N) or utility-(--color-category-N); use a typed semantic role helper.',
   },
   {
     selector:

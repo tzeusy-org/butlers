@@ -21,6 +21,10 @@ const SPEC_PATH = fileURLToPath(
   ),
 );
 const SPEC = readFileSync(SPEC_PATH, "utf8");
+const FRONTEND_TOPOLOGY_PATH = fileURLToPath(
+  new URL("../../../about/lay-and-land/frontend.md", import.meta.url),
+);
+const FRONTEND_TOPOLOGY = readFileSync(FRONTEND_TOPOLOGY_PATH, "utf8");
 
 const STATE_ROLES: readonly StateColorRole[] = [
   "healthy",
@@ -150,5 +154,22 @@ describe("semantic visual role registry", () => {
     expect(ownerCustomColor("bg-blue-500")).toBeUndefined();
     expect(ownerCustomColor(`var(--${"category-1"})`)).toBeUndefined();
     expect(CATEGORICAL_TOKEN_COUNT).toBe(12);
+  });
+
+  it("keeps frontend topology on private ButlerMark identity and typed role helpers", () => {
+    expect(FRONTEND_TOPOLOGY).toContain(
+      "`ButlerMark`'s public surface is intentionally small",
+    );
+    expect(FRONTEND_TOPOLOGY).toContain(
+      "The identity-slot resolver is private to ButlerMark",
+    );
+    expect(FRONTEND_TOPOLOGY).toContain(
+      "`categoricalHueVar` / `categoricalColor`",
+    );
+    expect(FRONTEND_TOPOLOGY).toContain(
+      "`chartSeriesColor` / `chartColor`",
+    );
+    expect(FRONTEND_TOPOLOGY).toContain("`StateDot` / `stateColorVar`");
+    expect(FRONTEND_TOPOLOGY).not.toMatch(/\b(?:butlerHueVar|categoryHueVar)\b/);
   });
 });
