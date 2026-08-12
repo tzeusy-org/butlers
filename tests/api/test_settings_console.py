@@ -1114,17 +1114,24 @@ async def test_settings_console_delta_loop_rejects_non_positive_interval():
 
 
 @pytest.mark.asyncio
-async def test_console_endpoint_db_none_marks_approval_and_models_unavailable():
+async def test_console_endpoint_db_none_reports_all_unavailable_subsystems():
     app = _make_app(db=None)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/settings/console")
     body = response.json()["data"]
     assert body["header_counts"]["open_approvals"] is None
     assert body["header_counts"]["models_total"] is None
-    assert {item["id"] for item in body["attention"]} >= {
+    # ``attention`` is intentionally capped at five items; subsystem failures
+    # must be asserted against the complete ordered collection so competing
+    # attention items cannot displace an otherwise truthful failure signal.
+    assert {item["id"] for item in body["attention_all"]} >= {
         "subsystem_error:approvals",
         "subsystem_error:models",
     }
+    assert body["attention"] == body["attention_all"][:5]
+    assert body["attention_truncated_count"] == max(
+        0, len(body["attention_all"]) - len(body["attention"])
+    )
 
 
 @pytest.mark.asyncio
