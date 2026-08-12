@@ -622,6 +622,34 @@ describe("SettingsPermissionsPage — webhook enabled state [bu-9q1dx.7]", () =>
   });
 });
 
+describe("SettingsPermissionsPage — webhook last-test date precision", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("preserves the calendar year at an owner-time cross-year boundary", async () => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(
+      webhooksFetch([], {
+        last_test_at: "2025-12-31T17:00:00Z",
+        last_test_ok: true,
+      }),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await act(async () => {
+      renderPage();
+    });
+
+    const cell = await screen.findByTestId(`webhook-last-test-${WEBHOOK_ID}`);
+    const time = cell.querySelector("time");
+    expect(time).not.toBeNull();
+    expect(time?.textContent).toContain("Jan 1, 2026");
+    expect(time?.getAttribute("datetime")).toBe("2025-12-31T17:00:00.000Z");
+  });
+});
+
 describe("SettingsPermissionsPage — webhooks load error [bu-ep4ks.5]", () => {
   afterEach(() => {
     cleanup();

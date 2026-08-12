@@ -2,6 +2,7 @@ import { Link } from "react-router";
 
 import type { QaCaseSummary } from "@/api/types";
 import { cn } from "@/lib/utils";
+import { useTimezone } from "@/components/ui/timezone-context";
 
 import { formatQaDetectedTime, qaSeverityClassName } from "./utils";
 
@@ -62,6 +63,7 @@ export function CaseList({
   hasMore = false,
   totalCount,
 }: CaseListProps) {
+  const ownerTimezone = useTimezone();
   return (
     <aside className={cn("w-full md:w-[320px]", className)} aria-label="QA cases">
       <div className="border-b border-border/60 pb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground tnum">
@@ -103,7 +105,7 @@ export function CaseList({
                     {qaCase.headline ?? "Untitled QA case"}
                   </span>
                   <span className="mt-1 block font-mono text-[9.5px] leading-none text-muted-foreground tnum">
-                    detected {formatQaDetectedTime(qaCase.detected)} · {formatAge(qaCase.age_seconds)}
+                    detected {formatQaDetectedTime(qaCase.detected, ownerTimezone)} · {formatAge(qaCase.age_seconds)}
                     {qaCase.state === "failed" ? (
                       <span
                         className="text-destructive"

@@ -78,6 +78,7 @@ export type TimePrecision =
   | "minute"
   | "hour"
   | "day"
+  | "day-short-year"
   | "weekday"
   | "time"
   | "short-date"
@@ -125,6 +126,7 @@ export interface TimeProps {
    *   - minute:     "May 3, 2026 at 4:42 PM SGT"  (default)
    *   - hour:       "May 3, 2026 at 4 PM SGT"
    *   - day:        "May 3, 2026 SGT"
+   *   - day-short-year: "May 3, 26" (two-digit year, no timezone label)
    *   - weekday:    "Sunday, May 3, 2026"  (compact: "Sunday, May 3"; no tz label)
    *   - time:       "08:30"  (24-hour clock, time-only; compact has no effect; no tz label)
    *   - short-date: "Sun 3 May 2026"  (3-letter weekday + day + 3-letter month + year;
@@ -154,6 +156,8 @@ export interface TimeProps {
    * Defaults to the owner timezone from AppTimezoneContext.
    */
   timezone?: string
+  /** Optional source-preserving datetime value for provenance contracts. */
+  dateTime?: string
   /**
    * When true, a full ISO 8601 timestamp is rendered in the native browser
    * tooltip via the HTML title attribute.
@@ -181,6 +185,7 @@ const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   minute:     "MMM d, yyyy 'at' h:mm a zzz",
   hour:       "MMM d, yyyy 'at' h a zzz",
   day:        "MMM d, yyyy zzz",
+  "day-short-year": "MMM d, yy",
   weekday:    "EEEE, MMMM d, yyyy",
   time:       "HH:mm",
   "short-date": "EEE d MMM yyyy",
@@ -194,6 +199,7 @@ const COMPACT_FORMAT: Record<TimePrecision, string> = {
   minute:     "MMM d, h:mm a",
   hour:       "MMM d, h a",
   day:        "MMM d",
+  "day-short-year": "MMM d, yy",
   weekday:    "EEEE, MMMM d",
   time:       "HH:mm",      // compact has no effect, same format
   "short-date": "EEE d MMM", // compact omits year: "Sun 3 May"
@@ -231,6 +237,21 @@ function formatAbsolute(date: Date, precision: TimePrecision, tz: string, compac
   } catch {
     return date.toISOString()
   }
+}
+
+/**
+ * Format a timestamp for non-React model text using the same owner-time
+ * formatter as <Time>. Callers must provide the resolved owner timezone.
+ */
+export function formatOwnerDateTime(
+  value: string | Date,
+  timezone: string,
+  precision: TimePrecision = "minute",
+  compact = true,
+): string {
+  const date = toDate(value)
+  if (Number.isNaN(date.getTime())) return "unknown"
+  return formatAbsolute(date, precision, timezone, compact)
 }
 
 function formatRelative(date: Date): string {
@@ -376,6 +397,7 @@ export function Time({
   precision = "minute",
   compact = false,
   timezone,
+  dateTime,
   showTitle = true,
   className,
 }: TimeProps) {
@@ -432,6 +454,7 @@ export function Time({
   }
 
   const isoString = date.toISOString()
+  const semanticDateTime = dateTime ?? isoString
 
   // a11y (bu-w40wg): the `title={iso}` is a mouse-hover-only affordance — a
   // non-interactive <time> is not keyboard-reachable, so screen-reader users
@@ -458,8 +481,8 @@ export function Time({
     const clockClass = ["font-mono tabular-nums", className].filter(Boolean).join(" ")
     return (
       <time
-        dateTime={isoString}
-        title={showTitle ? isoString : undefined}
+        dateTime={semanticDateTime}
+        title={showTitle ? semanticDateTime : undefined}
         aria-label={absoluteAria}
         className={clockClass}
       >
@@ -487,8 +510,8 @@ export function Time({
 
   return (
     <time
-      dateTime={isoString}
-      title={showTitle ? isoString : undefined}
+      dateTime={semanticDateTime}
+      title={showTitle ? semanticDateTime : undefined}
       aria-label={absoluteAria}
       className={className}
     >

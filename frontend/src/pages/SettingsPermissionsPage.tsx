@@ -54,6 +54,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { Time } from "@/components/ui/time";
 import { apiFetch, resolveApiHref } from "@/api/client";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -445,7 +446,7 @@ function AuditReelSection() {
               className="flex items-baseline gap-3 border-r border-b border-border/60 px-4 py-2 text-sm"
             >
               <span className="font-mono text-xs tabular-nums text-muted-foreground whitespace-nowrap">
-                {new Date(entry.ts).toLocaleTimeString()}
+                <Time value={entry.ts} mode="absolute" precision="time-seconds" />
               </span>
               <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">
                 {entry.actor}
@@ -1167,7 +1168,7 @@ function WebhooksSection() {
                           />
                         )}
                         <span className="font-mono tabular-nums text-muted-foreground">
-                          {new Date(wh.last_test_at).toLocaleString()}
+                          <Time value={wh.last_test_at} mode="absolute" precision="minute" />
                         </span>
                       </span>
                     ) : (

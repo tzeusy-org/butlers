@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useInsightDeliveryState } from "@/hooks/use-system"
+import { Time } from "@/components/ui/time"
+import type { ReactNode } from "react"
 
 // ---------------------------------------------------------------------------
 // Loading / error sub-components
@@ -65,7 +67,7 @@ function TileError() {
 
 interface StatRowProps {
   label: string;
-  value: number | string;
+  value: number | string | ReactNode;
   testId: string;
   muted?: boolean;
 }
@@ -105,9 +107,9 @@ export function InsightDeliveryTile() {
 
   const state = response?.data
 
-  const lastDeliveryLabel = state?.last_delivery_at
-    ? new Date(state.last_delivery_at).toLocaleString()
-    : "No deliveries yet"
+  const lastDeliveryLabel = state?.last_delivery_at ? (
+    <Time value={state.last_delivery_at} mode="absolute" precision="minute" />
+  ) : "No deliveries yet"
 
   return (
     <Card>

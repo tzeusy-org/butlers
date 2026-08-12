@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import * as React from "react";
+import { Time } from "@/components/ui/time";
 
 import type {
   UserCredential,
@@ -968,7 +969,7 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
             <Mono size={9} color="var(--dim)">last ingest</Mono>
             <Mono size={9}>
               {status.last_ingest_at && !Number.isNaN(new Date(status.last_ingest_at).getTime())
-                ? new Date(status.last_ingest_at).toLocaleDateString()
+                ? <Time value={status.last_ingest_at} mode="absolute" precision="day" />
                 : "—"}
             </Mono>
           </div>
@@ -985,7 +986,7 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
             <Mono size={9} data-testid="health-token-expiry">
               {status.token_expiry_estimate_at &&
               !Number.isNaN(new Date(status.token_expiry_estimate_at).getTime())
-                ? new Date(status.token_expiry_estimate_at).toLocaleDateString()
+                ? <Time value={status.token_expiry_estimate_at} mode="absolute" precision="day" />
                 : "—"}
             </Mono>
           </div>

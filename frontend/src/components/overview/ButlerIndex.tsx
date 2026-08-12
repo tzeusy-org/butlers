@@ -1,5 +1,8 @@
+import type { ReactNode } from "react";
+
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { RowLink } from "@/components/ui/RowLink";
+import { Time } from "@/components/ui/time";
 import { formatCostUsd } from "@/lib/format-cost";
 import { Section } from "./Section";
 import type { OverviewButlerIndexRow } from "./model";
@@ -145,25 +148,18 @@ function runtimeLabel(butler: OverviewButlerIndexRow): string {
   return butler.runtimeState;
 }
 
-function lastActivityLabel(butler: OverviewButlerIndexRow): string {
+function lastActivityLabel(butler: OverviewButlerIndexRow): ReactNode {
   if (butler.lastSessionAt) {
-    return `last ${formatDateTime(butler.lastSessionAt)}`;
+    return (
+      <>
+        last <Time value={butler.lastSessionAt} mode="absolute" precision="minute" compact />
+      </>
+    );
   }
   if (butler.heartbeatAgeSeconds != null) {
     return `heartbeat ${formatDuration(butler.heartbeatAgeSeconds)}`;
   }
   return "no session";
-}
-
-function formatDateTime(iso: string): string {
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return "unknown";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(parsed);
 }
 
 // eslint-disable-next-line no-restricted-syntax -- relative "X ago" suffix (bu-sd0l7.3), a different contract than lib/format-duration.ts's plain-span shapes.

@@ -33,19 +33,18 @@ import { DirectionPassport } from "@/components/secrets/passport";
 import { useSecretsInventory } from "@/hooks/use-secrets-inventory.ts";
 import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { formatOwnerDateTime } from "@/components/ui/time";
+import { useTimezone } from "@/components/ui/timezone-context";
 
 /** "HH:MM" in the viewer's local time, for the "showing data from HH:MM" banner copy. */
-function formatUpdatedAt(updatedAt: number): string {
+function formatUpdatedAt(updatedAt: number, timezone: string): string {
   if (!updatedAt) return "an earlier load";
-  return new Date(updatedAt).toLocaleTimeString("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  return formatOwnerDateTime(new Date(updatedAt), timezone, "time");
 }
 
 export default function SecretsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const ownerTimezone = useTimezone();
 
   // Derive stable primitives to keep the effect dep array honest.
   const toastParam = searchParams.get("toast");
@@ -149,7 +148,7 @@ export default function SecretsPage() {
         <div className="px-9 pt-3" data-testid="secrets-inventory-degraded">
           <SourceDegradedNote
             label="Inventory"
-            detail={`unreachable, showing data from ${formatUpdatedAt(dataUpdatedAt)} · retrying`}
+            detail={`unreachable, showing data from ${formatUpdatedAt(dataUpdatedAt, ownerTimezone)} · retrying`}
             onRetry={() => refetch()}
           />
         </div>

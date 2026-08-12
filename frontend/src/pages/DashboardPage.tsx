@@ -96,9 +96,11 @@ import { OperationsNowList } from "@/components/overview/OperationsNowList";
 import { RuntimeSummaryKpi } from "@/components/overview/RuntimeSummaryKpi";
 import { Section } from "@/components/overview/Section";
 import { deriveOverviewTriageModel } from "@/components/overview/model";
+import { useTimezone } from "@/components/ui/timezone-context";
 
 export default function DashboardPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const ownerTimezone = useTimezone();
   const includeInternal = searchParams.get("internal") === "1";
 
   // Briefing
@@ -244,7 +246,7 @@ export default function DashboardPage() {
           stuckDelegations: stuckDelegations.isError ? null : stuckDelegations.rows,
           stuckDelegationsError: stuckDelegations.isError,
         },
-        { now: new Date(overviewNowMs), includeInternal },
+        { now: new Date(overviewNowMs), ownerTimezone, includeInternal },
       ),
     [
       approvals,
@@ -265,6 +267,7 @@ export default function DashboardPage() {
       notificationSince,
       notificationUntil,
       overviewNowMs,
+      ownerTimezone,
       pendingApprovalsQuery.isError,
       pendingApprovalMetricSources,
       qaSummary,

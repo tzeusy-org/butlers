@@ -14,21 +14,15 @@ import type { ApprovalGatedTool, ApprovalRule } from "@/api/index.ts";
 import { approvalKeys, useRevokeRule } from "@/hooks/use-approvals.ts";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { CreateRuleDialog } from "@/components/approvals/create-rule-dialog.tsx";
+import { Time } from "@/components/ui/time";
 
 // Live use counts: reconcile periodically so grants created or revoked
 // elsewhere appear without requiring a page reload.
 const GATED_TOOLS_REFETCH_MS = 20_000;
 
-function fmtTs(iso: string | null | undefined): string {
+function fmtTs(iso: string | null | undefined) {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
+  return <Time value={iso} mode="absolute" precision="day" compact />;
 }
 
 function isWildcardConstraints(constraints: Record<string, unknown>): boolean {

@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button";
 import { useDismissQaIssue, useRemoveDismissal, useRetryHealingAttempt } from "@/hooks/use-qa";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { useTimezone } from "@/components/ui/timezone-context";
+import { formatInTimeZone } from "date-fns-tz";
 
 import { StateTrack, type QaStateTrackStage } from "./StateTrack";
 import { formatQaDetectedTime, qaSeverityClassName } from "./utils";
@@ -22,26 +24,13 @@ interface CaseDossierHeaderProps {
   className?: string;
 }
 
-function formatDismissalExpiry(expiresAt: string): string {
-  const expires = new Date(expiresAt);
-  if (Number.isNaN(expires.getTime())) return expiresAt;
-
-  const now = new Date();
-  const isToday =
-    expires.getFullYear() === now.getFullYear() &&
-    expires.getMonth() === now.getMonth() &&
-    expires.getDate() === now.getDate();
-
-  if (!isToday) {
-    return expires.toLocaleString([], {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }
-
-  return expires.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function formatDismissalExpiry(expiresAt: string, timezone: string): string {
+  const date = new Date(expiresAt);
+  if (Number.isNaN(date.getTime())) return expiresAt;
+  const today = formatInTimeZone(new Date(), timezone, "yyyy-MM-dd");
+  const day = formatInTimeZone(date, timezone, "yyyy-MM-dd");
+  const time = formatInTimeZone(date, timezone, "h:mm a").toLowerCase();
+  return day === today ? time : `${day} ${time}`;
 }
 
 export function CaseDossierHeader({
@@ -54,6 +43,7 @@ export function CaseDossierHeader({
   const removeDismissal = useRemoveDismissal();
   const dismissIssue = useDismissQaIssue();
   const retryAttempt = useRetryHealingAttempt();
+  const ownerTimezone = useTimezone();
 
   const isTerminal = TERMINAL_STAGES.includes(stage);
   const canDismiss = fingerprint !== null && dismissal === null && !isTerminal;
@@ -67,7 +57,7 @@ export function CaseDossierHeader({
           aria-label={`${qaCase.sev} severity`}
         />
         <p className="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum">
-          {qaCase.short_id} · {qaCase.butler} · detected {formatQaDetectedTime(qaCase.detected)}
+          {qaCase.short_id} · {qaCase.butler} · detected {formatQaDetectedTime(qaCase.detected, ownerTimezone)}
         </p>
         <div className="ml-auto flex items-center gap-2">
           <StateTrack stage={stage} />
@@ -138,7 +128,7 @@ export function CaseDossierHeader({
       </div>
       {dismissal ? (
         <p className="font-mono text-[10px] uppercase tracking-[0.10em] text-muted-foreground tnum">
-          dismissed until {formatDismissalExpiry(dismissal.expires_at)}
+              dismissed until {formatDismissalExpiry(dismissal.expires_at, ownerTimezone)}
         </p>
       ) : null}
       <h2 className="font-sans text-[22px] font-medium leading-[1.2] tracking-normal text-foreground">

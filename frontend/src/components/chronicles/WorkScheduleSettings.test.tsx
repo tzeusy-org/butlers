@@ -176,6 +176,26 @@ describe("WorkScheduleSettings — rows", () => {
     expect(html).toContain("routine-staleness-m-stale");
   });
 
+  it("renders last confirmed in the owner timezone", () => {
+    mockRoutines({
+      data: {
+        data: [
+          makeRoutine({
+            id: "m-boundary",
+            origin: "mined",
+            last_confirmed_at: "2026-05-01T17:00:00Z",
+          }),
+        ],
+        meta: {},
+      },
+    });
+
+    const html = render();
+
+    expect(html).toContain("May 2");
+    expect(html).toContain('dateTime="2026-05-01T17:00:00.000Z"');
+  });
+
   it("surfaces a toggle/update failure outside edit mode instead of failing silently", () => {
     mockRoutines({ data: { data: [makeRoutine({ id: "d3", origin: "declared" })], meta: {} } });
     vi.mocked(useUpdateChroniclesRoutine).mockReturnValue({

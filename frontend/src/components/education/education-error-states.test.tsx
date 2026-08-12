@@ -71,6 +71,33 @@ describe("QuizHistoryList error state", () => {
 
     expect(screen.getByText(/no quiz responses recorded/i)).toBeTruthy();
   });
+
+  it("preserves the year for cross-year response dates", () => {
+    mockUseQuizResponses.mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "response-cross-year",
+            node_id: "node-1",
+            mind_map_id: "mm-1",
+            question_text: "What is owner time?",
+            user_answer: "The configured timezone.",
+            quality: 4,
+            response_type: "review",
+            session_id: null,
+            responded_at: "2025-12-31T17:00:00Z",
+            evaluator_notes: null,
+            node_label: "Owner time",
+          },
+        ],
+      },
+      isError: false,
+    } as unknown as ReturnType<typeof useQuizResponses>);
+
+    render(<QuizHistoryList mindMapId="mm-1" />);
+
+    expect(screen.getByText(/Jan 1, 2026/)).toBeTruthy();
+  });
 });
 
 describe("MasterySummaryCards error state", () => {

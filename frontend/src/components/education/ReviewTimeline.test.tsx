@@ -263,6 +263,30 @@ describe("ReviewTimeline — actionable review controls", () => {
       nodeId: "node-closures",
     });
   });
+
+  it("preserves the year for cross-year due dates", () => {
+    const maps = [makeMap("map-a", "Alpha")];
+    mockUseMindMaps.mockReturnValue({
+      data: { data: maps },
+    } as unknown as ReturnType<typeof useMindMaps>);
+    mockUseAllPendingReviews.mockImplementation((mapIds: string[]) =>
+      mapIds.map(
+        () =>
+          ({
+            data: [
+              makeReview("node-cross-year", "Cross-year review", {
+                next_review_at: "2026-01-01T00:00:00Z",
+              }),
+            ],
+            isLoading: false,
+          }) as unknown as ReviewResult,
+      ),
+    );
+
+    renderTimeline();
+
+    expect(screen.getByText(/Jan 1, 2026/)).toBeTruthy();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,8 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Time, formatOwnerDateTime } from "@/components/ui/time";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { KpiCell, ErrorLine } from "./atoms";
 import { useContacts, useContact, useContactInteractions, useOverdueContacts } from "@/hooks/use-contacts";
 import { useDunbarRanking } from "@/hooks/use-memory";
@@ -83,7 +85,7 @@ function LoadingRows({ count = 4 }: { count?: number }) {
 }
 
 /** Format a date string as short relative text ("3d ago" or ISO date). */
-function relativeDate(isoStr: string | null | undefined): string {
+function relativeDate(isoStr: string | null | undefined, timezone: string): string {
   if (!isoStr) return "—";
   const d = new Date(isoStr);
   if (isNaN(d.getTime())) return "—";
@@ -93,7 +95,7 @@ function relativeDate(isoStr: string | null | undefined): string {
   if (diffDays === 0) return "today";
   if (diffDays === 1) return "1d ago";
   if (diffDays < 365) return `${diffDays}d ago`;
-  return d.toLocaleDateString();
+  return formatOwnerDateTime(isoStr, timezone, "day", false);
 }
 
 /** Clamp a number to [0, 1] and format as a percentage bar width. */
@@ -332,6 +334,7 @@ interface WatchlistPanelProps {
 }
 
 function WatchlistPanel({ ranking, isLoading, isError, selectedContactId, onSelectContact }: WatchlistPanelProps) {
+  const timezone = useTimezone();
   if (isLoading && !ranking) {
     return (
       <div className="space-y-2" data-testid="watchlist-loading">
@@ -407,7 +410,7 @@ function WatchlistPanel({ ranking, isLoading, isError, selectedContactId, onSele
                   className="py-2 pr-4 text-xs text-muted-foreground tnum"
                   data-testid="watchlist-last-contact"
                 >
-                  {relativeDate(entry.last_interaction_at)}
+                  {relativeDate(entry.last_interaction_at, timezone)}
                 </td>
                 <td className="py-2 text-right tnum font-mono text-xs">
                   {fmtWarmth(entry.warmth)}
@@ -471,7 +474,7 @@ function ThreadPanel({ contactId, contactName, isLoading, isError, interactions 
             </span>
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground tnum">
-                {new Date(ix.ts).toLocaleDateString()}
+                <Time value={ix.ts} mode="absolute" precision="day" className="tnum" />
               </p>
               <p className="truncate text-sm leading-snug">{ix.text}</p>
             </div>
@@ -492,6 +495,7 @@ interface KnownFactsPanelProps {
 }
 
 function KnownFactsPanel({ contact, contactName }: KnownFactsPanelProps) {
+  const timezone = useTimezone();
   if (!contactName) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="facts-empty-prompt">
@@ -507,7 +511,7 @@ function KnownFactsPanel({ contact, contactName }: KnownFactsPanelProps) {
     facts.push(`Labels: ${contact.labels.map((l) => l.name).join(", ")}`);
   }
   if (contact?.last_interaction_at) {
-    facts.push(`Last seen: ${relativeDate(contact.last_interaction_at)}`);
+    facts.push(`Last seen: ${relativeDate(contact.last_interaction_at, timezone)}`);
   }
 
   if (facts.length === 0) {

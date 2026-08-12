@@ -1,4 +1,5 @@
 import type { QaCaseSummary } from "@/api/types";
+import { formatInTimeZone } from "date-fns-tz";
 
 export const qaSeverityClassName: Record<QaCaseSummary["sev"], string> = {
   high: "bg-destructive",
@@ -19,24 +20,11 @@ export const qaSeverityClassName: Record<QaCaseSummary["sev"], string> = {
  * mono/uppercase typographic palette. Timestamps render in the viewer's
  * local timezone -- matching the page-level `Time` component.
  */
-export function formatQaDetectedTime(ts: string): string {
+export function formatQaDetectedTime(ts: string, timezone = "Asia/Singapore"): string {
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return ts;
-
-  const now = new Date();
-  const isToday =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-
-  const time = date
-    .toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })
-    .toLowerCase();
-
-  if (isToday) return time;
-
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day} ${time}`;
+  const day = formatInTimeZone(date, timezone, "yyyy-MM-dd");
+  const today = formatInTimeZone(new Date(), timezone, "yyyy-MM-dd");
+  const time = formatInTimeZone(date, timezone, "h:mm a").toLowerCase();
+  return day === today ? time : `${day} ${time}`;
 }

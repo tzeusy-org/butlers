@@ -539,10 +539,9 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
         class="grid grid-cols-[64px_96px_minmax(0,1fr)] gap-3 px-1 py-2"
       >
         <time
-          class="text-muted-foreground"
           datetime="2026-05-15T00:10:00Z"
         >
-          12:10 AM
+          2026-05-15T00:10:00Z
         </time>
         <span
           class="uppercase tracking-[0.12em] text-[var(--amber-text)]"
@@ -569,10 +568,9 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
         class="grid grid-cols-[64px_96px_minmax(0,1fr)] gap-3 px-1 py-2"
       >
         <time
-          class="text-muted-foreground"
           datetime="2026-05-15T00:16:00Z"
         >
-          12:16 AM
+          2026-05-15T00:16:00Z
         </time>
         <span
           class="uppercase tracking-[0.12em] text-[var(--green)]"

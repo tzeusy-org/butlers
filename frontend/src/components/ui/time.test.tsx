@@ -156,6 +156,16 @@ describe("precision variants (mode=absolute, timezone=Asia/Singapore)", () => {
     // Must not contain a colon (no time component)
     expect(text).not.toContain(":")
   })
+
+  it("precision=day-short-year preserves a two-digit year at an owner-time boundary", () => {
+    const { text } = parseTime(
+      render(
+        { value: "2025-12-31T17:00:00Z", mode: "absolute", precision: "day-short-year" },
+        SGT,
+      ),
+    )
+    expect(text).toBe("Jan 1, 26")
+  })
 })
 
 // ---------------------------------------------------------------------------

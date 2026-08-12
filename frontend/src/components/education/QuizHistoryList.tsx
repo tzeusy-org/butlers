@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Time } from "@/components/ui/time";
 import { useQuizResponses } from "@/hooks/use-education";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
@@ -147,7 +148,7 @@ export default function QuizHistoryList({
                 <Badge className={q.className}>{q.label}</Badge>
                 {!compact && (
                   <span className="text-xs text-muted-foreground">
-                    {new Date(r.responded_at).toLocaleDateString()}
+                    <Time value={r.responded_at} mode="absolute" precision="day" />
                   </span>
                 )}
               </div>

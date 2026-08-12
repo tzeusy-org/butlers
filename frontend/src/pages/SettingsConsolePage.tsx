@@ -23,7 +23,7 @@
  * bu-ju4kh — Phase 5: /settings Console
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
@@ -33,6 +33,7 @@ import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { InlineActionLink } from "@/components/ui/inline-action-link";
 import { cn } from "@/lib/utils";
+import { Time } from "@/components/ui/time";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import {
   useSettingsConsoleLive,
@@ -200,43 +201,13 @@ function AttentionStrip({
 // ---------------------------------------------------------------------------
 
 function ConsoleClock() {
-  const [time, setTime] = useState(() => {
-    const now = new Date();
-    return now.toLocaleTimeString("en-GB", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-  });
-
-  useEffect(() => {
-    function tick() {
-      const now = new Date();
-      setTime(
-        now.toLocaleTimeString("en-GB", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-        }),
-      );
-    }
-    // Align to the next minute boundary
-    const msUntilNextMinute = (60 - new Date().getSeconds()) * 1000;
-    const timeout = setTimeout(() => {
-      tick();
-      const interval = setInterval(tick, 60_000);
-      return () => clearInterval(interval);
-    }, msUntilNextMinute);
-    return () => clearTimeout(timeout);
-  }, []);
-
   return (
-    <span
-      className="font-mono text-sm tabular-nums text-muted-foreground"
-      aria-label="Current time"
-    >
-      {time}
-    </span>
+    <Time
+      value={new Date()}
+      mode="clock-24h-mono"
+      showTitle={false}
+      className="text-sm text-muted-foreground"
+    />
   );
 }
 

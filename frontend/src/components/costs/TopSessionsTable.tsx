@@ -11,6 +11,7 @@ import {
   TableRow,
 } from '../ui/table'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
+import { Time } from '@/components/ui/time'
 import { formatCostUsd } from '@/lib/format-cost'
 
 import type { TopSession } from '../../api/types'
@@ -26,17 +27,6 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return String(n)
-}
-
-function formatTime(iso: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return d.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 export default function TopSessionsTable({ sessions, isLoading, isUnavailable }: TopSessionsTableProps) {
@@ -121,7 +111,7 @@ export default function TopSessionsTable({ sessions, isLoading, isUnavailable }:
                 </TableCell>
                 <TableCell className="text-right text-xs text-muted-foreground">
                   <Link to={`/sessions/${session.session_id}`} className="hover:underline">
-                    {formatTime(session.started_at)}
+                    <Time value={session.started_at} mode="absolute" precision="minute" compact />
                   </Link>
                 </TableCell>
               </TableRow>

@@ -25,23 +25,15 @@ import { getAttentionLedgerSummary } from "@/api/index.ts";
 import type { AttentionSourceSummary } from "@/api/index.ts";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
 import { cn } from "@/lib/utils";
+import { Time } from "@/components/ui/time";
 
 const Q = {
   summary: () => ["attention-ledger", "summary"] as const,
 };
 
-function fmtTs(iso: string | null): string {
+function fmtTs(iso: string | null) {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+  return <Time value={iso} mode="absolute" precision="minute" compact />;
 }
 
 // ---------------------------------------------------------------------------

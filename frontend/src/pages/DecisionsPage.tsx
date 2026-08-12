@@ -29,6 +29,7 @@ import { useListTriage } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { DecisionsVerdictOpener } from "@/components/decisions/decisions-verdict-opener.tsx";
+import { Time } from "@/components/ui/time";
 import type { DecisionBeadSummary } from "@/api/index.ts";
 
 /**
@@ -166,13 +167,13 @@ function DecisionRow({
         >
           <div>
             <span className="font-mono uppercase tracking-wide">Created: </span>
-            {new Date(decision.created_at).toLocaleString()}
+            <Time value={decision.created_at} mode="absolute" precision="minute" />
           </div>
           {decision.description && <p>{decision.description}</p>}
           {decision.due_at && (
             <div data-testid="decision-due-at">
               <span className="font-mono uppercase tracking-wide">Due: </span>
-              <time dateTime={decision.due_at}>{new Date(decision.due_at).toLocaleString()}</time>
+              <Time value={decision.due_at} mode="absolute" precision="minute" />
             </div>
           )}
           {decision.options && (

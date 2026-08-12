@@ -1,5 +1,6 @@
 import type { QaJournalEvent } from "@/api/types";
 import { cn } from "@/lib/utils";
+import { Time } from "@/components/ui/time";
 
 interface PatrolJournalProps {
   events: QaJournalEvent[];
@@ -20,12 +21,6 @@ const stepClassName: Record<string, string> = {
   tick: "text-muted-foreground",
   wait: "text-muted-foreground",
 };
-
-function formatJournalTime(ts: string): string {
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return ts;
-  return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
-}
 
 export function PatrolJournal({
   events,
@@ -58,9 +53,7 @@ export function PatrolJournal({
             key={event.id}
             className="grid grid-cols-[64px_96px_minmax(0,1fr)] gap-3 px-1 py-2"
           >
-            <time className="text-muted-foreground" dateTime={event.ts}>
-              {formatJournalTime(event.ts)}
-            </time>
+            <Time value={event.ts} mode="absolute" precision="time" className="text-muted-foreground" />
             <span
               className={cn(
                 "uppercase tracking-[0.12em]",

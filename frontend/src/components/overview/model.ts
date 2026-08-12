@@ -14,6 +14,7 @@ import {
   isMaintenanceEvent,
   isSuccessfulMaintenanceEvent,
 } from "@/lib/timeline-machine-class";
+import { formatOwnerDateTime } from "@/components/ui/time";
 
 export type OverviewSeverity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -28,6 +29,7 @@ export type OverviewAttentionKind =
 
 export interface OverviewDerivationOptions {
   now?: Date;
+  ownerTimezone?: string;
   recentIssueHours?: number;
   includeOldIssueRows?: boolean;
   maxRecentIssueRows?: number;
@@ -260,7 +262,10 @@ export function deriveOverviewTriageModel(
     input.notificationStats,
   );
   const qaRows = qaAttentionRows(input.qaSummary, now);
-  const fleetHaltRows = fleetHaltAttentionRows(input.fleetHalt);
+  const fleetHaltRows = fleetHaltAttentionRows(
+    input.fleetHalt,
+    options.ownerTimezone ?? "Asia/Singapore",
+  );
   const delegationRows = delegationAttentionRows(
     input.stuckDelegations,
     input.stuckDelegationsError ?? false,
@@ -712,6 +717,7 @@ function notificationSourceErrorRows(
  */
 function fleetHaltAttentionRows(
   status: OverviewFleetHaltStatus | null | undefined,
+  ownerTimezone: string,
 ): OverviewAttentionRow[] {
   if (!status) return [];
 
@@ -739,7 +745,7 @@ function fleetHaltAttentionRows(
       severity: "critical",
       title: "Monthly ceiling reached -- dispatches denied",
       detail: `${status.deniedToday} denied today, ${status.deniedTotal} since ${
-        status.since ? formatSinceTimestamp(status.since) : "unknown"
+        status.since ? formatSinceTimestamp(status.since, ownerTimezone) : "unknown"
       }.`,
       href: "/spend",
       count: status.deniedToday,
@@ -793,15 +799,8 @@ function delegationAttentionRows(
 }
 
 /** Short human date+time for the fleet-halt row's "since <ts>" clause. */
-function formatSinceTimestamp(iso: string): string {
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return "unknown";
-  return parsed.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function formatSinceTimestamp(iso: string, timezone: string): string {
+  return formatOwnerDateTime(iso, timezone, "minute", true);
 }
 
 /**

@@ -79,6 +79,7 @@ import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-pa
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { TONE_COLORS } from "@/components/ui/StateDot";
+import { Time } from "@/components/ui/time";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -153,18 +154,9 @@ function invalidateRetryApprovalReads(qc: ReturnType<typeof useQueryClient>, act
 // Helpers
 // ---------------------------------------------------------------------------
 
-function fmtTs(iso: string | null | undefined): string {
+function fmtTs(iso: string | null | undefined, preserveDateTime = false) {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+  return <Time value={iso} mode="absolute" precision="minute" compact dateTime={preserveDateTime ? iso : undefined} />;
 }
 
 // "approved" ALWAYS means approved-but-not-yet-dispatched here (the backend
@@ -809,7 +801,7 @@ function Dossier({
                     Decided at
                   </dt>
                   <dd className="mt-0.5 text-sm text-foreground">
-                    <time dateTime={detail.decided_at}>{fmtTs(detail.decided_at)}</time>
+                    {fmtTs(detail.decided_at, true)}
                   </dd>
                 </div>
               )}

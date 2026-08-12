@@ -74,6 +74,7 @@ import { CostStripeChart } from "@/components/costs/CostStripeChart"
 import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener"
 import { formatCostUsd } from "@/lib/format-cost"
 import { cn } from "@/lib/utils"
+import { Time } from "@/components/ui/time"
 import { announce } from "@/lib/shell-announcer"
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry"
 import { computeMovers, type Mover } from "@/lib/spend-movers"
@@ -944,12 +945,7 @@ function TopSessionsSection({
                         </TableCell>
                         <TableCell className="py-2 px-2 text-right text-xs text-muted-foreground">
                           <Link to={`/sessions/${s.session_id}`} className="hover:underline">
-                            {new Date(s.started_at).toLocaleString("en-US", {
-                              month: "short",
-                              day: "numeric",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
+                            <Time value={s.started_at} mode="absolute" precision="minute" compact />
                           </Link>
                         </TableCell>
                       </TableRow>
@@ -1721,17 +1717,6 @@ function SpendRulesSection() {
 // each denied attempt.
 // ---------------------------------------------------------------------------
 
-function formatAttemptTimestamp(iso: string): string {
-  const parsed = new Date(iso)
-  if (Number.isNaN(parsed.getTime())) return "unknown"
-  return parsed.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
-}
-
 function FleetHaltBanner() {
   // Door target for the attention-ledger owner push (bu-7o89u.4): a
   // ?openDrawer=fleet-halt link lands here with the attempts drawer already
@@ -1771,7 +1756,7 @@ function FleetHaltBanner() {
           <span className="tabular-nums font-medium">{halt.deniedTotal}</span>{" "}
           {halt.deniedTotal === 1 ? "dispatch" : "dispatches"} denied since{" "}
           <span className="tabular-nums font-medium">
-            {halt.since ? formatAttemptTimestamp(halt.since) : "unknown"}
+            {halt.since ? <Time value={halt.since} mode="absolute" precision="minute" compact /> : "unknown"}
           </span>
           {" · "}
           <span className="tabular-nums font-medium">{halt.deniedToday}</span> denied today.
@@ -1812,7 +1797,7 @@ function FleetHaltBanner() {
                     >
                       <TableCell className="py-2 px-2">{a.butler}</TableCell>
                       <TableCell className="py-2 px-2 text-xs text-muted-foreground">
-                        {formatAttemptTimestamp(a.ts)}
+                        <Time value={a.ts} mode="absolute" precision="minute" compact />
                       </TableCell>
                       <TableCell className="py-2 px-2 text-xs text-muted-foreground">
                         {a.failure_reason ?? "—"}

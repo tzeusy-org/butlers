@@ -26,18 +26,11 @@
 import { useState } from 'react'
 
 import type { ContactSummary, PriorityContactEntry } from '@/api/types'
+import { Time } from '@/components/ui/time'
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
-  } catch {
-    return iso.slice(0, 10)
-  }
-}
 
 /** Human-readable channel handle line for a priority contact. */
 function handleFromEntry(entry: PriorityContactEntry): string {
@@ -228,7 +221,7 @@ export function PrioritySendersBlock({
 
                 {/* Added */}
                 <span className="font-mono text-[10px] text-muted-foreground">
-                  {formatDate(entry.added_at)}
+                  <Time value={entry.added_at} mode="absolute" precision="day-short-year" />
                 </span>
 
                 {/* Remove */}

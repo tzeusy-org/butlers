@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { Time } from "@/components/ui/time";
 import {
   useChroniclesRoutines,
   useCreateChroniclesRoutine,
@@ -56,14 +57,6 @@ function draftFromRoutine(r: ChroniclerRoutine): ScheduleDraft {
     windowEnd: formatWindowTime(r.window_end_local),
     label: r.label,
   };
-}
-
-function formatConfirmationTimestamp(value: string | null): string {
-  if (!value) return "not yet observed";
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
 }
 
 // ── Day-of-week toggle row ─────────────────────────────────────────────────
@@ -296,9 +289,7 @@ function RoutineRow({ routine }: { routine: ChroniclerRoutine }) {
             >
               Last confirmed:{" "}
               {routine.last_confirmed_at ? (
-                <time dateTime={routine.last_confirmed_at}>
-                  {formatConfirmationTimestamp(routine.last_confirmed_at)}
-                </time>
+                <Time value={routine.last_confirmed_at} mode="absolute" precision="minute" />
               ) : (
                 "not yet observed"
               )}

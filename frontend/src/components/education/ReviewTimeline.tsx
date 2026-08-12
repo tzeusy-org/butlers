@@ -6,6 +6,7 @@ import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { useListTriage } from "@/hooks/use-list-triage";
 import { useAllPendingReviews, useMindMaps } from "@/hooks/use-education";
 import { useTimezone } from "@/components/ui/timezone-context";
+import { Time } from "@/components/ui/time";
 import { classifyReviewBucket, type ReviewBucket } from "@/lib/review-buckets";
 import type { PendingReviewNode } from "@/api/index.ts";
 import type { EducationNodeSelection } from "./types";
@@ -84,7 +85,7 @@ function ReviewEntryRow({
           </Badge>
         )}
         <span className="text-xs text-muted-foreground">
-          {new Date(entry.next_review_at).toLocaleDateString()}
+          <Time value={entry.next_review_at} mode="absolute" precision="day" />
         </span>
       </span>
     </Button>

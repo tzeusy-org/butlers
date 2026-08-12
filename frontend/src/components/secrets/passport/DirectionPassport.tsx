@@ -25,6 +25,8 @@ import { Spine, SpineAddButton } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
 import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
+import { formatOwnerDateTime } from "@/components/ui/time";
+import { useTimezone } from "@/components/ui/timezone-context";
 
 // ── ProbeAllButton ───────────────────────────────────────────────────────────
 
@@ -152,6 +154,7 @@ export function DirectionPassport({
   inventory: InventoryResponse;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const ownerTimezone = useTimezone();
 
   // ── URL state ───────────────────────────────────────────────────────────
   const focusParam = searchParams.get("focus");
@@ -350,7 +353,7 @@ export function DirectionPassport({
           style={{ borderBottom: "1px solid var(--border)" }}
         >
           <div className="min-w-0">
-            <Eyebrow sub={new Date().toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}>
+            <Eyebrow sub={formatOwnerDateTime(new Date(), ownerTimezone, "short-date", false)}>
               secrets
             </Eyebrow>
             <div className="mt-2.5">
