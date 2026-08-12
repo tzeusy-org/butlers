@@ -28,7 +28,6 @@ export const VISUAL_TOKEN_ROLE_REGISTRY = {
   },
 } as const;
 
-export type VisualTokenRole = keyof typeof VISUAL_TOKEN_ROLE_REGISTRY;
 export type StateColorRole =
   | "healthy"
   | "ok"

@@ -63,7 +63,7 @@ const STATUS_COLORS: Record<string, string> = {
   stale: "var(--amber)",
 };
 
-function getStatusColor(status: string, agentType?: string, tone?: CellTone): string {
+function getStatusColor(status: string, tone?: CellTone): string {
   if (tone) {
     return TONE_COLORS[tone];
   }
@@ -100,7 +100,7 @@ function buildNodes(
       position: { x: centerX - 70, y: centerY - 20 },
       data: { label: switchboard.name },
       style: {
-        background: getStatusColor(switchboard.status, switchboard.type, switchboard.tone),
+        background: getStatusColor(switchboard.status, switchboard.tone),
         color: "white",
         border: "2px solid var(--bg-deep)",
         borderRadius: "12px",
@@ -120,7 +120,7 @@ function buildNodes(
       position: { x: 550, y: 50 },
       data: { label: heartbeat.name },
       style: {
-        background: getStatusColor(heartbeat.status, heartbeat.type, heartbeat.tone),
+        background: getStatusColor(heartbeat.status, heartbeat.tone),
         color: "white",
         border: "2px dashed var(--dim)",
         borderRadius: "50%",
@@ -155,7 +155,7 @@ function buildNodes(
       style: {
         background: "var(--bg-deep)",
         color: "white",
-        border: `2px solid ${getStatusColor(butler.status, butler.type, butler.tone)}`,
+        border: `2px solid ${getStatusColor(butler.status, butler.tone)}`,
         borderRadius: "8px",
         padding: "10px 16px",
         fontWeight: 500,

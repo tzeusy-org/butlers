@@ -57,8 +57,13 @@ export function chartSeriesColor(index = 0): ChartSeriesColor {
   return CHART_COLOR_VARS[((index % len) + len) % len] as ChartSeriesColor;
 }
 
-/** Backwards-compatible name for the typed chart-series helper. */
-export const chartColor = chartSeriesColor;
+/**
+ * Backwards-compatible chart helper for existing single-series consumers.
+ * New code should prefer the role-explicit `chartSeriesColor` name.
+ */
+export function chartColor(index = 0): ChartSeriesColor {
+  return chartSeriesColor(index);
+}
 
 /**
  * Returns a translucent variant of a chart series color for gradient stops
@@ -70,7 +75,7 @@ export const chartColor = chartSeriesColor;
  * full oklch(...) literals.
  */
 export function chartColorAlpha(index: number, alphaPercent: number): string {
-  return `color-mix(in oklch, ${chartColor(index)} ${alphaPercent}%, transparent)`;
+  return `color-mix(in oklch, ${chartSeriesColor(index)} ${alphaPercent}%, transparent)`;
 }
 
 // ---------------------------------------------------------------------------
