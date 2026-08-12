@@ -7,8 +7,9 @@ caller-visible identity for routing, pricing, spend enforcement, token-ledger
 history, and provenance. At an OpenCode selected-model execution boundary it
 SHALL derive a separate execution identifier with a named, pure mapping. When
 constructing the CLI command, a canonical `opencode-go/<native-id>` identifier
-is passed to `--model` as `<native-id>`; other qualified identifiers and
-existing bare identifiers are passed unchanged.
+is passed to `--model` unchanged because current OpenCode requires
+`provider/model` syntax; other qualified identifiers and existing bare
+identifiers are passed unchanged.
 The mapping SHALL be used by normal OpenCode invocation, the OpenCode CLI-auth
 health command, and any generated configuration field that represents the
 selected OpenCode Go execution model. The current generated OpenCode Go JSONC
@@ -22,18 +23,18 @@ ID: REQ-runtime-opencode-001
 Source: runtime-opencode Model Selection; model-catalog REQ-model-catalog-002; design.md Decision 2
 Scope: v1-mandatory
 
-#### Scenario: Canonical OpenCode Go Minimax identity has a native execution argument
+#### Scenario: Canonical OpenCode Go Minimax identity has a qualified execution argument
 
 - **WHEN** the resolved catalog model is
   `opencode-go/minimax-m2.7`
-- **THEN** the command includes `--model minimax-m2.7` before the prompt
+- **THEN** the command includes `--model opencode-go/minimax-m2.7` before the prompt
 - **AND** all caller-visible routing, pricing, and provenance identity remains
   `opencode-go/minimax-m2.7`
 
-#### Scenario: Canonical OpenCode Go Mimo identity has a native execution argument
+#### Scenario: Canonical OpenCode Go Mimo identity has a qualified execution argument
 
 - **WHEN** the resolved catalog model is `opencode-go/mimo-v2.5`
-- **THEN** the command includes `--model mimo-v2.5` before the prompt
+- **THEN** the command includes `--model opencode-go/mimo-v2.5` before the prompt
 - **AND** all caller-visible routing, pricing, and provenance identity remains
   `opencode-go/mimo-v2.5`
 
@@ -50,7 +51,7 @@ Scope: v1-mandatory
 
 - **WHEN** the OpenCode Go CLI-auth health check invokes its pinned canonical
   catalog/provider model
-- **THEN** it derives the exact same native `--model` argument as the adapter
+- **THEN** it derives the exact same provider-qualified `--model` argument as the adapter
 - **AND** its check does not create catalog verification or routed dispatch
   provenance
 

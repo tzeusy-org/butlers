@@ -12,10 +12,11 @@ then wrote its marker and attention ledger. Concurrent producers could all
 pass that check. A Messenger send could also succeed before a routing-log ACL
 error caused the caller to regard it as failed and retry.
 
-[Observed] daemon OpenCode invocations rejected the provider-qualified catalog
-IDs involved in this incident and suggested bare provider-native IDs, while the
-catalog, pricing, spend rules, history, and provider discovery use those
-provider-qualified IDs as canonical identity. No credential content was
+[Observed] the OpenCode execution mapper stripped `opencode-go/` from a
+provider-qualified catalog ID before invoking the CLI. The current CLI requires
+`provider/model`, so it parsed the resulting bare value as a provider with an
+empty model ID. Catalog, pricing, spend rules, history, and provider discovery
+use the provider-qualified IDs as canonical identity. No credential content was
 inspected or exposed during diagnosis.
 
 This design must preserve the system's binding boundaries: one authoritative
@@ -39,8 +40,9 @@ observability rather than delivery authority (RFC 0011 Amendment 1).
   external send, and make the resulting state operable rather than silent.
 - Test a catalog entry through the actual daemon runtime environment without
   misrepresenting that probe as a routed breaker recovery.
-- Preserve canonical OpenCode Go catalog identity while translating it to the
-  provider-native CLI argument at the one execution boundary that requires it.
+- Preserve canonical OpenCode Go catalog identity while passing the same
+  provider-qualified `provider/model` argument at the execution boundary that
+  requires it.
 
 **Non-Goals:**
 
@@ -83,7 +85,7 @@ location; `cli-auth/codex` is the demonstrated shared-runtime system credential
 that needs this stronger form. It fixes the shared-volume overwrite without
 changing established per-domain or other-provider credential resolution.
 
-### 2. Catalog identity is canonical; provider-native OpenCode syntax is an execution-boundary concern
+### 2. Catalog identity is canonical; OpenCode provider/model syntax is an execution-boundary concern
 
 `model_catalog.model_id` remains the canonical provider-qualified identity
 used by catalog discovery, pricing, spend rules, token-ledger history, and
@@ -91,13 +93,13 @@ routing. In particular, `opencode-go/<native-id>` remains persisted and is not
 migrated to a bare ID. No catalog API, migration, or historical-record rewrite
 may silently strip that provider namespace.
 
-`OpenCodeAdapter` owns a named, pure canonical-to-execution translation. When
-the resolved canonical OpenCode model begins `opencode-go/`, it invokes the
-configured CLI with the suffix `<native-id>` after `--model`; it retains the
-canonical value for all caller-visible provenance, pricing, spend, and history.
-Other qualified providers and unrelated runtimes pass their model identifiers
-unchanged. Existing bare values, if any, retain their existing execution
-behavior rather than being broadly normalized.
+`OpenCodeAdapter` owns a named, pure canonical-to-execution translation. The
+current OpenCode CLI requires `provider/model`, so a resolved
+`opencode-go/<native-id>` value is passed unchanged after `--model`; the
+adapter retains that canonical value for all caller-visible provenance, pricing,
+spend, and history. Other qualified providers and unrelated runtimes pass their
+model identifiers unchanged. Existing bare values, if any, retain their
+existing execution behavior rather than being broadly normalized.
 
 The catalog test and hourly verification move to a deterministic
 Switchboard-owned runtime-probe coordinator that uses the same shared runtime

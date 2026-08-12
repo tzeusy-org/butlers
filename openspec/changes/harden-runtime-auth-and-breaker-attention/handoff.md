@@ -49,7 +49,7 @@ all ten implementation leaves → gen-1 reconciliation → epic report
 | `bu-0uqgo.2` breaker/fleet producer activation | P0 | outbox representation | serialized edge tests prove one episode and legacy direct delivery is absent |
 | `bu-0uqgo.3` at-most-once Switchboard worker | P0 | producer activation | lease/fence/crash/uncertainty and confirmed-send bookkeeping regressions |
 | `bu-ih90b` explicit Codex authority | P0 | gate | dashboard-refresh/next-invocation, shared-home, and unavailable-authority tests |
-| `bu-0uqgo.4` OpenCode execution mapper | P1 | gate | canonical identity and native CLI argument tests without data migration |
+| `bu-0uqgo.4` OpenCode execution mapper | P1 | gate | canonical identity and provider-qualified CLI argument tests without data migration |
 | `bu-0uqgo.5` probe trust representation | P0 | gate, outbox convention, external migration/Secrets owners | inert schema/parser/receipt/grant/redaction evidence with no production key mount |
 | `bu-0uqgo.10` signed probe propagation | P0 | trust, Codex authority, OpenCode mapper | fixture-key private endpoint, replay, exact-runtime, and no-breaker-reset tests while production remains unavailable |
 | `bu-0uqgo.12` Dashboard CLI-auth child sandbox | P0 | gate, terminal base-image owner, explicit Codex authority, OpenCode mapper | complete runtime-CLI inventory, pinned Bubblewrap user/mount/PID namespaces, exclusive outer identities, exact Compose security policy/preflight, pidfd/namespace-init fencing, same-descriptor staging, adversarial peer/daemon tests, and exact deferred verification allowlist |
@@ -65,7 +65,7 @@ all ten implementation leaves → gen-1 reconciliation → epic report
 | Credential authority | unit/integration tests for explicit authority, local conflict, flat topology, shared-home writer order, rotation fencing, and safe logs | inspect provenance/metadata only; prove every daemon restores the same authority without reading values |
 | Breaker episode edge | real-Postgres concurrent writer tests with equal timestamps and distinct attempt IDs, including failed half-open races | induce one safe controlled breaker edge only after deployment authorization; observe one durable episode |
 | Delivery semantics | producer ACL/forgery tests, two-worker claim, fenced recovery/uncertainty, and post-send ACL route tests | verify sent/uncertain episode state and no automatic duplicate delivery |
-| OpenCode and probe | adapter/API and real-Postgres tests for canonical Go identities with native execution arguments, fail-closed owner control, fixed-algorithm/time signed control, nonce-race/retention/replay denial, key rotation, generic-Secrets exclusion, and probe-no-reset behavior | use an actual runtime probe plus a separate routed session; compare their independent evidence |
+| OpenCode and probe | adapter/API and real-Postgres tests for canonical Go identities with provider-qualified execution arguments, fail-closed owner control, fixed-algorithm/time signed control, nonce-race/retention/replay denial, key rotation, generic-Secrets exclusion, and probe-no-reset behavior | use an actual runtime probe plus a separate routed session; compare their independent evidence |
 | UI | API contract and frontend interaction tests for state separation, degraded observation, confirmation, fail-closed owner-control key states, and idempotent reissue | confirm Models/Spend surfaces reflect actual API state without a false success toast |
 
 ## Validation Record
