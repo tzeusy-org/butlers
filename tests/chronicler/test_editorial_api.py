@@ -203,6 +203,8 @@ async def test_briefing_returns_cached_voice_for_matching_timezone_window(
     assert body["attention_items"][0]["title"] == "Short sleep"
     assert body["subquery_availability"] == []
     templated.assert_not_called()
+    cache_lookup = conn.fetchrow_calls[0][0]
+    assert cache_lookup[1] == "day_close:2026-05-08:tz:Asia/Singapore"
 
 
 async def test_briefing_rejects_same_date_cache_from_other_timezone(

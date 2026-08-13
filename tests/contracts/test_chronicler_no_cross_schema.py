@@ -41,6 +41,7 @@ _ROUTER_PATH = Path(__file__).resolve().parents[2] / "roster" / "chronicler" / "
 # Derived from scanning all migration files in roster/chronicler/migrations/:
 #   001_chronicler_tables.py  → tables + views
 #   004_tier2_cache.py        → tier2_cache table
+#   025_day_close_cache_tuple_locks.py → tuple lock registry
 #
 # Core butler tables (present in every butler schema via the core module):
 #   scheduled_tasks
@@ -64,6 +65,8 @@ _CHRONICLER_RELATIONS: frozenset[str] = frozenset(
         "v_point_events_corrected",
         # ── Tables (004_tier2_cache.py) ───────────────────────────────────
         "tier2_cache",
+        # ── Tables (025_day_close_cache_tuple_locks.py) ───────────────────
+        "day_close_cache_locks",
         # ── Core butler tables (every butler schema) ──────────────────────
         "scheduled_tasks",
         # ── Per-butler tables accessed via fan-out (not via chronicler pool) ─

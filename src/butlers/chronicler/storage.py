@@ -923,7 +923,8 @@ async def upsert_tier2_cache(
 
     Args:
         conn: asyncpg connection or pool.
-        cache_key: Primary key string, e.g. ``day_close:2026-04-25``.
+        cache_key: Primary key string, e.g.
+            ``day_close:2026-04-25:tz:Asia/Singapore``.
         start_at: Start of the window covered by this summary.
         end_at: End of the window covered by this summary.
         prose: LLM-generated prose summary.

@@ -43,7 +43,7 @@ _T_OUTSIDE_24H = datetime(2026, 4, 25, 6, 0, 0, tzinfo=UTC) - timedelta(
     hours=25
 )  # built 25 hours ago (outside limit)
 
-_CACHE_KEY = "day_close:2026-04-24"
+_CACHE_KEY = "day_close:2026-04-24:tz:UTC"
 
 
 class _Row(dict):
@@ -596,6 +596,46 @@ class TestDayCloseRefreshNoDispatch:
 
 
 class TestDayCloseRefreshValidation:
+    async def test_missing_timezone_returns_400_before_rate_limit_or_dispatch(self):
+        """Refresh has no UTC default: tz is required before all cache work."""
+        pool = _mock_pool(fetchrow_returns=None)
+        dispatch_fn = AsyncMock()
+        app = _make_app_with_dispatch(pool, dispatch_fn)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/chronicler/aggregate/day-close/refresh",
+                json={"date": "2026-04-24"},
+            )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "missing_parameter"
+        assert body["error"]["butler"] == "chronicler"
+        pool.fetchrow.assert_not_awaited()
+        dispatch_fn.assert_not_awaited()
+
+    async def test_null_timezone_returns_the_same_structured_400(self):
+        """OpenAPI is non-nullable, but a malformed runtime body stays a 400 envelope."""
+        pool = _mock_pool(fetchrow_returns=None)
+        dispatch_fn = AsyncMock()
+        app = _make_app_with_dispatch(pool, dispatch_fn)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/chronicler/aggregate/day-close/refresh",
+                json={"date": "2026-04-24", "tz": None},
+            )
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "missing_parameter"
+        pool.fetchrow.assert_not_awaited()
+        dispatch_fn.assert_not_awaited()
+
     async def test_invalid_timezone_returns_400(self):
         """Invalid IANA timezone returns 400 with error envelope."""
         pool = _mock_pool(fetchrow_returns=None)
@@ -607,6 +647,17 @@ class TestDayCloseRefreshValidation:
         assert "error" in body
         assert body["error"]["code"] == "invalid_timezone"
 
+    async def test_empty_timezone_returns_400(self):
+        """An empty string is not an exact IANA timezone."""
+        pool = _mock_pool(fetchrow_returns=None)
+        app = _make_app_no_dispatch(pool)
+
+        resp = await _post_refresh(app, tz="")
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_timezone"
+        pool.fetchrow.assert_not_awaited()
+
     async def test_valid_non_utc_timezone_accepted(self):
         """A valid non-UTC timezone does not trigger the tz validation error."""
         pool = _mock_pool(fetchrow_returns=None)
@@ -615,6 +666,49 @@ class TestDayCloseRefreshValidation:
         resp = await _post_refresh(app, tz="America/New_York")
         # Should proceed past tz validation → hit dispatch guard → 503
         assert resp.status_code == 503
+
+
+def test_day_close_openapi_requires_a_nonnullable_query_tuple() -> None:
+    """OpenAPI must describe the same valid-call contract as the API boundary."""
+    schema = create_app(api_key="").openapi()
+    day_close_path = schema["paths"]["/api/chronicler/aggregate/day-close"]
+    date_parameter = next(
+        parameter
+        for parameter in day_close_path["get"]["parameters"]
+        if parameter["name"] == "date"
+    )
+    tz_parameter = next(
+        parameter for parameter in day_close_path["get"]["parameters"] if parameter["name"] == "tz"
+    )
+
+    assert date_parameter["required"] is True
+    assert date_parameter["schema"] == {"type": "string", "format": "date", "minLength": 1}
+    assert tz_parameter["required"] is True
+    assert tz_parameter["schema"] == {"type": "string", "minLength": 1}
+    assert [parameter["name"] for parameter in day_close_path["get"]["parameters"]].count(
+        "date"
+    ) == 1
+
+    refresh_path = schema["paths"]["/api/chronicler/aggregate/day-close/refresh"]
+    request_schema = refresh_path["post"]["requestBody"]["content"]["application/json"]["schema"]
+    request_ref = request_schema["$ref"].rsplit("/", 1)[-1]
+    refresh_schema = schema["components"]["schemas"][request_ref]
+    assert "tz" in refresh_schema["required"]
+    assert refresh_schema["properties"]["tz"] == {"type": "string", "minLength": 1}
+
+
+class TestDayCloseRefreshTimezoneIdentity:
+    async def test_rate_limit_uses_date_and_exact_timezone(self):
+        """A recent cache row only throttles the same requested local-day tuple."""
+        cache_built_at = datetime.now(UTC) - timedelta(hours=1)
+        pool = _mock_pool(fetchrow_returns=_row({"cache_built_at": cache_built_at}))
+        app = _make_app_no_dispatch(pool)
+
+        resp = await _post_refresh(app, tz="America/Los_Angeles")
+
+        assert resp.status_code == 429
+        lookup = pool.fetchrow.await_args.args
+        assert lookup[1] == "day_close:2026-04-24:tz:America/Los_Angeles"
 
 
 class TestDayCloseRefreshSettledDate:

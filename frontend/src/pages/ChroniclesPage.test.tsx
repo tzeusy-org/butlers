@@ -27,6 +27,10 @@ import type { ChroniclesBriefing } from "@/api/types";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
+const { postChroniclerDayCloseRefresh } = vi.hoisted(() => ({
+  postChroniclerDayCloseRefresh: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -57,6 +61,8 @@ vi.mock("@/hooks/use-chronicles-briefing", () => ({
     };
   },
 }));
+
+vi.mock("@/api/client.ts", () => ({ postChroniclerDayCloseRefresh }));
 
 // The drilldown panel pulls in heavy modules (Gantt, Map, Scrubber). For these
 // editorial smoke tests we stub it out; content visibility is tested in its
@@ -178,6 +184,7 @@ describe("ChroniclesPage editorial archetype", () => {
     _drilldownArgs = undefined;
     _navigate = undefined;
     _timezone = "Asia/Singapore";
+    postChroniclerDayCloseRefresh.mockReset();
   });
 
   afterEach(() => {
@@ -239,6 +246,131 @@ describe("ChroniclesPage editorial archetype", () => {
     _briefing = buildBriefing({ voice_source: "stale" });
     const html = renderPage();
     expect(html).toContain("stale");
+  });
+
+  it("regenerates a stale summary for the selected exact date and timezone", async () => {
+    _briefing = buildBriefing({ voice_source: "stale" });
+    postChroniclerDayCloseRefresh.mockResolvedValue({
+      cache_key: "day_close:2026-05-08:tz:Asia/Singapore",
+      quiet: true,
+    });
+
+    const { container, unmount } = mountPage("/chronicles?date=2026-05-08");
+    try {
+      const regenerate = container.querySelector(
+        'button[aria-label="Regenerate day-close summary"]',
+      ) as HTMLButtonElement;
+      expect(regenerate).toBeTruthy();
+
+      await act(async () => {
+        regenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+
+      expect(postChroniclerDayCloseRefresh).toHaveBeenCalledWith({
+        date: "2026-05-08",
+        tz: "Asia/Singapore",
+      });
+      expect(_refetch).toHaveBeenCalledOnce();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("keeps a newly selected stale tuple regeneratable while a prior tuple refresh is pending", async () => {
+    _briefing = buildBriefing({ date: "2026-05-08", voice_source: "stale" });
+    let resolvePriorRefresh: ((result: { cache_key: string; quiet: boolean }) => void) | undefined;
+    postChroniclerDayCloseRefresh.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePriorRefresh = resolve;
+        }),
+    );
+
+    const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+    try {
+      const priorRegenerate = container.querySelector(
+        'button[aria-label="Regenerate day-close summary"]',
+      ) as HTMLButtonElement;
+
+      await act(async () => {
+        priorRegenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(priorRegenerate.disabled).toBe(true);
+      expect(priorRegenerate.textContent).toContain("Regenerating");
+
+      _briefing = buildBriefing({ date: "2026-05-07", voice_source: "stale" });
+      navigate("/chronicles?date=2026-05-07");
+
+      const selectedRegenerate = container.querySelector(
+        'button[aria-label="Regenerate day-close summary"]',
+      ) as HTMLButtonElement;
+      expect(selectedRegenerate.disabled).toBe(false);
+      expect(selectedRegenerate.getAttribute("aria-busy")).toBe("false");
+      expect(selectedRegenerate.textContent).toContain("Regenerate");
+
+      await act(async () => {
+        resolvePriorRefresh?.({
+          cache_key: "day_close:2026-05-08:tz:Asia/Singapore",
+          quiet: true,
+        });
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    } finally {
+      unmount();
+    }
+  });
+
+  it("keeps a failed refresh visible only for the tuple that requested it", async () => {
+    _briefing = buildBriefing({ date: "2026-05-08", voice_source: "stale" });
+    let rejectPriorRefresh: ((error: Error) => void) | undefined;
+    postChroniclerDayCloseRefresh.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectPriorRefresh = reject;
+        }),
+    );
+
+    const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+    try {
+      const priorRegenerate = container.querySelector(
+        'button[aria-label="Regenerate day-close summary"]',
+      ) as HTMLButtonElement;
+      await act(async () => {
+        priorRegenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      _briefing = buildBriefing({ date: "2026-05-07", voice_source: "stale" });
+      navigate("/chronicles?date=2026-05-07");
+
+      await act(async () => {
+        rejectPriorRefresh?.(new Error("refresh failed"));
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const selectedRegenerate = container.querySelector(
+        'button[aria-label="Regenerate day-close summary"]',
+      ) as HTMLButtonElement;
+      expect(selectedRegenerate.disabled).toBe(false);
+      expect(selectedRegenerate.textContent).toContain("Regenerate");
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+
+      _briefing = buildBriefing({ date: "2026-05-08", voice_source: "stale" });
+      navigate("/chronicles?date=2026-05-08");
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Regeneration failed.",
+      );
+    } finally {
+      unmount();
+    }
   });
 
   it("voice rules: no em-dashes or exclamation marks in headline or voice paragraph copy", () => {

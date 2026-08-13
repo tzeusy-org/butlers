@@ -244,12 +244,30 @@ class DayCloseRefreshRequest(BaseModel):
 
     date: date
     """YYYY-MM-DD date to refresh the day-close cache for."""
-    tz: str = "UTC"
-    """IANA timezone for the requested local day (validated; default UTC).
+    tz: str | None = None
+    """Required exact IANA timezone for the requested local day.
 
-    Refresh binds the existing day-close Tier-2 path to this local-day timezone
-    and computes the cache window from this request target.
+    The API validates it before cache, rate-limit, or dispatch work and binds
+    the existing Tier-2 path to this local-day timezone.
     """
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: Any) -> dict[str, Any]:
+        """Advertise the valid-call contract while preserving structured 400s.
+
+        Runtime accepts an omitted/null value only long enough for the route to
+        return its documented ``missing_parameter`` error instead of FastAPI's
+        generic 422. Valid clients must send a non-empty string, so OpenAPI
+        deliberately exposes ``tz`` as required and non-nullable.
+        """
+        schema = handler(core_schema)
+        properties = schema.setdefault("properties", {})
+        properties["tz"] = {"type": "string", "minLength": 1}
+        required = list(schema.get("required", []))
+        if "tz" not in required:
+            required.append("tz")
+        schema["required"] = required
+        return schema
 
 
 class DayCloseRefreshResponse(BaseModel):

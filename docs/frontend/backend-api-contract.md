@@ -148,7 +148,8 @@ Coverage and cache precedence are fixed:
    day-close cache, active `activity`/`evidence` episode proof) counts;
    calendar intent, tombstones, and retained `legacy_unverified` rows do not.
    A cache witness additionally requires an active, admitted row whose
-   `day_close:{date}` key and `date_label` agree with the witness and whose
+   `day_close:{date}:tz:{exact-IANA-name}` key and `date_label` agree with the
+   witness and whose
    `[start_at, end_at)` exactly equals that date's owner-timezone local-day UTC
    window; a UTC-midnight window is not proof for a non-UTC owner.
 2. A settled day before the authoritative floor returns `no_data`; a gap at or
@@ -175,16 +176,38 @@ equals the selected URL date. A date-keyed query may retain prior placeholder
 data during navigation; that transition must use a safe loading presentation,
 not prior prose, KPI, recent-day rows, cache state, or drilldown content.
 
-## Chronicler Day-Close Refresh Contract
+## Chronicler Day-Close Cache and Refresh Contract
+
+- `GET /api/chronicler/aggregate/day-close` requires both
+  `date=YYYY-MM-DD` and an exact, non-empty IANA `tz` query parameter. The
+  typed dashboard client and its query key carry both values.
+- Day-close cache identity is
+  `day_close:{YYYY-MM-DD}:tz:{exact-IANA-name}`. The exact accepted timezone
+  string is part of the key; it is not replaced by a default or a normalized
+  alias.
+- Writer containment serializes the actual `(date, tz)` tuple through a
+  collision-safe Chronicler-local transaction lock, never a fixed-width hash
+  that could make different tuples contend.
+- A missing `tz` returns `400` with `error.code = "missing_parameter"`; an
+  empty or unresolvable value returns `400` with
+  `error.code = "invalid_timezone"`. These failures occur before cache,
+  rate-limit, or dispatch work.
+- Preserved legacy `day_close:{date}` rows are never queried as a compatibility
+  fallback. They remain untouched audit history and appear as normal cache
+  misses until a tuple-keyed row is written.
 
 - `POST /api/chronicler/aggregate/day-close/refresh` accepts
-  `{date: YYYY-MM-DD, tz: IANA timezone}` and reuses the scheduled
+  `{date: YYYY-MM-DD, tz: exact IANA timezone}` and reuses the scheduled
   `chronicler_day_close` path; the dashboard has no separate LLM route.
 - The target must be a settled historical local day: `date` is strictly before
   the server's current date in the supplied `tz`. Today and future targets
   return `400` with `error.code = "day_close_not_settled"` before any
   rate-limit lookup or dispatch. A valid historical target continues to the
-  normal rate-limit and dispatch path.
+  normal tuple-keyed rate-limit and dispatch path.
+- When a selected briefing reports its day-close prose as stale, the Chronicles
+  page's **Regenerate** action POSTs that exact selected `{date, tz}` tuple and
+  re-fetches the same tuple only after a successful response. Failure leaves
+  the stale indication visible rather than replacing it with unproven prose.
 - A prose-producing or contained-invalid success returns
   `{cache_key, cache_built_at, invalid, invalid_reason}`. `invalid_reason` is
   `null`, `inadmissible_prose`, or `date_mismatch`.

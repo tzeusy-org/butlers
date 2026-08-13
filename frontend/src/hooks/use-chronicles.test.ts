@@ -99,16 +99,25 @@ describe("chroniclesKeys", () => {
   });
 
   it("dayClose includes params", () => {
-    const params: ChroniclerDayCloseParams = { date: "2026-01-01" };
+    const params: ChroniclerDayCloseParams = { date: "2026-01-01", tz: "Asia/Singapore" };
     const key = chroniclesKeys.dayClose(params);
     expect(key[1]).toBe("day-close");
     expect(key[2]).toEqual(params);
   });
 
   it("different dayClose dates produce different keys", () => {
-    const k1 = chroniclesKeys.dayClose({ date: "2026-01-01" });
-    const k2 = chroniclesKeys.dayClose({ date: "2026-01-02" });
+    const k1 = chroniclesKeys.dayClose({ date: "2026-01-01", tz: "Asia/Singapore" });
+    const k2 = chroniclesKeys.dayClose({ date: "2026-01-02", tz: "Asia/Singapore" });
     expect(k1).not.toEqual(k2);
+  });
+
+  it("different dayClose timezones produce different keys for one date", () => {
+    const singapore = chroniclesKeys.dayClose({ date: "2026-01-01", tz: "Asia/Singapore" });
+    const losAngeles = chroniclesKeys.dayClose({
+      date: "2026-01-01",
+      tz: "America/Los_Angeles",
+    });
+    expect(singapore).not.toEqual(losAngeles);
   });
 
   it("byCategory and byDay keys are distinct even for same params", () => {
@@ -226,7 +235,7 @@ describe("getChroniclerSourceState client delegate", () => {
 });
 
 describe("getChroniclerDayClose client delegate", () => {
-  const params: ChroniclerDayCloseParams = { date: "2026-01-01" };
+  const params: ChroniclerDayCloseParams = { date: "2026-01-01", tz: "Asia/Singapore" };
 
   it("returns fresh response when cache is current", async () => {
     const freshResponse = {
@@ -286,13 +295,14 @@ describe("getChroniclerDayClose client delegate", () => {
   });
 
   it("uses different keys for different dates (cache isolation)", () => {
-    const params2: ChroniclerDayCloseParams = { date: "2026-01-02" };
+    const params2: ChroniclerDayCloseParams = { date: "2026-01-02", tz: "Asia/Singapore" };
     expect(chroniclesKeys.dayClose(params)).not.toEqual(chroniclesKeys.dayClose(params2));
   });
 
   it("passes a custom date through", async () => {
     const customParams: ChroniclerDayCloseParams = {
       date: "2026-03-15",
+      tz: "America/Los_Angeles",
     };
     vi.mocked(getChroniclerDayClose).mockResolvedValueOnce({
       prose: "Custom window summary.",

@@ -28,8 +28,8 @@ for D surfacing on D+2 SGT instead of D+1).  The hook computes:
     start_at    = midnight(yesterday) in owner_tz, converted to UTC
     end_at      = midnight(today_local) in owner_tz, converted to UTC (exclusive)
 
-``cache_key`` is ``day_close:{YYYY-MM-DD}`` where ``{YYYY-MM-DD}`` is the closed
-*local* day's ISO date.
+``cache_key`` is ``day_close:{YYYY-MM-DD}:tz:{IANA-timezone}`` where the
+tuple is the closed *local* day and the timezone that determined its window.
 
 Provenance extraction
 ---------------------
@@ -53,6 +53,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
+from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_close_cache_tuple
 from butlers.chronicler.editorial import record_coverage_witness
 from butlers.chronicler.prose_admission import classify_day_close_candidate
 from butlers.chronicler.storage import upsert_tier2_cache
@@ -427,7 +428,7 @@ async def write_day_close_cache(
         logger.debug("day_close_writer: output is empty without a valid quiet bundle")
         return
 
-    cache_key = f"day_close:{day_date.isoformat()}"
+    cache_key = day_close_cache_key(day_date, tz_name)
     provenance_refs = _extract_provenance_refs(tool_calls)
     date_label = _extract_date_label(
         tool_calls,
@@ -443,10 +444,12 @@ async def write_day_close_cache(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Serialize the existing-row check and all writes for this
-                # cache key. Otherwise an invalid candidate can inspect an
-                # absent/invalid row, a concurrent valid writer can commit,
-                # and the stale invalid path can overwrite that valid prose.
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cache_key)
+                # exact local-day tuple. The lock registry's composite primary
+                # key avoids the collision risk of a fixed-width advisory hash.
+                # Otherwise an invalid candidate can inspect an absent/invalid
+                # row, a concurrent valid writer can commit, and the stale
+                # invalid path can overwrite that valid prose.
+                await lock_day_close_cache_tuple(conn, day_date, tz_name)
 
                 if invalid_reason is not None:
                     existing = await conn.fetchrow(

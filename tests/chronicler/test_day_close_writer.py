@@ -401,7 +401,7 @@ async def test_write_day_close_cache_writes_row(fake_pool, mock_upsert) -> None:
 
     mock_upsert.assert_awaited_once()
     kwargs = mock_upsert.call_args.kwargs
-    assert kwargs["cache_key"] == "day_close:2026-04-24"
+    assert kwargs["cache_key"] == "day_close:2026-04-24:tz:UTC"
     assert kwargs["prose"] == "Day summary prose."
     assert kwargs["start_at"] == datetime(2026, 4, 24, 0, 0, 0, tzinfo=UTC)
     assert kwargs["end_at"] == datetime(2026, 4, 25, 0, 0, 0, tzinfo=UTC)
@@ -486,9 +486,12 @@ async def test_write_day_close_cache_contains_matching_capture_missing_timezone(
     assert mock_upsert.call_args.kwargs["invalid_reason"] == "date_mismatch"
     assert mock_upsert.call_args.kwargs["date_label"] is None
     fake_pool._conn.execute.assert_awaited_once()
-    lock_sql, lock_key = fake_pool._conn.execute.await_args.args
-    assert "pg_advisory_xact_lock" in lock_sql
-    assert lock_key == "day_close:2026-04-24"
+    lock_sql, lock_date, lock_timezone = fake_pool._conn.execute.await_args.args
+    assert "INSERT INTO day_close_cache_locks" in lock_sql
+    assert "ON CONFLICT (local_date, timezone) DO UPDATE" in lock_sql
+    assert "WHERE FALSE" in lock_sql
+    assert lock_date == date(2026, 4, 24)
+    assert lock_timezone == "UTC"
 
 
 async def test_write_day_close_cache_keeps_citations_from_canonical_bundle_capture(
@@ -575,9 +578,12 @@ async def test_write_day_close_cache_records_coverage_witness(fake_pool, mock_up
     args = fake_pool._conn.execute.await_args_list[0].args
     assert args[1] == date(2026, 4, 24)
     assert args[2] == "UTC"
-    lock_sql, lock_key = fake_pool._conn.execute.await_args_list[1].args
-    assert "pg_advisory_xact_lock" in lock_sql
-    assert lock_key == "day_close:2026-04-24"
+    lock_sql, lock_date, lock_timezone = fake_pool._conn.execute.await_args_list[1].args
+    assert "INSERT INTO day_close_cache_locks" in lock_sql
+    assert "ON CONFLICT (local_date, timezone) DO UPDATE" in lock_sql
+    assert "WHERE FALSE" in lock_sql
+    assert lock_date == date(2026, 4, 24)
+    assert lock_timezone == "UTC"
 
 
 @pytest.mark.parametrize(
@@ -716,7 +722,7 @@ async def test_write_day_close_cache_uses_explicit_target_timezone_window(
     )
 
     kwargs = mock_upsert.call_args.kwargs
-    assert kwargs["cache_key"] == "day_close:2026-03-08"
+    assert kwargs["cache_key"] == "day_close:2026-03-08:tz:America/Los_Angeles"
     assert kwargs["start_at"] == datetime(2026, 3, 8, 8, 0, tzinfo=UTC)
     assert kwargs["end_at"] == datetime(2026, 3, 9, 7, 0, tzinfo=UTC)
 
@@ -1178,7 +1184,7 @@ async def test_build_day_close_completion_hooks_hook_delegates(fake_pool, mock_u
     await hook(task_name=DAY_CLOSE_TASK_NAME, result=result, run_at=run_at)
 
     mock_upsert.assert_awaited_once()
-    assert mock_upsert.call_args.kwargs["cache_key"] == "day_close:2026-04-24"
+    assert mock_upsert.call_args.kwargs["cache_key"] == "day_close:2026-04-24:tz:UTC"
 
 
 async def test_build_day_close_completion_hooks_uses_owner_timezone(fake_pool, mock_upsert) -> None:
@@ -1198,7 +1204,7 @@ async def test_build_day_close_completion_hooks_uses_owner_timezone(fake_pool, m
     await hook(task_name=DAY_CLOSE_TASK_NAME, result=result, run_at=run_at)
 
     mock_upsert.assert_awaited_once()
-    assert mock_upsert.call_args.kwargs["cache_key"] == "day_close:2026-06-21"
+    assert mock_upsert.call_args.kwargs["cache_key"] == "day_close:2026-06-21:tz:Asia/Singapore"
     assert mock_upsert.call_args.kwargs["start_at"] == datetime(
         2026, 6, 21, 0, 0, 0, tzinfo=ZoneInfo("Asia/Singapore")
     ).astimezone(UTC)

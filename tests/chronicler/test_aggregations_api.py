@@ -1173,7 +1173,7 @@ async def test_day_close_span_cache_states(otel_exporter):
     def _cache_row():
         return _Row(
             {
-                "cache_key": "day_close:2026-04-01",
+                "cache_key": "day_close:2026-04-01:tz:UTC",
                 "start_at": _T0,
                 "end_at": _T1,
                 "cache_built_at": _T_CACHE_BUILT,
@@ -1197,7 +1197,7 @@ async def test_day_close_span_cache_states(otel_exporter):
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/chronicler/aggregate/day-close", params={"date": "2026-04-01"}
+            "/api/chronicler/aggregate/day-close", params={"date": "2026-04-01", "tz": "UTC"}
         )
     assert resp.status_code == 200
     assert (
@@ -1217,7 +1217,7 @@ async def test_day_close_span_cache_states(otel_exporter):
         transport=httpx.ASGITransport(app=app2), base_url="http://test"
     ) as client:
         resp2 = await client.get(
-            "/api/chronicler/aggregate/day-close", params={"date": "2026-04-01"}
+            "/api/chronicler/aggregate/day-close", params={"date": "2026-04-01", "tz": "UTC"}
         )
     assert resp2.status_code == 404
     all_spans = otel_exporter.get_finished_spans()

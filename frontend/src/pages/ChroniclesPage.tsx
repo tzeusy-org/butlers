@@ -19,11 +19,17 @@
 // ---------------------------------------------------------------------------
 
 import { useEffect, useMemo } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useSearchParams } from "react-router";
 
 import { useTimezone } from "@/components/ui/timezone-context";
 import { dayKeyInTimeZone, shiftDayKey } from "@/lib/day-window";
+import { postChroniclerDayCloseRefresh } from "@/api/client.ts";
+import type {
+  ChroniclerDayCloseRefreshRequest,
+  ChroniclerDayCloseRefreshResult,
+} from "@/api/types.ts";
 import { useChroniclesBriefing } from "@/hooks/use-chronicles-briefing";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
@@ -339,6 +345,27 @@ export default function ChroniclesPage() {
     : (briefing?.voice_paragraph ?? UNAVAILABLE_FALLBACK.voiceParagraph);
   const headlineLines = deriveHeadlineLines(stateClass, headline, subject);
   const isStale = isKnownContentState && briefing?.voice_source === "stale";
+  const regenerateDayClose = useMutation<
+    ChroniclerDayCloseRefreshResult,
+    Error,
+    ChroniclerDayCloseRefreshRequest
+  >({
+    mutationFn: (tuple) => postChroniclerDayCloseRefresh(tuple),
+    onSuccess: async (_result, refreshedTuple) => {
+      // Do not refresh a newly selected date/timezone with completion state
+      // from the prior tuple if the owner navigated while this was in flight.
+      if (refreshedTuple.date === selectedDate && refreshedTuple.tz === ownerTz) {
+        await refetch();
+      }
+    },
+  });
+  const isCurrentDayCloseRegeneration =
+    regenerateDayClose.variables?.date === selectedDate &&
+    regenerateDayClose.variables?.tz === ownerTz;
+  const isCurrentDayCloseRegenerationPending =
+    isCurrentDayCloseRegeneration && regenerateDayClose.isPending;
+  const isCurrentDayCloseRegenerationError =
+    isCurrentDayCloseRegeneration && regenerateDayClose.isError;
   const attentionItems = adaptAttention(
     isUnknownState ? [] : (briefing?.attention_items ?? []),
     () => void refetch(),
@@ -392,13 +419,33 @@ export default function ChroniclesPage() {
               <ChevronRight aria-hidden />
             </Button>
             {isStale ? (
-              <span
-                style={{ ...EYEBROW_STYLE, fontSize: "9px", letterSpacing: "0.08em" }}
-                title="The day-close summary may be out of date."
-                aria-label="Day-close summary may be out of date"
-              >
-                stale
-              </span>
+              <>
+                <span
+                  style={{ ...EYEBROW_STYLE, fontSize: "9px", letterSpacing: "0.08em" }}
+                  title="The day-close summary may be out of date."
+                  aria-label="Day-close summary may be out of date"
+                >
+                  stale
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={isCurrentDayCloseRegenerationPending}
+                  aria-busy={isCurrentDayCloseRegenerationPending}
+                  aria-label="Regenerate day-close summary"
+                  onClick={() =>
+                    regenerateDayClose.mutate({ date: selectedDate, tz: ownerTz })
+                  }
+                >
+                  {isCurrentDayCloseRegenerationPending ? "Regenerating" : "Regenerate"}
+                </Button>
+                {isCurrentDayCloseRegenerationError ? (
+                  <span role="alert" style={{ ...EYEBROW_STYLE, color: "var(--destructive)" }}>
+                    Regeneration failed.
+                  </span>
+                ) : null}
+              </>
             ) : null}
             {isNonContentState ? (
               <span

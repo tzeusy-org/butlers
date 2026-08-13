@@ -6463,10 +6463,20 @@ export type ChroniclerDayCloseRefreshResult =
   | ChroniclerDayCloseRefreshResponse
   | ChroniclerDayCloseRefreshQuietResponse;
 
+/** Required body for POST /api/chronicler/aggregate/day-close/refresh. */
+export interface ChroniclerDayCloseRefreshRequest {
+  /** Settled local calendar date in YYYY-MM-DD form. */
+  date: string;
+  /** Exact IANA timezone that defines this refresh tuple. */
+  tz: string;
+}
+
 /** Query parameters for GET /api/chronicler/aggregate/day-close. */
 export interface ChroniclerDayCloseParams {
   /** Local calendar date in YYYY-MM-DD form. */
   date: string;
+  /** Exact IANA timezone that defines this local day's cache identity. */
+  tz: string;
 }
 
 /** A single Chronicler point event (corrected view). */

@@ -3,6 +3,7 @@
 Covers:
 - Cache miss returns 404.
 - Fresh cache (no staleness signals) returns DayCloseFreshResponse.
+- Tuple-keyed cache row with a wrong local-day window is contained.
 - Stale due to episodes.tombstone_at > cache_built_at.
 - Stale due to episodes.updated_at > cache_built_at.
 - Stale due to point_events.tombstone_at > cache_built_at.
@@ -81,7 +82,7 @@ def _cache_row(
     refs = provenance_refs if provenance_refs is not None else ["core.sessions:abc123"]
     return _row(
         {
-            "cache_key": "day_close:2026-04-23",
+            "cache_key": "day_close:2026-04-23:tz:UTC",
             "start_at": _CACHE_START,
             "end_at": _CACHE_END,
             "cache_built_at": cache_built_at,
@@ -158,7 +159,7 @@ class TestDayCloseReaderCacheMiss:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 404
         assert "2026-04-23" in resp.json()["detail"]
 
@@ -170,7 +171,7 @@ class TestDayCloseReaderInvalid:
         """A row with a persisted invalid_reason never returns prose, even fresh."""
         cr = _row(
             {
-                "cache_key": "day_close:2026-04-23",
+                "cache_key": "day_close:2026-04-23:tz:UTC",
                 "start_at": _CACHE_START,
                 "end_at": _CACHE_END,
                 "cache_built_at": _T_CACHE_BUILT,
@@ -185,7 +186,7 @@ class TestDayCloseReaderInvalid:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["invalid"] is True
@@ -199,7 +200,7 @@ class TestDayCloseReaderInvalid:
         not the stale marker (admission validation precedes staleness)."""
         cr = _row(
             {
-                "cache_key": "day_close:2026-04-23",
+                "cache_key": "day_close:2026-04-23:tz:UTC",
                 "start_at": _CACHE_START,
                 "end_at": _CACHE_END,
                 "cache_built_at": _T_CACHE_BUILT,
@@ -213,12 +214,55 @@ class TestDayCloseReaderInvalid:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["invalid"] is True
         assert body["invalid_reason"] == "date_mismatch"
         assert "stale" not in body
+
+    async def test_tuple_keyed_row_with_wrong_timezone_window_is_contained(self):
+        """A malformed tuple-keyed row cannot cross a local-day boundary.
+
+        The row's key and date label claim the requested Singapore local day,
+        but its UTC-midnight window actually describes a different local day.
+        Direct GET must contain it before querying staleness, just as the
+        editorial cache reader does.
+        """
+        cr = _row(
+            {
+                "cache_key": "day_close:2026-04-23:tz:Asia/Singapore",
+                "start_at": _CACHE_START,
+                "end_at": _CACHE_END,
+                "cache_built_at": _T_CACHE_BUILT,
+                "prose": "This prose must not cross the timezone boundary.",
+                "provenance_refs": ["core.sessions:abc123"],
+                "date_label": "2026-04-23",
+                "invalid_reason": None,
+            }
+        )
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                cr,
+                _row({"last_invalidating_event_at": None}),
+            ]
+        )
+        app = _make_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/chronicler/aggregate/day-close?date=2026-04-23&tz=Asia/Singapore"
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["invalid"] is True
+        assert body["invalid_reason"] == "date_mismatch"
+        assert "prose" not in body
+        assert "provenance_refs" not in body
+        assert pool.fetchrow.await_count == 1
 
     @pytest.mark.parametrize(
         ("prose", "date_label", "expected_reason"),
@@ -266,7 +310,7 @@ class TestDayCloseReaderInvalid:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -280,8 +324,41 @@ class TestDayCloseReaderInvalid:
 class TestDayCloseReaderValidation:
     """400 error envelopes for missing / malformed parameters."""
 
-    async def test_missing_date_returns_400_envelope(self):
-        """Omitting the required date param → 400 with missing_parameter envelope."""
+    async def test_missing_timezone_returns_400_before_cache_lookup(self):
+        """A date-only request cannot fall back to the legacy date-only cache key."""
+        pool = _mock_pool(fetchrow_side_effect=[None])
+        app = _make_app(pool)
+        date_only_url = "/api/chronicler/aggregate/day-close?date=2026-04-23"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(date_only_url)
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "missing_parameter"
+        assert body["error"]["butler"] == "chronicler"
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_invalid_timezone_returns_400_before_cache_lookup(self):
+        """An unresolvable timezone never reaches a cache lookup or legacy fallback."""
+        pool = _mock_pool(fetchrow_side_effect=[None])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/chronicler/aggregate/day-close?date=2026-04-23&tz=Not/A/Timezone"
+            )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "invalid_timezone"
+        assert body["error"]["butler"] == "chronicler"
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_missing_date_returns_the_custom_400_envelope_before_cache_lookup(self):
+        """A documented-required date still reaches the route's custom 400, not FastAPI 422."""
         pool = _mock_pool(fetchrow_side_effect=[None])
         app = _make_app(pool)
         async with httpx.AsyncClient(
@@ -294,6 +371,7 @@ class TestDayCloseReaderValidation:
         assert body["error"]["code"] == "missing_parameter"
         assert body["error"]["butler"] == "chronicler"
         assert "data" not in body
+        pool.fetchrow.assert_not_awaited()
 
     async def test_invalid_date_format_returns_400_envelope(self):
         """Supplying a non-YYYY-MM-DD date string → 400 with invalid_date_format envelope."""
@@ -337,6 +415,72 @@ class TestDayCloseReaderValidation:
         assert "details" not in body["error"]
 
 
+class TestDayCloseReaderTimezoneIdentity:
+    """The cache identity is the exact requested local-day tuple."""
+
+    async def test_cache_lookup_uses_date_and_exact_timezone(self):
+        """Different timezone strings for one date must select different cache rows."""
+        pool = _mock_pool(
+            fetchrow_side_effect=[
+                _cache_row(),
+                _row({"last_invalidating_event_at": None}),
+            ]
+        )
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/chronicler/aggregate/day-close?date=2026-04-23&tz=America/Los_Angeles"
+            )
+
+        assert resp.status_code == 200
+        lookup = pool.fetchrow.call_args_list[0].args
+        assert lookup[1] == "day_close:2026-04-23:tz:America/Los_Angeles"
+
+    async def test_valid_timezone_aliases_keep_distinct_routed_cache_keys(self):
+        """The route validates both names but never canonicalizes their identities."""
+        pool = _mock_pool(fetchrow_returns=None)
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            alias_response = await client.get(
+                "/api/chronicler/aggregate/day-close?date=2026-04-23&tz=US/Pacific"
+            )
+            canonical_response = await client.get(
+                "/api/chronicler/aggregate/day-close?date=2026-04-23&tz=America/Los_Angeles"
+            )
+
+        assert alias_response.status_code == 404
+        assert canonical_response.status_code == 404
+        lookup_keys = [call.args[1] for call in pool.fetchrow.call_args_list]
+        assert lookup_keys == [
+            "day_close:2026-04-23:tz:US/Pacific",
+            "day_close:2026-04-23:tz:America/Los_Angeles",
+        ]
+
+    async def test_legacy_date_only_cache_row_is_a_miss(self):
+        """Preserved date-only rows are not a fallback for a timezone-qualified read."""
+
+        async def legacy_only_cache(*args: Any) -> _Row | None:
+            return _cache_row() if args[1] == "day_close:2026-04-23" else None
+
+        pool = _mock_pool()
+        pool.fetchrow = AsyncMock(side_effect=legacy_only_cache)
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/chronicler/aggregate/day-close?date=2026-04-23&tz=Asia/Singapore"
+            )
+
+        assert resp.status_code == 404
+        lookup = pool.fetchrow.call_args_list[0].args
+        assert lookup[1] == "day_close:2026-04-23:tz:Asia/Singapore"
+
+
 class TestDayCloseReaderFreshCache:
     async def test_fresh_cache_returns_prose_and_provenance(self):
         """No staleness signals → fresh response with prose + provenance_refs."""
@@ -348,7 +492,7 @@ class TestDayCloseReaderFreshCache:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["prose"] == "Yesterday was a productive day."
@@ -361,7 +505,7 @@ class TestDayCloseReaderFreshCache:
         refs_json = json.dumps(["spotify.session_summary:s1"])
         cr = _row(
             {
-                "cache_key": "day_close:2026-04-23",
+                "cache_key": "day_close:2026-04-23:tz:UTC",
                 "start_at": _CACHE_START,
                 "end_at": _CACHE_END,
                 "cache_built_at": _T_CACHE_BUILT,
@@ -376,7 +520,7 @@ class TestDayCloseReaderFreshCache:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         assert resp.json()["provenance_refs"] == ["spotify.session_summary:s1"]
 
@@ -395,7 +539,7 @@ class TestDayCloseReaderStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["stale"] is True
@@ -424,7 +568,7 @@ class TestDayCloseReaderStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["stale"] is True
@@ -440,7 +584,7 @@ class TestDayCloseReaderStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         body = resp.json()
         assert body["stale"] is True
         # cache_built_at should reflect _T_CACHE_BUILT (2026-04-24T02:00:00)
@@ -477,7 +621,7 @@ class TestDayCloseProvenanceRefStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["stale"] is True
@@ -493,7 +637,7 @@ class TestDayCloseProvenanceRefStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["stale"] is True
@@ -512,7 +656,7 @@ class TestDayCloseProvenanceRefStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
 
         # pool.fetchrow called twice: once for cache lookup, once for staleness.
         assert pool.fetchrow.call_count == 2
@@ -521,7 +665,7 @@ class TestDayCloseProvenanceRefStaleness:
         call_args = staleness_call[0]  # positional args tuple
         assert len(call_args) == 5, f"Expected SQL + 4 args, got {len(call_args)} args"
         # 5th element (index 4) is cache_key
-        assert call_args[4] == "day_close:2026-04-23"
+        assert call_args[4] == "day_close:2026-04-23:tz:UTC"
 
     async def test_fresh_cache_with_provenance_refs_no_stale(self):
         """Provenance-ref branches do not trigger stale when no updates occurred."""
@@ -533,7 +677,7 @@ class TestDayCloseProvenanceRefStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert "stale" not in body
@@ -569,7 +713,7 @@ class TestDayCloseCorrectedStartAtStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["stale"] is True
@@ -586,7 +730,7 @@ class TestDayCloseCorrectedStartAtStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert "stale" not in body
@@ -654,7 +798,7 @@ class TestDayCloseCorrectedStartAtPointEventStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert body["stale"] is True
@@ -671,7 +815,7 @@ class TestDayCloseCorrectedStartAtPointEventStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23&tz=UTC")
         assert resp.status_code == 200
         body = resp.json()
         assert "stale" not in body

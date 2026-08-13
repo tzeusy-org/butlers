@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getChroniclerDayClose } from "./client.ts";
+import { getChroniclerDayClose, postChroniclerDayCloseRefresh } from "./client.ts";
 import type {
   ChroniclerDayCloseRefreshResult,
   ChroniclerDayCloseResponse,
@@ -38,7 +38,7 @@ const INVALID_DAY_CLOSE_RESPONSE = {
 } satisfies ChroniclerDayCloseResponse;
 
 const QUIET_DAY_CLOSE_REFRESH_RESPONSE = {
-  cache_key: "day_close:2026-03-15",
+  cache_key: "day_close:2026-03-15:tz:Asia/Singapore",
   quiet: true,
 } satisfies ChroniclerDayCloseRefreshResult;
 
@@ -46,12 +46,16 @@ describe("getChroniclerDayClose", () => {
   it("requests one canonical day and preserves an invalid cache response", async () => {
     mockResponse(INVALID_DAY_CLOSE_RESPONSE);
 
-    const response = await getChroniclerDayClose({ date: "2026-03-15" });
+    const response = await getChroniclerDayClose({
+      date: "2026-03-15",
+      tz: "Asia/Singapore",
+    });
 
     const requestUrl = new URL(mockFetch.mock.calls[0][0], "http://butlers.test");
     expect(requestUrl.origin).toBe(EXPECTED_DAY_CLOSE_URL.origin);
     expect(requestUrl.pathname).toBe(EXPECTED_DAY_CLOSE_URL.pathname);
     expect(requestUrl.searchParams.get("date")).toBe("2026-03-15");
+    expect(requestUrl.searchParams.get("tz")).toBe("Asia/Singapore");
     expect(requestUrl.searchParams.has("window_start")).toBe(false);
     expect(requestUrl.searchParams.has("window_end")).toBe(false);
     expect(response).toEqual(INVALID_DAY_CLOSE_RESPONSE);
@@ -59,9 +63,25 @@ describe("getChroniclerDayClose", () => {
 });
 
 describe("Chronicler day-close refresh response contract", () => {
+  it("posts the selected exact date and timezone tuple", async () => {
+    mockResponse(QUIET_DAY_CLOSE_REFRESH_RESPONSE);
+
+    await postChroniclerDayCloseRefresh({
+      date: "2026-03-15",
+      tz: "US/Pacific",
+    });
+
+    const [requestUrl, requestInit] = mockFetch.mock.calls[0];
+    expect(new URL(requestUrl, "http://butlers.test").pathname).toBe(
+      "/api/chronicler/aggregate/day-close/refresh",
+    );
+    expect(requestInit).toMatchObject({ method: "POST" });
+    expect(JSON.parse(requestInit.body)).toEqual({ date: "2026-03-15", tz: "US/Pacific" });
+  });
+
   it("keeps a quiet close distinct from a cached response", () => {
     expect(QUIET_DAY_CLOSE_REFRESH_RESPONSE).toEqual({
-      cache_key: "day_close:2026-03-15",
+      cache_key: "day_close:2026-03-15:tz:Asia/Singapore",
       quiet: true,
     });
     expect(QUIET_DAY_CLOSE_REFRESH_RESPONSE).not.toHaveProperty("cache_built_at");

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import asyncpg
 import pytest
 
+from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_close_cache_tuple
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -47,14 +48,14 @@ async def pool(migrated_db_url: str) -> asyncpg.Pool:
     await p.close()
 
 
-def _result(*, prose: str, date_label: str) -> SimpleNamespace:
+def _result(*, prose: str, date_label: str, timezone: str = "UTC") -> SimpleNamespace:
     return SimpleNamespace(
         success=True,
         output=prose,
         tool_calls=[
             {
                 "name": "chronicler_day_close_bundle",
-                "input": {"date_label": date_label, "timezone": "UTC"},
+                "input": {"date_label": date_label, "timezone": timezone},
                 "outcome": "success",
                 "result": {
                     "date": date_label,
@@ -78,7 +79,8 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
     later valid candidate replaces an earlier audit-only invalid row.
     """
     run_at = datetime(2026, 4, 25, 1, 5, tzinfo=UTC)
-    cache_key = "day_close:2026-04-24"
+    target_date = date(2026, 4, 24)
+    cache_key = day_close_cache_key(target_date, "UTC")
     invalid_result = _result(
         prose="This candidate has an unbound day label.",
         date_label="2026-04-23",
@@ -93,7 +95,7 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
     try:
         async with pool.acquire() as blocker:
             async with blocker.transaction():
-                await blocker.execute("SELECT pg_advisory_xact_lock(hashtext($1))", cache_key)
+                await lock_day_close_cache_tuple(blocker, target_date, "UTC")
                 invalid_task = asyncio.create_task(
                     write_day_close_cache(
                         pool,
@@ -117,10 +119,7 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
                             """
                             SELECT count(*)
                             FROM pg_locks
-                            WHERE locktype = 'advisory'
-                              AND database = (
-                                  SELECT oid FROM pg_database WHERE datname = current_database()
-                              )
+                            WHERE locktype = 'transactionid'
                               AND NOT granted
                             """
                         )
@@ -151,3 +150,33 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def test_different_timezone_tuples_do_not_block_each_other(pool: asyncpg.Pool) -> None:
+    """A held UTC tuple lock cannot delay an otherwise independent SGT writer."""
+    run_at = datetime(2026, 4, 25, 1, 5, tzinfo=UTC)
+    target_date = date(2026, 4, 24)
+    result = _result(
+        prose="The Singapore local day stayed independent of the UTC cache row.",
+        date_label="2026-04-24",
+        timezone="Asia/Singapore",
+    )
+
+    async with pool.acquire() as blocker:
+        async with blocker.transaction():
+            await lock_day_close_cache_tuple(blocker, target_date, "UTC")
+            async with asyncio.timeout(2):
+                await write_day_close_cache(
+                    pool,
+                    task_name=DAY_CLOSE_TASK_NAME,
+                    result=result,
+                    run_at=run_at,
+                    tz="Asia/Singapore",
+                    target_date=target_date,
+                )
+
+    row = await pool.fetchrow(
+        "SELECT cache_key FROM tier2_cache WHERE cache_key = $1",
+        day_close_cache_key(target_date, "Asia/Singapore"),
+    )
+    assert row is not None

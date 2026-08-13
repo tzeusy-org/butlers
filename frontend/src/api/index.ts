@@ -1001,6 +1001,7 @@ export {
   getChroniclerAggregateByCategory,
   getChroniclerAggregateByDay,
   getChroniclerDayClose,
+  postChroniclerDayCloseRefresh,
   getChroniclerEpisodes,
   getChroniclerSourceState,
 } from "./client.ts";
@@ -1015,6 +1016,7 @@ export type {
   ChroniclerDayCloseFreshResponse,
   ChroniclerDayCloseInvalidResponse,
   ChroniclerDayCloseRefreshQuietResponse,
+  ChroniclerDayCloseRefreshRequest,
   ChroniclerDayCloseRefreshResponse,
   ChroniclerDayCloseRefreshResult,
   ChroniclerDayCloseResponse,

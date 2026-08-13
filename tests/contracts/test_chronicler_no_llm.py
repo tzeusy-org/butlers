@@ -9,7 +9,8 @@ Scanned files
 - roster/chronicler/api/router.py        — all handler functions
 - roster/chronicler/api/models.py        — Pydantic models for handler responses
 - src/butlers/chronicler/aggregations.py — category taxonomy + category_for()
-- src/butlers/chronicler/day_close_writer.py — day-close cache reader/writer
+- src/butlers/chronicler/day_close_cache.py — deterministic cache identity/lock helper
+- src/butlers/chronicler/day_close_writer.py — day-close cache writer
 - src/butlers/chronicler/storage.py      — low-level tier2_cache helpers
 - src/butlers/chronicler/reconciliation.py — deterministic day-close reconciliation core
 
@@ -46,6 +47,7 @@ _SCAN_FILES: list[Path] = [
     _REPO_ROOT / "roster" / "chronicler" / "api" / "router.py",
     _REPO_ROOT / "roster" / "chronicler" / "api" / "models.py",
     _REPO_ROOT / "src" / "butlers" / "chronicler" / "aggregations.py",
+    _REPO_ROOT / "src" / "butlers" / "chronicler" / "day_close_cache.py",
     _REPO_ROOT / "src" / "butlers" / "chronicler" / "day_close_writer.py",
     _REPO_ROOT / "src" / "butlers" / "chronicler" / "storage.py",
     _REPO_ROOT / "src" / "butlers" / "chronicler" / "reconciliation.py",
@@ -150,6 +152,13 @@ def test_aggregations_no_llm() -> None:
 def test_day_close_writer_no_llm() -> None:
     """src/butlers/chronicler/day_close_writer.py must not import or call LLM helpers."""
     path = _REPO_ROOT / "src" / "butlers" / "chronicler" / "day_close_writer.py"
+    violations = _violations_in_file(path)
+    assert not violations, _format(violations)
+
+
+def test_day_close_cache_no_llm() -> None:
+    """The tuple-identity helper must not introduce a second LLM path."""
+    path = _REPO_ROOT / "src" / "butlers" / "chronicler" / "day_close_cache.py"
     violations = _violations_in_file(path)
     assert not violations, _format(violations)
 

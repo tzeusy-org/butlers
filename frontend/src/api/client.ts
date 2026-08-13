@@ -286,6 +286,8 @@ import type {
   ChroniclerCategoryBuckets,
   ChroniclerCreateRoutineRequest,
   ChroniclerDayCloseParams,
+  ChroniclerDayCloseRefreshRequest,
+  ChroniclerDayCloseRefreshResult,
   ChroniclerDayCloseResponse,
   ChroniclerEpisode,
   ChroniclerEpisodeExplainResponse,
@@ -5624,15 +5626,28 @@ export function getChroniclerCorrectionPrompts(
 }
 
 /**
- * Fetch the day-close cache entry for one local date.
+ * Fetch the day-close cache entry for one exact local date/timezone tuple.
  * Returns fresh prose, a stale marker, or an invalid-without-prose marker.
  * 404 if no cache entry exists.
  */
 export function getChroniclerDayClose(
   params: ChroniclerDayCloseParams,
 ): Promise<ChroniclerDayCloseResponse> {
-  const sp = new URLSearchParams({ date: params.date });
+  const sp = new URLSearchParams({ date: params.date, tz: params.tz });
   return apiFetch(`/chronicler/aggregate/day-close?${sp.toString()}`);
+}
+
+/**
+ * Re-invoke the existing day-close schedule for one exact settled local-day tuple.
+ * This is the only dashboard LLM-bearing action on the Chronicles surface.
+ */
+export function postChroniclerDayCloseRefresh(
+  body: ChroniclerDayCloseRefreshRequest,
+): Promise<ChroniclerDayCloseRefreshResult> {
+  return apiFetch("/chronicler/aggregate/day-close/refresh", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 /** Fetch a single Chronicler episode by ID (corrected view). 404 if not found. */
