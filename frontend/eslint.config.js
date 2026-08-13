@@ -441,29 +441,33 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         type: 'problem',
       },
       create(context) {
-        function constInitializer(node) {
+        function scopeVariable(node) {
           let scope = context.sourceCode.getScope(node)
 
           while (scope) {
             const variable = scope.set.get(node.name)
-            if (variable) {
-              const [definition] = variable.defs
-              if (
-                variable.defs.length !== 1 ||
-                definition?.type !== 'Variable' ||
-                definition.parent?.kind !== 'const' ||
-                definition.node.id.type !== 'Identifier' ||
-                definition.node.id.name !== node.name ||
-                !definition.node.init
-              ) {
-                return null
-              }
-              return { initializer: definition.node.init, variable }
-            }
+            if (variable) return variable
             scope = scope.upper
           }
 
           return null
+        }
+
+        function constInitializer(node) {
+          const variable = scopeVariable(node)
+          const [definition] = variable?.defs ?? []
+          if (
+            !variable ||
+            variable.defs.length !== 1 ||
+            definition?.type !== 'Variable' ||
+            definition.parent?.kind !== 'const' ||
+            definition.node.id.type !== 'Identifier' ||
+            definition.node.id.name !== node.name ||
+            !definition.node.init
+          ) {
+            return null
+          }
+          return { initializer: definition.node.init, variable }
         }
 
         function memberPropertyName(node) {
@@ -471,6 +475,67 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             return node.property.value
           }
           return node.property.type === 'Identifier' ? node.property.name : null
+        }
+
+        function isUnshadowedGlobalIdentifier(node, name) {
+          if (node.type !== 'Identifier' || node.name !== name) return false
+          const variable = scopeVariable(node)
+          return !variable || !variable.defs.length
+        }
+
+        function resolvesImmutableAlias(node, predicate, resolvingVariables = new Set()) {
+          node = unwrapStaticExpression(node)
+          if (predicate(node)) return true
+          if (node.type !== 'Identifier') return false
+
+          const binding = constInitializer(node)
+          if (!binding || resolvingVariables.has(binding.variable)) return false
+
+          resolvingVariables.add(binding.variable)
+          const resolved = resolvesImmutableAlias(
+            binding.initializer,
+            predicate,
+            resolvingVariables,
+          )
+          resolvingVariables.delete(binding.variable)
+          return resolved
+        }
+
+        function isGlobalFunctionReference(node, name) {
+          return resolvesImmutableAlias(node, (candidate) =>
+            isUnshadowedGlobalIdentifier(candidate, name),
+          )
+        }
+
+        function isGlobalMemberReference(node, objectName, propertyName) {
+          return resolvesImmutableAlias(
+            node,
+            (candidate) =>
+              candidate.type === 'MemberExpression' &&
+              memberPropertyName(candidate) === propertyName &&
+              isUnshadowedGlobalIdentifier(candidate.object, objectName),
+          )
+        }
+
+        function isGetComputedStyleReference(node) {
+          return (
+            isGlobalFunctionReference(node, 'getComputedStyle') ||
+            isGlobalMemberReference(node, 'window', 'getComputedStyle') ||
+            isGlobalMemberReference(node, 'globalThis', 'getComputedStyle')
+          )
+        }
+
+        function isPrototypeMethodCall(node, constructorName, methodName) {
+          return (
+            node.type === 'CallExpression' &&
+            node.callee.type === 'MemberExpression' &&
+            memberPropertyName(node.callee) === 'call' &&
+            node.callee.object.type === 'MemberExpression' &&
+            memberPropertyName(node.callee.object) === methodName &&
+            node.callee.object.object.type === 'MemberExpression' &&
+            memberPropertyName(node.callee.object.object) === 'prototype' &&
+            isUnshadowedGlobalIdentifier(node.callee.object.object.object, constructorName)
+          )
         }
 
         function unwrapStaticExpression(node) {
@@ -621,6 +686,78 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             if (keep) filtered.push(element)
           }
           return filtered
+        }
+
+        function staticReducer(node) {
+          node = unwrapStaticExpression(node)
+          if (node.type !== 'ArrowFunctionExpression' && node.type !== 'FunctionExpression') {
+            return null
+          }
+          if (
+            node.params.length !== 2 ||
+            node.params.some((parameter) => parameter.type !== 'Identifier')
+          ) {
+            return null
+          }
+          if (node.body.type !== 'BlockStatement') {
+            return {
+              accumulator: node.params[0].name,
+              body: node.body,
+              element: node.params[1].name,
+            }
+          }
+          if (
+            node.body.body.length !== 1 ||
+            node.body.body[0].type !== 'ReturnStatement' ||
+            !node.body.body[0].argument
+          ) {
+            return null
+          }
+          return {
+            accumulator: node.params[0].name,
+            body: node.body.body[0].argument,
+            element: node.params[1].name,
+          }
+        }
+
+        function staticReducedString(
+          elements,
+          callbackNode,
+          initialValueNode,
+          resolvingVariables,
+          localValues,
+        ) {
+          const reducer = staticReducer(callbackNode)
+          if (!reducer) return null
+
+          let index = 0
+          let accumulator
+          if (initialValueNode) {
+            accumulator = stringConstructionValue(
+              initialValueNode,
+              resolvingVariables,
+              localValues,
+            )
+            if (accumulator === DYNAMIC_VALUE_MARKER) return null
+          } else {
+            const first = elements[0]
+            if (!first) return null
+            accumulator = stringConstructionValue(first, resolvingVariables, localValues)
+            if (accumulator === DYNAMIC_VALUE_MARKER) return null
+            index = 1
+          }
+
+          for (; index < elements.length; index += 1) {
+            const element = stringConstructionValue(elements[index], resolvingVariables, localValues)
+            if (element === DYNAMIC_VALUE_MARKER) return null
+            const callbackValues = new Map(localValues)
+            callbackValues.set(reducer.accumulator, accumulator)
+            callbackValues.set(reducer.element, element)
+            accumulator = stringConstructionValue(reducer.body, resolvingVariables, callbackValues)
+            if (accumulator === DYNAMIC_VALUE_MARKER) return null
+          }
+
+          return accumulator
         }
 
         function constArrayElements(node, resolvingVariables, localValues = new Map()) {
@@ -854,7 +991,13 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           const containsTailwindConstruction = TAILWIND_COLOR_UTILITY_SPELLINGS.some((utility) =>
             staticText.includes(`${utility}-(`),
           )
-          return containsCssVariableConstruction || containsTailwindConstruction
+          const containsPrivateIdentityFragment =
+            /--(?:color-)?category-(?:[1-9]|1[0-2])(?!\d)|--(?:color-)?category-(?=$|[^0-9])/.test(
+              staticText,
+            )
+          return containsCssVariableConstruction ||
+            containsTailwindConstruction ||
+            containsPrivateIdentityFragment
             ? `var(${DYNAMIC_VALUE_MARKER})`
             : DYNAMIC_VALUE_MARKER
         }
@@ -908,6 +1051,78 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
               stringConstructionValue(node.right, resolvingVariables, localValues)
             )
           }
+          if (
+            node.type === 'CallExpression' &&
+            isGlobalMemberReference(node.callee, 'String', 'fromCharCode')
+          ) {
+            if (node.arguments.some((argument) => argument.type === 'SpreadElement')) {
+              return DYNAMIC_VALUE_MARKER
+            }
+            const codeUnits = node.arguments.map((argument) =>
+              staticNumberValue(argument, resolvingVariables, localValues),
+            )
+            if (codeUnits.some((codeUnit) => codeUnit === null)) return DYNAMIC_VALUE_MARKER
+            try {
+              return String.fromCharCode(...codeUnits)
+            } catch {
+              return DYNAMIC_VALUE_MARKER
+            }
+          }
+          if (isPrototypeMethodCall(node, 'Array', 'join')) {
+            if (
+              node.arguments.length < 1 ||
+              node.arguments.length > 2 ||
+              node.arguments.some((argument) => argument.type === 'SpreadElement')
+            ) {
+              return DYNAMIC_VALUE_MARKER
+            }
+            const array = constArrayElements(node.arguments[0], resolvingVariables, localValues)
+            if (!array) return failClosedStructuralValue(node.arguments[0], resolvingVariables)
+            const separator = node.arguments[1]
+              ? stringConstructionValue(node.arguments[1], resolvingVariables, localValues)
+              : ','
+            if (separator === DYNAMIC_VALUE_MARKER) return failClosedStructuralValue(node, resolvingVariables)
+            const values = array.map((element) =>
+              stringConstructionValue(element, resolvingVariables, localValues),
+            )
+            return values.includes(DYNAMIC_VALUE_MARKER)
+              ? failClosedStructuralValue(node, resolvingVariables)
+              : values.join(separator)
+          }
+          if (isPrototypeMethodCall(node, 'String', 'concat')) {
+            if (
+              node.arguments.length < 1 ||
+              node.arguments.some((argument) => argument.type === 'SpreadElement')
+            ) {
+              return DYNAMIC_VALUE_MARKER
+            }
+            const values = node.arguments.map((argument) =>
+              stringConstructionValue(argument, resolvingVariables, localValues),
+            )
+            return values.includes(DYNAMIC_VALUE_MARKER)
+              ? failClosedStructuralValue(node, resolvingVariables)
+              : values.join('')
+          }
+          if (isPrototypeMethodCall(node, 'Array', 'reduce')) {
+            if (
+              node.arguments.length < 2 ||
+              node.arguments.length > 3 ||
+              node.arguments.some((argument) => argument.type === 'SpreadElement')
+            ) {
+              return DYNAMIC_VALUE_MARKER
+            }
+            const array = constArrayElements(node.arguments[0], resolvingVariables, localValues)
+            if (!array) return failClosedStructuralValue(node.arguments[0], resolvingVariables)
+            return (
+              staticReducedString(
+                array,
+                node.arguments[1],
+                node.arguments[2],
+                resolvingVariables,
+                localValues,
+              ) ?? failClosedStructuralValue(node, resolvingVariables)
+            )
+          }
           if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression') {
             const property = memberPropertyName(node.callee)
 
@@ -920,22 +1135,46 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
               const separator = node.arguments[0]
                 ? stringConstructionValue(node.arguments[0], resolvingVariables, localValues)
                 : ','
-              if (separator === DYNAMIC_VALUE_MARKER) return DYNAMIC_VALUE_MARKER
-              return array
-                .map((element) =>
-                  stringConstructionValue(element, resolvingVariables, localValues),
-                )
-                .join(separator)
+              if (separator === DYNAMIC_VALUE_MARKER) return failClosedStructuralValue(node, resolvingVariables)
+              const values = array.map((element) =>
+                stringConstructionValue(element, resolvingVariables, localValues),
+              )
+              return values.includes(DYNAMIC_VALUE_MARKER)
+                ? failClosedStructuralValue(node, resolvingVariables)
+                : values.join(separator)
             }
 
             if (property === 'concat') {
-              return [node.callee.object, ...node.arguments]
+              const values = [node.callee.object, ...node.arguments]
                 .map((part) =>
                   part.type === 'SpreadElement'
                     ? DYNAMIC_VALUE_MARKER
                     : stringConstructionValue(part, resolvingVariables, localValues),
                 )
-                .join('')
+              return values.includes(DYNAMIC_VALUE_MARKER)
+                ? failClosedStructuralValue(node, resolvingVariables)
+                : values.join('')
+            }
+
+            if (property === 'reduce') {
+              if (
+                node.arguments.length < 1 ||
+                node.arguments.length > 2 ||
+                node.arguments.some((argument) => argument.type === 'SpreadElement')
+              ) {
+                return DYNAMIC_VALUE_MARKER
+              }
+              const array = constArrayElements(node.callee.object, resolvingVariables, localValues)
+              if (!array) return failClosedStructuralValue(node.callee.object, resolvingVariables)
+              return (
+                staticReducedString(
+                  array,
+                  node.arguments[0],
+                  node.arguments[1],
+                  resolvingVariables,
+                  localValues,
+                ) ?? failClosedStructuralValue(node, resolvingVariables)
+              )
             }
 
             if (property === 'at' && node.arguments.length === 1) {
@@ -996,30 +1235,70 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         }
 
         function isNestedStringConstruction(node) {
+          const parent = node.parent
+          const enclosingCall =
+            parent?.type === 'CallExpression'
+              ? parent
+              : parent?.type === 'MemberExpression' &&
+                  parent.object === node &&
+                  parent.parent?.type === 'CallExpression' &&
+                  parent.parent.callee === parent
+                ? parent.parent
+                : null
+          const isResolverReceiver =
+            enclosingCall?.callee.type === 'MemberExpression' && enclosingCall.callee.object === node
           return (
-            (node.parent?.type === 'BinaryExpression' && node.parent.operator === '+') ||
-            node.parent?.type === 'TemplateLiteral'
+            (parent?.type === 'BinaryExpression' && parent.operator === '+') ||
+            parent?.type === 'TemplateLiteral' ||
+            (isResolverReceiver &&
+              ['at', 'concat', 'join', 'reduce', 'replace', 'replaceAll'].includes(
+                memberPropertyName(enclosingCall?.callee),
+              ))
+          )
+        }
+
+        function isCssomStyleReceiver(node) {
+          return resolvesImmutableAlias(node, (candidate) => {
+            if (
+              candidate.type === 'CallExpression' &&
+              isGetComputedStyleReference(candidate.callee)
+            ) {
+              return true
+            }
+            return candidate.type === 'MemberExpression' && memberPropertyName(candidate) === 'style'
+          })
+        }
+
+        function isTypedOmReceiver(node) {
+          return resolvesImmutableAlias(
+            node,
+            (candidate) =>
+              candidate.type === 'CallExpression' &&
+              resolvesImmutableAlias(
+                candidate.callee,
+                (callee) =>
+                  callee.type === 'MemberExpression' &&
+                  memberPropertyName(callee) === 'computedStyleMap',
+              ),
           )
         }
 
         function cssomPropertyReadValue(node) {
           if (
             node.callee.type !== 'MemberExpression' ||
-            memberPropertyName(node.callee) !== 'getPropertyValue' ||
             node.arguments.length !== 1 ||
-            node.arguments[0].type === 'SpreadElement' ||
-            node.callee.object.type !== 'CallExpression'
+            node.arguments[0].type === 'SpreadElement'
           ) {
             return null
           }
 
-          const getComputedStyle = node.callee.object.callee
-          const isDirectGlobal =
-            getComputedStyle.type === 'Identifier' && getComputedStyle.name === 'getComputedStyle'
-          const isGlobalMember =
-            getComputedStyle.type === 'MemberExpression' &&
-            memberPropertyName(getComputedStyle) === 'getComputedStyle'
-          if (!isDirectGlobal && !isGlobalMember) return null
+          const property = memberPropertyName(node.callee)
+          if (
+            (property !== 'getPropertyValue' || !isCssomStyleReceiver(node.callee.object)) &&
+            (property !== 'get' || !isTypedOmReceiver(node.callee.object))
+          ) {
+            return null
+          }
 
           return stringConstructionValue(node.arguments[0])
         }

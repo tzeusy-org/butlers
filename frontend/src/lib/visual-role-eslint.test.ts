@@ -395,6 +395,56 @@ const CSSOM_SEMANTIC_ROLE_READ_SOURCE = [
   'export const allowed = getComputedStyle(document.documentElement).getPropertyValue(category);',
 ].join("\n");
 
+const UNMODELLED_STATIC_PRIVATE_RESOLVER_SOURCE = [
+  'export const fromCharCode = String.fromCharCode(118, 97, 114, 40).concat("--category-1", ")");',
+  'export const fromReduce = ["var(", "--category-1", ")"].reduce((value, part) => value + part, "");',
+  'export const fromPrototypeJoin = Array.prototype.join.call(["var(", "--category-1", ")"], "");',
+  'export const fromPrototypeConcat = String.prototype.concat.call("var(", "--category-1", ")");',
+  'export const ordinaryTailwind = ["bg-(", "--category-1", ")"].reduce((value, part) => value + part, "");',
+  'export const typedTailwind = ["bg-(color:", "--color-category-12", ")"].reduce((value, part) => value + part, "");',
+].join("\n");
+
+const UNMODELLED_STATIC_SEMANTIC_ROLE_RESOLVER_SOURCE = [
+  'export const fromCharCode = String.fromCharCode(118, 97, 114, 40).concat("--categorical-1", ")");',
+  'export const fromReduce = ["var(", "--categorical-1", ")"].reduce((value, part) => value + part, "");',
+  'export const fromPrototypeJoin = Array.prototype.join.call(["var(", "--categorical-1", ")"], "");',
+  'export const fromPrototypeConcat = String.prototype.concat.call("var(", "--categorical-1", ")");',
+  'export const ordinaryTailwind = ["bg-(", "--categorical-1", ")"].reduce((value, part) => value + part, "");',
+  'export const typedTailwind = ["bg-(color:", "--categorical-1", ")"].reduce((value, part) => value + part, "");',
+].join("\n");
+
+const CSSOM_PRIVATE_IDENTITY_RESOLVER_VARIANT_SOURCE = [
+  'export const directStyle = document.documentElement.style.getPropertyValue("--category-1");',
+  'const read = getComputedStyle;',
+  'export const aliasedFunction = read(document.documentElement).getPropertyValue("--color-category-12");',
+  'const computed = getComputedStyle(document.documentElement);',
+  'export const aliasedStyle = computed.getPropertyValue("--category-1");',
+  'export const typedOm = document.documentElement.computedStyleMap().get("--color-category-12");',
+  'const inlineStyle = document.documentElement.style;',
+  'export const aliasedInlineStyle = inlineStyle.getPropertyValue("--category-1");',
+  'export const windowGlobal = window.getComputedStyle(document.documentElement).getPropertyValue("--color-category-12");',
+  'const windowRead = window.getComputedStyle;',
+  'export const aliasedWindowFunction = windowRead(document.documentElement).getPropertyValue("--category-1");',
+  'const typedStyleMap = document.documentElement.computedStyleMap();',
+  'export const aliasedTypedOm = typedStyleMap.get("--color-category-12");',
+].join("\n");
+
+const CSSOM_SEMANTIC_ROLE_RESOLVER_VARIANT_SOURCE = [
+  'export const directStyle = document.documentElement.style.getPropertyValue("--categorical-1");',
+  'const read = getComputedStyle;',
+  'export const aliasedFunction = read(document.documentElement).getPropertyValue("--categorical-1");',
+  'const computed = getComputedStyle(document.documentElement);',
+  'export const aliasedStyle = computed.getPropertyValue("--categorical-1");',
+  'export const typedOm = document.documentElement.computedStyleMap().get("--categorical-1");',
+  'const inlineStyle = document.documentElement.style;',
+  'export const aliasedInlineStyle = inlineStyle.getPropertyValue("--categorical-1");',
+  'export const windowGlobal = window.getComputedStyle(document.documentElement).getPropertyValue("--categorical-1");',
+  'const windowRead = window.getComputedStyle;',
+  'export const aliasedWindowFunction = windowRead(document.documentElement).getPropertyValue("--categorical-1");',
+  'const typedStyleMap = document.documentElement.computedStyleMap();',
+  'export const aliasedTypedOm = typedStyleMap.get("--categorical-1");',
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -594,6 +644,25 @@ describe("semantic visual-role lint", () => {
     expect(roleMessages).toEqual([]);
   });
 
+  it("rejects unmodelled static resolver constructions of private identity references", async () => {
+    const roleMessages = await visualRoleMessages(
+      UNMODELLED_STATIC_PRIVATE_RESOLVER_SOURCE,
+      "src/components/ui/UnmodelledStaticIdentityResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(6);
+    expect(roleMessages.map((message) => message.line)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("permits the same static resolver constructions for semantic role tokens", async () => {
+    const roleMessages = await visualRoleMessages(
+      UNMODELLED_STATIC_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/UnmodelledStaticSemanticRoleResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
   it("rejects immutable array wrapper pipelines that construct private identity references", async () => {
     const roleMessages = await visualRoleMessages(
       IMMUTABLE_ARRAY_WRAPPER_CONSTRUCTION_SOURCE,
@@ -661,9 +730,40 @@ describe("semantic visual-role lint", () => {
     expect(roleMessages).toEqual([]);
   });
 
+  it("rejects direct, aliased, and Typed OM private identity property reads", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_PRIVATE_IDENTITY_RESOLVER_VARIANT_SOURCE,
+      "src/components/ui/IdentityCssomResolverVariantLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(8);
+    expect(roleMessages.map((message) => message.line)).toEqual([1, 3, 5, 6, 8, 9, 11, 13]);
+  });
+
+  it("permits direct, aliased, and Typed OM semantic role property reads", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_SEMANTIC_ROLE_RESOLVER_VARIANT_SOURCE,
+      "src/components/ui/SemanticCssomResolverVariant.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
   it("keeps the ButlerMark exemption limited to its canonical component", async () => {
     const roleMessages = await visualRoleMessages(
       FULLY_DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE,
+      "src/components/ui/ButlerMark.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("keeps the ButlerMark exemption for static resolver and CSSOM identity access", async () => {
+    const roleMessages = await visualRoleMessages(
+      [
+        UNMODELLED_STATIC_PRIVATE_RESOLVER_SOURCE,
+        CSSOM_PRIVATE_IDENTITY_RESOLVER_VARIANT_SOURCE,
+      ].join("\n"),
       "src/components/ui/ButlerMark.tsx",
     );
 
