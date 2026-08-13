@@ -465,6 +465,13 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return null
         }
 
+        function memberPropertyName(node) {
+          if (node.computed && node.property.type === 'Literal') {
+            return node.property.value
+          }
+          return node.property.type === 'Identifier' ? node.property.name : null
+        }
+
         function constArrayElements(node, resolvingVariables) {
           if (
             node.type === 'TSAsExpression' ||
@@ -476,6 +483,23 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             return constArrayElements(node.expression, resolvingVariables)
           }
           if (node.type === 'ArrayExpression') return node.elements
+          if (
+            node.type === 'CallExpression' &&
+            node.callee.type === 'MemberExpression' &&
+            memberPropertyName(node.callee) === 'concat'
+          ) {
+            const receiverElements = constArrayElements(node.callee.object, resolvingVariables)
+            if (!receiverElements) return null
+
+            return node.arguments.reduce((elements, argument) => {
+              if (argument.type === 'SpreadElement') return [...elements, argument]
+
+              const argumentElements = constArrayElements(argument, resolvingVariables)
+              return argumentElements
+                ? [...elements, ...argumentElements]
+                : [...elements, argument]
+            }, receiverElements)
+          }
           if (node.type !== 'Identifier') return null
 
           const binding = constInitializer(node)
@@ -485,6 +509,34 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           const elements = constArrayElements(binding.initializer, resolvingVariables)
           resolvingVariables.delete(binding.variable)
           return elements
+        }
+
+        function constRegExpValue(node, resolvingVariables) {
+          if (
+            node.type === 'TSAsExpression' ||
+            node.type === 'TSTypeAssertion' ||
+            node.type === 'TSNonNullExpression' ||
+            node.type === 'TSSatisfiesExpression' ||
+            node.type === 'ChainExpression'
+          ) {
+            return constRegExpValue(node.expression, resolvingVariables)
+          }
+          if (node.type === 'Literal' && node.regex) {
+            try {
+              return new RegExp(node.regex.pattern, node.regex.flags)
+            } catch {
+              return null
+            }
+          }
+          if (node.type !== 'Identifier') return null
+
+          const binding = constInitializer(node)
+          if (!binding || resolvingVariables.has(binding.variable)) return null
+
+          resolvingVariables.add(binding.variable)
+          const value = constRegExpValue(binding.initializer, resolvingVariables)
+          resolvingVariables.delete(binding.variable)
+          return value
         }
 
         function stringConstructionValue(node, resolvingVariables = new Set()) {
@@ -532,12 +584,7 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             )
           }
           if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression') {
-            const property =
-              node.callee.computed && node.callee.property.type === 'Literal'
-                ? node.callee.property.value
-                : node.callee.property.type === 'Identifier'
-                  ? node.callee.property.name
-                  : null
+            const property = memberPropertyName(node.callee)
 
             if (property === 'join') {
               if (node.arguments.length > 1) return DYNAMIC_VALUE_MARKER
@@ -552,6 +599,8 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
                 .map((element) =>
                   element && element.type !== 'SpreadElement'
                     ? stringConstructionValue(element, resolvingVariables)
+                    : element?.type === 'SpreadElement'
+                      ? DYNAMIC_VALUE_MARKER
                     : '',
                 )
                 .join(separator)
@@ -567,15 +616,25 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
                 .join('')
             }
 
-            if (property === 'replace' && node.arguments.length === 2) {
+            if ((property === 'replace' || property === 'replaceAll') && node.arguments.length === 2) {
               const [search, replacement] = node.arguments
               if (search.type === 'SpreadElement' || replacement.type === 'SpreadElement') {
                 return DYNAMIC_VALUE_MARKER
               }
-              return stringConstructionValue(node.callee.object, resolvingVariables).replace(
-                stringConstructionValue(search, resolvingVariables),
-                stringConstructionValue(replacement, resolvingVariables),
-              )
+
+              const regExpSearch = constRegExpValue(search, resolvingVariables)
+              if (property === 'replaceAll' && regExpSearch && !regExpSearch.global) {
+                return DYNAMIC_VALUE_MARKER
+              }
+
+              try {
+                return stringConstructionValue(node.callee.object, resolvingVariables)[property](
+                  regExpSearch ?? stringConstructionValue(search, resolvingVariables),
+                  stringConstructionValue(replacement, resolvingVariables),
+                )
+              } catch {
+                return DYNAMIC_VALUE_MARKER
+              }
             }
           }
           return DYNAMIC_VALUE_MARKER

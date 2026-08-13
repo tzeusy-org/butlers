@@ -292,6 +292,26 @@ const STATIC_CALL_CONSTRUCTION_SOURCE = [
   'export const fromReplace = "var(__token__)".replace("__token__", "--category-1");',
 ].join("\n");
 
+const STATIC_CALL_CONSTRUCTION_VARIANT_SOURCE = [
+  'const identity = `--${"category-1"}`;',
+  'const tokenPattern = /__token__/;',
+  'export const fromRegExpReplace = "var(__token__)".replace(tokenPattern, identity);',
+  'const placeholder = `__${"token"}__`;',
+  'export const fromReplaceAll = "bg-(__token__)".replaceAll(placeholder, identity);',
+  'export const fromTypedReplaceAll = `bg-(color:${placeholder})`.replaceAll(placeholder, identity);',
+  'const fragments = ["var("] as const;',
+  'export const fromArrayConcatJoin = fragments.concat(identity, ")").join("");',
+].join("\n");
+
+const STATIC_CALL_SEMANTIC_ROLE_SOURCE = [
+  'const role = `--${"categorical-1"}`;',
+  'const placeholder = "__token__";',
+  'export const fromReplaceAll = "bg-(color:__token__)".replaceAll(placeholder, role);',
+  'const fragments = ["var("] as const;',
+  'const suffix = [role, ")"] as const;',
+  'export const fromArrayConcatJoin = fragments.concat(suffix).join("");',
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -470,6 +490,25 @@ describe("semantic visual-role lint", () => {
     );
 
     expect(roleMessages).toHaveLength(4);
+  });
+
+  it("rejects static RegExp replacement, replaceAll, and array concat/join identity construction", async () => {
+    const roleMessages = await visualRoleMessages(
+      STATIC_CALL_CONSTRUCTION_VARIANT_SOURCE,
+      "src/components/ui/StaticCallIdentityVariantLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(4);
+    expect(roleMessages.map((message) => message.line)).toEqual([3, 5, 6, 8]);
+  });
+
+  it("permits static call construction of semantic-role values", async () => {
+    const roleMessages = await visualRoleMessages(
+      STATIC_CALL_SEMANTIC_ROLE_SOURCE,
+      "src/components/ui/StaticCallSemanticRole.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
   });
 
   it("keeps the ButlerMark exemption limited to its canonical component", async () => {
