@@ -49,3 +49,9 @@
       quota-aware path, `next_same_tier_candidate`, or empty results (an empty answer is
       exactly the state most likely to change soon). TTL-based rather than event-driven
       invalidation — justified in `_fetch_resolve_rows`'s docstring.
+- [x] 5.4 Discretion quota skips (bu-x82cy): reconcile `model-catalog` and
+      `catalog-token-limits` so token limits are per-catalog-entry availability caps for
+      discretion dispatch, then make a denied candidate a bounded, pre-invocation,
+      same-effective-tier skip. Skips consume the existing attempt cap; terminal
+      quota/runtime exhaustion is `same_tier_failover_exhausted`; do not import unrelated
+      Spawner permission, monthly-ceiling, per-call, dashboard, or session-provenance gates.

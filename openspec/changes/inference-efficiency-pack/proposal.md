@@ -46,6 +46,15 @@ against is a small, bounded table.
   index-scan-friendly via `idx_model_dispatch_attempts_catalog_ts`). Same
   trigger condition, same result set -- verified against the full existing
   breaker test suite plus new isolation coverage.
+- **Discretion quota skip alignment**: a token limit is a per-catalog-entry
+  availability cap for connector discretion dispatch. A quota-denied selected
+  entry is skipped before adapter invocation and can fail over only through
+  the already selected effective tier. Each skip consumes the dispatcher's
+  existing bounded attempt budget; terminal quota/runtime exhaustion is
+  surfaced as `same_tier_failover_exhausted`. The change records only bounded
+  non-sensitive dispatcher operational provenance and deliberately does not
+  copy Spawner permission, monthly-ceiling, per-call, dashboard, or
+  session-provenance gates.
 
 ## Deferred (reported as follow-ups, not implemented here)
 
@@ -60,8 +69,10 @@ cuts.
 
 ## Impact
 
-- Affected specs: `model-catalog` (MODIFIED: Priority tie-breaking scenario).
+- Affected specs: `model-catalog` (MODIFIED: priority tie-breaking and discretion
+  quota-skip scenarios) and `catalog-token-limits` (MODIFIED: discretion quota behavior).
 - Affected code: `alembic/versions/core/core_187_dispatch_attempt_duration.py`,
   `src/butlers/core/spawner.py`, `src/butlers/core/model_routing.py`,
   `src/butlers/api/routers/model_settings.py`,
-  `frontend/src/pages/SettingsModelsPage.tsx`, `frontend/src/api/types.ts`.
+  `frontend/src/pages/SettingsModelsPage.tsx`, `frontend/src/api/types.ts`,
+  `src/butlers/connectors/discretion_dispatcher.py`.

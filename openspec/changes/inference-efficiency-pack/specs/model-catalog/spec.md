@@ -57,6 +57,26 @@ The system SHALL provide model resolution functions that select catalog entries 
 - **AND** it SHALL exclude all previously attempted or skipped `catalog_entry_id` values
 - **AND** it SHALL return the next highest-priority enabled model in that same tier
 
+#### Scenario: Discretion quota skip uses the same effective tier
+- **WHEN** the discretion dispatcher selects a catalog entry and its pre-invocation
+  `check_token_quota()` result is `allowed=False`
+- **THEN** it SHALL treat that catalog entry as a per-entry availability skip, without
+  invoking its adapter
+- **AND** it SHALL exclude the skipped `catalog_entry_id` and seek the next candidate only
+  in the already selected effective complexity tier
+- **AND** it SHALL consume one slot from the dispatcher's existing bounded same-tier
+  failover-attempt budget
+- **AND** it SHALL emit bounded operational provenance limited to the catalog model,
+  effective tier, quota-window state, bounded attempt count, and a stable quota-skip reason;
+  it SHALL NOT add prompt, system-prompt, caller identity, or Spawner session provenance
+
+#### Scenario: Discretion same-tier quota exhaustion is terminal
+- **WHEN** quota skips and/or eligible runtime failures consume every candidate in the
+  discretion dispatcher's effective complexity tier, or consume its bounded attempt budget
+- **THEN** the dispatcher SHALL raise `RuntimeError` tagged
+  `same_tier_failover_exhausted`
+- **AND** it SHALL NOT retry a candidate from a different effective complexity tier
+
 #### Scenario: Initial tier fallthrough remains separate
 - **WHEN** initial model resolution finds no candidate in the requested tier
 - **THEN** the existing canonical tier fallthrough behavior MAY select a candidate from
