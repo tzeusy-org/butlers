@@ -30,16 +30,20 @@
   denial: the root-owned project-scoped host policy must default-deny the
   executor bridge except its created relay peer at the configured port, and
   default-deny relay-bridge forwarded and bridge-to-host traffic except the
-  configured PostgreSQL endpoint and port; supported
-  `scripts/compose.sh` and `butlers deploy` paths must treat stop/down failure
-  as terminal before they create the executor,
+  configured PostgreSQL endpoint and port; protected
+  `scripts/compose.sh --with-restore-drill`, `scripts/compose.sh --prod`, and
+  `butlers deploy` paths must treat stop/down failure as terminal before they
+  create the executor,
   invoke only a fixed root-owned firewall wrapper with validated literal
   arguments and a versioned pre-create capability preparation, discover the
   exact created executor/relay topology, install both policies, then bind its
   per-created-generation nonce in the executor marker to the observable
   executor generation/IP/gateway and relay-alias IP; reject
   stale installed wrappers and stale same-boot down/recreate markers before
-  secret use, then start the protected services;
+  secret use, then start the protected services; ordinary dev
+  `scripts/compose.sh` must use only the base Compose file and must not inspect
+  executor prerequisites unless the operator explicitly passes
+  `--with-restore-drill`;
   disable executor
   auto-restart while retaining an untrimmed DNS `verify-full` TLS identity (not
   `localhost` or any numeric IPv4 spelling) separately from the resolved IPv4

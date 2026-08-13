@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from butlers.core.deploy import DEFAULT_COMPOSE_FILES
 from butlers.jobs.restore_drill_executor import load_restore_drill_executor_config
 from tests.restore_drill_endpoint_policy import (
     EXECUTOR_DNS_IDENTITIES_ACCEPTED,
@@ -115,6 +114,95 @@ def _rendered_compose(*compose_files: str, env_overrides: dict[str, str] | None 
     return json.loads(completed.stdout)
 
 
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _run_compose_launcher_harness(
+    tmp_path: Path,
+    *,
+    args: tuple[str, ...],
+    environment_name: str,
+    environment_text: str,
+    launcher_environment: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run the real launcher against fake lifecycle commands, never Docker."""
+    repo_root = tmp_path / "launcher-repo"
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    shutil.copy2(_COMPOSE_LAUNCHER, scripts_dir / "compose.sh")
+    shutil.copy2(_REPO_ROOT / "scripts" / "base-image-input-fingerprint.sh", scripts_dir)
+    for relative_path in (
+        "Dockerfile.base",
+        "scripts/runtime_cli_sandbox_init.c",
+        "scripts/generate_runtime_cli_sandbox_manifest.py",
+    ):
+        target = repo_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("test-only build input\n", encoding="utf-8")
+    (repo_root / f".env.{environment_name}").write_text(
+        environment_text,
+        encoding="utf-8",
+    )
+
+    calls = tmp_path / "launcher-calls"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "docker",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'docker %s\\n\' "$*" >> "$RESTORE_DRILL_LAUNCHER_CALLS"\n',
+    )
+    _write_executable(
+        fake_bin / "sudo",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'sudo %s\\n\' "$*" >> "$RESTORE_DRILL_LAUNCHER_CALLS"\n'
+        'if [[ "$*" == "-n true" ]]; then exit 1; fi\n'
+        'if [[ "${RESTORE_DRILL_TEST_FAIL_FIREWALL:-}" == "prepare" && "$*" == *"--prepare-executor-capability-v1"* ]]; then exit 1; fi\n'
+        'if [[ "${RESTORE_DRILL_TEST_FAIL_FIREWALL:-}" == "apply" && "$*" == *"--require-executor-capability-v1"* ]]; then exit 1; fi\n'
+        'if [[ "$*" == *"--prepare-executor-capability-v1"* ]]; then\n'
+        "  printf '%064d\\n' 0\n"
+        "fi\n",
+    )
+    _write_executable(
+        fake_bin / "git",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'if [[ "$1" == "rev-parse" ]]; then printf "test-sha\\n"; fi\n',
+    )
+    _write_executable(fake_bin / "bd", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        fake_bin / "getent",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'getent %s\\n\' "$*" >> "$RESTORE_DRILL_LAUNCHER_CALLS"\n'
+        "exit 88\n",
+    )
+
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+    }
+    for key in tuple(environment):
+        if key.startswith("RESTORE_DRILL_"):
+            environment.pop(key)
+    environment["RESTORE_DRILL_LAUNCHER_CALLS"] = str(calls)
+    environment.update(launcher_environment or {})
+    completed = subprocess.run(
+        ["bash", scripts_dir / "compose.sh", *args],
+        check=False,
+        capture_output=True,
+        cwd=repo_root,
+        env=environment,
+        text=True,
+    )
+    call_lines = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    return completed, call_lines
+
+
 def test_direct_compose_render_omits_the_privileged_restore_executor() -> None:
     """Bare Compose must not be able to start the credentialed executor unfenced."""
     direct = _rendered_compose(_BASE_COMPOSE_FILE)
@@ -123,6 +211,220 @@ def test_direct_compose_render_omits_the_privileged_restore_executor() -> None:
     assert direct["networks"].get("restore_drill_db") is None
     assert direct.get("secrets", {}).get("restore_drill_executor_password") is None
     assert direct.get("configs", {}).get(_CA_CONFIG_SOURCE) is None
+
+
+def test_dev_launcher_uses_only_base_compose_without_explicit_restore_drill_opt_in(
+    tmp_path: Path,
+) -> None:
+    completed, calls = _run_compose_launcher_harness(
+        tmp_path,
+        args=("--skip-oauth-check", "--skip-tailscale-check"),
+        environment_name="dev",
+        # These invalid protected-only endpoints prove disabled dev does not
+        # validate or resolve restore-drill configuration.
+        environment_text=(
+            "POSTGRES_HOST=postgres.example.test\n"
+            "POSTGRES_PORT=5432\n"
+            "POSTGRES_PASSWORD=non-secret-test-value\n"
+            "RESTORE_DRILL_EXECUTOR_DB_HOST=127.0.0.1\n"
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=127.0.0.1\n"
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Restore drill: disabled" in completed.stdout
+    assert any(call.endswith("down --remove-orphans") for call in calls)
+    assert any(
+        call.startswith("docker compose -f docker-compose.yml") and " up -d" in call
+        for call in calls
+    )
+    assert all("docker-compose.restore-drill.yml" not in call for call in calls)
+    assert all("restore-drill-postgres-proxy" not in call for call in calls)
+    assert all(_FIREWALL_WRAPPER not in call for call in calls)
+    assert all(not call.startswith("getent ") for call in calls)
+
+
+def test_dev_launcher_does_not_infer_restore_drill_opt_in_from_fully_provisioned_config(
+    tmp_path: Path,
+) -> None:
+    password_file = tmp_path / "password-file"
+    password_marker = "test-only-password-marker"
+    password_file.write_text(password_marker + "\n", encoding="utf-8")
+
+    completed, calls = _run_compose_launcher_harness(
+        tmp_path,
+        args=("--skip-oauth-check", "--skip-tailscale-check"),
+        environment_name="dev",
+        environment_text=(
+            "POSTGRES_HOST=postgres.example.test\n"
+            "POSTGRES_PORT=5432\n"
+            f"RESTORE_DRILL_EXECUTOR_PASSWORD_FILE={password_file}\n"
+            "RESTORE_DRILL_EXECUTOR_DB_HOST=postgres.example.test\n"
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=10.23.4.5\n"
+            "RESTORE_DRILL_EXECUTOR_DB_PORT=5432\n"
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Restore drill: disabled" in completed.stdout
+    assert str(password_file) not in completed.stdout + completed.stderr
+    assert password_marker not in completed.stdout + completed.stderr
+    assert all("docker-compose.restore-drill.yml" not in call for call in calls)
+    assert all("restore-drill-postgres-proxy" not in call for call in calls)
+    assert all(_FIREWALL_WRAPPER not in call for call in calls)
+
+
+def test_dev_opt_in_requires_password_file_before_lifecycle(tmp_path: Path) -> None:
+    completed, calls = _run_compose_launcher_harness(
+        tmp_path,
+        args=("--with-restore-drill", "--skip-oauth-check", "--skip-tailscale-check"),
+        environment_name="dev",
+        environment_text="POSTGRES_HOST=postgres.example.test\nPOSTGRES_PORT=5432\n",
+    )
+
+    assert completed.returncode == 1
+    assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" in completed.stderr
+    assert calls == []
+
+
+def test_prod_launcher_requires_password_file_before_lifecycle(tmp_path: Path) -> None:
+    completed, calls = _run_compose_launcher_harness(
+        tmp_path,
+        args=("--prod", "--skip-oauth-check", "--skip-tailscale-check"),
+        environment_name="prod",
+        environment_text="POSTGRES_HOST=postgres.example.test\nPOSTGRES_PORT=5432\n",
+    )
+
+    assert completed.returncode == 1
+    assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" in completed.stderr
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("args", "environment_name"),
+    (
+        (
+            ("--with-restore-drill", "--skip-oauth-check", "--skip-tailscale-check"),
+            "dev",
+        ),
+        (("--prod", "--skip-oauth-check", "--skip-tailscale-check"), "prod"),
+    ),
+)
+def test_protected_launcher_paths_include_the_overlay_and_preserve_prepared_start_order(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    environment_name: str,
+) -> None:
+    password_file = tmp_path / "password-file"
+    password_marker = "test-only-password-marker"
+    password_file.write_text(password_marker + "\n", encoding="utf-8")
+    completed, calls = _run_compose_launcher_harness(
+        tmp_path,
+        args=args,
+        environment_name=environment_name,
+        environment_text=(
+            "POSTGRES_HOST=postgres.example.test\n"
+            "POSTGRES_PORT=5432\n"
+            "POSTGRES_PASSWORD=non-secret-test-value\n"
+            f"RESTORE_DRILL_EXECUTOR_PASSWORD_FILE={password_file}\n"
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=10.23.4.5\n"
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert str(password_file) not in completed.stdout + completed.stderr
+    assert password_marker not in completed.stdout + completed.stderr
+    compose_calls = [call for call in calls if call.startswith("docker compose ")]
+    assert compose_calls
+    assert all(
+        "-f docker-compose.yml -f docker-compose.restore-drill.yml" in call
+        for call in compose_calls
+    )
+    down_index = next(index for index, call in enumerate(calls) if " down --remove-orphans" in call)
+    prepare_index = next(
+        index for index, call in enumerate(calls) if "--prepare-executor-capability-v1" in call
+    )
+    create_index = next(
+        index
+        for index, call in enumerate(calls)
+        if "create restore-drill-postgres-proxy restore-drill-executor" in call
+    )
+    fence_index = next(
+        index
+        for index, call in enumerate(calls)
+        if _FIREWALL_WRAPPER in call and "--require-executor-capability-v1" in call
+    )
+    up_index = next(index for index, call in enumerate(calls) if " up -d" in call)
+    assert down_index < prepare_index < create_index < fence_index < up_index
+
+
+@pytest.mark.parametrize(
+    ("args", "environment_name", "failure_stage", "expected_retry_command"),
+    (
+        (
+            ("--with-restore-drill", "--skip-oauth-check", "--skip-tailscale-check"),
+            "dev",
+            "prepare",
+            "./scripts/compose.sh --with-restore-drill",
+        ),
+        (
+            ("--prod", "--skip-oauth-check", "--skip-tailscale-check"),
+            "prod",
+            "apply",
+            "./scripts/compose.sh --prod",
+        ),
+    ),
+)
+def test_protected_launcher_failure_preserves_the_selected_retry_mode(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    environment_name: str,
+    failure_stage: str,
+    expected_retry_command: str,
+) -> None:
+    password_file = tmp_path / "password-file"
+    password_file.write_text("test-only-password-marker\n", encoding="utf-8")
+
+    completed, _ = _run_compose_launcher_harness(
+        tmp_path,
+        args=args,
+        environment_name=environment_name,
+        environment_text=(
+            "POSTGRES_HOST=postgres.example.test\n"
+            "POSTGRES_PORT=5432\n"
+            f"RESTORE_DRILL_EXECUTOR_PASSWORD_FILE={password_file}\n"
+            "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=10.23.4.5\n"
+        ),
+        launcher_environment={"RESTORE_DRILL_TEST_FAIL_FIREWALL": failure_stage},
+    )
+
+    assert completed.returncode == 1
+    assert (
+        f"then rerun {expected_retry_command} (and repeat any other selected flags)."
+        in completed.stderr
+    )
+    assert "then rerun scripts/compose.sh." not in completed.stderr
+
+
+def test_dev_opt_in_rejects_invalid_endpoint_before_lifecycle(tmp_path: Path) -> None:
+    password_file = tmp_path / "password-file"
+    password_file.write_text("test-only-password-marker\n", encoding="utf-8")
+
+    completed, calls = _run_compose_launcher_harness(
+        tmp_path,
+        args=("--with-restore-drill", "--skip-oauth-check", "--skip-tailscale-check"),
+        environment_name="dev",
+        environment_text=(
+            "POSTGRES_HOST=postgres.example.test\n"
+            "POSTGRES_PORT=5432\n"
+            f"RESTORE_DRILL_EXECUTOR_PASSWORD_FILE={password_file}\n"
+            "RESTORE_DRILL_EXECUTOR_DB_HOST=127.0.0.1\n"
+        ),
+    )
+
+    assert completed.returncode == 1
+    assert "DNS hostname" in completed.stderr
+    assert calls == []
 
 
 def test_direct_merged_compose_keeps_the_executor_on_an_internal_relay_network() -> None:
@@ -158,23 +460,6 @@ def test_direct_merged_compose_keeps_the_executor_on_an_internal_relay_network()
     assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in _environment_keys(relay)
 
 
-def test_supported_launchers_include_the_protected_restore_drill_compose_file() -> None:
-    """Only launchers that install the firewall may include the executor overlay."""
-    launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
-    protected_command = (
-        "CMD=(docker compose -f docker-compose.yml -f docker-compose.restore-drill.yml)"
-    )
-
-    assert DEFAULT_COMPOSE_FILES == (_BASE_COMPOSE_FILE, _RESTORE_DRILL_COMPOSE_FILE)
-    assert protected_command in launcher
-    assert "PROFILES=(dev)" in launcher
-    assert "PROFILES=(dev restore-drill)" not in launcher
-    assert launcher.index(protected_command) < launcher.index(
-        '"${CMD[@]}" create restore-drill-postgres-proxy restore-drill-executor'
-    )
-    assert launcher.index(_FIREWALL_WRAPPER) < launcher.index('"${CMD[@]}" up -d')
-
-
 @pytest.mark.parametrize("kind", ("unset", "missing", "directory", "empty", "unreadable"))
 def test_restore_drill_launcher_requires_private_password_file_before_lifecycle(
     tmp_path: Path, kind: str
@@ -190,7 +475,12 @@ def test_restore_drill_launcher_requires_private_password_file_before_lifecycle(
     start = launcher.index("# ── Load environment-specific database config")
     end = launcher.index("# ── Mode-dependent configuration", start)
     bootstrap_boundary = launcher[start:end]
-    env = {**os.environ, "PROJECT_DIR": str(tmp_path), "BUTLERS_MODE": "dev"}
+    env = {
+        **os.environ,
+        "PROJECT_DIR": str(tmp_path),
+        "BUTLERS_MODE": "dev",
+        "RESTORE_DRILL_ENABLED": "true",
+    }
     env.pop("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", None)
     configured_path = tmp_path / "password-file"
     if kind == "missing":
@@ -247,6 +537,7 @@ def test_restore_drill_launcher_accepts_valid_private_password_file(tmp_path: Pa
             **os.environ,
             "PROJECT_DIR": str(tmp_path),
             "BUTLERS_MODE": "dev",
+            "RESTORE_DRILL_ENABLED": "true",
             "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": str(password_file),
         },
         text=True,
@@ -275,7 +566,7 @@ def test_operator_guidance_keeps_the_protected_fragment_out_of_direct_compose() 
 
     assert "A bare direct\n# Compose invocation with this non-privileged base file" in compose
     assert "restore-drill-compose-inspect.sh" in scripts_readme
-    assert "same-boot manual down/recreate cannot" in backup_restore
+    assert "same-boot manual down/recreate cannot" in " ".join(backup_restore.split())
     assert "--prepare-executor-capability-v1" in backup_restore
     assert "restore-drill-compose-inspect.sh" in backup_restore
     assert "canonical dotted-decimal remote-unicast" in backup_restore
@@ -301,6 +592,27 @@ def test_operator_guidance_keeps_the_protected_fragment_out_of_direct_compose() 
     assert "executor bridge policy" in scripts_readme
     assert "rendered Compose output is inspection only" in backup_restore
     assert "restore-drill-compose-inspect.sh ps" in docker_deployment
+    assert "`scripts/compose.sh --with-restore-drill`" in scripts_readme
+    assert "./scripts/compose.sh --with-restore-drill" in backup_restore
+    assert "./scripts/compose.sh --with-restore-drill" in docker_deployment
+    assert "do not infer protected execution from the presence of a secret" in " ".join(
+        scripts_readme.split()
+    )
+    assert "a configured secret does not enable the protected services" in " ".join(
+        backup_restore.split()
+    )
+    assert "finding a configured secret does\nnot turn it on" in docker_deployment
+    assert "only supported lifecycle paths that include" in " ".join(backup_restore.split())
+    assert "only supported lifecycle paths that include" in " ".join(scripts_readme.split())
+    assert "read-only inspection helper is the sole non-lifecycle exception" in " ".join(
+        backup_restore.split()
+    )
+    assert "read-only inspection helper is the sole non-lifecycle exception" in " ".join(
+        scripts_readme.split()
+    )
+    assert "base-only `down --remove-orphans`" in backup_restore
+    assert "base-only `down --remove-orphans`" in docker_deployment
+    assert "base-only `down --remove-orphans`" in scripts_readme
     assert "docker compose logs <butler-name> --tail=100" in troubleshooting
     assert "restore-drill-compose-inspect.sh" not in troubleshooting
 
@@ -824,6 +1136,7 @@ def test_restore_drill_launcher_rejects_an_old_wrapper_before_create_or_up(
             "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=10.23.4.5",
             "RESTORE_DRILL_EXECUTOR_DB_PORT=5432",
             "SCALE_ARGS=()",
+            "RESTORE_DRILL_ENABLED=true",
             swap_boundary,
         ]
     )
@@ -911,7 +1224,7 @@ def test_restore_drill_launcher_rejects_numeric_executor_identity_before_compose
     end = launcher.index("# ── Mode-dependent configuration", start)
     endpoint_boundary = launcher[start:end]
 
-    env = {**os.environ, source_name: numeric_host}
+    env = {**os.environ, "RESTORE_DRILL_ENABLED": "true", source_name: numeric_host}
     if source_name != "POSTGRES_HOST":
         env["POSTGRES_HOST"] = "postgres.example.test"
     else:
@@ -951,6 +1264,7 @@ def test_restore_drill_launcher_rejects_dns_identities_outside_canonical_lengths
         capture_output=True,
         env={
             **os.environ,
+            "RESTORE_DRILL_ENABLED": "true",
             "POSTGRES_HOST": connection_host,
             "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "10.23.4.5",
         },
@@ -973,6 +1287,7 @@ def test_restore_drill_launcher_accepts_dns_identity_with_a_separate_remote_fire
     endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
+        "RESTORE_DRILL_ENABLED": "true",
         "POSTGRES_HOST": connection_host,
         "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": remote_ipv4,
     }
@@ -1011,6 +1326,7 @@ def test_restore_drill_launcher_rejects_a_dns_host_that_resolves_to_loopback(
         capture_output=True,
         env={
             **os.environ,
+            "RESTORE_DRILL_ENABLED": "true",
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "POSTGRES_HOST": "localhost",
         },
@@ -1029,6 +1345,7 @@ def test_restore_drill_launcher_rejects_localhost_with_a_remote_firewall_overrid
     endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
+        "RESTORE_DRILL_ENABLED": "true",
         "POSTGRES_HOST": "localhost",
         "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "10.23.4.5",
     }
@@ -1071,6 +1388,7 @@ def test_restore_drill_launcher_rejects_noncanonical_numeric_host_before_dns_fal
     getent.chmod(0o755)
     env = {
         **os.environ,
+        "RESTORE_DRILL_ENABLED": "true",
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "POSTGRES_HOST": noncanonical_ipv4,
         "RESTORE_DRILL_GETENT_CALLS": str(getent_calls),
@@ -1099,6 +1417,7 @@ def test_restore_drill_launcher_rejects_invalid_port_before_compose(invalid_port
     endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
+        "RESTORE_DRILL_ENABLED": "true",
         "POSTGRES_HOST": "postgres.example.test",
         "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "10.23.4.5",
         "RESTORE_DRILL_EXECUTOR_DB_PORT": invalid_port,
@@ -1144,7 +1463,12 @@ def test_restore_drill_launcher_rejects_raw_whitespace_endpoint_literals_before_
     start = launcher.index("# ── Load environment-specific database config")
     end = launcher.index("# ── Mode-dependent configuration", start)
     bootstrap_and_endpoint_boundary = launcher[start:end]
-    env = {**os.environ, "PROJECT_DIR": str(tmp_path), "BUTLERS_MODE": "dev"}
+    env = {
+        **os.environ,
+        "PROJECT_DIR": str(tmp_path),
+        "BUTLERS_MODE": "dev",
+        "RESTORE_DRILL_ENABLED": "true",
+    }
     for name in (
         "POSTGRES_HOST",
         "POSTGRES_PORT",
@@ -1194,7 +1518,12 @@ def test_restore_drill_launcher_rejects_indented_raw_whitespace_before_source(
     start = launcher.index("# ── Load environment-specific database config")
     end = launcher.index("# ── Mode-dependent configuration", start)
     bootstrap_and_endpoint_boundary = launcher[start:end]
-    env = {**os.environ, "PROJECT_DIR": str(tmp_path), "BUTLERS_MODE": "dev"}
+    env = {
+        **os.environ,
+        "PROJECT_DIR": str(tmp_path),
+        "BUTLERS_MODE": "dev",
+        "RESTORE_DRILL_ENABLED": "true",
+    }
     for name in (
         "POSTGRES_HOST",
         "POSTGRES_PORT",

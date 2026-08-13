@@ -36,6 +36,24 @@ Scope: v1-mandatory
   ad hoc `ALTER ROLE`, manually pre-create the scratch database, or mutate the
   live application database to make a drill pass
 
+#### Scenario: Ordinary dev excludes the privileged executor boundary
+- **WHEN** an operator invokes `scripts/compose.sh` in dev without
+  `--with-restore-drill`
+- **THEN** it selects only `docker-compose.yml` and does not require, resolve,
+  or disclose the executor password file or protected endpoint
+- **AND** it does not invoke the root-owned restore-drill firewall wrapper or
+  create either protected service
+- **AND** a configured executor secret does not implicitly enable the protected
+  topology
+- **WHEN** an operator invokes `scripts/compose.sh --with-restore-drill` in dev
+  or `scripts/compose.sh --prod`
+- **THEN** it selects the protected topology and fails closed on its secret and
+  endpoint prerequisites before lifecycle work begins
+- **AND** after a successful stop/down, it prepares the root-owned firewall
+  capability before it creates either protected service, then applies that
+  capability before it starts either one; a preparation or apply failure leaves
+  the executor stopped
+
 #### Scenario: Executor deployment boundary stays narrow
 - **WHEN** the restore-drill executor is deployed
 - **THEN** it joins only a dedicated Docker `internal` relay network, has a
@@ -71,9 +89,10 @@ Scope: v1-mandatory
   dial, uses a bounded listener backlog, and bounds upstream connect, idle, and
   total session lifetime with cancellation-safe cleanup; each side gets at most
   one second for graceful close before forced transport abort
-- **AND** both supported launchers, `scripts/compose.sh` and `butlers deploy`,
-  treat stop/down failure as terminal before create, invoke only a fixed
-  root-owned firewall wrapper's versioned prepare verb, inject its
+- **AND** the protected launch paths, `scripts/compose.sh --with-restore-drill`,
+  `scripts/compose.sh --prod`, and `butlers deploy`, treat stop/down failure as
+  terminal before create, invoke only a fixed root-owned firewall wrapper's
+  versioned prepare verb, inject its
   per-created-generation nonce into the created executor, then require the
   wrapper to discover and fence the exact executor/relay containers and
   networks, then bind that nonce in a post-policy marker to the current boot,
@@ -109,9 +128,10 @@ Scope: v1-mandatory
   and reaches its TLS identity only as the relay alias; rendering itself is not
   a launch authorization or a substitute for the prepared executor-bridge
   default-deny policy
-- **AND** only `scripts/compose.sh` and `butlers deploy` prepare both relay
-  egress and executor-bridge default-deny policies before they start either
-  protected service
+- **AND** only `scripts/compose.sh --with-restore-drill`,
+  `scripts/compose.sh --prod`, and `butlers deploy` prepare both relay egress
+  and executor-bridge default-deny policies before they start either protected
+  service
 - **AND** the documented merged-file inspection helper accepts only read-only
   `config`, `ps`, and `logs` operations and rejects lifecycle commands such as
   `up`

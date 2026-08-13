@@ -65,8 +65,12 @@ Before enabling the executor, use a reviewed cluster-superuser bootstrap
 procedure to run `scripts/init-db.sql`, apply the application migrations, and
 invoke the managed `scripts/provision_restore_drill_executor.sh` provisioner.
 The shared `butlers` database owner/migration login is not a substitute for
-this step. The provisioner expects the private file path named by this
-deployment setting:
+this step. An ordinary dev `./scripts/compose.sh` launch does not need this
+deployment setting and must not invent it. After the bootstrap is complete, use
+`./scripts/compose.sh --with-restore-drill` to enable the protected boundary in
+dev. `./scripts/compose.sh --prod` and `butlers deploy` always require the
+bootstrap. The provisioner expects the private file path named by this deployment
+setting:
 
 ```dotenv
 RESTORE_DRILL_EXECUTOR_PASSWORD_FILE=/secure/managed/path/restore-drill-executor-password
@@ -185,19 +189,27 @@ The Compose services are deliberately narrow:
   services and the bridge gateway do not traverse `FORWARD`. IPv6 is disabled
   on both dedicated networks.
 - The ordinary `docker-compose.yml` deliberately omits the executor, its
-  bridge, its CA config, and its private secret. The supported launchers,
-  `scripts/compose.sh` and `butlers deploy`, are the only paths that add
-  `docker-compose.restore-drill.yml`; they stop the old relay and executor,
-  call a versioned root-owned preparation verb before `create`, inject its
-  generation-bound nonce into the created executor, attest and fence that exact
-  container/relay topology, and only then start the merged stack. The wrapper
-  discovers that host-side topology while fencing it; the post-fence marker
-  binds the current host boot, project, nonce, executor generation, executor
-  IPv4/gateway, and relay-alias IPv4, which the socketless executor can verify
-  before reading its secret. A same-boot manual down/recreate cannot replay a
-  prior authorization. An older installed wrapper rejects the
-  preparation verb before `create`/`up`. The services have `restart: "no"`, so
-  a Docker daemon or host restart cannot auto-start them before the fence is
+  bridge, its CA config, and its private secret. Ordinary dev
+  `scripts/compose.sh` uses that base topology only. The protected launch paths,
+  `scripts/compose.sh --with-restore-drill`, `scripts/compose.sh --prod`, and
+  `butlers deploy`, are the only supported lifecycle paths that include
+  `docker-compose.restore-drill.yml` to start either protected service; the
+  read-only inspection helper is the sole non-lifecycle exception. They stop the
+  old relay and executor, call a versioned root-owned preparation verb before
+  `create`, inject its generation-bound nonce into the created executor, attest
+  and fence that exact container/relay topology, and only then start the merged
+  stack. Selection is explicit: a configured secret does not enable the
+  protected services in an ordinary dev launch. Returning an opted-in
+  `butlers-dev` project to ordinary dev runs base-only `down --remove-orphans`,
+  removing the former relay and executor before the base stack starts; continue
+  passing `--with-restore-drill` on later dev launches to keep them enabled. The
+  wrapper discovers that host-side topology while fencing it; the post-fence
+  marker binds the current host boot, project, nonce, executor generation,
+  executor IPv4/gateway, and relay-alias IPv4, which the socketless executor can
+  verify before reading its secret. A same-boot manual down/recreate cannot
+  replay a prior authorization. An older installed wrapper rejects the
+  preparation verb before `create`/`up`. The services have `restart: "no"`, so a
+  Docker daemon or host restart cannot auto-start them before the fence is
   recreated. A direct merged invocation has no valid prepared marker for its
   new executor generation and fails before reading the secret. A failed checked
   stop/down phase also ends the launcher before preparation, `create`, firewall
@@ -210,7 +222,7 @@ The Compose services are deliberately narrow:
 
 ### Firewall wrapper prerequisite
 
-Before enabling a supported launcher on a host, a root-controlled deployment
+Before enabling a protected launch path on a host, a root-controlled deployment
 procedure must review the exact checkout source and install the immutable
 runtime copy with `scripts/install_restore_drill_firewall_wrapper.sh`. That
 installer writes only `/usr/local/libexec/butlers-restore-drill-firewall` with
@@ -219,7 +231,7 @@ The host's managed sudo policy may permit only that fixed wrapper and its two
 literal versioned forms: `--prepare-executor-capability-v1 --project`, then
 `--project --db-host --db-port --require-executor-capability-v1`. The checked-in
 `scripts/restore-drill-firewall.sudoers` is a policy template for that host
-configuration step. These attest the supported launch sequence against stale
+configuration step. These attest the protected launch sequence against stale
 wrappers and stale container generations; a root-level firewall/Docker reset
 still requires the canonical launcher to prepare and fence a fresh topology.
 
@@ -227,8 +239,8 @@ Never grant passwordless sudo for `scripts/restore-drill-firewall.sh`, a
 checkout wildcard, `env`, a shell, or the installer. The checkout script is an
 installation artifact, not a runtime elevated command. If the fixed wrapper or
 its narrowly scoped sudo rule is absent, leave the executor stopped and repair
-the root-controlled deployment configuration before retrying either supported
-launcher.
+the root-controlled deployment configuration before retrying a protected launch
+path.
 
 This is a single-executor design. Do not scale `restore-drill-executor` above
 one replica until a reviewed cross-process exclusive guard protects the entire
@@ -277,7 +289,8 @@ Use normal deployment observation surfaces; none should display the secret:
 ./scripts/restore-drill-compose-inspect.sh logs --tail=100 restore-drill-executor
 ```
 
-Its rendered Compose output is inspection only: use a supported launcher or
+Its rendered Compose output is inspection only: use
+`scripts/compose.sh --with-restore-drill`, `scripts/compose.sh --prod`, or
 `butlers deploy` to validate the endpoint and prepare the firewall before any
 protected service starts.
 

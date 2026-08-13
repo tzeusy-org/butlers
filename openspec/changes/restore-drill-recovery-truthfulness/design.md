@@ -89,16 +89,18 @@ Docker's `DOCKER-USER`/`FORWARD` path and the bridge `INPUT` path, because a
 host or Docker gateway destination does not traverse `FORWARD`. The ordinary
 `docker-compose.yml` deliberately omits both protected services, their
 bridges, and their secret/config mounts; a bare Compose invocation therefore
-cannot start the privileged process. Both supported launchers
-(`scripts/compose.sh` and `butlers deploy`) add the protected
-`docker-compose.restore-drill.yml` fragment, stop/create the relay and
-executor, invoke only the fixed root-owned
+cannot start the privileged process. Ordinary dev `scripts/compose.sh` uses
+that base topology only. The protected launch paths (`scripts/compose.sh
+--with-restore-drill`, `scripts/compose.sh --prod`, and `butlers deploy`) add
+the protected `docker-compose.restore-drill.yml` fragment, stop/create the
+relay and executor, invoke only the fixed root-owned
 `/usr/local/libexec/butlers-restore-drill-firewall` wrapper, and use its
 versioned prepare verb before `create`. That verb emits a
 per-created-generation nonce; the created executor carries it, and the
 post-fence marker binds it to the
 current boot, project, nonce, exact executor container generation, executor
-IPv4/gateway, and relay-alias IPv4. The wrapper independently discovers the
+IPv4/gateway, and relay-alias IPv4. A configured secret never changes an
+ordinary dev launch into a protected one. The wrapper independently discovers the
 created relay/container/network topology while it fences both bridges; the
 socketless executor verifies only the marker dimensions it can observe before
 reading its secret. A same-boot manual down/recreate therefore cannot replay a

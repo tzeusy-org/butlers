@@ -24,8 +24,9 @@ Use the launcher; it selects the database target, sources the matching env file,
 sets the per-mode host ports, and configures Tailscale serve:
 
 ```bash
-./scripts/compose.sh              # dev database + hotreload (default)
-./scripts/compose.sh --prod       # production database, baked image
+./scripts/compose.sh                      # dev database + hotreload (base stack by default)
+./scripts/compose.sh --with-restore-drill # dev stack plus protected restore-drill executor
+./scripts/compose.sh --prod               # production database, baked image + protected executor
 ./scripts/compose.sh --no-hotreload   # dev DB, prod-style baked image (no source mount)
 ```
 
@@ -34,6 +35,19 @@ sets the per-mode host ports, and configures Tailscale serve:
 [Environment Variables](#environment-variables)), so both stacks can run on the
 same machine at once. For production **redeploys**, prefer `butlers deploy` over
 any direct Compose lifecycle command -- see [Production Deploys](#production-deploys-butlers-deploy).
+
+Ordinary dev deliberately uses only `docker-compose.yml`, so it does not need a
+restore-drill executor secret, endpoint, or root firewall wrapper. To start the
+privileged boundary in dev, pass `--with-restore-drill` after completing its
+operator bootstrap. Its selection is explicit: finding a configured secret does
+not turn it on. `--prod` and `butlers deploy` always select the protected
+topology and fail closed when its prerequisites are missing.
+
+If an opted-in `butlers-dev` project is returned to ordinary dev, the launcher
+runs base-only `down --remove-orphans` before it starts the base stack. That
+removes the former relay and executor rather than leaving privileged services
+running as orphans. Keep passing `--with-restore-drill` on later dev launches
+when the protected services must remain enabled.
 
 ## Read-only protected-topology inspection
 
@@ -49,9 +63,10 @@ or restarting any container, use the verb-restricted helper:
 
 It merges the base and protected Compose files but accepts only read-only
 `config`, `ps`, and `logs` operations. Never use those merged files with `up`;
-`scripts/compose.sh` and `butlers deploy` perform the required stop, versioned
-root preparation, create, exact-topology firewall attestation, and only then
-start either restore-drill service.
+`scripts/compose.sh --with-restore-drill`, `scripts/compose.sh --prod`, and
+`butlers deploy` perform the required stop, versioned root preparation, create,
+exact-topology firewall attestation, and only then start either restore-drill
+service.
 
 ## Images
 
