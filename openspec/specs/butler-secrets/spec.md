@@ -91,17 +91,27 @@ State SHALL be expressed as one of {dot, sliver, numeral, colour} — never as a
 - **AND** all other rows render unchanged (no colour leakage)
 
 ### Requirement: One Row Template Across All Three Families
-The User-tab's six bespoke provider Setup cards SHALL be replaced by one row template applicable to System, User (oauth / token / apikey / webhook variants), and CLI families. Per-provider oddities (OwnTracks webhook URL, Steam ID format, WhatsApp QR-link affordance) SHALL live in a provider-specific drawer opened from the row, not in divergent row chrome.
+The User-tab's six bespoke provider Setup cards SHALL be replaced by one row
+template applicable to System, User (oauth / token / apikey / webhook variants),
+and CLI families, plus connector-owned Passport projections. A projection uses
+the row template for visual coherence without becoming a User credential row.
+Per-provider oddities (OwnTracks webhook URL, Steam ID format, WhatsApp QR-link
+affordance) SHALL live in a provider-specific drawer opened from the row, not
+in divergent row chrome.
 
 #### Scenario: Row-template uniformity
 - **WHEN** the spine renders any credential from any family
 - **THEN** the row has the same vertical rhythm (10px vertical padding), same column layout (sliver | dot | label | subline | right-aligned glyph), and same hairline separators
 - **AND** the rendered HTML structure of a System row is identical (modulo `data-*` attributes and content) to the rendered HTML structure of a User row or CLI row
+- **AND** a connector-owned Passport projection uses that same structure while
+  preserving its separate storage-authority boundary
 
 #### Scenario: One spine row per credential concept
 - **WHEN** the inventory contains multiple raw rows that resolve to the same credential concept, such as multiple `entity_info.type` rows for one User provider or the same System `key` across butler schemas
 - **THEN** the spine renders exactly one row for that credential concept
 - **AND** the row preserves the highest-severity state and the relevant shared/local source-target provenance
+- **AND** a connector-owned projection has one row independent of raw token
+  rows and SHALL NOT be represented by a duplicated User credential row
 
 #### Scenario: Provider drawer for oddities
 - **WHEN** a User OAuth row for `owntracks` is expanded
@@ -116,6 +126,43 @@ The User-tab's six bespoke provider Setup cards SHALL be replaced by one row tem
 - **AND** the API hash is sent only to the Telegram session-auth flow; the generic raw-credential mutation MUST NOT receive it
 - **AND** the authenticated session flow persists a versioned non-secret consent grant and the API ID, API hash, and user session only after successful verification
 - **AND** dismissing the inline setup region returns keyboard focus to its `set up Telegram` trigger
+
+### Requirement: Connector-owned Passport projections
+
+`u:spotify` is a connector-owned Passport projection and SHALL remain
+presentation-only, not a User credential row. The `u:` focus namespace is
+presentation routing; it does not assign credential storage authority.
+Spotify's connector PKCE flow and CredentialStore entries remain the only
+authority for Spotify token material.
+
+The projection SHALL be content-blind. It may render only a closed connection
+state and the fixed `listening-history` capability evidence
+`capability_categories = ["listening-history"]`; this category is a stable
+operator-facing connector capability, not a dynamic provider-scope inventory.
+It SHALL NOT render or copy a client ID, access token, refresh token, Spotify
+user ID, display name, account type, raw provider error, raw probe result,
+audit payload, or free-form provider-derived text.
+
+#### Scenario: Spotify projection renders safe fixed evidence
+
+- **WHEN** the owner opens `/secrets?focus=u:spotify`
+- **THEN** Passport SHALL render the connector-owned projection whether or
+  not Spotify is currently connected
+- **AND** its visible evidence SHALL be limited to the closed connection state
+  and `capability_categories = ["listening-history"]`
+- **AND** it SHALL NOT require, create, or display a User credential inventory
+  row or `public.entity_info` record
+
+#### Scenario: Spotify projection delegates actions to the connector
+
+- **WHEN** the owner configures, connects, reconnects, checks status, or
+  disconnects Spotify from the projection
+- **THEN** Passport SHALL delegate to the corresponding connector-owned
+  `/api/connectors/spotify/*` endpoint
+- **AND** connect or reconnect SHALL call
+  `POST /api/connectors/spotify/oauth/start`
+- **AND** Passport SHALL NOT use a generic OAuth Spotify registry, route, or
+  compatibility alias
 
 ### Requirement: Owner-Default Inventory Surfaces Primary Google Account
 
@@ -193,11 +240,18 @@ The identity switcher chip SHALL include connected Google accounts as selectable
 ### Requirement: Deep-Link Focus Routing
 The `/secrets` page SHALL accept a `?focus=<key>` URL parameter that opens the right-page editorial for the specified credential. The focus-key format SHALL be:
 
-- `u:<provider>` for User credentials (e.g. `u:google`, `u:owntracks`)
+- `u:<provider>` for User credentials and connector-owned Passport
+  projections (e.g. `u:google`, `u:owntracks`, `u:spotify`)
 - `s:<KEY>` for System secrets (e.g. `s:BUTLER_TELEGRAM_TOKEN`)
 - `c:<id>` for CLI runtimes (e.g. `c:claude`)
 
-Focus keys SHALL be interpreted as decoded values (for example, `u:spotify`); the `:` separator is permitted in query values per RFC 3986 §3.4. OAuth callback `Location` headers SHALL retain that raw form (for example, `focus=u:spotify`), while browser URL updates through `URLSearchParams` MAY present the equivalent serialization `focus=u%3Aspotify`.
+Focus keys SHALL be interpreted as decoded values (for example, `u:spotify`);
+the `:` separator is permitted in query values per RFC 3986 §3.4. OAuth
+callback `Location` headers SHALL retain that raw form (for example,
+`focus=u:spotify`), while browser URL updates through `URLSearchParams` MAY
+present the equivalent serialization `focus=u%3Aspotify`. `u:spotify` remains
+a connector-owned presentation focus, never a User credential storage identity
+or generic OAuth provider alias.
 
 #### Scenario: Deep-link to a User credential
 - **WHEN** the owner clicks a link of the form `/secrets?focus=u:google` from `/ingestion/connectors` or anywhere else
@@ -225,7 +279,10 @@ The `/secrets` surfaces (spine, page, drawers, modals, toasts) MUST NOT trigger 
 
 1. **Stored prose** — a static catalogue entry (e.g. `provider.brief` from `public.provider_feature_catalogue`).
 2. **Templated string** — a template interpolating server-data values (e.g. `"Feeds the {feeds} butler"`, `"{kpi.healthy} healthy, {kpi.expiring} expiring"`).
-3. **Verbatim provider error tail** — the raw error message returned by the probed external API, displayed serif-italic with no transformation other than truncation.
+3. **Verbatim provider error tail** — the raw error message returned by the
+   probed external API, displayed serif-italic with no transformation other
+   than truncation. This option does not apply to a connector-owned
+   content-blind projection such as `u:spotify`.
 4. **Hard-coded literal** — empty-state lines, button labels, eyebrows.
 
 This is a binding spec invariant. Any future change, bead, or task that proposes LLM-elaborated scope explanations, audit summaries, "would-break" narratives, smart-explanation captions, or any other generative text on `/secrets` MUST be rejected by reference to this requirement and to brief §0 ("What we are deliberately NOT doing") + brief §4 ("Recommended de-scopes").
@@ -242,13 +299,25 @@ Rationale: brief §4 LLM-cost feasibility verified every `/secrets` affordance a
 - **THEN** the rows are sourced from `GET /api/secrets/breaks-catalogue?provider=<p>` server-side (which reads `public.provider_feature_catalogue`)
 - **AND** the row text is the stored `feature` label, never an LLM elaboration
 
-#### Scenario: Probe error tail is verbatim
-- **WHEN** a probe fails and the page renders the probe-result message
+#### Scenario: Credential probe error tail is verbatim
+- **WHEN** a probe fails for a credential page that is not a connector-owned
+  content-blind projection and the page renders the probe-result message
 - **THEN** the message is the raw `error` string returned by the external provider's API
 - **AND** the message is NOT summarised, paraphrased, translated, or annotated by an LLM
 
 ### Requirement: Cross-Page Reauth Bookkeeping
-OAuth dances initiated from `/secrets` SHALL return to `/secrets?focus=u:<provider>&toast=connected` on success. OAuth dances initiated from `/ingestion/connectors` SHALL return to `/ingestion/connectors`. The OAuth callback handler SHALL inspect a `page_of_origin` parameter carried through the state token to determine the return destination.
+
+Generic Google OAuth dances initiated from `/secrets` SHALL return to
+`/secrets?focus=u:<provider>&toast=connected` on success. Generic Google OAuth
+dances initiated from `/ingestion/connectors` SHALL return to
+`/ingestion/connectors`. The generic OAuth callback handler SHALL inspect a
+`page_of_origin` parameter carried through its state token to determine that
+return destination.
+
+Spotify is different: its connector-owned PKCE flow begins from the
+content-blind `/secrets?focus=u:spotify` projection and returns there through
+`GET /api/connectors/spotify/oauth/callback`. It SHALL NOT use generic OAuth
+state, callback routing, or `page_of_origin` bookkeeping.
 
 This requirement is **co-owned** with the in-flight `complete-ingestion-redesign-parity` change. This spec defines only the `/secrets` side of the contract; the `/ingestion/connectors` side is specified there.
 
@@ -258,12 +327,27 @@ This requirement is **co-owned** with the in-flight `complete-ingestion-redesign
 - **AND** the spine re-renders with the `u:google` row in state `ok` and a green `--green` toast confirms the reauthorization
 
 #### Scenario: Cross-page reauth returns to origin
-- **WHEN** the owner clicks `Reauthorize` from `/ingestion/connectors` and completes the dance
+- **WHEN** the owner clicks `Reauthorize` for a Google-backed connector from
+  `/ingestion/connectors` and completes the generic OAuth dance
 - **THEN** the callback redirects to `/ingestion/connectors` (NOT to `/secrets`)
 - **AND** the `/ingestion/connectors` view reflects the new credential state
 
+#### Scenario: Spotify connector PKCE returns to its Passport projection
+- **WHEN** the owner starts Spotify authorization from `/secrets?focus=u:spotify`
+- **THEN** `GET /api/connectors/spotify/oauth/callback` returns to that
+  Passport projection on success
+- **AND** it SHALL NOT use a generic OAuth Spotify callback or
+  `page_of_origin` state token
+
 ### Requirement: Inventory ≠ Channel-Health Dashboard (Scope Boundary)
-`/secrets` SHALL be the credential inventory surface. `/ingestion/connectors` SHALL remain the channel-side view of the same OAuth credential (throughput, scope, route, recent events). Both surfaces SHALL be capable of triggering a reauthorization dance and SHALL reflect identical source-of-truth state for any given credential. The two surfaces MUST NOT diverge in their representation of credential state — both read from the same DB-backed cache.
+`/secrets` SHALL be the credential inventory surface. `/ingestion/connectors`
+SHALL remain the channel-side view of connector health (throughput, scope,
+route, recent events). For generic Google OAuth, both surfaces SHALL reflect
+the same DB-backed credential state. For Spotify, `/secrets?focus=u:spotify` is
+a connector-owned content-blind projection of connector state, not an
+inventory credential; it SHALL not become a second token authority or User
+credential mirror. The two surfaces MUST NOT diverge from their declared
+authority boundaries.
 
 This requirement defines a scope boundary, not a UI contract; the UI contract for `/ingestion/connectors` is owned by other changes.
 

@@ -66,14 +66,16 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     drives `ReauthCallout` rendering.
   - Reauth endpoint contract:
     `POST /api/ingestion/connectors/:type/:identity/reauth` returns
-    `{auth_url, state, expires_in}` for OAuth providers (the auth_url is the
-    provider's authorization URL with the union of currently-granted and
-    required scopes), `{error: "unsupported", reason: "..."}` for non-OAuth
-    providers, and HTTP 409 when the connector is not in a state that warrants
-    reauth.
-  - Reauth callback contract: the existing OAuth callback handlers update
-    `observed_scopes` and append a second audit entry (`connector.reauth.completed`)
-    on success or `connector.reauth.failed` on failure.
+    `{auth_url, state, expires_in}` for generic OAuth providers other than
+    Spotify (the auth_url is the provider's authorization URL with the union
+    of currently-granted and required scopes), `{error: "unsupported",
+    reason: "..."}` for non-OAuth providers, and HTTP 409 when the connector
+    is not in a state that warrants reauth. Spotify instead enters its
+    connector-owned Passport recovery journey.
+  - Reauth callback contract: generic OAuth callbacks and connector-owned
+    callbacks update `observed_scopes` and append a second audit entry
+    (`connector.reauth.completed`) on success or `connector.reauth.failed` on
+    failure, each through its declared credential authority.
   - Approvals gating: reauth initiation is Approvals-gated (consistent with
     `connector-lifecycle-ceremony`). Granting an additional `sensitive` scope
     (e.g. `gmail.modify`, `calendar` write) emits a distinct audit entry with
@@ -82,10 +84,27 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - Rotation: when a connector module's declared `required` scopes change
     (operator edit OR provider deprecation), the spec defines how existing
     connectors are flagged `rotation-needed` and how the operator initiates
-    rotation via the same reauth endpoint.
-  - State token contract: reauth state tokens are CSRF-bound, single-use, and
-    idempotent (rapid re-initiation revokes prior state tokens and returns
-    fresh ones without stranding the connection in a half-authorized state).
+    rotation via the declared provider-owned recovery journey.
+  - Generic reauth state token contract: generic OAuth state tokens are
+    CSRF-bound, single-use, and idempotent (rapid re-initiation revokes prior
+    state tokens and returns fresh ones without stranding the connection in a
+    half-authorized state). Spotify PKCE state stays connector-owned.
+
+- **Spotify authority reconciliation** (spec-only, owner-approved):
+  - Spotify connector PKCE is the only production Spotify authorization flow;
+    `POST /api/connectors/spotify/oauth/start` and
+    `GET /api/connectors/spotify/oauth/callback` are connector-owned.
+  - `CredentialStore` is the sole authority for Spotify token material.
+    `connector_registry` may retain only derived connection and scope metadata.
+  - `/secrets?focus=u:spotify` is a content-blind, connector-owned Passport
+    projection, not a User credential row, `public.entity_info` record,
+    credential mirror, or generic OAuth provider alias. Its fixed v1 capability
+    evidence is `listening-history`.
+  - The generic OAuth provider surface remains Google-only in production. The
+    later serialized cleanup removes the Spotify registry, route,
+    configuration, UI, documentation, and test exemplar; generalized OAuth
+    tests retain a synthetic generalized-provider fixture only, with no
+    compatibility alias, shim, or production registry entry for Spotify.
 
 - **MODIFIED capability** `connector-lifecycle-ceremony` (spec lives in the
   sibling change `redesign-ingestion-dispatch-console`):
@@ -138,16 +157,21 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 ## Impact
 
 - **Code (implementation, not in this change)**:
-  - `src/butlers/api/routers/oauth.py` — extend `_probe_google_token`-style
-    introspection to per-connector providers; add Spotify, Discord introspection
-    paths; add the `scopes[]` block to `ConnectorDetail` responses.
+  - `src/butlers/api/routers/oauth.py` — retain generic Google provider
+    behavior and remove the Spotify production registry, route, configuration,
+    UI coupling, and test exemplar in the serialized cleanup lane. Generic
+    provider tests use a synthetic fixture after that cleanup.
+  - `src/butlers/api/routers/spotify.py` — retain connector-owned Spotify
+    PKCE start/callback ownership and CredentialStore-only token handling; add
+    only derived scope or connection metadata where this capability requires it.
   - `src/butlers/api/routers/ingestion_events.py` — replace the HTTP 503 stub
     in the reauth handler with the contract defined here.
   - `src/butlers/migrations/versions/` — Alembic migration adding
     `observed_scopes TEXT[]`, `observed_scopes_fetched_at TIMESTAMPTZ`,
     `required_scopes_version SMALLINT`, `auth_status VARCHAR` columns to
     `public.connector_registry`.
-  - `src/butlers/connectors/spotify/` — periodic re-introspection task.
+  - `src/butlers/connectors/spotify/` — periodic re-introspection task;
+    connector-owned Passport projection data remains content-blind.
   - `frontend/src/components/ingestion/ConnectorDetail.tsx` — wire `scopes[]`
     block; render `ReauthCallout` from `auth.status`; render `ScopeList` from
     `scopes[]` per-row `status` + `serif_note`.
@@ -156,9 +180,12 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - `GET /api/ingestion/connectors/{type}/{identity}` gains a `scopes` block
     and an `auth.status` field. Additive — no existing field changes type.
   - `POST /api/ingestion/connectors/{type}/{identity}/reauth` (currently 503)
-    becomes a working endpoint per this spec.
-  - `GET /api/oauth/{provider}/reauth/callback` is extended to update
-    `observed_scopes` and emit the second audit entry.
+    becomes a working generic-OAuth endpoint per this spec; Spotify recovery
+    remains the connector-owned Passport journey.
+  - Generic Google OAuth callback behavior updates `observed_scopes` and emits
+    the second audit entry. Spotify uses only
+    `GET /api/connectors/spotify/oauth/callback` for its connector-owned
+    callback and never a generic OAuth Spotify callback.
 
 - **Database**: additive columns on `public.connector_registry`. No new tables.
   No data migration required (NULL `observed_scopes` is interpreted as "not yet
@@ -202,6 +229,13 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     `openspec/specs/`; the archive process will merge this delta when
     `redesign-ingestion-dispatch-console` later archives. If the redesign
     archives first, this change's delta applies cleanly on archive.
+  - The owner-approved Spotify reconciliation is serialized and does not
+    authorize source changes in this spec-only amendment: merge this carrier's
+    canonical reconciliation first; then `bu-fj7lx` implements the
+    content-blind connector-owned Passport projection; only then `bu-3ifcj`
+    removes the generic OAuth Spotify production exemplar and repository
+    cruft. The cleanup keeps a synthetic generalized-provider fixture and no
+    compatibility alias, shim, or production registry entry.
 
 - **Tests (implementation, not in this change)**:
   - Drift detection unit tests per drift class (`ok`, `extra`, `drift`,
@@ -212,6 +246,11 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - Sensitive-scope grant audit trail.
   - Rotation scenario (operator bumps `required_scopes_version`; existing
     connectors flip to `rotation-needed`).
+  - Spotify authority regression: assert the Passport projection exposes only
+    its closed connection state and `listening-history` capability evidence;
+    assert token material remains CredentialStore-only; and assert the generic
+    OAuth suite uses a synthetic generalized-provider fixture rather than
+    Spotify.
 
 ## Source References
 
@@ -245,6 +284,9 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   `openspec/specs/connector-spotify/spec.md:229-247`
 - Spotify dashboard's existing `needs_reauth` pattern —
   `openspec/specs/dashboard-spotify-setup/spec.md:86-102`
+- Spotify connector-authority and Passport-projection reconciliation —
+  `openspec/specs/connector-spotify/spec.md`,
+  `openspec/specs/butler-secrets/spec.md`, `bu-fj7lx`, and `bu-3ifcj`
 - Connector base spec (extension target) —
   `openspec/specs/connector-base-spec/spec.md:381-419`
 - Credential masking contract (must not contradict) —

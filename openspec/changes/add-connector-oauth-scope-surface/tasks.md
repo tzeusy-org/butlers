@@ -4,6 +4,33 @@ This change is **spec-only**. The tasks below are spec-authoring tasks. The
 implementation work is captured as a bead-creation handoff in §5 (to be run
 by the operator AFTER this change ratifies).
 
+## 0. Spotify authority reconciliation amendment (owner-approved; spec-only)
+
+- [x] 0.1 Amend the active carrier's proposal, design, tasks, and
+      `connector-oauth-scope-surface` delta so they state: connector-owned
+      Spotify PKCE is the only production authorization flow; CredentialStore
+      is the sole Spotify token authority; and Passport is a content-blind,
+      connector-owned projection.
+
+- [x] 0.2 Amend the canonical ingestion, Passport, Spotify setup, Spotify
+      connector, and core-credentials specifications atomically. The canonical
+      contract routes Spotify recovery through `/secrets?focus=u:spotify`,
+      delegates its action to `POST /api/connectors/spotify/oauth/start`, and
+      uses `GET /api/connectors/spotify/oauth/callback`; it creates no User
+      credential or `public.entity_info` mirror.
+
+- [x] 0.3 Add a documentation-contract regression that fails if the active
+      carrier and canonical specs reintroduce generic OAuth Spotify ownership
+      or omit the serialized downstream plan.
+
+- [x] 0.4 Record the binding implementation order without mutating Beads:
+      after this reconciliation merges, `bu-fj7lx` implements the
+      content-blind connector-owned Passport projection; only then
+      `bu-3ifcj` removes the generic OAuth Spotify production exemplar and
+      repository cruft. The cleanup uses a synthetic generalized-provider
+      fixture and leaves no compatibility alias, shim, or production registry
+      entry.
+
 ## 1. Spec authoring — core capability
 
 - [x] 1.1 Draft `specs/connector-oauth-scope-surface/spec.md` with the
@@ -13,7 +40,8 @@ by the operator AFTER this change ratifies).
     Decision 2).
   - Drift taxonomy with five classes (per Decision 3).
   - `auth.status` enum with six values (per Decision 4).
-  - Reauth endpoint contract for OAuth providers (per Decision 5).
+  - Reauth endpoint contract for generic OAuth providers other than Spotify
+    (per Decision 5).
   - Reauth endpoint contract for non-OAuth providers (per Decision 6).
   - Re-introspection cadence (per Decision 7).
   - Audit trail (per Decision 8).
@@ -54,15 +82,15 @@ by the operator AFTER this change ratifies).
 
 ## 4. Spec authoring — verification
 
-- [ ] 4.1 Run `openspec validate add-connector-oauth-scope-surface` and
+- [x] 4.1 Run `openspec validate add-connector-oauth-scope-surface` and
       confirm clean output. Fix any structural drift (heading levels,
       requirement/scenario nesting, missing footer) before submitting for
       review.
 
-- [ ] 4.2 Run `openspec show add-connector-oauth-scope-surface` and visually
+- [x] 4.2 Run `openspec show add-connector-oauth-scope-surface` and visually
       review the rendered structure.
 
-- [ ] 4.3 Cross-check that no existing capability spec is contradicted:
+- [x] 4.3 Cross-check that no existing capability spec is contradicted:
   - `core-credentials/spec.md:52-99` — credential masking. Confirm no scope
     response field exposes a token.
   - `connector-lifecycle-ceremony/spec.md:103-109` — "No credentials in
@@ -75,6 +103,13 @@ by the operator AFTER this change ratifies).
     `google_accounts`. Confirm `observed_scopes` on `connector_registry`
     does not duplicate or contradict; the two serve different layers
     (account-level vs. connector-instance-level).
+  - `dashboard-ingestion-dispatch-console/spec.md`,
+    `butler-secrets/spec.md`, `dashboard-spotify-setup/spec.md`,
+    `connector-spotify/spec.md`, and `core-credentials/spec.md` — confirm
+    Spotify is connector-owned PKCE with CredentialStore as sole token
+    authority; `u:spotify` is content-blind presentation only; and no generic
+    OAuth Spotify route, registry, credential mirror, or User `entity_info`
+    authority remains normative.
 
 - [ ] 4.4 Confirm the per-connector applicability matrix (Decision 6) covers
       every connector type currently in `openspec/specs/connector-*/`:
@@ -100,7 +135,19 @@ by the operator AFTER this change ratifies).
 
 - [ ] 5.2 No `CLAUDE.md` update is required (no new agent-facing conventions).
 
-- [ ] 5.3 **Bead-creation handoff (MANUAL — run AFTER this change is ratified
+- [x] 5.3 **Serialized Spotify implementation handoff (NO Beads mutation in
+      this change):** after this reconciliation merges, implement the two
+      already-created beads in order:
+  1. `bu-fj7lx` adds the content-blind connector-owned Passport projection at
+     `/secrets?focus=u:spotify`, with fixed `listening-history` capability
+     evidence and connector-endpoint actions only. It must not create a User
+     credential, `public.entity_info` row, or token mirror.
+  2. `bu-3ifcj` follows `bu-fj7lx` and removes the generic OAuth Spotify
+     production registry, route, configuration, UI, documentation, and test
+     exemplar. It preserves a synthetic generalized-provider fixture only and
+     leaves no compatibility alias, shim, or production registry entry.
+
+- [ ] 5.4 **Bead-creation handoff (MANUAL — run AFTER this change is ratified
       and archived):** the operator runs the following `bd create` command to
       file the implementation bead that unblocks
       `bu-1f91v.11`:
@@ -120,10 +167,10 @@ by the operator AFTER this change ratifies).
       be created with a forward reference to spec work that is itself
       blocking). File it once the change archives, not before.
 
-- [ ] 5.4 Run `openspec validate add-connector-oauth-scope-surface` one
+- [x] 5.5 Run `openspec validate add-connector-oauth-scope-surface` one
       final time before submitting for review.
 
-- [ ] 5.5 Run `openspec archive add-connector-oauth-scope-surface` after the
+- [ ] 5.6 Run `openspec archive add-connector-oauth-scope-surface` after the
       change is ratified (moves the change directory to
       `openspec/changes/archive/`).
 
@@ -148,9 +195,15 @@ by the operator AFTER this change ratifies).
 - [ ] 6.5 The `## Source References` footer is present and lists doctrine
       principles by rule number plus all cited specs.
 
-- [ ] 6.6 `openspec validate add-connector-oauth-scope-surface --strict`
+- [x] 6.6 `openspec validate add-connector-oauth-scope-surface --strict`
       returns clean.
 
-- [ ] 6.7 Bead-creation command in §5.3 has been tested for shell-quoting
+- [ ] 6.7 Bead-creation command in §5.4 has been tested for shell-quoting
       sanity (the `--description` is one line; the `--deps` are
       comma-separated without spaces).
+
+- [x] 6.8 The active carrier and canonical specs agree that Spotify is
+      connector-owned PKCE with CredentialStore as sole token authority;
+      Passport is content-blind projection-only; and `bu-fj7lx` precedes
+      `bu-3ifcj` cleanup with a synthetic generalized-provider fixture and no
+      compatibility alias, shim, or production registry entry.

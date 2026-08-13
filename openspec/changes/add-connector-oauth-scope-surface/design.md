@@ -88,14 +88,18 @@ every OAuth-bound connector maintainer.
   `extra`, `drift`, `expired`, `unsupported`, `unconfigured`.
 - Define `auth.status` as the connector-detail-level rollup the
   `ReauthCallout` reads.
-- Define the reauth endpoint contract: `{auth_url, state, expires_in}` for
-  OAuth providers, `{error: "unsupported", reason}` for non-OAuth providers,
-  HTTP 409 when reauth is not warranted.
+- Define the generic reauth endpoint contract: `{auth_url, state, expires_in}`
+  for generic OAuth providers other than Spotify, `{error: "unsupported",
+  reason}` for non-OAuth providers, HTTP 409 when reauth is not warranted, and
+  connector-owned Passport recovery for Spotify.
 - Define replay-safe state tokens.
 - Define the audit trail for reauth and for scope-set rotation.
 - Define the cross-connector applicability matrix so non-OAuth connectors
   return well-formed-but-empty scope surfaces (not `null`, not omitted).
 - Honor existing credential-masking rules: no tokens in any response body.
+- Reconcile Spotify as a connector-owned PKCE flow with CredentialStore as its
+  sole token authority, and define its content-blind Passport projection
+  without treating it as a generic OAuth provider or a User credential row.
 
 **Non-Goals:**
 
@@ -118,6 +122,9 @@ every OAuth-bound connector maintainer.
   provider (`google-multi-account-oauth`, `dashboard-spotify-setup`, etc.)
   already exist; this spec adds the connector-detail reauth entrypoint that
   feeds into them.
+- A generic OAuth Spotify compatibility surface. The later cleanup may retain
+  a synthetic generalized-provider test fixture, but it SHALL retain no
+  Spotify alias, shim, or production registry entry.
 
 ## Decisions
 
@@ -298,21 +305,26 @@ the serif_note as an elevated permission).
   pattern). For non-OAuth where refresh is impossible, expiring-soon is
   surfaced as an eyebrow on the connector card, not as `auth.status`.
 
-### Decision 5 — Reauth state tokens are CSRF-bound, single-use, idempotent
+### Decision 5 — Generic reauth state tokens are CSRF-bound, single-use, idempotent
 
 **What:**
 
 - `POST /api/ingestion/connectors/{type}/{identity}/reauth` (Approvals-gated)
-  returns `{auth_url, state, expires_in}` where `state` is a 32-byte
+  returns `{auth_url, state, expires_in}` for generic OAuth providers where
+  `state` is a 32-byte
   URL-safe random token bound to `(connector_type, endpoint_identity,
   requesting_operator)`. The state is stored in the OAuth state store
   (existing infrastructure per `google-multi-account-oauth/spec.md:76-83`)
   with a 10-minute TTL.
-- The provider callback (`GET /api/oauth/{provider}/callback?state=...&code=...`)
-  validates the state, exchanges the code, updates `observed_scopes` and
-  `auth_status` on the matching `connector_registry` row, and consumes the
-  state (one-use).
-- Rapid re-initiation: if `POST .../reauth` is called while a prior state is
+- The generic Google callback
+  (`GET /api/oauth/google/callback?state=...&code=...`) validates the generic
+  state, exchanges the code, updates `observed_scopes` and `auth_status` on the
+  matching `connector_registry` row, and consumes the state (one-use).
+  Spotify instead owns PKCE state and exchange at
+  `GET /api/connectors/spotify/oauth/callback`; it persists token material
+  only through CredentialStore and may update only derived metadata on
+  `connector_registry`.
+- Rapid re-initiation: if generic `POST .../reauth` is called while a prior state is
   outstanding, the prior state is revoked and a fresh one issued. This is
   idempotent — the dashboard can spam-click the "Re-authorize" button and
   the worst case is one orphan state token in the store.
@@ -381,7 +393,7 @@ because the underlying credential model has no reauth semantics).
 
 | Connector | Credential type | `auth.status` | Reauth supported? |
 |-----------|----------------|----------------|-------------------|
-| Spotify | OAuth 2.0 PKCE (`dashboard-spotify-setup/spec.md:9-50`) | `ok | degraded | expired | rotation-needed` | Yes |
+| Spotify | Connector-owned OAuth 2.0 PKCE (`dashboard-spotify-setup/spec.md:9-50`) | `ok | degraded | expired | rotation-needed` | Yes — Passport → connector PKCE |
 | Gmail | Google OAuth (`connector-gmail/spec.md:9-34`) | same | Yes |
 | Google Calendar | Google OAuth (`connector-google-calendar/spec.md:8-37`) | same | Yes |
 | Google Drive | Google OAuth (referenced in `module-google-drive`) | same | Yes |
@@ -490,6 +502,51 @@ ahead of the row's `required_scopes_version`):
   changed; without it, "why is this connector suddenly in rotation-needed?"
   is hard to answer post-hoc.
 
+### Decision 9 — Spotify PKCE and Passport projection stay connector-owned
+
+**What:** Spotify connector PKCE is the only production Spotify authorization
+flow. `POST /api/connectors/spotify/oauth/start` and
+`GET /api/connectors/spotify/oauth/callback` are the connector-owned route
+pair, and CredentialStore is the sole authority for Spotify token material.
+The generic OAuth provider surface is Google-only in production.
+
+`/secrets?focus=u:spotify` is a content-blind connector-owned Passport
+projection, not a User credential identity, `public.entity_info` record,
+credential mirror, or generic OAuth alias. Its stable v1 evidence is a closed
+connection state plus `capability_categories = ["listening-history"]`. It does
+not display or copy token material, client ID, Spotify user ID, display name,
+account type, raw provider error, raw probe result, audit payload, or
+free-form provider-derived text. Its controls delegate to the connector
+endpoints.
+
+The implementation order is binding: this spec reconciliation merges first;
+`bu-fj7lx` implements the Passport projection; `bu-3ifcj` then removes the
+generic OAuth Spotify registry, route, configuration, UI, documentation, and
+test exemplar. The latter keeps a synthetic generalized-provider fixture and
+no compatibility alias, shim, or production registry entry.
+
+**Why:**
+
+- The connector is the transport and credential lifecycle owner (Non-Negotiable
+  Rule 7), so Spotify's PKCE state and token lifecycle cannot be split between
+  a generic router and connector code.
+- A Passport focus is useful as an operator recovery surface, but it must be
+  an evidence-only projection rather than a second credential authority or a
+  channel for profile/provider content.
+- Serializing the projection before generic cleanup prevents a recovery gap
+  while ensuring that temporary source residue never becomes a compatibility
+  contract.
+
+**Alternatives considered:**
+
+- **Keep Spotify in the generic OAuth registry:** rejected. It creates a
+  second authorization/token authority beside the connector PKCE lifecycle.
+- **Model `u:spotify` as a User `entity_info` credential:** rejected. It
+  duplicates authority and turns a content-blind recovery projection into a
+  credential mirror.
+- **Preserve a Spotify compatibility alias after cleanup:** rejected. It
+  makes a transitional implementation fact a permanent production contract.
+
 ## Risks / Trade-offs
 
 ### Risk 1 — Provider API drift breaks introspection
@@ -577,12 +634,25 @@ follow-up implementation bead (see "Bead-creation handoff" in tasks.md) will:
    migration. Nullable defaults mean no data backfill needed.
 2. Extend each OAuth connector's startup sequence to call the introspection
    helper on first successful token refresh.
-3. Extend the OAuth callback handlers per provider to write `observed_scopes`
-   and emit the audit entries.
+3. Extend generic OAuth and connector-owned callback handlers to write
+   `observed_scopes` and emit the audit entries through their declared
+   credential authority.
 4. Replace the HTTP 503 stub in `/api/ingestion/connectors/.../reauth` with
    the contract defined here.
 5. Add the per-connector applicability matrix as a Python registry and a
    pytest that asserts every `SourceProvider` value has an entry.
+
+Spotify's authority reconciliation is a separate serialized implementation
+lane, not permission to fold Spotify into the generic endpoint above:
+
+1. `bu-fj7lx` adds the content-blind connector-owned Passport projection and
+   routes its actions to the connector PKCE endpoints without a User credential
+   mirror.
+2. `bu-3ifcj`, after `bu-fj7lx`, removes the generic OAuth Spotify registry,
+   route, configuration, UI, documentation, and test exemplar. It replaces the
+   second-provider production example with a synthetic generalized-provider
+   fixture and leaves no compatibility alias, shim, or production registry
+   entry.
 
 There is no live data to migrate. Existing connectors will simply gain a
 populated `auth.status` on first introspection after the deploy.
@@ -637,6 +707,9 @@ populated `auth.status` on first introspection after the deploy.
   `openspec/specs/connector-spotify/spec.md:229-247`
 - Spotify dashboard `needs_reauth` pattern —
   `openspec/specs/dashboard-spotify-setup/spec.md:86-102`
+- Spotify connector-owned PKCE and Passport projection reconciliation —
+  `openspec/specs/connector-spotify/spec.md`,
+  `openspec/specs/butler-secrets/spec.md`, `bu-fj7lx`, and `bu-3ifcj`
 - Credential masking contract —
   `openspec/specs/core-credentials/spec.md:52-99`
 - Non-OAuth connector references for applicability matrix —

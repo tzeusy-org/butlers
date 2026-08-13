@@ -28,6 +28,11 @@ client, OwnTracks, Home Assistant, WhatsApp, Steam) return a structured
 `unsupported` shape that keeps the dashboard grid uniform but exposes the
 alternative credential surface for each provider.
 
+Spotify is OAuth-bound, but it is deliberately not a generic OAuth provider:
+its production authorization flow and token lifecycle are connector-owned.
+The Spotify-specific authority and Passport projection contract below narrows
+the otherwise-general OAuth rules wherever the two differ.
+
 ## ADDED Requirements
 
 ### Requirement: Connector module scope manifest
@@ -384,14 +389,67 @@ The connector-detail API response SHALL include an `auth` block and a `scopes` b
   `connector-base-spec/spec.md:388-392`
 - **AND** no existing field shape SHALL change
 
-### Requirement: Reauth endpoint contract for OAuth connectors
+### Requirement: Spotify connector authority and Passport projection
 
-The reauth endpoint `POST /api/ingestion/connectors/{type}/{identity}/reauth` SHALL, when this capability is implemented, return a structured authorization URL and CSRF state token for OAuth-bound connectors. The endpoint is owned by `connector-lifecycle-ceremony` (currently stubbed with HTTP 503) and remains Approvals-gated per `connector-lifecycle-ceremony/spec.md:9-19`.
+Spotify connector PKCE is the only production Spotify authorization flow. It SHALL remain so.
+CredentialStore is the sole authority for Spotify token material. It SHALL
+remain so. The Passport projection is content-blind and connector-owned. It
+SHALL remain a projection rather than a token authority.
 
-#### Scenario: OAuth provider response shape
+The production flow SHALL begin at
+`POST /api/connectors/spotify/oauth/start` and complete at
+`GET /api/connectors/spotify/oauth/callback`. `connector_registry` MAY hold
+only derived connection and scope metadata for this flow; it SHALL NOT hold
+token material. `/secrets?focus=u:spotify` is a presentation focus for the
+connector-owned projection, not a User credential identity, credential-store
+alias, or generic OAuth provider alias.
 
-- **WHEN** the endpoint is invoked for an OAuth-bound connector AND the
-  Approvals gate has been satisfied
+#### Scenario: Production Spotify authorization ownership
+
+- **WHEN** an operator connects or reauthorizes Spotify in production
+- **THEN** the operator journey SHALL enter the connector-owned PKCE flow at
+  `POST /api/connectors/spotify/oauth/start`
+- **AND** its callback SHALL be
+  `GET /api/connectors/spotify/oauth/callback`
+- **AND** no generic OAuth registry entry or `/api/oauth/spotify/*` endpoint
+  SHALL authorize, exchange, refresh, or persist Spotify token material
+
+#### Scenario: Content-blind Passport projection
+
+- **WHEN** Passport renders `/secrets?focus=u:spotify`
+- **THEN** it SHALL render only a closed connection-state value and the fixed
+  capability evidence `capability_categories = ["listening-history"]`
+- **AND** it SHALL NOT render or copy a client ID, access token, refresh
+  token, Spotify user ID, display name, account type, raw provider error, raw
+  probe result, audit payload, or free-form provider-derived text
+- **AND** it SHALL NOT create or require a User credential inventory row or
+  `public.entity_info` record
+- **AND** its configure, connect, reconnect, status, and disconnect controls
+  SHALL delegate to the Spotify connector endpoints rather than a generic
+  OAuth route
+
+#### Scenario: Generic OAuth Spotify cleanup contract
+
+- **WHEN** the serialized cleanup bead `bu-3ifcj` follows the Passport
+  projection bead `bu-fj7lx`
+- **THEN** it SHALL remove the generic OAuth Spotify production registry,
+  route, configuration, UI, documentation, and test exemplar
+- **AND** any generalized-provider test SHALL use a synthetic
+  generalized-provider fixture
+- **AND** the cleanup SHALL leave no compatibility alias, shim, or production
+  registry entry for Spotify
+
+### Requirement: Reauth endpoint contract for generic OAuth connectors
+
+The reauth endpoint `POST /api/ingestion/connectors/{type}/{identity}/reauth` SHALL, when this capability is implemented, return a structured authorization URL and CSRF state token for generic OAuth-bound connectors other than Spotify. The endpoint is owned by `connector-lifecycle-ceremony` (currently stubbed with HTTP 503) and remains Approvals-gated per
+`connector-lifecycle-ceremony/spec.md:9-19`. Spotify recovery is the
+connector-owned Passport journey defined in §Spotify connector authority and
+Passport projection, not a generic OAuth reauth response.
+
+#### Scenario: Generic OAuth provider response shape
+
+- **WHEN** the endpoint is invoked for a generic OAuth-bound connector other
+  than Spotify AND the Approvals gate has been satisfied
 - **THEN** the response SHALL be HTTP 200 with body:
   ```json
   {
@@ -402,8 +460,7 @@ The reauth endpoint `POST /api/ingestion/connectors/{type}/{identity}/reauth` SH
   ```
 - **AND** the `auth_url` SHALL include the union of the manifest's `required`
   scopes plus any currently-granted `optional` and `sensitive` scopes (so
-  reauth preserves prior grants, consistent with
-  `dashboard-spotify-setup/spec.md:94-99`)
+  generic reauth preserves prior grants)
 - **AND** the `state` token SHALL be stored in the OAuth state store with a
   600-second TTL and SHALL be bound to the tuple
   `(connector_type, endpoint_identity, requesting_operator)`
@@ -417,16 +474,18 @@ The reauth endpoint `POST /api/ingestion/connectors/{type}/{identity}/reauth` SH
   manifest's current `version`)
 - **THEN** the constructed `auth_url` SHALL include the provider's
   force-consent parameter (e.g. `prompt=consent` for Google per
-  `google-multi-account-oauth/spec.md:69-74`, `show_dialog=true` for
-  Spotify)
+  `google-multi-account-oauth/spec.md:69-74`)
 - **AND** this SHALL guarantee that the provider returns a fresh refresh
   token reflecting the current scope set
+- **AND** this generic endpoint SHALL NOT construct a Spotify authorization
+  URL; Spotify force-consent behavior remains inside its connector-owned PKCE
+  flow
 
 #### Scenario: Idempotent rapid re-initiation
 
-- **WHEN** the endpoint is invoked while a prior state token issued for the
-  same `(connector_type, endpoint_identity)` tuple is still within its TTL
-  and unconsumed
+- **WHEN** the generic reauth endpoint is invoked while a prior state token
+  issued for the same `(connector_type, endpoint_identity)` tuple is still
+  within its TTL and unconsumed
 - **THEN** the prior state token SHALL be revoked (deleted from the state
   store)
 - **AND** a fresh state token SHALL be issued and returned
@@ -455,7 +514,14 @@ The reauth endpoint `POST /api/ingestion/connectors/{type}/{identity}/reauth` SH
 
 ### Requirement: Reauth callback contract
 
-OAuth provider callback handlers SHALL, when this capability is implemented, accept the state token issued by the reauth endpoint, complete the token exchange, update `observed_scopes` and `auth_status` on the relevant `connector_registry` row, and emit completion audit entries. Callback handlers are per-provider (e.g. `/api/oauth/google/callback`, `/api/oauth/spotify/callback`).
+Generic OAuth callback handlers SHALL, when this capability is implemented,
+accept the state token issued by the generic reauth endpoint, complete the
+token exchange, update `observed_scopes` and `auth_status` on the relevant
+`connector_registry` row, and emit completion audit entries. The generic
+Google callback is `/api/oauth/google/callback`. Spotify uses the
+connector-owned `/api/connectors/spotify/oauth/callback` instead; it stores
+token material only through CredentialStore and may update only derived scope
+or connection metadata on `connector_registry`.
 
 #### Scenario: State validation
 
@@ -472,10 +538,10 @@ OAuth provider callback handlers SHALL, when this capability is implemented, acc
 
 - **WHEN** the state is valid AND the token exchange succeeds
 - **THEN** the state SHALL be marked consumed in the state store
-- **AND** the new refresh token SHALL be stored per the existing credential
-  pipeline (`core-credentials/spec.md:51-99` for Google;
-  `core-credentials/spec.md:200-223` for Spotify; equivalent for other
-  providers)
+- **AND** any new credential material SHALL be stored only through the
+  provider's approved credential authority (`core-credentials/spec.md:51-99`
+  for Google and `core-credentials/spec.md:200-223` for connector-owned
+  Spotify)
 - **AND** `connector_registry.observed_scopes`,
   `observed_scopes_fetched_at`, and `required_scopes_version` SHALL be
   updated for the row keyed by `(connector_type, endpoint_identity)`
@@ -548,7 +614,7 @@ that maps `SourceProvider` enum values (per
 
   | `connector_type` | Credential model | `auth.status` domain | Reauth |
   |------------------|------------------|----------------------|--------|
-  | `spotify` | OAuth 2.0 PKCE | `ok / degraded / expired / rotation-needed / unconfigured` | Yes |
+  | `spotify` | OAuth 2.0 PKCE (connector-owned) | `ok / degraded / expired / rotation-needed / unconfigured` | Yes — Passport → connector PKCE |
   | `gmail` | Google OAuth | same | Yes |
   | `google_calendar` | Google OAuth | same | Yes |
   | `google_drive` | Google OAuth | same | Yes |
@@ -631,8 +697,10 @@ All scope-surface state transitions SHALL emit `audit.append()` entries to
 
 ### Requirement: State token security
 
-OAuth state tokens issued by the reauth endpoint SHALL be CSRF-bound,
-single-use, time-bounded, and resistant to replay.
+OAuth state tokens issued by the generic reauth endpoint SHALL be CSRF-bound,
+single-use, time-bounded, and resistant to replay. Spotify's PKCE state is
+owned by the connector and SHALL NOT be issued or consumed through a generic
+OAuth Spotify route.
 
 #### Scenario: Token entropy and binding
 
@@ -658,7 +726,7 @@ single-use, time-bounded, and resistant to replay.
 
 #### Scenario: Revoke-on-reissue
 
-- **WHEN** the reauth endpoint is invoked for a `(connector_type,
+- **WHEN** the generic reauth endpoint is invoked for a `(connector_type,
   endpoint_identity)` pair that already has a non-consumed state token
 - **THEN** the prior token SHALL be revoked (deleted from the store) before
   the new token is issued
@@ -690,7 +758,7 @@ guarantees.
 #### Scenario: State token replay test
 
 - **WHEN** the test suite runs
-- **THEN** an integration test SHALL exercise the state token lifecycle:
+- **THEN** an integration test SHALL exercise the generic reauth state token lifecycle:
   issue → callback success → second callback presentation → assert
   `state_already_used`
 - **AND** a separate test SHALL exercise revoke-on-reissue: issue → re-issue
@@ -705,10 +773,19 @@ guarantees.
   (e.g. matches `^[A-Za-z0-9._-]{40,}$` AND key name contains `token` or
   `secret`)
 
+#### Scenario: Generic-provider fixture excludes Spotify
+
+- **WHEN** the generalized OAuth provider registry is tested after the
+  Spotify cleanup
+- **THEN** the test SHALL use a synthetic generalized-provider fixture rather
+  than Spotify as a second production provider
+- **AND** the production registry, routes, configuration, and compatibility
+  surface SHALL contain no Spotify alias or shim
+
 #### Scenario: Audit emission test
 
 - **WHEN** the test suite runs
-- **THEN** an integration test SHALL exercise the full reauth flow
+- **THEN** an integration test SHALL exercise the full generic reauth flow
   (POST `.../reauth` → Approval submit → Approval approved → OAuth callback)
   and assert that exactly four audit entries are emitted with the correct
   `action` values: `connector.reauth.submit`,
@@ -787,6 +864,10 @@ SHALL be uniform regardless of provider.
   `openspec/specs/connector-base-spec/spec.md:319-348,381-419`
 - Spotify connector OAuth scope declaration —
   `openspec/specs/connector-spotify/spec.md:229-247`
+- Spotify connector PKCE and Passport projection authority —
+  `openspec/specs/dashboard-spotify-setup/spec.md`,
+  `openspec/specs/butler-secrets/spec.md`, and `bu-fj7lx`
+- Serialized generic OAuth Spotify cleanup — `bu-3ifcj`
 - Spotify dashboard's `needs_reauth` pattern this spec generalizes —
   `openspec/specs/dashboard-spotify-setup/spec.md:86-102`
 - Credential storage contract this spec must not contradict —

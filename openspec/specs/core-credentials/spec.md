@@ -197,6 +197,7 @@ Runtime authentication SHALL use either CLI-level OAuth tokens (device-code flow
 ### Requirement: Spotify OAuth Token Storage
 
 The `CredentialStore` SHALL support storing and resolving Spotify OAuth tokens for the Spotify connector.
+The Spotify connector PKCE flow and its CredentialStore entries are the only Spotify token authority. A generic OAuth Spotify registry, Passport projection, User credential inventory row, `public.entity_info` record, or other credential store SHALL NOT duplicate, persist, or mutate Spotify token material.
 
 #### Scenario: Store Spotify OAuth tokens
 
@@ -207,6 +208,16 @@ The `CredentialStore` SHALL support storing and resolving Spotify OAuth tokens f
   - `SPOTIFY_REFRESH_TOKEN` — the OAuth refresh token (sensitive, long-lived)
   - `SPOTIFY_TOKEN_EXPIRES_AT` — the access token expiry as ISO 8601 timestamp (not sensitive)
 - **AND** `SPOTIFY_ACCESS_TOKEN` and `SPOTIFY_REFRESH_TOKEN` SHALL be stored with `is_sensitive=True`
+
+#### Scenario: Spotify authority has no token mirror
+
+- **WHEN** Spotify authorization, refresh, or disconnect changes token state
+- **THEN** only the connector-owned PKCE flow and CredentialStore SHALL write
+  or delete the Spotify token material
+- **AND** `connector_registry` MAY contain only derived connection or scope
+  metadata
+- **AND** a Passport projection MAY invoke connector actions but SHALL NOT
+  store or expose a token mirror
 
 #### Scenario: Resolve Spotify credentials for connector
 

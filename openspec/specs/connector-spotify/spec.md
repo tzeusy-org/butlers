@@ -141,6 +141,34 @@ The connector SHALL use an async HTTP client to communicate with the Spotify Web
 - **THEN** it SHALL proactively refresh the token 5 minutes before expiry
 - **AND** this avoids the latency of a failed request + retry cycle
 
+### Requirement: Connector-Owned Production Spotify PKCE
+
+The connector owns the production Spotify PKCE route and SHALL keep it
+connector-owned: `POST /api/connectors/spotify/oauth/start` initiates authorization and
+`GET /api/connectors/spotify/oauth/callback` completes it. The connector
+SHALL use the connector-specific redirect URI (including any
+`SPOTIFY_OAUTH_REDIRECT_URI` configuration) for that flow. A generic OAuth
+Spotify provider registry or `/api/oauth/spotify/*` route SHALL NOT authorize,
+exchange, refresh, or persist Spotify token material.
+
+#### Scenario: Passport delegates the production authorization action
+
+- **WHEN** Passport requests Spotify connection or reauthorization
+- **THEN** it SHALL invoke
+  `POST /api/connectors/spotify/oauth/start`
+- **AND** the connector SHALL validate its own PKCE state at
+  `GET /api/connectors/spotify/oauth/callback`
+- **AND** the connector SHALL persist token material only through
+  CredentialStore
+
+#### Scenario: Generic OAuth has no Spotify production compatibility surface
+
+- **WHEN** generic OAuth provider behavior is implemented or tested
+- **THEN** Spotify SHALL NOT be present as a production provider registry
+  entry, route, configuration path, UI control, or compatibility alias
+- **AND** a generalized-provider test fixture SHALL be synthetic rather than
+  a Spotify compatibility exemplar
+
 ### Requirement: Endpoint Identity Auto-Resolution
 
 The connector SHALL auto-resolve its `endpoint_identity` at startup by calling the Spotify API.
