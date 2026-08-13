@@ -29,7 +29,7 @@
   guarantees in this surviving delta and the authoritative RFC/API contracts;
   remove the competing change. This completes the disposition gate only, not the
   wider terminal-action recovery implementation or its remaining HOLD gates.
-- [ ] 1.3 After `reconcile-dashboard-conversation-contracts` lands its RFC 0003
+- [x] 1.3 After `reconcile-dashboard-conversation-contracts` lands its RFC 0003
   vocabulary/provenance authority, rebase on that exact head and amend only the
   recovery guidance: a dashboard route-inbox row recovered from `processing`
   with its immutable dashboard message identity and no durable route proof

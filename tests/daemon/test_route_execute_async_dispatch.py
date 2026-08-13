@@ -478,6 +478,73 @@ async def test_dashboard_processing_recovery_never_replays_a_predecessor(
     processed.assert_not_awaited()
 
 
+async def test_dashboard_accepted_recovery_replays_before_runtime_handoff() -> None:
+    """A dashboard row accepted before dispatch may safely resume its original runtime."""
+    from types import SimpleNamespace
+
+    from butlers.switchboard_wiring import recover_route_inbox
+
+    pool = AsyncMock()
+    message_id = uuid.uuid4()
+    row_id = uuid.uuid4()
+    processing_claim_id = uuid.uuid4()
+    trigger = _make_trigger_mock()
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="health"),
+        spawner=SimpleNamespace(trigger=trigger),
+    )
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(source_channel="dashboard"),
+        "input": {"prompt": "Resume this accepted dashboard route."},
+        "source_metadata": {
+            "channel": "dashboard",
+            "identity": "dashboard:owner",
+            "tool_name": "ingest",
+            "dashboard_message_id": str(message_id),
+        },
+    }
+
+    async def _recover_once(*_args, dispatch_fn, **_kwargs):
+        await dispatch_fn(
+            row_id=row_id,
+            route_envelope=envelope,
+            processing_claim_id=processing_claim_id,
+            recovery_from_processing=False,
+        )
+        return 1
+
+    with (
+        patch("butlers.switchboard_wiring.route_inbox_recovery_sweep", _recover_once),
+        patch(
+            "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "butlers.switchboard_wiring.reconcile_route_recovery",
+            new_callable=AsyncMock,
+        ) as reconcile,
+        patch(
+            "butlers.switchboard_wiring.route_inbox_mark_processed",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as processed,
+    ):
+        await recover_route_inbox(daemon, pool)
+
+    trigger.assert_awaited_once()
+    assert trigger.await_args.kwargs["dashboard_turn_id"] == message_id
+    assert trigger.await_args.kwargs["trigger_source"] == "route"
+    reconcile.assert_not_awaited()
+    processed.assert_awaited_once_with(
+        pool,
+        row_id,
+        trigger.return_value.session_id,
+        processing_claim_id=processing_claim_id,
+    )
+
+
 async def test_recovery_reconciliation_keeps_claim_fenced_before_spawn() -> None:
     """A recovery takeover while reconciling cannot start the displaced runtime."""
     from types import SimpleNamespace
