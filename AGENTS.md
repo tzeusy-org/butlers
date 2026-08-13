@@ -195,6 +195,7 @@ git push                # Push to remote (bead mutations already in Dolt)
 
 ## Notes to self
 
+- The protected restore-drill overlay must preflight `RESTORE_DRILL_EXECUTOR_PASSWORD_FILE` before `down`; otherwise Compose interpolation can report an arbitrary missing service after lifecycle work begins.
 - Infrastructure identity-version provenance is opt-in: producers pass `Observation(identity_version=...)`; on the first higher-version successor they must also pass the explicit `predecessor_fingerprint`. A complete snapshot then stores reciprocal `metadata.identity_payload.predecessor`/`successor` links and the terminal `superseded_by_identity_version_bump` reason. Never infer lineage from opaque fingerprints or rewrite historic rows; without that explicit link (or with an incomplete snapshot), ordinary snapshot-absence semantics remain.
 
 ### Steam presence events are metadata-only AND routing-skipped

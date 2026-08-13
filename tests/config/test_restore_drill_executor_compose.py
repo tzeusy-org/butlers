@@ -175,6 +175,88 @@ def test_supported_launchers_include_the_protected_restore_drill_compose_file() 
     assert launcher.index(_FIREWALL_WRAPPER) < launcher.index('"${CMD[@]}" up -d')
 
 
+@pytest.mark.parametrize("kind", ("unset", "missing", "directory", "empty", "unreadable"))
+def test_restore_drill_launcher_requires_private_password_file_before_lifecycle(
+    tmp_path: Path, kind: str
+) -> None:
+    environment_file = tmp_path / ".env.dev"
+    environment_file.write_text(
+        "POSTGRES_HOST=postgres.example.test\n"
+        "POSTGRES_PORT=5432\n"
+        "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=10.23.4.5\n",
+        encoding="utf-8",
+    )
+    launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
+    start = launcher.index("# ── Load environment-specific database config")
+    end = launcher.index("# ── Mode-dependent configuration", start)
+    bootstrap_boundary = launcher[start:end]
+    env = {**os.environ, "PROJECT_DIR": str(tmp_path), "BUTLERS_MODE": "dev"}
+    env.pop("RESTORE_DRILL_EXECUTOR_PASSWORD_FILE", None)
+    configured_path = tmp_path / "password-file"
+    if kind == "missing":
+        env["RESTORE_DRILL_EXECUTOR_PASSWORD_FILE"] = str(configured_path)
+    elif kind == "directory":
+        configured_path.mkdir()
+        env["RESTORE_DRILL_EXECUTOR_PASSWORD_FILE"] = str(configured_path)
+    elif kind == "empty":
+        configured_path.touch()
+        env["RESTORE_DRILL_EXECUTOR_PASSWORD_FILE"] = str(configured_path)
+    elif kind == "unreadable":
+        if os.geteuid() == 0:
+            pytest.skip("root can read permissionless files, so Bash -r cannot be observed")
+        configured_path.write_text("test-only-password-marker\n", encoding="utf-8")
+        configured_path.chmod(0o000)
+        env["RESTORE_DRILL_EXECUTOR_PASSWORD_FILE"] = str(configured_path)
+
+    completed = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + bootstrap_boundary],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" in completed.stderr
+    assert str(configured_path) not in completed.stdout + completed.stderr
+    assert launcher.index("# Restore-drill executor password-file preflight") < launcher.index(
+        '"${CMD[@]}" down --remove-orphans'
+    )
+
+
+def test_restore_drill_launcher_accepts_valid_private_password_file(tmp_path: Path) -> None:
+    password_file = tmp_path / "password-file"
+    password_marker = "test-only-password-marker"
+    password_file.write_text(password_marker + "\n", encoding="utf-8")
+    environment_file = tmp_path / ".env.dev"
+    environment_file.write_text(
+        "POSTGRES_HOST=postgres.example.test\n"
+        "POSTGRES_PORT=5432\n"
+        "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST=10.23.4.5\n",
+        encoding="utf-8",
+    )
+    launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
+    start = launcher.index("# ── Load environment-specific database config")
+    end = launcher.index("# ── Mode-dependent configuration", start)
+    bootstrap_boundary = launcher[start:end]
+    completed = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + bootstrap_boundary],
+        check=False,
+        capture_output=True,
+        env={
+            **os.environ,
+            "PROJECT_DIR": str(tmp_path),
+            "BUTLERS_MODE": "dev",
+            "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE": str(password_file),
+        },
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert str(password_file) not in completed.stdout + completed.stderr
+    assert password_marker not in completed.stdout + completed.stderr
+
+
 def test_operator_guidance_keeps_the_protected_fragment_out_of_direct_compose() -> None:
     """Guidance must retain the fail-closed launch and read-only inspection boundary."""
     compose = (_REPO_ROOT / _BASE_COMPOSE_FILE).read_text(encoding="utf-8")

@@ -102,6 +102,19 @@ set -a
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
+
+# Restore-drill executor password-file preflight: Compose interpolates this
+# protected secret even for lifecycle commands, so fail before Docker can stop
+# the existing stack. Metadata checks never read or disclose the secret.
+if [[ -z "${RESTORE_DRILL_EXECUTOR_PASSWORD_FILE:-}" ]]; then
+  echo "ERROR: RESTORE_DRILL_EXECUTOR_PASSWORD_FILE must name the private restore-drill executor password file." >&2
+  exit 1
+fi
+if [[ ! -f "$RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" || ! -r "$RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" || ! -s "$RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" ]]; then
+  echo "ERROR: RESTORE_DRILL_EXECUTOR_PASSWORD_FILE must name a readable, non-empty regular file." >&2
+  exit 1
+fi
+
 echo "Database: ${BUTLERS_MODE} (${POSTGRES_HOST}:${POSTGRES_PORT:-5432})"
 
 # The restore-drill executor has an internal-only network and reaches the
