@@ -29,7 +29,7 @@ import {
   useMeasurementTrend,
   useMeasurementTypes,
 } from "@/hooks/use-health";
-import { chartColor } from "@/lib/chart-colors";
+import { chartSeriesColor } from "@/lib/chart-colors";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,25 +46,6 @@ const TREND_WINDOWS: { value: MeasurementTrendWindowDays; label: string }[] = [
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Resolve a chart-series role to a literal color string for Recharts.
- * `index=0` is the primary `--chart-1` series and `index=1` is the secondary
- * `--chart-2` series. Recharts cannot consume a CSS custom property directly,
- * so we read the live computed value of each chart-series token.
- */
-function useChartColor(index: number): string {
-  const token = chartColor(index);
-  const property = token.slice(4, -1);
-  const [color] = useState<string>(() => {
-    if (typeof document === "undefined") return token;
-    const value = getComputedStyle(document.documentElement)
-      .getPropertyValue(property)
-      .trim();
-    return value || token;
-  });
-  return color;
-}
 
 /** Convert only finite numeric values into chart points. */
 function finiteNumber(value: unknown): number | null {
@@ -177,8 +158,8 @@ export default function MeasurementChart() {
   // readings have a tab and raw-data view, but no implicit series key is safe.
   const supportsTrend = activeTypeInfo?.value_shape === "scalar";
 
-  const hue = useChartColor(0);
-  const secondaryHue = useChartColor(1);
+  const hue = chartSeriesColor(0);
+  const secondaryHue = chartSeriesColor(1);
 
   // --- Trend (the leading surface) ------------------------------------------
   const trendQuery = useMeasurementTrend(

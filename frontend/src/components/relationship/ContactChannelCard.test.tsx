@@ -196,7 +196,10 @@ const INVALID_COLOR_CONTACT: LinkedContactSummary = {
 
 const WHITE_COLOR_CONTACT: LinkedContactSummary = {
   ...CONTACT_TWO,
-  labels: [{ id: "label-white", name: "White", color: "#ffffffff" }],
+  labels: [
+    // eslint-disable-next-line no-restricted-syntax -- fixture uses an arbitrary owner-selected white label color to exercise contrast selection
+    { id: "label-white", name: "White", color: "#ffffffff" },
+  ],
 };
 
 const SPARSE_CONTACT: LinkedContactSummary = {
@@ -306,6 +309,7 @@ describe("ContactChannelCard — one linked contact (populated state)", () => {
     setLinkedContacts([WHITE_COLOR_CONTACT]);
     const html = renderCard();
 
+    // eslint-disable-next-line no-restricted-syntax -- regression assertion verifies the exact normalized owner-selected white fill
     expect(html).toContain("background-color:#ffffff");
     expect(html).toContain("color:var(--label-fill-foreground-on-light)");
   });

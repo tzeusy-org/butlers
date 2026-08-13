@@ -91,7 +91,10 @@ const INVALID_COLOR_FAMILY: Group = {
 
 const WHITE_COLOR_FAMILY: Group = {
   ...FAMILY,
-  labels: [{ id: "label-white", name: "White", color: "#fff" }],
+  labels: [
+    // eslint-disable-next-line no-restricted-syntax -- fixture uses an arbitrary owner-selected white label color to exercise contrast selection
+    { id: "label-white", name: "White", color: "#fff" },
+  ],
 };
 
 // ---------------------------------------------------------------------------
