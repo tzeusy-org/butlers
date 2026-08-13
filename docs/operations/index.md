@@ -9,6 +9,7 @@
 - [Environment Config](environment-config.md) — configuration reference, secrets directory
 - [Backup and Restore](backup-restore.md) — backup cadence, restore drill, integrity verification
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
+- [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff
 - [Connector Scaling](connector-scaling.md) — horizontal scaling for connectors
 - [Troubleshooting](troubleshooting.md) — common issues, debugging, health checks
 - [Tailscale Serve Repair Packet](tailscale-serve-repair-packet.md) — sanitized, diagnosis-first repair boundary

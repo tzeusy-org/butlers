@@ -110,3 +110,4 @@ async def test_health_not_ready_before_lifespan_startup(path):
     assert resp.status_code == 503, (
         f"Expected 503 (startup not complete) from {path}, got {resp.status_code}"
     )
+    assert resp.json()["status"] == "starting"
