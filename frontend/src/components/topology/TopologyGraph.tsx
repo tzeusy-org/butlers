@@ -101,7 +101,7 @@ function buildNodes(
       data: { label: switchboard.name },
       style: {
         background: "var(--bg-deep)",
-        color: stateColor,
+        color: "var(--fg)",
         border: `2px solid ${stateColor}`,
         borderRadius: "12px",
         padding: "16px 24px",
@@ -122,7 +122,7 @@ function buildNodes(
       data: { label: heartbeat.name },
       style: {
         background: "var(--bg-deep)",
-        color: stateColor,
+        color: "var(--fg)",
         border: `2px dashed ${stateColor}`,
         borderRadius: "50%",
         padding: "12px",
@@ -155,7 +155,7 @@ function buildNodes(
       data: { label: butler.name },
       style: {
         background: "var(--bg-deep)",
-        color: "white",
+        color: "var(--fg)",
         border: `2px solid ${getStatusColor(butler.status, butler.tone)}`,
         borderRadius: "8px",
         padding: "10px 16px",
@@ -185,7 +185,7 @@ function buildNodes(
       data: { label: connectorLabel(connector) },
       style: {
         background: "var(--bg)",
-        color: "white",
+        color: "var(--fg)",
         border: `2px solid ${getStatusColor(connector.liveness)}`,
         borderRadius: "8px",
         padding: "8px 12px",

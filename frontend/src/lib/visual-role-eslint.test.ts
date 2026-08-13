@@ -187,6 +187,102 @@ const DYNAMIC_PARENTHESIZED_IDENTITY_TEMPLATE_SOURCE =
 const DYNAMIC_PARENTHESIZED_IDENTITY_BINARY_SOURCE =
   dynamicParenthesizedIdentitySource("binary");
 
+type StructuralAliasFragment = "literal" | "template" | "binary";
+type StructuralExpression = "template" | "binary";
+
+function structuralAliasInitializer(
+  fragment: StructuralAliasFragment,
+  value: string,
+): string {
+  if (fragment === "literal") return JSON.stringify(value);
+  if (fragment === "template") return `\`${value}\``;
+
+  const [first = "", ...rest] = value;
+  return [JSON.stringify(first), ...rest.map((character) => JSON.stringify(character))].join(" + ");
+}
+
+function structuralAliasExpression(
+  expression: StructuralExpression,
+  parts: readonly string[],
+): string {
+  if (expression === "binary") return parts.join(" + ");
+  return `\`${parts
+    .map((part) => (part.startsWith('"') ? part.slice(1, -1) : `\${${part}}`))
+    .join("")}\``;
+}
+
+function aliasedStructuralGrammarSource(
+  fragment: StructuralAliasFragment,
+  expression: StructuralExpression,
+): string {
+  const cssOpen = structuralAliasInitializer(fragment, "var(");
+  const classOpen = structuralAliasInitializer(fragment, "bg-(");
+  const typedClassOpen = structuralAliasInitializer(fragment, "bg-(color:");
+  const close = structuralAliasInitializer(fragment, ")");
+  const sourceParts = (parts: readonly string[]) =>
+    structuralAliasExpression(expression, parts);
+
+  return [
+    // The custom-property source is runtime-derived. The grammar fragments
+    // below are static and must therefore remain visible to the guard even
+    // when they arrive through aliases.
+    "function resolveCustomProperty(): string { return \"--categorical-1\"; }",
+    "const identity = resolveCustomProperty();",
+    `const cssOpen = ${cssOpen};`,
+    `const classOpen = ${classOpen};`,
+    `const typedClassOpen = ${typedClassOpen};`,
+    `const close = ${close};`,
+    `export const cssDirect = ${sourceParts(['"var("', "identity", '")"'])};`,
+    `export const cssPrefix = ${sourceParts(["cssOpen", "identity", '")"'])};`,
+    `export const cssSuffix = ${sourceParts(['"var("', "identity", "close"])};`,
+    `export const cssBoth = ${sourceParts(["cssOpen", "identity", "close"])};`,
+    `export const classDirect = ${sourceParts(['"bg-("', "identity", '")"'])};`,
+    `export const classPrefix = ${sourceParts(["classOpen", "identity", '")"'])};`,
+    `export const classSuffix = ${sourceParts(['"bg-("', "identity", "close"])};`,
+    `export const classBoth = ${sourceParts(["classOpen", "identity", "close"])};`,
+    `export const typedDirect = ${sourceParts(['"bg-(color:"', "identity", '")"'])};`,
+    `export const typedPrefix = ${sourceParts(["typedClassOpen", "identity", '")"'])};`,
+    `export const typedSuffix = ${sourceParts(['"bg-(color:"', "identity", "close"])};`,
+    `export const typedBoth = ${sourceParts(["typedClassOpen", "identity", "close"])};`,
+  ].join("\n");
+}
+
+const ALIASED_STRUCTURAL_GRAMMAR_CASES = (
+  ["literal", "template", "binary"] as const
+).flatMap((fragment) =>
+  (["template", "binary"] as const).map(
+    (expression) =>
+      [
+        `${fragment} structural aliases through ${expression} expressions`,
+        aliasedStructuralGrammarSource(fragment, expression),
+      ] as const,
+  ),
+);
+const ALIASED_STRUCTURAL_GRAMMAR_FORM_COUNT = 12;
+
+const ALIASED_STATIC_SEMANTIC_ROLE_SOURCE = [
+  'const cssOpen = "var(" as const;',
+  'const classOpen = `bg-(color:` as const;',
+  'const close = (")" + "") as const;',
+  'const semanticRole = "--categorical-1" as const;',
+  "export const css = cssOpen + semanticRole + close;",
+  "export const utility = `${classOpen}${semanticRole}${close}`;",
+].join("\n");
+
+const TYPE_ASSERTED_PRIVATE_ALIAS_SOURCE = [
+  'const open = "var(" as const;',
+  'const identity = "--category-1" as const;',
+  'const close = ")" as const;',
+  "export const leaked = open + identity + close;",
+].join("\n");
+
+const STATIC_PRIVATE_ALIAS_SOURCE = [
+  'const open = "var(";',
+  'const identity = "--category-1";',
+  'const close = ")";',
+  "export const leaked = open + identity + close;",
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -219,6 +315,13 @@ async function visualRoleMessages(source: string, filePath: string) {
       ) &&
       message.message.includes("Butler identity"),
   );
+}
+
+async function statusGuardMessages(source: string) {
+  const [result] = await new ESLint().lintText(source, {
+    filePath: "src/components/topology/TopologyGraph.tsx",
+  });
+  return result.messages.filter((message) => message.ruleId === "no-restricted-syntax");
 }
 
 describe("semantic visual-role lint", () => {
@@ -312,6 +415,45 @@ describe("semantic visual-role lint", () => {
     },
   );
 
+  it.each(ALIASED_STRUCTURAL_GRAMMAR_CASES)(
+    "fails closed when %s surround a runtime-derived custom-property value",
+    async (_construction, source) => {
+      const roleMessages = await visualRoleMessages(
+        source,
+        "src/components/ui/IdentityAliasedStructureLeak.tsx",
+      );
+
+      expect(roleMessages).toHaveLength(ALIASED_STRUCTURAL_GRAMMAR_FORM_COUNT);
+    },
+  );
+
+  it("permits statically resolved semantic-role values through structural aliases", async () => {
+    const roleMessages = await visualRoleMessages(
+      ALIASED_STATIC_SEMANTIC_ROLE_SOURCE,
+      "src/components/ui/SemanticRoleAliasedStructure.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("traces type-asserted private aliases", async () => {
+    const roleMessages = await visualRoleMessages(
+      TYPE_ASSERTED_PRIVATE_ALIAS_SOURCE,
+      "src/components/ui/TypeAssertedIdentityAliasLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(1);
+  });
+
+  it("rejects the direct immutable alias construction", async () => {
+    const roleMessages = await visualRoleMessages(
+      STATIC_PRIVATE_ALIAS_SOURCE,
+      "src/components/ui/StaticIdentityAliasLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(1);
+  });
+
   it("keeps the ButlerMark exemption limited to its canonical component", async () => {
     const roleMessages = await visualRoleMessages(
       FULLY_DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE,
@@ -337,5 +479,14 @@ describe("semantic visual-role lint", () => {
     );
 
     expect(roleMessages).toEqual([]);
+  });
+
+  it("describes category tokens as private Butler identity rather than categorical status hues", async () => {
+    const [message] = await statusGuardMessages('const leaked = "var(--category-1)";');
+
+    expect(message?.message).toContain("private Butler identity token");
+    expect(message?.message).not.toContain("chart/categorical hue");
+    expect(message?.message).not.toContain("fixed identity hue");
+    expect(message?.message).not.toContain("exception");
   });
 });

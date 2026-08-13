@@ -332,15 +332,12 @@ const NO_WINDOW_CONFIRM_SELECTORS = [
   },
 ]
 
-// bu-ep4ks.15: ban var(--category-N) (a chart/categorical hue, e.g. the blue
-// --category-1) standing in for a STATUS color. StateDot.tsx's exported
-// TONE_COLORS/STATE_COLORS registry is now the canonical status-color source
+// bu-ep4ks.15: ban var(--category-N), a private Butler identity token, from
+// standing in for a live STATUS color. StateDot.tsx's exported
+// TONE_COLORS/STATE_COLORS registry is the canonical status-color source
 // (green/amber/red/neutral only, per dashboard-design-language spec § State
-// Color Discipline) -- a categorical hue reused as a live status signal is
-// the exact "unguarded blue/purple" drift the population-coverage audit
-// flagged (TopologyGraph.tsx's staffer identity blue is the one deliberate,
-// reviewed exception, kept via a documented inline eslint-disable rather than
-// silently exempted from the rule).
+// Color Discipline). Identity tokens belong exclusively to ButlerMark and
+// never authorize a topology or status rendering.
 //
 // Scoped to NO_CATEGORICAL_STATUS_FILES (the two files this bead's registry
 // consolidation touches) rather than repo-wide: a broader audit of the ~17
@@ -362,12 +359,9 @@ const NO_CATEGORICAL_STATUS_SELECTORS = [
   {
     selector: 'Literal[value=/var\\(--category-\\d+\\)/]',
     message:
-      'var(--category-N) is a chart/categorical hue, not one of the three sanctioned status ' +
-      'colors (var(--red)/var(--amber)/var(--green), see StateDot.tsx\'s exported ' +
-      'TONE_COLORS/STATE_COLORS) -- using it as a live status signal is the "unguarded ' +
-      'blue/purple" drift bu-ep4ks.15 flagged. If this is a deliberate, reviewed exception ' +
-      '(e.g. a fixed identity hue), add a line-level eslint-disable-next-line with a ' +
-      'one-line reason instead of a rule-wide escape hatch.',
+      'var(--category-N) is a private Butler identity token, not a live status color. Use ' +
+      'StateDot\'s exported TONE_COLORS/STATE_COLORS (var(--red)/var(--amber)/var(--green) ' +
+      'or neutral) for operational state; Butler identity stays inside ButlerMark.',
   },
 ]
 
@@ -446,9 +440,57 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         type: 'problem',
       },
       create(context) {
-        function stringConstructionValue(node) {
+        function constInitializer(node) {
+          let scope = context.sourceCode.getScope(node)
+
+          while (scope) {
+            const variable = scope.set.get(node.name)
+            if (variable) {
+              const [definition] = variable.defs
+              if (
+                variable.defs.length !== 1 ||
+                definition?.type !== 'Variable' ||
+                definition.parent?.kind !== 'const' ||
+                definition.node.id.type !== 'Identifier' ||
+                definition.node.id.name !== node.name ||
+                !definition.node.init
+              ) {
+                return null
+              }
+              return { initializer: definition.node.init, variable }
+            }
+            scope = scope.upper
+          }
+
+          return null
+        }
+
+        function stringConstructionValue(node, resolvingVariables = new Set()) {
+          // These wrappers are erased before runtime string construction, so they
+          // must not hide a statically proven alias from the structural grammar
+          // detector. Every other expression remains ambiguous and fail-closed.
+          if (
+            node.type === 'TSAsExpression' ||
+            node.type === 'TSTypeAssertion' ||
+            node.type === 'TSNonNullExpression' ||
+            node.type === 'TSSatisfiesExpression' ||
+            node.type === 'ChainExpression'
+          ) {
+            return stringConstructionValue(node.expression, resolvingVariables)
+          }
           if (node.type === 'Literal') {
             return typeof node.value === 'string' ? node.value : DYNAMIC_VALUE_MARKER
+          }
+          if (node.type === 'Identifier') {
+            const binding = constInitializer(node)
+            if (!binding || resolvingVariables.has(binding.variable)) {
+              return DYNAMIC_VALUE_MARKER
+            }
+
+            resolvingVariables.add(binding.variable)
+            const value = stringConstructionValue(binding.initializer, resolvingVariables)
+            resolvingVariables.delete(binding.variable)
+            return value
           }
           if (node.type === 'TemplateLiteral') {
             return node.quasis.reduce(
@@ -456,13 +498,16 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
                 value +
                 (quasi.value.cooked ?? quasi.value.raw) +
                 (index < node.expressions.length
-                  ? stringConstructionValue(node.expressions[index])
+                  ? stringConstructionValue(node.expressions[index], resolvingVariables)
                   : ''),
               '',
             )
           }
           if (node.type === 'BinaryExpression' && node.operator === '+') {
-            return stringConstructionValue(node.left) + stringConstructionValue(node.right)
+            return (
+              stringConstructionValue(node.left, resolvingVariables) +
+              stringConstructionValue(node.right, resolvingVariables)
+            )
           }
           return DYNAMIC_VALUE_MARKER
         }
