@@ -75,7 +75,13 @@ expiry), never an LLM session.
 Anti-spam is control-plane-appropriate (approval requests are time-sensitive, so
 they do not share the insight broker's daily budget; they borrow its shape):
 
-- **One push per action** (dedup key = `action_id`), edits/retries never re-push.
+- **One push per action** (dedup key = `action_id`), and ordinary
+  edits/retries never re-push. The authenticated dashboard `defer` verb is
+  the narrow, explicit re-presentation exception: each successful defer
+  schedules one successor presentation for the same still-pending action at
+  `now + hours`, without creating another action or weakening any
+  decision/expiry gate. RFC 0023 defines its fenced presentation-generation
+  protocol.
 - **Quiet hours** follow the global Owner Attention Policy
   (`core/approvals_policy.py`) as an end-exclusive `[start, end)` interval:
   pushes are deferred to the exact configured end, not dropped; the pending
