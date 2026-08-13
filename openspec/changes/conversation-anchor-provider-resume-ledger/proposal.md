@@ -11,14 +11,23 @@ scratch (`src/butlers/core/spawner.py`) with no provider-native resume
 handle, so a conversational turn can never reuse the prior turn's warm
 prompt-cache state even when the underlying CLI supports resuming a session.
 
-This change lands the ledger/provider-layer primitives underneath both gaps
-without wiring them into the live spawn/routing hot path yet (that
-integration — deciding where in `pipeline.py`/`spawner.py` to actually
-consume these primitives per trigger source — is significant, separately
-risky work against an already-intricate same-tier-failover loop, and is
-called out as follow-up rather than bundled here). It is the layer beneath
-bu-27dxl.9 (Telegram context injection/ack/voice/inline confirms), not that
-app-layer work itself.
+This change landed the ledger/provider-layer primitives underneath both gaps
+and their deliberately narrow live wiring in [#3592](https://github.com/Tzeusy/butlers/pull/3592).
+The route processor creates a conversation anchor only after it knows the
+target butler, and the spawner resolves and persists a provider-resume handle
+only for conversational `trigger_source == "route"` dispatches. It is the
+layer beneath bu-27dxl.9 (Telegram context injection/ack/voice/inline
+confirms), not that app-layer work itself.
+
+## Status correction (2026-08-13)
+
+PR #3592 reviewed head `3b992b1d70da16a8b5577caeac0f5cc9ca3d7cd9` against
+base `10661019436644ba8253a880c3fac385781987f5`, completed CI run
+`30185159686` (`check`, `frontend`, `frontend-e2e`, `em-dash-guard`, and
+`session-link-guard`), and landed as squash
+`91fff3a5a9f9fc067818c882f5e1e9947b74405e` on `2026-07-26T03:28:52Z`.
+That landing completes tasks 4.1-4.2 below. Earlier wording that live
+routing/spawn wiring was absent is historical and is no longer current.
 
 ## What Changes
 
@@ -49,12 +58,12 @@ app-layer work itself.
 
 ## What Does Not Change Yet (explicit follow-up)
 
-- Nothing calls `conversation_get_or_create_by_thread` from the Telegram/email
-  ingest paths yet, and nothing in `spawner.py`'s failover loop looks up or
-  passes `resume_session_id` yet. Both are real, mergeable primitives with
-  their own test coverage, but wiring them into the live routing/spawn hot
-  path is deliberately out of scope for this change (see the discovered
-  follow-up items filed against bu-ep4ks.8).
+- The landed wiring remains deliberately scoped: the route processor creates
+  an anchor after classification has selected the target butler, and
+  `spawner.py` uses provider resume only for conversational
+  `trigger_source == "route"` dispatches. It does not turn every ingestion
+  path into a generic conversation reader or broaden provider resume beyond
+  that routed interactive boundary.
 - First-token streaming and the unified Conversations read surface (rank #8's
   slices 3-4) are not part of this change.
 

@@ -1,12 +1,12 @@
 # Ingestion Event Registry
 
 ## Purpose
-Provides the canonical first-class record of every event that enters the butler ecosystem via a connector. The `public.ingestion_events` table anchors request-ID-based lineage queries across all downstream sessions and traces, replacing the previous trace-ID-based lookup model.
+Provides the canonical first-class record of every event that enters the butler ecosystem through a connector or direct internal dashboard ingress. The `public.ingestion_events` table anchors request-ID-based lineage queries across all downstream sessions and traces, replacing the previous trace-ID-based lookup model.
 
 ## Requirements
 
 ### Requirement: Ingestion Event Table
-The `public.ingestion_events` table is the canonical first-class record of every event that enters the butler ecosystem via a connector. One row exists per canonical ingestion event after deduplication. The UUID7 primary key is the `request_id` returned to connectors and propagated to all downstream sessions and traces.
+The `public.ingestion_events` table is the canonical first-class record of every event that enters the butler ecosystem through a connector or direct internal dashboard ingress. One row exists per canonical ingestion event after deduplication. The UUID7 primary key is the `request_id` returned to connectors or direct internal callers and propagated to all downstream sessions and traces. Connector-specific `filtered_events` joins and status semantics remain limited to connector records and SHALL NOT be inferred for dashboard events.
 
 #### Scenario: Row created on new ingest accept
 - **WHEN** the Switchboard accepts an ingest envelope and no existing row matches the computed dedupe key
@@ -74,7 +74,7 @@ Return all sessions spawned from a given `request_id`, joined across all butler 
 - **THEN** all sessions where `request_id` matches are returned (the query falls back to direct `request_id` match when no ingestion event row exists)
 
 ### Requirement: Dashboard Channel as Valid Ingestion Source
-The `public.ingestion_events` table accepts events with `source_channel = "dashboard"`. Dashboard-originated events follow the same deduplication, request context, and lineage semantics as any connector-originated event.
+The `public.ingestion_events` table accepts events with `source_channel = "dashboard"`. Dashboard-originated events follow the same deduplication, request-context, and lineage semantics as connector-originated events without becoming connector provenance or acquiring connector-specific filtered-event/status semantics.
 
 #### Scenario: Dashboard ingestion event recorded
 - **WHEN** a dashboard conversation message is ingested by the Switchboard

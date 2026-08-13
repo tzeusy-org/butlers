@@ -11,6 +11,22 @@ These are source-of-truth defects.  They are small individually, but they make a
 reliability plan look less certain than the code and can cause a future change to
 duplicate already-landed work.
 
+## Exact landed evidence
+
+This reconciliation records merged repository evidence only; it introduces no
+runtime, migration, replay, or external-operation work.
+
+| Authority | Reviewed head and base | Exact landing | Targeted verification evidence |
+| --- | --- | --- | --- |
+| Scoped conversation anchor and provider-resume wiring (anchor/resume tasks 4.1-4.2) | [#3592](https://github.com/Tzeusy/butlers/pull/3592) head `3b992b1d70da16a8b5577caeac0f5cc9ca3d7cd9`, base `10661019436644ba8253a880c3fac385781987f5` | squash `91fff3a5a9f9fc067818c882f5e1e9947b74405e` at `2026-07-26T03:28:52Z` | CI run `30185159686` completed successfully: `check`, `frontend`, `frontend-e2e`, `em-dash-guard`, and `session-link-guard`. |
+| Durable message-scoped Stop and route truth | [#3624](https://github.com/Tzeusy/butlers/pull/3624) head `7adf9f123635d50fb25c315f43b8f71d3ce35d8e`, base `dd61157dbaea383bbdb2aba0642492775e9d01a8` | squash `bc49e801002a79278b27ba511cbdf5249a564e3a` at `2026-07-29T00:04:35Z` | CI run `30396353654` completed successfully: `check`, `frontend`, `frontend-e2e`, `em-dash-guard`, and `session-link-guard`. |
+| Truthful dispatch receipt, current-turn accountability, and non-destructive reads | [#3618](https://github.com/Tzeusy/butlers/pull/3618) head `a38dd2b9daf664dfb7d064dcaa0e2a3caefafc2d`, base `008d5cdef7123812af5233058bdeda2859a1d1e4` | squash `6f04df6e5b35b78472634f5200310b179d75ac7d` at `2026-08-02T04:26:46Z` | CI run `30730869625` completed successfully: `check`, `frontend`, `frontend-e2e`, `em-dash-guard`, and `session-link-guard`. |
+
+The exact GitHub pull-request records above establish the completed prerequisite
+authority. They do not authorize terminal-action recovery implementation; that
+work remains held until this vocabulary/provenance authority is merged and the
+recovery carrier is rebased and reverified.
+
 ## Goals / Non-Goals
 
 **Goals:**

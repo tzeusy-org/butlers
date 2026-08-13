@@ -4,7 +4,7 @@
 
 The `public.ingestion_events` table SHALL be the canonical first-class record
 of every event that enters the butler ecosystem through a connector or direct
-internal dashboard ingress. One row SHALL exist per canonical ingestion event
+owner-dashboard ingress. One row SHALL exist per canonical ingestion event
 after deduplication. The UUID7 primary key SHALL be the `request_id` returned to
 connectors or direct internal callers and propagated to all downstream sessions
 and traces. Connector-specific `filtered_events` joins and status semantics
