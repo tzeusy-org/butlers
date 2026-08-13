@@ -480,6 +480,15 @@ class _StatsPool:
         return None
 
 
+class _PartialMemoryStatsPool(_StatsPool):
+    """Memory-like pool whose episodes exist but facts/rules do not."""
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        if 'FROM "partial"."facts"' in query or 'FROM "partial"."rules"' in query:
+            raise UndefinedTableError('relation "partial.facts" does not exist')
+        return await super().fetchval(query, *args)
+
+
 class _StatsDB:
     """DatabaseManager stand-in returning a distinct _StatsPool per butler."""
 
@@ -611,6 +620,85 @@ async def test_stats_retention_failure_is_unknown_without_discarding_ordinary_st
                 "retention_eligible_episodes": None,
                 "reapable_expired_ratio": None,
             },
+        ],
+    }
+
+
+async def test_stats_graph_health_marks_partial_memory_schema_as_unknown(app):
+    """An ordinary stats/schema failure cannot leave graph coverage complete."""
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(schema="atlas", retention={"expired": 1, "eligible": 2}),
+            "partial": _PartialMemoryStatsPool(
+                schema="partial", retention={"expired": 0, "eligible": 1}
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["pools_failed"] == ["partial"]
+    assert "retention_pools_failed" not in body["meta"]
+    assert body["meta"]["graph_health"] == {
+        "coverage": "incomplete",
+        "pools": [
+            {
+                "source_butler": "atlas",
+                "source_schema": "atlas",
+                "coverage": "complete",
+                "reapable_expired_episodes": 1,
+                "retention_eligible_episodes": 2,
+                "reapable_expired_ratio": 0.5,
+            },
+            {
+                "source_butler": "partial",
+                "source_schema": None,
+                "coverage": "unknown",
+                "reapable_expired_episodes": None,
+                "retention_eligible_episodes": None,
+                "reapable_expired_ratio": None,
+            },
+        ],
+    }
+
+
+async def test_stats_graph_health_is_unknown_when_only_partial_memory_schema_fails(app):
+    """No ordinary-stats-complete pool means no completed graph observation."""
+    db = _StatsDB(
+        {
+            "partial": _PartialMemoryStatsPool(
+                schema="partial", retention={"expired": 0, "eligible": 1}
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["pools_failed"] == ["partial"]
+    assert "retention_pools_failed" not in body["meta"]
+    assert body["meta"]["graph_health"] == {
+        "coverage": "unknown",
+        "pools": [
+            {
+                "source_butler": "partial",
+                "source_schema": None,
+                "coverage": "unknown",
+                "reapable_expired_episodes": None,
+                "retention_eligible_episodes": None,
+                "reapable_expired_ratio": None,
+            }
         ],
     }
 

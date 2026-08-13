@@ -614,7 +614,14 @@ async def get_memory_stats(
     # graph/provenance measurement. Reuse the completed retention observations
     # exactly: their numerator is the owner-selected consolidation-aware cleanup
     # lag population, and their denominator is `expires_at IS NOT NULL`. A
-    # failed source remains explicitly unknown instead of being zero-filled.
+    # stats/schema failure also invalidates a completed graph observation even
+    # if the standalone retention aggregate could still read episodes.
+    graph_health_unknown_names = set(tracker.names) | set(retention_tracker.names)
+    graph_health_sources = [
+        source
+        for source in retention_sources
+        if source.source_butler not in graph_health_unknown_names
+    ]
     graph_health_pools = [
         GraphHealthPoolCoverage(
             source_butler=source.source_butler,
@@ -624,7 +631,7 @@ async def get_memory_stats(
             retention_eligible_episodes=source.retention_eligible_episodes,
             reapable_expired_ratio=source.expired_retained_ratio,
         )
-        for source in retention_sources
+        for source in graph_health_sources
     ]
     graph_health_pools.extend(
         GraphHealthPoolCoverage(
@@ -638,12 +645,12 @@ async def get_memory_stats(
             retention_eligible_episodes=None,
             reapable_expired_ratio=None,
         )
-        for butler_name in retention_tracker.names
+        for butler_name in sorted(graph_health_unknown_names)
     )
     graph_health_pools.sort(key=lambda pool: pool.source_butler)
-    if not retention_sources:
+    if not graph_health_sources:
         graph_health_coverage = "unknown"
-    elif retention_tracker.failed:
+    elif graph_health_unknown_names:
         graph_health_coverage = "incomplete"
     else:
         graph_health_coverage = "complete"
