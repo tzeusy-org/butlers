@@ -86,6 +86,15 @@ export type OwnerCustomColor = string & {
   readonly __visualRole: "owner-custom-color";
 };
 
+export interface LabelFillColors {
+  backgroundColor: CategoricalColor | OwnerCustomColor;
+  color: string;
+}
+
+const CATEGORICAL_FILL_FOREGROUND = "var(--categorical-fill-foreground)";
+const LABEL_FILL_FOREGROUND_ON_LIGHT = "var(--label-fill-foreground-on-light)";
+const LABEL_FILL_FOREGROUND_ON_DARK = "var(--label-fill-foreground-on-dark)";
+
 const STATE_COLORS: Record<StateColorRole, string> = {
   healthy: "var(--green)",
   ok: "var(--green)",
@@ -131,19 +140,83 @@ export function stateColorVar(state: StateColorRole): string {
   return STATE_COLORS[state];
 }
 
-/** Mark an owner-selected color as an explicit custom-color boundary. */
+/**
+ * Normalize an owner-selected hex color into an opaque RGB fill.
+ *
+ * Alpha-bearing CSS hex has no stable contrast guarantee because its effective
+ * background depends on the surface below the badge. The four CSS hex forms
+ * remain accepted, but #RGBA and #RRGGBBAA intentionally drop alpha so the
+ * foreground selection below is deterministic and verifiably accessible.
+ */
 export function ownerCustomColor(
   value: string | null | undefined,
 ): OwnerCustomColor | undefined {
-  if (
-    !value ||
-    !/^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl|oklch|color-mix)\([^)]*\))$/i.test(
-      value.trim(),
-    )
-  ) {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(trimmed)) {
     return undefined;
   }
-  return value.trim() as OwnerCustomColor;
+
+  const hex = trimmed.slice(1);
+  const rgb = hex.length <= 4
+    ? hex.slice(0, 3).split("").map((component) => component + component).join("")
+    : hex.slice(0, 6);
+  return `#${rgb.toLowerCase()}` as OwnerCustomColor;
+}
+
+function srgbComponentLuminance(component: number): number {
+  const normalized = component / 255;
+  return normalized <= 0.04045
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function ownerCustomColorLuminance(color: OwnerCustomColor): number {
+  const red = Number.parseInt(color.slice(1, 3), 16);
+  const green = Number.parseInt(color.slice(3, 5), 16);
+  const blue = Number.parseInt(color.slice(5, 7), 16);
+  return (
+    0.2126 * srgbComponentLuminance(red) +
+    0.7152 * srgbComponentLuminance(green) +
+    0.0722 * srgbComponentLuminance(blue)
+  );
+}
+
+function ownerCustomFillForeground(color: OwnerCustomColor): string {
+  const luminance = ownerCustomColorLuminance(color);
+  const contrastWithDark = (luminance + 0.05) / 0.05;
+  const contrastWithLight = 1.05 / (luminance + 0.05);
+  return contrastWithDark >= contrastWithLight
+    ? LABEL_FILL_FOREGROUND_ON_LIGHT
+    : LABEL_FILL_FOREGROUND_ON_DARK;
+}
+
+/** Resolve the foreground token for a non-owner categorical fill. */
+export function categoricalFillForeground(): string {
+  return CATEGORICAL_FILL_FOREGROUND;
+}
+
+/**
+ * Resolve a label's complete fill style at the role boundary.
+ *
+ * Custom owner hex values receive a foreground selected from their normalized
+ * opaque background. Unsupported input falls back to the local categorical
+ * role, whose foreground is theme-aware and contrast-tested for every slot.
+ */
+export function labelFillColors(
+  labelName: string,
+  ownerColor: string | null | undefined,
+): LabelFillColors {
+  const customColor = ownerCustomColor(ownerColor);
+  if (customColor) {
+    return {
+      backgroundColor: customColor,
+      color: ownerCustomFillForeground(customColor),
+    };
+  }
+  return {
+    backgroundColor: categoricalHueVar(labelName),
+    color: categoricalFillForeground(),
+  };
 }
 
 export const CATEGORICAL_TOKEN_COUNT =

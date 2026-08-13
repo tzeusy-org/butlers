@@ -162,6 +162,12 @@ system.
 - **THEN** it appears only on the category mark, label, border, or data visualization it differentiates
 - **AND** it does not become a page background, generic hover color, button treatment, or status indicator
 
+#### Scenario: Filled category and owner labels keep an accessible foreground
+- **WHEN** a category or owner-selected label uses its color as a fill
+- **THEN** a categorical fill uses `--categorical-fill-foreground`, which clears the WCAG AA normal-text floor against every supported categorical slot in both themes
+- **AND** an owner fill accepts only CSS hex `#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`, normalizes it to opaque RGB, and selects the higher-contrast `--label-fill-foreground-on-light` or `--label-fill-foreground-on-dark` foreground
+- **AND** unsupported owner input falls back to the local categorical role and its contrast-safe foreground
+
 ### Requirement: Semantic Visual Role Matrix
 Every visual color request SHALL resolve through exactly one semantic role:
 
@@ -171,7 +177,7 @@ Every visual color request SHALL resolve through exactly one semantic role:
 | Operational state | `StateDot` / `stateColorVar` | `--red`, `--amber`, `--green`, `--dim`, `--state-unidentified`, `--muted-foreground` | state affordance |
 | Local category | `categoricalHueVar` / `categoricalColor` | `--categorical-1..12` | label, icon, position, or legend |
 | Chart series | `chartSeriesColor` / `chartColor` | `--chart-1..5` | series label or legend |
-| Owner custom color | `ownerCustomColor` | owner-provided value | owner label or legend |
+| Owner custom color | `ownerCustomColor` / `labelFillColors` | normalized opaque owner hex | owner label or legend |
 
 Identity resolvers SHALL NOT be exported for general consumers. A local
 category, chart series, or state SHALL never request a Butler identity token.

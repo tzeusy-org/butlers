@@ -14,8 +14,7 @@
 // EntityMark is for entities in the entity graph.
 // ---------------------------------------------------------------------------
 
-import { ENTITY_BADGE_TEXT } from "@/lib/entity-model"
-import { categoricalColor } from "@/lib/visual-token-roles"
+import { categoricalColor, categoricalFillForeground } from "@/lib/visual-token-roles"
 
 // ---------------------------------------------------------------------------
 // Type-glyph catalog
@@ -108,7 +107,7 @@ export interface EntityMarkProps {
   entityType?: string
   /**
    * Visual tone:
-   *   "fill"    — solid hue background, white glyph. Use for active/selected state.
+   *   "fill"    — solid hue background, contrast-safe glyph. Use for active/selected state.
    *   "neutral" — transparent background, hue border, fg glyph. Default.
    */
   tone?: "fill" | "neutral"
@@ -167,7 +166,7 @@ export function EntityMark({
   const bg = tone === "fill" ? hue : "transparent"
   const fg =
     tone === "fill"
-      ? ENTITY_BADGE_TEXT
+      ? categoricalFillForeground()
       : isUnidentified
         ? "var(--amber-text)"
         : "var(--fg)"

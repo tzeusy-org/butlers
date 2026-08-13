@@ -7,6 +7,7 @@ import {
   CATEGORICAL_TOKEN_COUNT,
   VISUAL_TOKEN_ROLE_REGISTRY,
   categoricalColor,
+  labelFillColors,
   categoricalHueVar,
   ownerCustomColor,
   stateColorVar,
@@ -166,10 +167,15 @@ describe("semantic visual role registry", () => {
     expect(CATEGORICAL_TOKEN_COUNT).toBe(12);
   });
 
-  it.each(["#123", "#1234", "#123456", "#12345678"])(
-    "accepts valid owner custom CSS hex colors with length %s",
-    (color) => {
-      expect(ownerCustomColor(color)).toBe(color);
+  it.each([
+    ["#123", "#112233"],
+    ["#1234", "#112233"],
+    ["#123456", "#123456"],
+    ["#12345678", "#123456"],
+  ])(
+    "normalizes valid owner custom CSS hex colors with length %s",
+    (color, expected) => {
+      expect(ownerCustomColor(color)).toBe(expected);
     },
   );
 
@@ -179,6 +185,25 @@ describe("semantic visual role registry", () => {
       expect(ownerCustomColor(color)).toBeUndefined();
     },
   );
+
+  it.each([
+    ["#000", "#000000", "var(--label-fill-foreground-on-dark)"],
+    ["#0000", "#000000", "var(--label-fill-foreground-on-dark)"],
+    ["#ffffff", "#ffffff", "var(--label-fill-foreground-on-light)"],
+    ["#ffffffff", "#ffffff", "var(--label-fill-foreground-on-light)"],
+  ])(
+    "selects an AA foreground for valid owner hex %s",
+    (input, backgroundColor, color) => {
+      expect(labelFillColors("Owner", input)).toEqual({ backgroundColor, color });
+    },
+  );
+
+  it("uses the categorical fill foreground when owner input is unsupported", () => {
+    expect(labelFillColors("Family", "#12345")).toEqual({
+      backgroundColor: categoricalHueVar("Family"),
+      color: "var(--categorical-fill-foreground)",
+    });
+  });
 
   it("keeps frontend topology on private ButlerMark identity and typed role helpers", () => {
     expect(FRONTEND_TOPOLOGY).toContain(

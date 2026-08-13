@@ -89,6 +89,11 @@ const INVALID_COLOR_FAMILY: Group = {
   labels: [{ id: "label-invalid", name: "Invalid colour", color: "#12345" }],
 };
 
+const WHITE_COLOR_FAMILY: Group = {
+  ...FAMILY,
+  labels: [{ id: "label-white", name: "White", color: "#fff" }],
+};
+
 // ---------------------------------------------------------------------------
 // Render helper
 // ---------------------------------------------------------------------------
@@ -179,7 +184,22 @@ describe("CirclesPage — structure", () => {
     renderPage();
 
     expect(container.innerHTML).toMatch(/background-color:\s*var\(--categorical-/);
+    expect(container.innerHTML).toMatch(/color:\s*var\(--categorical-fill-foreground\)/);
     expect(container.innerHTML).not.toContain("#12345");
+  });
+
+  it("uses a dark foreground for a valid white owner label fill", () => {
+    (useGroups as AnyMock).mockReturnValue({
+      data: { groups: [WHITE_COLOR_FAMILY], total: 1 },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    renderPage();
+
+    expect(container.innerHTML).toMatch(/background-color:\s*rgb\(255, 255, 255\)/);
+    expect(container.innerHTML).toMatch(/color:\s*var\(--label-fill-foreground-on-light\)/);
   });
 });
 

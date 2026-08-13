@@ -1,3 +1,7 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, extname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 /**
  * Semantic recognizer for the private Butler identity token surface.
  *
@@ -372,4 +376,104 @@ export function findPrivateIdentityReferences(value) {
       return true;
     })
     .sort((left, right) => left.start - right.start);
+}
+
+function maskCssCommentsAndStrings(source) {
+  let masked = "";
+  let index = 0;
+
+  while (index < source.length) {
+    if (source[index] === "/" && source[index + 1] === "*") {
+      const end = source.indexOf("*/", index + 2);
+      const commentEnd = end === -1 ? source.length : end + 2;
+      for (; index < commentEnd; index += 1) {
+        masked += source[index] === "\n" || source[index] === "\r" ? source[index] : " ";
+      }
+      continue;
+    }
+
+    if (source[index] === '"' || source[index] === "'") {
+      const quote = source[index];
+      masked += " ";
+      index += 1;
+      while (index < source.length) {
+        if (source[index] === "\\") {
+          masked += source[index] === "\n" || source[index] === "\r" ? source[index] : " ";
+          index += 1;
+          if (index < source.length) {
+            masked += source[index] === "\n" || source[index] === "\r" ? source[index] : " ";
+            index += 1;
+          }
+          continue;
+        }
+        const character = source[index];
+        masked += character === "\n" || character === "\r" ? character : " ";
+        index += 1;
+        if (character === quote) break;
+      }
+      continue;
+    }
+
+    masked += source[index];
+    index += 1;
+  }
+
+  return masked;
+}
+
+/**
+ * Scan a CSS stylesheet while excluding comments and string literals, which
+ * cannot consume a custom property at runtime. Raw custom-property
+ * declarations remain visible but are intentionally harmless: the private
+ * surface is a *reference* boundary, not a ban on defining its tokens.
+ */
+export function findPrivateIdentityReferencesInStylesheet(source) {
+  return findPrivateIdentityReferences(maskCssCommentsAndStrings(source));
+}
+
+function cssSourcePaths(directory) {
+  return readdirSync(directory, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .flatMap((entry) => {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return cssSourcePaths(path);
+      return entry.isFile() && extname(entry.name) === ".css" ? [path] : [];
+    });
+}
+
+function lineAndColumn(source, index) {
+  const prefix = source.slice(0, index);
+  const lines = prefix.split(/\r\n|\r|\n/);
+  return { column: lines.at(-1).length + 1, line: lines.length };
+}
+
+function checkCssSources() {
+  const scriptPath = fileURLToPath(import.meta.url);
+  const frontendDirectory = dirname(dirname(scriptPath));
+  const sourceDirectory = join(frontendDirectory, "src");
+  let hasFailures = false;
+
+  for (const path of cssSourcePaths(sourceDirectory)) {
+    const source = readFileSync(path, "utf8");
+    for (const reference of findPrivateIdentityReferencesInStylesheet(source)) {
+      const { line, column } = lineAndColumn(source, reference.start);
+      console.error(
+        `${relative(frontendDirectory, path)}:${line}:${column}: Butler identity token ${reference.property} is private to ButlerMark; use a typed semantic role helper instead.`,
+      );
+      hasFailures = true;
+    }
+  }
+
+  if (hasFailures) process.exitCode = 1;
+}
+
+const scriptPath = fileURLToPath(import.meta.url);
+const runningAsScript = process.argv[1] && resolve(process.argv[1]) === scriptPath;
+if (runningAsScript) {
+  if (process.argv.length !== 3 || process.argv[2] !== "--check") {
+    console.error("Usage: node scripts/visual-role-css-guard.mjs --check");
+    process.exitCode = 2;
+  } else {
+    checkCssSources();
+  }
 }

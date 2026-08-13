@@ -145,11 +145,11 @@ describe("EntityMark: tone=fill", () => {
     expect(html).toContain("background")
   })
 
-  it("applies white text color", () => {
+  it("applies the theme-aware categorical fill foreground", () => {
     const html = renderToStaticMarkup(
       <EntityMark name="Acme" entityType="organization" tone="fill" />,
     )
-    expect(html).toContain("white")
+    expect(html).toContain("var(--categorical-fill-foreground)")
   })
 
   it("applies transparent border in fill tone", () => {

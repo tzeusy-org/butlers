@@ -42,7 +42,7 @@ import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { categoricalHueVar, ownerCustomColor } from "@/lib/visual-token-roles";
+import { labelFillColors } from "@/lib/visual-token-roles";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
 import {
   useAssignGroupLabel,
@@ -65,12 +65,8 @@ import {
 // this, the honest fix is a real backend page size bump, not a silent
 // client cap (see the truncation footnote below for the interim signal).
 const FETCH_LIMIT = 200;
-// bu-86c4c.6: "white" keyword, not a hex literal — matches the ButlerMark
-// tone="fill" precedent (`color: "white"`) for text on a solid category fill.
-const BADGE_TEXT = "white";
-
-function labelBg(label: Label): string {
-  return ownerCustomColor(label.color) ?? categoricalHueVar(label.name);
+function labelFillStyle(label: Label) {
+  return labelFillColors(label.name, label.color);
 }
 
 // ---------------------------------------------------------------------------
@@ -136,12 +132,12 @@ function CreateLabelDialog() {
               value={color}
               onChange={(e) => setColor(e.target.value)}
               // bu-86c4c.6: example format text for a free-form user-chosen
-              // label color, not a themed color — labels intentionally accept
-              // any hex the owner types (see labelBg() above), so this is not
-              // a design-token violation.
+              // label color, not a themed color — labels accept CSS hex forms
+              // and normalize their opaque fill/foreground pair at the visual
+              // role boundary, so this is not a design-token violation.
               // eslint-disable-next-line no-restricted-syntax
               placeholder="#e63946"
-              maxLength={7}
+              maxLength={9}
             />
           </div>
           <DialogFooter>
@@ -208,7 +204,7 @@ function AssignLabelDialog({
               <Badge
                 key={label.id}
                 className="cursor-pointer"
-                style={{ backgroundColor: labelBg(label), color: BADGE_TEXT }}
+                style={labelFillStyle(label)}
                 onClick={() => {
                   assign.mutate({ groupId, labelId: label.id });
                   setOpen(false);
@@ -240,7 +236,7 @@ function GroupLabelCell({ groupId, labels }: { groupId: string; labels: Label[] 
         <Badge
           key={label.id}
           className="pr-1 gap-1"
-          style={{ backgroundColor: labelBg(label), color: BADGE_TEXT }}
+          style={labelFillStyle(label)}
         >
           <span>{label.name}</span>
           <button

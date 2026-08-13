@@ -8,6 +8,7 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 
 import {
   DYNAMIC_VALUE_MARKER,
+  TAILWIND_COLOR_UTILITY_SPELLINGS,
   findPrivateIdentityReferences,
 } from './scripts/visual-role-css-guard.mjs'
 
@@ -472,93 +473,224 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return node.property.type === 'Identifier' ? node.property.name : null
         }
 
-        function constArrayElements(node, resolvingVariables) {
-          if (
-            node.type === 'TSAsExpression' ||
-            node.type === 'TSTypeAssertion' ||
-            node.type === 'TSNonNullExpression' ||
-            node.type === 'TSSatisfiesExpression' ||
-            node.type === 'ChainExpression'
+        function unwrapStaticExpression(node) {
+          while (
+            node &&
+            (node.type === 'TSAsExpression' ||
+              node.type === 'TSTypeAssertion' ||
+              node.type === 'TSNonNullExpression' ||
+              node.type === 'TSSatisfiesExpression' ||
+              node.type === 'ChainExpression')
           ) {
-            return constArrayElements(node.expression, resolvingVariables)
+            node = node.expression
           }
+          return node
+        }
+
+        function syntheticStringLiteral(value) {
+          return { type: 'Literal', value }
+        }
+
+        function staticObjectProperty(node, propertyName, resolvingVariables, localValues) {
+          node = unwrapStaticExpression(node)
+          if (node.type === 'ObjectExpression') {
+            for (const property of node.properties) {
+              if (property.type !== 'Property' || property.kind !== 'init' || property.method) {
+                return null
+              }
+              const key = property.computed
+                ? stringConstructionValue(property.key, resolvingVariables, localValues)
+                : memberPropertyName({ computed: false, property: property.key })
+              if (key === DYNAMIC_VALUE_MARKER) return null
+              if (key === propertyName) return property.value
+            }
+            return undefined
+          }
+          if (node.type !== 'Identifier') return null
+
+          const binding = constInitializer(node)
+          if (!binding || resolvingVariables.has(binding.variable)) return null
+
+          resolvingVariables.add(binding.variable)
+          const value = staticObjectProperty(
+            binding.initializer,
+            propertyName,
+            resolvingVariables,
+            localValues,
+          )
+          resolvingVariables.delete(binding.variable)
+          return value
+        }
+
+        function staticCallback(node) {
+          node = unwrapStaticExpression(node)
+          if (node.type !== 'ArrowFunctionExpression' && node.type !== 'FunctionExpression') {
+            return null
+          }
+          if (node.params.length > 1 || node.params.some((parameter) => parameter.type !== 'Identifier')) {
+            return null
+          }
+          if (node.body.type !== 'BlockStatement') {
+            return { body: node.body, parameter: node.params[0]?.name }
+          }
+          if (
+            node.body.body.length !== 1 ||
+            node.body.body[0].type !== 'ReturnStatement' ||
+            !node.body.body[0].argument
+          ) {
+            return null
+          }
+          return { body: node.body.body[0].argument, parameter: node.params[0]?.name }
+        }
+
+        function staticNumberValue(node, resolvingVariables, localValues) {
+          node = unwrapStaticExpression(node)
+          if (node.type === 'Literal' && typeof node.value === 'number' && Number.isInteger(node.value)) {
+            return node.value
+          }
+          if (node.type === 'UnaryExpression' && (node.operator === '+' || node.operator === '-')) {
+            const operand = staticNumberValue(node.argument, resolvingVariables, localValues)
+            return operand === null ? null : node.operator === '-' ? -operand : operand
+          }
+          if (node.type !== 'Identifier' || localValues.has(node.name)) return null
+
+          const binding = constInitializer(node)
+          if (!binding || resolvingVariables.has(binding.variable)) return null
+
+          resolvingVariables.add(binding.variable)
+          const value = staticNumberValue(binding.initializer, resolvingVariables, localValues)
+          resolvingVariables.delete(binding.variable)
+          return value
+        }
+
+        function staticBooleanValue(node, resolvingVariables, localValues) {
+          node = unwrapStaticExpression(node)
+          if (node.type === 'Literal' && typeof node.value === 'boolean') return node.value
+          if (node.type === 'UnaryExpression' && node.operator === '!') {
+            const value = staticBooleanValue(node.argument, resolvingVariables, localValues)
+            return value === null ? null : !value
+          }
+          if (node.type === 'LogicalExpression') {
+            const left = staticBooleanValue(node.left, resolvingVariables, localValues)
+            const right = staticBooleanValue(node.right, resolvingVariables, localValues)
+            if (left === null || right === null) return null
+            return node.operator === '&&' ? left && right : left || right
+          }
+          if (
+            node.type === 'BinaryExpression' &&
+            ['===', '!==', '==', '!='].includes(node.operator)
+          ) {
+            const left = stringConstructionValue(node.left, resolvingVariables, localValues)
+            const right = stringConstructionValue(node.right, resolvingVariables, localValues)
+            if (left === DYNAMIC_VALUE_MARKER || right === DYNAMIC_VALUE_MARKER) return null
+            const equal = left === right
+            return node.operator === '===' || node.operator === '==' ? equal : !equal
+          }
+          return null
+        }
+
+        function staticMappedElements(elements, callbackNode, resolvingVariables, localValues) {
+          const callback = staticCallback(callbackNode)
+          if (!callback?.parameter) return null
+
+          const mapped = []
+          for (const element of elements) {
+            const elementValue = stringConstructionValue(element, resolvingVariables, localValues)
+            if (elementValue === DYNAMIC_VALUE_MARKER) return null
+            const callbackValues = new Map(localValues)
+            callbackValues.set(callback.parameter, elementValue)
+            const value = stringConstructionValue(callback.body, resolvingVariables, callbackValues)
+            if (value === DYNAMIC_VALUE_MARKER) return null
+            mapped.push(syntheticStringLiteral(value))
+          }
+          return mapped
+        }
+
+        function staticFilteredElements(elements, callbackNode, resolvingVariables, localValues) {
+          const callback = staticCallback(callbackNode)
+          if (!callback) return null
+
+          const filtered = []
+          for (const element of elements) {
+            const elementValue = stringConstructionValue(element, resolvingVariables, localValues)
+            if (elementValue === DYNAMIC_VALUE_MARKER) return null
+            const callbackValues = new Map(localValues)
+            if (callback.parameter) callbackValues.set(callback.parameter, elementValue)
+            const keep = staticBooleanValue(callback.body, resolvingVariables, callbackValues)
+            if (keep === null) return null
+            if (keep) filtered.push(element)
+          }
+          return filtered
+        }
+
+        function constArrayElements(node, resolvingVariables, localValues = new Map()) {
+          node = unwrapStaticExpression(node)
           if (node.type === 'ArrayExpression') {
-            return node.elements.reduce(
-              (result, element) => {
-                if (element?.type !== 'SpreadElement') {
-                  return { ...result, elements: [...result.elements, element] }
-                }
-
-                const spreadElements = constArrayElements(element.argument, resolvingVariables)
-                if (!spreadElements) {
-                  return {
-                    ambiguous: true,
-                    elements: [...result.elements, element],
-                  }
-                }
-
-                return {
-                  ambiguous: result.ambiguous || spreadElements.ambiguous,
-                  elements: [...result.elements, ...spreadElements.elements],
-                }
-              },
-              { ambiguous: false, elements: [] },
+            const elements = []
+            for (const element of node.elements) {
+              if (!element) {
+                elements.push(syntheticStringLiteral(''))
+                continue
+              }
+              if (element.type !== 'SpreadElement') {
+                elements.push(element)
+                continue
+              }
+              const spreadElements = constArrayElements(
+                element.argument,
+                resolvingVariables,
+                localValues,
+              )
+              if (!spreadElements) return null
+              elements.push(...spreadElements)
+            }
+            return elements
+          }
+          if (node.type === 'MemberExpression') {
+            const property = memberPropertyName(node)
+            if (property === null) return null
+            const value = staticObjectProperty(
+              node.object,
+              property,
+              resolvingVariables,
+              localValues,
             )
+            return value === null || value === undefined
+              ? null
+              : constArrayElements(value, resolvingVariables, localValues)
           }
           if (
             node.type === 'CallExpression' &&
             node.callee.type === 'MemberExpression' &&
             memberPropertyName(node.callee) === 'concat'
           ) {
-            const receiverElements = constArrayElements(node.callee.object, resolvingVariables)
+            const receiverElements = constArrayElements(
+              node.callee.object,
+              resolvingVariables,
+              localValues,
+            )
             if (!receiverElements) return null
 
-            return node.arguments.reduce((result, argument) => {
+            const elements = [...receiverElements]
+            for (const argument of node.arguments) {
               if (argument.type === 'SpreadElement') {
-                const spreadElements = constArrayElements(argument.argument, resolvingVariables)
-                if (!spreadElements) {
-                  return {
-                    ambiguous: true,
-                    elements: [...result.elements, argument],
-                  }
-                }
-
-                return {
-                  ambiguous: result.ambiguous || spreadElements.ambiguous,
-                  elements: [...result.elements, ...spreadElements.elements],
-                }
+                const spreadElements = constArrayElements(
+                  argument.argument,
+                  resolvingVariables,
+                  localValues,
+                )
+                if (!spreadElements) return null
+                elements.push(...spreadElements)
+                continue
               }
-
-              const argumentElements = constArrayElements(argument, resolvingVariables)
-              return argumentElements
-                ? {
-                    ambiguous: result.ambiguous || argumentElements.ambiguous,
-                    elements: [...result.elements, ...argumentElements.elements],
-                  }
-                : { ...result, elements: [...result.elements, argument] }
-            }, receiverElements)
-          }
-          if (
-            node.type === 'CallExpression' &&
-            node.callee.type === 'MemberExpression' &&
-            memberPropertyName(node.callee) === 'slice' &&
-            node.arguments.length === 0
-          ) {
-            return constArrayElements(node.callee.object, resolvingVariables)
-          }
-          if (
-            node.type === 'CallExpression' &&
-            node.callee.type === 'MemberExpression' &&
-            memberPropertyName(node.callee) === 'map'
-          ) {
-            const receiverElements = constArrayElements(node.callee.object, resolvingVariables)
-            if (!receiverElements) return null
-
-            // The callback may transform every element, so retain the static
-            // trace but mark the joined result ambiguous instead of assuming an
-            // identity mapping. That preserves static semantic roles while
-            // preventing an unmodeled map() from hiding an identity token.
-            return { ...receiverElements, ambiguous: true }
+              const argumentElements = constArrayElements(argument, resolvingVariables, localValues)
+              if (argumentElements) {
+                elements.push(...argumentElements)
+              } else {
+                elements.push(argument)
+              }
+            }
+            return elements
           }
           if (
             node.type === 'CallExpression' &&
@@ -569,50 +701,85 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             node.arguments.length >= 1 &&
             node.arguments.length <= 2
           ) {
-            const sourceElements = constArrayElements(node.arguments[0], resolvingVariables)
+            const sourceElements = constArrayElements(node.arguments[0], resolvingVariables, localValues)
             if (!sourceElements) return null
-
-            // Array.from's optional mapper has the same unknown-transform
-            // boundary as Array.prototype.map(). Keep the source trace, but
-            // make the joined value ambiguous rather than infer identity.
-            return node.arguments.length === 1
-              ? sourceElements
-              : { ...sourceElements, ambiguous: true }
+            if (node.arguments.length === 1) return sourceElements
+            return staticMappedElements(
+              sourceElements,
+              node.arguments[1],
+              resolvingVariables,
+              localValues,
+            )
           }
           if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression') {
-            const receiverElements = constArrayElements(node.callee.object, resolvingVariables)
+            const property = memberPropertyName(node.callee)
+            const receiverElements = constArrayElements(
+              node.callee.object,
+              resolvingVariables,
+              localValues,
+            )
             if (!receiverElements) return null
 
-            // Any other array method can transform, filter, or reorder its
-            // elements. Retain its static trace so an enclosing join() cannot
-            // hide a private token, but mark the result ambiguous rather than
-            // assuming the method preserved the original array.
-            return { ...receiverElements, ambiguous: true }
+            if (property === 'slice' && node.arguments.length === 0) return receiverElements
+            if (property === 'reverse' && node.arguments.length === 0) {
+              return [...receiverElements].reverse()
+            }
+            if (property === 'map' && node.arguments.length === 1) {
+              return staticMappedElements(
+                receiverElements,
+                node.arguments[0],
+                resolvingVariables,
+                localValues,
+              )
+            }
+            if (property === 'filter' && node.arguments.length === 1) {
+              return staticFilteredElements(
+                receiverElements,
+                node.arguments[0],
+                resolvingVariables,
+                localValues,
+              )
+            }
+            return null
           }
-          if (node.type !== 'Identifier') return null
+          if (node.type !== 'Identifier' || localValues.has(node.name)) return null
 
           const binding = constInitializer(node)
           if (!binding || resolvingVariables.has(binding.variable)) return null
 
           resolvingVariables.add(binding.variable)
-          const elements = constArrayElements(binding.initializer, resolvingVariables)
+          const elements = constArrayElements(binding.initializer, resolvingVariables, localValues)
           resolvingVariables.delete(binding.variable)
           return elements
         }
 
-        function constRegExpValue(node, resolvingVariables) {
+        function constRegExpValue(node, resolvingVariables, localValues = new Map()) {
+          node = unwrapStaticExpression(node)
           if (
-            node.type === 'TSAsExpression' ||
-            node.type === 'TSTypeAssertion' ||
-            node.type === 'TSNonNullExpression' ||
-            node.type === 'TSSatisfiesExpression' ||
-            node.type === 'ChainExpression'
+            node.type === 'Literal' &&
+            node.regex
           ) {
-            return constRegExpValue(node.expression, resolvingVariables)
-          }
-          if (node.type === 'Literal' && node.regex) {
             try {
               return new RegExp(node.regex.pattern, node.regex.flags)
+            } catch {
+              return null
+            }
+          }
+          if (
+            node.type === 'NewExpression' &&
+            node.callee.type === 'Identifier' &&
+            node.callee.name === 'RegExp' &&
+            node.arguments.length >= 1 &&
+            node.arguments.length <= 2 &&
+            node.arguments.every((argument) => argument.type !== 'SpreadElement')
+          ) {
+            const source = stringConstructionValue(node.arguments[0], resolvingVariables, localValues)
+            const flags = node.arguments[1]
+              ? stringConstructionValue(node.arguments[1], resolvingVariables, localValues)
+              : ''
+            if (source === DYNAMIC_VALUE_MARKER || flags === DYNAMIC_VALUE_MARKER) return null
+            try {
+              return new RegExp(source, flags)
             } catch {
               return null
             }
@@ -623,37 +790,106 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (!binding || resolvingVariables.has(binding.variable)) return null
 
           resolvingVariables.add(binding.variable)
-          const value = constRegExpValue(binding.initializer, resolvingVariables)
+          const value = constRegExpValue(binding.initializer, resolvingVariables, localValues)
           resolvingVariables.delete(binding.variable)
           return value
         }
 
-        function stringConstructionValue(node, resolvingVariables = new Set()) {
+        function staticConstructionFragments(node, resolvingVariables = new Set()) {
+          node = unwrapStaticExpression(node)
+          if (node.type === 'Literal') return typeof node.value === 'string' ? [node.value] : []
+          if (node.type === 'Identifier') {
+            const binding = constInitializer(node)
+            if (!binding || resolvingVariables.has(binding.variable)) return []
+            resolvingVariables.add(binding.variable)
+            const fragments = staticConstructionFragments(binding.initializer, resolvingVariables)
+            resolvingVariables.delete(binding.variable)
+            return fragments
+          }
+          if (node.type === 'ArrayExpression') {
+            return node.elements.flatMap((element) =>
+              element
+                ? staticConstructionFragments(
+                    element.type === 'SpreadElement' ? element.argument : element,
+                    resolvingVariables,
+                  )
+                : [],
+            )
+          }
+          if (node.type === 'TemplateLiteral') {
+            return node.quasis.flatMap((quasi, index) => [
+              quasi.value.cooked ?? quasi.value.raw,
+              ...(index < node.expressions.length
+                ? staticConstructionFragments(node.expressions[index], resolvingVariables)
+                : []),
+            ])
+          }
+          if (node.type === 'BinaryExpression' && node.operator === '+') {
+            return [
+              ...staticConstructionFragments(node.left, resolvingVariables),
+              ...staticConstructionFragments(node.right, resolvingVariables),
+            ]
+          }
+          if (node.type === 'CallExpression' || node.type === 'NewExpression') {
+            const receiver =
+              node.type === 'CallExpression' && node.callee.type === 'MemberExpression'
+                ? staticConstructionFragments(node.callee.object, resolvingVariables)
+                : []
+            return [
+              ...receiver,
+              ...node.arguments.flatMap((argument) =>
+                staticConstructionFragments(
+                  argument.type === 'SpreadElement' ? argument.argument : argument,
+                  resolvingVariables,
+                ),
+              ),
+            ]
+          }
+          return []
+        }
+
+        function failClosedStructuralValue(node, resolvingVariables) {
+          const staticText = staticConstructionFragments(node, resolvingVariables).join('')
+          const containsCssVariableConstruction = /\bvar\s*\(/i.test(staticText)
+          const containsTailwindConstruction = TAILWIND_COLOR_UTILITY_SPELLINGS.some((utility) =>
+            staticText.includes(`${utility}-(`),
+          )
+          return containsCssVariableConstruction || containsTailwindConstruction
+            ? `var(${DYNAMIC_VALUE_MARKER})`
+            : DYNAMIC_VALUE_MARKER
+        }
+
+        function stringConstructionValue(
+          node,
+          resolvingVariables = new Set(),
+          localValues = new Map(),
+        ) {
+          node = unwrapStaticExpression(node)
           // These wrappers are erased before runtime string construction, so they
           // must not hide a statically proven alias from the structural grammar
           // detector. Every other expression remains ambiguous and fail-closed.
-          if (
-            node.type === 'TSAsExpression' ||
-            node.type === 'TSTypeAssertion' ||
-            node.type === 'TSNonNullExpression' ||
-            node.type === 'TSSatisfiesExpression' ||
-            node.type === 'ChainExpression'
-          ) {
-            return stringConstructionValue(node.expression, resolvingVariables)
-          }
           if (node.type === 'Literal') {
             return typeof node.value === 'string' ? node.value : DYNAMIC_VALUE_MARKER
           }
           if (node.type === 'Identifier') {
+            if (localValues.has(node.name)) return localValues.get(node.name)
             const binding = constInitializer(node)
             if (!binding || resolvingVariables.has(binding.variable)) {
               return DYNAMIC_VALUE_MARKER
             }
 
             resolvingVariables.add(binding.variable)
-            const value = stringConstructionValue(binding.initializer, resolvingVariables)
+            const value = stringConstructionValue(binding.initializer, resolvingVariables, localValues)
             resolvingVariables.delete(binding.variable)
             return value
+          }
+          if (node.type === 'MemberExpression') {
+            const property = memberPropertyName(node)
+            if (property === null) return DYNAMIC_VALUE_MARKER
+            const value = staticObjectProperty(node.object, property, resolvingVariables, localValues)
+            return value === null || value === undefined
+              ? DYNAMIC_VALUE_MARKER
+              : stringConstructionValue(value, resolvingVariables, localValues)
           }
           if (node.type === 'TemplateLiteral') {
             return node.quasis.reduce(
@@ -661,15 +897,15 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
                 value +
                 (quasi.value.cooked ?? quasi.value.raw) +
                 (index < node.expressions.length
-                  ? stringConstructionValue(node.expressions[index], resolvingVariables)
+                  ? stringConstructionValue(node.expressions[index], resolvingVariables, localValues)
                   : ''),
               '',
             )
           }
           if (node.type === 'BinaryExpression' && node.operator === '+') {
             return (
-              stringConstructionValue(node.left, resolvingVariables) +
-              stringConstructionValue(node.right, resolvingVariables)
+              stringConstructionValue(node.left, resolvingVariables, localValues) +
+              stringConstructionValue(node.right, resolvingVariables, localValues)
             )
           }
           if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression') {
@@ -678,22 +914,18 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             if (property === 'join') {
               if (node.arguments.length > 1) return DYNAMIC_VALUE_MARKER
 
-              const array = constArrayElements(node.callee.object, resolvingVariables)
-              if (!array) return DYNAMIC_VALUE_MARKER
+              const array = constArrayElements(node.callee.object, resolvingVariables, localValues)
+              if (!array) return failClosedStructuralValue(node.callee.object, resolvingVariables)
 
               const separator = node.arguments[0]
-                ? stringConstructionValue(node.arguments[0], resolvingVariables)
+                ? stringConstructionValue(node.arguments[0], resolvingVariables, localValues)
                 : ','
-              const joined = array.elements
+              if (separator === DYNAMIC_VALUE_MARKER) return DYNAMIC_VALUE_MARKER
+              return array
                 .map((element) =>
-                  element && element.type !== 'SpreadElement'
-                    ? stringConstructionValue(element, resolvingVariables)
-                    : element?.type === 'SpreadElement'
-                      ? DYNAMIC_VALUE_MARKER
-                    : '',
+                  stringConstructionValue(element, resolvingVariables, localValues),
                 )
                 .join(separator)
-              return array.ambiguous ? joined + DYNAMIC_VALUE_MARKER : joined
             }
 
             if (property === 'concat') {
@@ -701,9 +933,20 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
                 .map((part) =>
                   part.type === 'SpreadElement'
                     ? DYNAMIC_VALUE_MARKER
-                    : stringConstructionValue(part, resolvingVariables),
+                    : stringConstructionValue(part, resolvingVariables, localValues),
                 )
                 .join('')
+            }
+
+            if (property === 'at' && node.arguments.length === 1) {
+              const array = constArrayElements(node.callee.object, resolvingVariables, localValues)
+              const index = staticNumberValue(node.arguments[0], resolvingVariables, localValues)
+              if (!array || index === null) return DYNAMIC_VALUE_MARKER
+              const normalizedIndex = index < 0 ? array.length + index : index
+              const element = array[normalizedIndex]
+              return element
+                ? stringConstructionValue(element, resolvingVariables, localValues)
+                : DYNAMIC_VALUE_MARKER
             }
 
             if ((property === 'replace' || property === 'replaceAll') && node.arguments.length === 2) {
@@ -712,15 +955,37 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
                 return DYNAMIC_VALUE_MARKER
               }
 
-              const regExpSearch = constRegExpValue(search, resolvingVariables)
+              const regExpSearch = constRegExpValue(search, resolvingVariables, localValues)
               if (property === 'replaceAll' && regExpSearch && !regExpSearch.global) {
                 return DYNAMIC_VALUE_MARKER
               }
 
               try {
-                return stringConstructionValue(node.callee.object, resolvingVariables)[property](
-                  regExpSearch ?? stringConstructionValue(search, resolvingVariables),
-                  stringConstructionValue(replacement, resolvingVariables),
+                const subject = stringConstructionValue(
+                  node.callee.object,
+                  resolvingVariables,
+                  localValues,
+                )
+                const replacementValue = stringConstructionValue(
+                  replacement,
+                  resolvingVariables,
+                  localValues,
+                )
+                const searchValue = regExpSearch ?? stringConstructionValue(
+                  search,
+                  resolvingVariables,
+                  localValues,
+                )
+                if (
+                  subject === DYNAMIC_VALUE_MARKER ||
+                  replacementValue === DYNAMIC_VALUE_MARKER ||
+                  searchValue === DYNAMIC_VALUE_MARKER
+                ) {
+                  return DYNAMIC_VALUE_MARKER
+                }
+                return subject[property](
+                  searchValue,
+                  replacementValue,
                 )
               } catch {
                 return DYNAMIC_VALUE_MARKER
@@ -735,6 +1000,28 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             (node.parent?.type === 'BinaryExpression' && node.parent.operator === '+') ||
             node.parent?.type === 'TemplateLiteral'
           )
+        }
+
+        function cssomPropertyReadValue(node) {
+          if (
+            node.callee.type !== 'MemberExpression' ||
+            memberPropertyName(node.callee) !== 'getPropertyValue' ||
+            node.arguments.length !== 1 ||
+            node.arguments[0].type === 'SpreadElement' ||
+            node.callee.object.type !== 'CallExpression'
+          ) {
+            return null
+          }
+
+          const getComputedStyle = node.callee.object.callee
+          const isDirectGlobal =
+            getComputedStyle.type === 'Identifier' && getComputedStyle.name === 'getComputedStyle'
+          const isGlobalMember =
+            getComputedStyle.type === 'MemberExpression' &&
+            memberPropertyName(getComputedStyle) === 'getComputedStyle'
+          if (!isDirectGlobal && !isGlobalMember) return null
+
+          return stringConstructionValue(node.arguments[0])
         }
 
         function reportPrivateIdentityReferences(value, node) {
@@ -764,6 +1051,14 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             }
           },
           CallExpression(node) {
+            const cssomProperty = cssomPropertyReadValue(node)
+            if (cssomProperty !== null) {
+              // A CSSOM property lookup is semantically equivalent to reading
+              // var(--token): the token name must observe the same private
+              // ButlerMark boundary even though it is not written in CSS.
+              reportPrivateIdentityReferences(`var(${cssomProperty})`, node)
+              return
+            }
             if (!isNestedStringConstruction(node)) {
               reportPrivateIdentityReferences(stringConstructionValue(node), node)
             }

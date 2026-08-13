@@ -1181,7 +1181,9 @@ color-role surface documented here.
 The identity-slot resolver is private to ButlerMark. It is not a public API:
 no chart, tag, badge, or other caller may resolve `--category-N` (or its
 legacy `--color-category-N` alias) directly. The private identity surface is
-enforced by the visual-role guard in `frontend/eslint.config.js`.
+enforced by the visual-role guard in `frontend/eslint.config.js` for
+TypeScript/TSX and `frontend/scripts/visual-role-css-guard.mjs` for source
+stylesheets; both gates run through `frontend`'s `npm run lint`.
 
 Non-identity callers choose a typed semantic role instead:
 
@@ -1196,6 +1198,10 @@ Non-identity callers choose a typed semantic role instead:
   state-token registry rather than a categorical or identity hue.
 - **Owner-selected label colors:** `ownerCustomColor`, the explicit custom
   color boundary for a supplied owner value.
+- **Filled label styles:** `labelFillColors` normalizes supported owner hex
+  (`#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA`) to an opaque fill and chooses a
+  contrast-safe foreground; unsupported input falls back to the typed local
+  categorical ramp and its theme-aware fill foreground.
 
 ### Source files
 

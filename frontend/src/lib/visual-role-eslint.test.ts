@@ -334,6 +334,67 @@ const IMMUTABLE_ARRAY_WRAPPER_SEMANTIC_ROLE_SOURCE = [
   'export const fromFilter = fragments.filter(() => true).join("");',
 ].join("\n");
 
+// These are deliberately non-identity transformations. Treating map(),
+// filter(), reverse(), or Array.from() as an identity operation misses the
+// private token each pipeline creates from harmless-looking fragments.
+const TRANSFORMED_STATIC_PRIVATE_IDENTITY_SOURCE = [
+  'const mapped = ["var(", "category-", "1)"] as const;',
+  'export const fromMap = mapped.map((part) => part.replace("category-", "--category-")).join("");',
+  'const filtered = ["var(", "--", "__drop__", "category-1", ")"] as const;',
+  'export const fromFilter = filtered.filter((part) => part !== "__drop__").join("");',
+  'const reversed = [")", "category-1", "--", "var("] as const;',
+  'export const fromReverse = reversed.reverse().join("");',
+  'const arrayFrom = ["var(", "category-", "1)"] as const;',
+  'export const fromArrayFrom = Array.from(arrayFrom, (part) => part.replace("category-", "--category-")).join("");',
+  'const pattern = new RegExp("__token__");',
+  'export const fromNewRegExp = "var(__token__)".replace(pattern, "--category-1");',
+  'const objectAlias = { open: "var(", property: "--category-1", close: ")" } as const;',
+  'export const fromObjectAlias = objectAlias.open + objectAlias.property + objectAlias.close;',
+  'const nestedObjectAlias = { parts: ["var(", "--category-1", ")"] as const } as const;',
+  'export const fromStaticAt = nestedObjectAlias.parts.at(0)! + nestedObjectAlias.parts.at(1)! + nestedObjectAlias.parts.at(2)!;',
+].join("\n");
+
+const TRANSFORMED_STATIC_SEMANTIC_ROLE_SOURCE = [
+  'const mapped = ["var(", "categorical-", "1)"] as const;',
+  'export const fromMap = mapped.map((part) => part.replace("categorical-", "--categorical-")).join("");',
+  'const filtered = ["var(", "--", "__drop__", "categorical-1", ")"] as const;',
+  'export const fromFilter = filtered.filter((part) => part !== "__drop__").join("");',
+  'const reversed = [")", "categorical-1", "--", "var("] as const;',
+  'export const fromReverse = reversed.reverse().join("");',
+  'const arrayFrom = ["var(", "categorical-", "1)"] as const;',
+  'export const fromArrayFrom = Array.from(arrayFrom, (part) => part.replace("categorical-", "--categorical-")).join("");',
+  'const pattern = new RegExp("__token__");',
+  'export const fromNewRegExp = "var(__token__)".replace(pattern, "--categorical-1");',
+  'const objectAlias = { open: "var(", property: "--categorical-1", close: ")" } as const;',
+  'export const fromObjectAlias = objectAlias.open + objectAlias.property + objectAlias.close;',
+  'const nestedObjectAlias = { parts: ["var(", "--categorical-1", ")"] as const } as const;',
+  'export const fromStaticAt = nestedObjectAlias.parts.at(0)! + nestedObjectAlias.parts.at(1)! + nestedObjectAlias.parts.at(2)!;',
+].join("\n");
+
+// A transform that cannot be evaluated exactly is still unsafe when its
+// statically known fragments form a custom-property construction: assuming it
+// is identity-mapped was the original bypass. The guard must fail closed here
+// rather than allow an arbitrary callback to synthesize a Butler token.
+const UNRESOLVED_STATIC_TRANSFORM_SOURCE = [
+  'const fragments = ["var(", "category-", "1)"] as const;',
+  'declare function transform(part: string): string;',
+  'export const unresolved = fragments.map(transform).join("");',
+].join("\n");
+
+const CSSOM_PRIVATE_IDENTITY_READ_SOURCE = [
+  'export const literal = getComputedStyle(document.documentElement).getPropertyValue("--category-1");',
+  'const alias = "--color-category-12";',
+  'export const fromConst = getComputedStyle(document.documentElement).getPropertyValue(alias);',
+  'const prefix = "--category";',
+  'const suffix = "-1";',
+  'export const fromBinary = getComputedStyle(document.documentElement).getPropertyValue(prefix + suffix);',
+].join("\n");
+
+const CSSOM_SEMANTIC_ROLE_READ_SOURCE = [
+  'const category = "--categorical-1";',
+  'export const allowed = getComputedStyle(document.documentElement).getPropertyValue(category);',
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -547,6 +608,54 @@ describe("semantic visual-role lint", () => {
     const roleMessages = await visualRoleMessages(
       IMMUTABLE_ARRAY_WRAPPER_SEMANTIC_ROLE_SOURCE,
       "src/components/ui/ImmutableArrayWrapperSemanticRole.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("rejects statically transformed arrays, RegExp replacements, and object aliases that compose private identity tokens", async () => {
+    const roleMessages = await visualRoleMessages(
+      TRANSFORMED_STATIC_PRIVATE_IDENTITY_SOURCE,
+      "src/components/ui/TransformedStaticIdentityLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(7);
+    expect(roleMessages.map((message) => message.line)).toEqual([2, 4, 6, 8, 10, 12, 14]);
+  });
+
+  it("permits the same statically transformed constructions when they resolve to the categorical role", async () => {
+    const roleMessages = await visualRoleMessages(
+      TRANSFORMED_STATIC_SEMANTIC_ROLE_SOURCE,
+      "src/components/ui/TransformedStaticSemanticRole.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("fails closed when an unresolvable static array transform has private-token construction fragments", async () => {
+    const roleMessages = await visualRoleMessages(
+      UNRESOLVED_STATIC_TRANSFORM_SOURCE,
+      "src/components/ui/UnresolvedStaticIdentityTransform.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(1);
+    expect(roleMessages[0]?.line).toBe(3);
+  });
+
+  it("rejects direct CSSOM reads of private identity properties through literal and static aliases", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_PRIVATE_IDENTITY_READ_SOURCE,
+      "src/components/ui/IdentityCssomReadLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(3);
+    expect(roleMessages.map((message) => message.line)).toEqual([1, 3, 6]);
+  });
+
+  it("permits CSSOM reads of a static non-identity semantic token", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_SEMANTIC_ROLE_READ_SOURCE,
+      "src/components/ui/SemanticCssomRead.tsx",
     );
 
     expect(roleMessages).toEqual([]);

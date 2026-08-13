@@ -152,6 +152,37 @@ describe.each(["light", "dark"] as const)("contrast: %s theme text tokens vs sur
   })
 })
 
+describe.each(["light", "dark"] as const)("contrast: %s theme categorical label fills", (theme) => {
+  const tokens = theme === "light" ? LIGHT_TOKENS : DARK_TOKENS
+
+  it("uses an AA-safe foreground for every categorical fill", () => {
+    const foreground = requireToken(tokens, "categorical-fill-foreground")
+
+    for (const categoricalName of CATEGORICAL_TEXT_TOKENS) {
+      const background = requireToken(tokens, categoricalName)
+      const ratio = contrastRatio(foreground, background)
+      expect(
+        ratio,
+        `--categorical-fill-foreground (${theme}) vs --${categoricalName} = ${ratio.toFixed(2)}:1, below the ${WCAG_AA_NORMAL_TEXT}:1 AA floor`,
+      ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
+    }
+  })
+})
+
+describe.each(["light", "dark"] as const)("contrast: %s theme owner label fill foregrounds", (theme) => {
+  const tokens = theme === "light" ? LIGHT_TOKENS : DARK_TOKENS
+
+  it("keeps both luminance-selected owner foregrounds above the AA floor", () => {
+    const black: Oklch = { l: 0, c: 0, h: 0 }
+    const white: Oklch = { l: 1, c: 0, h: 0 }
+    const onLight = requireToken(tokens, "label-fill-foreground-on-light")
+    const onDark = requireToken(tokens, "label-fill-foreground-on-dark")
+
+    expect(contrastRatio(onLight, white)).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
+    expect(contrastRatio(onDark, black)).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Regression pins — the exact failures the audit found must never come back.
 // ---------------------------------------------------------------------------

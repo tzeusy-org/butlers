@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 import { compile } from "tailwindcss";
 
@@ -5,8 +8,12 @@ import {
   DYNAMIC_VALUE_MARKER,
   TAILWIND_COLOR_UTILITY_SPELLINGS,
   findPrivateIdentityReferences,
+  findPrivateIdentityReferencesInStylesheet,
   normalizeCssCustomProperty,
 } from "./visual-role-css-guard.mjs";
+
+const PACKAGE_JSON_PATH = fileURLToPath(new URL("../package.json", import.meta.url));
+const PACKAGE_JSON = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
 
 function references(value) {
   return findPrivateIdentityReferences(value).map(
@@ -142,5 +149,29 @@ describe("visual-role CSS custom-property grammar", () => {
     expect(references("bg-(color:--categorical-1)")).toEqual([]);
     expect(references("var(--category-13)")).toEqual([]);
     expect(references("text-color-category-13")).toEqual([]);
+  });
+
+  it("scans runtime CSS references without mistaking definitions, comments, or strings for usage", () => {
+    const stylesheet = [
+      ":root { --category-1: oklch(0.62 0.13 259); }",
+      "/* var(--category-1) is ButlerMark-only documentation */",
+      '.safe::before { content: "var(--category-1)"; color: var(--categorical-1); }',
+      ".leak { color: var(/* source stylesheet */ --category-1); }",
+    ].join("\n");
+
+    expect(findPrivateIdentityReferencesInStylesheet(stylesheet)).toEqual([
+      expect.objectContaining({
+        ambiguous: false,
+        form: "css-var",
+        property: "--category-1",
+      }),
+    ]);
+  });
+
+  it("runs the CSS private-token guard as part of frontend lint", () => {
+    expect(PACKAGE_JSON.scripts["lint:visual-role-css"]).toBe(
+      "node scripts/visual-role-css-guard.mjs --check",
+    );
+    expect(PACKAGE_JSON.scripts.lint).toContain("lint:visual-role-css");
   });
 });
