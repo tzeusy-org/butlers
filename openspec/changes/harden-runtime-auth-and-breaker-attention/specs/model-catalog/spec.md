@@ -127,8 +127,9 @@ The model catalog SHALL preserve its canonical provider-qualified `model_id`
 as the identity used by catalog discovery, pricing, spend rules, token-ledger
 history, routing, and dispatch provenance. For the configured OpenCode Go
 profile, `opencode-go/<native-id>` is a valid canonical catalog identity;
-runtime-opencode owns deriving `<native-id>` only for the CLI execution
-argument. Catalog mutation, verification, and migration code SHALL NOT silently
+runtime-opencode owns passing that provider-qualified identifier unchanged to
+the CLI execution argument because current OpenCode requires `provider/model`
+syntax. Catalog mutation, verification, and migration code SHALL NOT silently
 rewrite that canonical identity to a bare execution identifier.
 
 ID: REQ-model-catalog-002
@@ -141,8 +142,8 @@ Scope: v1-mandatory
   `opencode-go/mimo-v2.5`
 - **THEN** pricing, spend-rule lookup, routing, and historical dispatch evidence
   continue to use that exact canonical identifier
-- **AND** only the OpenCode execution command receives the corresponding bare
-  provider-native suffix
+- **AND** the OpenCode execution command receives the same provider-qualified
+  identifier
 
 #### Scenario: Existing canonical catalog identifiers are not data-migrated
 

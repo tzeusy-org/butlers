@@ -42,8 +42,8 @@ _EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
 @pytest.mark.parametrize(
     ("canonical", "execution"),
     [
-        ("opencode-go/minimax-m2.7", "minimax-m2.7"),
-        ("opencode-go/mimo-v2.5", "mimo-v2.5"),
+        ("opencode-go/minimax-m2.7", "opencode-go/minimax-m2.7"),
+        ("opencode-go/mimo-v2.5", "opencode-go/mimo-v2.5"),
         ("anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"),
         ("ollama/qwen3:8b", "ollama/qwen3:8b"),
         ("minimax-m2.7", "minimax-m2.7"),
@@ -51,7 +51,7 @@ _EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
     ],
 )
 def test_canonical_to_execution_model_matrix(canonical, execution):
-    """REQ-runtime-opencode-001: only OpenCode Go loses its CLI namespace."""
+    """REQ-runtime-opencode-001/REQ-model-catalog-002: preserve current CLI spelling."""
     assert canonical_to_execution_model(canonical) == execution
 
 
@@ -73,6 +73,7 @@ def test_selected_model_translation_has_one_named_boundary_mapper():
     health_source = getsource(_run_provider_test)
     assert "canonical_to_execution_model(" in adapter_source
     assert "canonical_to_execution_model(" in health_source
+    assert ".removeprefix(" not in adapter_source
     assert ".removeprefix(" not in health_source
 
 
@@ -498,10 +499,10 @@ async def test_invoke_success_and_config():
             system_prompt="",
             mcp_servers={},
             env={},
-            model="opencode-go/minimax-m2.7",
+            model="opencode-go/minimax-m3",
         )
     cmd = mock_sub.call_args[0]
-    assert cmd[cmd.index("--model") + 1] == "minimax-m2.7"
+    assert cmd[cmd.index("--model") + 1] == "opencode-go/minimax-m3"
 
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(prompt="run", system_prompt="", mcp_servers={}, env={}, model=None)

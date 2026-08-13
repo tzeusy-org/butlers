@@ -520,17 +520,17 @@ async def test_claude_health_probe_not_authenticated_or_unavailable():
 
 
 @pytest.mark.parametrize(
-    ("canonical_model", "execution_model"),
+    "canonical_model",
     [
-        ("opencode-go/minimax-m2.7", "minimax-m2.7"),
-        ("opencode-go/mimo-v2.5", "mimo-v2.5"),
-        ("opencode-go/minimax-m3", "minimax-m3"),
+        "opencode-go/minimax-m2.7",
+        "opencode-go/mimo-v2.5",
+        "opencode-go/minimax-m3",
     ],
 )
-async def test_opencode_go_health_command_maps_canonical_model_at_execution_boundary(
-    canonical_model, execution_model, tmp_path: Path
+async def test_opencode_go_health_command_preserves_provider_qualified_model(
+    canonical_model, tmp_path: Path
 ):
-    """REQ-runtime-opencode-001/REQ-core-credentials-002: native argv stays sandboxed."""
+    """REQ-runtime-opencode-001/REQ-core-credentials-002: qualified argv stays sandboxed."""
     from butlers.api.routers.cli_auth import _run_provider_test
 
     auth_path = tmp_path / ".local" / "share" / "opencode" / "auth.json"
@@ -569,7 +569,7 @@ async def test_opencode_go_health_command_maps_canonical_model_at_execution_boun
 
     assert result.success is True
     command = commands[0]
-    assert command[command.index("--model") + 1] == execution_model
+    assert command[command.index("--model") + 1] == canonical_model
     assert provider.test_command[provider.test_command.index("--model") + 1] == canonical_model
     assert "create_subprocess_exec" not in getsource(_run_provider_test)
 

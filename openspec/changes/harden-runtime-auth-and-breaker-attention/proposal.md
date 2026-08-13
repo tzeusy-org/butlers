@@ -4,10 +4,10 @@ The runtime can currently disagree with the dashboard about whether a model is
 healthy. In the observed incident, a stale schema-local Codex credential
 overwrote the newer public credential in the daemon's shared runtime volume;
 the dashboard's isolated test passed while real routed sessions failed to
-refresh. Independently, several OpenCode entries used provider-qualified
-catalog identities that the configured runtime command rejected at execution
-time, and breaker notifications could send duplicates because their debounce
-was a non-atomic read-send-write sequence.
+refresh. Independently, a prefix-stripping OpenCode execution mapper turned
+provider-qualified catalog identities into invalid bare CLI arguments, and
+breaker notifications could send duplicates because their debounce was a
+non-atomic read-send-write sequence.
 
 The owner needs one trustworthy answer to "is this runtime usable?" and one
 bounded, explainable alert per actual outage episode. A dashboard probe,
@@ -22,9 +22,10 @@ not change that answer.
   and cannot overwrite shared runtime files. Existing authority behavior for
   other CLI providers is unchanged by this change.
 - Preserve provider-qualified OpenCode Go catalog identifiers as the canonical
-  identity used by pricing, spend rules, and history. Derive the provider-native
-  execution argument only at the OpenCode adapter boundary, and run probes
-  through that same translation and generated-runtime configuration path.
+  identity used by pricing, spend rules, and history. Pass that provider-qualified
+  identity unchanged as the current OpenCode `provider/model` execution argument
+  only at the OpenCode adapter boundary, and run probes through that same
+  translation and generated-runtime configuration path.
 - Replace the breaker alert's audit-marker debounce with an atomic
   closed-to-open transition and a durable attention-delivery outbox. The
   Switchboard alone claims and sends queued attention; delivery is at-most-once
@@ -61,7 +62,7 @@ not change that answer.
   authoritative shared scope without per-butler overwrite ordering.
 - `model-catalog`: breaker opening becomes an atomic transition that produces
   one alert episode while retaining canonical provider-qualified model identity.
-- `runtime-opencode`: OpenCode model selection derives a provider-native
+- `runtime-opencode`: OpenCode model selection preserves its provider-qualified
   execution argument from that canonical identity only at the CLI boundary.
 - `core-notify`: confirmed delivery is insulated from post-send bookkeeping,
   and attention records remain observations rather than idempotency authority.
