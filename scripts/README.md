@@ -102,11 +102,19 @@ to two fixed wrapper forms: `--prepare-executor-capability-v1 --project` and
 the version-gated `--project --db-host --db-port
 --require-executor-capability-v1` apply form. Never grant sudo for the checkout
 script, a checkout wildcard, `env`, a shell, or the installer.
-`scripts/compose.sh` and `butlers deploy` are the only supported paths that
-include `docker-compose.restore-drill.yml`: they stop, call the root-owned
-prepare verb, create the relay and executor with its generation-bound nonce, attest
-and fence that exact created topology, and only then start the merged stack.
-An older installed wrapper rejects the prepare verb before `create`/`up`.
+Ordinary `scripts/compose.sh` dev launches use only `docker-compose.yml` and do
+not infer protected execution from the presence of a secret. The only supported
+lifecycle paths that include `docker-compose.restore-drill.yml` to start a
+protected service are `scripts/compose.sh --with-restore-drill`,
+`scripts/compose.sh --prod`, and `butlers deploy`; the read-only inspection
+helper is the sole non-lifecycle exception. Those paths stop, call the root-owned
+prepare verb, create the relay and executor with its generation-bound nonce,
+attest and fence that exact created topology, and only then start the merged
+stack. An older installed wrapper rejects the prepare verb before `create`/`up`.
+Returning an opted-in dev project to ordinary `scripts/compose.sh` runs the
+base-only `down --remove-orphans` path first, which removes the former relay and
+executor rather than leaving them as orphaned protected containers. Continue
+passing `--with-restore-drill` on later dev launches to keep them enabled.
 The post-fence root marker is boot-, project-, nonce-, executor-container/IP/
 gateway-, and relay-alias/IP-bound. The wrapper separately discovers the
 created relay/container/network topology while it fences both bridges, so a
