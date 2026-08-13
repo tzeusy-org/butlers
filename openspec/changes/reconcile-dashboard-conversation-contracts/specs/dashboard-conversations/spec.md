@@ -4,10 +4,11 @@
 
 Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through
 the standard Switchboard ingestion pipeline, submitted to the Switchboard's
-`ingest` MCP tool. RFC 0003 SHALL recognize `dashboard` / `internal` as the
-canonical pair for this direct owner-dashboard ingress; it is not connector
-provenance. The dashboard API, not a connector startup probe, SHALL assign
-`dashboard:web:{conversation_id}` as the endpoint identity.
+`ingest` MCP tool. RFC 0003 §"ingest.v1 Envelope Format" SHALL recognize
+`dashboard` / `internal` as the canonical pair for this direct owner-dashboard
+ingress; it is not connector provenance. The dashboard API, not a connector
+startup probe, SHALL assign `dashboard:web:{conversation_id}` as the endpoint
+identity.
 
 ID: REQ-dashboard-conversations-001
 Source: RFC 0003 § ingest.v1 Envelope Format; dashboard-conversations § Dashboard Ingestion Envelope Construction; design.md Decision 1

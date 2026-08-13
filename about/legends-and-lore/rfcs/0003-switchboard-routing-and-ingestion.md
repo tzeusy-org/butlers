@@ -5,7 +5,15 @@
 
 ## Summary
 
-The Switchboard butler is the single ingress point for all external events entering the Butlers framework. Connectors normalize events into `ingest.v1` envelopes and submit them via MCP. The Switchboard processes these through a multi-stage pipeline: deduplication, pre-classification triage (deterministic rules + thread affinity), and LLM classification fallback. Routed messages are dispatched to target butlers via `route.execute` with full identity preamble and trace context. A durable route inbox provides crash recovery, and email priority queuing prevents urgent messages from being buried behind bulk traffic.
+The Switchboard butler is the single ingress point for all external events and direct
+owner-dashboard messages entering the Butlers framework. Connectors normalize external
+events into `ingest.v1` envelopes and submit them via MCP; the dashboard API submits its
+direct owner ingress through the same envelope. The Switchboard processes these through a
+multi-stage pipeline: deduplication, pre-classification triage (deterministic rules +
+thread affinity), and LLM classification fallback. Routed messages are dispatched to
+target butlers via `route.execute` with full identity preamble and trace context. A durable
+route inbox provides crash recovery, and email priority queuing prevents urgent messages
+from being buried behind bulk traffic.
 
 ## Motivation
 
@@ -15,15 +23,15 @@ Personal email and messaging inboxes generate bursty, heterogeneous traffic. Wit
 
 ### ingest.v1 Envelope Format
 
-Connectors submit events using this canonical envelope:
+Connectors and the dashboard API submit events using this canonical envelope:
 
 ```json
 {
   "schema_version": "ingest.v1",
   "source": {
-    "channel": "telegram|slack|email|api|mcp|gaming|wellness",
+    "channel": "telegram|slack|email|api|mcp|gaming|wellness|dashboard",
     "provider": "telegram|slack|gmail|imap|internal|steam|google_health",
-    "endpoint_identity": "<auto-resolved at startup>"
+    "endpoint_identity": "<connector startup identity or dashboard:web:{conversation_id}>"
   },
   "event": {
     "external_event_id": "<provider-event-id>",
@@ -47,10 +55,10 @@ Connectors submit events using this canonical envelope:
 
 **Field contracts:**
 
-- `source.channel` and `source.provider` MUST use canonical pairings: `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `gaming/steam`, `wellness/google_health`, `wellness/home_assistant` (see Amendment 1), `activitywatch/activitywatch` (see Amendment 2).
-- `source.endpoint_identity` is auto-resolved from the source API at connector startup (e.g., Telegram `getMe()` yields `telegram:bot:@username`; Gmail yields `gmail:user:email`).
+- `source.channel` and `source.provider` MUST use canonical pairings: `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `gaming/steam`, `wellness/google_health`, `wellness/home_assistant` (see Amendment 1), `activitywatch/activitywatch` (see Amendment 2), and direct owner-dashboard `dashboard/internal` (see Amendment 3).
+- Connector `source.endpoint_identity` values are auto-resolved from the source API at connector startup (e.g., Telegram `getMe()` yields `telegram:bot:@username`; Gmail yields `gmail:user:email`). Direct owner-dashboard ingress is not connector provenance: the dashboard API SHALL assign `dashboard:web:{conversation_id}` and SHALL NOT use connector-startup resolution.
 - `event.external_event_id` is REQUIRED when the source provides a stable event identifier (Telegram `update_id`, email `Message-ID`).
-- `sender.identity` is the provider-native identifier used for identity resolution (see RFC 0004).
+- `sender.identity` is the provider-native identifier used for identity resolution (see RFC 0004). For direct owner-dashboard ingress, the dashboard API SHALL set `sender.identity` to `dashboard:operator`; it does not invoke connector identity resolution.
 - `payload.raw` preserves the original source payload for audit and reprocessing.
 - `control.policy_tier` defaults to `"default"` when absent.
 - `control.trace_context` carries W3C Trace Context headers for distributed tracing (see RFC 0005).
@@ -309,6 +317,32 @@ bypasses LLM classification for these events.
 
 **Backward compatibility:** Additive only. No existing channel/provider pair
 is affected.
+
+### Amendment 3 (2026-08-13) — Direct Owner-Dashboard Ingress
+
+Applied per `openspec/changes/reconcile-dashboard-conversation-contracts`.
+
+**Summary:** The direct owner-dashboard conversation path is a canonical
+`dashboard/internal` `ingest.v1` source pair. It enters through the dashboard
+API, not a connector, and uses the durable per-conversation endpoint identity
+`dashboard:web:{conversation_id}`.
+
+**Changes made:**
+- §"Summary" and §"ingest.v1 Envelope Format" distinguish connector submission
+  from the dashboard API's direct owner ingress.
+- §"Field contracts" records `dashboard/internal`, assigns the direct dashboard
+  endpoint identity, and records `dashboard:operator` as the dashboard sender
+  identity without invoking connector identity resolution.
+
+**Ordering:** This vocabulary and provenance amendment SHALL land before any
+RFC 0003 terminal-action recovery amendment. The
+`durable-dashboard-terminal-action-recovery` change remains held until it has
+rebased on the resulting authority head (or one explicit documentation PR
+applies the two ordered amendments separately).
+
+**Backward compatibility:** Documentation and contract reconciliation only. It
+does not change routing policy, connector startup behavior, or runtime ingress
+implementation.
 
 ## Alternatives Considered
 

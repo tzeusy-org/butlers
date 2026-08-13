@@ -4,7 +4,7 @@
 
 The `public.ingestion_events` table SHALL be the canonical first-class record
 of every event that enters the butler ecosystem through a connector or direct
-internal dashboard ingress. One row SHALL exist per canonical ingestion event
+owner-dashboard ingress. One row SHALL exist per canonical ingestion event
 after deduplication. The UUID7 primary key SHALL be the `request_id` returned to
 connectors or direct internal callers and propagated to all downstream sessions
 and traces. Connector-specific `filtered_events` joins and status semantics
@@ -61,3 +61,13 @@ Scope: v1-mandatory
 - **THEN** it SHALL NOT infer a `connectors.filtered_events` row or
   connector-specific status semantics merely because the event appears in the
   unified registry
+
+#### Scenario: Dashboard ingress and routed-session provenance remain distinct
+
+- **WHEN** the dashboard API submits a direct `dashboard` / `internal`
+  `ingest.v1` envelope and the Switchboard routes it to a target butler
+- **THEN** the canonical ingestion-event row SHALL retain
+  `source_channel = "dashboard"` and `source_provider = "internal"`
+- **AND** the routed target-butler session SHALL record
+  `trigger_source = "route"`; direct dashboard ingress provenance SHALL NOT
+  be conflated with the downstream route trigger boundary

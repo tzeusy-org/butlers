@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provides the persistence layer, data model, and API endpoints for per-butler conversational threads originating from the dashboard. Dashboard conversations create real butler sessions via the existing Switchboard ingestion pipeline, enabling full lineage tracking, audit, and cost attribution. This capability covers conversation lifecycle (create, continue, archive, rename), message storage with model attribution and token counts, and SSE-streamed responses.
+Provides the persistence layer, data model, and API endpoints for per-butler conversational threads originating from the dashboard. The dashboard API is direct owner ingress with RFC 0003's canonical `dashboard` / `internal` source pair, not connector provenance. Dashboard conversations create real butler sessions via the existing Switchboard ingestion pipeline, enabling full lineage tracking, audit, and cost attribution. This capability covers conversation lifecycle (create, continue, archive, rename), message storage with model attribution and token counts, and SSE-streamed responses.
 
 ## Requirements
 
@@ -315,7 +315,7 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 
 ### Requirement: Dashboard Ingestion Envelope Construction
 
-Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through the standard Switchboard ingestion pipeline, submitted to the Switchboard's `ingest` MCP tool.
+Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through the standard Switchboard ingestion pipeline, submitted to the Switchboard's `ingest` MCP tool. RFC 0003 §"ingest.v1 Envelope Format" defines `dashboard` / `internal` as direct owner-dashboard ingress: the dashboard API, rather than a connector startup probe, SHALL assign `dashboard:web:{conversation_id}` as the endpoint identity.
 
 #### Scenario: Envelope structure for dashboard messages
 
