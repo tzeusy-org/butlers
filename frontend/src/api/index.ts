@@ -1207,7 +1207,13 @@ export type {
 
 export { getDecisions } from "./client.ts";
 
+export { getBeadDetail } from "./client.ts";
+
 export type {
+  BeadDependencySummary,
+  BeadDetail,
+  BeadDetailMeta,
+  BeadDetailResponse,
   DecisionBeadSummary,
   DecisionsListMeta,
   DecisionsListResponse,

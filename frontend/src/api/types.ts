@@ -9160,6 +9160,49 @@ export interface DecisionsListResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Snapshot-backed Bead detail -- GET /api/beads/{id}
+// ---------------------------------------------------------------------------
+
+/** One bounded direct dependency summary; never a raw snapshot edge. */
+export interface BeadDependencySummary {
+  id: string;
+  title: string | null;
+  status: string | null;
+  priority: number | null;
+  type: string | null;
+}
+
+/** Strict allowlist returned by GET /api/beads/{id}. */
+export interface BeadDetail {
+  id: string;
+  title: string | null;
+  status: string | null;
+  priority: number | null;
+  type: string | null;
+  description: string | null;
+  design: string | null;
+  acceptance_criteria: string | null;
+  labels: string[];
+  created_at: string | null;
+  updated_at: string | null;
+  started_at: string | null;
+  closed_at: string | null;
+  due_at: string | null;
+  dependencies: BeadDependencySummary[];
+  /** Display-only source text; never use it as a navigation target. */
+  external_ref: string | null;
+}
+
+export interface BeadDetailMeta extends ApiMeta {
+  export_as_of: string | null;
+}
+
+export interface BeadDetailResponse {
+  data: BeadDetail;
+  meta: BeadDetailMeta;
+}
+
+// ---------------------------------------------------------------------------
 // Rule-promotion approvals surface (bu-o62bc, bead 4)
 // ---------------------------------------------------------------------------
 

@@ -561,6 +561,7 @@ export async function apiFetch<T>(
       if (body.error) {
         code = (body as ErrorResponse).error.code;
         message = (body as ErrorResponse).error.message;
+        detail = (body as ErrorResponse).error.details ?? undefined;
       } else if (typeof body.detail === "string") {
         // FastAPI HTTPException format: { "detail": "..." }
         message = body.detail;
@@ -2367,6 +2368,11 @@ export function getInsightCandidates(
  */
 export function getDecisions(): Promise<import("./types").DecisionsListResponse> {
   return apiFetch<import("./types").DecisionsListResponse>("/decisions");
+}
+
+/** Read one strict-allowlisted Bead detail from the mounted snapshot only. */
+export function getBeadDetail(id: string): Promise<import("./types").BeadDetailResponse> {
+  return apiFetch<import("./types").BeadDetailResponse>(`/beads/${encodeURIComponent(id)}`);
 }
 
 /** Fetch a paginated list of health research notes. */

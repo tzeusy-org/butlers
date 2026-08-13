@@ -100,6 +100,33 @@ describe("apiFetch — timeout", () => {
   });
 });
 
+describe("apiFetch — standard error envelope details", () => {
+  it("preserves safe ErrorResponse details for a snapshot-unavailable UI state", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      json: async () => ({
+        error: {
+          code: "BEAD_SNAPSHOT_UNAVAILABLE",
+          message: "Bead snapshot is unavailable.",
+          butler: null,
+          details: { reason: "export_stale", export_as_of: "2026-07-29T12:00:00Z" },
+        },
+      }),
+    });
+
+    const error = await apiFetch("/beads/bu-safe").catch((caught) => caught);
+
+    expect(error).toMatchObject({
+      name: "ApiError",
+      code: "BEAD_SNAPSHOT_UNAVAILABLE",
+      status: 503,
+      detail: { reason: "export_stale", export_as_of: "2026-07-29T12:00:00Z" },
+    });
+  });
+});
+
 describe("apiFetch — caller-provided AbortSignal", () => {
   it("forwards a caller abort into the underlying fetch call", async () => {
     const callerController = new AbortController();

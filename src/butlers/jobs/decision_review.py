@@ -99,7 +99,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import subprocess
 import sys
@@ -111,6 +110,7 @@ from typing import Any
 import asyncpg
 
 from butlers.api.routers import audit as audit_router
+from butlers.beads_snapshot import DEFAULT_BEADS_EXPORT_PATH, STALE_BEADS_EXPORT_AGE
 from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
     is_policy_quiet_now,
@@ -136,13 +136,11 @@ _DIGEST_MAX_LISTED = 10
 
 # Overridable for tests / non-default deploy layouts; defaults to the
 # docker-compose bind-mount target (see module docstring).
-_DEFAULT_EXPORT_PATH = Path(
-    os.environ.get("BUTLERS_BEADS_EXPORT_PATH", "/app/.beads/issues.export.jsonl")
-)
+_DEFAULT_EXPORT_PATH = DEFAULT_BEADS_EXPORT_PATH
 # Beyond this age the export is treated as stale rather than trusted --
 # either bd hasn't run on the host checkout in a long time, or (fresh clone)
 # the mount target is an empty placeholder Docker created for a missing file.
-_STALE_EXPORT_AGE = timedelta(days=14)
+_STALE_EXPORT_AGE = STALE_BEADS_EXPORT_AGE
 
 # scripts/lint_decision_beads.py, resolved relative to this file rather than
 # a hardcoded "/app" so it also works from a plain repo checkout in tests --

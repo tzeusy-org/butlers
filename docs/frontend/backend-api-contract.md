@@ -25,6 +25,37 @@ All endpoints and payload shapes below are mandatory. Absence or shape drift is 
   - Relationship domain endpoints use unwrapped typed payloads.
   - Trigger endpoint returns `TriggerResponse` (unwrapped).
 
+## Bead Snapshot Detail Contract
+
+- `GET /api/beads/{id}` -> `ApiResponse<BeadDetail>`.
+- The endpoint reads only the existing read-only Beads JSONL export. It does
+  not call `bd`, Dolt, GitHub, a database, a credential service, an external
+  service, or any tracker mutation path.
+- `meta.export_as_of` is the export file mtime and is present on every 200
+  response. It is source freshness evidence, not a claim that a live tracker
+  was queried.
+- `BeadDetail` is a strict allowlist: `id`, `title`, `status`, `priority`,
+  `type`, `description`, `design`, `acceptance_criteria`, `labels`,
+  `created_at`, `updated_at`, `started_at`, `closed_at`, `due_at`,
+  `dependencies`, and `external_ref`.
+- `dependencies` contains at most 20 direct source-order summaries. Every
+  summary contains only `id`, `title`, `status`, `priority`, and `type`.
+- The response never contains notes, metadata, comments, identities,
+  credentials, raw source records, raw dependency edges, or an arbitrary URL
+  / `href` field.
+- A fresh, fully readable snapshot that lacks the requested ID returns HTTP
+  404 with `ErrorResponse.error.code = "BEAD_NOT_FOUND"`.
+- A missing, stale, oversized, unreadable, or malformed snapshot returns HTTP
+  503 with `ErrorResponse.error.code = "BEAD_SNAPSHOT_UNAVAILABLE"` and
+  `ErrorResponse.error.details.export_as_of` (ISO timestamp when known,
+  otherwise `null`). A 503 is never converted to a calm empty detail or a 404.
+
+The matching dashboard page is `/beads/:id`. It renders only the typed API
+allowlist, exposes the source-as-of time, and has no tracker mutation control.
+Every decision and blocker drill-down builds a same-origin `/beads/:id` route
+from its safe ID. `external_ref` is displayed as inert text, never an anchor
+or a navigation target.
+
 ## Core System Endpoints
 
 - `GET /api/health` -> `{ "status": "ok" | string }`

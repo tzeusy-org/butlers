@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import { useDecisions } from "@/hooks/use-decisions";
 import { useListTriage } from "@/hooks/use-list-triage";
@@ -31,6 +31,7 @@ import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundar
 import { DecisionsVerdictOpener } from "@/components/decisions/decisions-verdict-opener.tsx";
 import { Time } from "@/components/ui/time";
 import type { DecisionBeadSummary } from "@/api/index.ts";
+import { beadDetailPath } from "@/lib/bead-detail";
 
 /**
  * Same coarse age vocabulary as DecisionsVerdictOpener's own formatAgeHours
@@ -157,6 +158,16 @@ function DecisionRow({
         </div>
       </button>
 
+      <div className="px-3 pb-3">
+        <Link
+          data-testid={`decision-bead-link-${decision.id}`}
+          to={beadDetailPath(decision.id)}
+          className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground underline decoration-border-strong underline-offset-4 hover:text-foreground hover:decoration-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+        >
+          Open Bead detail
+        </Link>
+      </div>
+
       {selected && (
         <div
           id={detailId}
@@ -201,12 +212,19 @@ function DecisionRow({
           )}
           {decision.escalated ? (
             <div>
-              Blocking{" "}
-              <span className="font-medium text-foreground">
-                {decision.escalated_blocked_title}
-              </span>{" "}
-              ({decision.escalated_blocked_id}), {blockedKindLabel(decision.escalated_blocked_kind)}
-              , for {formatAgeHours(decision.escalated_block_hours ?? 0)}.
+              Blocking {" "}
+              {decision.escalated_blocked_id ? (
+                <Link
+                  to={beadDetailPath(decision.escalated_blocked_id)}
+                  className="font-medium text-foreground underline decoration-border-strong underline-offset-4 hover:decoration-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                >
+                  {decision.escalated_blocked_title ?? decision.escalated_blocked_id}
+                </Link>
+              ) : (
+                <span className="font-medium text-foreground">{decision.escalated_blocked_title}</span>
+              )}{" "}
+              ({decision.escalated_blocked_id}), {blockedKindLabel(decision.escalated_blocked_kind)}, for{" "}
+              {formatAgeHours(decision.escalated_block_hours ?? 0)}.
             </div>
           ) : (
             <div className="italic">

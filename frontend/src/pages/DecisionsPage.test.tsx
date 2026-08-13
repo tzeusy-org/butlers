@@ -244,6 +244,25 @@ describe("DecisionsPage -- structured decision context", () => {
     expect(html).toContain('data-testid="decision-item"');
     expect(html).not.toContain('data-testid="decision-detail"');
   });
+
+  it("uses only same-origin Bead detail routes for decisions and escalation blockers", () => {
+    mockDecisions([
+      decision({
+        id: "bu-decision",
+        escalated: true,
+        escalated_blocked_id: "bu-blocker",
+        escalated_blocked_title: "Blocked safe record",
+        escalated_blocked_kind: "p1_bug",
+        escalated_block_hours: 72,
+      }),
+    ]);
+
+    const html = renderPage("/decisions?bead=bu-decision");
+
+    expect(html).toContain('href="/beads/bu-decision"');
+    expect(html).toContain('href="/beads/bu-blocker"');
+    expect(html).not.toContain("https://");
+  });
 });
 
 describe("DecisionsPage -- j/k roving selection expands the door", () => {

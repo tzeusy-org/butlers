@@ -41,6 +41,7 @@ from butlers.api.routers.activity_feed import router as activity_feed_router
 from butlers.api.routers.approvals import router as approvals_router
 from butlers.api.routers.attention_ledger import router as attention_ledger_router
 from butlers.api.routers.audit import router as audit_router
+from butlers.api.routers.beads import router as beads_router
 from butlers.api.routers.blob_storage import router as blob_storage_router
 from butlers.api.routers.butler_logs import router as butler_logs_router
 from butlers.api.routers.butler_management import router as butler_management_router
@@ -652,6 +653,7 @@ def create_app(
     app.include_router(calendar_export_router)
     app.include_router(search_router)
     app.include_router(audit_router)
+    app.include_router(beads_router)
     app.include_router(memory_router)
     app.include_router(butler_memory_router)
     app.include_router(oauth_router)

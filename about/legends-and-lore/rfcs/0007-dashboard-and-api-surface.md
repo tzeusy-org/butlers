@@ -369,3 +369,46 @@ Conformance with RFC 0005 (observability and telemetry):
 - `actor_count` MUST be a low-cardinality integer attribute (count of distinct `actor_id` values, not raw audit rows).
 - The span MUST NOT carry high-cardinality identifiers (`request_id`, session IDs, actor names) as span attributes — these belong in logs or structured evidence, not metric labels (RFC 0005 § "Cardinality Discipline").
 - The span wraps the egress query and actor-aggregation block; it is not emitted for 403 (owner-gate failure) or 503 (DB error) responses, where the endpoint returns before reaching the aggregation step.
+
+---
+
+## Amendment 2: Snapshot-backed Bead Detail
+
+**Date:** 2026-08-13
+**Status:** Accepted
+**Implementing change:** `openspec/changes/add-dashboard-bead-detail/` (bu-7a74e)
+
+The dashboard adds a single read-only Bead drill-down without expanding its
+tracker trust boundary.
+
+### API Surface
+
+`GET /api/beads/{id}` returns `ApiResponse<BeadDetail>` only from the existing
+read-only Beads JSONL export bind mount. There is no live `bd`, Dolt, GitHub,
+database, credential, external-network, or tracker-mutation bridge. Successful
+responses include `meta.export_as_of`, the source file mtime.
+
+`BeadDetail` is an explicit allowlist: `id`, `title`, `status`, `priority`,
+`type`, `description`, `design`, `acceptance_criteria`, `labels`,
+`created_at`, `updated_at`, `started_at`, `closed_at`, `due_at`, bounded direct
+`dependencies`, and `external_ref`. A dependency summary is limited to 20
+source-order records and contains only `id`, `title`, `status`, `priority`, and
+`type`. Notes, metadata, comments, identities, credentials, raw records, raw
+edges, and arbitrary href values are never materialized.
+
+The endpoint fully verifies bounded source readability before looking up the
+ID. Only a readable, sufficiently fresh snapshot with no matching ID returns
+`404 ErrorResponse{code: "BEAD_NOT_FOUND"}`. A missing, stale, oversized,
+unreadable, or malformed snapshot returns `503
+ErrorResponse{code: "BEAD_SNAPSHOT_UNAVAILABLE"}` with
+`error.details.export_as_of`, including `null` when no mtime is known. This
+prevents an unavailable source from becoming a fabricated not-found claim.
+
+### Frontend Route and Navigation
+
+`/beads/:id` is a same-origin, read-only detail route. It uses the standard
+detail shell and semantic, rule-separated content; it exposes source freshness
+and distinct loading, not-found, and unavailable states. It has no tracker
+mutation affordance. Decisions and escalation blockers build their targets
+only as `/beads/${encodeURIComponent(id)}`. `external_ref` is inert displayed
+text, never a link or fetched target.
