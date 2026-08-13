@@ -88,7 +88,11 @@ The `public.ingestion_events` table accepts events with `source_channel = "dashb
 
 #### Scenario: Dashboard event lineage
 - **WHEN** `ingestion_event_sessions(db, request_id, pricing=None)` is called for a dashboard-originated event
-- **THEN** the resulting butler session(s) are returned with `trigger_source = "dashboard"` in the lineage
+- **THEN** the resulting routed target-butler session(s) are returned with
+  `trigger_source = "route"` in the lineage
+- **AND** the originating ingestion event retains `source_channel = "dashboard"`
+  and `source_provider = "internal"`; ingress provenance and the downstream
+  session trigger boundary are distinct
 
 ### Requirement: Token and Cost Rollup per Request ID
 Aggregate token usage and cost across all sessions attributed to a single `request_id`.
