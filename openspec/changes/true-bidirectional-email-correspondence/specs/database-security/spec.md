@@ -13,6 +13,14 @@ and fixed aggregate output.  It SHALL use
 references, `REVOKE ALL ON FUNCTION ... FROM PUBLIC`, and `GRANT EXECUTE` only
 to `butler_relationship_rw`.
 
+This RFC 0010 exception SHALL remain a database-enforced narrow reader, not a
+general cross-schema capability.  Its function, designated owner, grants, and
+revocation SHALL be migration-managed and auditable.  The grant authorizes no
+MCP/API/on-demand/interactive aggregate path: the only permitted caller is the
+fixed zero-LLM Relationship `dispatch_mode="job"` batch specified in the
+Relationship contract, never a public tool, dashboard route, Switchboard route,
+scheduled prompt, or LLM session.
+
 The only Switchboard SQL write paths into private correspondence storage are two
 separate fixed Messenger-owned `SECURITY DEFINER` functions.  The ingress
 projection function is
@@ -118,6 +126,13 @@ fallback.
 - **THEN** PostgreSQL rejects the action under the migration-managed grants
 - **AND** no caller-controlled search path or unbounded selector can alter the
   function's private-table reads
+
+#### Scenario: The narrow reader cannot become an interactive surface
+
+- **WHEN** an implementation adds a caller for the aggregate
+- **THEN** it uses only the migration-managed database-enforced narrow reader
+  from the fixed Relationship scheduled job
+- **AND** it creates no MCP/API/on-demand/interactive aggregate path
 
 #### Scenario: Connector correspondence is brokered and principal-bound
 

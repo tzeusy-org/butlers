@@ -25,6 +25,10 @@ evidence.
 - Add a narrow, migration-managed `SECURITY DEFINER` aggregate interface so
   Relationship can consume per-entity evidence without selecting or enumerating
   Messenger ledger rows.
+- Bind that RFC 0010 exception to one daily, 100-entity maximum,
+  zero-LLM `email_correspondence_enrichment` `dispatch_mode="job"` consumer;
+  it has no MCP/API/on-demand/interactive aggregate path and replaces an
+  otherwise bounded 101-session-per-batch MCP fan-out.
 - Make correspondence-path audit, notification, inbox, metrics, and error
   handling metadata-only from trusted pre-route candidate through admission and
   outcome; content-bearing existing stores are never evidence or a new mirror

@@ -2,12 +2,19 @@
 
 ### Requirement: Freshness-aware aggregate correspondence enrichment
 
-Relationship SHALL use only the bounded correspondence aggregate from a new,
-separate deterministic known-entity correspondence enrichment job.  It SHALL
-pass a bounded set of already-resolved entity IDs and consume only the fixed
-aggregate result.  It SHALL not select Messenger tables, enumerate ledger
-records, query a provider, or derive a positive bidirectional claim from
-`public.ingestion_events` alone.  The existing
+Under RFC 0010's exception, Relationship SHALL use only the bounded
+correspondence aggregate from the new, separate deterministic
+`email_correspondence_enrichment` known-entity job.  The job SHALL pass a maximum
+100 already-resolved entity IDs and consume only the fixed aggregate result.  It
+SHALL be registered in the deterministic scheduler registry and seeded at
+`35 6 * * *` with `dispatch_mode="job"`; it has zero-LLM behavior.  The
+aggregate has no MCP/API/on-demand/interactive consumer: no Relationship or
+Messenger MCP tool, dashboard/API route, Switchboard route, scheduled prompt, or
+LLM session may invoke it.  At this 100-ID ceiling, the compliant per-entity MCP
+fan-out costs up to 101 LLM sessions per daily batch; this fixed job costs zero.
+Relationship SHALL not select Messenger tables, enumerate ledger records, query a
+provider, or derive a positive bidirectional claim from `public.ingestion_events`
+alone.  The existing
 `run_email_identity_enrichment` unresolved-sender discovery/proposal job SHALL
 remain inbound-only and SHALL not be relabeled or converted into correspondence
 proof.
@@ -21,6 +28,14 @@ proof.
   raw ledger row, or content
 - **AND** it uses only the returned count, timestamps, freshness, and
   bidirectional tri-state
+
+#### Scenario: Aggregate access is a fixed scheduled job only
+
+- **WHEN** the daily `email_correspondence_enrichment` schedule fires at
+  `35 6 * * *`
+- **THEN** the registered `dispatch_mode="job"` handler processes no more than
+  100 resolved entity IDs with zero-LLM behavior
+- **AND** no MCP/API/on-demand/interactive consumer can invoke the aggregate
 
 #### Scenario: Unresolved-sender discovery stays separate
 

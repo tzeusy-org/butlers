@@ -317,6 +317,25 @@ last qualifying-inbound time, `bidirectional` (`true`, `false`, or `null`), and
 addresses, account/provider references, message/thread IDs, individual state
 rows, audit text, or content.
 
+RFC 0010 permits that exception only as a database-enforced narrow reader with
+a fixed batch and a material cost case.  The only consumer SHALL be a new
+Relationship `email_correspondence_enrichment` handler registered in
+`src/butlers/scheduled_jobs.py` and seeded exactly once daily as
+`35 6 * * *` in `roster/relationship/butler.toml` with
+`dispatch_mode="job"` and `job_name="email_correspondence_enrichment"`.  It
+receives a maximum 100 already-resolved entity IDs, has zero-LLM behavior, and
+has no MCP/API/on-demand/interactive consumer.  No Relationship or
+Messenger MCP tool, dashboard/API endpoint, Switchboard route, scheduled prompt,
+or LLM session may invoke the aggregate.
+
+The bounded cost comparison is explicit.  At the maximum 100 IDs, a compliant
+per-entity Switchboard MCP fan-out would require one Relationship LLM session
+plus up to 100 Messenger LLM response sessions, or up to 101 LLM sessions per
+daily batch.  The registered deterministic job uses zero LLM sessions for the
+same fixed-shape result.  A hypothetical batched MCP tool is not an equivalent
+shortcut because it introduces an interactive surface; it needs a separate
+contract and cannot relax this exception.
+
 `bidirectional=true` requires both evidence legs in the same rolling 180-day
 window, an active exact peer authority that covers both evidence timestamps when
 an alias is used, and fresh account/provider watermarks.  Each account has metadata-only

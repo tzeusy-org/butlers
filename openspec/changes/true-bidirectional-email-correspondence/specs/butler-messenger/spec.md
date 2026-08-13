@@ -47,10 +47,13 @@ with no gap.  Messenger SHALL expose no raw account-universe rows to Relationshi
 
 #### Scenario: Relationship cannot call a Messenger raw-ledger tool
 
-- **WHEN** a Relationship runtime or API client requests correspondence data
-- **THEN** Messenger exposes no MCP/API method that lists private ledger rows
+- **WHEN** a Relationship runtime, MCP/API/on-demand/interactive client, or LLM
+  session requests correspondence data
+- **THEN** Messenger exposes no MCP/API/on-demand/interactive aggregate path or
+  method that lists private ledger rows
 - **AND** the only supported consumer path is the bounded security-definer
-  aggregate authorized by the database-security contract
+  aggregate from the fixed Relationship deterministic scheduled job authorized by
+  the database-security contract
 
 #### Scenario: Only the authenticated Switchboard broker can record Gmail evidence
 

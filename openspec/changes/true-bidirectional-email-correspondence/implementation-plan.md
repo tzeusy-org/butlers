@@ -314,6 +314,30 @@ resolved entity IDs through the aggregate and consumes only the fixed result.  I
 must not use raw ledger rows or existing content-bearing Switchboard messages as
 a fallback.
 
+RFC 0010 binds this otherwise narrow reader to one exact implementation surface.
+Name the new roster function `run_email_correspondence_enrichment`, wrap it as
+`_run_relationship_email_correspondence_enrichment_job` in
+`src/butlers/scheduled_jobs.py`, and register
+`email_correspondence_enrichment` under the Relationship deterministic registry.
+Seed it only as `name = "email-correspondence-enrichment"`,
+`cron = "35 6 * * *"`, `dispatch_mode="job"`, and
+`job_name="email_correspondence_enrichment"` in
+`roster/relationship/butler.toml`.  A run accepts at most 100 already-resolved
+entity IDs and is deterministic and zero-LLM.  It has no
+MCP/API/on-demand/interactive aggregate path.  Do not register an MCP tool,
+dashboard/API route, Switchboard route, scheduled prompt, or LLM-session caller
+for this function.
+The security-definer grants are database-enforced narrow reader grants only;
+migration-managed installation and the scheduled job do not authorize a general
+Relationship query capability.
+
+The cost case is bounded and explicit.  The compliant per-entity Switchboard
+MCP fan-out would use one Relationship LLM session plus up to 100 Messenger LLM
+response sessions for a maximum 100-ID batch, or up to 101 LLM sessions per
+daily batch.  This fixed Python handler performs that same aggregate with zero
+LLM sessions.  A hypothetical batched MCP tool remains out of scope because it
+would create an interactive surface and cannot be used to weaken this exception.
+
 ### Freshness and 180-day truth table
 
 | Condition | `freshness` | `bidirectional` |
@@ -554,11 +578,18 @@ the staffer's no-autonomous-behavior posture.
    whole window and no qualifying leg.  Never select an account from the
    entity-ID input, infer the universe from provider/mailbox data, or issue an
    alias-derived negative.
-2. Add a separate bounded known-entity correspondence enrichment job beside
-   `roster/relationship/jobs/relationship_jobs.py::run_email_identity_enrichment`.
-   The new job asks only for resolved entity-ID batches and never writes raw
-   correspondence metadata into Relationship facts/logs.  Preserve the existing
-   unresolved-sender discovery/proposal job unchanged and inbound-only.
+2. Add a separate bounded `email_correspondence_enrichment` known-entity job
+   beside `roster/relationship/jobs/relationship_jobs.py::run_email_identity_enrichment`.
+   Implement `run_email_correspondence_enrichment`, register its wrapper in
+   `src/butlers/scheduled_jobs.py`, and declare exactly one daily `35 6 * * *`
+   `roster/relationship/butler.toml` schedule with `dispatch_mode="job"` and
+   `job_name="email_correspondence_enrichment"`.  The new job asks only for a
+   maximum 100 resolved entity IDs, has zero-LLM behavior, and never writes raw
+   correspondence metadata into Relationship facts/logs.  It has no
+   MCP/API/on-demand/interactive aggregate path: do not add an MCP tool,
+   dashboard/API endpoint, Switchboard route, scheduled prompt, or LLM-session
+   caller.  Preserve the existing unresolved-sender discovery/proposal job
+   unchanged and inbound-only.
 3. Add tests for same authenticated account+peer positive evidence; different or
    envelope-only account; inactive/retracted fact; inferred/newer-than-evidence/
    expired/revoked alias rejection; inbound-only and outbound-only cases; no-peer
@@ -568,7 +599,10 @@ the staffer's no-autonomous-behavior posture.
    coverage null; reset/gap/re-auth null; transient receipt-delay/future-skew
    rejection; duplicate-ingress immutable receipt time; invalid-age/reset/gap/
    re-auth/rebind/principal-mismatch closure; 180-day boundaries for every private
-   record; and zero materialization of raw values.
+   record; and zero materialization of raw values.  Add source-level registry and
+   TOML tests for the exact job, cron, callable handler, zero-LLM no-public-path
+   boundary, plus the static packet contract that protects RFC 0010's
+   database-enforced narrow reader and migration auditability.
 
 ### Phase 6 - maintenance, documentation, and rollout
 

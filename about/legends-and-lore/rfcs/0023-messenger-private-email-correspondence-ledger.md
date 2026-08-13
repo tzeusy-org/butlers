@@ -348,8 +348,9 @@ inbound observation must both fall within the rolling window.
 
 ### Relationship aggregate and schema boundary
 
-RFC 0006 forbids raw cross-schema reads.  This RFC proposes a narrow exception,
-not a reusable data plane:
+RFC 0006 forbids raw cross-schema reads.  This RFC invokes RFC 0010's narrow
+cross-butler read exception only for the fixed aggregate consumer described
+below, not as a reusable data plane:
 
 ```sql
 public.relationship_email_correspondence_summary(entity_ids uuid[])
@@ -375,6 +376,43 @@ migration-admin activation routine creates it with `SECURITY DEFINER`,
 `butler_relationship_rw`.  Relationship gets no direct table select,
 connector/dashboard/public roles get no execute, and the function does not
 accept arbitrary addresses or SQL-like predicates.
+
+#### RFC 0010 scheduled-reader guardrails
+
+This exception is permitted only while all RFC 0010 reuse criteria remain true:
+
+1. **Database-enforced narrow reader.** The fixed vector signature, 100-ID
+   ceiling, fixed aggregate output, `SECURITY DEFINER` owner, hardened search
+   path, explicit schema qualification, `PUBLIC` revocation, exact
+   `butler_relationship_rw` execute grant, and absence of any raw-table grant
+   are a database-enforced narrow reader.  They are not application convention
+   or a grant to enumerate Messenger data.
+2. **Fixed scheduled batch.** The sole aggregate consumer SHALL be the
+   deterministic `email_correspondence_enrichment` job.  Future implementation
+   SHALL register its Relationship wrapper in `src/butlers/scheduled_jobs.py`
+   and declare exactly one daily `35 6 * * *` schedule in
+   `roster/relationship/butler.toml` with `dispatch_mode="job"` and
+   `job_name="email_correspondence_enrichment"`.  The job processes at most 100
+   already-resolved entity IDs per run, receives no prompt, and has zero-LLM
+   behavior.
+3. **No public or interactive consumer.** The exception authorizes no
+   MCP/API/on-demand/interactive aggregate path: no Relationship or Messenger
+   MCP tool, dashboard/API route, Switchboard route, LLM-session tool call,
+   direct human query, or scheduled prompt may invoke it.  The fixed
+   `dispatch_mode="job"` handler is its sole permitted runtime invocation.
+4. **Migration auditability and regression evidence.** The reader and its
+   grants remain migration-managed and reversible.  Migrated PostgreSQL tests
+   SHALL prove the fixed signature, ownership, ACLs, bounded output, direct
+   select denial, and failed-closed partial topology.  Source-level schedule and
+   registry tests, plus a static packet contract, SHALL prove the handler is
+   registered, the fixed cron is preserved, and no public tool path appears.
+5. **Concrete bounded cost case.** At the 100-entity ceiling, the compliant
+   alternative is a Relationship LLM session plus up to one Messenger LLM
+   response session per entity, or up to 101 LLM sessions per daily batch.  The
+   registered deterministic job performs the same bounded aggregate with zero
+   LLM sessions.  A new batched MCP tool would still create an interactive
+   surface and is outside this exception; it cannot be used to weaken the cost
+   or scheduling boundary.
 
 The authenticated Switchboard broker is a separate, narrow control-plane
 exception.  It has no direct Messenger table grant and no generic cross-schema
@@ -412,12 +450,12 @@ caller-controlled search-path resistance, atomic deduplication, and absence of a
 generic cross-schema write surface.
 
 Relationship invokes only
-`public.relationship_email_correspondence_summary(uuid[])` from a new bounded
-deterministic known-entity correspondence enrichment job.  It may use fresh
-`true` as a structured signal under its existing provenance/approval rules, but
-it must not materialize raw correspondence metadata in a fact or log.  The
-existing `run_email_identity_enrichment` unresolved-sender discovery/proposal job
-remains separate and inbound-only; this RFC neither replaces it nor relabels its
+`public.relationship_email_correspondence_summary(uuid[])` from the RFC 0010
+scheduled `email_correspondence_enrichment` job above.  It may use fresh `true`
+as a structured signal under its existing provenance/approval rules, but it must
+not materialize raw correspondence metadata in a fact or log.  The existing
+`run_email_identity_enrichment` unresolved-sender discovery/proposal job remains
+separate and inbound-only; this RFC neither replaces it nor relabels its
 recurrence heuristic as provider-confirmed correspondence.  Neither job may call
 a provider or fall back to inbound-only recurrence as a positive correspondence
 proof.
@@ -599,7 +637,8 @@ revokes the aggregate before either dependent schema changes.
 - RFC 0004 - identity and contact resolution.
 - RFC 0006 - database schema isolation; this RFC's narrow exception needs
   explicit security-owner approval.
-- RFC 0010 - limited deterministic cross-butler read exception precedent.
+- RFC 0010 - limited deterministic cross-butler read exception precedent; all
+  reuse criteria bind the scheduled Relationship aggregate consumer above.
 - RFC 0017 - owner-routing safety and provenance gates.
 - `openspec/changes/true-bidirectional-email-correspondence/` - normative
   proposal, delta specs, technical design, and implementation plan.
