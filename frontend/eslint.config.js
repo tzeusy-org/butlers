@@ -465,6 +465,28 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return null
         }
 
+        function constArrayElements(node, resolvingVariables) {
+          if (
+            node.type === 'TSAsExpression' ||
+            node.type === 'TSTypeAssertion' ||
+            node.type === 'TSNonNullExpression' ||
+            node.type === 'TSSatisfiesExpression' ||
+            node.type === 'ChainExpression'
+          ) {
+            return constArrayElements(node.expression, resolvingVariables)
+          }
+          if (node.type === 'ArrayExpression') return node.elements
+          if (node.type !== 'Identifier') return null
+
+          const binding = constInitializer(node)
+          if (!binding || resolvingVariables.has(binding.variable)) return null
+
+          resolvingVariables.add(binding.variable)
+          const elements = constArrayElements(binding.initializer, resolvingVariables)
+          resolvingVariables.delete(binding.variable)
+          return elements
+        }
+
         function stringConstructionValue(node, resolvingVariables = new Set()) {
           // These wrappers are erased before runtime string construction, so they
           // must not hide a statically proven alias from the structural grammar
@@ -509,6 +531,53 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
               stringConstructionValue(node.right, resolvingVariables)
             )
           }
+          if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression') {
+            const property =
+              node.callee.computed && node.callee.property.type === 'Literal'
+                ? node.callee.property.value
+                : node.callee.property.type === 'Identifier'
+                  ? node.callee.property.name
+                  : null
+
+            if (property === 'join') {
+              if (node.arguments.length > 1) return DYNAMIC_VALUE_MARKER
+
+              const elements = constArrayElements(node.callee.object, resolvingVariables)
+              if (!elements) return DYNAMIC_VALUE_MARKER
+
+              const separator = node.arguments[0]
+                ? stringConstructionValue(node.arguments[0], resolvingVariables)
+                : ','
+              return elements
+                .map((element) =>
+                  element && element.type !== 'SpreadElement'
+                    ? stringConstructionValue(element, resolvingVariables)
+                    : '',
+                )
+                .join(separator)
+            }
+
+            if (property === 'concat') {
+              return [node.callee.object, ...node.arguments]
+                .map((part) =>
+                  part.type === 'SpreadElement'
+                    ? DYNAMIC_VALUE_MARKER
+                    : stringConstructionValue(part, resolvingVariables),
+                )
+                .join('')
+            }
+
+            if (property === 'replace' && node.arguments.length === 2) {
+              const [search, replacement] = node.arguments
+              if (search.type === 'SpreadElement' || replacement.type === 'SpreadElement') {
+                return DYNAMIC_VALUE_MARKER
+              }
+              return stringConstructionValue(node.callee.object, resolvingVariables).replace(
+                stringConstructionValue(search, resolvingVariables),
+                stringConstructionValue(replacement, resolvingVariables),
+              )
+            }
+          }
           return DYNAMIC_VALUE_MARKER
         }
 
@@ -542,6 +611,11 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           },
           BinaryExpression(node) {
             if (node.operator === '+' && !isNestedStringConstruction(node)) {
+              reportPrivateIdentityReferences(stringConstructionValue(node), node)
+            }
+          },
+          CallExpression(node) {
+            if (!isNestedStringConstruction(node)) {
               reportPrivateIdentityReferences(stringConstructionValue(node), node)
             }
           },

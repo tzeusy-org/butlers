@@ -283,6 +283,15 @@ const STATIC_PRIVATE_ALIAS_SOURCE = [
   "export const leaked = open + identity + close;",
 ].join("\n");
 
+const STATIC_CALL_CONSTRUCTION_SOURCE = [
+  'const token = "--category-1";',
+  'export const fromJoin = ["var(", token, ")"].join("");',
+  'const fragments = ["var(", token, ")"] as const;',
+  'export const fromAliasedJoin = fragments.join("");',
+  'export const fromConcat = "var(".concat("--color-category-12", ")");',
+  'export const fromReplace = "var(__token__)".replace("__token__", "--category-1");',
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -452,6 +461,15 @@ describe("semantic visual-role lint", () => {
     );
 
     expect(roleMessages).toHaveLength(1);
+  });
+
+  it("rejects statically constructed private references through string calls", async () => {
+    const roleMessages = await visualRoleMessages(
+      STATIC_CALL_CONSTRUCTION_SOURCE,
+      "src/components/ui/StaticCallIdentityAliasLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(4);
   });
 
   it("keeps the ButlerMark exemption limited to its canonical component", async () => {
