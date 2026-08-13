@@ -846,6 +846,18 @@ The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action 
 - **AND** `POST /api/secrets/user/<provider>/disconnect?identity=<uuid>` returns `ApiResponse<{ status: "disconnected" }>` and writes an audit row with action `disconnected`
 - **AND** `POST /api/secrets/user/<provider>/probe?identity=<uuid>` returns `ApiResponse<TestResult>`, writes one row to `public.secret_probe_log`, and writes one audit row with action `verified` (on ok) or `failed` (on fail)
 
+#### Scenario: Spotify is excluded from generic User credential mutations
+- **WHEN** a caller targets Spotify through a generic User credential mutation
+- **THEN** `POST /api/secrets/user/spotify/reauthorize` SHALL NOT construct a
+  generic OAuth redirect, state token, or callback journey
+- **AND** generic User credential mutations SHALL NOT create, read, write,
+  rotate, disconnect, or probe Spotify token material or a Spotify
+  `public.entity_info` record
+- **AND** the content-blind Spotify Passport projection SHALL delegate its
+  connection and reauthorization action only to
+  `POST /api/connectors/spotify/oauth/start` (with its connector-owned
+  callback and lifecycle surfaces)
+
 #### Scenario: System credential mutations
 - **WHEN** `POST /api/secrets/system/<key>` is called with body `{ value, target: "shared" | "<butler>" }`
 - **THEN** the response is `ApiResponse<SystemSecret>` (updated)
@@ -887,20 +899,31 @@ The `/api/secrets/*` namespace SHALL expose two read-side endpoints supporting t
 - **BECAUSE** an empty catalogue must not read as "no breaks tracked for this provider" when the pool itself could not be queried -- mirrors the fleet-wide `meta.<flag>` degraded-envelope convention (see CLAUDE.md API Conventions). A legitimately-absent `provider_feature_catalogue` table (pre-migration) is a different case: it is NOT flagged and keeps `data: []` with `catalogue_available` absent (an honest empty, not a degraded source).
 
 ### Requirement: OAuth Per-Provider Generalisation
-The existing `/api/oauth/*` namespace (currently Google-only per `src/butlers/api/routers/oauth.py:156-1893`) SHALL be generalised to accept a `<provider>` path segment. Provider scope-sets SHALL be resolved from each butler's `butler.toml` declaration. The `/api/oauth/google/*` endpoints SHALL continue to function unchanged (path generalisation is additive; existing routes resolve via `provider=google`).
+The existing `/api/oauth/*` namespace (currently Google-only per `src/butlers/api/routers/oauth.py:156-1893`) SHALL be generalised to accept a `<provider>` path segment for registered generic OAuth providers. The production generic OAuth provider registry is Google-only. A connector type is not itself a generic OAuth provider identifier: Spotify is excluded from this namespace and remains connector-owned. Provider scope-sets SHALL be resolved from each butler's `butler.toml` declaration. The `/api/oauth/google/*` endpoints SHALL continue to function unchanged (path generalisation is additive; existing routes resolve via `provider=google`).
 
 #### Scenario: Generalised begin endpoint
-- **WHEN** `GET /api/oauth/<provider>/start?redirect_uri=<uri>&account_hint=<hint>&force_consent=<bool>&page_of_origin=<page>` is called
+- **WHEN** `GET /api/oauth/<provider>/start?redirect_uri=<uri>&account_hint=<hint>&force_consent=<bool>&page_of_origin=<page>` is called for a registered generic OAuth provider
 - **THEN** the response is `ApiResponse<{ authorization_url: str }>`
 - **AND** the `state` token carries the `page_of_origin` value so the callback can route the user back appropriately
 - **AND** for `provider=google`, the response is identical to the pre-change behaviour of `/api/oauth/google/start`
 
 #### Scenario: Generalised callback endpoint
-- **WHEN** `GET /api/oauth/<provider>/callback?code=<code>&state=<state>` is invoked
+- **WHEN** `GET /api/oauth/<provider>/callback?code=<code>&state=<state>` is invoked for a registered generic OAuth provider
 - **THEN** the callback exchanges the code for tokens, persists them to the correct authoritative store (`butler_secrets` for system, `public.entity_info` for per-account user credentials per `about/heart-and-soul/security.md:107-127`), writes a `connected` audit row, and redirects the browser based on `state.page_of_origin`:
   - `secrets` → `/secrets?focus=u:<provider>&toast=connected`
   - `ingestion` → `/ingestion/connectors`
   - (default / missing) → `/secrets?focus=u:<provider>&toast=connected`
+
+#### Scenario: Spotify is excluded from generic OAuth authority
+- **WHEN** `GET /api/oauth/spotify/start` or
+  `GET /api/oauth/spotify/callback` is requested
+- **THEN** the generic OAuth surface SHALL NOT authorize, exchange, refresh, or
+  persist Spotify token material
+- **AND** it MUST NOT persist Spotify token material to `public.entity_info`,
+  create generic OAuth state, or route a Spotify callback
+- **AND** Spotify authorization SHALL use only
+  `POST /api/connectors/spotify/oauth/start` and
+  `GET /api/connectors/spotify/oauth/callback`
 
 #### Scenario: Provider scope resolution from butler.toml
 - **WHEN** the OAuth begin endpoint is called for a provider whose scopes are declared in one or more `butler.toml` files

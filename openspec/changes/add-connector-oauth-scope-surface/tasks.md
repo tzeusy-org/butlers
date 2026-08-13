@@ -147,6 +147,12 @@ by the operator AFTER this change ratifies).
      exemplar. It preserves a synthetic generalized-provider fixture only and
      leaves no compatibility alias, shim, or production registry entry.
 
+  Before dispatching `bu-3ifcj`, the coordinator SHALL run
+  `bd dep add bu-3ifcj bu-fj7lx --type blocks` to materialize the required
+  blocker. A `discovered-from` relation is not a substitute for that `blocks`
+  prerequisite. This spec-only change records the post-ratification tracker
+  action and does not execute it.
+
 - [ ] 5.4 **Bead-creation handoff (MANUAL — run AFTER this change is ratified
       and archived):** the operator runs the following `bd create` command to
       file the implementation bead that unblocks

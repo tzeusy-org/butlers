@@ -525,6 +525,12 @@ generic OAuth Spotify registry, route, configuration, UI, documentation, and
 test exemplar. The latter keeps a synthetic generalized-provider fixture and
 no compatibility alias, shim, or production registry entry.
 
+Before that cleanup is dispatched, its coordinator SHALL materialize the
+ordering in Beads with `bd dep add bu-3ifcj bu-fj7lx --type blocks`: the
+cleanup bead is blocked by the Passport projection bead. A `discovered-from`
+relation is provenance only; it is not a dispatch prerequisite. This spec-only
+amendment records that later tracker action; it does not execute it.
+
 **Why:**
 
 - The connector is the transport and credential lifecycle owner (Non-Negotiable

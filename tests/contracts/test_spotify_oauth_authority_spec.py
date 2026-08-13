@@ -28,9 +28,13 @@ _CARRIER_SPEC = (
 _CARRIER_TASKS = (
     _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "tasks.md"
 )
+_CARRIER_DESIGN = (
+    _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "design.md"
+)
 _INGESTION_SPEC = (
     _REPO_ROOT / "openspec" / "specs" / "dashboard-ingestion-dispatch-console" / "spec.md"
 )
+_DASHBOARD_API_SPEC = _REPO_ROOT / "openspec" / "specs" / "dashboard-api" / "spec.md"
 _PASSPORT_SPEC = _REPO_ROOT / "openspec" / "specs" / "butler-secrets" / "spec.md"
 _SPOTIFY_SETUP_SPEC = _REPO_ROOT / "openspec" / "specs" / "dashboard-spotify-setup" / "spec.md"
 _SPOTIFY_CONNECTOR_SPEC = _REPO_ROOT / "openspec" / "specs" / "connector-spotify" / "spec.md"
@@ -40,6 +44,17 @@ _CREDENTIALS_SPEC = _REPO_ROOT / "openspec" / "specs" / "core-credentials" / "sp
 def _read(path: Path) -> str:
     assert path.exists(), f"expected normative artifact is missing: {path.relative_to(_REPO_ROOT)}"
     return path.read_text(encoding="utf-8")
+
+
+def _collapse_whitespace(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _requirement(document: str, title: str) -> str:
+    marker = f"### Requirement: {title}"
+    start = document.index(marker)
+    end = document.find("\n### Requirement:", start + len(marker))
+    return document[start:] if end == -1 else document[start:end]
 
 
 def test_active_carrier_declares_spotify_connector_and_passport_boundaries() -> None:
@@ -79,11 +94,41 @@ def test_canonical_specs_do_not_route_spotify_through_generic_oauth() -> None:
     )
 
 
-def test_carrier_serializes_the_two_downstream_implementation_lanes() -> None:
-    """The cleanup and projection work must not race or retain a production alias."""
-    tasks = _read(_CARRIER_TASKS)
+def test_dashboard_api_excludes_spotify_from_generic_oauth_and_user_credential_authority() -> None:
+    """Generic provider and entity-info rules cannot reclaim Spotify authority."""
+    dashboard_api = _read(_DASHBOARD_API_SPEC)
+    mutations = _requirement(dashboard_api, "Secrets Mutation Endpoints")
+    generic_oauth = _requirement(dashboard_api, "OAuth Per-Provider Generalisation")
 
-    assert "`bu-fj7lx`" in tasks
-    assert "`bu-3ifcj`" in tasks
+    assert "`POST /api/secrets/user/spotify/reauthorize` SHALL NOT" in mutations
+    assert "`public.entity_info` record" in mutations
+    assert "`POST /api/connectors/spotify/oauth/start`" in mutations
+
+    assert "The production generic OAuth provider registry is Google-only." in generic_oauth
+    assert "`GET /api/oauth/spotify/start`" in generic_oauth
+    assert "MUST NOT persist Spotify token material to `public.entity_info`" in generic_oauth
+    assert "`GET /api/connectors/spotify/oauth/callback`" in generic_oauth
+
+
+def test_carrier_serializes_the_two_downstream_implementation_lanes() -> None:
+    """The cleanup must depend on the projection in artifacts and tracker handoff."""
+    carrier = _collapse_whitespace(_read(_CARRIER_SPEC))
+    tasks = _collapse_whitespace(_read(_CARRIER_TASKS))
+    design = _collapse_whitespace(_read(_CARRIER_DESIGN))
+
+    assert "`bu-fj7lx` implements the Passport projection; `bu-3ifcj` then removes" in design
+    assert (
+        "A `discovered-from` relation is provenance only; it is not a dispatch prerequisite."
+        in design
+    )
+    assert (
+        "the tracker SHALL contain a `blocks` prerequisite from `bu-3ifcj` to `bu-fj7lx` "
+        "before cleanup dispatch."
+    ) in carrier
+    assert "`bd dep add bu-3ifcj bu-fj7lx --type blocks`" in tasks
+    assert "Before dispatching `bu-3ifcj`" in tasks
+    assert (
+        "A `discovered-from` relation is not a substitute for that `blocks` prerequisite" in tasks
+    )
     assert "synthetic generalized-provider fixture" in tasks
     assert "no compatibility alias, shim, or production registry entry" in tasks

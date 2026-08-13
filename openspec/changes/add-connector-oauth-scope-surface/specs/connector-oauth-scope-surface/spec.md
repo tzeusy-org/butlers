@@ -432,7 +432,13 @@ alias, or generic OAuth provider alias.
 
 - **WHEN** the serialized cleanup bead `bu-3ifcj` follows the Passport
   projection bead `bu-fj7lx`
-- **THEN** it SHALL remove the generic OAuth Spotify production registry,
+- **AND** the cleanup is about to be dispatched
+- **THEN** the tracker SHALL contain a `blocks` prerequisite from `bu-3ifcj` to
+  `bu-fj7lx` before cleanup dispatch.
+- **AND** the coordinator SHALL materialize that prerequisite with
+  `bd dep add bu-3ifcj bu-fj7lx --type blocks`; a `discovered-from` relation
+  is provenance only and SHALL NOT substitute for the blocking edge
+- **AND** it SHALL remove the generic OAuth Spotify production registry,
   route, configuration, UI, documentation, and test exemplar
 - **AND** any generalized-provider test SHALL use a synthetic
   generalized-provider fixture
