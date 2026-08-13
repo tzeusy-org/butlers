@@ -482,7 +482,29 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           ) {
             return constArrayElements(node.expression, resolvingVariables)
           }
-          if (node.type === 'ArrayExpression') return node.elements
+          if (node.type === 'ArrayExpression') {
+            return node.elements.reduce(
+              (result, element) => {
+                if (element?.type !== 'SpreadElement') {
+                  return { ...result, elements: [...result.elements, element] }
+                }
+
+                const spreadElements = constArrayElements(element.argument, resolvingVariables)
+                if (!spreadElements) {
+                  return {
+                    ambiguous: true,
+                    elements: [...result.elements, element],
+                  }
+                }
+
+                return {
+                  ambiguous: result.ambiguous || spreadElements.ambiguous,
+                  elements: [...result.elements, ...spreadElements.elements],
+                }
+              },
+              { ambiguous: false, elements: [] },
+            )
+          }
           if (
             node.type === 'CallExpression' &&
             node.callee.type === 'MemberExpression' &&
@@ -491,14 +513,81 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             const receiverElements = constArrayElements(node.callee.object, resolvingVariables)
             if (!receiverElements) return null
 
-            return node.arguments.reduce((elements, argument) => {
-              if (argument.type === 'SpreadElement') return [...elements, argument]
+            return node.arguments.reduce((result, argument) => {
+              if (argument.type === 'SpreadElement') {
+                const spreadElements = constArrayElements(argument.argument, resolvingVariables)
+                if (!spreadElements) {
+                  return {
+                    ambiguous: true,
+                    elements: [...result.elements, argument],
+                  }
+                }
+
+                return {
+                  ambiguous: result.ambiguous || spreadElements.ambiguous,
+                  elements: [...result.elements, ...spreadElements.elements],
+                }
+              }
 
               const argumentElements = constArrayElements(argument, resolvingVariables)
               return argumentElements
-                ? [...elements, ...argumentElements]
-                : [...elements, argument]
+                ? {
+                    ambiguous: result.ambiguous || argumentElements.ambiguous,
+                    elements: [...result.elements, ...argumentElements.elements],
+                  }
+                : { ...result, elements: [...result.elements, argument] }
             }, receiverElements)
+          }
+          if (
+            node.type === 'CallExpression' &&
+            node.callee.type === 'MemberExpression' &&
+            memberPropertyName(node.callee) === 'slice' &&
+            node.arguments.length === 0
+          ) {
+            return constArrayElements(node.callee.object, resolvingVariables)
+          }
+          if (
+            node.type === 'CallExpression' &&
+            node.callee.type === 'MemberExpression' &&
+            memberPropertyName(node.callee) === 'map'
+          ) {
+            const receiverElements = constArrayElements(node.callee.object, resolvingVariables)
+            if (!receiverElements) return null
+
+            // The callback may transform every element, so retain the static
+            // trace but mark the joined result ambiguous instead of assuming an
+            // identity mapping. That preserves static semantic roles while
+            // preventing an unmodeled map() from hiding an identity token.
+            return { ...receiverElements, ambiguous: true }
+          }
+          if (
+            node.type === 'CallExpression' &&
+            node.callee.type === 'MemberExpression' &&
+            node.callee.object.type === 'Identifier' &&
+            node.callee.object.name === 'Array' &&
+            memberPropertyName(node.callee) === 'from' &&
+            node.arguments.length >= 1 &&
+            node.arguments.length <= 2
+          ) {
+            const sourceElements = constArrayElements(node.arguments[0], resolvingVariables)
+            if (!sourceElements) return null
+
+            // Array.from's optional mapper has the same unknown-transform
+            // boundary as Array.prototype.map(). Keep the source trace, but
+            // make the joined value ambiguous rather than infer identity.
+            return node.arguments.length === 1
+              ? sourceElements
+              : { ...sourceElements, ambiguous: true }
+          }
+          if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression') {
+            const receiverElements = constArrayElements(node.callee.object, resolvingVariables)
+            if (!receiverElements) return null
+
+            // Any other array method can transform, filter, or reorder its
+            // elements. Retain its static trace so an enclosing join() cannot
+            // hide a private token, but mark the result ambiguous rather than
+            // assuming the method preserved the original array.
+            return { ...receiverElements, ambiguous: true }
           }
           if (node.type !== 'Identifier') return null
 
@@ -589,13 +678,13 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             if (property === 'join') {
               if (node.arguments.length > 1) return DYNAMIC_VALUE_MARKER
 
-              const elements = constArrayElements(node.callee.object, resolvingVariables)
-              if (!elements) return DYNAMIC_VALUE_MARKER
+              const array = constArrayElements(node.callee.object, resolvingVariables)
+              if (!array) return DYNAMIC_VALUE_MARKER
 
               const separator = node.arguments[0]
                 ? stringConstructionValue(node.arguments[0], resolvingVariables)
                 : ','
-              return elements
+              const joined = array.elements
                 .map((element) =>
                   element && element.type !== 'SpreadElement'
                     ? stringConstructionValue(element, resolvingVariables)
@@ -604,6 +693,7 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
                     : '',
                 )
                 .join(separator)
+              return array.ambiguous ? joined + DYNAMIC_VALUE_MARKER : joined
             }
 
             if (property === 'concat') {

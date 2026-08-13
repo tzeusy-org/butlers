@@ -84,6 +84,11 @@ const WORK: Group = {
   updated_at: "2026-02-01T00:00:00Z",
 };
 
+const INVALID_COLOR_FAMILY: Group = {
+  ...FAMILY,
+  labels: [{ id: "label-invalid", name: "Invalid colour", color: "#12345" }],
+};
+
 // ---------------------------------------------------------------------------
 // Render helper
 // ---------------------------------------------------------------------------
@@ -161,6 +166,20 @@ describe("CirclesPage — structure", () => {
     expect(container.textContent).toContain("4 members");
     expect(container.textContent).toContain("Work friends");
     expect(container.textContent).toContain("2 members");
+  });
+
+  it("uses the categorical fallback when a label has an unsupported owner hex length", () => {
+    (useGroups as AnyMock).mockReturnValue({
+      data: { groups: [INVALID_COLOR_FAMILY], total: 1 },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    renderPage();
+
+    expect(container.innerHTML).toMatch(/background-color:\s*var\(--categorical-/);
+    expect(container.innerHTML).not.toContain("#12345");
   });
 });
 

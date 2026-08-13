@@ -312,6 +312,28 @@ const STATIC_CALL_SEMANTIC_ROLE_SOURCE = [
   'export const fromArrayConcatJoin = fragments.concat(suffix).join("");',
 ].join("\n");
 
+const IMMUTABLE_ARRAY_WRAPPER_CONSTRUCTION_SOURCE = [
+  'const identity = "--category-1";',
+  'const fragments = ["var(", identity, ")"] as const;',
+  'export const fromMap = fragments.map((part) => part).join("");',
+  'export const fromSlice = fragments.slice().join("");',
+  'export const fromSpread = [...fragments].join("");',
+  'export const fromArrayFrom = Array.from(fragments).join("");',
+  'export const fromArrayFromMap = Array.from(fragments, (part) => part).join("");',
+  'export const fromFilter = fragments.filter(() => true).join("");',
+].join("\n");
+
+const IMMUTABLE_ARRAY_WRAPPER_SEMANTIC_ROLE_SOURCE = [
+  'const role = "--categorical-1";',
+  'const fragments = ["var(", role, ")"] as const;',
+  'export const fromMap = fragments.map((part) => part).join("");',
+  'export const fromSlice = fragments.slice().join("");',
+  'export const fromSpread = [...fragments].join("");',
+  'export const fromArrayFrom = Array.from(fragments).join("");',
+  'export const fromArrayFromMap = Array.from(fragments, (part) => part).join("");',
+  'export const fromFilter = fragments.filter(() => true).join("");',
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -506,6 +528,25 @@ describe("semantic visual-role lint", () => {
     const roleMessages = await visualRoleMessages(
       STATIC_CALL_SEMANTIC_ROLE_SOURCE,
       "src/components/ui/StaticCallSemanticRole.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("rejects immutable array wrapper pipelines that construct private identity references", async () => {
+    const roleMessages = await visualRoleMessages(
+      IMMUTABLE_ARRAY_WRAPPER_CONSTRUCTION_SOURCE,
+      "src/components/ui/ImmutableArrayWrapperIdentityLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(6);
+    expect(roleMessages.map((message) => message.line)).toEqual([3, 4, 5, 6, 7, 8]);
+  });
+
+  it("permits immutable array wrapper pipelines that construct semantic-role values", async () => {
+    const roleMessages = await visualRoleMessages(
+      IMMUTABLE_ARRAY_WRAPPER_SEMANTIC_ROLE_SOURCE,
+      "src/components/ui/ImmutableArrayWrapperSemanticRole.tsx",
     );
 
     expect(roleMessages).toEqual([]);

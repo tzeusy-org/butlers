@@ -189,6 +189,11 @@ const CONTACT_TWO: LinkedContactSummary = {
   reachable_channels: [],
 };
 
+const INVALID_COLOR_CONTACT: LinkedContactSummary = {
+  ...CONTACT_TWO,
+  labels: [{ id: "label-invalid", name: "Invalid colour", color: "#1234567" }],
+};
+
 const SPARSE_CONTACT: LinkedContactSummary = {
   id: "contact-003",
   full_name: "Charlie",
@@ -281,6 +286,14 @@ describe("ContactChannelCard — one linked contact (populated state)", () => {
     setLinkedContacts([CONTACT_ONE]);
     const html = renderCard();
     expect(html).toContain("Friend");
+  });
+
+  it("uses the categorical fallback when a label has an unsupported owner hex length", () => {
+    setLinkedContacts([INVALID_COLOR_CONTACT]);
+    const html = renderCard();
+
+    expect(html).toContain("background-color:var(--categorical-");
+    expect(html).not.toContain("#1234567");
   });
 
   it("renders preferred channel chip when set", () => {

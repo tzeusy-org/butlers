@@ -166,6 +166,20 @@ describe("semantic visual role registry", () => {
     expect(CATEGORICAL_TOKEN_COUNT).toBe(12);
   });
 
+  it.each(["#123", "#1234", "#123456", "#12345678"])(
+    "accepts valid owner custom CSS hex colors with length %s",
+    (color) => {
+      expect(ownerCustomColor(color)).toBe(color);
+    },
+  );
+
+  it.each(["#12345", "#1234567"])(
+    "rejects owner custom hex colors with unsupported CSS length %s",
+    (color) => {
+      expect(ownerCustomColor(color)).toBeUndefined();
+    },
+  );
+
   it("keeps frontend topology on private ButlerMark identity and typed role helpers", () => {
     expect(FRONTEND_TOPOLOGY).toContain(
       "`ButlerMark`'s color-role-facing subset of its public surface",

@@ -137,7 +137,7 @@ export function ownerCustomColor(
 ): OwnerCustomColor | undefined {
   if (
     !value ||
-    !/^(?:#[0-9a-f]{3,8}|(?:rgb|hsl|oklch|color-mix)\([^)]*\))$/i.test(
+    !/^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl|oklch|color-mix)\([^)]*\))$/i.test(
       value.trim(),
     )
   ) {
