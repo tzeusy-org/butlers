@@ -128,10 +128,17 @@ describe("semantic visual role registry", () => {
     const localCategoryTokens = VISUAL_TOKEN_ROLE_REGISTRY[
       "local-category"
     ].tokens as unknown as string[];
+    const localCategoryValues = VISUAL_TOKEN_ROLE_REGISTRY[
+      "local-category"
+    ].values as unknown as string[];
     const chartSeriesTokens = VISUAL_TOKEN_ROLE_REGISTRY["chart-series"]
       .tokens as unknown as string[];
+    const chartSeriesValues = VISUAL_TOKEN_ROLE_REGISTRY["chart-series"]
+      .values as unknown as string[];
     localCategoryTokens.push("--categorical-13");
+    localCategoryValues.push("var(--categorical-13)");
     chartSeriesTokens.push("--chart-6");
+    chartSeriesValues.push("var(--chart-6)");
 
     try {
       expect(categoricalColor(localCategoryTokens.length - 1)).toBe(
@@ -142,7 +149,9 @@ describe("semantic visual role registry", () => {
       );
     } finally {
       localCategoryTokens.pop();
+      localCategoryValues.pop();
       chartSeriesTokens.pop();
+      chartSeriesValues.pop();
     }
   });
 

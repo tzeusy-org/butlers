@@ -218,13 +218,15 @@ function readCssCustomProperty(value, start) {
 }
 
 function isPotentialPrivateIdentityPrefix(property, form) {
-  // A dynamically assembled custom property can resolve to any private
-  // identity token. Outside ButlerMark, fail closed as soon as its static
-  // prefix is `--`; static, known semantic-role custom properties remain
-  // allowed. A named Tailwind alias is not itself a custom-property
+  // A dynamic value in var(...) or a supported parenthesized Tailwind form can
+  // resolve to any custom property, including a private Butler identity token.
+  // Outside ButlerMark those constructions must fail closed even when their
+  // static prefix is empty (or follows legal CSS trivia). Static semantic-role
+  // properties remain allowed because this branch runs only for ambiguous
+  // constructions. A named Tailwind alias is not itself a custom-property
   // construction, so retain its narrower private-namespace check.
   if (form !== "tailwind-named-alias") {
-    return property.startsWith("--");
+    return true;
   }
   return property === "--category-" || property === "--color-category-";
 }

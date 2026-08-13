@@ -130,6 +130,63 @@ const DYNAMIC_CUSTOM_PROPERTY_LITERAL_SOURCE = [
   'export const splitStatic = "var(--" + "category" + "-1)";',
 ].join("\n");
 
+const FULLY_DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE = [
+  'const identity = "--category-1";',
+  'const suffix = "category-1";',
+  'export const direct = `var(${identity})`;',
+  'export const withTrivia = `var(/* identity trivia */ ${identity})`;',
+  'export const splitStatic = `var(${"--"}${suffix})`;',
+  'export const directUtility = `bg-(${identity})`;',
+  'export const typedUtility = `bg-(color:${identity})`;',
+  'export const typedUtilityWithTrivia = `bg-(color: /* identity trivia */ ${identity})`;',
+].join("\n");
+
+const FULLY_DYNAMIC_CUSTOM_PROPERTY_BINARY_SOURCE = [
+  'const identity = "--color-category-12";',
+  'export const direct = "var(" + identity + ")";',
+  'export const withTrivia = "var(/* identity trivia */ " + identity + ")";',
+  'export const directUtility = "bg-(" + identity + ")";',
+  'export const typedUtility = "bg-(color:" + identity + ")";',
+  'export const typedUtilityWithTrivia = "bg-(color: /* identity trivia */ " + identity + ")";',
+].join("\n");
+
+function dynamicParenthesizedIdentitySource(construction: "template" | "binary"): string {
+  const lines: string[] = [];
+  let index = 0;
+
+  for (const utility of IDENTITY_COLOR_UTILITY_SPELLINGS) {
+    for (const variable of IDENTITY_VARIABLES) {
+      const identity = `identity${index}`;
+      lines.push(`const ${identity} = "--${variable}";`);
+
+      if (construction === "template") {
+        lines.push(`export const direct${index} = \`${utility}-(\${${identity}})\`;`);
+        lines.push(`export const typed${index} = \`${utility}-(color:\${${identity}})\`;`);
+        lines.push(
+          `export const typedTrivia${index} = \`${utility}-(color: /* identity trivia */ \${${identity}})\`;`,
+        );
+      } else {
+        lines.push(`export const direct${index} = "${utility}-(" + ${identity} + ")";`);
+        lines.push(`export const typed${index} = "${utility}-(color:" + ${identity} + ")";`);
+        lines.push(
+          `export const typedTrivia${index} = "${utility}-(color: /* identity trivia */ " + ${identity} + ")";`,
+        );
+      }
+
+      index += 1;
+    }
+  }
+
+  return lines.join("\n");
+}
+
+const DYNAMIC_PARENTHESIZED_IDENTITY_FORM_COUNT =
+  IDENTITY_COLOR_UTILITY_SPELLINGS.length * IDENTITY_VARIABLES.length * 3;
+const DYNAMIC_PARENTHESIZED_IDENTITY_TEMPLATE_SOURCE =
+  dynamicParenthesizedIdentitySource("template");
+const DYNAMIC_PARENTHESIZED_IDENTITY_BINARY_SOURCE =
+  dynamicParenthesizedIdentitySource("binary");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -224,6 +281,44 @@ describe("semantic visual-role lint", () => {
 
     expect(templateMessages).toHaveLength(3);
     expect(literalMessages).toHaveLength(2);
+  });
+
+  it("rejects fully dynamic custom-property names through template and binary paths", async () => {
+    const templateMessages = await visualRoleMessages(
+      FULLY_DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE,
+      "src/components/ui/IdentityFullyDynamicTemplateLeak.tsx",
+    );
+    const binaryMessages = await visualRoleMessages(
+      FULLY_DYNAMIC_CUSTOM_PROPERTY_BINARY_SOURCE,
+      "src/components/ui/IdentityFullyDynamicBinaryLeak.tsx",
+    );
+
+    expect(templateMessages).toHaveLength(6);
+    expect(binaryMessages).toHaveLength(5);
+  });
+
+  it.each([
+    ["template literals", DYNAMIC_PARENTHESIZED_IDENTITY_TEMPLATE_SOURCE],
+    ["binary expressions", DYNAMIC_PARENTHESIZED_IDENTITY_BINARY_SOURCE],
+  ])(
+    "rejects every fully dynamic direct, typed, and trivia parenthesized form in %s",
+    async (_construction, source) => {
+      const roleMessages = await visualRoleMessages(
+        source,
+        "src/components/ui/IdentityDynamicParenthesizedLeak.tsx",
+      );
+
+      expect(roleMessages).toHaveLength(DYNAMIC_PARENTHESIZED_IDENTITY_FORM_COUNT);
+    },
+  );
+
+  it("keeps the ButlerMark exemption limited to its canonical component", async () => {
+    const roleMessages = await visualRoleMessages(
+      FULLY_DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE,
+      "src/components/ui/ButlerMark.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
   });
 
   it("keeps the canonical ButlerMark exemption narrow", async () => {

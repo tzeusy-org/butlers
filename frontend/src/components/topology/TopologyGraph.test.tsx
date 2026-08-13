@@ -30,6 +30,11 @@ const DASHBOARD_VISIBILITY_SPEC = readFileSync(
   resolve(process.cwd(), "../openspec/specs/dashboard-visibility/spec.md"),
   "utf8",
 );
+const STATE_COLOR_BY_TONE = {
+  green: "var(--green)",
+  amber: "var(--amber)",
+  red: "var(--red)",
+} as const;
 
 // ---------------------------------------------------------------------------
 // Mock @xyflow/react -- render nodes as plain DOM elements carrying their
@@ -105,15 +110,43 @@ describe("TopologyGraph -- canonical liveness tone coloring", () => {
     expect(html).toContain("var(--dim)");
   });
 
-  it("keeps Switchboard neutral while applying its canonical tone to foreground and border", () => {
-    const html = render({
-      butlers: [{ name: "switchboard", status: "ok", tone: "green" }],
-    });
-    const nodeMatch = html.match(/<div data-testid="node-switchboard"[^>]*>/);
-    expect(nodeMatch).not.toBeNull();
-    expect(nodeMatch![0]).toContain("background:var(--bg-deep)");
-    expect(nodeMatch![0]).toContain("var(--green)");
-    expect(nodeMatch![0]).toContain("border:2px solid var(--green)");
+  it("keeps every topology liveness node on a neutral surface while applying canonical tone to its foreground or border", () => {
+    for (const tone of ["green", "amber", "red"] as const) {
+      const stateColor = STATE_COLOR_BY_TONE[tone];
+      const connectorLiveness =
+        tone === "green" ? "online" : tone === "amber" ? "stale" : "offline";
+      const html = render({
+        butlers: [
+          { name: "switchboard", status: "ok", tone },
+          { name: "heartbeat", status: "ok", tone },
+          { name: "general", status: "ok", tone },
+        ],
+        connectors: [
+          {
+            connector_type: "gmail",
+            endpoint_identity: "user@example.com",
+            liveness: connectorLiveness,
+          },
+        ],
+      });
+
+      for (const [nodeName, neutralBackground] of [
+        ["switchboard", "var(--bg-deep)"],
+        ["heartbeat", "var(--bg-deep)"],
+        ["general", "var(--bg-deep)"],
+        ["connector-gmail-user@example.com", "var(--bg)"],
+      ]) {
+        const nodeMatch = html.match(new RegExp(`<div data-testid="node-${nodeName}"[^>]*>`));
+        expect(nodeMatch).not.toBeNull();
+        expect(nodeMatch![0]).toContain(`background:${neutralBackground}`);
+        expect(nodeMatch![0]).toContain(stateColor);
+        expect(nodeMatch![0]).toContain("border:2px");
+        expect(nodeMatch![0]).not.toContain(`background:${stateColor}`);
+      }
+
+      const heartbeatMatch = html.match(/<div data-testid="node-heartbeat"[^>]*>/);
+      expect(heartbeatMatch![0]).toContain(`border:2px dashed ${stateColor}`);
+    }
   });
 
   it("falls back to the legacy status-string color when tone is absent", () => {
@@ -146,8 +179,11 @@ describe("TopologyGraph -- legend", () => {
   });
 
   it("keeps the topology requirement aligned with State Color Discipline", () => {
-    expect(DASHBOARD_VISIBILITY_SPEC).toContain("neutral background");
+    expect(DASHBOARD_VISIBILITY_SPEC).toContain("every topology node retains a neutral background");
     expect(DASHBOARD_VISIBILITY_SPEC).toContain("state-colored border and foreground");
+    expect(DASHBOARD_VISIBILITY_SPEC).toContain(
+      "Switchboard and Heartbeat nodes retain a neutral background",
+    );
     expect(DASHBOARD_VISIBILITY_SPEC).not.toContain(
       "Switchboard node's background is the status color",
     );

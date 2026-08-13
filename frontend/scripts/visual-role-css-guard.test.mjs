@@ -116,6 +116,27 @@ describe("visual-role CSS custom-property grammar", () => {
     expect(references(`border-${DYNAMIC_VALUE_MARKER}`)).toEqual([]);
   });
 
+  it("fails closed when a recognized custom-property value is wholly dynamic", () => {
+    expect(references(`var(${DYNAMIC_VALUE_MARKER})`)).toEqual([
+      { form: "css-var", property: "", ambiguous: true },
+    ]);
+    expect(references(`var(/* identity trivia */ ${DYNAMIC_VALUE_MARKER})`)).toEqual([
+      { form: "css-var", property: "", ambiguous: true },
+    ]);
+
+    for (const utility of TAILWIND_COLOR_UTILITY_SPELLINGS) {
+      expect(references(`${utility}-(${DYNAMIC_VALUE_MARKER})`)).toEqual([
+        { form: "tailwind-parenthesized", property: "", ambiguous: true },
+      ]);
+      expect(references(`${utility}-(color:${DYNAMIC_VALUE_MARKER})`)).toEqual([
+        { form: "tailwind-parenthesized", property: "", ambiguous: true },
+      ]);
+      expect(
+        references(`${utility}-(color: /* identity trivia */ ${DYNAMIC_VALUE_MARKER})`),
+      ).toEqual([{ form: "tailwind-parenthesized", property: "", ambiguous: true }]);
+    }
+  });
+
   it("preserves semantic-role and out-of-range custom properties", () => {
     expect(references("var(--categorical-1)")).toEqual([]);
     expect(references("bg-(color:--categorical-1)")).toEqual([]);

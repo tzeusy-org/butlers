@@ -358,7 +358,7 @@ The `TopologyGraph` component SHALL render a force-directed graph of butler node
 - **THEN** its state border or foreground is red (`--red`)
 - **WHEN** status is "degraded"
 - **THEN** its state border or foreground is amber (`--amber`)
-- **AND** the Switchboard node retains a neutral background and exposes its live state through a state-colored border and foreground; other ordinary butlers have dark backgrounds with colored borders
+- **AND** every topology node retains a neutral background and exposes live state only through a state-colored border, foreground, or compact `StateDot`; the Switchboard and Heartbeat nodes retain a neutral background with state-colored border and foreground, while other ordinary butlers have dark backgrounds with colored borders
 
 #### Scenario: Edge visualization
 - **WHEN** the Switchboard butler is present

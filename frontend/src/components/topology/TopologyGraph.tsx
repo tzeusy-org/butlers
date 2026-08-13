@@ -115,14 +115,15 @@ function buildNodes(
 
   // Heartbeat node: top-right
   if (heartbeat) {
+    const stateColor = getStatusColor(heartbeat.status, heartbeat.tone);
     nodes.push({
       id: heartbeat.name,
       position: { x: 550, y: 50 },
       data: { label: heartbeat.name },
       style: {
-        background: getStatusColor(heartbeat.status, heartbeat.tone),
-        color: "white",
-        border: "2px dashed var(--dim)",
+        background: "var(--bg-deep)",
+        color: stateColor,
+        border: `2px dashed ${stateColor}`,
         borderRadius: "50%",
         padding: "12px",
         fontWeight: 600,

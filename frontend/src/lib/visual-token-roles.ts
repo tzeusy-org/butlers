@@ -15,15 +15,34 @@ const STATE_TOKENS = [
   "--muted-foreground",
 ] as const;
 
-const LOCAL_CATEGORY_TOKENS = Array.from(
-  { length: 12 },
-  (_, index) => `--categorical-${index + 1}`,
-);
+// Keep semantic role values literal. The visual-role guard deliberately
+// rejects dynamically assembled var(...) references outside ButlerMark, even
+// when their eventual property is a semantic role.
+const LOCAL_CATEGORY_VALUES = [
+  "var(--categorical-1)",
+  "var(--categorical-2)",
+  "var(--categorical-3)",
+  "var(--categorical-4)",
+  "var(--categorical-5)",
+  "var(--categorical-6)",
+  "var(--categorical-7)",
+  "var(--categorical-8)",
+  "var(--categorical-9)",
+  "var(--categorical-10)",
+  "var(--categorical-11)",
+  "var(--categorical-12)",
+];
 
-const CHART_SERIES_TOKENS = Array.from(
-  { length: 5 },
-  (_, index) => `--chart-${index + 1}`,
-);
+const CHART_SERIES_VALUES = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+];
+
+const LOCAL_CATEGORY_TOKENS = LOCAL_CATEGORY_VALUES.map((value) => value.slice(4, -1));
+const CHART_SERIES_TOKENS = CHART_SERIES_VALUES.map((value) => value.slice(4, -1));
 
 export const VISUAL_TOKEN_ROLE_REGISTRY = {
   state: {
@@ -32,10 +51,12 @@ export const VISUAL_TOKEN_ROLE_REGISTRY = {
   },
   "local-category": {
     tokens: LOCAL_CATEGORY_TOKENS,
+    values: LOCAL_CATEGORY_VALUES,
     legendRequired: true,
   },
   "chart-series": {
     tokens: CHART_SERIES_TOKENS,
+    values: CHART_SERIES_VALUES,
     legendRequired: true,
   },
   "owner-custom-color": {
@@ -90,9 +111,9 @@ export function visualRoleToken(
   role: "local-category" | "chart-series",
   index: number,
 ): string {
-  const tokens = VISUAL_TOKEN_ROLE_REGISTRY[role].tokens;
-  const slot = ((index % tokens.length) + tokens.length) % tokens.length;
-  return `var(${tokens[slot]})`;
+  const values = VISUAL_TOKEN_ROLE_REGISTRY[role].values;
+  const slot = ((index % values.length) + values.length) % values.length;
+  return values[slot]!;
 }
 
 /** Resolve a local taxonomy value through the non-identity categorical ramp. */
