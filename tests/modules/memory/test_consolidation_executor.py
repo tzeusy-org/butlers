@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from butlers.modules.memory.consolidation_parser import (
     NewFact,
     NewRule,
     UpdatedFact,
+    parse_consolidation_output,
 )
 
 pytestmark = pytest.mark.unit
@@ -215,13 +217,24 @@ async def test_execute_consolidation_forwards_new_narrative_edge_target(monkeypa
     assert result["facts_created"] == 1
     assert stored_kwargs[0]["entity_id"] == subject_entity_id
     assert stored_kwargs[0]["object_entity_id"] == object_entity_id
+    assert stored_kwargs[0]["enforce_consolidation_edge_allowlist"] is True
+    assert stored_kwargs[0]["consolidation_edge_classification"] == "planned_dinner_with"
 
 
 @pytest.mark.asyncio
-async def test_execute_consolidation_rejects_registry_relational_edge(monkeypatch) -> None:
-    store_fact_mock = AsyncMock(
-        return_value={"id": uuid.uuid4(), "supersedes_id": None},
-    )
+async def test_execute_consolidation_defers_unapproved_edge_to_storage_boundary(
+    monkeypatch,
+) -> None:
+    object_entity_id = uuid.uuid4()
+
+    async def _store_fact(*args, **kwargs):
+        assert kwargs["predicate"] == "works_at"
+        assert kwargs["object_entity_id"] == object_entity_id
+        assert kwargs["enforce_consolidation_edge_allowlist"] is True
+        assert kwargs["consolidation_edge_classification"] is None
+        raise ValueError("consolidation edge predicate is not owner-approved")
+
+    store_fact_mock = AsyncMock(side_effect=_store_fact)
     monkeypatch.setattr(consolidation_executor, "store_fact", store_fact_mock)
     monkeypatch.setattr(
         consolidation_executor,
@@ -236,7 +249,7 @@ async def test_execute_consolidation_rejects_registry_relational_edge(monkeypatc
                 predicate="works_at",
                 content="engineer",
                 entity_id=str(uuid.uuid4()),
-                object_entity_id=str(uuid.uuid4()),
+                object_entity_id=str(object_entity_id),
             )
         ],
     )
@@ -251,7 +264,67 @@ async def test_execute_consolidation_rejects_registry_relational_edge(monkeypatc
 
     assert result["facts_created"] == 0
     assert result["errors"] == ["Failed to store new fact (person/works_at)"]
-    store_fact_mock.assert_not_awaited()
+    store_fact_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        ["planned_dinner_with"],
+        {"name": "planned_dinner_with"},
+    ),
+    ids=("json-list", "json-object"),
+)
+async def test_execute_consolidation_defers_structured_edge_predicate_to_storage_boundary(
+    monkeypatch,
+    predicate: object,
+) -> None:
+    object_entity_id = uuid.uuid4()
+    parsed = parse_consolidation_output(
+        json.dumps(
+            {
+                "new_facts": [
+                    {
+                        "subject": "person",
+                        "predicate": predicate,
+                        "content": "coordination context",
+                        "entity_id": str(uuid.uuid4()),
+                        "object_entity_id": str(object_entity_id),
+                    }
+                ]
+            }
+        )
+    )
+    assert parsed.parse_errors == []
+    assert parsed.new_facts[0].predicate == predicate
+
+    async def _store_fact(*args, **kwargs):
+        assert kwargs["predicate"] == predicate
+        assert kwargs["object_entity_id"] == object_entity_id
+        assert kwargs["enforce_consolidation_edge_allowlist"] is True
+        assert kwargs["consolidation_edge_classification"] is None
+        raise ValueError("consolidation edge classification is unavailable")
+
+    store_fact_mock = AsyncMock(side_effect=_store_fact)
+    monkeypatch.setattr(consolidation_executor, "store_fact", store_fact_mock)
+    monkeypatch.setattr(
+        consolidation_executor,
+        "_lookup_episode_ttl_days",
+        AsyncMock(return_value=7),
+    )
+
+    result = await consolidation_executor.execute_consolidation(
+        pool=object(),
+        embedding_engine=object(),
+        parsed=parsed,
+        source_episode_ids=[],
+        butler_name="relationship",
+    )
+
+    assert result["facts_created"] == 0
+    assert result["errors"] == [f"Failed to store new fact (person/{predicate})"]
+    store_fact_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

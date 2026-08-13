@@ -65,11 +65,13 @@ Respond with a JSON block:
   entities. Include `object_entity_id` set to the UUID of the target entity.
   - Example: `{"subject": "Alice", "predicate": "planned_dinner_with", "content": "dinner next Friday", "object_entity_id": "<uuid of Bob>"}`
 
+**Only these predicates may carry `object_entity_id`: `planned_dinner_with`, `wake_coordination`, `social_exchange_with`.**
+
 **When to emit narrative edge-facts:**
 - The fact describes episodic or coordination context between two known entities
 - Both the subject entity and the object entity have been resolved to entity IDs
-- Predicates like `planned_dinner_with`, `wake_coordination`, and
-  `social_exchange_with` are appropriate narrative edges
+- The predicate is one of the exact v1 allowlist above; omit the edge extraction
+  rather than inventing a new relationship predicate
 
 **Registry-relational edges are not memory facts:**
 - Do not emit structural relationship predicates such as `works_at`, `friend_of`,

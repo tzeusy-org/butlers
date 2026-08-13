@@ -158,6 +158,56 @@ _TYPE_TABLE: dict[str, str] = {
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+# ---------------------------------------------------------------------------
+# Consolidation-only narrative-edge boundary
+# ---------------------------------------------------------------------------
+#
+# New consolidation output has a deliberately narrower edge vocabulary than
+# the generic memory writer. The owner-approved v1 list stays local to the
+# memory storage boundary: it is not a relationship-registry lookup and does
+# not change ordinary ``store_fact`` admission.
+_CONSOLIDATION_NARRATIVE_EDGE_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "planned_dinner_with",
+        "wake_coordination",
+        "social_exchange_with",
+    }
+)
+
+
+def classify_consolidation_narrative_edge(predicate: object) -> str | None:
+    """Classify an exact owner-approved consolidation edge, or return ``None``.
+
+    This intentionally performs no database or relationship-registry read. A
+    newly introduced narrative edge needs an explicit owner-approved change
+    before it can carry ``object_entity_id`` during consolidation. Non-string
+    values remain unclassified so the storage boundary rejects them before any
+    persistence work begins.
+    """
+    if not isinstance(predicate, str):
+        return None
+    if predicate in _CONSOLIDATION_NARRATIVE_EDGE_ALLOWLIST:
+        return predicate
+    return None
+
+
+def _validate_consolidation_narrative_edge(
+    predicate: str,
+    classification: str | None,
+) -> None:
+    """Reject an unclassified or disallowed consolidation edge before persistence."""
+    if classification is None:
+        raise ValueError(
+            "Consolidation edge classification is unavailable; refusing to persist "
+            f"object_entity_id for predicate {predicate!r}"
+        )
+    if classification != predicate or classification not in _CONSOLIDATION_NARRATIVE_EDGE_ALLOWLIST:
+        raise ValueError(
+            f"Consolidation edge predicate {predicate!r} is not owner-approved for "
+            "object_entity_id persistence"
+        )
+
+
 def _memory_relation(memory_type: str, memory_schema: str | None = None) -> str:
     """Return a memory table relation, optionally pinned to its owning schema.
 
@@ -1338,6 +1388,8 @@ async def store_fact(
     sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
+    enforce_consolidation_edge_allowlist: bool = False,
+    consolidation_edge_classification: str | None = None,
 ) -> dict:
     """Store a distilled fact with optional supersession.
 
@@ -1404,6 +1456,12 @@ async def store_fact(
         source_schema: The butler schema name used as ``source_schema`` in the
             catalog row (e.g. ``'health'``).  Required when
             ``enable_shared_catalog=True``; ignored otherwise.
+        enforce_consolidation_edge_allowlist: Restrict an edge emitted by the
+            consolidation executor to the owner-approved local narrative
+            allowlist. Generic callers retain the default ``False`` behavior.
+        consolidation_edge_classification: The executor's local classification
+            for a consolidation edge. A missing or mismatched classification
+            is rejected before any storage work begins.
 
     Returns:
         A dict with:
@@ -1413,6 +1471,9 @@ async def store_fact(
           dicts of registered predicates similar to the novel predicate, or absent
           when the predicate was found in the registry or no close matches exist.
     """
+    if enforce_consolidation_edge_allowlist and object_entity_id is not None:
+        _validate_consolidation_narrative_edge(predicate, consolidation_edge_classification)
+
     fact_id = uuid.uuid4()
     searchable = f"{subject} {predicate} {content}"
     embedding = embedding_engine.embed(searchable)

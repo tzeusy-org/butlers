@@ -217,3 +217,98 @@ class TestStoreEpisode:
         assert result == existing_id
         assert conn.execute.await_count == 1
         assert "UPDATE episodes" in conn.execute.await_args.args[0]
+
+
+class TestConsolidationNarrativeEdgeBoundary:
+    @pytest.mark.parametrize(
+        "predicate",
+        ("planned_dinner_with", "wake_coordination", "social_exchange_with"),
+    )
+    def test_classifies_only_owner_approved_v1_predicates(self, predicate: str) -> None:
+        assert storage.classify_consolidation_narrative_edge(predicate) == predicate
+        assert storage.classify_consolidation_narrative_edge("co_hosted") is None
+
+    @pytest.mark.parametrize(
+        "predicate",
+        (
+            "is_planned_dinner_with",
+            "planned-dinner-with",
+            "planned dinner with",
+        ),
+    )
+    def test_classification_rejects_non_exact_allowlist_aliases(self, predicate: str) -> None:
+        assert storage.classify_consolidation_narrative_edge(predicate) is None
+
+    @pytest.mark.parametrize(
+        "predicate",
+        (
+            ["planned_dinner_with"],
+            {"name": "planned_dinner_with"},
+        ),
+        ids=("json-list", "json-object"),
+    )
+    async def test_direct_storage_fails_closed_for_structured_predicate(
+        self,
+        predicate: object,
+    ) -> None:
+        pool = MagicMock()
+        engine = MagicMock()
+
+        classification = storage.classify_consolidation_narrative_edge(predicate)
+
+        assert classification is None
+        with pytest.raises(ValueError, match="classification.*unavailable"):
+            await storage.store_fact(
+                pool,
+                subject="Alice",
+                predicate=predicate,
+                content="Dinner next Friday",
+                embedding_engine=engine,
+                entity_id=uuid.uuid4(),
+                object_entity_id=uuid.uuid4(),
+                enforce_consolidation_edge_allowlist=True,
+                consolidation_edge_classification=classification,
+            )
+
+        engine.embed.assert_not_called()
+        pool.acquire.assert_not_called()
+
+    async def test_direct_storage_fails_closed_for_unavailable_edge_classification(self) -> None:
+        pool = MagicMock()
+        engine = MagicMock()
+
+        with pytest.raises(ValueError, match="classification.*unavailable"):
+            await storage.store_fact(
+                pool,
+                subject="Alice",
+                predicate="planned_dinner_with",
+                content="Dinner next Friday",
+                embedding_engine=engine,
+                entity_id=uuid.uuid4(),
+                object_entity_id=uuid.uuid4(),
+                enforce_consolidation_edge_allowlist=True,
+                consolidation_edge_classification=None,
+            )
+
+        engine.embed.assert_not_called()
+        pool.acquire.assert_not_called()
+
+    async def test_direct_storage_rejects_a_mismatched_edge_classification(self) -> None:
+        pool = MagicMock()
+        engine = MagicMock()
+
+        with pytest.raises(ValueError, match="not owner-approved"):
+            await storage.store_fact(
+                pool,
+                subject="Alice",
+                predicate="co_hosted",
+                content="Co-hosted a podcast",
+                embedding_engine=engine,
+                entity_id=uuid.uuid4(),
+                object_entity_id=uuid.uuid4(),
+                enforce_consolidation_edge_allowlist=True,
+                consolidation_edge_classification="planned_dinner_with",
+            )
+
+        engine.embed.assert_not_called()
+        pool.acquire.assert_not_called()

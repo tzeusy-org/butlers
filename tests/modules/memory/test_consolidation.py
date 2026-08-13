@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -16,6 +17,7 @@ import pytest
 from tests.modules.memory._test_helpers import MEMORY_MODULE_PATH
 
 _PARSER_PATH = MEMORY_MODULE_PATH / "consolidation_parser.py"
+_CONSOLIDATION_SKILL_PATH = MEMORY_MODULE_PATH / "skills/consolidate/SKILL.md"
 
 
 def _load_parser():
@@ -167,6 +169,29 @@ class TestValidParsing:
         assert result.new_facts == []
         assert result.parse_errors == ["Skipping new_fact: invalid object_entity_id"]
 
+    @pytest.mark.parametrize(
+        "predicate",
+        ("planned_dinner_with", "wake_coordination", "social_exchange_with"),
+    )
+    def test_owner_approved_narrative_edge_predicates_parse(self, predicate: str) -> None:
+        payload = {
+            "new_facts": [
+                {
+                    "subject": "person",
+                    "predicate": predicate,
+                    "content": "Narrative coordination context",
+                    "entity_id": UUID1,
+                    "object_entity_id": UUID2,
+                }
+            ]
+        }
+
+        result = parse(_json(payload))
+
+        assert result.parse_errors == []
+        assert result.new_facts[0].predicate == predicate
+        assert result.new_facts[0].object_entity_id == UUID2
+
     def test_temporal_fact_timestamp_with_surrounding_whitespace_is_parsed(self) -> None:
         payload = {
             "new_facts": [
@@ -212,6 +237,18 @@ class TestValidParsing:
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
+
+
+def test_consolidation_skill_names_the_exact_v1_narrative_edge_allowlist() -> None:
+    skill = _CONSOLIDATION_SKILL_PATH.read_text(encoding="utf-8")
+    match = re.search(r"Only these predicates may carry `object_entity_id`: (.+)", skill)
+
+    assert match is not None
+    assert set(re.findall(r"`([^`]+)`", match.group(1))) == {
+        "planned_dinner_with",
+        "wake_coordination",
+        "social_exchange_with",
+    }
 
 
 class TestErrorHandling:

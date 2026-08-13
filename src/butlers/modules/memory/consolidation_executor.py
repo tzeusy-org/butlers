@@ -33,15 +33,11 @@ from butlers.modules.memory.consolidation_parser import ConsolidationResult
 from butlers.modules.memory.storage import (
     StaleSupersessionTargetError,
     _lookup_episode_ttl_days,
+    classify_consolidation_narrative_edge,
     confirm_memory,
     create_link,
     store_fact,
     store_rule,
-)
-from butlers.modules.memory.tools.writing import (
-    is_relational_registry_predicate,
-    normalize_predicate,
-    refresh_relational_registry_predicates,
 )
 
 if TYPE_CHECKING:
@@ -409,18 +405,11 @@ async def execute_consolidation(
             fact_object_entity_id = (
                 uuid.UUID(fact.object_entity_id) if fact.object_entity_id else None
             )
-            if fact_object_entity_id is not None:
-                normalized_predicate = normalize_predicate(fact.predicate)
-                relational_predicates = await refresh_relational_registry_predicates(pool)
-                if is_relational_registry_predicate(
-                    normalized_predicate,
-                    relational_predicates,
-                ):
-                    raise ValueError(
-                        f"Registry-relational predicate {fact.predicate!r} is out of scope "
-                        "for memory consolidation edge-facts; use "
-                        "relationship_assert_fact(object_kind='entity')"
-                    )
+            consolidation_edge_classification = (
+                classify_consolidation_narrative_edge(fact.predicate)
+                if fact_object_entity_id is not None
+                else None
+            )
             if fact_entity_id is None:
                 logger.warning(
                     "Consolidation: new fact %s/%s has no entity_id — "
@@ -448,6 +437,8 @@ async def execute_consolidation(
                     request_id=request_id,
                     enable_shared_catalog=enable_shared_catalog,
                     source_schema=source_schema,
+                    enforce_consolidation_edge_allowlist=fact_object_entity_id is not None,
+                    consolidation_edge_classification=consolidation_edge_classification,
                 )
                 return store_result["id"]
 

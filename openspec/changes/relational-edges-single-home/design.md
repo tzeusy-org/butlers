@@ -104,13 +104,45 @@ New script under `src/butlers/scripts/` mirroring the safety posture of
   `relationship_assert_fact()` (same shape as the existing identity-contact
   rejection).
 - **Consolidation producer guard** (`memory/skills/consolidate/SKILL.md` and
-  `consolidation_executor.py`): emit and persist `object_entity_id` only for
-  narrative edges. Reject registry-relational edge output before the executor
-  reaches the lower-level memory storage function, and reject malformed target
-  UUIDs rather than silently downgrading an edge to a property fact.
+  `consolidation_executor.py`): retain well-formed `object_entity_id` output
+  and reject malformed target UUIDs rather than silently downgrading an edge to
+  a property fact. The executor forwards every well-formed edge to the storage
+  boundary, where B6's exact local narrative allowlist is the authoritative
+  admission decision before persistence.
 - **Contract test**: every edge predicate used in the skill is a subset of the
   relational registry (or on an explicit narrative allowlist). This is the
   guard that would have caught the original drift.
+
+### Consolidation-only v1 narrative-edge admission amendment
+
+This amendment narrows only the **new-consolidation** producer. It does not
+replace the generic memory-writer boundary above, re-open Track B5, or grant
+the memory module access to the relationship registry.
+
+When a parsed `NewFact` carries `object_entity_id`, the consolidation executor
+marks the write as a consolidation edge and the storage boundary classifies its
+literal predicate against this immutable v1 local allowlist:
+
+```text
+planned_dinner_with
+wake_coordination
+social_exchange_with
+```
+
+The storage boundary persists the edge only if the classification is available
+and matches that exact list. A missing classification, an unlisted predicate,
+or an unavailable classifier is a `ValueError` before that artifact can insert
+a fact or evidence link. The executor treats that as a failed new-fact action
+through its existing error reporting; it keeps exact evidence validation,
+tenant scoping, idempotence, retry/lease fencing, and terminal lifecycle rules
+unchanged.
+
+The allowlist is deliberately local and versioned in `storage.py`: this path
+does not query `relationship.entity_predicate_registry`, write
+`relationship.entity_facts`, or turn generic `memory_store_fact()` into a
+global graph-policy gate. New narrative predicates require a future explicit
+OpenSpec/owner decision rather than being admitted by registry-read success or
+by an unknown-predicate fallback.
 
 ## quick_facts deprecation
 
@@ -132,5 +164,8 @@ already has `company`/`job_title` columns.
   (leave-as-narrative when ambiguous, logged).
 - **Skill change without writer guard re-introduces drift.** Both ship together;
   the contract test fails CI if they diverge.
+- **An unknown consolidation edge becomes silently durable.** Mitigated by the
+  exact local allowlist at the storage boundary; unavailable classification is
+  rejected before persistence rather than treated as a generic narrative fact.
 - **vCard regression on ORG/TITLE.** Covered by vcard round-trip tests updated
   to assert `public.contacts` is the source.
