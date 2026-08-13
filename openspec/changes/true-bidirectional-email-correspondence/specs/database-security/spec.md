@@ -21,6 +21,18 @@ fixed zero-LLM Relationship `dispatch_mode="job"` batch specified in the
 Relationship contract, never a public tool, dashboard route, Switchboard route,
 scheduled prompt, or LLM session.
 
+The grant boundary is not application convention: it depends on scheduler-level
+protected-job enforcement for `email_correspondence_enrichment` as well as the
+database ACL.  Future implementation SHALL reject generic interactive
+`schedule_trigger` before dispatch and `schedule_create`/`schedule_update` before
+persistence unless the request is trusted synchronization of the exact protected
+`source='toml'` configuration identity.  That policy prevents runtime copies,
+aliases, and cron/mode/argument mutation from turning the narrow reader into an
+interactive route; it leaves the fixed TOML schedule and due system tick intact.
+Each denial is an auditable bounded category with content-free metrics/security
+audit data, and any durable enforcement metadata remains migration-managed and
+reversible.
+
 The only Switchboard SQL write paths into private correspondence storage are two
 separate fixed Messenger-owned `SECURITY DEFINER` functions.  The ingress
 projection function is

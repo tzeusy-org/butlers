@@ -331,6 +331,25 @@ The security-definer grants are database-enforced narrow reader grants only;
 migration-managed installation and the scheduled job do not authorize a general
 Relationship query capability.
 
+The fixed TOML declaration is necessary but not sufficient because Relationship
+already exposes generic scheduling tools.  Future implementation SHALL define a
+scheduler-level protected-job registry keyed by the normalized canonical
+Relationship identity: `source='toml'`,
+`name="email-correspondence-enrichment"`, `cron="35 6 * * *"`,
+`dispatch_mode="job"`, `job_name="email_correspondence_enrichment"`, and the
+configuration-declared job arguments.  The shared scheduler must consult it in
+`src/butlers/core_tools/_scheduling.py::schedule_trigger` before dispatch and in
+`src/butlers/core/scheduler.py::schedule_create` and `schedule_update` before
+persistence.  Generic callers must not trigger the protected row, create a
+runtime copy or alias, mutate its cron/mode/name/arguments, or convert another
+row into the protected identity.  Trusted TOML synchronization and the due
+system scheduler tick remain the sole permitted invocation paths.  The future
+implementation returns a bounded auditable rejection category and emits a
+content-free metric/security audit event for each denied generic attempt.  The
+policy is configuration-owned; any durable enforcement metadata or constraint
+must be migration-managed, reversible, and auditable.  This plan does not
+implement that scheduler behavior or grant operational authority.
+
 The cost case is bounded and explicit.  The compliant per-entity Switchboard
 MCP fan-out would use one Relationship LLM session plus up to 100 Messenger LLM
 response sessions for a maximum 100-ID batch, or up to 101 LLM sessions per
@@ -590,7 +609,19 @@ the staffer's no-autonomous-behavior posture.
    dashboard/API endpoint, Switchboard route, scheduled prompt, or LLM-session
    caller.  Preserve the existing unresolved-sender discovery/proposal job
    unchanged and inbound-only.
-3. Add tests for same authenticated account+peer positive evidence; different or
+3. Before the job can be registered, add a scheduler-level protected-job registry
+   keyed by its canonical Relationship `source='toml'` schedule identity:
+   `name="email-correspondence-enrichment"`, `cron="35 6 * * *"`, job mode,
+   `job_name="email_correspondence_enrichment"`, and config-declared arguments.
+   The generic `schedule_trigger` seam rejects it before dispatch;
+   `schedule_create` rejects runtime copies/aliases and `schedule_update` rejects
+   cron, mode, name, or argument mutation and attempts to adopt that identity
+   before persistence.  Only TOML synchronization and the due system tick may
+   dispatch it.  Return an auditable bounded rejection category and emit only
+   content-free metrics/security audit data; keep the policy configuration-owned
+   and make any durable enforcement metadata or constraint migration-managed and
+   reversible.
+4. Add tests for same authenticated account+peer positive evidence; different or
    envelope-only account; inactive/retracted fact; inferred/newer-than-evidence/
    expired/revoked alias rejection; inbound-only and outbound-only cases; no-peer
    null; alias-only and literal-plus-active-alias null absent true; newly minted,
@@ -601,8 +632,12 @@ the staffer's no-autonomous-behavior posture.
    re-auth/rebind/principal-mismatch closure; 180-day boundaries for every private
    record; and zero materialization of raw values.  Add source-level registry and
    TOML tests for the exact job, cron, callable handler, zero-LLM no-public-path
-   boundary, plus the static packet contract that protects RFC 0010's
-   database-enforced narrow reader and migration auditability.
+   boundary.  Add scheduler regressions proving generic `schedule_trigger`,
+   `schedule_create`, and `schedule_update` reject the protected identity before
+   dispatch/persistence while configuration sync and due tick still work, with
+   bounded audit/metric evidence.  Extend the static packet contract to protect
+   RFC 0010's database-enforced narrow reader, protected scheduler admission, and
+   migration auditability.
 
 ### Phase 6 - maintenance, documentation, and rollout
 

@@ -387,25 +387,44 @@ This exception is permitted only while all RFC 0010 reuse criteria remain true:
    `butler_relationship_rw` execute grant, and absence of any raw-table grant
    are a database-enforced narrow reader.  They are not application convention
    or a grant to enumerate Messenger data.
-2. **Fixed scheduled batch.** The sole aggregate consumer SHALL be the
-   deterministic `email_correspondence_enrichment` job.  Future implementation
-   SHALL register its Relationship wrapper in `src/butlers/scheduled_jobs.py`
-   and declare exactly one daily `35 6 * * *` schedule in
-   `roster/relationship/butler.toml` with `dispatch_mode="job"` and
-   `job_name="email_correspondence_enrichment"`.  The job processes at most 100
-   already-resolved entity IDs per run, receives no prompt, and has zero-LLM
-   behavior.
+2. **Fixed protected scheduled batch.** The sole aggregate consumer SHALL be
+   the deterministic `email_correspondence_enrichment` job.  Future
+   implementation SHALL register its Relationship wrapper in
+   `src/butlers/scheduled_jobs.py` and declare exactly one daily `35 6 * * *`
+   schedule in `roster/relationship/butler.toml` with
+   `dispatch_mode="job"` and `job_name="email_correspondence_enrichment"`.
+   The canonical protected identity is the normalized tuple of Relationship,
+   `source='toml'`, `name="email-correspondence-enrichment"`, that exact cron,
+   job dispatch mode, job name, and its configuration-declared job arguments.
+   The job processes at most 100 already-resolved entity IDs per run, receives no
+   prompt, and has zero-LLM behavior.  Future implementation SHALL define a
+   scheduler-level protected-job registry or allowlist for that identity;
+   deterministic handler registration alone is not authorization to run it.
 3. **No public or interactive consumer.** The exception authorizes no
    MCP/API/on-demand/interactive aggregate path: no Relationship or Messenger
    MCP tool, dashboard/API route, Switchboard route, LLM-session tool call,
-   direct human query, or scheduled prompt may invoke it.  The fixed
-   `dispatch_mode="job"` handler is its sole permitted runtime invocation.
-4. **Migration auditability and regression evidence.** The reader and its
-   grants remain migration-managed and reversible.  Migrated PostgreSQL tests
-   SHALL prove the fixed signature, ownership, ACLs, bounded output, direct
-   select denial, and failed-closed partial topology.  Source-level schedule and
-   registry tests, plus a static packet contract, SHALL prove the handler is
-   registered, the fixed cron is preserved, and no public tool path appears.
+   direct human query, or scheduled prompt may invoke it.  The scheduler-level
+   protected-job registry SHALL reject `schedule_trigger` attempts for the
+   protected identity before dispatch.  It SHALL reject `schedule_create`
+   attempts to persist a runtime or alias schedule for the protected job, and
+   `schedule_update` attempts to mutate the canonical identity or change another
+   schedule into it, before persistence.  A generic caller cannot substitute a
+   name, cron, dispatch mode, or job arguments to reach the handler.  The normal
+   configuration synchronization and scheduler tick retain the one fixed TOML
+   schedule as the only permitted system invocation.
+4. **Migration/config ownership and regression evidence.** The reader and its
+   grants remain migration-managed and reversible.  The protected identity is
+   owned by the roster configuration rather than interactive runtime CRUD; any
+   durable enforcement metadata or database constraint introduced to support it
+   SHALL also be migration-managed, reversible, and auditable.  Migrated
+   PostgreSQL tests SHALL prove the fixed signature, ownership, ACLs, bounded
+   output, direct select denial, and failed-closed partial topology.  Scheduler
+   tests and the static packet contract SHALL prove protected `schedule_trigger`,
+   `schedule_create`, and `schedule_update` rejection before dispatch or
+   persistence, while the exact TOML configuration sync and due system tick still
+   run the handler.  Each rejected generic path SHALL return an auditable
+   rejection category, emit a bounded metric and security audit event, and expose
+   no entity ID, account, peer, job arguments, or other correspondence metadata.
 5. **Concrete bounded cost case.** At the 100-entity ceiling, the compliant
    alternative is a Relationship LLM session plus up to one Messenger LLM
    response session per entity, or up to 101 LLM sessions per daily batch.  The

@@ -328,6 +328,23 @@ has no MCP/API/on-demand/interactive consumer.  No Relationship or
 Messenger MCP tool, dashboard/API endpoint, Switchboard route, scheduled prompt,
 or LLM session may invoke the aggregate.
 
+That declaration alone is insufficient because Relationship exposes generic
+scheduling tools.  Future implementation SHALL add a scheduler-level
+protected-job registry keyed by the deterministic canonical identity:
+Relationship, `source='toml'`, `name="email-correspondence-enrichment"`,
+`cron="35 6 * * *"`, `dispatch_mode="job"`,
+`job_name="email_correspondence_enrichment"`, and configuration-declared job
+arguments.  The shared scheduler seams in `src/butlers/core/scheduler.py` and
+`src/butlers/core_tools/_scheduling.py` SHALL enforce that registry: reject a
+generic `schedule_trigger` before dispatch, and reject `schedule_create` or
+`schedule_update` before persistence when a caller targets, aliases, or mutates
+the protected job.  Only trusted configuration synchronization for the fixed
+TOML schedule and its due scheduler tick may dispatch it.  The rejection is a
+bounded auditable category with a dedicated metric and security audit event; it
+must not include job arguments, entity IDs, accounts, peers, or correspondence
+metadata.  This is a future implementation seam, not a scheduler implementation
+or operational authorization in this planning change.
+
 The bounded cost comparison is explicit.  At the maximum 100 IDs, a compliant
 per-entity Switchboard MCP fan-out would require one Relationship LLM session
 plus up to 100 Messenger LLM response sessions, or up to 101 LLM sessions per

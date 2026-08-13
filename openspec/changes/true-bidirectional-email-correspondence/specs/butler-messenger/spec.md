@@ -53,7 +53,8 @@ with no gap.  Messenger SHALL expose no raw account-universe rows to Relationshi
   method that lists private ledger rows
 - **AND** the only supported consumer path is the bounded security-definer
   aggregate from the fixed Relationship deterministic scheduled job authorized by
-  the database-security contract
+  the database-security contract and admitted only by the scheduler-level
+  protected-job registry for its canonical TOML identity
 
 #### Scenario: Only the authenticated Switchboard broker can record Gmail evidence
 

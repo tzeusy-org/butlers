@@ -106,3 +106,63 @@ def test_proposal_and_design_keep_the_cost_case_bounded_and_planning_only() -> N
         "zero-LLM",
         "no MCP/API/on-demand/interactive",
     )
+
+
+def test_rfc_0023_requires_scheduler_admission_for_the_protected_job() -> None:
+    """The fixed job cannot rely on absence of a bespoke aggregate tool alone."""
+    _assert_contains(
+        "about/legends-and-lore/rfcs/0023-messenger-private-email-correspondence-ledger.md",
+        "scheduler-level protected-job registry",
+        "email_correspondence_enrichment",
+        "`schedule_trigger`",
+        "`schedule_create`",
+        "`schedule_update`",
+        "before dispatch",
+        "before persistence",
+        "`source='toml'`",
+        "auditable rejection",
+        "metric",
+    )
+
+
+def test_active_packet_binds_protected_job_admission_at_the_scheduler_seam() -> None:
+    """Future work must protect trigger, create, and update without blocking the TOML job."""
+    _assert_contains(
+        "openspec/changes/true-bidirectional-email-correspondence/specs/core-scheduler/spec.md",
+        "protected-job registry",
+        "email_correspondence_enrichment",
+        "`schedule_trigger`",
+        "`schedule_create`",
+        "`schedule_update`",
+        "before dispatch",
+        "before persistence",
+        "`source='toml'`",
+        "fixed TOML schedule",
+        "auditable rejection",
+        "metric",
+    )
+    _assert_contains(
+        "openspec/changes/true-bidirectional-email-correspondence/specs/butler-relationship/spec.md",
+        "protected-job registry",
+        "no generic interactive trigger/create/update path",
+        "fixed TOML schedule",
+    )
+    _assert_contains(
+        "openspec/changes/true-bidirectional-email-correspondence/specs/database-security/spec.md",
+        "scheduler-level protected-job enforcement",
+        "not application convention",
+    )
+    for relative_path in (
+        "openspec/changes/true-bidirectional-email-correspondence/proposal.md",
+        "openspec/changes/true-bidirectional-email-correspondence/design.md",
+        "openspec/changes/true-bidirectional-email-correspondence/tasks.md",
+        "openspec/changes/true-bidirectional-email-correspondence/implementation-plan.md",
+    ):
+        _assert_contains(
+            relative_path,
+            "protected-job registry",
+            "email_correspondence_enrichment",
+            "schedule_trigger",
+            "schedule_create",
+            "schedule_update",
+        )

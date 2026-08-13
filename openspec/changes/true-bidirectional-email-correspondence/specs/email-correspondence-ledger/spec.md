@@ -219,6 +219,13 @@ writer.  The raw source event ID SHALL not be retained.  A duplicate/retry SHALL
 return the original categorical result and SHALL NOT insert a new observation,
 replace the original server `received_at`, or refresh coverage.
 
+The bounded Relationship aggregate is callable only through the scheduler-level
+protected `email_correspondence_enrichment` identity defined by the
+configuration-owned fixed TOML schedule.  Generic interactive scheduling cannot
+trigger, create, alias, or mutate that identity; it receives only a bounded
+auditable rejection before dispatch or persistence.  This scheduler admission
+rule is independent of, and in addition to, the aggregate's database ACL.
+
 The only other qualified-ingress coverage mutation SHALL be the fixed
 `messenger.close_qualified_email_coverage(text, text, uuid, text, timestamptz)`
 function.  Its inputs are only broker-derived provider, canonical account,

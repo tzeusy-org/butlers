@@ -29,6 +29,12 @@ evidence.
   zero-LLM `email_correspondence_enrichment` `dispatch_mode="job"` consumer;
   it has no MCP/API/on-demand/interactive aggregate path and replaces an
   otherwise bounded 101-session-per-batch MCP fan-out.
+- Require a scheduler-level protected-job registry for that exact
+  `email_correspondence_enrichment` identity.  It rejects generic
+  `schedule_trigger` before dispatch and `schedule_create`/`schedule_update`
+  before persistence, so an interactive caller cannot create an alias, alter the
+  cron, or repurpose another schedule while the fixed configuration-owned TOML
+  system schedule remains runnable.
 - Make correspondence-path audit, notification, inbox, metrics, and error
   handling metadata-only from trusted pre-route candidate through admission and
   outcome; content-bearing existing stores are never evidence or a new mirror

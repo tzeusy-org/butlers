@@ -19,6 +19,20 @@ alone.  The existing
 remain inbound-only and SHALL not be relabeled or converted into correspondence
 proof.
 
+Relationship's scheduler SHALL treat that job as a protected identity rather
+than merely a registered handler.  A scheduler-level protected-job registry SHALL
+bind it to the fixed TOML schedule: `source='toml'`,
+`name="email-correspondence-enrichment"`, `cron="35 6 * * *"`, job dispatch
+mode, `job_name="email_correspondence_enrichment"`, and its configuration-declared
+arguments.  There is no generic interactive trigger/create/update path to that
+identity: generic `schedule_trigger` rejects it before dispatch, while
+`schedule_create` and `schedule_update` reject aliases, runtime copies, and
+identity mutation before persistence.  The fixed TOML schedule remains runnable
+only through trusted configuration synchronization and the due scheduler tick.
+Each rejection is bounded and auditable through content-free metrics/security
+audit data; this policy does not expose the aggregate, raw ledger data, or an
+interactive override.
+
 #### Scenario: Relationship consumes a bounded aggregate
 
 - **WHEN** the separate deterministic known-entity correspondence enrichment job
@@ -36,6 +50,17 @@ proof.
 - **THEN** the registered `dispatch_mode="job"` handler processes no more than
   100 resolved entity IDs with zero-LLM behavior
 - **AND** no MCP/API/on-demand/interactive consumer can invoke the aggregate
+
+#### Scenario: Generic scheduling cannot bypass the fixed batch
+
+- **WHEN** an interactive Relationship caller targets the protected job through
+  `schedule_trigger`, `schedule_create`, or `schedule_update`
+- **THEN** the scheduler returns a bounded protected-job rejection before dispatch
+  or persistence
+- **AND** it records no entity, account, peer, raw ledger, or job-argument data
+- **AND WHEN** trusted TOML synchronization creates the exact configured row and
+  the row becomes due
+- **THEN** the deterministic handler remains runnable from the fixed schedule
 
 #### Scenario: Unresolved-sender discovery stays separate
 
