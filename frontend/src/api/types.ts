@@ -2813,6 +2813,26 @@ export interface RetentionSourceObservation {
 }
 
 /**
+ * Read-only evidence for one relevant memory pool in the additive graph-health
+ * compatibility view. This is coverage of the consolidation-aware cleanup-lag
+ * population, not a provenance-link metric or graph repair verdict.
+ */
+export interface GraphHealthPoolCoverage {
+  source_butler: string;
+  source_schema: string | null;
+  coverage: "complete" | "unknown";
+  reapable_expired_episodes: number | null;
+  retention_eligible_episodes: number | null;
+  reapable_expired_ratio: number | null;
+}
+
+/** Fleet coverage state for the additive graph-health read model. */
+export interface GraphHealthCoverage {
+  coverage: "complete" | "incomplete" | "unknown";
+  pools: GraphHealthPoolCoverage[];
+}
+
+/**
  * Metadata for GET /api/memory/stats. Extends the base bag with the
  * degraded-envelope flag the backend emits when the per-pool fan-out drops one
  * or more memory pools (memory.py::get_stats -> `ApiMeta(pools_failed=...)`).
@@ -2846,6 +2866,11 @@ export interface MemoryStatsMeta extends ApiMeta {
   retention_sources?: RetentionSourceObservation[];
   /** Sources whose retention query failed, distinct from ordinary stats failures. */
   retention_pools_failed?: string[];
+  /**
+   * Per-memory-pool graph-health coverage. Absent on an older server; when
+   * present, complete/unknown evidence must not be read as graph health.
+   */
+  graph_health?: GraphHealthCoverage;
 }
 
 /** GET /api/memory/stats response: aggregate totals + degraded-pool meta. */

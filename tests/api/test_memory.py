@@ -21,6 +21,7 @@ import pytest
 from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.routers.memory import _get_db_manager
+from butlers.modules.memory.consolidation import REAPABLE_EXPIRED_EPISODE_SQL
 
 pytestmark = pytest.mark.unit
 
@@ -447,6 +448,7 @@ class _StatsPool:
         self._drift = drift or {}
         self._retention = retention or {}
         self._retention_exc = retention_exc
+        self.fetchrow_queries: list[str] = []
 
     async def fetchval(self, query: str, *args: object) -> int:
         if "current_schema()" in query:
@@ -457,6 +459,7 @@ class _StatsPool:
         return 0
 
     async def fetchrow(self, query: str, *args: object) -> dict | None:
+        self.fetchrow_queries.append(query)
         if "expired_retained_episodes" in query:
             if self._retention_exc is not None:
                 raise self._retention_exc
@@ -475,6 +478,15 @@ class _StatsPool:
                 "rules_drifted": self._drift.get("rules_drifted", 0),
             }
         return None
+
+
+class _PartialMemoryStatsPool(_StatsPool):
+    """Memory-like pool whose episodes exist but facts/rules do not."""
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        if 'FROM "partial"."facts"' in query or 'FROM "partial"."rules"' in query:
+            raise UndefinedTableError('relation "partial.facts" does not exist')
+        return await super().fetchval(query, *args)
 
 
 class _StatsDB:
@@ -530,6 +542,19 @@ async def test_stats_retention_healthy_with_zero_eligible_denominator(app):
         }
     ]
     assert "retention_pools_failed" not in body["meta"]
+    assert body["meta"]["graph_health"] == {
+        "coverage": "complete",
+        "pools": [
+            {
+                "source_butler": "atlas",
+                "source_schema": "atlas",
+                "coverage": "complete",
+                "reapable_expired_episodes": 0,
+                "retention_eligible_episodes": 0,
+                "reapable_expired_ratio": None,
+            }
+        ],
+    }
 
 
 async def test_stats_retention_failure_is_unknown_without_discarding_ordinary_stats(app):
@@ -571,6 +596,158 @@ async def test_stats_retention_failure_is_unknown_without_discarding_ordinary_st
             "expired_retained_episodes": 1,
             "retention_eligible_episodes": 2,
             "expired_retained_ratio": 0.5,
+        }
+    ]
+    # Existing retention fields remain the compatibility baseline: the
+    # additive graph-health read model carries its own complete/unknown pool
+    # evidence rather than changing those fields or their fleet status.
+    assert body["meta"]["graph_health"] == {
+        "coverage": "incomplete",
+        "pools": [
+            {
+                "source_butler": "atlas",
+                "source_schema": "atlas",
+                "coverage": "complete",
+                "reapable_expired_episodes": 1,
+                "retention_eligible_episodes": 2,
+                "reapable_expired_ratio": 0.5,
+            },
+            {
+                "source_butler": "finance",
+                "source_schema": None,
+                "coverage": "unknown",
+                "reapable_expired_episodes": None,
+                "retention_eligible_episodes": None,
+                "reapable_expired_ratio": None,
+            },
+        ],
+    }
+
+
+async def test_stats_graph_health_marks_partial_memory_schema_as_unknown(app):
+    """An ordinary stats/schema failure cannot leave graph coverage complete."""
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(schema="atlas", retention={"expired": 1, "eligible": 2}),
+            "partial": _PartialMemoryStatsPool(
+                schema="partial", retention={"expired": 0, "eligible": 1}
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["pools_failed"] == ["partial"]
+    assert "retention_pools_failed" not in body["meta"]
+    assert body["meta"]["graph_health"] == {
+        "coverage": "incomplete",
+        "pools": [
+            {
+                "source_butler": "atlas",
+                "source_schema": "atlas",
+                "coverage": "complete",
+                "reapable_expired_episodes": 1,
+                "retention_eligible_episodes": 2,
+                "reapable_expired_ratio": 0.5,
+            },
+            {
+                "source_butler": "partial",
+                "source_schema": None,
+                "coverage": "unknown",
+                "reapable_expired_episodes": None,
+                "retention_eligible_episodes": None,
+                "reapable_expired_ratio": None,
+            },
+        ],
+    }
+
+
+async def test_stats_graph_health_is_unknown_when_only_partial_memory_schema_fails(app):
+    """No ordinary-stats-complete pool means no completed graph observation."""
+    db = _StatsDB(
+        {
+            "partial": _PartialMemoryStatsPool(
+                schema="partial", retention={"expired": 0, "eligible": 1}
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["pools_failed"] == ["partial"]
+    assert "retention_pools_failed" not in body["meta"]
+    assert body["meta"]["graph_health"] == {
+        "coverage": "unknown",
+        "pools": [
+            {
+                "source_butler": "partial",
+                "source_schema": None,
+                "coverage": "unknown",
+                "reapable_expired_episodes": None,
+                "retention_eligible_episodes": None,
+                "reapable_expired_ratio": None,
+            }
+        ],
+    }
+
+
+async def test_stats_graph_health_is_unknown_without_memory_pool_evidence(app):
+    """No completed pool is unknown evidence, never a zero/healthy graph claim."""
+    db = _StatsDB({})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Preserve the pre-existing retention response semantics for callers while
+    # making the new graph-health evidence honest.
+    assert body["data"]["expired_retained_episodes"] == 0
+    assert body["meta"]["retention_status"] == "healthy"
+    assert body["meta"]["graph_health"] == {"coverage": "unknown", "pools": []}
+
+
+async def test_stats_graph_health_reuses_the_consolidation_aware_retention_population(app):
+    """Graph coverage inherits the cleanup predicate and expiry denominator verbatim."""
+    pool = _StatsPool(schema="relationship", retention={"expired": 2, "eligible": 4})
+    db = _StatsDB({"relationship": pool})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    retention_query = next(
+        query for query in pool.fetchrow_queries if "expired_retained_episodes" in query
+    )
+    assert REAPABLE_EXPIRED_EPISODE_SQL in retention_query
+    assert "count(*) FILTER (WHERE expires_at IS NOT NULL)" in retention_query
+    body = resp.json()
+    assert body["meta"]["graph_health"]["pools"] == [
+        {
+            "source_butler": "relationship",
+            "source_schema": "relationship",
+            "coverage": "complete",
+            "reapable_expired_episodes": 2,
+            "retention_eligible_episodes": 4,
+            "reapable_expired_ratio": 0.5,
         }
     ]
 

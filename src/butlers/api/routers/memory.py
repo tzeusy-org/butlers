@@ -36,6 +36,8 @@ from butlers.api.models.memory import (
     EntitySummary,
     Episode,
     Fact,
+    GraphHealthCoverage,
+    GraphHealthPoolCoverage,
     MemoryActivity,
     MemoryCatalogSearchResult,
     MemoryInspectResult,
@@ -608,12 +610,61 @@ async def get_memory_stats(
         )
         retention_status = "degraded" if totals.expired_retained_episodes > 0 else "healthy"
 
+    # Graph health is an additive compatibility read model, not a separate
+    # graph/provenance measurement. Reuse the completed retention observations
+    # exactly: their numerator is the owner-selected consolidation-aware cleanup
+    # lag population, and their denominator is `expires_at IS NOT NULL`. A
+    # stats/schema failure also invalidates a completed graph observation even
+    # if the standalone retention aggregate could still read episodes.
+    graph_health_unknown_names = set(tracker.names) | set(retention_tracker.names)
+    graph_health_sources = [
+        source
+        for source in retention_sources
+        if source.source_butler not in graph_health_unknown_names
+    ]
+    graph_health_pools = [
+        GraphHealthPoolCoverage(
+            source_butler=source.source_butler,
+            source_schema=source.source_schema,
+            coverage="complete",
+            reapable_expired_episodes=source.expired_retained_episodes,
+            retention_eligible_episodes=source.retention_eligible_episodes,
+            reapable_expired_ratio=source.expired_retained_ratio,
+        )
+        for source in graph_health_sources
+    ]
+    graph_health_pools.extend(
+        GraphHealthPoolCoverage(
+            source_butler=butler_name,
+            # The existing failed-source tracker only proves the butler name.
+            # Keep the optional schema unknown rather than re-resolving state
+            # outside the fan-out and risking a new failure while reporting one.
+            source_schema=None,
+            coverage="unknown",
+            reapable_expired_episodes=None,
+            retention_eligible_episodes=None,
+            reapable_expired_ratio=None,
+        )
+        for butler_name in sorted(graph_health_unknown_names)
+    )
+    graph_health_pools.sort(key=lambda pool: pool.source_butler)
+    if not graph_health_sources:
+        graph_health_coverage = "unknown"
+    elif graph_health_unknown_names:
+        graph_health_coverage = "incomplete"
+    else:
+        graph_health_coverage = "complete"
+
     meta_fields: dict[str, object] = {
         "catalog_live": catalog_live,
         "catalog_stale": catalog_stale,
         "catalog_drifted": catalog_drifted,
         "retention_status": retention_status,
         "retention_sources": retention_sources,
+        "graph_health": GraphHealthCoverage(
+            coverage=graph_health_coverage,
+            pools=graph_health_pools,
+        ),
     }
     if tracker.failed:
         meta_fields["pools_failed"] = tracker.names

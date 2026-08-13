@@ -558,6 +558,20 @@ Response model shapes:
 ## Memory Domain Contract
 
 - `GET /api/memory/stats` -> `ApiResponse<MemoryStats>`
+  - Additive `meta.graph_health` is a read-only coverage view, not a graph
+    health, provenance-link, or repair verdict:
+    - `coverage`: `complete | incomplete | unknown`
+    - `pools`: `GraphHealthPoolCoverage[]`, where each row has
+      `source_butler`, `source_schema`, `coverage: complete | unknown`,
+      `reapable_expired_episodes`, `retention_eligible_episodes`, and
+      `reapable_expired_ratio`.
+    - Complete rows reuse the existing consolidation-aware cleanup-lag
+      numerator and `expires_at IS NOT NULL` denominator. Unknown rows have
+      null metrics; no completed relevant pool means fleet coverage is
+      `unknown`, not zero or healthy.
+    - Existing `retention_*` data and metadata fields retain their prior names
+      and semantics. The stats request remains side-effect-free and does not
+      expose a cleanup, repair, or other graph mutation.
 - `GET /api/memory/episodes` -> `PaginatedResponse<Episode>`
 - `GET /api/memory/facts` -> `PaginatedResponse<Fact>`
 - `GET /api/memory/facts/{factId}` -> `ApiResponse<Fact>`

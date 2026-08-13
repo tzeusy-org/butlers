@@ -34,7 +34,7 @@ import {
   writeupCell,
 } from "@/lib/memory-overture";
 import { cn } from "@/lib/utils";
-import type { MemoryStats } from "@/api/types.ts";
+import type { GraphHealthCoverage, MemoryStats } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // KPI strip
@@ -197,6 +197,53 @@ function CatalogBand({
 }
 
 // ---------------------------------------------------------------------------
+// Graph-health coverage
+// ---------------------------------------------------------------------------
+
+/**
+ * Surface the graph-health read model as coverage, never a graph-health or
+ * repair verdict. The completed values reuse the retention observation's
+ * consolidation-aware cleanup-lag population; an unknown pool therefore needs
+ * a visible qualification rather than a zero/healthy fallback.
+ */
+function GraphHealthCoverageNote({
+  graphHealth,
+  onRetry,
+}: {
+  graphHealth: GraphHealthCoverage;
+  onRetry: () => void;
+}) {
+  if (graphHealth.coverage === "complete") {
+    const poolCount = graphHealth.pools.length;
+    return (
+      <div
+        className="font-mono text-[11px] leading-[1.4] text-[var(--mfg)]"
+        data-testid="memory-overture-graph-health-complete"
+      >
+        Graph health coverage complete across {poolCount} memory {poolCount === 1 ? "pool" : "pools"}.
+      </div>
+    );
+  }
+
+  const unknownPools = graphHealth.pools
+    .filter((pool) => pool.coverage === "unknown")
+    .map((pool) => pool.source_butler);
+  const incomplete = graphHealth.coverage === "incomplete";
+  const detail = unknownPools.length > 0
+    ? `${unknownPools.join(", ")} unavailable, graph-health coverage is ${incomplete ? "incomplete" : "unknown"}`
+    : "no memory pool returned evidence, graph-health coverage is unknown";
+
+  return (
+    <SourceDegradedNote
+      label="Graph health coverage"
+      detail={detail}
+      onRetry={onRetry}
+      testId={`memory-overture-graph-health-${incomplete ? "incomplete" : "unknown"}`}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
 // MemoryOverture
 // ---------------------------------------------------------------------------
 
@@ -237,6 +284,7 @@ export default function MemoryOverture() {
   const retentionStatus = catalogMeta?.retention_status;
   const retentionSources = catalogMeta?.retention_sources ?? [];
   const retentionPoolsFailed = catalogMeta?.retention_pools_failed ?? [];
+  const graphHealth = catalogMeta?.graph_health;
   const degradedRetentionSources = retentionSources.filter(
     (source) => source.expired_retained_episodes > 0,
   );
@@ -319,6 +367,14 @@ export default function MemoryOverture() {
           testId="memory-overture-retention-degraded"
         />
       ))}
+
+      {/* This is an additive coverage/read-model compatibility signal, not a
+          provenance-link metric or a graph repair control. Keep it separate
+          from legacy retention semantics and offer only a side-effect-free
+          re-read when evidence is incomplete or unknown. */}
+      {!statsUnavailable && graphHealth != null && (
+        <GraphHealthCoverageNote graphHealth={graphHealth} onRetry={() => void refetch()} />
+      )}
 
       {/* Band 3: Catalog-drift gauge. Reserve the band height so the page below
           does not jump when stats arrive. When one or more butler pools dropped
