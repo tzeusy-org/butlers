@@ -440,6 +440,27 @@ def _case_memory_retention_stats() -> DegradedCase:
         assert body["meta"]["retention_pools_failed"] == ["finance"]
         assert body["meta"]["retention_status"] == "unknown"
         assert body["data"]["expired_retained_episodes"] is None
+        assert body["meta"]["graph_health"] == {
+            "coverage": "incomplete",
+            "pools": [
+                {
+                    "source_butler": "atlas",
+                    "source_schema": None,
+                    "coverage": "complete",
+                    "reapable_expired_episodes": 0,
+                    "retention_eligible_episodes": 1,
+                    "reapable_expired_ratio": 0.0,
+                },
+                {
+                    "source_butler": "finance",
+                    "source_schema": None,
+                    "coverage": "unknown",
+                    "reapable_expired_episodes": None,
+                    "retention_eligible_episodes": None,
+                    "reapable_expired_ratio": None,
+                },
+            ],
+        }
 
     return DegradedCase("memory_retention_stats", _run)
 

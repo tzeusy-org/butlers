@@ -175,6 +175,29 @@ class RetentionSourceObservation(BaseModel):
     expired_retained_ratio: float | None
 
 
+class GraphHealthPoolCoverage(BaseModel):
+    """Read-only graph-health evidence for one relevant memory pool.
+
+    This reports coverage of the same consolidation-aware cleanup-lag
+    population used by the retention observation. It is a compatibility read
+    model, not a provenance-link metric or a graph repair verdict.
+    """
+
+    source_butler: str
+    source_schema: str | None
+    coverage: Literal["complete", "unknown"]
+    reapable_expired_episodes: int | None
+    retention_eligible_episodes: int | None
+    reapable_expired_ratio: float | None
+
+
+class GraphHealthCoverage(BaseModel):
+    """Fleet coverage state for the additive graph-health read model."""
+
+    coverage: Literal["complete", "incomplete", "unknown"]
+    pools: list[GraphHealthPoolCoverage]
+
+
 class EntitySummary(BaseModel):
     """Lightweight entity representation for list views."""
 

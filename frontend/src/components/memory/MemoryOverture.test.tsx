@@ -362,6 +362,104 @@ describe("MemoryOverture", () => {
     expect(container.querySelector('[data-testid="memory-overture-retention-unknown"]')).not.toBeNull();
   });
 
+  it("renders complete graph-health coverage without calling the graph healthy", () => {
+    setStats(
+      makeStats(),
+      {
+        graph_health: {
+          coverage: "complete",
+          pools: [
+            {
+              source_butler: "relationship",
+              source_schema: "relationship",
+              coverage: "complete",
+              reapable_expired_episodes: 0,
+              retention_eligible_episodes: 3,
+              reapable_expired_ratio: 0,
+            },
+          ],
+        },
+      } as unknown as MemoryStatsMeta,
+    );
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+
+    const coverage = container.querySelector('[data-testid="memory-overture-graph-health-complete"]');
+    expect(coverage).not.toBeNull();
+    expect(coverage!.textContent).toContain("Graph health coverage complete across 1 memory pool");
+    expect(coverage!.textContent).not.toContain("healthy");
+    expect(coverage!.querySelector("button")).toBeNull();
+  });
+
+  it("keeps graph-health incomplete evidence distinct from retention and ordinary failures", () => {
+    setStats(
+      makeStats(),
+      {
+        pools_failed: ["general"],
+        retention_status: "unknown",
+        retention_sources: [],
+        retention_pools_failed: ["relationship"],
+        graph_health: {
+          coverage: "incomplete",
+          pools: [
+            {
+              source_butler: "atlas",
+              source_schema: "atlas",
+              coverage: "complete",
+              reapable_expired_episodes: 0,
+              retention_eligible_episodes: 1,
+              reapable_expired_ratio: 0,
+            },
+            {
+              source_butler: "relationship",
+              source_schema: "relationship",
+              coverage: "unknown",
+              reapable_expired_episodes: null,
+              retention_eligible_episodes: null,
+              reapable_expired_ratio: null,
+            },
+          ],
+        },
+      } as unknown as MemoryStatsMeta,
+    );
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+
+    const note = container.querySelector('[data-testid="memory-overture-graph-health-incomplete"]');
+    expect(note).not.toBeNull();
+    expect(note!.getAttribute("role")).toBe("alert");
+    expect(note!.textContent).toContain("relationship unavailable");
+    expect(note!.textContent).toContain("coverage is incomplete");
+    expect(note!.querySelector("button")).not.toBeNull();
+    expect(container.querySelector('[data-testid="memory-overture-pools-degraded"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="memory-overture-retention-unknown"]')).not.toBeNull();
+  });
+
+  it("renders unknown graph-health coverage when no memory pool returns evidence", () => {
+    setStats(
+      makeStats(),
+      {
+        graph_health: {
+          coverage: "unknown",
+          pools: [],
+        },
+      } as unknown as MemoryStatsMeta,
+    );
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+
+    const note = container.querySelector('[data-testid="memory-overture-graph-health-unknown"]');
+    expect(note).not.toBeNull();
+    expect(note!.getAttribute("role")).toBe("alert");
+    expect(note!.textContent).toContain("no memory pool returned evidence");
+    expect(note!.textContent).toContain("coverage is unknown");
+    expect(note!.textContent).not.toContain("healthy");
+    expect(note!.querySelector("button")).not.toBeNull();
+  });
+
   // -------------------------------------------------------------------------
   // Catalog-drift gauge (bu-i8jlt)
   // -------------------------------------------------------------------------
