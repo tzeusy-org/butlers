@@ -264,12 +264,20 @@ The guard has a non-negative, monotonic `BIGINT` generation and a mutation
 audit keyed by immutable `mutation_id`. A canonical DND request carries its
 writer, operation (`set` or `clear`), affected writer row, opaque stable
 correlation reference, and complete DND payload. Each audit row and returned
-receipt persist `mutation_id`, generation, verified writer, affected row,
-operation, opaque correlation, requested/effective expiry, a semantic
-fingerprint version/digest, and commit timestamp. General's explicit-context
-MCP tools and every future Switchboard DND path are the only canonical writers.
-Health, Messenger, connectors, and other domain butlers may read a DND snapshot
-but may not mutate DND.
+receipt retain `mutation_id`, generation, verified writer, affected row,
+operation, opaque correlation, requested/effective expiry, and commit
+timestamp. The private audit additionally retains its semantic fingerprint
+version/digest for replay comparison; callers receive no fingerprint/digest.
+General's explicit-context MCP tools and every future Switchboard DND path are
+the only canonical writers. Health, Messenger, connectors, and other domain
+butlers may read a DND snapshot but may not mutate DND.
+
+General's relative `hours` convenience input is non-DND-only. A canonical DND
+action that needs a custom TTL carries a stable absolute requested expiry in
+the routed action and preserves it on retry; a null requested expiry asks the
+database to resolve the DND default once. Recomputing a DND absolute expiry
+from `hours` on every invocation is not an exact replay and is rejected before
+mutation.
 
 The semantic fingerprint is SHA-256 over a versioned canonical document. It
 includes the protocol/signal, verified writer, affected row, operation, opaque
@@ -321,14 +329,65 @@ the operation returns `replay_identity_unprovable` before DND DML and never
 infers a replacement identity, guesses a receipt, or applies a second mutation.
 
 Direct DND DML that bypasses this path is forbidden by the database security
-boundary. `FORCE ROW LEVEL SECURITY` preserves existing direct runtime access
-to non-DND rows but denies DND and DND-crossing updates; a narrowly owned,
-pinned `SECURITY DEFINER` operation is executable only by the General and
-Switchboard runtime roles. It validates the active `SET ROLE` identity rather
-than trusting a caller-supplied writer or `session_user`, and it fails closed if
-that role/ACL/guard boundary is not provable. A counter that would exceed
-`BIGINT` maximum fails closed before changing DND; it never wraps, resets, or
-reuses a generation.
+boundary. `ENABLE` plus `FORCE ROW LEVEL SECURITY` preserves existing direct
+runtime access to non-DND rows but denies DND and DND-crossing updates. A
+pinned `SECURITY INVOKER` gateway is executable only by the General and
+Switchboard runtime roles and validates `current_user` before it calls the
+private pinned `SECURITY DEFINER` operation. The private definer independently
+checks `current_setting('role', true)`, because its `current_user` is the owner;
+neither layer trusts a caller-supplied writer, `session_user`, or an absent role.
+General and Switchboard may mutate only their own DND row. Every role/writer,
+direct/private invocation, ACL, RLS, or guard boundary that cannot be proved
+fails closed. A counter that would exceed `BIGINT` maximum fails closed before
+changing DND; it never wraps, resets, or reuses a generation.
+
+#### Trusted bootstrap and authority handoff
+
+The DND boundary is installed only by a trusted cluster-superuser bootstrap
+interface in `scripts/init-db.sql`. Its fixed no-argument installer and
+finalizer use pinned search paths and reject untrusted pre-existing authority
+objects; a normal core migration may only catalog-validate a finalized trusted
+interface or invoke that fixed installer. It MUST NOT create, adopt, re-own,
+repair, or grant authority to a similarly named DND role, table, policy,
+gateway, or definer.
+
+A planned `core_197` downgrade may invoke only a separately catalog-proven,
+fixed no-argument bootstrap rollback routine as a trusted superuser. That route
+first requires an empty mutation audit and singleton generation `0`, then keeps
+all `public.user_context` rows while restoring the recorded migration-role
+ownership/RLS posture and only the installer handoff. Any durable receipt or
+advanced generation fails closed before destructive DDL; it requires a separate
+audited recovery migration rather than dropping or reseeding the guard.
+
+Before it transfers the legacy shared table, the installer verifies its complete
+known column/key shape, recorded migration-role ownership, and ordinary
+disabled-RLS posture; it rejects any pre-existing user policy, trigger, or
+rewrite rule. In particular, it cannot accept an arbitrary permissive RLS
+policy: policies combine permissively, and such a policy could otherwise reopen
+direct DND DML alongside the guarded policy set. Nor can it accept a predecessor
+posture that the bounded rollback could not restore. It holds an `ACCESS
+EXCLUSIVE` lock through validation and final ownership transfer so the former
+shared-table owner cannot race those checks.
+
+The finalizer hands ownership of `public.user_context`, the singleton guard,
+the mutation audit, DND policies, and private definer to one dedicated NOLOGIN,
+non-superuser, non-BYPASSRLS role. That role has no runtime or migration
+membership and is not a caller principal. Final catalog proof includes table
+ownership, `ENABLE` and `FORCE RLS`, policy predicates, function owner/security
+and pinned search path, and revocation of `PUBLIC`, migration-role, direct, and
+cross-role DND authority. Runtime roles receive no direct guard/audit DML or
+audit read; only the two canonical writer roles receive the minimal public
+gateway and private-function/schema call-chain grants. PostgreSQL requires
+those call-chain grants for an invoker gateway, so the private definer repeats
+the active-role/writer check and rejects any direct call that cannot prove it.
+The durable audit and replay receipt retain no raw DND value, metadata, user
+text, notification content, or provider payload.
+
+The real-PostgreSQL migration/role/catalog suite is mandatory evidence for this
+boundary: it must prove ownership and forced RLS, approved gateway success,
+direct DML denial, cross-writer denial, private-definer denial or active-role
+recheck, audit non-disclosure, and ordinary non-DND runtime writes. Static
+source tests do not substitute for that execution proof.
 
 The policy is command-specific rather than a blanket `FOR ALL` restriction: it
 must not hide DND rows from the shared public read path used by snapshots and

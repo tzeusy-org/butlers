@@ -57,10 +57,65 @@ record.
 
 ## Decisions
 
+### D0 — Establish the authority boundary only through a trusted bootstrap handoff
+
+The DND guard is security infrastructure, so a normally privileged migration
+role must not be able to create, take ownership of, or repair its own authority
+boundary. A cluster-superuser-owned bootstrap schema in `scripts/init-db.sql`
+therefore supplies three fixed, no-argument, pinned-search-path operations:
+
+1. an installer that rejects untrusted pre-existing DND authority objects,
+   creates the complete interface only from the trusted bootstrap state, and
+   then invokes the finalizer; and
+2. a finalizer that proves the exact object, ownership, ACL, RLS, and function
+   interface before handing all DND boundary objects to a dedicated NOLOGIN
+   owner role.
+3. a rollback routine for a planned core downgrade. It is callable only by a
+   trusted superuser and may proceed only while the durable mutation audit is
+   empty and the singleton remains at generation `0`; it holds the shared-table
+   lock, preserves every `public.user_context` row, restores the recorded
+   migration-role ownership/RLS posture, and re-exposes only the fixed installer
+   handoff. Any receipt or nonzero generation fails closed and requires the
+   separately planned, audited recovery path.
+
+The ordinary `core_197` migration is deliberately weak: it may catalog-validate
+an already-finalized trusted interface and return, or catalog-validate the
+trusted bootstrap interface and invoke that fixed installer. It MUST NOT issue
+authority-bearing DDL for the DND table, guard, audit, policies, owner role,
+gateway, private definer, or their grants/revokes; it MUST fail closed rather
+than adopting an object that merely has a familiar name. The bootstrap remains
+the only installer/finalizer/rollback authority, and the migration role receives
+only the minimum execute/usage grant needed to invoke the installer.
+
+A managed trusted-superuser one-step rollback/reapply may use that same
+catalog-proven installer after the bounded rollback has restored the pre-guard
+handoff. It does not create a migration-owned repair path or widen the ordinary
+migration role's authority.
+
+Before the ownership handoff, the installer also proves the complete known
+`public.user_context` column/key shape, the recorded migration-role owner, and
+the ordinary disabled-RLS posture; it rejects every pre-existing user RLS
+policy, user trigger, or rewrite rule. Permissive RLS policies compose with OR,
+so accepting an arbitrary policy beside the DND policies would silently reopen
+direct DND DML, and accepting an ambiguous predecessor posture would make a
+bounded rollback unsafe. It takes an `ACCESS EXCLUSIVE` table lock through the
+installer/finalizer handoff so the former shared-table owner cannot race a
+policy, trigger, or shape change between validation and ownership transfer.
+
+The final state has a dedicated NOLOGIN, non-superuser, non-BYPASSRLS owner
+with no `CREATEROLE`, `CREATEDB`, replication, or inherited runtime membership.
+That owner owns `public.user_context`, `public.dnd_generation_guard`,
+`public.dnd_generation_mutations`, the DND policies, and the private pinned
+definer. `public.user_context` is both `ENABLE ROW LEVEL SECURITY` and `FORCE
+ROW LEVEL SECURITY`; the catalog proof must establish both flags, owner
+identity, policy predicates, function ownership/security/path, and exact
+grants/revokes. The owner is not a caller role and is never granted to a
+runtime/migration role.
+
 ### D1 — Use one public, singleton DND generation guard
 
-The future core migration creates a singleton `public.dnd_generation_guard`
-row. Its durable minimum shape is:
+The trusted installer creates a singleton `public.dnd_generation_guard` row.
+Its durable minimum shape is:
 
 | Field | Meaning |
 | --- | --- |
@@ -77,9 +132,11 @@ the affected context writer identity, `requested_expires_at`,
 `effective_expires_at` are null for a clear. The receipt returned to a caller
 contains the same durable identity fields that it needs to identify a retry:
 `mutation_id`, generation, effective writer, operation, opaque correlation,
-requested and effective expiry, fingerprint version/digest, and commit time.
-It MUST NOT store raw Telegram text, the optional DND `value`, a metadata
-document, or a copied notification payload.
+requested and effective expiry, and commit time. It deliberately does not
+expose the fingerprint version/digest: the private audit remains the only
+replay-comparison surface. Neither audit nor receipt MUST store raw Telegram
+text, the optional DND `value`, a metadata document, or a copied notification
+payload.
 
 The audit is not a snapshot/admission reader surface. Runtime roles receive no
 direct `SELECT` or write privilege on it; the canonical operation alone reads
@@ -105,11 +162,11 @@ separate aggregate fence.
 
 ### D2 — Route every canonical DND mutation through one atomic operation
 
-The eventual implementation exposes one core-owned DND mutation operation;
-the exact Python helper name is an implementation detail, but its versioned
-wire/receipt shape is `context.dnd.mutate.v1`. Generic `set_context()` and
-`clear_context()` dispatch to it whenever `signal_type == "dnd"`; non-DND
-signals retain their existing paths.
+The implementation exposes one core-owned DND mutation operation; the exact
+Python helper name is an implementation detail, but its versioned wire/receipt
+shape is `context.dnd.mutate.v1`. Generic `set_context()` and `clear_context()`
+dispatch to it whenever `signal_type == "dnd"`; non-DND signals retain their
+existing paths.
 
 The only canonical callers are:
 
@@ -123,11 +180,20 @@ reserved canonical path, not permission to perform raw SQL; a future path must
 use this operation and carry accepted-event correlation before it becomes live.
 Health, Messenger, connectors, and every other butler cannot mutate DND.
 
-The request contains an immutable `mutation_id`, writer, operation, affected
-`set_by_butler`, opaque correlation reference, and the complete DND payload. A
-retry MUST reuse the same `mutation_id` and payload. The operation has one
+The request contains an immutable per-action `mutation_id`, writer, operation,
+affected `set_by_butler`, opaque correlation reference, and the complete DND
+payload. The routed action/session/tool-call evidence creates that ID once; a
+retry MUST reuse the same `mutation_id` and payload, and a new action MUST NOT
+derive an ID from wall-clock time or raw DND content. The operation has one
 privacy-preserving semantic identity, defined as SHA-256 over a versioned,
 canonical UTF-8 document containing:
+
+General's `hours` convenience parameter is consequently non-DND-only. A DND
+action using a custom TTL must carry one stable absolute requested expiry from
+its routed action; the default DND TTL is represented as a null requested
+expiry and is resolved once by the mutation transaction. Recomputing an
+absolute expiry from `hours` on each tool invocation would make an otherwise
+exact retry semantically different and is rejected before mutation.
 
 - `context.dnd.mutate.v1`, `dnd`, the verified effective writer, affected
   writer row, operation, and opaque correlation reference;
@@ -187,18 +253,30 @@ The operation MUST reject that replay before DND DML as
 `replay_identity_unprovable`; it must not infer an identity, return a guessed
 receipt, or apply a second mutation.
 
-The core migration must preserve the existing table-level runtime grants for
-ordinary non-DND context writes while making direct DND DML impossible for
-runtime roles. It does this with `FORCE ROW LEVEL SECURITY` policies that allow
-the existing runtime roles to write only `signal_type <> 'dnd'`, including
-blocking updates that cross the DND boundary. A narrowly owned,
-`SECURITY DEFINER` canonical operation is the only DND exception: it runs with
-a pinned search path, is executable only by the General and Switchboard runtime
-roles, validates the active `SET ROLE` identity rather than a caller-supplied
-writer, and is the only role permitted by the DND RLS policy. The migration
-must revoke `EXECUTE` from `PUBLIC`, grant no runtime role direct guard/audit
-write privilege, and preserve the application-level per-signal permission check
-for non-DND rows. This is a database security property, not a Python
+The trusted finalizer preserves existing table-level runtime grants for ordinary
+non-DND context writes while making direct DND DML impossible for runtime roles.
+It enables and forces RLS policies that allow the existing runtime roles to
+write only `signal_type <> 'dnd'`, including blocking updates that cross the
+DND boundary. It revokes `PUBLIC`, migration-role, and unapproved runtime
+access to the guard, audit, and authority functions; General and Switchboard
+cannot write the other writer's DND row directly or through a caller-supplied
+writer argument.
+
+Canonical invocation is deliberately layered. A public, pinned `SECURITY
+INVOKER` gateway first maps and checks `current_user` as the active runtime
+role, then calls a private pinned `SECURITY DEFINER` mutation function owned by
+the DND NOLOGIN role. The gateway is not a trust substitute: because
+`current_user` becomes the owner inside a definer, the private function
+independently validates `current_setting('role', true)` against the allowed
+General/Switchboard role and the requested writer before doing DND DML. It
+fails closed for no active role, shared-role fallback, role/writer mismatch, or
+direct/private invocation that cannot prove the active role. `PUBLIC` receives
+no execute grant; only the two canonical runtime roles receive the minimal
+gateway grant and the private-function/schema call-chain ACLs PostgreSQL
+requires for a `SECURITY INVOKER` gateway to invoke a definer. Those private
+ACLs are not a second authority path: the private definer repeats the
+active-role and writer proof, so an absent, mismatched, or unapproved caller
+still fails closed. This is a database security property, not a Python
 convention.
 
 The RLS policies are write-specific: every butler retains the RFC 0009 public
@@ -317,7 +395,7 @@ property is transactional.
 | --- | --- | --- |
 | General set | Generation `N`; General sets DND with fresh mutation ID | Committed row is active, receipt/audit is correlated, generation is `N+1`, and no separate committed state is observable. |
 | Switchboard clear | Switchboard owns an active DND row and clears it | Only its row changes; generation advances exactly once; another active writer still makes logical DND active. |
-| Duplicate replay | Repeat an identical mutation ID and normalized semantic payload after a successful set/clear | Original generation/receipt, including the persisted effective expiry and fingerprint, is returned; no second audit row or generation advance occurs. |
+| Duplicate replay | Repeat an identical mutation ID and normalized semantic payload after a successful set/clear | Original generation and content-minimizing receipt, including the persisted effective expiry, are returned; the private audit compares its fingerprint without exposing it, and no second audit row or generation advance occurs. |
 | Changed-expiry replay | Reuse a set mutation ID with a different requested expiry, or a candidate whose normalized effective expiry differs from the receipt | Rejects `idempotency_conflict`; context, guard, audit, and prior receipt remain unchanged. |
 | Changed-payload replay | Reuse a set mutation ID with a changed optional value, confidence, or metadata, including `null` versus empty value | Rejects `idempotency_conflict`; the privacy-preserving audit exposes no raw changed payload. |
 | Uncomparable replay | Restart with an audit row missing fingerprint version/digest, using an unsupported version, or carrying expiry fields incompatible with its operation (such as a set with no effective expiry) | Rejects `replay_identity_unprovable` before DND DML; it neither guesses an identity nor applies a second mutation. |
@@ -330,7 +408,10 @@ property is transactional.
 | TTL expiry | Capture active DND, advance database clock beyond `revalidate_at` without a write | Cached evidence is rejected; a fresh guarded read sees inactive state using database time. |
 | Restart / audit recovery | Restart after committed mutation and after rolled-back mutation | Committed state reconstructs from tables; rollback leaves no receipt, row change, or generation advance. |
 | Authorized non-DND path | A non-owner test session executes `SET ROLE butler_health_rw` or another real runtime role and writes an authorized non-DND signal through the normal context path | The normal application-level permission check and non-DND RLS policy permit the write; the test is not run as the migration owner or a privileged setup session. |
-| Unauthorized DND path | Health, Messenger, connector, or direct generic DND DML from a real runtime role attempts mutation | RLS/ACL denies the operation before any DND row/guard/audit mutation; a missing or unverifiable `SET ROLE` makes canonical DND mutation and DND-based admission fail closed. |
+| Trusted bootstrap/finalizer | A clean trusted cluster-superuser bootstrap installs the interface, then a normal core migration observes it | The ordinary migration only catalog-validates/invokes; the final catalog proves dedicated NOLOGIN ownership, `ENABLE` + `FORCE RLS`, pinned gateway/definer, and no authority retained by the migration role. |
+| Privileged pre-consumer rollback | A trusted-superuser core downgrade observes an empty mutation audit and generation `0` | The fixed bootstrap rollback preserves `public.user_context` rows, restores the pre-guard ownership/RLS posture, and re-exposes only the installer handoff; any receipt or nonzero generation fails before destructive DDL. |
+| Authority spoof | A familiar DND table, role, policy, function, or bootstrap entry point exists with untrusted ownership/ACL/path | Installer, finalizer, and ordinary migration fail closed; none adopts, repairs, or escalates the object. |
+| Unauthorized DND path | Health, Messenger, connector, migration role, direct generic DND DML, or a General/Switchboard cross-writer attempt mutates DND from a real runtime role | RLS/ACL denies the operation before any DND row/guard/audit mutation; a missing or unverifiable `SET ROLE` makes canonical DND mutation and DND-based admission fail closed. |
 | Counter exhaustion | Seed guard at `BIGINT` maximum and attempt a new mutation | Fails closed; no wrap, no context mutation, and an observable error is produced. |
 
 ## Risks / Trade-offs
@@ -360,24 +441,28 @@ property is transactional.
 
 ## Migration Plan
 
-This documentation PR performs no migration. The follow-on implementation must:
+This source-only implementation changes repository code but does not execute
+any bootstrap, Alembic migration, database/testcontainer, Compose action, or
+deployment. In an authorized environment it must:
 
-1. add a guarded public singleton and replay audit in a new core migration,
-   with `to_regclass`/column guards suitable for core-only databases;
+1. use the trusted cluster-superuser source to install/finalize the singleton,
+   audit, NOLOGIN ownership, RLS, gateway, and private definer; the ordinary
+   `core_197` migration only catalog-validates/invokes that fixed boundary;
 2. seed generation `0` without rewriting existing context rows;
-3. preserve the existing broad `public.user_context` runtime grants for
-   non-DND rows, then enforce DND-only RLS/ACL restrictions, a pinned
-   `SECURITY DEFINER` mutation operation, and minimum execute/select
-   privileges for canonical writers and admission readers while denying direct
-   runtime access to the replay audit;
-4. route generic context-bus DND set/clear calls through the atomic operation;
-5. add the contract/integration tests in this design, including role-enforced
-   non-DND regression and refresh/reactivation coverage, then require the strict
-   wake-recovery implementation to consume the finalized helper;
+3. preserve broad non-DND runtime grants while proving `ENABLE` plus `FORCE`
+   RLS, direct/cross-role DND DML denial, no `PUBLIC`/migration-role authority,
+   and active-role gateway plus private-definer checks;
+4. route generic context-bus DND set/clear calls through the atomic operation
+   with stable per-action identity and durable TTL/replay receipts;
+5. execute the real-PostgreSQL contract suite in this design, including
+   role-enforced non-DND regression, ownership/catalog provenance, direct and
+   cross-role denial, replay, refresh/reactivation, and lock-order coverage;
 6. deploy the guard before enabling any Health/Messenger wake admission; and
-7. roll back only before a consumer depends on it. Once a durable mutation or
-   admission record references a generation, rollback requires a planned,
-   audited migration rather than dropping/reseeding the counter.
+7. use the fixed privileged rollback only before a consumer depends on it and
+   only while the durable mutation audit is empty at generation `0`. Once a
+   durable mutation or admission record references a generation, rollback
+   requires a separately planned, audited migration rather than
+   dropping/reseeding the counter.
 
 ## Open Questions
 

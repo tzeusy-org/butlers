@@ -364,8 +364,19 @@ def home_db_url(postgres_container) -> str:
 
 async def _pool(url: str) -> asyncpg.Pool:
     p = await asyncpg.create_pool(url, min_size=1, max_size=5, init=register_jsonb_codec)
-    await p.execute("TRUNCATE public.user_context CASCADE")
+    await _clear_non_dnd_context(p)
     return p
+
+
+async def _clear_non_dnd_context(pool: asyncpg.Pool) -> None:
+    """Reset fixture-owned context without bypassing the DND privilege boundary."""
+    await pool.execute(
+        """
+        UPDATE public.user_context
+        SET superseded_at = now()
+        WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+        """
+    )
 
 
 @pytest.mark.integration
@@ -569,7 +580,7 @@ class TestContextProducersIntegration:
                 quiet_end,
             )
             # Before the producer runs, nothing suppresses.
-            await pool.execute("TRUNCATE public.user_context CASCADE")
+            await _clear_non_dnd_context(pool)
             assert await get_suppressing_context_signal(pool) is None
 
             result = await run_sleep_window_context_producer(pool)

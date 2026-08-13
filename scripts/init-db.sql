@@ -1222,4 +1222,1536 @@ BEGIN
 END;
 $$;
 
+-- ── Canonical DND generation guard bootstrap boundary ──────────────────────
+--
+-- ``public.user_context`` is an existing shared-awareness table, but DND now
+-- carries a safety-critical generation/replay boundary.  The ordinary Alembic
+-- login must never create or take ownership of that boundary.  This
+-- cluster-superuser bootstrap exposes fixed no-argument installer, finalizer,
+-- and restricted rollback operations; core_197 can only catalog-validate and
+-- invoke them. The installer rejects partial or familiar-looking authority
+-- objects rather than adopting them, while rollback accepts only an unused
+-- generation boundary before restoring the pre-guard handoff.
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+    v_schema_owner NAME;
+    v_schema_owner_is_superuser BOOLEAN;
+BEGIN
+    IF current_user::name = v_migration_role THEN
+        RAISE EXCEPTION
+            'DND generation admin bootstrap cannot run as the shared migration role';
+    END IF;
+    IF v_migration_role IN ('butler_general_rw', 'butler_switchboard_rw') THEN
+        RAISE EXCEPTION
+            'DND generation bootstrap requires a migration role distinct from canonical DND writers';
+    END IF;
+    IF NOT COALESCE(
+        (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
+        false
+    ) THEN
+        RAISE EXCEPTION
+            'DND generation admin bootstrap requires a cluster superuser';
+    END IF;
+
+    SELECT owner_role.rolname, owner_role.rolsuper
+    INTO v_schema_owner, v_schema_owner_is_superuser
+    FROM pg_namespace AS admin_schema
+    JOIN pg_roles AS owner_role ON owner_role.oid = admin_schema.nspowner
+    WHERE admin_schema.nspname = 'dnd_generation_admin';
+
+    IF v_schema_owner IS NULL THEN
+        EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %I', 'dnd_generation_admin', current_user);
+    ELSIF NOT COALESCE(v_schema_owner_is_superuser, false) THEN
+        RAISE EXCEPTION
+            'DND generation admin schema is not owned by a trusted bootstrap superuser';
+    ELSE
+        -- A retry can be run by another superuser.  Keep all retained admin
+        -- objects owned by the already-proven schema owner.
+        EXECUTE format('SET ROLE %I', v_schema_owner);
+    END IF;
+END;
+$$;
+
+REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_admin FROM PUBLIC;
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+    v_bootstrap_owner OID;
+    v_bootstrap_owner_is_superuser BOOLEAN;
+BEGIN
+    SELECT admin_schema.nspowner, bootstrap_owner.rolsuper
+    INTO v_bootstrap_owner, v_bootstrap_owner_is_superuser
+    FROM pg_namespace AS admin_schema
+    JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
+    WHERE admin_schema.nspname = 'dnd_generation_admin';
+    IF NOT COALESCE(v_bootstrap_owner_is_superuser, false) THEN
+        RAISE EXCEPTION
+            'DND generation admin schema is not owned by a trusted bootstrap superuser';
+    END IF;
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_admin FROM %I', v_migration_role);
+    IF EXISTS (
+        SELECT 1
+        FROM pg_proc AS admin_function
+        JOIN pg_namespace AS admin_schema
+            ON admin_schema.oid = admin_function.pronamespace
+        WHERE admin_schema.nspname = 'dnd_generation_admin'
+          AND admin_function.proname IN (
+              'finalize_interface',
+              'install_interface',
+              'rollback_interface'
+          )
+          AND admin_function.pronargs = 0
+          AND admin_function.proowner <> v_bootstrap_owner
+    ) THEN
+        RAISE EXCEPTION
+            'DND generation admin interface function is not owned by the bootstrap role';
+    END IF;
+END;
+$$;
+
+DO $$
+DECLARE
+    v_owner OID;
+    v_valid BOOLEAN;
+BEGIN
+    SELECT oid INTO v_owner FROM pg_roles WHERE rolname = 'dnd_generation_owner';
+    IF v_owner IS NULL THEN
+        CREATE ROLE dnd_generation_owner
+            NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS;
+    ELSE
+        SELECT NOT rolcanlogin
+               AND NOT rolinherit
+               AND NOT rolsuper
+               AND NOT rolcreaterole
+               AND NOT rolcreatedb
+               AND NOT rolreplication
+               AND NOT rolbypassrls
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_auth_members
+                    WHERE roleid = v_owner OR member = v_owner
+               )
+        INTO v_valid
+        FROM pg_roles
+        WHERE oid = v_owner;
+        IF NOT COALESCE(v_valid, false) THEN
+            RAISE EXCEPTION
+                'DND generation owner role is untrusted or has runtime membership';
+        END IF;
+    END IF;
+END;
+$$;
+
+DO $$
+DECLARE
+    v_bootstrap_owner OID;
+    v_existing_owner OID;
+BEGIN
+    SELECT nspowner INTO v_bootstrap_owner
+    FROM pg_namespace
+    WHERE nspname = 'dnd_generation_admin';
+    SELECT relowner INTO v_existing_owner
+    FROM pg_class AS relation
+    JOIN pg_namespace AS admin_schema ON admin_schema.oid = relation.relnamespace
+    WHERE admin_schema.nspname = 'dnd_generation_admin'
+      AND relation.relname = 'bootstrap_configuration'
+      AND relation.relkind = 'r';
+    IF v_existing_owner IS NOT NULL AND v_existing_owner <> v_bootstrap_owner THEN
+        RAISE EXCEPTION
+            'DND generation bootstrap configuration is not owned by the bootstrap role';
+    END IF;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS dnd_generation_admin.bootstrap_configuration (
+    singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+    migration_role NAME NOT NULL,
+    bootstrap_role NAME NOT NULL
+);
+REVOKE ALL PRIVILEGES ON TABLE dnd_generation_admin.bootstrap_configuration FROM PUBLIC;
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+BEGIN
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON TABLE dnd_generation_admin.bootstrap_configuration FROM %I',
+        v_migration_role
+    );
+END;
+$$;
+
+INSERT INTO dnd_generation_admin.bootstrap_configuration (
+    singleton,
+    migration_role,
+    bootstrap_role
+)
+VALUES (
+    true,
+    COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name,
+    (
+        SELECT bootstrap_owner.rolname::name
+        FROM pg_namespace AS admin_schema
+        JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
+        WHERE admin_schema.nspname = 'dnd_generation_admin'
+    )
+)
+ON CONFLICT (singleton) DO UPDATE SET
+    migration_role = EXCLUDED.migration_role,
+    bootstrap_role = EXCLUDED.bootstrap_role;
+
+CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $dnd_finalizer$
+DECLARE
+    v_migration_role NAME;
+    v_bootstrap_owner OID;
+    v_bootstrap_owner_is_superuser BOOLEAN;
+    v_admin_schema_owner OID;
+    v_admin_configuration_owner OID;
+    v_dnd_owner OID;
+    v_general_runtime_role OID;
+    v_switchboard_runtime_role OID;
+    v_user_context_owner OID;
+    v_guard_owner OID;
+    v_audit_owner OID;
+    v_private_schema_owner OID;
+    v_gateway_owner OID;
+    v_canonical_json_owner OID;
+    v_private_mutation_owner OID;
+    v_runtime_role NAME;
+    v_is_bootstrap_staged BOOLEAN := false;
+    v_is_finalized BOOLEAN := false;
+BEGIN
+    SELECT migration_role INTO v_migration_role
+    FROM dnd_generation_admin.bootstrap_configuration
+    WHERE singleton;
+    SELECT interface_function.proowner INTO v_bootstrap_owner
+    FROM pg_proc AS interface_function
+    WHERE interface_function.oid = 'dnd_generation_admin.finalize_interface()'::regprocedure;
+    SELECT admin_schema.nspowner, bootstrap_owner.rolsuper
+    INTO v_admin_schema_owner, v_bootstrap_owner_is_superuser
+    FROM pg_namespace AS admin_schema
+    JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
+    WHERE admin_schema.nspname = 'dnd_generation_admin';
+    SELECT configuration.relowner INTO v_admin_configuration_owner
+    FROM pg_class AS configuration
+    JOIN pg_namespace AS admin_schema ON admin_schema.oid = configuration.relnamespace
+    WHERE admin_schema.nspname = 'dnd_generation_admin'
+      AND configuration.relname = 'bootstrap_configuration'
+      AND configuration.relkind = 'r';
+    SELECT oid INTO v_dnd_owner
+    FROM pg_roles
+    WHERE rolname = 'dnd_generation_owner';
+    SELECT oid INTO v_general_runtime_role
+    FROM pg_roles
+    WHERE rolname = 'butler_general_rw';
+    SELECT oid INTO v_switchboard_runtime_role
+    FROM pg_roles
+    WHERE rolname = 'butler_switchboard_rw';
+
+    IF v_migration_role IS NULL OR v_bootstrap_owner IS NULL OR v_dnd_owner IS NULL
+       OR v_general_runtime_role IS NULL OR v_switchboard_runtime_role IS NULL
+       OR v_admin_schema_owner IS DISTINCT FROM v_bootstrap_owner
+       OR v_admin_configuration_owner IS DISTINCT FROM v_bootstrap_owner
+       OR NOT COALESCE(v_bootstrap_owner_is_superuser, false)
+       OR to_regclass('public.user_context') IS NULL
+       OR to_regclass('public.dnd_generation_guard') IS NULL
+       OR to_regclass('public.dnd_generation_mutations') IS NULL
+       OR to_regnamespace('dnd_generation_private') IS NULL
+       OR to_regprocedure(
+            'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'
+       ) IS NULL
+       OR to_regprocedure(
+            'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'
+       ) IS NULL
+       OR to_regprocedure(
+            'dnd_generation_private.canonical_json(jsonb)'
+       ) IS NULL THEN
+        RAISE EXCEPTION
+            'DND authority objects must be created by the fixed bootstrap installer';
+    END IF;
+
+    -- A direct bootstrap-finalizer retry must observe one stable shared-table
+    -- catalog while it validates policy/ownership and repairs final ACLs.
+    LOCK TABLE public.user_context IN ACCESS EXCLUSIVE MODE;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE oid = v_dnd_owner
+          AND NOT rolcanlogin
+          AND NOT rolinherit
+          AND NOT rolsuper
+          AND NOT rolcreaterole
+          AND NOT rolcreatedb
+          AND NOT rolreplication
+          AND NOT rolbypassrls
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_auth_members
+        WHERE roleid = v_dnd_owner OR member = v_dnd_owner
+    ) THEN
+        RAISE EXCEPTION 'DND generation owner role is untrusted or has memberships';
+    END IF;
+
+    SELECT relation.relowner INTO v_user_context_owner
+    FROM pg_class AS relation
+    WHERE relation.oid = 'public.user_context'::regclass;
+    SELECT relation.relowner INTO v_guard_owner
+    FROM pg_class AS relation
+    WHERE relation.oid = 'public.dnd_generation_guard'::regclass;
+    SELECT relation.relowner INTO v_audit_owner
+    FROM pg_class AS relation
+    WHERE relation.oid = 'public.dnd_generation_mutations'::regclass;
+    SELECT nspowner INTO v_private_schema_owner
+    FROM pg_namespace WHERE nspname = 'dnd_generation_private';
+    SELECT proowner INTO v_gateway_owner
+    FROM pg_proc
+    WHERE oid = 'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure;
+    SELECT proowner INTO v_canonical_json_owner
+    FROM pg_proc
+    WHERE oid = 'dnd_generation_private.canonical_json(jsonb)'::regprocedure;
+    SELECT proowner INTO v_private_mutation_owner
+    FROM pg_proc
+    WHERE oid = 'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure;
+
+    v_is_bootstrap_staged := COALESCE(
+        v_user_context_owner = v_bootstrap_owner
+        AND v_guard_owner = v_bootstrap_owner
+        AND v_audit_owner = v_bootstrap_owner
+        AND v_private_schema_owner = v_bootstrap_owner
+        AND v_gateway_owner = v_bootstrap_owner
+        AND v_canonical_json_owner = v_bootstrap_owner
+        AND v_private_mutation_owner = v_bootstrap_owner,
+        false
+    );
+    v_is_finalized := COALESCE(
+        v_user_context_owner = v_dnd_owner
+        AND v_guard_owner = v_dnd_owner
+        AND v_audit_owner = v_dnd_owner
+        AND v_private_schema_owner = v_dnd_owner
+        AND v_gateway_owner = v_dnd_owner
+        AND v_canonical_json_owner = v_dnd_owner
+        AND v_private_mutation_owner = v_dnd_owner,
+        false
+    );
+    IF NOT v_is_bootstrap_staged AND NOT v_is_finalized THEN
+        RAISE EXCEPTION 'DND generation interface ownership is untrusted';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class AS relation
+        WHERE relation.oid = 'public.user_context'::regclass
+          AND relation.relrowsecurity
+          AND relation.relforcerowsecurity
+    )
+       OR NOT EXISTS (
+            SELECT 1 FROM pg_policy
+            WHERE polrelid = 'public.user_context'::regclass
+              AND polname = 'dnd_user_context_select' AND polcmd = 'r'
+              AND polpermissive
+              AND polroles = ARRAY[0]::oid[]
+              AND pg_get_expr(polqual, polrelid) = 'true'
+       )
+       OR NOT EXISTS (
+            SELECT 1 FROM pg_policy
+            WHERE polrelid = 'public.user_context'::regclass
+              AND polname = 'dnd_user_context_insert' AND polcmd = 'a'
+              AND polpermissive
+              AND polroles = ARRAY[0]::oid[]
+              AND lower(COALESCE(pg_get_expr(polwithcheck, polrelid), ''))
+                    LIKE '%signal_type%'
+              AND lower(COALESCE(pg_get_expr(polwithcheck, polrelid), ''))
+                    LIKE '%dnd_generation_owner%'
+       )
+       OR NOT EXISTS (
+            SELECT 1 FROM pg_policy
+            WHERE polrelid = 'public.user_context'::regclass
+              AND polname = 'dnd_user_context_update' AND polcmd = 'w'
+              AND polpermissive
+              AND polroles = ARRAY[0]::oid[]
+              AND lower(COALESCE(pg_get_expr(polqual, polrelid), ''))
+                    LIKE '%signal_type%'
+              AND lower(COALESCE(pg_get_expr(polwithcheck, polrelid), ''))
+                    LIKE '%dnd_generation_owner%'
+       )
+       OR NOT EXISTS (
+            SELECT 1 FROM pg_policy
+            WHERE polrelid = 'public.user_context'::regclass
+              AND polname = 'dnd_user_context_delete' AND polcmd = 'd'
+              AND polpermissive
+              AND polroles = ARRAY[0]::oid[]
+              AND lower(COALESCE(pg_get_expr(polqual, polrelid), ''))
+                    LIKE '%dnd_generation_owner%'
+       )
+       OR EXISTS (
+            SELECT 1 FROM pg_policy
+            WHERE polrelid = 'public.user_context'::regclass
+              AND polname NOT IN (
+                  'dnd_user_context_select',
+                  'dnd_user_context_insert',
+                  'dnd_user_context_update',
+                  'dnd_user_context_delete'
+              )
+       ) THEN
+        RAISE EXCEPTION 'DND user_context RLS catalog proof is incomplete';
+    END IF;
+
+    -- Pin function lookup before handing ownership to the NOLOGIN role.  The
+    -- invoker gateway proves current_user; the private definer must re-check
+    -- the active SET ROLE because current_user becomes its owner there.
+    IF EXISTS (
+        SELECT 1
+        FROM pg_proc
+        WHERE oid = 'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure
+          AND prosecdef
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc
+        WHERE oid = 'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure
+          AND NOT prosecdef
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc
+        WHERE oid = 'dnd_generation_private.canonical_json(jsonb)'::regprocedure
+          AND prosecdef
+    ) THEN
+        RAISE EXCEPTION 'DND authority function security attributes are untrusted';
+    END IF;
+    EXECUTE 'ALTER FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb) '
+        || 'SET search_path = pg_catalog, public, dnd_generation_private, pg_temp';
+    EXECUTE 'ALTER FUNCTION dnd_generation_private.canonical_json(jsonb) '
+        || 'SET search_path = pg_catalog, pg_temp';
+    EXECUTE 'ALTER FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb) '
+        || 'SET search_path = pg_catalog, public, pg_temp';
+
+    IF v_is_bootstrap_staged THEN
+        EXECUTE 'ALTER TABLE public.user_context OWNER TO dnd_generation_owner';
+        EXECUTE 'ALTER TABLE public.dnd_generation_guard OWNER TO dnd_generation_owner';
+        EXECUTE 'ALTER TABLE public.dnd_generation_mutations OWNER TO dnd_generation_owner';
+        EXECUTE 'ALTER SCHEMA dnd_generation_private OWNER TO dnd_generation_owner';
+        EXECUTE 'ALTER FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb) OWNER TO dnd_generation_owner';
+        EXECUTE 'ALTER FUNCTION dnd_generation_private.canonical_json(jsonb) OWNER TO dnd_generation_owner';
+        EXECUTE 'ALTER FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb) OWNER TO dnd_generation_owner';
+    END IF;
+
+    EXECUTE 'REVOKE CREATE ON SCHEMA public FROM dnd_generation_owner';
+    EXECUTE 'GRANT USAGE ON SCHEMA public TO dnd_generation_owner';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_private FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA dnd_generation_private FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA dnd_generation_private FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_admin FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE dnd_generation_admin.bootstrap_configuration FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.dnd_generation_guard FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.dnd_generation_mutations FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_private.canonical_json(jsonb) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.finalize_interface() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.rollback_interface() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.user_context FROM PUBLIC';
+
+    -- Keep the existing development/non-DND fallback usable by the shared
+    -- login. FORCE RLS still rejects every direct DND or DND-crossing write.
+    EXECUTE format(
+        'GRANT SELECT, INSERT, UPDATE ON TABLE public.user_context TO %I',
+        v_migration_role
+    );
+    EXECUTE format('REVOKE DELETE ON TABLE public.user_context FROM %I', v_migration_role);
+    EXECUTE format(
+        'REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.user_context FROM %I',
+        v_migration_role
+    );
+
+    -- The shared login may retain ordinary non-DND table access through its
+    -- runtime role.  It retains no DND authority objects; forced RLS denies
+    -- direct DND/crossing DML even when that legacy non-DND grant exists.
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_admin FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_private FROM %I', v_migration_role);
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON TABLE dnd_generation_admin.bootstrap_configuration FROM %I',
+        v_migration_role
+    );
+    EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.dnd_generation_guard FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.dnd_generation_mutations FROM %I', v_migration_role);
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb) FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_private.canonical_json(jsonb) FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb) FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.finalize_interface() FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.rollback_interface() FROM %I',
+        v_migration_role
+    );
+
+    FOREACH v_runtime_role IN ARRAY ARRAY[
+        'butler_chronicler_rw',
+        'butler_education_rw',
+        'butler_finance_rw',
+        'butler_general_rw',
+        'butler_health_rw',
+        'butler_home_rw',
+        'butler_lifestyle_rw',
+        'butler_messenger_rw',
+        'butler_qa_rw',
+        'butler_relationship_rw',
+        'butler_switchboard_rw',
+        'butler_travel_rw',
+        'connector_writer'
+    ]::name[] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
+            EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_admin FROM %I', v_runtime_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_private FROM %I', v_runtime_role);
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON TABLE dnd_generation_admin.bootstrap_configuration FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.dnd_generation_guard FROM %I', v_runtime_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.dnd_generation_mutations FROM %I', v_runtime_role);
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb) FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_private.canonical_json(jsonb) FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb) FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.finalize_interface() FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.rollback_interface() FROM %I',
+                v_runtime_role
+            );
+            -- Keep the existing public context read/non-DND write matrix.
+            EXECUTE format('GRANT SELECT, INSERT, UPDATE ON TABLE public.user_context TO %I', v_runtime_role);
+            EXECUTE format('REVOKE DELETE ON TABLE public.user_context FROM %I', v_runtime_role);
+            EXECUTE format(
+                'REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.user_context FROM %I',
+                v_runtime_role
+            );
+            EXECUTE format('GRANT SELECT ON TABLE public.dnd_generation_guard TO %I', v_runtime_role);
+        END IF;
+    END LOOP;
+
+    -- PostgreSQL checks the private function EXECUTE ACL using the invoker's
+    -- current role even when it is called from a SECURITY INVOKER gateway. The
+    -- private definer therefore independently validates active SET ROLE and
+    -- writer identity; no PUBLIC or noncanonical role receives this privilege.
+    FOREACH v_runtime_role IN ARRAY ARRAY['butler_general_rw', 'butler_switchboard_rw']::name[] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
+            RAISE EXCEPTION 'DND canonical runtime role % is missing', v_runtime_role;
+        END IF;
+        EXECUTE format('GRANT USAGE ON SCHEMA dnd_generation_private TO %I', v_runtime_role);
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb) TO %I',
+            v_runtime_role
+        );
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb) TO %I',
+            v_runtime_role
+        );
+    END LOOP;
+
+    -- The gateway and private definer are deliberately the only narrow
+    -- canonical writer interface. Verify their exact ACL shape after each
+    -- finalization so an unlisted runtime/group grant cannot survive a rerun.
+    IF NOT has_function_privilege(
+        v_general_runtime_role,
+        'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure,
+        'EXECUTE'
+    ) OR NOT has_function_privilege(
+        v_switchboard_runtime_role,
+        'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure,
+        'EXECUTE'
+    ) OR NOT has_function_privilege(
+        v_general_runtime_role,
+        'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure,
+        'EXECUTE'
+    ) OR NOT has_function_privilege(
+        v_switchboard_runtime_role,
+        'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure,
+        'EXECUTE'
+    ) OR NOT has_schema_privilege(
+        v_general_runtime_role,
+        'dnd_generation_private'::regnamespace,
+        'USAGE'
+    ) OR NOT has_schema_privilege(
+        v_switchboard_runtime_role,
+        'dnd_generation_private'::regnamespace,
+        'USAGE'
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_class AS context_relation,
+             LATERAL aclexplode(
+                 COALESCE(context_relation.relacl, acldefault('r', context_relation.relowner))
+             ) AS acl
+        WHERE context_relation.oid = 'public.user_context'::regclass
+          AND acl.privilege_type IN ('DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER')
+          AND acl.grantee <> v_dnd_owner
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_class AS guard_relation,
+             LATERAL aclexplode(
+                 COALESCE(guard_relation.relacl, acldefault('r', guard_relation.relowner))
+             ) AS acl
+        WHERE guard_relation.oid = 'public.dnd_generation_guard'::regclass
+          AND acl.privilege_type <> 'SELECT'
+          AND acl.grantee <> v_dnd_owner
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc AS interface_function,
+             LATERAL aclexplode(
+                 COALESCE(
+                     interface_function.proacl,
+                     acldefault('f', interface_function.proowner)
+                 )
+             ) AS acl
+        WHERE interface_function.oid =
+                  'dnd_generation_private.canonical_json(jsonb)'::regprocedure
+          AND acl.privilege_type = 'EXECUTE'
+          AND acl.grantee <> v_dnd_owner
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc AS interface_function,
+             LATERAL aclexplode(
+                 COALESCE(
+                     interface_function.proacl,
+                     acldefault('f', interface_function.proowner)
+                 )
+             ) AS acl
+        WHERE interface_function.oid =
+                  'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure
+          AND acl.privilege_type = 'EXECUTE'
+          AND acl.grantee NOT IN (
+              v_dnd_owner, v_general_runtime_role, v_switchboard_runtime_role
+          )
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc AS interface_function,
+             LATERAL aclexplode(
+                 COALESCE(
+                     interface_function.proacl,
+                     acldefault('f', interface_function.proowner)
+                 )
+             ) AS acl
+        WHERE interface_function.oid =
+                  'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'::regprocedure
+          AND acl.privilege_type = 'EXECUTE'
+          AND acl.grantee NOT IN (
+              v_dnd_owner, v_general_runtime_role, v_switchboard_runtime_role
+          )
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_namespace AS private_schema,
+             LATERAL aclexplode(
+                 COALESCE(private_schema.nspacl, acldefault('n', private_schema.nspowner))
+             ) AS acl
+        WHERE private_schema.nspname = 'dnd_generation_private'
+          AND acl.grantee NOT IN (
+              v_dnd_owner, v_general_runtime_role, v_switchboard_runtime_role
+          )
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_class AS audit_relation,
+             LATERAL aclexplode(
+                 COALESCE(audit_relation.relacl, acldefault('r', audit_relation.relowner))
+             ) AS acl
+        WHERE audit_relation.oid = 'public.dnd_generation_mutations'::regclass
+          AND acl.grantee <> v_dnd_owner
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_namespace AS admin_schema,
+             LATERAL aclexplode(
+                 COALESCE(admin_schema.nspacl, acldefault('n', admin_schema.nspowner))
+             ) AS acl
+        WHERE admin_schema.nspname = 'dnd_generation_admin'
+          AND acl.grantee <> v_bootstrap_owner
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_class AS configuration,
+             LATERAL aclexplode(
+                 COALESCE(configuration.relacl, acldefault('r', configuration.relowner))
+             ) AS acl
+        WHERE configuration.oid = 'dnd_generation_admin.bootstrap_configuration'::regclass
+          AND acl.grantee <> v_bootstrap_owner
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc AS admin_function,
+             LATERAL aclexplode(
+                 COALESCE(admin_function.proacl, acldefault('f', admin_function.proowner))
+             ) AS acl
+        WHERE admin_function.oid IN (
+            'dnd_generation_admin.install_interface()'::regprocedure,
+            'dnd_generation_admin.finalize_interface()'::regprocedure,
+            'dnd_generation_admin.rollback_interface()'::regprocedure
+        )
+          AND acl.privilege_type = 'EXECUTE'
+          AND acl.grantee <> v_bootstrap_owner
+    ) THEN
+        RAISE EXCEPTION 'DND authority ACL finalization is incomplete';
+    END IF;
+
+    EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE dnd_generation_owner IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC';
+    EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE dnd_generation_owner IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC';
+    EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE dnd_generation_owner IN SCHEMA dnd_generation_private REVOKE ALL ON TABLES FROM PUBLIC';
+    EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE dnd_generation_owner IN SCHEMA dnd_generation_private REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC';
+END;
+$dnd_finalizer$;
+
+CREATE OR REPLACE FUNCTION dnd_generation_admin.install_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $dnd_installer$
+DECLARE
+    v_migration_role NAME;
+    v_bootstrap_owner NAME;
+BEGIN
+    SELECT migration_role, bootstrap_role
+    INTO v_migration_role, v_bootstrap_owner
+    FROM dnd_generation_admin.bootstrap_configuration
+    WHERE singleton;
+    IF v_migration_role IS NULL OR v_bootstrap_owner IS NULL THEN
+        RAISE EXCEPTION 'DND generation bootstrap configuration is missing';
+    END IF;
+
+    -- ``user_context`` is the legacy shared table this installer hardens.  All
+    -- new authority objects must be absent; an arbitrary compatible object is
+    -- never repaired or accepted as bootstrap provenance.
+    IF to_regclass('public.user_context') IS NULL THEN
+        RAISE EXCEPTION 'DND generation requires the canonical public.user_context table';
+    END IF;
+    -- Preserve this lock through the installer/finalizer handoff. Without it,
+    -- the former shared table owner could race a policy/trigger/shape change
+    -- between the preflight and final ownership transfer.
+    LOCK TABLE public.user_context IN ACCESS EXCLUSIVE MODE;
+    -- The bounded rollback returns exactly this known ordinary posture. Do not
+    -- harden a table whose owner/RLS state would make that reversal ambiguous.
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class AS relation
+        JOIN pg_roles AS migration_role ON migration_role.oid = relation.relowner
+        WHERE relation.oid = 'public.user_context'::regclass
+          AND migration_role.rolname = v_migration_role
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_class AS relation
+        WHERE relation.oid = 'public.user_context'::regclass
+          AND (relation.relrowsecurity OR relation.relforcerowsecurity)
+    ) THEN
+        RAISE EXCEPTION
+            'DND generation requires the recorded pre-guard ownership and ordinary RLS posture';
+    END IF;
+    IF to_regclass('public.dnd_generation_guard') IS NOT NULL
+       OR to_regclass('public.dnd_generation_mutations') IS NOT NULL
+       OR to_regnamespace('dnd_generation_private') IS NOT NULL
+       OR to_regprocedure(
+            'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'
+       ) IS NOT NULL
+       OR to_regprocedure(
+            'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'
+       ) IS NOT NULL
+       -- RLS permissive policies compose with OR. Do not permit an
+       -- attacker-created broad policy to survive beside the DND policies we
+       -- are about to install: the pre-DND table must have no user policies at
+       -- all, not merely no policy with a familiar DND name.
+       OR EXISTS (
+            SELECT 1 FROM pg_policy
+            WHERE polrelid = 'public.user_context'::regclass
+       )
+       OR EXISTS (
+            SELECT 1 FROM pg_trigger
+            WHERE tgrelid = 'public.user_context'::regclass
+              AND NOT tgisinternal
+       ) THEN
+        RAISE EXCEPTION
+            'DND authority interface must be absent before fixed bootstrap installation';
+    END IF;
+    -- This is an ownership handoff of a pre-existing shared table. Verify the
+    -- entire known core shape rather than adopting a compatible-looking table
+    -- with attacker-added columns, altered types, or a missing upsert key.
+    IF (SELECT count(*)
+        FROM pg_attribute AS attribute
+        WHERE attribute.attrelid = 'public.user_context'::regclass
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped) <> 9
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'id'
+              AND attribute.atttypid = 'uuid'::regtype
+              AND attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'signal_type'
+              AND attribute.atttypid = 'text'::regtype
+              AND attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'value'
+              AND attribute.atttypid = 'text'::regtype
+              AND NOT attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'set_by_butler'
+              AND attribute.atttypid = 'text'::regtype
+              AND attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'set_at'
+              AND attribute.atttypid = 'timestamptz'::regtype
+              AND attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'expires_at'
+              AND attribute.atttypid = 'timestamptz'::regtype
+              AND attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'confidence'
+              AND attribute.atttypid = 'real'::regtype
+              AND attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'metadata'
+              AND attribute.atttypid = 'jsonb'::regtype
+              AND NOT attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.user_context'::regclass
+              AND attribute.attname = 'superseded_at'
+              AND attribute.atttypid = 'timestamptz'::regtype
+              AND NOT attribute.attnotnull
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint AS constraint_row
+            WHERE constraint_row.conrelid = 'public.user_context'::regclass
+              AND constraint_row.contype = 'p'
+              AND constraint_row.conkey = ARRAY[
+                  (SELECT attribute.attnum
+                   FROM pg_attribute AS attribute
+                   WHERE attribute.attrelid = 'public.user_context'::regclass
+                     AND attribute.attname = 'id')
+              ]::smallint[]
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint AS constraint_row
+            WHERE constraint_row.conrelid = 'public.user_context'::regclass
+              AND constraint_row.contype = 'u'
+              AND constraint_row.conkey = ARRAY[
+                  (SELECT attribute.attnum
+                   FROM pg_attribute AS attribute
+                   WHERE attribute.attrelid = 'public.user_context'::regclass
+                     AND attribute.attname = 'signal_type'),
+                  (SELECT attribute.attnum
+                   FROM pg_attribute AS attribute
+                   WHERE attribute.attrelid = 'public.user_context'::regclass
+                     AND attribute.attname = 'set_by_butler')
+              ]::smallint[]
+       )
+       OR (SELECT count(*)
+           FROM pg_constraint AS constraint_row
+           WHERE constraint_row.conrelid = 'public.user_context'::regclass) <> 3
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint AS constraint_row
+            WHERE constraint_row.conrelid = 'public.user_context'::regclass
+              AND constraint_row.conname = 'user_context_confidence_check'
+              AND constraint_row.contype = 'c'
+       )
+       OR EXISTS (
+            SELECT 1
+            FROM pg_depend AS dependency
+            JOIN pg_proc AS referenced_function ON referenced_function.oid = dependency.refobjid
+            JOIN pg_namespace AS function_schema
+                ON function_schema.oid = referenced_function.pronamespace
+            JOIN pg_constraint AS constraint_row ON constraint_row.oid = dependency.objid
+            WHERE dependency.classid = 'pg_constraint'::regclass
+              AND dependency.refclassid = 'pg_proc'::regclass
+              AND constraint_row.conrelid = 'public.user_context'::regclass
+              AND function_schema.nspname <> 'pg_catalog'
+       )
+       OR EXISTS (
+            SELECT 1
+            FROM pg_depend AS dependency
+            JOIN pg_operator AS referenced_operator ON referenced_operator.oid = dependency.refobjid
+            JOIN pg_namespace AS operator_schema
+                ON operator_schema.oid = referenced_operator.oprnamespace
+            JOIN pg_constraint AS constraint_row ON constraint_row.oid = dependency.objid
+            WHERE dependency.classid = 'pg_constraint'::regclass
+              AND dependency.refclassid = 'pg_operator'::regclass
+              AND constraint_row.conrelid = 'public.user_context'::regclass
+              AND operator_schema.nspname <> 'pg_catalog'
+       )
+       OR (SELECT count(*)
+           FROM pg_index AS index_row
+           WHERE index_row.indrelid = 'public.user_context'::regclass) <> 3
+       OR EXISTS (
+            SELECT 1
+            FROM pg_index AS index_row
+            WHERE index_row.indrelid = 'public.user_context'::regclass
+              AND index_row.indexprs IS NOT NULL
+       )
+       OR NOT EXISTS (
+            SELECT 1
+            FROM pg_index AS index_row
+            JOIN pg_class AS index_relation ON index_relation.oid = index_row.indexrelid
+            WHERE index_row.indrelid = 'public.user_context'::regclass
+              AND index_relation.relname = 'idx_user_context_active_signals'
+              AND NOT index_row.indisprimary
+              AND NOT index_row.indisunique
+              -- pg_index.indkey is an int2vector, not a smallint[] like
+              -- pg_constraint.conkey. Compare its single key directly while
+              -- proving no included or additional index attributes exist.
+              AND index_row.indnkeyatts = 1
+              AND index_row.indnatts = 1
+              AND index_row.indkey[0] = (
+                  SELECT attribute.attnum
+                  FROM pg_attribute AS attribute
+                  WHERE attribute.attrelid = 'public.user_context'::regclass
+                    AND attribute.attname = 'signal_type'
+              )
+              AND pg_get_expr(index_row.indpred, index_row.indrelid)
+                    = '(superseded_at IS NULL)'
+       )
+       OR EXISTS (
+            SELECT 1
+            FROM pg_rewrite AS rewrite_rule
+            WHERE rewrite_rule.ev_class = 'public.user_context'::regclass
+              AND rewrite_rule.rulename <> '_RETURN'
+       ) THEN
+        RAISE EXCEPTION 'DND generation requires the canonical user_context shape';
+    END IF;
+
+    EXECUTE format('ALTER TABLE public.user_context OWNER TO %I', v_bootstrap_owner);
+    CREATE SCHEMA dnd_generation_private AUTHORIZATION dnd_generation_owner;
+    -- Create it under the bootstrap owner first so finalizer provenance is
+    -- explicit; the final ownership handoff happens only after full catalog
+    -- and ACL proof.
+    EXECUTE format('ALTER SCHEMA dnd_generation_private OWNER TO %I', v_bootstrap_owner);
+
+    CREATE TABLE public.dnd_generation_guard (
+        guard_id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (guard_id = 1),
+        generation BIGINT NOT NULL DEFAULT 0 CHECK (generation >= 0),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+    );
+    INSERT INTO public.dnd_generation_guard (guard_id, generation)
+    VALUES (1, 0);
+
+    CREATE TABLE public.dnd_generation_mutations (
+        mutation_id UUID PRIMARY KEY,
+        generation BIGINT NOT NULL CHECK (generation >= 0),
+        writer TEXT NOT NULL CHECK (writer IN ('general', 'switchboard')),
+        operation TEXT NOT NULL CHECK (operation IN ('set', 'clear')),
+        correlation TEXT NOT NULL CHECK (
+            correlation ~ '^dnd-action:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        ),
+        requested_expires_at TIMESTAMPTZ,
+        effective_expires_at TIMESTAMPTZ,
+        semantic_fingerprint_version SMALLINT NOT NULL,
+        semantic_fingerprint TEXT NOT NULL,
+        committed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+        CHECK (
+            (operation = 'set' AND effective_expires_at IS NOT NULL)
+            OR (operation = 'clear' AND requested_expires_at IS NULL AND effective_expires_at IS NULL)
+        )
+    );
+    CREATE UNIQUE INDEX dnd_generation_mutations_generation_key
+        ON public.dnd_generation_mutations (generation);
+
+    ALTER TABLE public.user_context ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE public.user_context FORCE ROW LEVEL SECURITY;
+    CREATE POLICY dnd_user_context_select ON public.user_context
+        FOR SELECT TO PUBLIC USING (true);
+    CREATE POLICY dnd_user_context_insert ON public.user_context
+        FOR INSERT TO PUBLIC
+        WITH CHECK (signal_type <> 'dnd' OR current_user = 'dnd_generation_owner');
+    CREATE POLICY dnd_user_context_update ON public.user_context
+        FOR UPDATE TO PUBLIC
+        USING (signal_type <> 'dnd' OR current_user = 'dnd_generation_owner')
+        WITH CHECK (signal_type <> 'dnd' OR current_user = 'dnd_generation_owner');
+    CREATE POLICY dnd_user_context_delete ON public.user_context
+        FOR DELETE TO PUBLIC
+        USING (signal_type <> 'dnd' OR current_user = 'dnd_generation_owner');
+
+    CREATE FUNCTION dnd_generation_private.canonical_json(p_document JSONB)
+    RETURNS TEXT
+    LANGUAGE plpgsql
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, pg_temp
+    AS $dnd_canonical_json$
+    DECLARE
+        v_kind TEXT;
+        v_rendered TEXT;
+    BEGIN
+        IF p_document IS NULL THEN
+            RETURN 'null';
+        END IF;
+
+        v_kind := jsonb_typeof(p_document);
+        IF v_kind = 'object' THEN
+            -- JSONB gives deterministic structural semantics, while this
+            -- explicit rendering also normalizes Unicode object keys. A pair
+            -- of distinct source keys that normalizes to the same NFC key is
+            -- ambiguous for replay identity and must fail closed.
+            IF EXISTS (
+                SELECT 1
+                FROM (
+                    SELECT "normalize"(entry.key, 'NFC') AS normalized_key
+                    FROM jsonb_each(p_document) AS entry
+                ) AS normalized_keys
+                GROUP BY normalized_key
+                HAVING count(*) > 1
+            ) THEN
+                RAISE EXCEPTION 'DND metadata has duplicate NFC-normalized keys';
+            END IF;
+
+            SELECT '{' || string_agg(
+                to_jsonb("normalize"(entry.key, 'NFC'))::text
+                || ':' || dnd_generation_private.canonical_json(entry.value),
+                ',' ORDER BY convert_to("normalize"(entry.key, 'NFC'), 'UTF8')
+            ) || '}'
+            INTO v_rendered
+            FROM jsonb_each(p_document) AS entry;
+            RETURN COALESCE(v_rendered, '{}');
+        ELSIF v_kind = 'array' THEN
+            SELECT '[' || string_agg(
+                dnd_generation_private.canonical_json(entry.value),
+                ',' ORDER BY entry.ordinality
+            ) || ']'
+            INTO v_rendered
+            FROM jsonb_array_elements(p_document) WITH ORDINALITY AS entry(value, ordinality);
+            RETURN COALESCE(v_rendered, '[]');
+        ELSIF v_kind = 'string' THEN
+            RETURN to_jsonb("normalize"(p_document #>> '{}', 'NFC'))::text;
+        ELSIF v_kind = 'number' THEN
+            -- JSONB rejects non-JSON numeric input, but keep the canonical
+            -- form explicit: numeric display scale must not make 1, 1.0, and
+            -- 1.00 distinct replay identities. PostgreSQL numeric NaN is not
+            -- a valid JSON number and is rejected defensively if encountered.
+            IF (p_document #>> '{}')::numeric = 'NaN'::numeric THEN
+                RAISE EXCEPTION 'DND metadata numeric value is not finite';
+            END IF;
+            RETURN trim_scale((p_document #>> '{}')::numeric)::text;
+        END IF;
+
+        -- JSONB renders scalar booleans and null deterministically.
+        RETURN p_document::text;
+    END;
+    $dnd_canonical_json$;
+
+    CREATE FUNCTION dnd_generation_private.mutate(
+        p_mutation_id UUID,
+        p_writer TEXT,
+        p_operation TEXT,
+        p_requested_expires_at TIMESTAMPTZ,
+        p_value TEXT,
+        p_confidence REAL,
+        p_metadata JSONB
+    )
+    RETURNS TABLE (
+        mutation_id UUID,
+        generation BIGINT,
+        writer TEXT,
+        operation TEXT,
+        correlation TEXT,
+        requested_expires_at TIMESTAMPTZ,
+        effective_expires_at TIMESTAMPTZ,
+        committed_at TIMESTAMPTZ
+    )
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $dnd_private$
+    DECLARE
+        v_active_role TEXT := NULLIF(current_setting('role', true), 'none');
+        v_effective_writer TEXT;
+        v_now TIMESTAMPTZ;
+        v_effective_expires_at TIMESTAMPTZ;
+        v_guard_generation BIGINT;
+        v_existing public.dnd_generation_mutations%ROWTYPE;
+        v_has_existing BOOLEAN := false;
+        v_correlation TEXT;
+        v_requested_expiry_canonical TEXT;
+        v_effective_expiry_canonical TEXT;
+        v_confidence_canonical TEXT;
+        v_value_normalized TEXT;
+        v_value_digest TEXT;
+        v_metadata_digest TEXT;
+        v_fingerprint TEXT;
+    BEGIN
+        IF v_active_role = 'butler_general_rw' THEN
+            v_effective_writer := 'general';
+        ELSIF v_active_role = 'butler_switchboard_rw' THEN
+            v_effective_writer := 'switchboard';
+        ELSE
+            RAISE EXCEPTION 'DND mutation requires an active canonical runtime role';
+        END IF;
+        IF p_writer IS DISTINCT FROM v_effective_writer THEN
+            RAISE EXCEPTION 'DND writer does not match the active runtime role';
+        END IF;
+        IF p_mutation_id IS NULL THEN
+            RAISE EXCEPTION 'DND mutation requires stable mutation_id';
+        END IF;
+        v_correlation := 'dnd-action:' || p_mutation_id::text;
+        IF p_operation NOT IN ('set', 'clear') THEN
+            RAISE EXCEPTION 'DND operation must be set or clear';
+        END IF;
+        IF p_operation = 'clear'
+           AND (p_requested_expires_at IS NOT NULL OR p_value IS NOT NULL
+                OR p_confidence IS NOT NULL OR p_metadata IS NOT NULL) THEN
+            RAISE EXCEPTION 'DND clear cannot carry set payload fields';
+        END IF;
+        IF p_operation = 'set'
+           AND (p_confidence IS NULL OR p_confidence < 0.0 OR p_confidence > 1.0) THEN
+            RAISE EXCEPTION 'DND confidence must be in [0, 1]';
+        END IF;
+
+        SELECT guard.generation INTO v_guard_generation
+        FROM public.dnd_generation_guard AS guard
+        WHERE guard.guard_id = 1
+        FOR UPDATE;
+        IF v_guard_generation IS NULL OR v_guard_generation < 0 THEN
+            RAISE EXCEPTION 'DND generation guard is missing or invalid';
+        END IF;
+
+        SELECT * INTO v_existing
+        FROM public.dnd_generation_mutations AS receipt
+        WHERE receipt.mutation_id = p_mutation_id;
+        v_has_existing := FOUND;
+
+        IF v_has_existing THEN
+            IF v_existing.semantic_fingerprint_version <> 1
+               OR v_existing.semantic_fingerprint IS NULL
+               OR (v_existing.operation = 'set' AND v_existing.effective_expires_at IS NULL)
+               OR (v_existing.operation = 'clear'
+                   AND (v_existing.requested_expires_at IS NOT NULL
+                        OR v_existing.effective_expires_at IS NOT NULL)) THEN
+                RAISE EXCEPTION 'replay_identity_unprovable';
+            END IF;
+            v_effective_expires_at := v_existing.effective_expires_at;
+        ELSE
+            v_now := clock_timestamp();
+            IF p_operation = 'set' THEN
+                v_effective_expires_at := LEAST(
+                    COALESCE(p_requested_expires_at, v_now + interval '2 hours'),
+                    v_now + interval '24 hours'
+                );
+            ELSE
+                v_effective_expires_at := NULL;
+            END IF;
+        END IF;
+
+        v_requested_expiry_canonical := CASE
+            WHEN p_requested_expires_at IS NULL THEN NULL
+            ELSE to_char(
+                p_requested_expires_at AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+            )
+        END;
+        v_effective_expiry_canonical := CASE
+            WHEN v_effective_expires_at IS NULL THEN NULL
+            ELSE to_char(
+                v_effective_expires_at AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+            )
+        END;
+        v_confidence_canonical := CASE
+            WHEN p_confidence IS NULL THEN NULL
+            ELSE encode(float4send(p_confidence), 'hex')
+        END;
+        v_value_normalized := CASE
+            WHEN p_value IS NULL THEN NULL
+            ELSE "normalize"(p_value, 'NFC')
+        END;
+        v_value_digest := CASE
+            WHEN v_value_normalized IS NULL THEN encode(
+                digest(convert_to('dnd-value:null', 'UTF8'), 'sha256'), 'hex'
+            )
+            ELSE encode(
+                digest(
+                    convert_to('dnd-value:string:' || v_value_normalized, 'UTF8'),
+                    'sha256'
+                ),
+                'hex'
+            )
+        END;
+        v_metadata_digest := encode(
+            digest(
+                convert_to(
+                    CASE
+                        WHEN p_metadata IS NULL THEN 'dnd-metadata:absent'
+                        ELSE 'dnd-metadata:json:'
+                            || dnd_generation_private.canonical_json(p_metadata)
+                    END,
+                    'UTF8'
+                ),
+                'sha256'
+            ),
+            'hex'
+        );
+        v_fingerprint := encode(
+            digest(
+                convert_to(
+                    dnd_generation_private.canonical_json(
+                        jsonb_build_object(
+                            'protocol', 'context.dnd.mutate.v1',
+                            'signal_type', 'dnd',
+                            'writer', v_effective_writer,
+                            'set_by_butler', v_effective_writer,
+                            'operation', p_operation,
+                            'correlation', v_correlation,
+                            'requested_expires_at', v_requested_expiry_canonical,
+                            'effective_expires_at', v_effective_expiry_canonical,
+                            'confidence_float4', v_confidence_canonical,
+                            'value_digest', v_value_digest,
+                            'metadata_digest', v_metadata_digest
+                        )
+                    ),
+                    'UTF8'
+                ),
+                'sha256'
+            ),
+            'hex'
+        );
+
+        IF v_has_existing THEN
+            IF v_existing.writer IS DISTINCT FROM v_effective_writer
+               OR v_existing.operation IS DISTINCT FROM p_operation
+               OR v_existing.correlation IS DISTINCT FROM v_correlation
+               OR v_existing.semantic_fingerprint IS DISTINCT FROM v_fingerprint THEN
+                RAISE EXCEPTION 'idempotency_conflict';
+            END IF;
+            RETURN QUERY
+            SELECT v_existing.mutation_id, v_existing.generation, v_existing.writer,
+                   v_existing.operation, v_existing.correlation,
+                   v_existing.requested_expires_at, v_existing.effective_expires_at,
+                   v_existing.committed_at;
+            RETURN;
+        END IF;
+
+        IF v_guard_generation = 9223372036854775807 THEN
+            RAISE EXCEPTION 'DND generation is exhausted';
+        END IF;
+        IF v_now IS NULL THEN
+            v_now := clock_timestamp();
+        END IF;
+
+        IF p_operation = 'set' THEN
+            INSERT INTO public.user_context (
+                id, signal_type, value, set_by_butler, set_at, expires_at, confidence,
+                metadata, superseded_at
+            )
+            VALUES (
+                gen_random_uuid(), 'dnd', p_value, v_effective_writer, v_now, v_effective_expires_at,
+                p_confidence, p_metadata, NULL
+            )
+            ON CONFLICT (signal_type, set_by_butler) DO UPDATE
+                SET value = EXCLUDED.value,
+                    set_at = EXCLUDED.set_at,
+                    expires_at = EXCLUDED.expires_at,
+                    confidence = EXCLUDED.confidence,
+                    metadata = EXCLUDED.metadata,
+                    superseded_at = NULL;
+        ELSE
+            UPDATE public.user_context
+            SET superseded_at = v_now
+            WHERE signal_type = 'dnd'
+              AND set_by_butler = v_effective_writer
+              AND superseded_at IS NULL;
+        END IF;
+
+        UPDATE public.dnd_generation_guard AS guard
+        SET generation = guard.generation + 1,
+            updated_at = v_now
+        WHERE guard.guard_id = 1
+        RETURNING guard.generation INTO v_guard_generation;
+
+        INSERT INTO public.dnd_generation_mutations (
+            mutation_id, generation, writer, operation, correlation,
+            requested_expires_at, effective_expires_at,
+            semantic_fingerprint_version, semantic_fingerprint, committed_at
+        )
+        VALUES (
+            p_mutation_id, v_guard_generation, v_effective_writer, p_operation,
+            v_correlation, p_requested_expires_at, v_effective_expires_at,
+            1, v_fingerprint, v_now
+        );
+
+        RETURN QUERY
+        SELECT p_mutation_id, v_guard_generation, v_effective_writer, p_operation,
+               v_correlation, p_requested_expires_at, v_effective_expires_at,
+               v_now;
+    END;
+    $dnd_private$;
+
+    CREATE FUNCTION public.context_dnd_mutate(
+        p_mutation_id UUID,
+        p_writer TEXT,
+        p_operation TEXT,
+        p_requested_expires_at TIMESTAMPTZ,
+        p_value TEXT,
+        p_confidence REAL,
+        p_metadata JSONB
+    )
+    RETURNS TABLE (
+        mutation_id UUID,
+        generation BIGINT,
+        writer TEXT,
+        operation TEXT,
+        correlation TEXT,
+        requested_expires_at TIMESTAMPTZ,
+        effective_expires_at TIMESTAMPTZ,
+        committed_at TIMESTAMPTZ
+    )
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public, dnd_generation_private, pg_temp
+    AS $dnd_gateway$
+    DECLARE
+        v_effective_writer TEXT;
+    BEGIN
+        IF current_user = 'butler_general_rw' THEN
+            v_effective_writer := 'general';
+        ELSIF current_user = 'butler_switchboard_rw' THEN
+            v_effective_writer := 'switchboard';
+        ELSE
+            RAISE EXCEPTION 'DND gateway requires an active canonical runtime role';
+        END IF;
+        IF p_writer IS DISTINCT FROM v_effective_writer THEN
+            RAISE EXCEPTION 'DND writer does not match the gateway active role';
+        END IF;
+        RETURN QUERY
+        SELECT * FROM dnd_generation_private.mutate(
+            p_mutation_id, p_writer, p_operation,
+            p_requested_expires_at, p_value, p_confidence, p_metadata
+        );
+    END;
+    $dnd_gateway$;
+
+    PERFORM dnd_generation_admin.finalize_interface();
+END;
+$dnd_installer$;
+
+CREATE OR REPLACE FUNCTION dnd_generation_admin.rollback_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $dnd_rollback$
+DECLARE
+    v_migration_role NAME;
+    v_generation BIGINT;
+    v_session_is_superuser BOOLEAN;
+BEGIN
+    SELECT rolsuper
+    INTO v_session_is_superuser
+    FROM pg_roles
+    WHERE rolname = session_user;
+    IF NOT COALESCE(v_session_is_superuser, false) THEN
+        RAISE EXCEPTION 'core_197 downgrade requires the managed privileged bootstrap owner';
+    END IF;
+
+    IF to_regclass('public.user_context') IS NULL
+       OR to_regclass('public.dnd_generation_guard') IS NULL
+       OR to_regclass('public.dnd_generation_mutations') IS NULL
+       OR to_regnamespace('dnd_generation_private') IS NULL
+       OR to_regprocedure(
+            'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'
+       ) IS NULL
+       OR to_regprocedure(
+            'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'
+       ) IS NULL
+       OR to_regprocedure('dnd_generation_private.canonical_json(jsonb)') IS NULL THEN
+        RAISE EXCEPTION 'core_197 rollback requires the complete trusted DND interface';
+    END IF;
+
+    -- A durable replay receipt or any advanced generation proves that a
+    -- consumer may depend on this boundary.  That state needs an explicitly
+    -- planned, audited recovery migration rather than destructive reseeding.
+    IF EXISTS (SELECT 1 FROM public.dnd_generation_mutations) THEN
+        RAISE EXCEPTION
+            'core_197 rollback refuses durable DND replay receipts; use a planned audited rollback';
+    END IF;
+    SELECT generation
+    INTO v_generation
+    FROM public.dnd_generation_guard
+    WHERE guard_id = 1;
+    IF NOT FOUND OR v_generation IS NULL OR v_generation <> 0 THEN
+        RAISE EXCEPTION
+            'core_197 rollback refuses a nonzero DND generation; use a planned audited rollback';
+    END IF;
+
+    -- This only accepts the bootstrap-produced shape.  It cannot adopt an
+    -- attacker-shaped authority boundary before reopening the ordinary path.
+    PERFORM dnd_generation_admin.finalize_interface();
+    LOCK TABLE public.user_context IN ACCESS EXCLUSIVE MODE;
+
+    SELECT generation
+    INTO v_generation
+    FROM public.dnd_generation_guard
+    WHERE guard_id = 1
+    FOR UPDATE;
+    IF NOT FOUND OR v_generation IS NULL OR v_generation <> 0 THEN
+        RAISE EXCEPTION
+            'core_197 rollback refuses a nonzero DND generation; use a planned audited rollback';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.dnd_generation_mutations) THEN
+        RAISE EXCEPTION
+            'core_197 rollback refuses durable DND replay receipts; use a planned audited rollback';
+    END IF;
+
+    SELECT migration_role
+    INTO v_migration_role
+    FROM dnd_generation_admin.bootstrap_configuration
+    WHERE singleton;
+    IF v_migration_role IS NULL
+       OR NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_migration_role) THEN
+        RAISE EXCEPTION 'core_197 rollback has no trusted migration-role handoff';
+    END IF;
+
+    DROP FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb);
+    DROP FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb);
+    DROP FUNCTION dnd_generation_private.canonical_json(jsonb);
+    DROP SCHEMA dnd_generation_private;
+    DROP TABLE public.dnd_generation_mutations;
+    DROP TABLE public.dnd_generation_guard;
+
+    ALTER TABLE public.user_context NO FORCE ROW LEVEL SECURITY;
+    ALTER TABLE public.user_context DISABLE ROW LEVEL SECURITY;
+    DROP POLICY dnd_user_context_delete ON public.user_context;
+    DROP POLICY dnd_user_context_update ON public.user_context;
+    DROP POLICY dnd_user_context_insert ON public.user_context;
+    DROP POLICY dnd_user_context_select ON public.user_context;
+    EXECUTE format('ALTER TABLE public.user_context OWNER TO %I', v_migration_role);
+
+    -- Re-upgrade is still possible, but only through the same fixed bootstrap
+    -- installer.  The ordinary migration role never receives rollback access.
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.rollback_interface() FROM %I', v_migration_role);
+    EXECUTE format('GRANT USAGE ON SCHEMA dnd_generation_admin TO %I', v_migration_role);
+    EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION dnd_generation_admin.install_interface() TO %I',
+        v_migration_role
+    );
+END;
+$dnd_rollback$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.finalize_interface() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.rollback_interface() FROM PUBLIC;
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+BEGIN
+    -- Keep the migration login unable to call a finalizer or self-install a
+    -- named object except through the narrow one-time installer handoff.
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_admin FROM %I', v_migration_role);
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.finalize_interface() FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_interface() FROM %I',
+        v_migration_role
+    );
+    EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.rollback_interface() FROM %I',
+        v_migration_role
+    );
+
+    IF to_regclass('public.dnd_generation_guard') IS NOT NULL
+       OR to_regclass('public.dnd_generation_mutations') IS NOT NULL
+       OR to_regnamespace('dnd_generation_private') IS NOT NULL
+       OR to_regprocedure(
+            'public.context_dnd_mutate(uuid,text,text,timestamptz,text,real,jsonb)'
+       ) IS NOT NULL
+       OR to_regprocedure(
+            'dnd_generation_private.mutate(uuid,text,text,timestamptz,text,real,jsonb)'
+       ) IS NOT NULL THEN
+        PERFORM dnd_generation_admin.finalize_interface();
+    ELSE
+        EXECUTE format('GRANT USAGE ON SCHEMA dnd_generation_admin TO %I', v_migration_role);
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION dnd_generation_admin.install_interface() TO %I',
+            v_migration_role
+        );
+    END IF;
+END;
+$$;
+
 RESET ROLE;

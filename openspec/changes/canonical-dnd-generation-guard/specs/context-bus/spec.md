@@ -28,6 +28,15 @@ non-DND context writes. The ordinary non-DND mapping remains an application
 authorization rule; this change does not turn it into a generic row-level
 permission system.
 
+The canonical DND operation SHALL enter through a pinned `SECURITY INVOKER`
+gateway that checks `current_user` as the active General/Switchboard runtime
+role before it calls the private pinned `SECURITY DEFINER` mutation operation.
+The private operation SHALL independently check the active `SET ROLE` setting,
+because its `current_user` is the NOLOGIN owner. Neither layer may trust a
+caller-supplied writer, `session_user`, an absent role, or a shared-role
+development fallback. A runtime role may mutate only its own DND row; a
+cross-writer operation SHALL fail before it changes a row, guard, or receipt.
+
 The DND database policy constrains writes only. Every butler retains the public
 read path for active DND state and guarded snapshots; the implementation SHALL
 not use a blanket RLS policy that hides DND rows from those readers.
@@ -44,6 +53,13 @@ not use a blanket RLS policy that hides DND rows from those readers.
 - **THEN** the request is routed to the canonical DND mutation operation
 - **AND** it cannot complete through the ordinary generic row-upsert or clear
   path
+
+#### Scenario: DND gateway rejects an active-role or writer mismatch
+- **WHEN** a caller invokes the DND gateway without an active General or
+  Switchboard runtime role, or asks it to mutate the other canonical writer's
+  row
+- **THEN** the gateway/private operation rejects before any DND row, guard, or
+  mutation receipt changes
 
 #### Scenario: Unauthorized writer remains rejected
 - **WHEN** Finance calls the normal context path with
@@ -71,15 +87,31 @@ persist a receipt/audit in one transaction. A committed observer SHALL never
 see a DND row change without the corresponding advanced generation, or an
 advanced generation without the corresponding row change.
 
+`mutation_id` SHALL be created once from durable routed action/session/tool-call
+evidence before the first mutation attempt. Retry paths SHALL carry it forward
+unchanged; the implementation SHALL NOT derive it from wall-clock time, an
+attempt count, or raw DND content. The durable receipt is the authoritative
+replay result and SHALL retain no raw DND value or metadata.
+
+The General MCP tool's relative `hours` convenience input SHALL remain limited
+to non-DND signals. A DND action with a custom TTL SHALL provide a stable
+absolute requested expiry from its routed action and preserve it for retry;
+otherwise the tool SHALL reject before mutation. A null requested expiry means
+the canonical database operation resolves the DND default exactly once.
+
 The durable replay identity SHALL be `(mutation_id,
-semantic_fingerprint_version, semantic_fingerprint)`. The audit and returned
-receipt SHALL retain `mutation_id`, generation, verified writer, affected
-writer row, operation, opaque correlation reference, requested and effective
-expiry, fingerprint version/digest, and commit timestamp. A set resolves its
-effective expiry once from database time after the normal TTL default/max
-normalization; both requested and effective expiry use canonical UTC PostgreSQL
-timestamp precision. A clear stores null expiry fields and rejects set-only
-payload fields.
+semantic_fingerprint_version, semantic_fingerprint)`. The private durable audit
+SHALL retain `mutation_id`, generation, verified writer, affected writer row,
+operation, opaque correlation reference, requested and effective expiry,
+fingerprint version/digest, and commit timestamp. The returned canonical-writer
+receipt SHALL retain the non-secret ordering/replay evidence it needs:
+`mutation_id`, generation, verified writer, operation, opaque correlation,
+requested/effective expiry, and commit timestamp. It SHALL NOT expose the
+fingerprint/digest, raw DND value, or metadata. A set resolves its effective
+expiry once from database time after the normal TTL default/max normalization;
+both requested and effective expiry use canonical UTC PostgreSQL timestamp
+precision. A clear stores null expiry fields and rejects set-only payload
+fields.
 
 `semantic_fingerprint` SHALL be SHA-256 over a versioned canonical document
 that includes the protocol/signal, verified writer, affected row, operation,

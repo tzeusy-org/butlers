@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
@@ -127,6 +128,137 @@ async def test_set_context_validation():
         await set_context(MagicMock(), butler_name="finance", signal_type="exercising")
 
 
+@pytest.mark.asyncio
+async def test_dnd_set_requires_stable_mutation_identity() -> None:
+    """DND cannot silently fall back to the generic unversioned upsert."""
+    pool = MagicMock()
+
+    with pytest.raises(ValueError, match="mutation_id"):
+        await set_context(pool, butler_name="general", signal_type="dnd")
+    with pytest.raises(ValueError, match="mutation_id"):
+        await set_context(
+            pool,
+            butler_name="general",
+            signal_type="dnd",
+            mutation_id="raw DND/user text",  # type: ignore[arg-type]
+        )
+
+    pool.execute.assert_not_called()
+    pool.fetchrow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dnd_set_uses_atomic_gateway_and_returns_durable_receipt() -> None:
+    """Canonical DND writes are delegated to the database receipt boundary."""
+    mutation_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    committed_at = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "mutation_id": mutation_id,
+            "generation": 7,
+            "writer": "general",
+            "operation": "set",
+            "correlation": "dnd-action:11111111-1111-1111-1111-111111111111",
+            "requested_expires_at": None,
+            "effective_expires_at": committed_at + timedelta(hours=2),
+            "committed_at": committed_at,
+        }
+    )
+
+    receipt = await set_context(
+        pool,
+        butler_name="general",
+        signal_type="dnd",
+        value="focus time",
+        mutation_id=mutation_id,
+    )
+
+    assert receipt is not None
+    assert receipt.mutation_id == mutation_id
+    assert receipt.generation == 7
+    assert receipt.correlation_id == "dnd-action:11111111-1111-1111-1111-111111111111"
+    args = pool.fetchrow.await_args.args
+    assert len(args) == 8
+    assert "dnd-action:" not in args[0]
+    assert args[1:] == (mutation_id, "general", "set", None, "focus time", 1.0, None)
+    assert receipt.operation == "set"
+    pool.execute.assert_not_called()
+    pool.fetchrow.assert_awaited_once()
+    query = pool.fetchrow.await_args.args[0]
+    assert "public.context_dnd_mutate" in query
+    assert pool.fetchrow.await_args.args[1:4] == (mutation_id, "general", "set")
+
+
+@pytest.mark.asyncio
+async def test_dnd_clear_uses_same_stable_mutation_boundary() -> None:
+    mutation_id = uuid.UUID("22222222-2222-2222-2222-222222222222")
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "mutation_id": mutation_id,
+            "generation": 8,
+            "writer": "general",
+            "operation": "clear",
+            "correlation": "dnd-action:22222222-2222-2222-2222-222222222222",
+            "requested_expires_at": None,
+            "effective_expires_at": None,
+            "committed_at": _NOW,
+        }
+    )
+
+    receipt = await clear_context(
+        pool,
+        "general",
+        "dnd",
+        mutation_id=mutation_id,
+    )
+
+    assert receipt is not None
+    assert receipt.operation == "clear"
+    pool.execute.assert_not_called()
+    assert receipt.correlation_id == "dnd-action:22222222-2222-2222-2222-222222222222"
+    assert pool.fetchrow.await_args.args[2:4] == ("general", "clear")
+
+
+@pytest.mark.asyncio
+async def test_dnd_rejects_a_nonopaque_correlation_returned_by_the_gateway() -> None:
+    """A malformed/raw audit correlation never crosses the Python receipt boundary."""
+    mutation_id = uuid.UUID("33333333-3333-3333-3333-333333333333")
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "mutation_id": mutation_id,
+            "generation": 9,
+            "writer": "general",
+            "operation": "set",
+            "correlation": "raw DND/user text",
+            "requested_expires_at": None,
+            "effective_expires_at": _NOW + timedelta(hours=2),
+            "committed_at": _NOW,
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="invalid durable receipt"):
+        await set_context(
+            pool,
+            butler_name="general",
+            signal_type="dnd",
+            mutation_id=mutation_id,
+        )
+
+
+async def _clear_non_dnd_context(pool: asyncpg.Pool) -> None:
+    """Reset fixture-owned context without bypassing the DND table ACL."""
+    await pool.execute(
+        """
+        UPDATE public.user_context
+        SET superseded_at = now()
+        WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+        """
+    )
+
+
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
     """Provision a DB with core migrations applied once per module."""
@@ -149,7 +281,7 @@ class TestContextBusIntegration:
         p = await asyncpg.create_pool(
             migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
         )
-        await p.execute("TRUNCATE public.user_context CASCADE")
+        await _clear_non_dnd_context(p)
         yield p
         await p.close()
 
@@ -206,7 +338,7 @@ class TestContextBusIntegration:
         )["superseded_at"] is not None
 
         # get_active_context: excludes expired; is_user_in_context checks confidence
-        await pool.execute("TRUNCATE public.user_context")
+        await _clear_non_dnd_context(pool)
         await set_context(pool, butler_name="general", signal_type="meeting")
         await set_context(pool, butler_name="travel", signal_type="traveling", confidence=0.9)
 

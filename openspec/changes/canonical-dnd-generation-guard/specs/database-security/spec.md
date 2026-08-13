@@ -7,20 +7,61 @@ authorization matrix in the canonical specification. In particular,
 for ordinary context signals; the application-level context-bus permission
 mapping remains responsible for per-signal authorization outside DND.
 
-`dnd` is the sole exception. A core migration SHALL enable and force row-level
-security on `public.user_context` so the existing runtime roles and
-`connector_writer` can directly write only rows whose `signal_type <> 'dnd'`.
-The policy SHALL reject direct DND insert, update, clear, delete, and any update
-that crosses into or out of `dnd`. A dedicated no-login DND mutation-owner role
-is the only policy principal allowed to write DND rows; it owns the pinned
-`SECURITY DEFINER` canonical mutation operation but is not a runtime role and
-is not granted to runtime callers. The migration SHALL revoke function execute
-from `PUBLIC` and grant it only to `butler_general_rw` and
-`butler_switchboard_rw`. No runtime role receives direct write access to the
-guard or mutation audit, and no runtime role receives direct audit read access.
-The canonical operation alone reads the audit for replay comparison and returns
-its receipt only to the calling canonical writer; snapshot/admission readers
-receive neither audit rows nor semantic fingerprints.
+`dnd` is the sole exception. A trusted cluster-superuser bootstrap installer and
+finalizer SHALL establish the boundary; an ordinary core migration SHALL only
+catalog-validate that trusted interface or invoke its fixed no-argument
+installer. The ordinary migration SHALL NOT create, own, re-own, repair, or
+adopt the DND table, guard, audit, owner role, policy, gateway, or private
+definer.
+
+A planned core downgrade MAY invoke only a separately catalog-proven,
+no-argument bootstrap rollback routine. It SHALL require a trusted superuser,
+an empty durable mutation audit, and a singleton guard at generation `0`; it
+SHALL otherwise fail before destructive DDL. The routine SHALL preserve
+`public.user_context` rows, restore the recorded migration-role ownership and
+ordinary non-DND RLS posture, and re-grant only the fixed installer handoff. It
+SHALL NOT drop/reseed a receipt-bearing or advanced generation boundary.
+
+A managed trusted-superuser down/up MAY then invoke the same catalog-proven
+installer. This does not grant the ordinary migration role finalizer or rollback
+authority.
+
+Before it transfers the existing shared table, the installer SHALL prove the
+complete known `public.user_context` column/key shape, the recorded migration
+role as its owner, and an ordinary disabled-RLS posture; it SHALL reject every
+pre-existing user policy, trigger, or rewrite rule. It SHALL not accept an
+arbitrary permissive RLS policy beside the guarded set, because permissive
+policies compose with OR and could reopen direct DND DML, nor an ambiguous
+pre-guard state that the bounded rollback could not restore.
+It SHALL hold an `ACCESS EXCLUSIVE` lock through this validation and final
+ownership handoff so the former shared-table owner cannot race a policy,
+trigger, or shape change.
+
+The finalized interface SHALL make a dedicated NOLOGIN, non-superuser,
+non-BYPASSRLS owner with no runtime/migration membership the owner of
+`public.user_context`, `public.dnd_generation_guard`,
+`public.dnd_generation_mutations`, the DND policies, and private pinned
+definer. It SHALL both enable and force row-level security on
+`public.user_context` so the existing runtime roles and `connector_writer` can
+directly write only rows whose `signal_type <> 'dnd'`. The policy SHALL reject
+direct DND insert, update, clear, delete, and any update that crosses into or
+out of `dnd`.
+
+The finalizer SHALL revoke `PUBLIC`, ordinary migration-role, and unapproved
+runtime direct DML/DDL/function authority; it SHALL grant no runtime role
+direct guard/audit access or audit read access. A pinned `SECURITY INVOKER`
+gateway SHALL first prove `current_user` is the active General/Switchboard role
+and that it matches the requested writer, then call a private pinned
+`SECURITY DEFINER` operation. The private operation SHALL independently verify
+`current_setting('role', true)` because its `current_user` is the NOLOGIN owner.
+`PUBLIC` receives no execute grant; only `butler_general_rw` and
+`butler_switchboard_rw` receive the minimum gateway grant and the private
+function/schema call-chain grants PostgreSQL requires for an invoker gateway to
+reach its definer. Those private grants do not create a second authority path:
+the private function independently rejects an absent or mismatched active role
+and writer. The private operation alone reads the audit for replay comparison
+and returns its receipt only to the calling canonical writer; snapshot/admission
+readers receive neither audit rows nor semantic fingerprints.
 
 The RLS policies SHALL constrain writes only. All butlers retain the RFC 0009
 public `SELECT` path for active DND state and guarded snapshots; a `FOR ALL`
@@ -55,6 +96,31 @@ any direct Health/Messenger access to another butler's records.
   atomic guard/context/audit change
 - **AND** Health, Messenger, connectors, and all other roles cannot invoke that
   operation or write DND directly
+
+#### Scenario: Trusted bootstrap is the sole authority installer
+- **WHEN** an ordinary core migration encounters an absent DND interface or a
+  pre-existing interface with untrusted owner, ACL, policy, search path, or
+  function-security catalog state
+- **THEN** it only invokes a catalog-proven trusted bootstrap installer for the
+  absent case and otherwise fails closed
+- **AND** it never creates, adopts, re-owns, repairs, or grants authority to the
+  observed DND objects
+
+#### Scenario: Privileged pre-consumer rollback is bounded
+- **WHEN** a trusted-superuser core downgrade finds an empty mutation audit and
+  guard generation `0`
+- **THEN** it invokes only the catalog-proven bootstrap rollback routine, which
+  preserves `public.user_context` rows and restores the pre-guard handoff
+- **AND** any durable receipt or nonzero generation fails before it removes the
+  DND authority objects
+
+#### Scenario: Real PostgreSQL catalog proof establishes the final boundary
+- **WHEN** the authorized role/catalog integration suite runs against actual
+  PostgreSQL after the trusted installer/finalizer
+- **THEN** it proves the NOLOGIN ownership, `ENABLE` plus `FORCE RLS`, exact
+  policy predicates, pinned invoker/definer attributes, and revocation of
+  `PUBLIC`, migration-role, direct, and cross-role DND authority
+- **AND** static source inspection alone is not accepted as that proof
 
 ### Requirement: Graceful Fallback Policy
 SET ROLE enforcement SHALL retain its existing graceful development fallback
@@ -92,14 +158,15 @@ Only General and Switchboard may invoke the canonical DND mutation operation;
 Health, Messenger, connectors, and all other butlers SHALL have no DND mutation
 authority.
 
-The core migration SHALL enforce the DND exception with forced row-level
-security while preserving the existing application-authorized non-DND context
-paths and broad runtime table grants. It SHALL use a dedicated no-login owner
-for a pinned `SECURITY DEFINER` canonical DND operation, revoke execute from
-`PUBLIC`, and grant only the minimum execute/select privileges required by the
-canonical writers and admission readers. It SHALL NOT grant Health, Messenger,
-or Switchboard read access to another butler's private schema, a shared DSN, or
-a peer queue.
+The trusted finalizer SHALL enforce the DND exception with `ENABLE` plus
+`FORCE` row-level security while preserving the existing application-authorized
+non-DND context paths and broad runtime table grants. It SHALL use its dedicated
+NOLOGIN owner for a private pinned `SECURITY DEFINER` canonical DND operation
+behind a pinned `SECURITY INVOKER` active-role gateway, revoke execute from
+`PUBLIC`, and grant only the minimum gateway execute/select privileges required
+by canonical writers and admission readers. It SHALL NOT grant Health,
+Messenger, or Switchboard read access to another butler's private schema, a
+shared DSN, or a peer queue.
 
 The mutation operation SHALL validate the effective writer identity in addition
 to its caller-supplied writer field. Development-mode absence of `SET ROLE` may
