@@ -444,10 +444,11 @@ class DiscretionDispatcher:
                 # record. Keep skip provenance bounded and operational: catalog
                 # data + stable reason only, never prompt/system/identity content.
                 logger.info(
-                    "DiscretionDispatcher quota skip: model=%s tier=%s "
+                    "DiscretionDispatcher quota skip: model=%s tier=%s attempt=%d "
                     "reason=quota_exhausted windows=%s",
                     bounded_model_id,
                     bounded_effective_tier,
+                    attempt_count,
                     bounded_windows,
                 )
                 attempted_ids.append(catalog_entry_id)

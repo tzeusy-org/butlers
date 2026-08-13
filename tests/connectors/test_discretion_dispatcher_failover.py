@@ -314,6 +314,7 @@ async def test_call_skips_quota_denied_selected_candidate_before_invocation(
     assert selected_model[:256] in quota_messages[0]
     assert selected_model not in quota_messages[0]
     assert "specialty" in quota_messages[0]
+    assert "attempt=1" in quota_messages[0]
     assert prompt_marker not in quota_messages[0]
     assert system_marker not in quota_messages[0]
     assert identity_marker not in quota_messages[0]
