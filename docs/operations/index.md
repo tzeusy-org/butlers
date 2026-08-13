@@ -11,3 +11,4 @@
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
 - [Connector Scaling](connector-scaling.md) — horizontal scaling for connectors
 - [Troubleshooting](troubleshooting.md) — common issues, debugging, health checks
+- [Tailscale Serve Repair Packet](tailscale-serve-repair-packet.md) — sanitized, diagnosis-first repair boundary
