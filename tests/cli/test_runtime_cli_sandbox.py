@@ -2083,6 +2083,7 @@ async def test_readonly_command_uses_one_absolute_timeout_across_multiple_chunks
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """REQ-core-credentials-002: each small chunk cannot renew the total deadline."""
+    from butlers.cli_auth import sandbox_platform
     from butlers.cli_auth.sandbox import ReadonlySandboxAuthority
     from butlers.cli_auth.sandbox_platform import (
         BubblewrapDashboardCLIAuthSandbox,
@@ -2095,11 +2096,18 @@ async def test_readonly_command_uses_one_absolute_timeout_across_multiple_chunks
         def __init__(self) -> None:
             super().__init__()
             self.read_calls = 0
+            self.second_chunk_seen = asyncio.Event()
+            self._block = asyncio.Event()
 
         async def read(self, n: int = -1) -> bytes:
             self.read_calls += 1
-            await asyncio.sleep(0.05)
-            return b"chunk" if self.read_calls == 1 else b"later-chunk"
+            if self.read_calls == 1:
+                return b"first-chunk"
+            if self.read_calls == 2:
+                self.second_chunk_seen.set()
+                return b"second-chunk"
+            await self._block.wait()
+            return b""
 
     process = _HandshakeProcess([])
     process.stdout = _SlowChunkStream()
@@ -2131,6 +2139,26 @@ async def test_readonly_command_uses_one_absolute_timeout_across_multiple_chunks
         pidfd_send_signal=lambda *_args: None,
         pidfd_is_dead=lambda _pidfd, _timeout: True,
     )
+    real_wait_for = sandbox_platform.asyncio.wait_for
+    absolute_timeout_values: list[float] = []
+
+    async def _deterministic_wait_for(awaitable: object, timeout: float) -> object:
+        """Expire the collector after two chunks without depending on wall-clock scheduling."""
+        coroutine_code = getattr(awaitable, "cr_code", None)
+        if coroutine_code is None or coroutine_code.co_name != "_collect":
+            return await real_wait_for(awaitable, timeout)  # type: ignore[arg-type]
+
+        absolute_timeout_values.append(timeout)
+        collection_task = asyncio.create_task(awaitable)  # type: ignore[arg-type]
+        try:
+            await real_wait_for(process.stdout.second_chunk_seen.wait(), timeout=1.0)
+        finally:
+            collection_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await collection_task
+        raise TimeoutError
+
+    monkeypatch.setattr(sandbox_platform.asyncio, "wait_for", _deterministic_wait_for)
 
     try:
         with pytest.raises(TimeoutError):
@@ -2147,7 +2175,8 @@ async def test_readonly_command_uses_one_absolute_timeout_across_multiple_chunks
         for fd in block_readers:
             os.close(fd)
 
-    assert process.stdout.read_calls >= 2
+    assert absolute_timeout_values == [0.08]
+    assert process.stdout.read_calls == 3
     assert process.wait_calls == 1
     assert not stage_home.exists()
 
