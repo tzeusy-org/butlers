@@ -470,9 +470,11 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return { initializer: definition.node.init, variable }
         }
 
-        function memberPropertyName(node) {
-          if (node.computed && node.property.type === 'Literal') {
-            return node.property.value
+        function memberPropertyName(node, resolvingVariables = new Set(), localValues = new Map()) {
+          if (node.computed) {
+            if (node.property.type === 'Literal') return node.property.value
+            const value = stringConstructionValue(node.property, resolvingVariables, localValues)
+            return value === DYNAMIC_VALUE_MARKER ? null : value
           }
           return node.property.type === 'Identifier' ? node.property.name : null
         }
@@ -1051,10 +1053,14 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
               stringConstructionValue(node.right, resolvingVariables, localValues)
             )
           }
-          if (
+          const staticStringFactory =
             node.type === 'CallExpression' &&
-            isGlobalMemberReference(node.callee, 'String', 'fromCharCode')
-          ) {
+            (isGlobalMemberReference(node.callee, 'String', 'fromCharCode')
+              ? String.fromCharCode
+              : isGlobalMemberReference(node.callee, 'String', 'fromCodePoint')
+                ? String.fromCodePoint
+                : null)
+          if (staticStringFactory) {
             if (node.arguments.some((argument) => argument.type === 'SpreadElement')) {
               return DYNAMIC_VALUE_MARKER
             }
@@ -1063,7 +1069,7 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             )
             if (codeUnits.some((codeUnit) => codeUnit === null)) return DYNAMIC_VALUE_MARKER
             try {
-              return String.fromCharCode(...codeUnits)
+              return staticStringFactory(...codeUnits)
             } catch {
               return DYNAMIC_VALUE_MARKER
             }
@@ -1293,14 +1299,29 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           }
 
           const property = memberPropertyName(node.callee)
+          const argumentValue = stringConstructionValue(node.arguments[0])
+          const cssomReceiver = isCssomStyleReceiver(node.callee.object)
+          const typedOmReceiver = isTypedOmReceiver(node.callee.object)
           if (
-            (property !== 'getPropertyValue' || !isCssomStyleReceiver(node.callee.object)) &&
-            (property !== 'get' || !isTypedOmReceiver(node.callee.object))
+            (property === 'getPropertyValue' && cssomReceiver) ||
+            (property === 'get' && typedOmReceiver)
           ) {
-            return null
+            return argumentValue
           }
 
-          return stringConstructionValue(node.arguments[0])
+          // A dynamic method on a known CSSOM receiver can still be a private
+          // token read. Reject only a statically proven private argument at
+          // that boundary; dynamic arguments remain unreported so unrelated
+          // runtime dispatch does not turn into a broad false positive.
+          if (
+            property === null &&
+            (cssomReceiver || typedOmReceiver) &&
+            argumentValue !== DYNAMIC_VALUE_MARKER
+          ) {
+            return argumentValue
+          }
+
+          return null
         }
 
         function reportPrivateIdentityReferences(value, node) {

@@ -30,7 +30,7 @@ import { Check, Copy, Download, Loader2, RotateCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Time } from '@/components/ui/time'
-import { categoricalHueVar } from '@/lib/visual-token-roles'
+import { categoricalFillForeground, categoricalHueVar } from '@/lib/visual-token-roles'
 import {
   useIngestionEventLineage,
   useIngestionEventReplays,
@@ -277,7 +277,10 @@ function DrawerSessionsTab({
                           className="absolute top-0.5 bottom-0.5 rounded-sm opacity-80 hover:opacity-100 transition-opacity cursor-pointer"
                           style={{ left: `${left}%`, width: `${width}%`, backgroundColor: laneColor }}
                         >
-                          <span className="px-1 text-[10px] font-medium text-white truncate block leading-6">
+                          <span
+                            className="px-1 text-[10px] font-medium truncate block leading-6"
+                            style={{ color: categoricalFillForeground() }}
+                          >
                             {dur}
                           </span>
                         </Link>

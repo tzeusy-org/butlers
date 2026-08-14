@@ -395,6 +395,36 @@ const CSSOM_SEMANTIC_ROLE_READ_SOURCE = [
   'export const allowed = getComputedStyle(document.documentElement).getPropertyValue(category);',
 ].join("\n");
 
+const CSSOM_COMPUTED_METHOD_PRIVATE_IDENTITY_READ_SOURCE = [
+  'export const cssom = getComputedStyle(document.documentElement)["get" + "PropertyValue"]("--category-1");',
+  'export const typedOm = document.documentElement.computedStyleMap()["g" + "et"]("--color-category-12");',
+].join("\n");
+
+const CSSOM_COMPUTED_METHOD_SEMANTIC_ROLE_READ_SOURCE = [
+  'export const cssom = getComputedStyle(document.documentElement)["get" + "PropertyValue"]("--categorical-1");',
+  'export const typedOm = document.documentElement.computedStyleMap()["g" + "et"]("--categorical-1");',
+].join("\n");
+
+const CSSOM_DYNAMIC_METHOD_PRIVATE_IDENTITY_READ_SOURCE = [
+  'declare const method: string;',
+  'export const cssom = getComputedStyle(document.documentElement)[method]("--category-1");',
+  'export const typedOm = document.documentElement.computedStyleMap()[method]("--color-category-12");',
+].join("\n");
+
+const CSSOM_DYNAMIC_METHOD_SEMANTIC_ROLE_READ_SOURCE = [
+  'declare const method: string;',
+  'export const cssom = getComputedStyle(document.documentElement)[method]("--categorical-1");',
+  'export const typedOm = document.documentElement.computedStyleMap()[method]("--categorical-1");',
+].join("\n");
+
+const FROM_CODE_POINT_PRIVATE_IDENTITY_SOURCE = [
+  'export const fromCodePoint = String.fromCodePoint(118, 97, 114, 40, 45, 45, 99, 97, 116, 101, 103, 111, 114, 121, 45, 49, 41);',
+].join("\n");
+
+const FROM_CODE_POINT_SEMANTIC_ROLE_SOURCE = [
+  'export const fromCodePoint = String.fromCodePoint(118, 97, 114, 40, 45, 45, 99, 97, 116, 101, 103, 111, 114, 105, 99, 97, 108, 45, 49, 41);',
+].join("\n");
+
 const UNMODELLED_STATIC_PRIVATE_RESOLVER_SOURCE = [
   'export const fromCharCode = String.fromCharCode(118, 97, 114, 40).concat("--category-1", ")");',
   'export const fromReduce = ["var(", "--category-1", ")"].reduce((value, part) => value + part, "");',
@@ -725,6 +755,63 @@ describe("semantic visual-role lint", () => {
     const roleMessages = await visualRoleMessages(
       CSSOM_SEMANTIC_ROLE_READ_SOURCE,
       "src/components/ui/SemanticCssomRead.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("rejects private CSSOM and Typed OM reads through statically composed method keys", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_COMPUTED_METHOD_PRIVATE_IDENTITY_READ_SOURCE,
+      "src/components/ui/IdentityComputedMethodReadLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(2);
+    expect(roleMessages.map((message) => message.line)).toEqual([1, 2]);
+  });
+
+  it("permits semantic CSSOM and Typed OM reads through statically composed method keys", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_COMPUTED_METHOD_SEMANTIC_ROLE_READ_SOURCE,
+      "src/components/ui/SemanticComputedMethodRead.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("fails closed for a private identity argument on an unresolved CSSOM or Typed OM method", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_DYNAMIC_METHOD_PRIVATE_IDENTITY_READ_SOURCE,
+      "src/components/ui/IdentityDynamicMethodReadLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(2);
+    expect(roleMessages.map((message) => message.line)).toEqual([2, 3]);
+  });
+
+  it("does not flag an unresolved CSSOM or Typed OM method with a semantic role argument", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_DYNAMIC_METHOD_SEMANTIC_ROLE_READ_SOURCE,
+      "src/components/ui/SemanticDynamicMethodRead.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("rejects a private identity string constructed with String.fromCodePoint", async () => {
+    const roleMessages = await visualRoleMessages(
+      FROM_CODE_POINT_PRIVATE_IDENTITY_SOURCE,
+      "src/components/ui/IdentityFromCodePointLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(1);
+    expect(roleMessages[0]?.line).toBe(1);
+  });
+
+  it("permits a semantic categorical string constructed with String.fromCodePoint", async () => {
+    const roleMessages = await visualRoleMessages(
+      FROM_CODE_POINT_SEMANTIC_ROLE_SOURCE,
+      "src/components/ui/SemanticFromCodePoint.tsx",
     );
 
     expect(roleMessages).toEqual([]);
