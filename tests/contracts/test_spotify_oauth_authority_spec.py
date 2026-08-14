@@ -31,6 +31,15 @@ _CARRIER_TASKS = (
 _CARRIER_DESIGN = (
     _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "design.md"
 )
+_LIFECYCLE_DELTA = (
+    _REPO_ROOT
+    / "openspec"
+    / "changes"
+    / "add-connector-oauth-scope-surface"
+    / "specs"
+    / "connector-lifecycle-ceremony"
+    / "spec.md"
+)
 _INGESTION_SPEC = (
     _REPO_ROOT / "openspec" / "specs" / "dashboard-ingestion-dispatch-console" / "spec.md"
 )
@@ -132,3 +141,19 @@ def test_carrier_serializes_the_two_downstream_implementation_lanes() -> None:
     )
     assert "synthetic generalized-provider fixture" in tasks
     assert "no compatibility alias, shim, or production registry entry" in tasks
+
+
+def test_lifecycle_delta_splits_reauth_by_authority_before_approvals() -> None:
+    """Lifecycle reauth cannot collapse generic, Spotify, and unsupported paths."""
+    lifecycle = _requirement(_read(_LIFECYCLE_DELTA), "Per-action lifecycle gate matrix")
+
+    assert "#### Scenario: Generic OAuth reauth is Approvals-gated" in lifecycle
+    assert "§Reauth endpoint contract for generic OAuth connectors" in lifecycle
+    assert "#### Scenario: Spotify reauth stays connector-owned" in lifecycle
+    assert "`/secrets?focus=u:spotify`" in lifecycle
+    assert "`POST /api/connectors/spotify/oauth/start`" in lifecycle
+    assert "SHALL NOT return the generic `{auth_url, state, expires_in}` response" in lifecycle
+    assert "SHALL NOT create, validate, or consume a generic OAuth `state` token" in lifecycle
+    assert "SHALL NOT invoke a generic OAuth callback" in lifecycle
+    assert "#### Scenario: Non-OAuth reauth is rejected before approval" in lifecycle
+    assert "SHALL NOT pass through the Approvals module" in lifecycle
