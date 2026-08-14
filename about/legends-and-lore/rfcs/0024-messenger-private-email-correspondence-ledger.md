@@ -1,4 +1,4 @@
-# RFC 0023: Messenger-Private Email Correspondence Ledger
+# RFC 0024: Messenger-Private Email Correspondence Ledger
 
 **Status:** Proposed - Owner Option A approved planning only
 

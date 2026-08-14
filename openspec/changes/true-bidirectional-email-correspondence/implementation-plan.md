@@ -387,7 +387,7 @@ the staffer's no-autonomous-behavior posture.
 
 1. Get written approval for the provider proof mechanism, alias authority,
    security-definer exception, retention, rollout, and communications wording.
-2. Re-read RFC 0023 and this OpenSpec change after those decisions; update the
+2. Re-read RFC 0024 and this OpenSpec change after those decisions; update the
    delta specs before writing code if they differ.
 3. Create no provider calls, database rows, migrations, or feature flags during
    this planning bead.

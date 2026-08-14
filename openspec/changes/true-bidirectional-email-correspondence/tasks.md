@@ -1,10 +1,10 @@
 ## 1. Contract and owner gates
 
-- [ ] 1.1 Obtain written provider, privacy/data-retention, security, product/operations, and implementation-owner approval for RFC 0023; do not treat this planning PR as execution authorization.
+- [ ] 1.1 Obtain written provider, privacy/data-retention, security, product/operations, and implementation-owner approval for RFC 0024; do not treat this planning PR as execution authorization.
 - [ ] 1.2 Resolve and document the Messenger-initiated provider-native send that returns the exact stable reference directly, the fenced principal/dispatch/send-report/confirmation-report idempotency contract, the exact-reference Sent proof, OAuth scope, canonical account reference, authenticated ingress binding, transient provider-age assertion source and receipt-delay/clock-skew budget, confirmation deadline, and full-window coverage semantics before enabling any account.
 - [ ] 1.3 Decide active-literal `has-email` only versus an explicit versioned provider peer-alias authority; if the latter is approved, document its source/writer, exact canonical-account/entity/peer binding, issuance/expiry/revocation/purge lifecycle, evidence-time/query-time validity, and no-auto-renewal rule.  In this v1 an active alias can support only a positive result: because output is entity-wide and 180-day authority is half-open/retained, any active alias forces `null` absent `true`.  Provider account aliases remain out of scope unless a separate approved change defines them.
 - [ ] 1.3a Obtain an owner-approved static complete canonical provider/account universe for negative evidence, including disabled, unsupported, and unproven accounts.  Document its configuration writer, no mailbox/provider-list/backfill discovery rule, rolling continuity interval, identical-member-set-only rollover, and change/gap/expiry invalidation; do not enable `false` until that internal interval naturally spans 180 days.
-- [ ] 1.4 Update RFC 0023, the affected OpenSpec specs, Messenger/Gmail/Relationship documentation, and topology notes if the approved provider contract differs from this plan.
+- [ ] 1.4 Update RFC 0024, the affected OpenSpec specs, Messenger/Gmail/Relationship documentation, and topology notes if the approved provider contract differs from this plan.
 
 ## 2. Private Messenger storage and access controls
 

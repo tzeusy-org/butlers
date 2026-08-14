@@ -39,7 +39,7 @@ evidence.
   handling metadata-only from trusted pre-route candidate through admission and
   outcome; content-bearing existing stores are never evidence or a new mirror
   for this capability.
-- Record RFC 0023, an implementation plan, migration/rollback sequencing, and
+- Record RFC 0024, an implementation plan, migration/rollback sequencing, and
   owner gates.  This change is planning only: it does not execute migrations,
   contact a provider, scan a mailbox, backfill data, deploy, or mutate live data.
 
