@@ -14,16 +14,17 @@ content-blind Passport projection to the connector-owned PKCE flow. Non-OAuth
 reauth is rejected before the Approvals module.
 
 This capability unblocks
-`POST /api/ingestion/connectors/{type}/{identity}/reauth`, which is
-deliberately stubbed with HTTP 503 in `connector-lifecycle-ceremony` until
-this spec exists (per
-`openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40`).
+`POST /api/ingestion/connectors/{type}/{identity}/reauth`, whose historical
+HTTP 503 gate is recorded in the archived
+`2026-05-19-redesign-ingestion-dispatch-console` change. That archived
+artifact is context, not an archive target: this change adds the durable
+dashboard-side lifecycle authority to the existing
+`dashboard-ingestion-dispatch-console` canonical spec.
 
 It extends `connector-base-spec` (`openspec/specs/connector-base-spec/spec.md`)
 additively, depends on `module-approvals` only for generic OAuth reauth
-gating, depends on the existing `public.audit_log` infrastructure (per
-`dashboard-api/spec.md:530-541` and `connector-lifecycle-ceremony/spec.md:90-101`)
-for audit emissions, and re-uses the OAuth state-store infrastructure introduced by
+gating, uses the existing `public.audit_log` infrastructure for audit
+emissions, and re-uses the OAuth state-store infrastructure introduced by
 `google-multi-account-oauth/spec.md:76-83`.
 
 The capability applies non-uniformly: OAuth-bound connectors (Spotify,
@@ -382,9 +383,8 @@ The connector-detail API response SHALL include an `auth` block and a `scopes` b
 - **WHEN** any field of the `auth` or `scopes` block is serialized
 - **THEN** the response SHALL NOT contain any access token, refresh token,
   client secret, bearer token, session string, app password, or API key
-- **AND** this requirement SHALL be enforced consistent with
-  `connector-lifecycle-ceremony/spec.md:103-109` ("No credentials in
-  lifecycle API responses")
+- **AND** this requirement SHALL preserve the credential-masking boundary in
+  `core-credentials/spec.md`
 
 #### Scenario: Additive field rule
 
@@ -455,10 +455,14 @@ alias, or generic OAuth provider alias.
 
 ### Requirement: Reauth endpoint contract for generic OAuth connectors
 
-The reauth endpoint `POST /api/ingestion/connectors/{type}/{identity}/reauth` SHALL, when this capability is implemented, return a structured authorization URL and CSRF state token for generic OAuth-bound connectors other than Spotify. The endpoint is owned by `connector-lifecycle-ceremony` (currently stubbed with HTTP 503) and remains Approvals-gated per
-`connector-lifecycle-ceremony/spec.md:9-19`. Spotify recovery is the
-connector-owned Passport journey defined in §Spotify connector authority and
-Passport projection, not a generic OAuth reauth response.
+The reauth endpoint `POST /api/ingestion/connectors/{type}/{identity}/reauth` SHALL,
+when this capability is implemented, return a structured authorization URL and
+CSRF state token for generic OAuth-bound connectors other than Spotify.
+The durable dashboard lifecycle authority is added by this change's
+`dashboard-ingestion-dispatch-console` delta: only generic OAuth is
+Approvals-gated. Spotify recovery is the connector-owned Passport journey
+defined in §Spotify connector authority and Passport projection, not a generic
+OAuth reauth response.
 
 #### Scenario: Generic OAuth provider response shape
 
@@ -513,8 +517,7 @@ Passport projection, not a generic OAuth reauth response.
   `action = "connector.reauth.submit"`,
   `target = {connector_type, endpoint_identity}`,
   and the approval id in the entry metadata
-- **AND** this SHALL satisfy the audit-emission requirement on the lifecycle
-  ceremony gate matrix (`connector-lifecycle-ceremony/spec.md:90-101`)
+- **AND** this entry SHALL be emitted only for generic OAuth reauth
 
 #### Scenario: Approval resolution audit emission
 
@@ -660,9 +663,8 @@ that maps `SourceProvider` enum values (per
 ### Requirement: Audit trail
 
 All scope-surface state transitions SHALL emit `audit.append()` entries to
-`public.audit_log` consistent with the existing audit infrastructure (per
-`dashboard-api/spec.md:530-541`). Retention is indefinite per
-`connector-lifecycle-ceremony/spec.md:91`.
+`public.audit_log` consistent with the existing audit infrastructure. Audit
+entries required by this capability SHALL be retained indefinitely.
 
 #### Scenario: Audit action namespace
 
@@ -680,11 +682,9 @@ All scope-surface state transitions SHALL emit `audit.append()` entries to
     `required_scopes_version`; metadata includes `from_version`,
     `to_version`, `newly_required`, `newly_dropped`
   - `connector.reauth.submit` — emitted only on a generic OAuth POST
-    `.../reauth` Approvals submission (consistent with
-    `connector-lifecycle-ceremony/spec.md:97-99`)
+    `.../reauth` Approvals submission
   - `connector.reauth.approved` / `connector.reauth.denied` — emitted on
-    generic OAuth Approval resolution (consistent with
-    `connector-lifecycle-ceremony/spec.md:100-101`)
+    generic OAuth Approval resolution
   - `connector.reauth.completed` / `connector.reauth.failed` — emitted by
     the generic OAuth callback handler on success or failure
 
@@ -855,12 +855,11 @@ SHALL be uniform regardless of provider.
   `about/heart-and-soul/security.md:96-147`
 - v1 scope — dashboard OAuth credential configuration —
   `about/heart-and-soul/v1.md:103-110`
-- Blocking dependency declaration that this spec resolves —
-  `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40`
-- Audit-pair pattern reused by this spec —
-  `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:90-101`
-- Credential masking constraint —
-  `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:103-109`
+- Historical HTTP 503 gate that this capability supersedes (context only) —
+  `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40`
+- Durable dashboard lifecycle target added by this change —
+  `openspec/specs/dashboard-ingestion-dispatch-console/spec.md:331-454`
+- Credential masking constraint — `openspec/specs/core-credentials/spec.md`
 - UI ground truth — `ReauthCallout` —
   `docs/redesigns/ingestion-connector-detail.jsx:70-101`
 - UI ground truth — `ScopeList` —

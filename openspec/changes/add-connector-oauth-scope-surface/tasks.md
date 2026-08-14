@@ -67,18 +67,18 @@ by the operator AFTER this change ratifies).
 - [x] 2.2 Cite the existing `connector-base-spec/spec.md:319-348,381-419` as
       the extension target.
 
-## 3. Spec authoring — delta against `connector-lifecycle-ceremony`
+## 3. Spec authoring — durable delta against `dashboard-ingestion-dispatch-console`
 
-- [x] 3.1 Place a `## MODIFIED Requirements` block in
-      `specs/connector-lifecycle-ceremony/spec.md` that supersedes the
-      "Reauth is blocked" scenario and the gate matrix entry for `reauth`
-      from
-      `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:11-17,36-40`.
+- [x] 3.1 Place an `## ADDED Requirements` block in
+      `specs/dashboard-ingestion-dispatch-console/spec.md` that adds the
+      generic-OAuth, Spotify, and non-OAuth reauth authority split to the
+      existing canonical ingestion recovery resolver.
 
-- [x] 3.2 Note in `proposal.md ## Impact > Cross-change coordination` and
-      in the lifecycle-ceremony delta's preamble that the delta applies
-      cleanly regardless of archive order, with the no-op fallback for the
-      case where this change archives BEFORE `redesign-ingestion-dispatch-console`.
+- [x] 3.2 Remove the orphaned
+      `specs/connector-lifecycle-ceremony/spec.md` modified delta. Record in
+      proposal and design that the historical lifecycle artifact is context
+      only; this delta targets the live canonical spec and therefore survives
+      this change's own archive without a second-change ordering fallback.
 
 ## 4. Spec authoring — verification
 
@@ -93,9 +93,9 @@ by the operator AFTER this change ratifies).
 - [x] 4.3 Cross-check that no existing capability spec is contradicted:
   - `core-credentials/spec.md:52-99` — credential masking. Confirm no scope
     response field exposes a token.
-  - `connector-lifecycle-ceremony/spec.md:103-109` — "No credentials in
-    lifecycle API responses". Confirm reauth response shape only contains
-    `auth_url`, `state`, `expires_in` — no token.
+  - `connector-oauth-scope-surface/spec.md` — its response-shape and audit
+    requirements keep credentials out of the generic OAuth response while the
+    Spotify path retains CredentialStore-only token authority.
   - `google-multi-account-oauth/spec.md:84-145` — scope-set registry.
     Confirm the manifest schema in Decision 1 generalizes the existing
     Google scope-set pattern without conflict.
@@ -127,6 +127,10 @@ by the operator AFTER this change ratifies).
   - `connector-telegram-bot` — bot token (non-OAuth)
   - `connector-telegram-user-client` — TDLib session (non-OAuth)
   Every entry must be classified in the spec.
+
+- [x] 4.5 Add a static archive-survival regression that proves the active
+      lifecycle-authority delta is named for an existing canonical spec and
+      that the orphaned lifecycle-ceremony delta is absent.
 
 ## 5. Documentation + cleanup
 

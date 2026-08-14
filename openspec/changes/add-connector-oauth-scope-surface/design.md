@@ -59,16 +59,19 @@ and neither defines what happens to connectors that have no OAuth surface at
 all (Telegram user client uses TDLib session strings; OwnTracks uses a static
 bearer; Home Assistant uses a long-lived access token).
 
-The blocking dependency from `connector-lifecycle-ceremony` is explicit:
+The archived lifecycle artifact records the original blocking dependency:
 
 > The `reauth` action additionally depends on a future
 > `connector-oauth-scope-surface` capability and is blocked until that spec
 > exists.
 
-— `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4`
+— `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4`
 
 A 503 with no `Retry-After` is the right behavior for a dependency that can
-only be resolved by spec evolution. This change resolves it.
+only be resolved by spec evolution. That artifact is historical context only:
+this change extends the existing `dashboard-ingestion-dispatch-console`
+canonical spec with the durable lifecycle-authority requirement and keeps the
+full flow contract in its active `connector-oauth-scope-surface` carrier.
 
 Stakeholders: the operator (Tze), QA staffer (which currently has to detect
 scope drift through a 401-on-API failure-streak heuristic — see
@@ -104,9 +107,9 @@ every OAuth-bound connector maintainer.
 **Non-Goals:**
 
 - Implementation. Migrations, code, and tests are deferred to follow-up beads.
-- A separate `scope_history` table. The existing `public.audit_log` with
-  indefinite retention (per `connector-lifecycle-ceremony` spec.md:91) already
-  serves this purpose.
+- A separate `scope_history` table. The existing `public.audit_log`, with
+  indefinite retention specified by this change's Audit trail requirement,
+  already serves this purpose.
 - A separate `scope_catalog` registry. Per-provider scope semantics live in
   the connector module's manifest, which is where reviewers already look when
   adding new scope grants.
@@ -457,7 +460,8 @@ or the spec is out of date.
 ### Decision 8 — `sensitive` scope grants get a distinct audit entry on top of the standard reauth pair
 
 **What:** The standard generic OAuth reauth audit sequence applies only to
-generic OAuth reauth. It follows `connector-lifecycle-ceremony`:
+generic OAuth reauth. The durable dashboard lifecycle-authority delta in this
+change requires:
 
 1. `connector.reauth.submit` (on POST `.../reauth` → Approvals submission)
 2. `connector.reauth.approved` or `connector.reauth.denied` (on Approval resolution)
@@ -490,9 +494,9 @@ ahead of the row's `required_scopes_version`):
 
 **Why:**
 
-- The generic OAuth reauth audit sequence already exists per
-  `connector-lifecycle-ceremony` (spec.md:91-101). This spec adds the generic
-  OAuth completion entries and the elevation/rotation entries.
+- The generic OAuth reauth audit sequence is made durable by this change's
+  `dashboard-ingestion-dispatch-console` delta. This spec defines its generic
+  completion entries and the elevation/rotation entries.
 - The `elevated_grant` entry is what makes "did the operator actually grant
   write access to their Gmail?" auditable after the fact.
 - The `required_changed` entry creates a paper trail when a connector
@@ -502,9 +506,9 @@ ahead of the row's `required_scopes_version`):
 **Alternatives considered:**
 
 - **Combine all four into a single rich audit entry:** rejected. The generic
-  OAuth Approvals submit / resolution split is mandated by the lifecycle
-  ceremony spec; the completion entry is needed because generic OAuth
-  callbacks run asynchronously after the Approval resolves.
+  OAuth Approvals submit / resolution split is required by this change's
+  durable lifecycle-authority delta; the completion entry is needed because
+  generic OAuth callbacks run asynchronously after the Approval resolves.
 - **Skip `required_changed` and let `rotation-needed` speak for itself:**
   rejected. The audit log is the only durable record that scope requirements
   changed; without it, "why is this connector suddenly in rotation-needed?"
@@ -604,8 +608,9 @@ calls generic reauth on its own behalf. If the auth_status flips automatically
 the Approval is only created when the operator clicks "Re-authorize". Spotify
 continues directly from its content-blind Passport projection to its
 connector-owned PKCE recovery; non-OAuth reauth rejects before Approvals.
-Unlike reauth, `connector-lifecycle-ceremony` rejects `rotate-token` before
-parking until a safe credential-reference replay command exists.
+Unlike reauth, `rotate-token` remains rejected before parking under the
+separate approval-replay contract until a safe credential-reference replay
+command exists.
 
 ### Risk 4 — Non-OAuth connector authors forget to update the applicability matrix
 
@@ -703,8 +708,10 @@ populated `auth.status` on first introspection after the deploy.
 - Security model — credential authority + masking —
   `about/heart-and-soul/security.md:96-147`
 - v1 scope — `about/heart-and-soul/v1.md:103-110,154-167`
-- Blocking spec dependency declaration —
-  `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40,91-101`
+- Historical HTTP 503 gate (context only) —
+  `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40,91-101`
+- Durable dashboard lifecycle target —
+  `openspec/specs/dashboard-ingestion-dispatch-console/spec.md:331-454`
 - UI binding for `ReauthCallout` and `ScopeList` —
   `docs/redesigns/ingestion-connector-detail.jsx:70-101,216-245`
 - Spotify fixture (auth.status, scopes) —

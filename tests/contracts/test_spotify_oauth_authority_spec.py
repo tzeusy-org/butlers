@@ -34,7 +34,19 @@ _CARRIER_DESIGN = (
 _CARRIER_PROPOSAL = (
     _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "proposal.md"
 )
-_LIFECYCLE_DELTA = (
+_DASHBOARD_INGESTION_LIFECYCLE_DELTA = (
+    _REPO_ROOT
+    / "openspec"
+    / "changes"
+    / "add-connector-oauth-scope-surface"
+    / "specs"
+    / "dashboard-ingestion-dispatch-console"
+    / "spec.md"
+)
+_INGESTION_SPEC = (
+    _REPO_ROOT / "openspec" / "specs" / "dashboard-ingestion-dispatch-console" / "spec.md"
+)
+_STALE_LIFECYCLE_DELTA = (
     _REPO_ROOT
     / "openspec"
     / "changes"
@@ -42,9 +54,6 @@ _LIFECYCLE_DELTA = (
     / "specs"
     / "connector-lifecycle-ceremony"
     / "spec.md"
-)
-_INGESTION_SPEC = (
-    _REPO_ROOT / "openspec" / "specs" / "dashboard-ingestion-dispatch-console" / "spec.md"
 )
 _DASHBOARD_API_SPEC = _REPO_ROOT / "openspec" / "specs" / "dashboard-api" / "spec.md"
 _PASSPORT_SPEC = _REPO_ROOT / "openspec" / "specs" / "butler-secrets" / "spec.md"
@@ -146,18 +155,25 @@ def test_carrier_serializes_the_two_downstream_implementation_lanes() -> None:
     assert "no compatibility alias, shim, or production registry entry" in tasks
 
 
-def test_lifecycle_delta_splits_reauth_by_authority_before_approvals() -> None:
-    """Lifecycle reauth cannot collapse generic, Spotify, and unsupported paths."""
-    lifecycle = _requirement(_read(_LIFECYCLE_DELTA), "Per-action lifecycle gate matrix")
+def test_reauth_lifecycle_authority_has_a_live_canonical_archive_target() -> None:
+    """Archive must retain the authority split in the canonical ingestion contract."""
+    canonical = _read(_INGESTION_SPEC)
+    lifecycle = _requirement(
+        _read(_DASHBOARD_INGESTION_LIFECYCLE_DELTA), "OAuth reauth lifecycle authority"
+    )
+
+    assert _DASHBOARD_INGESTION_LIFECYCLE_DELTA.parent.name == _INGESTION_SPEC.parent.name
+    assert not _STALE_LIFECYCLE_DELTA.exists()
+    assert "### Requirement: Ingestion-Originated OAuth page_of_origin Contract" in canonical
+    assert "## ADDED Requirements" in _read(_DASHBOARD_INGESTION_LIFECYCLE_DELTA)
 
     assert "#### Scenario: Generic OAuth reauth is Approvals-gated" in lifecycle
-    assert "§Reauth endpoint contract for generic OAuth connectors" in lifecycle
+    assert "`connector-oauth-scope-surface/spec`" in lifecycle
     assert "#### Scenario: Spotify reauth stays connector-owned" in lifecycle
     assert "`/secrets?focus=u:spotify`" in lifecycle
     assert "`POST /api/connectors/spotify/oauth/start`" in lifecycle
-    assert "SHALL NOT return the generic `{auth_url, state, expires_in}` response" in lifecycle
-    assert "SHALL NOT create, validate, or consume a generic OAuth `state` token" in lifecycle
-    assert "SHALL NOT invoke a generic OAuth callback" in lifecycle
+    assert "CredentialStore" in lifecycle
+    assert "SHALL NOT submit the recovery to the Approvals module" in lifecycle
     assert "#### Scenario: Non-OAuth reauth is rejected before approval" in lifecycle
     assert "SHALL NOT pass through the Approvals module" in lifecycle
 
