@@ -72,15 +72,17 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     reason: "..."}` for non-OAuth providers, and HTTP 409 when the connector
     is not in a state that warrants reauth. Spotify instead enters its
     connector-owned Passport recovery journey.
-  - Reauth callback contract: generic OAuth callbacks and connector-owned
-    callbacks update `observed_scopes` and append a second audit entry
-    (`connector.reauth.completed`) on success or `connector.reauth.failed` on
-    failure, each through its declared credential authority.
-  - Approvals gating: reauth initiation is Approvals-gated (consistent with
-    `connector-lifecycle-ceremony`). Granting an additional `sensitive` scope
-    (e.g. `gmail.modify`, `calendar` write) emits a distinct audit entry with
-    extra context (`scope.elevated_grant` action) on top of the standard reauth
-    audit pair.
+  - Reauth callback contract: generic OAuth callbacks update
+    `observed_scopes` and append `connector.reauth.completed` on success or
+    `connector.reauth.failed` on failure. Spotify continues directly from its
+    content-blind Passport projection to the connector-owned PKCE flow. Its
+    connector-owned callback stays outside the generic approval and audit
+    sequence. Non-OAuth reauth is rejected before the Approvals module.
+  - Approval + audit authority: Only generic OAuth reauth is Approvals-gated
+    and emits the generic reauth audit sequence. Granting an additional
+    `sensitive` scope (e.g. `gmail.modify`, `calendar` write) emits a distinct
+    audit entry with extra context (`scope.elevated_grant` action) on top of
+    that generic OAuth sequence.
   - Rotation: when a connector module's declared `required` scopes change
     (operator edit OR provider deprecation), the spec defines how existing
     connectors are flagged `rotation-needed` and how the operator initiates
@@ -110,7 +112,8 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   sibling change `redesign-ingestion-dispatch-console`):
   - Removes the blocking scenario "Reauth is blocked" once both changes are
     archived. The lifecycle ceremony spec's reauth row in the gate matrix is
-    updated to read: "Approvals-gated; delegates to
+    updated to read: "Generic OAuth: Approvals-gated; Spotify: connector-owned
+    Passport-to-PKCE journey; non-OAuth: reject before Approvals; delegates to
     `connector-oauth-scope-surface/spec` for behavior contract".
   - This modification is documented as a `## MODIFIED Requirements` block in
     this change's spec delta. The owning change (`redesign-ingestion-dispatch-console`)
@@ -132,7 +135,9 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   retention (indefinite, per `connector-lifecycle-ceremony`) covers it.
 
 - **NO new approval primitives.** Re-uses the existing `module-approvals`
-  Approvals module per `connector-lifecycle-ceremony`.
+  Approvals module only for generic OAuth reauth per
+  `connector-lifecycle-ceremony`; Spotify stays direct and connector-owned,
+  and non-OAuth reauth rejects before approval.
 
 ## Capabilities
 
@@ -191,12 +196,15 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   No data migration required (NULL `observed_scopes` is interpreted as "not yet
   probed").
 
-- **Audit log**: new `action` values: `connector.reauth.submit`,
-  `connector.reauth.approved`, `connector.reauth.denied`,
-  `connector.reauth.completed`, `connector.reauth.failed`,
-  `connector.scope.observed`, `connector.scope.elevated_grant`,
-  `connector.scope.required_changed`. These reuse the existing audit-log
-  infrastructure; no schema change.
+- **Audit log**: generic OAuth reauth, and only generic OAuth reauth, emits
+  `connector.reauth.submit`, `connector.reauth.approved`,
+  `connector.reauth.denied`, `connector.reauth.completed`, and
+  `connector.reauth.failed`. `connector.scope.observed`,
+  `connector.scope.elevated_grant`, and `connector.scope.required_changed`
+  retain their own specified OAuth-connector lifecycle. Spotify's direct
+  connector-owned path does not require the generic submit or approval-
+  resolution records, and non-OAuth reauth attempts reject before approval.
+  These values reuse the existing audit-log infrastructure; no schema change.
 
 - **Doctrine alignment**:
   - **Non-Negotiable Rule 1 (user-federated)**: scope surface is per-instance,

@@ -309,9 +309,9 @@ the serif_note as an elevated permission).
 
 **What:**
 
-- `POST /api/ingestion/connectors/{type}/{identity}/reauth` (Approvals-gated)
-  returns `{auth_url, state, expires_in}` for generic OAuth providers where
-  `state` is a 32-byte
+- This Approvals-gated state issuance applies only to generic OAuth reauth.
+  `POST /api/ingestion/connectors/{type}/{identity}/reauth` returns
+  `{auth_url, state, expires_in}` for generic OAuth providers where `state` is a 32-byte
   URL-safe random token bound to `(connector_type, endpoint_identity,
   requesting_operator)`. The state is stored in the OAuth state store
   (existing infrastructure per `google-multi-account-oauth/spec.md:76-83`)
@@ -324,6 +324,9 @@ the serif_note as an elevated permission).
   `GET /api/connectors/spotify/oauth/callback`; it persists token material
   only through CredentialStore and may update only derived metadata on
   `connector_registry`.
+- Spotify's direct Passport-to-connector PKCE recovery is not submitted to
+  Approvals and does not require generic submit or approval-resolution audit
+  records. A non-OAuth target is rejected before any Approvals submission.
 - Rapid re-initiation: if generic `POST .../reauth` is called while a prior state is
   outstanding, the prior state is revoked and a fresh one issued. This is
   idempotent — the dashboard can spam-click the "Re-authorize" button and
@@ -453,7 +456,8 @@ or the spec is out of date.
 
 ### Decision 8 — `sensitive` scope grants get a distinct audit entry on top of the standard reauth pair
 
-**What:** Standard reauth audit pair (per `connector-lifecycle-ceremony`):
+**What:** The standard generic OAuth reauth audit sequence applies only to
+generic OAuth reauth. It follows `connector-lifecycle-ceremony`:
 
 1. `connector.reauth.submit` (on POST `.../reauth` → Approvals submission)
 2. `connector.reauth.approved` or `connector.reauth.denied` (on Approval resolution)
@@ -461,7 +465,11 @@ or the spec is out of date.
 Reauth completion (callback):
 
 3. `connector.reauth.completed` (success) or `connector.reauth.failed` (error)
-   on the OAuth callback.
+   on the generic OAuth callback.
+
+Spotify's direct Passport-to-connector PKCE recovery is not submitted to
+Approvals and does not require generic submit or approval-resolution audit
+records. A non-OAuth target is rejected before any Approvals submission.
 
 If the callback observes that the new `granted_scopes` includes any scope
 marked `sensitive` in the manifest, a fourth entry is appended:
@@ -482,9 +490,9 @@ ahead of the row's `required_scopes_version`):
 
 **Why:**
 
-- The reauth audit pair already exists per `connector-lifecycle-ceremony`
-  (spec.md:91-101). This spec adds the OAuth-specific completion entries and
-  the elevation/rotation entries.
+- The generic OAuth reauth audit sequence already exists per
+  `connector-lifecycle-ceremony` (spec.md:91-101). This spec adds the generic
+  OAuth completion entries and the elevation/rotation entries.
 - The `elevated_grant` entry is what makes "did the operator actually grant
   write access to their Gmail?" auditable after the fact.
 - The `required_changed` entry creates a paper trail when a connector
@@ -493,10 +501,10 @@ ahead of the row's `required_scopes_version`):
 
 **Alternatives considered:**
 
-- **Combine all four into a single rich audit entry:** rejected. The
-  Approvals submit / resolution split is mandated by the lifecycle ceremony
-  spec; the completion entry is needed because OAuth callbacks run
-  asynchronously after the Approval resolves.
+- **Combine all four into a single rich audit entry:** rejected. The generic
+  OAuth Approvals submit / resolution split is mandated by the lifecycle
+  ceremony spec; the completion entry is needed because generic OAuth
+  callbacks run asynchronously after the Approval resolves.
 - **Skip `required_changed` and let `rotation-needed` speak for itself:**
   rejected. The audit log is the only durable record that scope requirements
   changed; without it, "why is this connector suddenly in rotation-needed?"
@@ -585,17 +593,19 @@ increments ONLY when `required` changes, not `optional` or `sensitive`.
 
 ### Risk 3 — Approvals fatigue
 
-**Risk:** Reauth is Approvals-gated. If a connector flaps between `ok` and
-`drift` (e.g. clock skew, brief provider hiccup), the operator could be
-prompted to approve reauth they did not initiate.
+**Risk:** Generic OAuth reauth is Approvals-gated. If a generic OAuth connector
+flaps between `ok` and `drift` (e.g. clock skew, brief provider hiccup), the
+operator could be prompted to approve reauth they did not initiate.
 
-**Mitigation:** The reauth endpoint is **operator-initiated** (button click
-on the dashboard), not automatic. The connector daemon NEVER calls reauth on
-its own behalf. If the auth_status flips automatically (drift detected on
-introspection), the dashboard surfaces `ReauthCallout` but the Approval is
-only created when the operator clicks "Re-authorize". Unlike reauth,
-`connector-lifecycle-ceremony` rejects `rotate-token` before parking until a
-safe credential-reference replay command exists.
+**Mitigation:** The generic OAuth reauth endpoint is **operator-initiated**
+(button click on the dashboard), not automatic. The connector daemon NEVER
+calls generic reauth on its own behalf. If the auth_status flips automatically
+(drift detected on introspection), the dashboard surfaces `ReauthCallout` but
+the Approval is only created when the operator clicks "Re-authorize". Spotify
+continues directly from its content-blind Passport projection to its
+connector-owned PKCE recovery; non-OAuth reauth rejects before Approvals.
+Unlike reauth, `connector-lifecycle-ceremony` rejects `rotate-token` before
+parking until a safe credential-reference replay command exists.
 
 ### Risk 4 — Non-OAuth connector authors forget to update the applicability matrix
 

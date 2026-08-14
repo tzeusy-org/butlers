@@ -5,8 +5,13 @@
 Defines the per-connector contract for declaring required OAuth scopes,
 observing currently-granted scopes from providers, detecting drift,
 surfacing scope state on the connector-detail dashboard page (the
-`ReauthCallout` band and `ScopeList` panel), gating reauthorization through
-the Approvals module, and auditing scope rotations.
+`ReauthCallout` band and `ScopeList` panel), gating generic OAuth
+reauthorization through the Approvals module, and auditing scope rotations.
+
+Only generic OAuth reauth is gated through the Approvals module and emits the
+generic reauth audit sequence. Spotify continues directly from its
+content-blind Passport projection to the connector-owned PKCE flow. Non-OAuth
+reauth is rejected before the Approvals module.
 
 This capability unblocks
 `POST /api/ingestion/connectors/{type}/{identity}/reauth`, which is
@@ -15,10 +20,10 @@ this spec exists (per
 `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40`).
 
 It extends `connector-base-spec` (`openspec/specs/connector-base-spec/spec.md`)
-additively, depends on `module-approvals` for reauth gating, depends on the
-existing `public.audit_log` infrastructure (per `dashboard-api/spec.md:530-541`
-and `connector-lifecycle-ceremony/spec.md:90-101`) for audit emissions, and
-re-uses the OAuth state-store infrastructure introduced by
+additively, depends on `module-approvals` only for generic OAuth reauth
+gating, depends on the existing `public.audit_log` infrastructure (per
+`dashboard-api/spec.md:530-541` and `connector-lifecycle-ceremony/spec.md:90-101`)
+for audit emissions, and re-uses the OAuth state-store infrastructure introduced by
 `google-multi-account-oauth/spec.md:76-83`.
 
 The capability applies non-uniformly: OAuth-bound connectors (Spotify,
@@ -413,6 +418,9 @@ alias, or generic OAuth provider alias.
   `GET /api/connectors/spotify/oauth/callback`
 - **AND** no generic OAuth registry entry or `/api/oauth/spotify/*` endpoint
   SHALL authorize, exchange, refresh, or persist Spotify token material
+- **AND** the direct connector-owned recovery SHALL NOT be submitted to the
+  Approvals module or require generic `connector.reauth.submit`,
+  `connector.reauth.approved`, or `connector.reauth.denied` audit records
 
 #### Scenario: Content-blind Passport projection
 
@@ -523,11 +531,12 @@ Passport projection, not a generic OAuth reauth response.
 Generic OAuth callback handlers SHALL, when this capability is implemented,
 accept the state token issued by the generic reauth endpoint, complete the
 token exchange, update `observed_scopes` and `auth_status` on the relevant
-`connector_registry` row, and emit completion audit entries. The generic
-Google callback is `/api/oauth/google/callback`. Spotify uses the
+`connector_registry` row, and emit the generic completion audit entries. The
+generic Google callback is `/api/oauth/google/callback`. Spotify uses the
 connector-owned `/api/connectors/spotify/oauth/callback` instead; it stores
-token material only through CredentialStore and may update only derived scope
-or connection metadata on `connector_registry`.
+token material only through CredentialStore, may update only derived scope or
+connection metadata on `connector_registry`, and does not enter the generic
+Approvals or state-token journey.
 
 #### Scenario: State validation
 
@@ -544,10 +553,9 @@ or connection metadata on `connector_registry`.
 
 - **WHEN** the state is valid AND the token exchange succeeds
 - **THEN** the state SHALL be marked consumed in the state store
-- **AND** any new credential material SHALL be stored only through the
+- **AND** any new credential material SHALL be stored only through the generic
   provider's approved credential authority (`core-credentials/spec.md:51-99`
-  for Google and `core-credentials/spec.md:200-223` for connector-owned
-  Spotify)
+  for the current Google path)
 - **AND** `connector_registry.observed_scopes`,
   `observed_scopes_fetched_at`, and `required_scopes_version` SHALL be
   updated for the row keyed by `(connector_type, endpoint_identity)`
@@ -671,13 +679,14 @@ All scope-surface state transitions SHALL emit `audit.append()` entries to
     when the daemon notices that the manifest's `version` exceeds
     `required_scopes_version`; metadata includes `from_version`,
     `to_version`, `newly_required`, `newly_dropped`
-  - `connector.reauth.submit` — emitted on POST `.../reauth` Approvals
-    submission (consistent with `connector-lifecycle-ceremony/spec.md:97-99`)
+  - `connector.reauth.submit` — emitted only on a generic OAuth POST
+    `.../reauth` Approvals submission (consistent with
+    `connector-lifecycle-ceremony/spec.md:97-99`)
   - `connector.reauth.approved` / `connector.reauth.denied` — emitted on
-    Approval resolution (consistent with
+    generic OAuth Approval resolution (consistent with
     `connector-lifecycle-ceremony/spec.md:100-101`)
   - `connector.reauth.completed` / `connector.reauth.failed` — emitted by
-    the OAuth callback handler on success or failure
+    the generic OAuth callback handler on success or failure
 
 #### Scenario: Audit entry field shape
 

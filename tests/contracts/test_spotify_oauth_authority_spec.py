@@ -31,6 +31,9 @@ _CARRIER_TASKS = (
 _CARRIER_DESIGN = (
     _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "design.md"
 )
+_CARRIER_PROPOSAL = (
+    _REPO_ROOT / "openspec" / "changes" / "add-connector-oauth-scope-surface" / "proposal.md"
+)
 _LIFECYCLE_DELTA = (
     _REPO_ROOT
     / "openspec"
@@ -157,3 +160,41 @@ def test_lifecycle_delta_splits_reauth_by_authority_before_approvals() -> None:
     assert "SHALL NOT invoke a generic OAuth callback" in lifecycle
     assert "#### Scenario: Non-OAuth reauth is rejected before approval" in lifecycle
     assert "SHALL NOT pass through the Approvals module" in lifecycle
+
+
+def test_active_carrier_limits_generic_approval_and_audit_to_generic_oauth() -> None:
+    """The active carrier must not turn Spotify or non-OAuth reauth into generic approval flow."""
+    proposal = _collapse_whitespace(_read(_CARRIER_PROPOSAL))
+    carrier = _collapse_whitespace(_read(_CARRIER_SPEC))
+    design = _collapse_whitespace(_read(_CARRIER_DESIGN))
+
+    assert (
+        "Only generic OAuth reauth is Approvals-gated and emits the generic reauth audit sequence."
+        in proposal
+    )
+    assert (
+        "Spotify continues directly from its content-blind Passport projection to the connector-owned PKCE flow."
+        in proposal
+    )
+    assert "Non-OAuth reauth is rejected before the Approvals module." in proposal
+
+    assert (
+        "Only generic OAuth reauth is gated through the Approvals module and emits the generic reauth audit sequence."
+        in carrier
+    )
+    assert (
+        "Spotify continues directly from its content-blind Passport projection to the connector-owned PKCE flow."
+        in carrier
+    )
+    assert "Non-OAuth reauth is rejected before the Approvals module." in carrier
+
+    assert "This Approvals-gated state issuance applies only to generic OAuth reauth." in design
+    assert (
+        "The standard generic OAuth reauth audit sequence applies only to generic OAuth reauth."
+        in design
+    )
+    assert (
+        "Spotify's direct Passport-to-connector PKCE recovery is not submitted to Approvals and does not require generic submit or approval-resolution audit records."
+        in design
+    )
+    assert "A non-OAuth target is rejected before any Approvals submission." in design
