@@ -1289,7 +1289,66 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           )
         }
 
+        function prototypePropertyReadKind(node) {
+          const isPrototypeMethod = (constructorName, methodName) =>
+            resolvesImmutableAlias(
+              node,
+              (candidate) =>
+                candidate.type === 'MemberExpression' &&
+                memberPropertyName(candidate) === methodName &&
+                candidate.object.type === 'MemberExpression' &&
+                memberPropertyName(candidate.object) === 'prototype' &&
+                resolvesImmutableAlias(
+                  candidate.object.object,
+                  (constructor) => isUnshadowedGlobalIdentifier(constructor, constructorName),
+                ),
+            )
+
+          if (isPrototypeMethod('CSSStyleDeclaration', 'getPropertyValue')) return 'cssom'
+          if (isPrototypeMethod('StylePropertyMapReadOnly', 'get')) return 'typed-om'
+          return null
+        }
+
+        function prototypePropertyReadArgumentValue(kind, receiver, propertyNode) {
+          const receiverIsKnown =
+            kind === 'cssom' ? isCssomStyleReceiver(receiver) : isTypedOmReceiver(receiver)
+          if (!receiverIsKnown) return null
+          if (!propertyNode || propertyNode.type === 'SpreadElement') {
+            return DYNAMIC_VALUE_MARKER
+          }
+          return stringConstructionValue(propertyNode)
+        }
+
+        function prototypePropertyReadValue(node) {
+          if (
+            node.callee.type === 'MemberExpression' &&
+            memberPropertyName(node.callee) === 'call'
+          ) {
+            const kind = prototypePropertyReadKind(node.callee.object)
+            if (!kind || node.arguments.length < 2) return null
+            return prototypePropertyReadArgumentValue(kind, node.arguments[0], node.arguments[1])
+          }
+
+          if (!isGlobalMemberReference(node.callee, 'Reflect', 'apply') || node.arguments.length !== 3) {
+            return null
+          }
+
+          const kind = prototypePropertyReadKind(node.arguments[0])
+          if (!kind || node.arguments[1].type === 'SpreadElement' || node.arguments[2].type === 'SpreadElement') {
+            return null
+          }
+
+          const argumentsList = constArrayElements(node.arguments[2], new Set())
+          if (!argumentsList) {
+            return prototypePropertyReadArgumentValue(kind, node.arguments[1], null)
+          }
+          return prototypePropertyReadArgumentValue(kind, node.arguments[1], argumentsList[0])
+        }
+
         function cssomPropertyReadValue(node) {
+          const prototypeProperty = prototypePropertyReadValue(node)
+          if (prototypeProperty !== null) return prototypeProperty
+
           if (
             node.callee.type !== 'MemberExpression' ||
             node.arguments.length !== 1 ||

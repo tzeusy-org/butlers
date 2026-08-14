@@ -475,6 +475,20 @@ const CSSOM_SEMANTIC_ROLE_RESOLVER_VARIANT_SOURCE = [
   'export const aliasedTypedOm = typedStyleMap.get("--categorical-1");',
 ].join("\n");
 
+const CSSOM_PROTOTYPE_PRIVATE_IDENTITY_READ_SOURCE = [
+  'export const cssomCall = CSSStyleDeclaration.prototype.getPropertyValue.call(document.documentElement.style, "--category-1");',
+  'export const cssomApply = Reflect.apply(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, ["--category-1"]);',
+  'export const typedOmCall = StylePropertyMapReadOnly.prototype.get.call(document.documentElement.computedStyleMap(), "--color-category-12");',
+  'export const typedOmApply = Reflect.apply(StylePropertyMapReadOnly.prototype.get, document.documentElement.computedStyleMap(), ["--color-category-12"]);',
+].join("\n");
+
+const CSSOM_PROTOTYPE_SEMANTIC_ROLE_READ_SOURCE = [
+  'export const cssomCall = CSSStyleDeclaration.prototype.getPropertyValue.call(document.documentElement.style, "--categorical-1");',
+  'export const cssomApply = Reflect.apply(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, ["--categorical-1"]);',
+  'export const typedOmCall = StylePropertyMapReadOnly.prototype.get.call(document.documentElement.computedStyleMap(), "--categorical-1");',
+  'export const typedOmApply = Reflect.apply(StylePropertyMapReadOnly.prototype.get, document.documentElement.computedStyleMap(), ["--categorical-1"]);',
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -836,6 +850,25 @@ describe("semantic visual-role lint", () => {
     expect(roleMessages).toEqual([]);
   });
 
+  it("rejects private CSSOM and Typed OM reads through static prototype call and Reflect.apply paths", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_PROTOTYPE_PRIVATE_IDENTITY_READ_SOURCE,
+      "src/components/ui/IdentityCssomPrototypeLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(4);
+    expect(roleMessages.map((message) => message.line)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("permits semantic CSSOM and Typed OM reads through static prototype call and Reflect.apply paths", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_PROTOTYPE_SEMANTIC_ROLE_READ_SOURCE,
+      "src/components/ui/SemanticCssomPrototypeRead.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
   it("keeps the ButlerMark exemption limited to its canonical component", async () => {
     const roleMessages = await visualRoleMessages(
       FULLY_DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE,
@@ -850,6 +883,7 @@ describe("semantic visual-role lint", () => {
       [
         UNMODELLED_STATIC_PRIVATE_RESOLVER_SOURCE,
         CSSOM_PRIVATE_IDENTITY_RESOLVER_VARIANT_SOURCE,
+        CSSOM_PROTOTYPE_PRIVATE_IDENTITY_READ_SOURCE,
       ].join("\n"),
       "src/components/ui/ButlerMark.tsx",
     );

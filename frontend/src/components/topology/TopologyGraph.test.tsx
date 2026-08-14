@@ -210,12 +210,16 @@ describe("TopologyGraph -- legend", () => {
   });
 
   it("keeps the topology requirement aligned with State Color Discipline", () => {
+    expect(DASHBOARD_VISIBILITY_SPEC).toContain("its state border is green (`--green`)");
+    expect(DASHBOARD_VISIBILITY_SPEC).toContain("its state border is red (`--red`)");
+    expect(DASHBOARD_VISIBILITY_SPEC).toContain("its state border is amber (`--amber`)");
     expect(DASHBOARD_VISIBILITY_SPEC).toContain("every topology node retains a neutral background");
     expect(DASHBOARD_VISIBILITY_SPEC).toContain("readable neutral foreground (`var(--fg)`) in both themes");
     expect(DASHBOARD_VISIBILITY_SPEC).toContain("state-colored border or compact `StateDot`");
     expect(DASHBOARD_VISIBILITY_SPEC).toContain(
       "Switchboard and Heartbeat nodes retain neutral backgrounds with state-colored borders",
     );
+    expect(DASHBOARD_VISIBILITY_SPEC).not.toContain("state border or foreground");
     expect(DASHBOARD_VISIBILITY_SPEC).not.toContain("state-colored border and foreground");
     expect(DASHBOARD_VISIBILITY_SPEC).not.toContain("Switchboard node's background is the status color");
   });

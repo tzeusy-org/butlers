@@ -210,10 +210,11 @@ The page MUST contain:
   named compound exception: it MUST render `systolic` and `diastolic` as two lines. Another
   chart-eligible compound type MAY expose its raw data, but it MUST NOT guess a numeric key or invent
   a line series; it MUST state that no unambiguous series is available instead. The line palette MUST
-  be driven by the chart-series token `--chart-1` (bridged to a literal color for recharts via a read
-  of the computed CSS variable), not a hardcoded hex. Where two lines are shown
-  (systolic/diastolic), the second line MUST use the separate chart-series token `--chart-2`
-  so the two lines remain visually separable.
+  use the direct chart-series CSS custom-property reference `var(--chart-1)` passed to the Recharts
+  SVG `stroke` prop, not a hardcoded hex or computed-style-derived literal. Chromium resolves that
+  CSS custom property in the SVG presentation attribute at paint time. Where two lines are shown
+  (systolic/diastolic), the second line MUST pass the separate `var(--chart-2)` reference to its
+  SVG stroke so the two lines remain visually separable.
 - The trend rule-list as the primary surface, sourced from `GET /api/health/measurements/trend`
   (the bucketed mean/min/max aggregation). Only scalar types MAY request or render that scalar
   aggregation. `blood_pressure` and other compound types MUST state that trend aggregation is
