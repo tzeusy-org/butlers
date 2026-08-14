@@ -540,6 +540,285 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           )
         }
 
+        // The private-token boundary is about the resolved operation, not its
+        // surface spelling. Keep this allowlist deliberately small: these are
+        // the only prototype methods whose static result we model, plus the
+        // two Function meta-invokers needed to follow a known method through
+        // call/apply. Unknown dynamic functions remain outside this evaluator.
+        const STATIC_RESOLVER_METHODS = {
+          Array: {
+            join: 'array-join',
+            reduce: 'array-reduce',
+          },
+          CSSStyleDeclaration: {
+            getPropertyValue: 'cssom',
+          },
+          Function: {
+            apply: 'function-apply',
+            call: 'function-call',
+          },
+          String: {
+            concat: 'string-concat',
+            replace: 'string-replace',
+            replaceAll: 'string-replace-all',
+          },
+          StylePropertyMapReadOnly: {
+            get: 'typed-om',
+          },
+        }
+
+        const INSTANCE_RESOLVER_METHODS = {
+          concat: 'string-concat',
+          get: 'typed-om',
+          getPropertyValue: 'cssom',
+          join: 'array-join',
+          reduce: 'array-reduce',
+          replace: 'string-replace',
+          replaceAll: 'string-replace-all',
+        }
+
+        function resolverMethodKind(constructorName, methodName) {
+          return STATIC_RESOLVER_METHODS[constructorName]?.[methodName] ?? null
+        }
+
+        function prototypeConstructorName(node, resolvingVariables = new Set()) {
+          node = unwrapStaticExpression(node)
+          if (
+            node.type === 'MemberExpression' &&
+            memberPropertyName(node) === 'prototype' &&
+            node.object.type === 'Identifier' &&
+            isUnshadowedGlobalIdentifier(node.object, node.object.name)
+          ) {
+            return node.object.name
+          }
+          if (node.type !== 'Identifier') return null
+
+          const binding = constInitializer(node)
+          if (!binding || resolvingVariables.has(binding.variable)) return null
+
+          resolvingVariables.add(binding.variable)
+          const constructorName = prototypeConstructorName(binding.initializer, resolvingVariables)
+          resolvingVariables.delete(binding.variable)
+          return constructorName
+        }
+
+        function directPrototypeResolverTarget(node, resolvingVariables = new Set()) {
+          node = unwrapStaticExpression(node)
+          if (node.type !== 'MemberExpression') return null
+          const constructorName = prototypeConstructorName(node.object, resolvingVariables)
+          const methodName = memberPropertyName(node, resolvingVariables)
+          return constructorName && typeof methodName === 'string'
+            ? resolverMethodKind(constructorName, methodName)
+            : null
+        }
+
+        function reflectedPrototypeResolverTarget(node, resolvingVariables = new Set()) {
+          node = unwrapStaticExpression(node)
+          if (
+            node.type === 'CallExpression' &&
+            isGlobalMemberReference(node.callee, 'Reflect', 'get') &&
+            node.arguments.length === 2 &&
+            node.arguments.every((argument) => argument.type !== 'SpreadElement')
+          ) {
+            const constructorName = prototypeConstructorName(node.arguments[0], resolvingVariables)
+            const methodName = stringConstructionValue(node.arguments[1], resolvingVariables)
+            return constructorName && methodName !== DYNAMIC_VALUE_MARKER
+              ? resolverMethodKind(constructorName, methodName)
+              : null
+          }
+
+          if (
+            node.type !== 'MemberExpression' ||
+            memberPropertyName(node, resolvingVariables) !== 'value' ||
+            node.object.type !== 'CallExpression' ||
+            !isGlobalMemberReference(node.object.callee, 'Object', 'getOwnPropertyDescriptor') ||
+            node.object.arguments.length !== 2 ||
+            node.object.arguments.some((argument) => argument.type === 'SpreadElement')
+          ) {
+            return null
+          }
+
+          const constructorName = prototypeConstructorName(node.object.arguments[0], resolvingVariables)
+          const methodName = stringConstructionValue(node.object.arguments[1], resolvingVariables)
+          return constructorName && methodName !== DYNAMIC_VALUE_MARKER
+            ? resolverMethodKind(constructorName, methodName)
+            : null
+        }
+
+        function staticResolverTarget(node, resolvingVariables = new Set()) {
+          node = unwrapStaticExpression(node)
+
+          const prototypeTarget = directPrototypeResolverTarget(node, resolvingVariables)
+          if (prototypeTarget) return prototypeTarget
+
+          const reflectedTarget = reflectedPrototypeResolverTarget(node, resolvingVariables)
+          if (reflectedTarget) return reflectedTarget
+
+          if (node.type === 'MemberExpression') {
+            const instanceTarget = INSTANCE_RESOLVER_METHODS[
+              memberPropertyName(node, resolvingVariables)
+            ]
+            if (instanceTarget) return instanceTarget
+          }
+
+          if (node.type !== 'Identifier') return null
+
+          const binding = constInitializer(node)
+          if (!binding || resolvingVariables.has(binding.variable)) return null
+
+          resolvingVariables.add(binding.variable)
+          const target = staticResolverTarget(binding.initializer, resolvingVariables)
+          resolvingVariables.delete(binding.variable)
+          return target
+        }
+
+        function staticBoundResolver(node, resolvingVariables = new Set()) {
+          node = unwrapStaticExpression(node)
+          if (node.type === 'Identifier') {
+            const binding = constInitializer(node)
+            if (!binding || resolvingVariables.has(binding.variable)) return null
+
+            resolvingVariables.add(binding.variable)
+            const bound = staticBoundResolver(binding.initializer, resolvingVariables)
+            resolvingVariables.delete(binding.variable)
+            return bound
+          }
+
+          if (
+            node.type !== 'CallExpression' ||
+            node.callee.type !== 'MemberExpression' ||
+            memberPropertyName(node.callee, resolvingVariables) !== 'bind' ||
+            node.arguments.length < 1 ||
+            node.arguments.some((argument) => argument.type === 'SpreadElement')
+          ) {
+            return null
+          }
+
+          const target = staticResolverCallable(node.callee.object, resolvingVariables)
+          if (!target) return null
+
+          return {
+            arguments: [...target.arguments, ...node.arguments.slice(1)],
+            kind: target.kind,
+            receiver: target.receiver ?? node.arguments[0],
+          }
+        }
+
+        function staticResolverCallable(node, resolvingVariables = new Set()) {
+          const bound = staticBoundResolver(node, resolvingVariables)
+          if (bound) return bound
+
+          const kind = staticResolverTarget(node, resolvingVariables)
+          return kind ? { arguments: [], kind, receiver: null } : null
+        }
+
+        function normalizeStaticResolverInvocation(
+          invocation,
+          resolvingVariables = new Set(),
+          depth = 0,
+        ) {
+          if (depth > 8) return null
+          if (invocation.kind !== 'function-call' && invocation.kind !== 'function-apply') {
+            return invocation
+          }
+          if (!invocation.receiver) return null
+
+          const target = staticResolverCallable(invocation.receiver, resolvingVariables)
+          if (!target) return null
+
+          if (invocation.kind === 'function-call') {
+            if (invocation.arguments.length < 1) return null
+            return invokeStaticResolver(
+              target,
+              invocation.arguments[0],
+              invocation.arguments.slice(1),
+              resolvingVariables,
+              depth + 1,
+            )
+          }
+
+          if (invocation.arguments.length !== 2) return null
+          const appliedArguments = constArrayElements(
+            invocation.arguments[1],
+            resolvingVariables,
+          )
+          if (!appliedArguments) return null
+          return invokeStaticResolver(
+            target,
+            invocation.arguments[0],
+            appliedArguments,
+            resolvingVariables,
+            depth + 1,
+          )
+        }
+
+        function invokeStaticResolver(
+          callable,
+          receiver,
+          callArguments,
+          resolvingVariables = new Set(),
+          depth = 0,
+        ) {
+          return normalizeStaticResolverInvocation(
+            {
+              arguments: [...callable.arguments, ...callArguments],
+              kind: callable.kind,
+              receiver: callable.receiver ?? receiver,
+            },
+            resolvingVariables,
+            depth,
+          )
+        }
+
+        function staticResolverInvocation(node, resolvingVariables = new Set()) {
+          if (node.type !== 'CallExpression' || node.arguments.some((argument) => argument.type === 'SpreadElement')) {
+            return null
+          }
+
+          if (isGlobalMemberReference(node.callee, 'Reflect', 'apply')) {
+            if (node.arguments.length !== 3) return null
+            const callable = staticResolverCallable(node.arguments[0], resolvingVariables)
+            const appliedArguments = constArrayElements(node.arguments[2], resolvingVariables)
+            return callable && appliedArguments
+              ? invokeStaticResolver(
+                  callable,
+                  node.arguments[1],
+                  appliedArguments,
+                  resolvingVariables,
+                )
+              : null
+          }
+
+          if (node.callee.type === 'MemberExpression') {
+            const property = memberPropertyName(node.callee, resolvingVariables)
+            const callable = staticResolverCallable(node.callee.object, resolvingVariables)
+            if (property === 'call' && callable && node.arguments.length >= 1) {
+              return invokeStaticResolver(
+                callable,
+                node.arguments[0],
+                node.arguments.slice(1),
+                resolvingVariables,
+              )
+            }
+            if (property === 'apply' && callable && node.arguments.length === 2) {
+              const appliedArguments = constArrayElements(node.arguments[1], resolvingVariables)
+              return appliedArguments
+                ? invokeStaticResolver(
+                    callable,
+                    node.arguments[0],
+                    appliedArguments,
+                    resolvingVariables,
+                  )
+                : null
+            }
+          }
+
+          const bound = staticBoundResolver(node.callee, resolvingVariables)
+          return bound
+            ? invokeStaticResolver(bound, null, node.arguments, resolvingVariables)
+            : null
+        }
+
         function unwrapStaticExpression(node) {
           while (
             node &&
@@ -1004,6 +1283,98 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             : DYNAMIC_VALUE_MARKER
         }
 
+        function staticResolverStringValue(
+          node,
+          resolvingVariables = new Set(),
+          localValues = new Map(),
+        ) {
+          const invocation = staticResolverInvocation(node, resolvingVariables)
+          if (!invocation || !invocation.receiver) return null
+
+          if (invocation.kind === 'array-join') {
+            if (invocation.arguments.length > 1) return DYNAMIC_VALUE_MARKER
+            const array = constArrayElements(invocation.receiver, resolvingVariables, localValues)
+            if (!array) return failClosedStructuralValue(invocation.receiver, resolvingVariables)
+            const separator = invocation.arguments[0]
+              ? stringConstructionValue(invocation.arguments[0], resolvingVariables, localValues)
+              : ','
+            if (separator === DYNAMIC_VALUE_MARKER) return failClosedStructuralValue(node, resolvingVariables)
+            const values = array.map((element) =>
+              stringConstructionValue(element, resolvingVariables, localValues),
+            )
+            return values.includes(DYNAMIC_VALUE_MARKER)
+              ? failClosedStructuralValue(node, resolvingVariables)
+              : values.join(separator)
+          }
+
+          if (invocation.kind === 'string-concat') {
+            const values = [invocation.receiver, ...invocation.arguments].map((part) =>
+              stringConstructionValue(part, resolvingVariables, localValues),
+            )
+            return values.includes(DYNAMIC_VALUE_MARKER)
+              ? failClosedStructuralValue(node, resolvingVariables)
+              : values.join('')
+          }
+
+          if (invocation.kind === 'array-reduce') {
+            if (invocation.arguments.length < 1 || invocation.arguments.length > 2) {
+              return DYNAMIC_VALUE_MARKER
+            }
+            const array = constArrayElements(invocation.receiver, resolvingVariables, localValues)
+            if (!array) return failClosedStructuralValue(invocation.receiver, resolvingVariables)
+            return (
+              staticReducedString(
+                array,
+                invocation.arguments[0],
+                invocation.arguments[1],
+                resolvingVariables,
+                localValues,
+              ) ?? failClosedStructuralValue(node, resolvingVariables)
+            )
+          }
+
+          if (invocation.kind === 'string-replace' || invocation.kind === 'string-replace-all') {
+            if (invocation.arguments.length !== 2) return DYNAMIC_VALUE_MARKER
+            const [search, replacement] = invocation.arguments
+            const regExpSearch = constRegExpValue(search, resolvingVariables, localValues)
+            if (invocation.kind === 'string-replace-all' && regExpSearch && !regExpSearch.global) {
+              return DYNAMIC_VALUE_MARKER
+            }
+
+            try {
+              const subject = stringConstructionValue(
+                invocation.receiver,
+                resolvingVariables,
+                localValues,
+              )
+              const replacementValue = stringConstructionValue(
+                replacement,
+                resolvingVariables,
+                localValues,
+              )
+              const searchValue = regExpSearch ?? stringConstructionValue(
+                search,
+                resolvingVariables,
+                localValues,
+              )
+              if (
+                subject === DYNAMIC_VALUE_MARKER ||
+                replacementValue === DYNAMIC_VALUE_MARKER ||
+                searchValue === DYNAMIC_VALUE_MARKER
+              ) {
+                return failClosedStructuralValue(node, resolvingVariables)
+              }
+              return invocation.kind === 'string-replace'
+                ? subject.replace(searchValue, replacementValue)
+                : subject.replaceAll(searchValue, replacementValue)
+            } catch {
+              return DYNAMIC_VALUE_MARKER
+            }
+          }
+
+          return null
+        }
+
         function stringConstructionValue(
           node,
           resolvingVariables = new Set(),
@@ -1074,6 +1445,12 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
               return DYNAMIC_VALUE_MARKER
             }
           }
+          const indirectResolverValue = staticResolverStringValue(
+            node,
+            resolvingVariables,
+            localValues,
+          )
+          if (indirectResolverValue !== null) return indirectResolverValue
           if (isPrototypeMethodCall(node, 'Array', 'join')) {
             if (
               node.arguments.length < 1 ||
@@ -1320,6 +1697,19 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         }
 
         function prototypePropertyReadValue(node) {
+          const staticInvocation = staticResolverInvocation(node)
+          if (
+            staticInvocation &&
+            staticInvocation.receiver &&
+            (staticInvocation.kind === 'cssom' || staticInvocation.kind === 'typed-om')
+          ) {
+            return prototypePropertyReadArgumentValue(
+              staticInvocation.kind,
+              staticInvocation.receiver,
+              staticInvocation.arguments[0],
+            )
+          }
+
           if (
             node.callee.type === 'MemberExpression' &&
             memberPropertyName(node.callee) === 'call'

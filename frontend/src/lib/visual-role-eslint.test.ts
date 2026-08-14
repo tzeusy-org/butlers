@@ -489,6 +489,74 @@ const CSSOM_PROTOTYPE_SEMANTIC_ROLE_READ_SOURCE = [
   'export const typedOmApply = Reflect.apply(StylePropertyMapReadOnly.prototype.get, document.documentElement.computedStyleMap(), ["--categorical-1"]);',
 ].join("\n");
 
+// Indirection must not turn a private CSSOM/Typed-OM read into an unobservable
+// resolver. These cover immutable aliases, bound methods, descriptor and
+// reflection lookup, and Function's call/apply meta-invocations.
+const CSSOM_INDIRECT_PRIVATE_IDENTITY_READ_SOURCE = [
+  'const boundCssom = CSSStyleDeclaration.prototype.getPropertyValue.bind(document.documentElement.style);',
+  'export const fromBoundCssom = boundCssom("--category-1");',
+  'const aliasedCssom = CSSStyleDeclaration.prototype.getPropertyValue;',
+  'export const fromAliasedCall = aliasedCssom.call(document.documentElement.style, "--color-category-12");',
+  'export const fromFunctionCall = Function.prototype.call.call(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, "--category-1");',
+  'export const fromFunctionApply = Function.prototype.apply.call(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, ["--color-category-12"]);',
+  'const cssomDescriptor = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, "getPropertyValue").value;',
+  'export const fromDescriptor = cssomDescriptor.call(document.documentElement.style, "--category-1");',
+  'export const fromReflectApply = Reflect["apply"](Reflect.get(CSSStyleDeclaration.prototype, "getPropertyValue"), document.documentElement.style, ["--color-category-12"]);',
+  'const boundTypedOm = StylePropertyMapReadOnly.prototype.get.bind(document.documentElement.computedStyleMap());',
+  'export const fromBoundTypedOm = boundTypedOm("--category-1");',
+  'const typedOmDescriptor = Object.getOwnPropertyDescriptor(StylePropertyMapReadOnly.prototype, "get").value;',
+  'export const fromTypedOmDescriptor = typedOmDescriptor.call(document.documentElement.computedStyleMap(), "--color-category-12");',
+].join("\n");
+
+const CSSOM_INDIRECT_SEMANTIC_ROLE_READ_SOURCE = [
+  'const boundCssom = CSSStyleDeclaration.prototype.getPropertyValue.bind(document.documentElement.style);',
+  'export const fromBoundCssom = boundCssom("--categorical-1");',
+  'const aliasedCssom = CSSStyleDeclaration.prototype.getPropertyValue;',
+  'export const fromAliasedCall = aliasedCssom.call(document.documentElement.style, "--chart-1");',
+  'export const fromFunctionCall = Function.prototype.call.call(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, "--green");',
+  'export const fromFunctionApply = Function.prototype.apply.call(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, ["--categorical-1"]);',
+  'const cssomDescriptor = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, "getPropertyValue").value;',
+  'export const fromDescriptor = cssomDescriptor.call(document.documentElement.style, "--chart-1");',
+  'export const fromReflectApply = Reflect["apply"](Reflect.get(CSSStyleDeclaration.prototype, "getPropertyValue"), document.documentElement.style, ["--green"]);',
+  'const boundTypedOm = StylePropertyMapReadOnly.prototype.get.bind(document.documentElement.computedStyleMap());',
+  'export const fromBoundTypedOm = boundTypedOm("--categorical-1");',
+  'const typedOmDescriptor = Object.getOwnPropertyDescriptor(StylePropertyMapReadOnly.prototype, "get").value;',
+  'export const fromTypedOmDescriptor = typedOmDescriptor.call(document.documentElement.computedStyleMap(), "--chart-1");',
+].join("\n");
+
+// Static construction needs the same boundary when the resolver function is
+// retrieved or bound indirectly. The lexical forms below still all evaluate
+// to var(--category-N) or a Tailwind arbitrary-value equivalent.
+const INDIRECT_STATIC_PRIVATE_IDENTITY_RESOLVER_SOURCE = [
+  'const boundJoin = Array.prototype.join.bind(["var(", "--category-1", ")"], "");',
+  'export const fromBoundJoin = boundJoin();',
+  'const boundConcat = String.prototype.concat.bind("var(", "--color-category-12", ")");',
+  'export const fromBoundConcat = boundConcat();',
+  'const boundReplace = String.prototype.replace.bind("var(__token__)", "__token__", "--category-1");',
+  'export const fromBoundReplace = boundReplace();',
+  'const boundReplaceAll = String.prototype.replaceAll.bind("bg-(color:__token__)", "__token__", "--color-category-12");',
+  'export const fromBoundReplaceAll = boundReplaceAll();',
+  'export const fromReflectedCall = Reflect.get(String.prototype, "concat").call("var(", "--category-1", ")");',
+  'export const fromDescriptorCall = Object.getOwnPropertyDescriptor(String.prototype, "concat").value.call("var(", "--color-category-12", ")");',
+  'export const fromFunctionApply = Function.prototype.apply.call(String.prototype.concat, "var(", ["--category-1", ")"]);',
+  'export const fromComputedReflectApply = Reflect["apply"](String.prototype.concat, "var(", ["--color-category-12", ")"]);',
+].join("\n");
+
+const INDIRECT_STATIC_SEMANTIC_ROLE_RESOLVER_SOURCE = [
+  'const boundJoin = Array.prototype.join.bind(["var(", "--categorical-1", ")"], "");',
+  'export const fromBoundJoin = boundJoin();',
+  'const boundConcat = String.prototype.concat.bind("var(", "--chart-1", ")");',
+  'export const fromBoundConcat = boundConcat();',
+  'const boundReplace = String.prototype.replace.bind("var(__token__)", "__token__", "--categorical-1");',
+  'export const fromBoundReplace = boundReplace();',
+  'const boundReplaceAll = String.prototype.replaceAll.bind("bg-(color:__token__)", "__token__", "--chart-1");',
+  'export const fromBoundReplaceAll = boundReplaceAll();',
+  'export const fromReflectedCall = Reflect.get(String.prototype, "concat").call("var(", "--categorical-1", ")");',
+  'export const fromDescriptorCall = Object.getOwnPropertyDescriptor(String.prototype, "concat").value.call("var(", "--chart-1", ")");',
+  'export const fromFunctionApply = Function.prototype.apply.call(String.prototype.concat, "var(", ["--categorical-1", ")"]);',
+  'export const fromComputedReflectApply = Reflect["apply"](String.prototype.concat, "var(", ["--chart-1", ")"]);',
+].join("\n");
+
 const MALFORMED_PRIVATE_IDENTITY_SOURCE = [
   'export const direct = "var(--category-1";',
   'export const utility = "bg-(color:--color-category-12";',
@@ -869,6 +937,44 @@ describe("semantic visual-role lint", () => {
     expect(roleMessages).toEqual([]);
   });
 
+  it("rejects private CSSOM and Typed OM reads through bound, descriptor, reflected, and Function meta-invocation paths", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_INDIRECT_PRIVATE_IDENTITY_READ_SOURCE,
+      "src/components/ui/IdentityIndirectCssomReadLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(8);
+    expect(roleMessages.map((message) => message.line)).toEqual([2, 4, 5, 6, 8, 9, 11, 13]);
+  });
+
+  it("permits semantic category, chart, and state CSSOM reads through the same indirect paths", async () => {
+    const roleMessages = await visualRoleMessages(
+      CSSOM_INDIRECT_SEMANTIC_ROLE_READ_SOURCE,
+      "src/components/ui/SemanticIndirectCssomRead.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("rejects private static resolver construction through bound, descriptor, reflected, and Function meta-invocation paths", async () => {
+    const roleMessages = await visualRoleMessages(
+      INDIRECT_STATIC_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityIndirectStaticResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(8);
+    expect(roleMessages.map((message) => message.line)).toEqual([2, 4, 6, 8, 9, 10, 11, 12]);
+  });
+
+  it("permits semantic static resolver construction through the same indirect paths", async () => {
+    const roleMessages = await visualRoleMessages(
+      INDIRECT_STATIC_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticIndirectStaticResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
   it("keeps the ButlerMark exemption limited to its canonical component", async () => {
     const roleMessages = await visualRoleMessages(
       FULLY_DYNAMIC_CUSTOM_PROPERTY_TEMPLATE_SOURCE,
@@ -884,6 +990,8 @@ describe("semantic visual-role lint", () => {
         UNMODELLED_STATIC_PRIVATE_RESOLVER_SOURCE,
         CSSOM_PRIVATE_IDENTITY_RESOLVER_VARIANT_SOURCE,
         CSSOM_PROTOTYPE_PRIVATE_IDENTITY_READ_SOURCE,
+        CSSOM_INDIRECT_PRIVATE_IDENTITY_READ_SOURCE,
+        INDIRECT_STATIC_PRIVATE_IDENTITY_RESOLVER_SOURCE,
       ].join("\n"),
       "src/components/ui/ButlerMark.tsx",
     );
