@@ -12,3 +12,4 @@
 - [Email Priority Queuing](email-priority-queuing.md) — email priority and queuing design
 - [Pre-Classification Triage](pre-classification-triage.md) — pre-classification triage design
 - [Thread Affinity Routing](thread-affinity-routing.md) — thread affinity routing design
+- [Beads Runtime Data Bridge](beads-runtime-data-bridge.md) — owner-approved planning contract for a hardened, multi-host read-only Beads projection
