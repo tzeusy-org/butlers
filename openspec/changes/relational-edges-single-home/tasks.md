@@ -31,19 +31,14 @@ so the boundary cannot silently re-diverge.
   (spec: "Skill edge vocabulary stays a subset of the registry")
 - [ ] B4 — Tests for B2: registry-relational predicate rejected; narrative edge
   (`planned_dinner_with`) still stored and visible via `memory_entity_neighbors`.
-- [x] B5 — Guard the consolidation producer: retain valid `object_entity_id`
-  values, reject malformed target UUIDs instead of downgrading them to property
-  facts, and forward every well-formed edge to B6's storage boundary, where the
-  exact local narrative allowlist makes the authoritative admission decision
-  before persistence; align the consolidation skill examples with the single-home
-  boundary.
-- [x] B6 — For newly consolidated facts only, enforce the owner-approved exact
-  local narrative-edge allowlist (`planned_dinner_with`, `wake_coordination`,
-  `social_exchange_with`) at the storage boundary before persistence. Reject
-  unavailable classification and every other `object_entity_id` predicate;
-  preserve generic writer behavior, relationship isolation, evidence/lifecycle,
-  tenant, cardinality, retry, lease, and idempotence behavior. Add focused
-  storage, executor, parser, and consolidation-skill contract tests.
+
+## Transferred landed slice — B5/B6 only
+
+PR #3728 landed B5/B6 before this carrier could complete. They are no longer
+tasks or delta authority in this change: their observed canonical contract and
+test mapping live in `openspec/specs/module-memory/spec.md` and
+`landed-b5-b6-transfer.md`. This transfer is not acceptance of B1-B4 or Tracks
+C-E; the 17 unchecked tasks below and above remain active.
 
 ## Track C — Backfill (blocked by A1, B2)
 

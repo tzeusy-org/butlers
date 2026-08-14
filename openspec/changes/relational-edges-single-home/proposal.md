@@ -66,14 +66,11 @@ columns to absorb its only live use.
   `memory_store_fact()` MUST be rejected with a `ValueError` directing the caller
   to `relationship_assert_fact()`, mirroring the existing identity-contact
   carve-out.
-- **ADDED (`module-memory`) — consolidation-only narrative-edge admission.** A
-  newly consolidated fact may carry `object_entity_id` only when its predicate is
-  one of the owner-approved v1 narrative edges: `planned_dinner_with`,
-  `wake_coordination`, or `social_exchange_with`. The consolidation storage path
-  applies that exact local allowlist before persistence and rejects an unknown,
-  unclassified, or otherwise disallowed edge. It does not consult or mutate the
-  relationship registry, alter generic `memory_store_fact()` behavior, or create
-  a generic graph-policy authority.
+- **TRANSFERRED (B5/B6 only; observed, not active carrier authority).** PR
+  #3728 landed the exact consolidation-only narrative-edge admission fence. Its
+  canonical observed authority now lives in `module-memory`; see
+  [landed-b5-b6-transfer.md](landed-b5-b6-transfer.md). This transfer does not
+  accept, implement, or alter B1-B4 or Tracks C-E.
 - **NEW (`relationship-facts`) — fact-extraction skill contract.** The
   relationship butler's `fact-extraction` skill MUST route registry-relational
   edges through `relationship_assert_fact()` with hyphenated registry predicate
@@ -99,10 +96,9 @@ columns to absorb its only live use.
   - `roster/relationship/.agents/skills/fact-extraction/SKILL.md` — boundary
     rewrite + edge-fact routing to `relationship_assert_fact()`.
   - `src/butlers/modules/memory/` (`__init__.py` / `storage.py`) — reject
-    registry-relational predicates in `memory_store_fact()`.
-  - `src/butlers/modules/memory/storage.py`, `consolidation_executor.py`, and
-    `skills/consolidate/SKILL.md` — enforce the consolidation-only exact
-    narrative-edge allowlist before a new fact is persisted.
+    registry-relational predicates in `memory_store_fact()` when Track B2 is
+    implemented; the already-landed B5/B6 consolidation-only fence is tracked
+    separately by `landed-b5-b6-transfer.md`.
   - `roster/relationship/tools/relationship_assert_fact.py` — alias map for
     underscore→hyphen relational predicate names (optional ingest convenience).
   - `roster/relationship/tools/vcard.py`, `src/butlers/scripts/backfill_facts.py`

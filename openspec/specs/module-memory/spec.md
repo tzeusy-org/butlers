@@ -188,7 +188,11 @@ another daemon's session work.
 
 ### Requirement: LLM-driven memory consolidation pipeline
 
-The consolidation pipeline SHALL transform unconsolidated episodes into durable facts and rules via a multi-step process: fetch pending episodes, group by (tenant_id, source butler), build a prompt with existing context, spawn an LLM CLI session, parse the structured JSON output, and execute the extracted actions against the database. All derived facts and rules MUST inherit the tenant context from their source episodes.
+The consolidation pipeline SHALL transform unconsolidated episodes into durable facts and rules via a multi-step process: fetch pending episodes, group by `(tenant_id, source butler)`, build a prompt with existing context, spawn an LLM CLI session, parse the structured JSON output, validate artifact evidence, and execute the extracted actions against the database. All derived facts and rules MUST inherit the tenant context from their source episodes.
+
+ID: REQ-module-memory-005
+Source: [Observed] PR #3669; `openspec/changes/archive/2026-08-14-consolidation-exact-artifact-evidence/CANONICALIZATION.md`
+Scope: v1-mandatory
 
 #### Scenario: Episode grouping by tenant and butler
 
@@ -204,6 +208,18 @@ The consolidation pipeline SHALL transform unconsolidated episodes into durable 
 - **AND** the runtime output MUST be parsed for a JSON block containing `new_facts`, `updated_facts`, `new_rules`, and `confirmations`
 - **AND** a successful runtime result with missing or blank output MUST fail the group with an actionable error so its episodes remain eligible for retry rather than being marked consolidated
 - **AND** partial failures in one group MUST NOT block other groups from processing
+
+#### Scenario: Artifact output names exact episode evidence
+
+- **WHEN** a non-empty episode group is formatted for consolidation
+- **THEN** each rendered episode MUST expose its UUID to the runtime session
+- **AND** every emitted `new_facts`, `updated_facts`, and `new_rules` entry MUST include a non-empty `evidence_episode_ids` array naming only the claimed episode UUIDs that support that artifact
+
+#### Scenario: Invalid artifact evidence fails the group before persistence
+
+- **WHEN** any emitted fact or rule artifact has absent, empty, malformed, duplicate, or out-of-group `evidence_episode_ids`
+- **THEN** the consolidation group MUST use the existing failed/dead-letter retry path
+- **AND** no fact, rule, `memory_links` row, or consolidated episode state from that group MAY be persisted before the failure
 
 #### Scenario: Scheduled consolidation uses the catalog-backed daemon spawner
 
@@ -230,14 +246,19 @@ The consolidation pipeline SHALL transform unconsolidated episodes into durable 
 
 ### Requirement: Consolidation executor with per-action error isolation
 
-The consolidation executor SHALL apply parsed consolidation results to the database. Each action (new fact, updated fact, new rule, confirmation) SHALL be wrapped in its own try/except block so that one failure does not prevent remaining actions from executing. The executor MUST propagate tenant_id and request_id from the source episode group to all derived writes.
+The consolidation executor SHALL apply parsed consolidation results to the database. Each action (new fact, updated fact, new rule, confirmation) SHALL be wrapped in its own try/except block so that one valid action failure does not prevent remaining valid actions from executing. Before any action is attempted for a non-empty source group, the executor MUST validate every fact and rule artifact's exact episode evidence. The executor MUST propagate tenant_id and request_id from the source episode group to all derived writes.
 
-#### Scenario: New facts stored with tenant context and derived_from links
+ID: REQ-module-memory-006
+Source: [Observed] PR #3669; `openspec/changes/archive/2026-08-14-consolidation-exact-artifact-evidence/CANONICALIZATION.md`
+Scope: v1-mandatory
 
-- **WHEN** the executor processes a `new_facts` entry
+#### Scenario: New facts stored with tenant context and exact derived_from links
+
+- **WHEN** the executor processes a valid `new_facts` entry
 - **THEN** `store_fact` MUST be called with the entry's fields, `source_butler` set to the butler name, and `tenant_id` set to the episode group's tenant_id
 - **AND** a `valid_at` value on the entry MUST be forwarded so the fact is stored as a temporal observation
-- **AND** a `derived_from` link MUST be created from the new fact to each source episode
+- **AND** exactly one `derived_from` link MUST be created from the new fact to each UUID in that entry's validated `evidence_episode_ids`, and none to another claimed episode
+- **AND** the fact write and all of those links MUST commit atomically
 
 #### Scenario: Updated facts trigger supersession with tenant context
 
@@ -250,7 +271,8 @@ The consolidation executor SHALL apply parsed consolidation results to the datab
 - **AND** temporal-predicate classification MUST use the persisted target predicate, including predicate aliases, rather than the repeated model-output predicate
 - **AND** `store_fact` MUST atomically verify that `target_id` remains the current fact for that identity key before superseding it
 - **AND** a missing, stale, cross-tenant, cross-source, temporal, or entity-edge target MUST be rejected without preventing later consolidation actions
-- **AND** a `derived_from` link MUST be created from the new fact to each source episode
+- **AND** exactly one `derived_from` link MUST be created from the new fact to each UUID in that entry's validated `evidence_episode_ids`, and none to another claimed episode
+- **AND** the updated fact write and all of those links MUST commit atomically
 
 #### Scenario: Temporal observations are not updated facts
 
@@ -259,10 +281,12 @@ The consolidation executor SHALL apply parsed consolidation results to the datab
 - **AND** when `valid_at` is omitted but the predicate registry marks the predicate as temporal, the executor MUST reject the entry before calling `store_fact`
 - **AND** the consolidation prompt MUST direct temporal observations to `new_facts`, where `valid_at` preserves coexistence rather than supersession
 
-#### Scenario: New rules stored with tenant context
+#### Scenario: New rules stored with tenant context and exact derived_from links
 
-- **WHEN** the executor processes a `new_rules` entry
+- **WHEN** the executor processes a valid `new_rules` entry
 - **THEN** `store_rule` MUST be called with `tenant_id` set to the episode group's tenant_id
+- **AND** exactly one `derived_from` link MUST be created from the new rule to each UUID in that entry's validated `evidence_episode_ids`, and none to another claimed episode
+- **AND** the rule write and all of those links MUST commit atomically
 
 #### Scenario: Source episodes marked as consolidated
 
@@ -271,15 +295,59 @@ The consolidation executor SHALL apply parsed consolidation results to the datab
 
 #### Scenario: Individual action failures do not block others
 
-- **WHEN** storing one new fact fails with an exception
+- **WHEN** storing one valid new fact fails with an exception
 - **THEN** the error MUST be logged and added to the `errors` list
-- **AND** subsequent actions MUST still be attempted
+- **AND** subsequent valid actions MUST still be attempted
 
 #### Scenario: Memory events include tenant_id
 
 - **WHEN** consolidation emits memory_events (success or failure)
 - **THEN** the INSERT MUST include `tenant_id` from the episode group being processed
 - **AND** the INSERT MUST include `actor_butler` with the butler name
+
+---
+
+### Requirement: Consolidation narrative edges use an exact local allowlist
+
+For newly consolidated facts only, the storage boundary SHALL admit an
+`object_entity_id` edge only after its literal predicate is classified by the
+versioned local v1 allowlist: `planned_dinner_with`, `wake_coordination`, and
+`social_exchange_with`. The storage boundary MUST reject every other predicate
+and an unavailable or missing classification before that artifact can write a
+fact or evidence link. This consolidation-only guard SHALL NOT query or write
+`relationship.entity_predicate_registry` or `relationship.entity_facts`, and
+SHALL NOT change generic `memory_store_fact()` admission behavior.
+
+ID: REQ-module-memory-012
+Source: [Observed] PR #3728; `openspec/changes/relational-edges-single-home/landed-b5-b6-transfer.md`
+Scope: v1-mandatory
+
+#### Scenario: Approved consolidation narrative edge persists
+
+- **WHEN** the consolidation executor submits a new fact with
+  `object_entity_id` and predicate `planned_dinner_with`, `wake_coordination`,
+  or `social_exchange_with`
+- **THEN** the storage boundary MUST persist the edge in `{schema}.facts`
+- **AND** the existing evidence, tenant, cardinality, retry, lease, and
+  idempotence behavior MUST remain in effect
+
+#### Scenario: Consolidation preserves a well-formed edge target
+
+- **WHEN** consolidation output contains a well-formed `object_entity_id`
+- **THEN** the executor MUST preserve that target and forward the new edge to
+  the consolidation storage boundary for exact-allowlist classification
+- **AND** when the target is malformed, it MUST reject that new fact rather
+  than silently downgrading it to a property fact or the generic writer path
+
+#### Scenario: Unapproved or unavailable consolidation edge is rejected
+
+- **WHEN** the consolidation executor submits a new fact with
+  `object_entity_id` whose predicate is not in the local allowlist, or the
+  consolidation edge classification is unavailable
+- **THEN** the storage boundary MUST raise `ValueError` before inserting a fact
+- **AND** it MUST NOT write an evidence link for that rejected artifact
+- **AND** it MUST preserve the executor's established group lifecycle policy
+- **AND** the generic `memory_store_fact()` path MUST remain unaffected
 
 ---
 
