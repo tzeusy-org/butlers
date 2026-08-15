@@ -70,23 +70,52 @@ function specRoleTokens(role: "Local category" | "Chart series"): Set<string> {
   );
 }
 
+function specVisualRoleRows(): Map<string, readonly [string, string, string]> {
+  const rows = new Map<string, readonly [string, string, string]>();
+  const matrix = SPEC.split("### Requirement: Semantic Visual Role Matrix")[1]
+    ?.split("### Requirement:")[0];
+  if (!matrix) throw new Error("Could not find the semantic visual role matrix");
+  for (const line of matrix.split("\n")) {
+    const match = line.match(/^\| ([^|]+?) \| ([^|]+?) \| ([^|]+?) \| ([^|]+?) \|$/);
+    if (match && match[1] !== "Role" && match[1] !== "------") {
+      rows.set(match[1].trim(), [
+        match[2].replaceAll("`", "").trim(),
+        match[3].replaceAll("`", "").trim(),
+        match[4].replaceAll("`", "").trim(),
+      ]);
+    }
+  }
+  return rows;
+}
+
 describe("semantic visual role registry", () => {
   it("keeps the executable registry and binding spec table aligned", () => {
-    expect(SPEC).toContain("| Butler identity | `ButlerMark` (private)");
-    expect(SPEC).toContain(
-      "| Operational state | `StateDot` / `stateColorVar`",
+    const specRows = specVisualRoleRows();
+    expect(new Set(specRows.keys())).toEqual(
+      new Set(
+        Object.values(VISUAL_TOKEN_ROLE_REGISTRY).map(({ specRole }) => specRole),
+      ),
     );
-    expect(SPEC).toContain(
-      "| Local category | `categoricalHueVar` / `categoricalColor`",
-    );
-    expect(SPEC).toContain(
-      "| Chart series | `chartSeriesColor` / `chartColor`",
-    );
-    expect(SPEC).toContain("| Owner custom color | `ownerCustomColor`");
+    for (const role of Object.values(VISUAL_TOKEN_ROLE_REGISTRY)) {
+      expect(specRows.get(role.specRole)).toEqual([
+        role.resolver,
+        role.tokenFamily,
+        role.requiredSignal,
+      ]);
+    }
+    expect(VISUAL_TOKEN_ROLE_REGISTRY["butler-identity"].tokens).toHaveLength(12);
     expect(VISUAL_TOKEN_ROLE_REGISTRY["local-category"].tokens).toHaveLength(
       12,
     );
     expect(VISUAL_TOKEN_ROLE_REGISTRY["chart-series"].tokens).toHaveLength(5);
+    expect(VISUAL_TOKEN_ROLE_REGISTRY["owner-custom-color"]).toMatchObject({
+      acceptedHexLengths: [3, 4, 6, 8],
+      normalization: "opaque RGB",
+      foregrounds: [
+        "--label-fill-foreground-on-light",
+        "--label-fill-foreground-on-dark",
+      ],
+    });
   });
 
   it("covers every stateColorVar output in the executable registry", () => {
@@ -189,6 +218,9 @@ describe("semantic visual role registry", () => {
   it.each([
     ["#000", "#000000", "var(--label-fill-foreground-on-dark)"],
     ["#0000", "#000000", "var(--label-fill-foreground-on-dark)"],
+    ["#767676", "#767676", "var(--label-fill-foreground-on-light)"],
+    ["#777777", "#777777", "var(--label-fill-foreground-on-light)"],
+    ["#787878", "#787878", "var(--label-fill-foreground-on-light)"],
     ["#ffffff", "#ffffff", "var(--label-fill-foreground-on-light)"],
     ["#ffffffff", "#ffffff", "var(--label-fill-foreground-on-light)"],
   ])(

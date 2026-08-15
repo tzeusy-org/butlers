@@ -560,6 +560,24 @@ const DESTRUCTURED_SEMANTIC_ROLE_RESOLVER_SOURCE = [
   'export const concatenated = stringConcat.call("var(", "--categorical-1", ")");',
 ].join("\n");
 
+const NESTED_DESTRUCTURED_PRIVATE_IDENTITY_RESOLVER_SOURCE = [
+  'const { prototype: { getPropertyValue: nestedCssom } } = CSSStyleDeclaration;',
+  'export const cssom = nestedCssom.call(document.documentElement.style, "--category-1");',
+  'const [{ get: arrayTypedOm }] = [StylePropertyMapReadOnly.prototype];',
+  'export const typedOm = arrayTypedOm.call(document.documentElement.computedStyleMap(), "--color-category-12");',
+  'const { call: cssomCall } = CSSStyleDeclaration.prototype.getPropertyValue;',
+  'export const throughCall = cssomCall.call(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, "--category-1");',
+].join("\n");
+
+const NESTED_DESTRUCTURED_SEMANTIC_ROLE_RESOLVER_SOURCE = [
+  'const { prototype: { getPropertyValue: nestedCssom } } = CSSStyleDeclaration;',
+  'export const cssom = nestedCssom.call(document.documentElement.style, "--categorical-1");',
+  'const [{ get: arrayTypedOm }] = [StylePropertyMapReadOnly.prototype];',
+  'export const typedOm = arrayTypedOm.call(document.documentElement.computedStyleMap(), "--chart-1");',
+  'const { call: cssomCall } = CSSStyleDeclaration.prototype.getPropertyValue;',
+  'export const throughCall = cssomCall.call(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, "--green");',
+].join("\n");
+
 // Static construction needs the same boundary when the resolver function is
 // retrieved or bound indirectly. The lexical forms below still all evaluate
 // to var(--category-N) or a Tailwind arbitrary-value equivalent.
@@ -1025,6 +1043,25 @@ describe("semantic visual-role lint", () => {
     const roleMessages = await visualRoleMessages(
       DESTRUCTURED_SEMANTIC_ROLE_RESOLVER_SOURCE,
       "src/components/ui/SemanticDestructuredResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("rejects private CSSOM and Typed OM reads through nested object, array, and call destructuring aliases", async () => {
+    const roleMessages = await visualRoleMessages(
+      NESTED_DESTRUCTURED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityNestedDestructuredResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(3);
+    expect(roleMessages.map((message) => message.line)).toEqual([2, 4, 6]);
+  });
+
+  it("permits semantic roles through nested object, array, and call destructuring aliases", async () => {
+    const roleMessages = await visualRoleMessages(
+      NESTED_DESTRUCTURED_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticNestedDestructuredResolver.tsx",
     );
 
     expect(roleMessages).toEqual([]);

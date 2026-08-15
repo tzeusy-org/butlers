@@ -470,7 +470,42 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return { initializer: definition.node.init, variable }
         }
 
-        function constDestructuredProperty(node) {
+        function destructuringPath(pattern, bindingName, path = []) {
+          pattern = unwrapStaticExpression(pattern)
+          if (pattern.type === 'AssignmentPattern') {
+            return destructuringPath(pattern.left, bindingName, path)
+          }
+          if (pattern.type === 'Identifier') {
+            return pattern.name === bindingName ? path : null
+          }
+          if (pattern.type === 'ObjectPattern') {
+            for (const property of pattern.properties) {
+              if (property.type !== 'Property' || property.kind !== 'init' || property.method) {
+                continue
+              }
+              const propertyName = property.computed
+                ? stringConstructionValue(property.key)
+                : memberPropertyName({ computed: false, property: property.key })
+              if (typeof propertyName !== 'string') continue
+              const nested = destructuringPath(
+                property.value,
+                bindingName,
+                [...path, propertyName],
+              )
+              if (nested) return nested
+            }
+          }
+          if (pattern.type === 'ArrayPattern') {
+            for (const [index, element] of pattern.elements.entries()) {
+              if (!element || element.type === 'RestElement') continue
+              const nested = destructuringPath(element, bindingName, [...path, index])
+              if (nested) return nested
+            }
+          }
+          return null
+        }
+
+        function constDestructuredBinding(node) {
           const variable = scopeVariable(node)
           const [definition] = variable?.defs ?? []
           if (
@@ -478,31 +513,14 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             variable.defs.length !== 1 ||
             definition?.type !== 'Variable' ||
             definition.parent?.kind !== 'const' ||
-            definition.node.id.type !== 'ObjectPattern' ||
+            !['ObjectPattern', 'ArrayPattern'].includes(definition.node.id.type) ||
             !definition.node.init
           ) {
             return null
           }
 
-          for (const property of definition.node.id.properties) {
-            if (property.type !== 'Property' || property.kind !== 'init' || property.method) {
-              continue
-            }
-            const value = unwrapStaticExpression(property.value)
-            const bindingIdentifier =
-              value.type === 'AssignmentPattern' ? unwrapStaticExpression(value.left) : value
-            if (bindingIdentifier.type !== 'Identifier' || bindingIdentifier.name !== node.name) {
-              continue
-            }
-            const propertyName = property.computed
-              ? stringConstructionValue(property.key)
-              : memberPropertyName({ computed: false, property: property.key })
-            return typeof propertyName === 'string'
-              ? { initializer: definition.node.init, propertyName, variable }
-              : null
-          }
-
-          return null
+          const path = destructuringPath(definition.node.id, node.name)
+          return path ? { initializer: definition.node.init, path, variable } : null
         }
 
         function memberPropertyName(node, resolvingVariables = new Set(), localValues = new Map()) {
@@ -698,17 +716,15 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
 
           if (node.type !== 'Identifier') return null
 
-          const destructured = constDestructuredProperty(node)
+          const destructured = constDestructuredBinding(node)
           if (destructured && !resolvingVariables.has(destructured.variable)) {
             resolvingVariables.add(destructured.variable)
-            const constructorName = prototypeConstructorName(
+            const target = destructuredResolverTarget(
               destructured.initializer,
+              destructured.path,
               resolvingVariables,
             )
             resolvingVariables.delete(destructured.variable)
-            const target = constructorName
-              ? resolverMethodKind(constructorName, destructured.propertyName)
-              : null
             if (target) return target
           }
 
@@ -719,6 +735,61 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           const target = staticResolverTarget(binding.initializer, resolvingVariables)
           resolvingVariables.delete(binding.variable)
           return target
+        }
+
+        function destructuredResolverTarget(
+          initializer,
+          path,
+          resolvingVariables = new Set(),
+        ) {
+          initializer = unwrapStaticExpression(initializer)
+          if (!path.length) return staticResolverTarget(initializer, resolvingVariables)
+
+          const [property, ...remaining] = path
+          if (
+            typeof property === 'number' &&
+            initializer.type === 'ArrayExpression' &&
+            initializer.elements[property] &&
+            initializer.elements[property].type !== 'SpreadElement'
+          ) {
+            return destructuredResolverTarget(
+              initializer.elements[property],
+              remaining,
+              resolvingVariables,
+            )
+          }
+
+          if (typeof property !== 'string') return null
+          if (
+            property === 'prototype' &&
+            initializer.type === 'Identifier' &&
+            isUnshadowedGlobalIdentifier(initializer, initializer.name)
+          ) {
+            if (!remaining.length) return null
+            const [methodName, ...methodRemainder] = remaining
+            if (typeof methodName !== 'string') return null
+            const methodTarget = resolverMethodKind(initializer.name, methodName)
+            if (!methodTarget) return null
+            if (methodRemainder.length === 0) return methodTarget
+            return methodRemainder.length === 1 && methodRemainder[0] === 'call'
+              ? 'function-call'
+              : null
+          }
+
+          const constructorName = prototypeConstructorName(initializer, resolvingVariables)
+          if (constructorName) {
+            const methodTarget = resolverMethodKind(constructorName, property)
+            if (!methodTarget) return null
+            if (remaining.length === 0) return methodTarget
+            return remaining.length === 1 && remaining[0] === 'call'
+              ? 'function-call'
+              : null
+          }
+
+          const initializerTarget = staticResolverTarget(initializer, resolvingVariables)
+          return initializerTarget && property === 'call' && remaining.length === 0
+            ? 'function-call'
+            : null
         }
 
         function staticBoundResolver(node, resolvingVariables = new Set()) {

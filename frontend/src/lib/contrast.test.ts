@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
 import { contrastRatio, relativeLuminance, WCAG_AA_NORMAL_TEXT, type Oklch } from "./contrast"
+import { labelFillColors } from "./visual-token-roles"
 
 const CSS_PATH = fileURLToPath(new URL("../index.css", import.meta.url))
 const CSS_SOURCE = readFileSync(CSS_PATH, "utf-8")
@@ -80,6 +81,23 @@ function requireToken(tokens: Map<string, Oklch>, name: string): Oklch {
   const value = tokens.get(name)
   if (!value) throw new Error(`Token --${name} not found`)
   return value
+}
+
+function hexLuminance(hex: string): number {
+  const channels = [1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16) / 255)
+  const [red, green, blue] = channels.map((channel) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+  )
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+}
+
+function contrastAgainstHex(foreground: Oklch, background: string): number {
+  const foregroundLuminance = relativeLuminance(foreground)
+  const backgroundLuminance = hexLuminance(background)
+  return (
+    (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +199,20 @@ describe.each(["light", "dark"] as const)("contrast: %s theme owner label fill f
     expect(contrastRatio(onLight, white)).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
     expect(contrastRatio(onDark, black)).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
   })
+
+  it.each(["#767676", "#777777", "#787878", "#000000", "#ffffff"])(
+    "keeps the emitted %s owner-label pair above the AA floor",
+    (background) => {
+      const foreground = labelFillColors("Owner", background).color
+      const foregroundName = foreground.match(/^var\(--([a-z0-9-]+)\)$/)?.[1]
+      if (!foregroundName) throw new Error(`Unexpected owner foreground: ${foreground}`)
+      const ratio = contrastAgainstHex(requireToken(tokens, foregroundName), background)
+      expect(
+        ratio,
+        `${foregroundName} (${theme}) vs ${background} = ${ratio.toFixed(2)}:1, below the ${WCAG_AA_NORMAL_TEXT}:1 AA floor`,
+      ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
+    },
+  )
 })
 
 // ---------------------------------------------------------------------------

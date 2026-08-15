@@ -2,9 +2,25 @@
  * Typed semantic visual roles.
  *
  * A palette slot is not a meaning. Callers select a role, and this registry
- * owns the token namespace for that role. Butler identity is intentionally
- * absent: resolving a butler's identity belongs only to ButlerMark.
+ * owns the token namespace for that role. The Butler identity family is
+ * recorded here for spec parity, while its resolver remains private to
+ * ButlerMark.
  */
+
+const BUTLER_IDENTITY_VALUES = [
+  "var(--category-1)",
+  "var(--category-2)",
+  "var(--category-3)",
+  "var(--category-4)",
+  "var(--category-5)",
+  "var(--category-6)",
+  "var(--category-7)",
+  "var(--category-8)",
+  "var(--category-9)",
+  "var(--category-10)",
+  "var(--category-11)",
+  "var(--category-12)",
+] as const;
 
 const STATE_TOKENS = [
   "--red",
@@ -43,24 +59,57 @@ const CHART_SERIES_VALUES = [
 
 const LOCAL_CATEGORY_TOKENS = LOCAL_CATEGORY_VALUES.map((value) => value.slice(4, -1));
 const CHART_SERIES_TOKENS = CHART_SERIES_VALUES.map((value) => value.slice(4, -1));
+const BUTLER_IDENTITY_TOKENS = BUTLER_IDENTITY_VALUES.map((value) => value.slice(4, -1));
 
 export const VISUAL_TOKEN_ROLE_REGISTRY = {
+  "butler-identity": {
+    specRole: "Butler identity",
+    resolver: "ButlerMark (private)",
+    tokenFamily: "--category-1..12",
+    requiredSignal: "letter-mark only",
+    tokens: BUTLER_IDENTITY_TOKENS,
+    values: BUTLER_IDENTITY_VALUES,
+    legendRequired: false,
+  },
   state: {
+    specRole: "Operational state",
+    resolver: "StateDot / stateColorVar",
+    tokenFamily:
+      "--red, --amber, --green, --dim, --state-unidentified, --muted-foreground",
+    requiredSignal: "state affordance",
     tokens: STATE_TOKENS,
     legendRequired: false,
   },
   "local-category": {
+    specRole: "Local category",
+    resolver: "categoricalHueVar / categoricalColor",
+    tokenFamily: "--categorical-1..12",
+    requiredSignal: "label, icon, position, or legend",
     tokens: LOCAL_CATEGORY_TOKENS,
     values: LOCAL_CATEGORY_VALUES,
     legendRequired: true,
   },
   "chart-series": {
+    specRole: "Chart series",
+    resolver: "chartSeriesColor / chartColor",
+    tokenFamily: "--chart-1..5",
+    requiredSignal: "series label or legend",
     tokens: CHART_SERIES_TOKENS,
     values: CHART_SERIES_VALUES,
     legendRequired: true,
   },
   "owner-custom-color": {
+    specRole: "Owner custom color",
+    resolver: "ownerCustomColor / labelFillColors",
+    tokenFamily: "normalized opaque owner hex",
+    requiredSignal: "owner label or legend",
     tokens: [],
+    acceptedHexLengths: [3, 4, 6, 8],
+    normalization: "opaque RGB",
+    foregrounds: [
+      "--label-fill-foreground-on-light",
+      "--label-fill-foreground-on-dark",
+    ],
     legendRequired: true,
   },
 } as const;
@@ -92,8 +141,10 @@ export interface LabelFillColors {
 }
 
 const CATEGORICAL_FILL_FOREGROUND = "var(--categorical-fill-foreground)";
-const LABEL_FILL_FOREGROUND_ON_LIGHT = "var(--label-fill-foreground-on-light)";
-const LABEL_FILL_FOREGROUND_ON_DARK = "var(--label-fill-foreground-on-dark)";
+const [LABEL_FILL_FOREGROUND_ON_LIGHT_TOKEN, LABEL_FILL_FOREGROUND_ON_DARK_TOKEN] =
+  VISUAL_TOKEN_ROLE_REGISTRY["owner-custom-color"].foregrounds;
+const LABEL_FILL_FOREGROUND_ON_LIGHT = `var(${LABEL_FILL_FOREGROUND_ON_LIGHT_TOKEN})`;
+const LABEL_FILL_FOREGROUND_ON_DARK = `var(${LABEL_FILL_FOREGROUND_ON_DARK_TOKEN})`;
 
 const STATE_COLORS: Record<StateColorRole, string> = {
   healthy: "var(--green)",
@@ -152,11 +203,16 @@ export function ownerCustomColor(
   value: string | null | undefined,
 ): OwnerCustomColor | undefined {
   const trimmed = value?.trim();
-  if (!trimmed || !/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(trimmed)) {
+  const hex = trimmed?.startsWith("#") ? trimmed.slice(1) : "";
+  const acceptedLengths = VISUAL_TOKEN_ROLE_REGISTRY["owner-custom-color"].acceptedHexLengths;
+  if (
+    !hex ||
+    !/^[0-9a-f]+$/i.test(hex) ||
+    !acceptedLengths.some((length) => length === hex.length)
+  ) {
     return undefined;
   }
 
-  const hex = trimmed.slice(1);
   const rgb = hex.length <= 4
     ? hex.slice(0, 3).split("").map((component) => component + component).join("")
     : hex.slice(0, 6);

@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { fireEvent, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -203,6 +204,38 @@ describe("CirclesPage — structure", () => {
 
     expect(container.innerHTML).toMatch(/background-color:\s*rgb\(255, 255, 255\)/);
     expect(container.innerHTML).toMatch(/color:\s*var\(--label-fill-foreground-on-light\)/);
+  });
+});
+
+describe("CirclesPage — assign label dialog", () => {
+  it("exposes each available label as a native button activated by Enter", async () => {
+    const assign = vi.fn();
+    const user = userEvent.setup();
+    (useGroups as AnyMock).mockReturnValue({
+      data: { groups: [WORK], total: 1 },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    (useLabels as AnyMock).mockReturnValue({
+      data: [{ id: "label-vip", name: "VIP", color: "#fff" }],
+      isPending: false,
+    });
+    (useAssignGroupLabel as AnyMock).mockReturnValue({ mutate: assign });
+    renderPage();
+
+    await user.click(container.querySelector('button[aria-label="Assign label"]')!);
+    const labelControl = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "VIP",
+    );
+    expect(labelControl).toBeTruthy();
+
+    labelControl!.focus();
+    expect(document.activeElement).toBe(labelControl);
+    await user.type(labelControl!, "{enter}");
+
+    expect(assign).toHaveBeenCalledWith({ groupId: "group-work", labelId: "label-vip" });
   });
 });
 

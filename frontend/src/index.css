@@ -207,7 +207,7 @@
    * white clears AA against every slot. Owner hex fills choose one of the
    * explicit light/dark-background foregrounds in visual-token-roles.ts. */
   --categorical-fill-foreground: oklch(1 0 0);
-  --label-fill-foreground-on-light: oklch(0.145 0 0);
+  --label-fill-foreground-on-light: oklch(0 0 0);
   --label-fill-foreground-on-dark: oklch(1 0 0);
 
   /* ---------------------------------------------------------------------------
@@ -592,7 +592,7 @@ body {
    * switches to the dark surface. Owner foregrounds are selected from the
    * opaque fill itself and remain identical across themes. */
   --categorical-fill-foreground: oklch(0.145 0 0);
-  --label-fill-foreground-on-light: oklch(0.145 0 0);
+  --label-fill-foreground-on-light: oklch(0 0 0);
   --label-fill-foreground-on-dark: oklch(1 0 0);
 
   /* Role badges — lifted ~0.07 L for legibility on dark card backgrounds */

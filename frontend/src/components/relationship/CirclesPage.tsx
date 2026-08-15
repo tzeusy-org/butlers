@@ -201,16 +201,18 @@ function AssignLabelDialog({
         ) : (
           <div className="flex flex-wrap gap-2 py-2">
             {available.map((label) => (
-              <Badge
-                key={label.id}
-                className="cursor-pointer"
-                style={labelFillStyle(label)}
-                onClick={() => {
-                  assign.mutate({ groupId, labelId: label.id });
-                  setOpen(false);
-                }}
-              >
-                {label.name}
+              <Badge key={label.id} asChild>
+                <button
+                  type="button"
+                  className="cursor-pointer"
+                  style={labelFillStyle(label)}
+                  onClick={() => {
+                    assign.mutate({ groupId, labelId: label.id });
+                    setOpen(false);
+                  }}
+                >
+                  {label.name}
+                </button>
               </Badge>
             ))}
           </div>
