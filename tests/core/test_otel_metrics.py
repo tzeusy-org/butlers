@@ -57,6 +57,49 @@ def _collect_metrics(reader: InMemoryMetricReader) -> dict[str, Any]:
     return result
 
 
+def test_domain_event_failed_permanent_counter_uses_only_bounded_labels() -> None:
+    """Terminal domain-event failures have one low-cardinality counter contract."""
+    record = getattr(_metrics_mod, "record_domain_event_delivery_failed_permanent", None)
+    assert callable(record), "domain-event failed_permanent metric recorder is required"
+
+    _provider, reader = _make_in_memory_provider()
+    try:
+        record(
+            source_butler="travel",
+            destination_butler="finance",
+            reason="non_retryable",
+        )
+        record(
+            source_butler="travel",
+            destination_butler="finance",
+            reason="attempts_exhausted",
+        )
+
+        data = _collect_metrics(reader)
+        data_points = data["butlers.domain_event.delivery_failed_permanent_total"]
+        observed = {
+            (data_point.attributes["source_butler"], data_point.attributes["reason"])
+            for data_point in data_points
+        }
+        assert observed == {("travel", "non_retryable"), ("travel", "attempts_exhausted")}
+        for data_point in data_points:
+            assert dict(data_point.attributes) == {
+                "source_butler": "travel",
+                "destination_butler": "finance",
+                "reason": data_point.attributes["reason"],
+            }
+            assert data_point.value == 1
+
+        with pytest.raises(ValueError, match="unsupported failed-permanent reason"):
+            record(
+                source_butler="travel",
+                destination_butler="finance",
+                reason="RuntimeError: arbitrary exception text",
+            )
+    finally:
+        _reset_metrics_global_state()
+
+
 class MockAdapter(RuntimeAdapter):
     @property
     def binary_name(self) -> str:

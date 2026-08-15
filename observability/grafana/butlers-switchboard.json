@@ -176,6 +176,18 @@
       "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(http_response_status_code) (rate(http_server_request_duration_milliseconds_count{job=\"butlers-dashboard\"}[$__rate_interval]))", "legendFormat": "HTTP {{http_response_status_code}}", "refId": "A" }],
       "title": "Dashboard API HTTP Status Rates", "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 69 }, "id": 107, "title": "Domain Event Delivery", "type": "row" },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "New durable failed_permanent transitions. increase() avoids false failures across exporter resets.",
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 15, "lineWidth": 1, "stacking": { "group": "A", "mode": "normal" } }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 70 }, "id": 17,
+      "options": { "legend": { "calcs": ["sum", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(source_butler, destination_butler, reason) (increase(butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"}[$__rate_interval]))", "legendFormat": "{{source_butler}} to {{destination_butler}} ({{reason}})", "refId": "A" }],
+      "title": "Permanent Domain-Event Delivery Failures", "type": "timeseries"
     }
 
   ],
@@ -195,5 +207,5 @@
   "timezone": "browser",
   "title": "Butlers — Switchboard",
   "uid": "butlers-switchboard-v1",
-  "version": 1
+  "version": 2
 }

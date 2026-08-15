@@ -1,0 +1,122 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "butlers-domain-event-delivery",
+      "folder": "Butlers",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "butlers-domain-event-failed-permanent",
+          "title": "Permanent domain-event delivery failure",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "editorMode": "code",
+                "expr": "sum by(source_butler, destination_butler, reason) (increase(butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"}[15m]))",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": true,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "dashboardUid": "butlers-switchboard-v1",
+          "panelId": 17,
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "Permanent domain-event delivery failure",
+            "description": "A durable domain-event delivery transitioned to failed_permanent in the last 15 minutes.",
+            "no_data": "The configured NoData policy takes effect only after an owner explicitly enables evaluation; it then keeps a missing series visible rather than treating it as healthy.",
+            "exec_error": "The configured Error policy takes effect only after an owner explicitly enables evaluation; it then surfaces rule execution failures.",
+            "reset": "increase() treats an exporter counter reset as zero rather than a new delivery failure.",
+            "deduplication": "The query preserves source_butler, destination_butler, and reason; Grafana creates one alert instance per label tuple.",
+            "disabled": "isPaused=true: Grafana performs no evaluation and creates no alert instances, receiver, notification policy, or route."
+          },
+          "labels": {
+            "severity": "warning"
+          },
+          "isPaused": true
+        }
+      ]
+    }
+  ]
+}

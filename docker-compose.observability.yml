@@ -107,7 +107,8 @@ services:
 
   # ── Grafana ───────────────────────────────────────────────────────────
   # Pre-provisioned with Prometheus + Tempo datasources and all dashboards
-  # from grafana/*.json.
+  # from grafana/*.json. Alerting files stay outside that recursive dashboard
+  # source and mount only at Grafana's alerting provisioning path.
   grafana:
     image: grafana/grafana:11.1.0
     profiles: [observability]
@@ -122,6 +123,7 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana-alerting:/etc/grafana/provisioning/alerting:ro
       - ./observability/grafana:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:

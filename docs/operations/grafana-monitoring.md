@@ -233,6 +233,29 @@ increase(ingestion_bulk_replay_errors_total{code="503"}[1h])
 rate(ingestion_bulk_replay_errors_total{code="503"}[5m])
 ```
 
+### Durable domain-event delivery failures
+
+`butlers.domain_event.delivery_failed_permanent_total` is an OTel counter for a
+newly durable `failed_permanent` domain-event delivery. It has only
+`source_butler`, `destination_butler`, and `reason` (`non_retryable` or
+`attempts_exhausted`) labels; it deliberately excludes event IDs, payloads,
+exception text, and timestamps.
+
+The Switchboard dashboard displays it with a reset-safe
+`increase(...)` query. The provisioned warning rule is configured to evaluate a
+new transition over 15 minutes for 5 minutes once an owner-approved change
+enables evaluation; it is explicitly paused and ships no contact point or
+notification policy. While `isPaused=true`, Grafana performs no evaluation and
+creates no alert instances, so this rule cannot diagnose a missing series or
+evaluation error. Its configured `NoData` and `Error` policies take effect only
+after an owner explicitly enables evaluation.
+Enabling evaluation or notification delivery, changing a route, or exercising
+an alert requires a separate owner-approved operational change.
+
+Its JSON definition lives in `observability/grafana-alerting/`, mounted only
+at Grafana's alerting-provisioning path. It must remain outside the recursive
+dashboard source so Grafana never mistakes the alert rule for a dashboard.
+
 ## Related Pages
 
 - [Deployment Posture](deployment-posture.md) -- Dev vs hardened posture, Grafana anon-viewer gating

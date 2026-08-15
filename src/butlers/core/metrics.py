@@ -87,6 +87,12 @@ Recovery (emitted from healing/dispatch.py and qa/dispatch.py):
   butlers.recovery.execution_failures_total Counter (labels: butler, workflow, phase, error_class)
       Terminal failures from launched workflow phases.
 
+Domain events (emitted from core_tools/_domain_events.py):
+
+  butlers.domain_event.delivery_failed_permanent_total Counter
+      (labels: source_butler, destination_butler, reason=non_retryable|attempts_exhausted)
+      Durable domain-event delivery transitions that can no longer be retried.
+
 Failover (emitted from spawner.py same-tier failover loop):
 
   butlers.spawner.failover_attempts_total   Counter (labels: butler, from_model, to_model, reason)
@@ -98,7 +104,9 @@ Failover (emitted from spawner.py same-tier failover loop):
   butlers.spawner.failover_exhausted_total  Counter (labels: butler, tier)
       Failover loops exhausted after all same-tier candidates failed.
 
-All instruments carry a ``butler`` label for per-butler drill-down in Grafana.
+All per-butler instruments carry a ``butler`` label for per-butler drill-down
+in Grafana. Domain-event delivery counters instead carry the bounded source
+and destination butler labels needed to diagnose a cross-butler route.
 The ``deployment.environment`` resource attribute is set from the ``ENV``
 environment variable when present (e.g. ENV=prod or ENV=dev).
 """
@@ -388,6 +396,47 @@ def _switchboard_ingest_result() -> metrics.Counter:
         name="butlers.switchboard.ingest_result",
         description="Switchboard ingest boundary outcomes (success, validation_error, db_error)",
         unit="requests",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Domain-event instruments
+# ---------------------------------------------------------------------------
+
+_DOMAIN_EVENT_DELIVERY_FAILURE_REASONS = frozenset({"non_retryable", "attempts_exhausted"})
+
+
+def _domain_event_delivery_failed_permanent_total() -> metrics.Counter:
+    """Counter: durable terminal delivery failures (bounded route labels only)."""
+    return get_meter().create_counter(
+        name="butlers.domain_event.delivery_failed_permanent_total",
+        description="Domain-event deliveries that transitioned durably to failed_permanent",
+        unit="deliveries",
+    )
+
+
+def record_domain_event_delivery_failed_permanent(
+    *,
+    source_butler: str,
+    destination_butler: str,
+    reason: str,
+) -> None:
+    """Record one durable domain-event ``failed_permanent`` transition.
+
+    ``reason`` is deliberately closed to the two ledger transition paths.
+    Callers provide only registered butler names for source and destination;
+    event IDs, event types, payloads, exceptions, and timestamps are never
+    metric attributes.
+    """
+    if reason not in _DOMAIN_EVENT_DELIVERY_FAILURE_REASONS:
+        raise ValueError(f"unsupported failed-permanent reason: {reason!r}")
+    _domain_event_delivery_failed_permanent_total().add(
+        1,
+        {
+            "source_butler": source_butler,
+            "destination_butler": destination_butler,
+            "reason": reason,
+        },
     )
 
 

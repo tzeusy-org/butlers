@@ -109,7 +109,7 @@ Structured evidence for workflow failures SHOULD be persisted outside the metric
 
 ### Metrics Catalog
 
-The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler wrapper around OTel instruments. All instruments are lazily created from the global `MeterProvider`, so construction before `init_metrics` is safe.
+The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler wrapper around OTel instruments, while narrowly scoped module-level recorders serve shared durable boundaries that do not own a daemon instance. All instruments are lazily created from the global `MeterProvider`, so construction before `init_metrics` is safe.
 
 #### Spawner Metrics
 
@@ -168,9 +168,17 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 | `butlers.switchboard.triage.pass_through` | Counter | `source_channel`, `reason` | Triage pass-through |
 | `butlers.switchboard.triage.evaluation_latency_ms` | Histogram | `result` | End-to-end triage latency |
 
+#### Domain-Event Delivery Metrics
+
+| Instrument | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `butlers.domain_event.delivery_failed_permanent_total` | Counter | `source_butler`, `destination_butler`, `reason` (`non_retryable`/`attempts_exhausted`) | New durable `failed_permanent` delivery transitions only |
+
+The domain-event counter MUST be recorded only after `mark_delivery_failed()` has successfully returned `failed_permanent`. It is deliberately best-effort after the durable ledger write: exporter failure MUST NOT roll back, replace, or otherwise alter the delivery outcome. Event IDs, types, payloads, exception text, and timestamps are forbidden attributes.
+
 ### Cardinality Discipline
 
-All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `destination_butler`, `workflow`, `phase`, `decision`.
+All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`.
 
 The following MUST NEVER be used as metric attributes: `request_id`, raw sender identities, `thread_id`, message text, session IDs, attempt IDs, trace IDs, UUIDs, timestamps, or any other high-cardinality identifier.
 

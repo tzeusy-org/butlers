@@ -134,16 +134,24 @@ Six buffer instruments: `butlers.buffer.queue_depth` (UpDownCounter), `butlers.b
 - **THEN** `buffer_enqueue_hot()` increments the counter with `path="hot"`
 
 ### Requirement: Additional Domain Metric Instruments
-Beyond the core spawner, route, and buffer instruments above, `ButlerMetrics` (`src/butlers/core/metrics.py`) ships additional instruments that the spec earlier omitted. These SHALL be available and carry the `butler` label where applicable:
+Beyond the core spawner, route, and buffer instruments above, the metrics module (`src/butlers/core/metrics.py`) ships additional instruments via `ButlerMetrics` where applicable. These SHALL be available and carry the `butler` label where applicable:
 - Spawner extensions: `butlers.spawner.global_queue_depth` (UpDownCounter), `butlers.spawner.input_tokens` (Counter), `butlers.spawner.output_tokens` (Counter).
 - Failover: `butlers.spawner.failover_attempts_total`, `butlers.spawner.failover_suppressed_total`, `butlers.spawner.failover_exhausted_total` (Counters).
 - Scheduler: `butlers.scheduler.tasks_dispatched` (Counter).
 - Switchboard ingest: `butlers.switchboard.ingest_result` (Counter).
 - Recovery (self-healing): `butlers.recovery.active_workflows` (UpDownCounter), `butlers.recovery.phase_duration_ms` (Histogram), `butlers.recovery.dispatch_decisions_total` (Counter), `butlers.recovery.execution_failures_total` (Counter).
+- Domain-event delivery: `butlers.domain_event.delivery_failed_permanent_total` (Counter), with only `source_butler`, `destination_butler`, and closed-set `reason` (`non_retryable` or `attempts_exhausted`) attributes. It SHALL be emitted only after `mark_delivery_failed()` successfully returns `failed_permanent`; a repeated terminal-row update emits nothing, and a metric-export failure MUST NOT alter the durable delivery outcome.
 
 #### Scenario: Failover suppression recorded
 - **WHEN** the spawner suppresses a failover attempt
 - **THEN** `butlers.spawner.failover_suppressed_total` is incremented
+
+#### Scenario: Domain-event delivery becomes permanently failed
+- **WHEN** a durable domain-event delivery transitions to `failed_permanent` because its route is non-retryable or its attempts are exhausted
+- **THEN** `butlers.domain_event.delivery_failed_permanent_total` is incremented once with only its source butler, destination butler, and bounded reason
+- **AND** a repeated terminal delivery update does not increment the counter
+- **AND** an unsuccessful durable-state update does not increment the counter
+- **AND** a metric-export failure does not roll back or hide the durable terminal outcome
 
 ### Requirement: Metric Namespace Convention
 All metric instruments use the `butlers.` namespace prefix. Instruments are lazily created from the global MeterProvider (safe to construct before `init_metrics` is called).

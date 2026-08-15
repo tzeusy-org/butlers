@@ -282,8 +282,8 @@ async def claim_delivery(
     idempotence boundary: the first call for a pair inserts a fresh
     ``pending`` row; every subsequent call (retry, crash-replay) instead
     reads back whatever row already exists. Callers must branch on the
-    returned row's ``status`` -- only ``delivered`` means "do not dispatch
-    again."
+    returned row's ``status`` -- ``delivered`` and ``failed_permanent`` are
+    terminal and must never be dispatched again.
     """
     inserted = await pool.fetchrow(
         """
@@ -319,41 +319,80 @@ async def claim_delivery(
     return _row_to_dict(existing)
 
 
+async def get_delivery_status(pool: asyncpg.Pool, delivery_id: uuid.UUID | str) -> str | None:
+    """Return the durable status for one delivery, or ``None`` if it no longer exists."""
+    observed_status = await pool.fetchval(
+        "SELECT status FROM public.domain_event_deliveries WHERE id = $1",
+        uuid.UUID(str(delivery_id)),
+    )
+    return str(observed_status) if observed_status is not None else None
+
+
 async def mark_delivery_delivered(
     pool: asyncpg.Pool,
     delivery_id: uuid.UUID | str,
     *,
     task_id: uuid.UUID | str,
     task_name: str,
-) -> None:
-    """Record a successful fan-out dispatch (subscriber reconciled its own task)."""
-    await pool.execute(
+) -> str | None:
+    """Persist a successful fan-out dispatch and return the observed final status.
+
+    A route success can race a durable terminal failure.  Do not let that
+    stale success overwrite either terminal status; if it lost the fence,
+    re-observe and return the row's actual status so callers do not report a
+    delivery that the ledger rejected.  ``None`` means the row disappeared
+    before it could be re-observed.
+    """
+    delivery_uuid = uuid.UUID(str(delivery_id))
+    resulting_status = await pool.fetchval(
         """
         UPDATE public.domain_event_deliveries
         SET status = 'delivered', task_id = $2, task_name = $3,
             delivered_at = now(), updated_at = now()
-        WHERE id = $1
+        WHERE id = $1 AND status NOT IN ('delivered', 'failed_permanent')
+        RETURNING status
         """,
-        uuid.UUID(str(delivery_id)),
+        delivery_uuid,
         uuid.UUID(str(task_id)),
         task_name,
     )
+    if resulting_status is not None:
+        return str(resulting_status)
+
+    observed_status = await pool.fetchval(
+        "SELECT status FROM public.domain_event_deliveries WHERE id = $1",
+        delivery_uuid,
+    )
+    return str(observed_status) if observed_status is not None else None
 
 
-async def mark_delivery_conflict(pool: asyncpg.Pool, delivery_id: uuid.UUID | str) -> None:
-    """Record that the subscriber found a conflicting deterministic-named task.
+async def mark_delivery_conflict(pool: asyncpg.Pool, delivery_id: uuid.UUID | str) -> str | None:
+    """Persist a task conflict and return the observed final delivery status.
 
-    Never downgrades an already-``delivered`` row (mirrors
-    ``delegation_ledger.record_wake_task_conflict``).
+    A task-conflict response can race a durable terminal failure. Do not let
+    that stale response overwrite either terminal status; if it loses the
+    fence, re-observe and return the row's actual status so callers do not
+    report a conflict that the ledger rejected. ``None`` means the row
+    disappeared before it could be re-observed.
     """
-    await pool.execute(
+    delivery_uuid = uuid.UUID(str(delivery_id))
+    resulting_status = await pool.fetchval(
         """
         UPDATE public.domain_event_deliveries
         SET status = 'conflict', updated_at = now()
-        WHERE id = $1 AND status != 'delivered'
+        WHERE id = $1 AND status NOT IN ('delivered', 'failed_permanent')
+        RETURNING status
         """,
-        uuid.UUID(str(delivery_id)),
+        delivery_uuid,
     )
+    if resulting_status is not None:
+        return str(resulting_status)
+
+    observed_status = await pool.fetchval(
+        "SELECT status FROM public.domain_event_deliveries WHERE id = $1",
+        delivery_uuid,
+    )
+    return str(observed_status) if observed_status is not None else None
 
 
 async def mark_delivery_failed(
