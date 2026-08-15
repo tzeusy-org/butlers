@@ -630,6 +630,8 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           replaceAll: 'string-replace-all',
         }
 
+        const AMBIGUOUS_RESOLVER_TARGET = 'ambiguous-resolver'
+
         function resolverMethodKind(constructorName, methodName) {
           return STATIC_RESOLVER_METHODS[constructorName]?.[methodName] ?? null
         }
@@ -709,24 +711,21 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
 
           if (node.type === 'MemberExpression') {
             const property = memberPropertyName(node, resolvingVariables)
-            if (property !== null) {
-              const immutableValue = staticImmutableProperty(
-                node.object,
-                property,
-                resolvingVariables,
-              )
-              if (immutableValue !== null && immutableValue !== undefined) {
-                const immutableTarget = staticResolverTarget(
-                  immutableValue,
-                  resolvingVariables,
-                )
-                if (immutableTarget) return immutableTarget
-              }
+            if (property === null) return AMBIGUOUS_RESOLVER_TARGET
+
+            const immutableProperty = staticImmutableProperty(
+              node.object,
+              property,
+              resolvingVariables,
+            )
+            if (immutableProperty.status === 'resolved') {
+              return staticResolverTarget(immutableProperty.value, resolvingVariables)
+            }
+            if (immutableProperty.status === 'ambiguous') {
+              return AMBIGUOUS_RESOLVER_TARGET
             }
 
-            const instanceTarget = INSTANCE_RESOLVER_METHODS[
-              property
-            ]
+            const instanceTarget = INSTANCE_RESOLVER_METHODS[property]
             if (instanceTarget) return instanceTarget
           }
 
@@ -745,7 +744,8 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           }
 
           const binding = constInitializer(node)
-          if (!binding || resolvingVariables.has(binding.variable)) return null
+          if (!binding) return null
+          if (resolvingVariables.has(binding.variable)) return AMBIGUOUS_RESOLVER_TARGET
 
           resolvingVariables.add(binding.variable)
           const target = staticResolverTarget(binding.initializer, resolvingVariables)
@@ -762,45 +762,51 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (!path.length) return staticResolverTarget(initializer, resolvingVariables)
 
           const [property, ...remaining] = path
-          const immutableValue = staticImmutableProperty(
+          if (typeof property === 'string') {
+            if (
+              property === 'prototype' &&
+              initializer.type === 'Identifier' &&
+              isUnshadowedGlobalIdentifier(initializer, initializer.name)
+            ) {
+              if (!remaining.length) return null
+              const [methodName, ...methodRemainder] = remaining
+              if (typeof methodName !== 'string') return null
+              const methodTarget = resolverMethodKind(initializer.name, methodName)
+              if (!methodTarget) return null
+              if (methodRemainder.length === 0) return methodTarget
+              return methodRemainder.length === 1 && methodRemainder[0] === 'call'
+                ? 'function-call'
+                : null
+            }
+
+            const constructorName = prototypeConstructorName(initializer, resolvingVariables)
+            if (constructorName) {
+              const methodTarget = resolverMethodKind(constructorName, property)
+              if (!methodTarget) return null
+              if (remaining.length === 0) return methodTarget
+              return remaining.length === 1 && remaining[0] === 'call'
+                ? 'function-call'
+                : null
+            }
+          }
+
+          const immutableProperty = staticImmutableProperty(
             initializer,
             property,
             resolvingVariables,
           )
-          if (immutableValue !== null && immutableValue !== undefined) {
+          if (immutableProperty.status === 'resolved') {
             return destructuredResolverTarget(
-              immutableValue,
+              immutableProperty.value,
               remaining,
               resolvingVariables,
             )
           }
+          if (immutableProperty.status === 'ambiguous') {
+            return AMBIGUOUS_RESOLVER_TARGET
+          }
 
           if (typeof property !== 'string') return null
-          if (
-            property === 'prototype' &&
-            initializer.type === 'Identifier' &&
-            isUnshadowedGlobalIdentifier(initializer, initializer.name)
-          ) {
-            if (!remaining.length) return null
-            const [methodName, ...methodRemainder] = remaining
-            if (typeof methodName !== 'string') return null
-            const methodTarget = resolverMethodKind(initializer.name, methodName)
-            if (!methodTarget) return null
-            if (methodRemainder.length === 0) return methodTarget
-            return methodRemainder.length === 1 && methodRemainder[0] === 'call'
-              ? 'function-call'
-              : null
-          }
-
-          const constructorName = prototypeConstructorName(initializer, resolvingVariables)
-          if (constructorName) {
-            const methodTarget = resolverMethodKind(constructorName, property)
-            if (!methodTarget) return null
-            if (remaining.length === 0) return methodTarget
-            return remaining.length === 1 && remaining[0] === 'call'
-              ? 'function-call'
-              : null
-          }
 
           const initializerTarget = staticResolverTarget(initializer, resolvingVariables)
           return initializerTarget && property === 'call' && remaining.length === 0
@@ -992,6 +998,37 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return { type: 'Literal', value }
         }
 
+        const IMMUTABLE_PROPERTY_MISSING = Object.freeze({ status: 'missing' })
+        const IMMUTABLE_PROPERTY_AMBIGUOUS = Object.freeze({ status: 'ambiguous' })
+
+        function resolvedImmutableProperty(value) {
+          return { status: 'resolved', value }
+        }
+
+        function staticImmutablePath(
+          node,
+          path,
+          resolvingVariables,
+          localValues,
+        ) {
+          let current = resolvedImmutableProperty(node)
+          for (const property of path) {
+            if (current.status !== 'resolved') return current
+            current = staticImmutableProperty(
+              current.value,
+              property,
+              resolvingVariables,
+              localValues,
+            )
+          }
+          return current
+        }
+
+        // Resolve one property from a statically immutable container. The
+        // tagged result keeps a proven absence distinct from an access whose
+        // value could change at runtime; private-token callers fail closed only
+        // for the latter. One recursive path handles direct member chains,
+        // destructured aliases, arrays, and object/array spreads.
         function staticImmutableProperty(
           node,
           propertyName,
@@ -1000,47 +1037,104 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         ) {
           node = unwrapStaticExpression(node)
           if (node.type === 'ObjectExpression') {
-            let matchingValue
+            let result = IMMUTABLE_PROPERTY_MISSING
             for (const property of node.properties) {
-              if (property.type !== 'Property' || property.kind !== 'init' || property.method) {
-                return null
+              if (property.type === 'SpreadElement') {
+                const spread = staticImmutableProperty(
+                  property.argument,
+                  propertyName,
+                  resolvingVariables,
+                  localValues,
+                )
+                if (spread.status !== 'missing') result = spread
+                continue
               }
+
               const key = property.computed
                 ? stringConstructionValue(property.key, resolvingVariables, localValues)
                 : memberPropertyName({ computed: false, property: property.key })
-              if (key === DYNAMIC_VALUE_MARKER) return null
-              if (key === propertyName) {
-                if (matchingValue !== undefined) return null
-                matchingValue = property.value
+              if (key === DYNAMIC_VALUE_MARKER || key === null) {
+                result = IMMUTABLE_PROPERTY_AMBIGUOUS
+                continue
               }
+              if (key !== propertyName) continue
+              result = property.kind === 'init' && !property.method
+                ? resolvedImmutableProperty(property.value)
+                : IMMUTABLE_PROPERTY_AMBIGUOUS
             }
-            return matchingValue
+            return result
           }
+
           if (node.type === 'ArrayExpression') {
             if (
               typeof propertyName !== 'number' ||
               !Number.isInteger(propertyName) ||
-              propertyName < 0 ||
-              node.elements.some((element) => element?.type === 'SpreadElement')
+              propertyName < 0
             ) {
-              return null
+              return IMMUTABLE_PROPERTY_MISSING
             }
-            return node.elements[propertyName] ?? undefined
+            const elements = constArrayElements(
+              node,
+              resolvingVariables,
+              localValues,
+            )
+            if (!elements) return IMMUTABLE_PROPERTY_AMBIGUOUS
+            return elements[propertyName]
+              ? resolvedImmutableProperty(elements[propertyName])
+              : IMMUTABLE_PROPERTY_MISSING
           }
-          if (node.type !== 'Identifier') return null
 
-          const binding = constInitializer(node)
-          if (!binding || resolvingVariables.has(binding.variable)) return null
+          if (node.type === 'MemberExpression') {
+            const memberName = memberPropertyName(node, resolvingVariables, localValues)
+            if (memberName === null) return IMMUTABLE_PROPERTY_AMBIGUOUS
+            const member = staticImmutableProperty(
+              node.object,
+              memberName,
+              resolvingVariables,
+              localValues,
+            )
+            return member.status === 'resolved'
+              ? staticImmutableProperty(
+                  member.value,
+                  propertyName,
+                  resolvingVariables,
+                  localValues,
+                )
+              : member
+          }
 
-          resolvingVariables.add(binding.variable)
-          const value = staticImmutableProperty(
-            binding.initializer,
-            propertyName,
-            resolvingVariables,
-            localValues,
-          )
-          resolvingVariables.delete(binding.variable)
-          return value
+          if (node.type === 'Identifier') {
+            const binding = constInitializer(node)
+            const destructured = binding ? null : constDestructuredBinding(node)
+            const variable = binding?.variable ?? destructured?.variable
+            if (!variable || resolvingVariables.has(variable)) {
+              return IMMUTABLE_PROPERTY_AMBIGUOUS
+            }
+
+            resolvingVariables.add(variable)
+            const value = binding
+              ? resolvedImmutableProperty(binding.initializer)
+              : staticImmutablePath(
+                  destructured.initializer,
+                  destructured.path,
+                  resolvingVariables,
+                  localValues,
+                )
+            const property = value.status === 'resolved'
+              ? staticImmutableProperty(
+                  value.value,
+                  propertyName,
+                  resolvingVariables,
+                  localValues,
+                )
+              : value
+            resolvingVariables.delete(variable)
+            return property
+          }
+
+          return node.type === 'Literal'
+            ? IMMUTABLE_PROPERTY_MISSING
+            : IMMUTABLE_PROPERTY_AMBIGUOUS
         }
 
         function staticCallback(node) {
@@ -1242,15 +1336,15 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (node.type === 'MemberExpression') {
             const property = memberPropertyName(node)
             if (property === null) return null
-            const value = staticImmutableProperty(
+            const propertyValue = staticImmutableProperty(
               node.object,
               property,
               resolvingVariables,
               localValues,
             )
-            return value === null || value === undefined
-              ? null
-              : constArrayElements(value, resolvingVariables, localValues)
+            return propertyValue.status === 'resolved'
+              ? constArrayElements(propertyValue.value, resolvingVariables, localValues)
+              : null
           }
           if (
             node.type === 'CallExpression' &&
@@ -1441,19 +1535,29 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return []
         }
 
+        function containsPrivateIdentityFragment(value) {
+          return /--(?:color-)?category-(?:[1-9]|1[0-2])(?!\d)|--(?:color-)?category-(?=$|[^0-9])/.test(
+            value,
+          )
+        }
+
         function failClosedStructuralValue(node, resolvingVariables) {
           const staticText = staticConstructionFragments(node, resolvingVariables).join('')
           const containsCssVariableConstruction = /\bvar\s*\(/i.test(staticText)
           const containsTailwindConstruction = TAILWIND_COLOR_UTILITY_SPELLINGS.some((utility) =>
             staticText.includes(`${utility}-(`),
           )
-          const containsPrivateIdentityFragment =
-            /--(?:color-)?category-(?:[1-9]|1[0-2])(?!\d)|--(?:color-)?category-(?=$|[^0-9])/.test(
-              staticText,
-            )
+          const containsPrivateFragment = containsPrivateIdentityFragment(staticText)
           return containsCssVariableConstruction ||
             containsTailwindConstruction ||
-            containsPrivateIdentityFragment
+            containsPrivateFragment
+            ? `var(${DYNAMIC_VALUE_MARKER})`
+            : DYNAMIC_VALUE_MARKER
+        }
+
+        function failClosedAmbiguousResolverValue(node, resolvingVariables) {
+          const staticText = staticConstructionFragments(node, resolvingVariables).join('')
+          return containsPrivateIdentityFragment(staticText)
             ? `var(${DYNAMIC_VALUE_MARKER})`
             : DYNAMIC_VALUE_MARKER
         }
@@ -1465,6 +1569,10 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         ) {
           const invocation = staticResolverInvocation(node, resolvingVariables)
           if (!invocation || !invocation.receiver) return null
+
+          if (invocation.kind === AMBIGUOUS_RESOLVER_TARGET) {
+            return failClosedAmbiguousResolverValue(node, resolvingVariables)
+          }
 
           if (invocation.kind === 'array-join') {
             if (invocation.arguments.length > 1) return DYNAMIC_VALUE_MARKER
@@ -1577,15 +1685,15 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (node.type === 'MemberExpression') {
             const property = memberPropertyName(node)
             if (property === null) return DYNAMIC_VALUE_MARKER
-            const value = staticImmutableProperty(
+            const propertyValue = staticImmutableProperty(
               node.object,
               property,
               resolvingVariables,
               localValues,
             )
-            return value === null || value === undefined
-              ? DYNAMIC_VALUE_MARKER
-              : stringConstructionValue(value, resolvingVariables, localValues)
+            return propertyValue.status === 'resolved'
+              ? stringConstructionValue(propertyValue.value, resolvingVariables, localValues)
+              : DYNAMIC_VALUE_MARKER
           }
           if (node.type === 'TemplateLiteral') {
             return node.quasis.reduce(

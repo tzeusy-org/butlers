@@ -616,6 +616,69 @@ const IMMUTABLE_PROPERTY_SEMANTIC_ROLE_RESOLVER_SOURCE = [
   'export const indexedConcat = stringResolvers[0].call("var(", "--categorical-1", ")");',
 ].join("\n");
 
+const RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES = [
+  {
+    call: (resolver: string, token: string) =>
+      `${resolver}.call(document.documentElement.style, ${JSON.stringify(token)})`,
+    name: "cssom",
+    resolver: "CSSStyleDeclaration.prototype.getPropertyValue",
+  },
+  {
+    call: (resolver: string, token: string) =>
+      `${resolver}.call(document.documentElement.computedStyleMap(), ${JSON.stringify(token)})`,
+    name: "typedOm",
+    resolver: "StylePropertyMapReadOnly.prototype.get",
+  },
+  {
+    call: (resolver: string, token: string) =>
+      `${resolver}.call(["var(", ${JSON.stringify(token)}, ")"], "")`,
+    name: "arrayJoin",
+    resolver: "Array.prototype.join",
+  },
+  {
+    call: (resolver: string, token: string) =>
+      `${resolver}.call("var(", ${JSON.stringify(token)}, ")")`,
+    name: "stringConcat",
+    resolver: "String.prototype.concat",
+  },
+] as const;
+
+function recursiveImmutableResolverSource(token: string): string {
+  return RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.flatMap(({ call, name, resolver }) => [
+    `const ${name}Nested = { layer: { resolver: ${resolver} } } as const;`,
+    `export const ${name}FromNested = ${call(`${name}Nested.layer.resolver`, token)};`,
+    `const ${name}DestructuringSource = { layer: { resolver: ${resolver} } } as const;`,
+    `const { layer: ${name}Layer } = ${name}DestructuringSource;`,
+    `const { resolver: ${name}Destructured } = ${name}Layer;`,
+    `export const ${name}FromDestructuring = ${call(`${name}Destructured`, token)};`,
+    `const ${name}SpreadBase = { resolver: ${resolver} } as const;`,
+    `const ${name}Spread = { ...${name}SpreadBase } as const;`,
+    `export const ${name}FromSpread = ${call(`${name}Spread.resolver`, token)};`,
+    `const ${name}Indexes = [[${resolver}]] as const;`,
+    `export const ${name}FromIndexes = ${call(`${name}Indexes[0][0]`, token)};`,
+    `const ${name}Dynamic = { resolver: ${resolver} } as const;`,
+    `export const ${name}FromDynamic = ${call(`${name}Dynamic[resolverKey]`, token)};`,
+  ]).join("\n");
+}
+
+const RECURSIVE_IMMUTABLE_PRIVATE_IDENTITY_RESOLVER_SOURCE = [
+  'declare const resolverKey: "resolver";',
+  recursiveImmutableResolverSource("--category-1"),
+].join("\n");
+
+const RECURSIVE_IMMUTABLE_SEMANTIC_ROLE_RESOLVER_SOURCE = [
+  'declare const resolverKey: "resolver";',
+  recursiveImmutableResolverSource("--categorical-1"),
+].join("\n");
+
+function cyclicResolverAliasSource(token: string): string {
+  return [
+    "const firstResolver = secondResolver;",
+    "const secondResolver = firstResolver;",
+    `export const fromCycle = firstResolver.call("var(", ${JSON.stringify(token)}, ")");`,
+  ].join("\n");
+}
+
 // Static construction needs the same boundary when the resolver function is
 // retrieved or bound indirectly. The lexical forms below still all evaluate
 // to var(--category-N) or a Tailwind arbitrary-value equivalent.
@@ -1126,6 +1189,48 @@ describe("semantic visual-role lint", () => {
     expect(roleMessages).toEqual([]);
   });
 
+  it("rejects private resolver aliases through recursive immutable containers and ambiguous keys", async () => {
+    const roleMessages = await visualRoleMessages(
+      RECURSIVE_IMMUTABLE_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityRecursiveImmutableResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.length * 5);
+    expect(roleMessages.map((message) => message.line)).toEqual(
+      RECURSIVE_IMMUTABLE_PRIVATE_IDENTITY_RESOLVER_SOURCE.split("\n").flatMap(
+        (line, index) => (line.startsWith("export const") ? [index + 1] : []),
+      ),
+    );
+  });
+
+  it("permits semantic roles through every recursive immutable container form", async () => {
+    const roleMessages = await visualRoleMessages(
+      RECURSIVE_IMMUTABLE_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticRecursiveImmutableResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("fails closed without recursing forever on cyclic private resolver aliases", async () => {
+    const roleMessages = await visualRoleMessages(
+      cyclicResolverAliasSource("--category-1"),
+      "src/components/ui/IdentityCyclicResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(1);
+    expect(roleMessages[0]?.line).toBe(3);
+  });
+
+  it("does not flag a semantic role passed through a cyclic resolver alias", async () => {
+    const roleMessages = await visualRoleMessages(
+      cyclicResolverAliasSource("--categorical-1"),
+      "src/components/ui/SemanticCyclicResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
   it("rejects private static resolver construction through bound, descriptor, reflected, and Function meta-invocation paths", async () => {
     const roleMessages = await visualRoleMessages(
       INDIRECT_STATIC_PRIVATE_IDENTITY_RESOLVER_SOURCE,
@@ -1163,6 +1268,8 @@ describe("semantic visual-role lint", () => {
         CSSOM_INDIRECT_PRIVATE_IDENTITY_READ_SOURCE,
         CSSOM_DIRECT_REFLECTED_PRIVATE_IDENTITY_READ_SOURCE,
         DESTRUCTURED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+        RECURSIVE_IMMUTABLE_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+        cyclicResolverAliasSource("--category-1"),
         INDIRECT_STATIC_PRIVATE_IDENTITY_RESOLVER_SOURCE,
       ].join("\n"),
       "src/components/ui/ButlerMark.tsx",
