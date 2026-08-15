@@ -39,7 +39,7 @@ action was never wired. None of the adjacent tools cover that gap:
 
 - `impeccable` — visual/UX/aesthetic critique; never traces to the backend.
 - `reconcile-spec-to-project` — spec-vs-code drift, files beads; spec-centric, not flow-centric.
-- `craft-and-care` / `th-engineering` — engineering quality of a *change*, not a flow sweep.
+- `/doctrine` → craft-and-care, `/th-engineering` — engineering quality of a *change*, not a flow sweep.
 
 ## Use When
 
@@ -111,7 +111,7 @@ is the exemplar: it surfaced far more than a control-by-control sweep of the sam
 ### Phase 0 — Derive the flows (orchestrator, inline)
 
 Ground the flow list in **project shape**, do not invent goals. Read the manifesto/doctrine for
-what the surface is *for* (`heart-and-soul`, `lay-and-land`), and the intended end-state for what
+what the surface is *for* (`/doctrine` → heart-and-soul, lay-and-land), and the intended end-state for what
 was *promised* (redesign briefs + openspec). Then enumerate candidate surfaces deterministically:
 
 ```bash

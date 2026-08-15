@@ -12,11 +12,7 @@ Detail belongs in the destinations below — add it there, not here.
 | --- | --- |
 | Runtime traps, subsystem contracts, hard-won gotchas | `AGENTS.md` (§ Notes to self) |
 | Beads workflow in depth: worktrees, session protocol, commands | `AGENTS.md` (§ Beads Workflow Integration), `bd prime` |
-| WHY — doctrine, scope, non-negotiables | `heart-and-soul` skill → `about/heart-and-soul/` |
-| WHAT — normative requirements, active changes | `spec-and-spine` skill → `openspec/` |
-| HOW — wire-level design contracts (RFCs) | `legends-and-lore` skill → `about/legends-and-lore/` |
-| WHERE — component maps, data flow, deployment | `lay-and-land` skill → `about/lay-and-land/` |
-| Engineering bar, test scope, quality gates, review | `craft-and-care` skill → `about/craft-and-care/` |
+| WHY (scope, non-negotiables) · WHAT (specs) · HOW (RFCs) · WHERE (topology) · engineering bar | `doctrine` skill — routes to one pillar navigator under `about/` or `openspec/` |
 | Architecture / runtime / modules / connectors reference | `docs/index.md` |
 | Adding a butler, module, or connector | `adding-butlers-to-roster`, `adding-connectors-and-modules` skills |
 | Dashboard API conventions (mount boundary, cursor pagination, degraded envelopes) | `docs/api_and_protocols/response-conventions.md` |

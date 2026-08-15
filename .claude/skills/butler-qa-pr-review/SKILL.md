@@ -17,9 +17,9 @@ Review one PR end-to-end: scrub personal information, resolve the outstanding re
 
 ## Load These Only When Needed
 
-- `/heart-and-soul` — load in the dedicated alignment subagent for doctrine, scope, manifesto, and non-negotiable-rule checks on the PR delta.
-- `/craft-and-care` — load in the dedicated alignment subagent for engineering-bar, verification, documentation, and change-hygiene checks on the PR delta.
-- `/spec-and-spine` — load in the dedicated alignment subagent for feature-behavior, active OpenSpec change, and spec-drift checks on the PR delta.
+- `/doctrine` → heart-and-soul — load in the dedicated alignment subagent for doctrine, scope, manifesto, and non-negotiable-rule checks on the PR delta.
+- `/doctrine` → craft-and-care — load in the dedicated alignment subagent for engineering-bar, verification, documentation, and change-hygiene checks on the PR delta.
+- `/doctrine` → spec-and-spine — load in the dedicated alignment subagent for feature-behavior, active OpenSpec change, and spec-drift checks on the PR delta.
 - `scripts/review_threads.py` — list unresolved threads, post inline replies, and resolve threads deterministically through GitHub APIs.
 - `scripts/validate_pr_review.py` — fail-closed validator for unresolved threads, terminal reply format, and required GitHub checks.
 - `references/pii-and-replies.md` — load before drafting replies, commit messages, or PR text edits.
@@ -85,9 +85,9 @@ subagent for alignment analysis of the PR diff and feature delta.
 That subagent must:
 
 1. Inspect the PR diff and changed files.
-2. Run `/heart-and-soul` for doctrine and manifesto alignment.
-3. Run `/craft-and-care` for execution-quality, verification, and doc hygiene.
-4. Run `/spec-and-spine` for normative feature-behavior and active-change alignment.
+2. Run `/doctrine` → heart-and-soul for doctrine and manifesto alignment.
+3. Run `/doctrine` → craft-and-care for execution-quality, verification, and doc hygiene.
+4. Run `/doctrine` → spec-and-spine for normative feature-behavior and active-change alignment.
 5. Return a concise report with:
    - doctrine blockers or scope concerns
    - craft-and-care blockers or missing verification/doc updates
@@ -102,7 +102,7 @@ Minimum prompt shape:
 
 ```text
 Review PR #<pr-number> in <repo>. Check the diff and feature delta for alignment.
-Load /heart-and-soul, /craft-and-care, and /spec-and-spine.
+Load `/doctrine` and read its heart-and-soul, craft-and-care, and spec-and-spine subskills.
 Return only blockers, risks, and missing updates, with exact file/spec references and a disposition for each.
 ```
 
@@ -191,7 +191,7 @@ Before calling the PR review complete, verify all of the following:
 6. All required GitHub quality gate checks are passing on the PR head.
 7. `python3 scripts/validate_pr_review.py --pr <pr-number>` exits successfully.
 8. You can enumerate the handled thread IDs and their final outcome (`Accepted` or `Wontfix`).
-9. A dedicated alignment subagent completed `/heart-and-soul`, `/craft-and-care`, and `/spec-and-spine` checks on the diff and feature delta.
+9. A dedicated alignment subagent completed the `/doctrine` heart-and-soul, craft-and-care, and spec-and-spine checks on the diff and feature delta.
 10. Any doctrine, craft-and-care, or spec blockers were either fixed in the PR or documented as explicit blockers with justification.
 11. Any fixes, commits, and targeted tests were run from the PR's dedicated isolated worktree, not the main checkout.
 12. `validate_pr_review.py`'s `session_link_findings` is empty (bu-mr5t5): no

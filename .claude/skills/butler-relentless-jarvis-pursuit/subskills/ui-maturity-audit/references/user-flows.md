@@ -14,8 +14,8 @@ and backed end to end.
 
 A flow must trace to what the product is *for*, not to what would be neat to test.
 
-1. **What is the surface for?** Read the relevant manifesto / doctrine — invoke `heart-and-soul`
-   for the butler or capability, and `lay-and-land` for where it lives. The manifesto states the
+1. **What is the surface for?** Read the relevant manifesto / doctrine — invoke `/doctrine` → heart-and-soul
+   for the butler or capability, and its lay-and-land subskill for where it lives. The manifesto states the
    value proposition; each value proposition implies one or more user goals.
 2. **What was promised?** Read the redesign brief (`docs/redesigns/*.md`) and the openspec
    change/spec for the surface. A redesign's "design intent" section is a list of intended user

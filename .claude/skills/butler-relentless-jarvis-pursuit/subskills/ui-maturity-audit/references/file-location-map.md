@@ -7,7 +7,7 @@ them (those docs are the source of truth and this map must not become a second o
 ## Authoritative topology — read these, don't trust a hardcoded list
 
 - **`about/lay-and-land/frontend.md`** — routing surface, page archetypes, where pages/components
-  live. (Invoke `lay-and-land`.)
+  live. (Invoke `/doctrine` → lay-and-land.)
 - **`about/lay-and-land/components.md`** — backend router layout (`src/butlers/api/routers/`) and
   component inventory.
 - **`about/lay-and-land/deployment.md`** — service topology + ports (for live verification).
