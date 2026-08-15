@@ -405,6 +405,12 @@ OAuth app client ID remains a Tier 1 system credential in `CredentialStore`.
 The Passport projection is content-blind and connector-owned. It SHALL remain
 a projection rather than a token authority.
 
+The three Spotify owner `entity_info` types are a connector-managed Tier 2
+exception to EntityDetail's generic user-provisioned credential rule.
+EntityDetail SHALL hide their rows and SHALL NOT offer their types in its Add
+property dropdown. Reading them through `resolve_owner_entity_info()` does not
+make them editable or move token authority to Tier 1 `CredentialStore`.
+
 The production flow SHALL begin at
 `POST /api/connectors/spotify/oauth/start` and complete at
 `GET /api/connectors/spotify/oauth/callback`. `connector_registry` MAY hold

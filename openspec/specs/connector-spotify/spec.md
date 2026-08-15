@@ -157,6 +157,12 @@ refresh tokens are RFC 0006 Tier 2 credentials stored in
 `resolve_owner_entity_info()`. The non-secret OAuth app client ID remains a
 Tier 1 system credential in `CredentialStore`.
 
+The three Spotify owner `entity_info` types are a connector-managed Tier 2
+exception to EntityDetail's generic user-provisioned credential rule.
+EntityDetail SHALL hide their rows and SHALL NOT offer those types in its Add
+property dropdown. The shared resolver is a read seam, not a generic editing
+surface or a transfer of token authority to `CredentialStore`.
+
 #### Scenario: Passport delegates the production authorization action
 
 - **WHEN** Passport requests Spotify connection or reauthorization

@@ -209,6 +209,12 @@ personal-account token material. `SPOTIFY_CLIENT_ID` SHALL remain in Tier 1
 `CredentialStore`. Derived expiry and granted-scope state MAY be retained as
 non-secret connector metadata, but it SHALL NOT become a second token authority.
 
+`spotify_oauth_access`, `spotify_oauth_refresh`, and
+`spotify_oauth_expires_at` are a connector-managed Tier 2 exception to
+EntityDetail's generic user-provisioned credential rule. EntityDetail SHALL
+hide their rows and SHALL NOT offer those types in its Add property dropdown.
+That hiding does not transfer token authority to Tier 1 `CredentialStore`.
+
 #### Scenario: Store Spotify OAuth tokens
 
 - **WHEN** the Spotify OAuth flow completes successfully

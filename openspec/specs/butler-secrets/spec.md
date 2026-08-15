@@ -139,6 +139,12 @@ writer. The Passport projection is not a secret authority and SHALL NOT expose
 or mirror the backing Tier 2 rows. `CredentialStore` remains authoritative
 only for the system-level Spotify OAuth app client ID.
 
+The backing Spotify types are a connector-managed Tier 2 exception to
+EntityDetail's generic user-provisioned credential rule. EntityDetail SHALL
+hide their rows and SHALL NOT offer `spotify_oauth_access`,
+`spotify_oauth_refresh`, or `spotify_oauth_expires_at` in its Add property
+dropdown. This does not move token authority to `CredentialStore`.
+
 The projection SHALL be content-blind. It may render only a closed connection
 state and the fixed `listening-history` capability evidence
 `capability_categories = ["listening-history"]`; this category is a stable

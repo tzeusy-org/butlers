@@ -36,6 +36,12 @@ access token, refresh token, and expiry from RFC 0006 Tier 2
 `public.entity_info` via `resolve_owner_entity_info()`. It SHALL NOT resolve
 identity-bound token material from `CredentialStore` or the environment.
 
+Those three Spotify types are a connector-managed Tier 2 exception to
+EntityDetail's generic user-provisioned credential rule. EntityDetail SHALL
+hide their rows and SHALL NOT offer them in its Add property dropdown. Using
+the shared resolver is read access, not an editable surface or Tier 1
+`CredentialStore` authority.
+
 #### Scenario: Successful credential resolution at startup
 
 - **WHEN** `on_startup` is called with a `CredentialStore`

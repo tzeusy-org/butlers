@@ -25,6 +25,11 @@ Spotify OAuth app client ID remains a Tier 1 system credential in
 `CredentialStore`. The Passport projection remains content-blind and is not a
 secret authority.
 
+The three Spotify owner `entity_info` types are a connector-managed Tier 2
+exception to EntityDetail's generic user-provisioned credential rule.
+EntityDetail SHALL hide their rows and SHALL NOT offer those types in its Add
+property dropdown. `CredentialStore` remains limited to `SPOTIFY_CLIENT_ID`.
+
 #### Scenario: Client ID configuration
 
 - **WHEN** the user opens the Spotify provider configuration drawer

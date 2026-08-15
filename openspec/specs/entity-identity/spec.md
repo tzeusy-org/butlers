@@ -56,13 +56,22 @@ CREATE TABLE public.entities (
 
 ### Requirement: [WITHDRAWN] Entity tenant_id
 
-**Withdrawn (core_062).** The tenant_id column was removed from public.entities. Entities live in a single shared namespace — uniqueness is enforced on (canonical_name, entity_type). Schema-based isolation (per-butler PostgreSQL schemas) provides the actual boundary between butlers.
+**Withdrawn (core_062).** Implementations MUST NOT restore the `tenant_id`
+column on `public.entities`. Entities live in a single shared namespace —
+uniqueness is enforced on `(canonical_name, entity_type)`. Schema-based
+isolation (per-butler PostgreSQL schemas) provides the actual boundary between
+butlers.
+
+#### Scenario: Withdrawn entity tenant remains absent
+
+- **WHEN** the entity schema is created or upgraded
+- **THEN** `public.entities` MUST NOT contain a `tenant_id` column
 
 ---
 
 ### Requirement: Entity-first data model
 
-The canonical data model hierarchy is **Entity → Contact → Contact Details**.
+The canonical data model hierarchy SHALL be **Entity → Contact → Contact Details**.
 
 - **Entity** (`public.entities`) is the top-level identity anchor. Facts, relationships, and knowledge graph edges attach to entities. Every known person, organization, or place is an entity.
 - **Contact** (`public.contacts`) is a child of entity. A CRM record with name fields, linked to exactly one entity via `entity_id`. Created when reachable contact details (phone, email, address) are known.
@@ -267,7 +276,13 @@ The `roles` field on entities MUST NOT be writable by runtime MCP tool callers. 
 
 ### Requirement: [WITHDRAWN] MCP entity tools default tenant_id
 
-**Withdrawn (core_062).** Entity tools no longer accept a tenant_id parameter. See above.
+**Withdrawn (core_062).** Entity tools MUST NOT accept a `tenant_id`
+parameter. See above.
+
+#### Scenario: Withdrawn MCP tenant parameter remains absent
+
+- **WHEN** an entity MCP tool is registered
+- **THEN** its public parameters MUST NOT include `tenant_id`
 
 ---
 
@@ -532,9 +547,22 @@ The `public.entity_info` table's `UNIQUE(entity_id, type)` constraint SHALL natu
 
 ### Requirement: Entity info type registry (frontend ↔ backend coupling)
 
-The entity detail page (`/butlers/entities/:id`) provides an "Add property" form with a type dropdown. **This dropdown is the sole UI for provisioning credentials that backend modules resolve at startup.** If a credential type is missing from the dropdown, users cannot configure it through the dashboard.
+The entity info type registry SHALL distinguish user-provisioned module
+credential dependencies from explicitly connector-managed credentials. The
+entity detail page (`/butlers/entities/:id`) provides an "Add property" form
+with a type dropdown. **This dropdown is the sole UI for user-provisioned
+module credential dependencies that backend modules resolve at startup.** If
+such a credential type is missing from the dropdown, users cannot configure it
+through the dashboard.
 
-The frontend `ENTITY_INFO_TYPES` array and the backend module credential lookups (via `resolve_owner_entity_info(pool, info_type)` or `resolve_google_account_entity(pool, email)`) form a tight coupling: every `info_type` that a module resolves MUST be present in the frontend dropdown, and the frontend MUST mark credential types as secured.
+The frontend `ENTITY_INFO_TYPES` array and the backend module credential lookups (via `resolve_owner_entity_info(pool, info_type)` or `resolve_google_account_entity(pool, email)`) form a tight coupling for user-provisioned module credential dependencies: every such `info_type` that a module resolves MUST be present in the frontend dropdown, and the frontend MUST mark credential types as secured.
+
+An `info_type` read through `resolve_owner_entity_info()` MAY instead be a
+connector-managed Tier 2 exception only when its canonical provider contract
+names the connector flow as the sole writer and supplies a dedicated setup and
+recovery surface. Such a read uses the shared Tier 2 lookup seam; it does not
+make the credential user-provisioned or move its authority to Tier 1
+`CredentialStore`.
 
 #### Canonical type registry
 
@@ -558,31 +586,48 @@ The frontend `ENTITY_INFO_TYPES` array and the backend module credential lookups
 | `email_password` | Email Password | yes | Email module |
 | `other` | Other | no | (generic) |
 
+#### Connector-managed Tier 2 exceptions
+
+The Spotify connector-owned PKCE lifecycle is the sole writer for these owner
+`public.entity_info` types:
+
+- `spotify_oauth_access`
+- `spotify_oauth_refresh`
+- `spotify_oauth_expires_at`
+
+These types MUST NOT be present in the frontend `ENTITY_INFO_TYPES` dropdown.
+EntityDetail SHALL hide any existing rows of those types and SHALL NOT expose
+add, edit, or delete controls for them. Spotify setup, reauthorization, and
+disconnect remain on the connector-owned Passport/PKCE surface. This hiding
+rule does not change their RFC 0006 Tier 2 authority and MUST NOT make
+`CredentialStore` authoritative for token material; Tier 1 remains limited to
+`SPOTIFY_CLIENT_ID`.
+
 **Change note:** `google_oauth_refresh` is now consumed by the Google account registry on companion entities, not directly by modules via `resolve_owner_entity_info()`. The type remains in the registry for visibility but manual editing of `google_oauth_refresh` rows on the owner entity is no longer meaningful — Google OAuth tokens are managed exclusively through the `/api/oauth/google/*` endpoints.
 
-**Maintenance rule:** When a new module introduces a credential dependency via `resolve_owner_entity_info()`, the developer MUST add the corresponding type to:
-1. The frontend `ENTITY_INFO_TYPES` array in `frontend/src/pages/EntityDetailPage.tsx`
+**Maintenance rule:** When a new module introduces a user-provisioned credential dependency via `resolve_owner_entity_info()`, the developer MUST add the corresponding type to:
+1. The frontend `ENTITY_INFO_TYPES` array in `frontend/src/lib/user-secret-templates.ts`
 2. The `SECURED_TYPES` set (if the value is a secret)
 3. The `entityInfoTypeLabel()` switch for a human-readable label
 4. This spec's canonical type registry table
 
-#### Scenario: Module credential type missing from frontend dropdown
+#### Scenario: User-provisioned module credential type missing from frontend dropdown
 
-- **WHEN** a backend module calls `resolve_owner_entity_info(pool, 'new_credential_type')` at startup
+- **WHEN** a backend module calls `resolve_owner_entity_info(pool, 'new_credential_type')` at startup for a user-provisioned dependency
 - **AND** `'new_credential_type'` is NOT in the frontend `ENTITY_INFO_TYPES` array
 - **THEN** users CANNOT configure this credential through the dashboard entity detail page
 - **AND** the module will fail to start or degrade (depending on its error handling)
 - **AND** this is considered a bug — the type MUST be added to the frontend
 
-#### Scenario: All module credential types are present in the dropdown
+#### Scenario: All user-provisioned module credential types are present in the dropdown
 
 - **WHEN** a user navigates to the entity detail page for the owner entity
 - **THEN** the type dropdown MUST include all credential types listed in the canonical type registry
 - **AND** selecting a secured type MUST use a password input field and auto-set `secured = true`
 
-#### Scenario: Adding a new module with credential dependency
+#### Scenario: Adding a new module with user-provisioned credential dependency
 
-- **WHEN** a developer creates a new module that resolves credentials via `resolve_owner_entity_info()`
+- **WHEN** a developer creates a new module that resolves a user-provisioned credential via `resolve_owner_entity_info()`
 - **THEN** the module's credential types MUST be added to the frontend dropdown before the module is deployed
 - **AND** the canonical type registry in this spec MUST be updated
 
@@ -591,6 +636,17 @@ The frontend `ENTITY_INFO_TYPES` array and the backend module credential lookups
 - **WHEN** a user views the owner entity's entity_info on the dashboard
 - **THEN** `google_oauth_refresh` rows SHALL NOT appear (they live on companion entities)
 - **AND** the dashboard SHALL direct users to the Google Accounts management page for OAuth management
+
+#### Scenario: Spotify connector-managed rows are not editable in EntityDetail
+
+- **WHEN** a user views an entity that has `spotify_oauth_access`,
+  `spotify_oauth_refresh`, or `spotify_oauth_expires_at` rows
+- **THEN** EntityDetail SHALL hide those rows and SHALL NOT offer their types in
+  the Add property dropdown
+- **AND** the connector-owned Spotify PKCE lifecycle SHALL remain their only
+  mutation surface
+- **AND** the rows SHALL remain RFC 0006 Tier 2 authority rather than Tier 1
+  `CredentialStore` entries
 
 ---
 

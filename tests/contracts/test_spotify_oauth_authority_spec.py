@@ -61,6 +61,8 @@ _SPOTIFY_SETUP_SPEC = _REPO_ROOT / "openspec" / "specs" / "dashboard-spotify-set
 _SPOTIFY_CONNECTOR_SPEC = _REPO_ROOT / "openspec" / "specs" / "connector-spotify" / "spec.md"
 _CREDENTIALS_SPEC = _REPO_ROOT / "openspec" / "specs" / "core-credentials" / "spec.md"
 _SPOTIFY_MODULE_SPEC = _REPO_ROOT / "openspec" / "specs" / "module-spotify" / "spec.md"
+_ENTITY_IDENTITY_SPEC = _REPO_ROOT / "openspec" / "specs" / "entity-identity" / "spec.md"
+_USER_SECRET_TYPES = _REPO_ROOT / "frontend" / "src" / "lib" / "user-secret-templates.ts"
 _RFC_0006 = (
     _REPO_ROOT / "about" / "legends-and-lore" / "rfcs" / "0006-database-schema-and-isolation.md"
 )
@@ -284,3 +286,54 @@ def test_rfc_0006_tier2_authority_projects_into_spotify_specs() -> None:
     assert "`CredentialStore`" in credential_storage
     assert "Passport projection" in credential_storage
     assert "SHALL NOT duplicate, persist, or mutate Spotify token material" in credential_storage
+
+
+def test_spotify_tier2_tokens_are_connector_managed_entity_detail_exceptions() -> None:
+    """The shared read helper must not imply a generic editable or Tier 1 authority."""
+    entity_registry = _requirement(
+        _read(_ENTITY_IDENTITY_SPEC), "Entity info type registry (frontend ↔ backend coupling)"
+    )
+
+    assert "user-provisioned module credential dependencies" in entity_registry
+    assert "connector-managed Tier 2 exception" in entity_registry
+    assert "every `info_type` that a module resolves MUST be present" not in entity_registry
+    dropdown_source = _read(_USER_SECRET_TYPES)
+    dropdown = dropdown_source.split("export const ENTITY_INFO_TYPES = [", 1)[1].split(
+        "] as const", 1
+    )[0]
+    for info_type in (
+        "spotify_oauth_access",
+        "spotify_oauth_refresh",
+        "spotify_oauth_expires_at",
+    ):
+        assert f"`{info_type}`" in entity_registry
+        assert f'"{info_type}"' not in dropdown
+    assert "MUST NOT be present in the frontend `ENTITY_INFO_TYPES` dropdown" in entity_registry
+    assert "SHALL hide any existing rows of those types" in entity_registry
+
+    spotify_sections = {
+        "active OAuth carrier": _requirement(
+            _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
+        ),
+        "canonical credential storage": _requirement(
+            _read(_CREDENTIALS_SPEC), "Spotify OAuth Token Storage"
+        ),
+        "canonical Spotify setup": _requirement(
+            _read(_SPOTIFY_SETUP_SPEC),
+            "Connector-Owned Spotify OAuth 2.0 PKCE Authorization Flow",
+        ),
+        "canonical Spotify connector": _requirement(
+            _read(_SPOTIFY_CONNECTOR_SPEC), "Connector-Owned Production Spotify PKCE"
+        ),
+        "canonical Passport projection": _requirement(
+            _read(_PASSPORT_SPEC), "Connector-owned Passport projections"
+        ),
+        "canonical Spotify module": _requirement(
+            _read(_SPOTIFY_MODULE_SPEC), "Credential Resolution"
+        ),
+    }
+
+    for artifact, section in spotify_sections.items():
+        assert "connector-managed Tier 2" in section, artifact
+        assert "EntityDetail" in section, artifact
+        assert "CredentialStore" in section, artifact
