@@ -59,7 +59,9 @@ MCP surface, browser payload, command line, log, or telemetry attribute.
 The only exception to a current-generation binding is a first device-auth
 bootstrap prepared through a distinct owner-authorized device-auth entry point
 when the guarded singleton is absent, has never initialized, has no generation
-record, and has no eligible credential row. The general runtime/prewarm/probe
+record, and has no reserved raw row at all. A present malformed, unbound, or
+otherwise ineligible reserved row is inconsistent authority, not absence, and
+SHALL remain unavailable until direct owner replacement. The general runtime/prewarm/probe
 prepare entry point SHALL NOT accept a bootstrap flag or otherwise select this
 state. The guarded device-auth entry point SHALL establish
 `bootstrap_absent` from locked database state rather than caller input. The
@@ -78,6 +80,16 @@ existing raw credential row, bind a new opaque generation, update the current
 pointer, retire the prior generation, reset inherited health, and terminalize
 the operation.  A duplicate, stale, expired, malformed, wrong-kind, or
 otherwise unprovable operation SHALL not write a successor or health result.
+
+The credential store SHALL expose a distinct guarded abandonment operation for
+prepared-stage failure, prelaunch cancellation, failed launch marking, process
+launch failure, cancellation, containment failure, invalid staged output, and
+persistence unavailability. It SHALL accept only that closed reason vocabulary,
+terminalize a nonterminal operation as discarded without successor or health,
+and return an idempotent non-commit result for duplicate abandonment. A
+launched operation SHALL be abandoned only after its complete child domain is
+proven dead. Ordinary completion SHALL remain the only path that may write a
+successor or health outcome.
 
 #### Scenario: Runtime rotation is conditional on its exact launch generation
 - **WHEN** a runtime operation launched on current generation `G` returns a
@@ -114,6 +126,13 @@ otherwise unprovable operation SHALL not write a successor or health result.
 - **THEN** a device-auth prepare request returns a safe unavailable result
 - **AND** it does not create an operation that can recreate authority
 
+#### Scenario: Present malformed raw authority cannot bootstrap
+- **WHEN** the reserved `cli-auth/codex` row exists but is malformed, unbound,
+  or inconsistent before any generation is initialized
+- **THEN** device-auth bootstrap returns a safe unavailable result and leaves
+  the present malformed raw row unchanged
+- **AND** only direct owner replacement may establish a valid current authority
+
 #### Scenario: Runtime preparation cannot select bootstrap authority
 - **WHEN** a role authorized to prepare normal runtime or prewarm operations
   invokes the normal guarded preparation entry point while authority is absent
@@ -126,10 +145,24 @@ otherwise unprovable operation SHALL not write a successor or health result.
 #### Scenario: Bootstrap has no unchanged health completion
 - **WHEN** an explicitly absent never-initialized device-auth bootstrap is
   launched but returns no strictly validated successor
-- **THEN** the operation terminalizes safely without writing a credential or
+- **THEN** after proving the child domain dead, the caller invokes guarded
+  abandonment with `invalid_staged_output`
+- **AND** the operation becomes discarded without writing a credential or
   attaching health to an absent authority
 - **AND** the state remains eligible only according to the guarded bootstrap
   rule, not a local stage or device session observation
+
+#### Scenario: Prepared failure has an explicit guarded terminal path
+- **WHEN** private-stage creation, prelaunch cancellation, launch marking, or
+  process creation fails for a prepared operation
+- **THEN** the caller invokes guarded abandonment with the matching closed reason
+- **AND** the operation becomes discarded without successor, health, or child
+
+#### Scenario: Duplicate abandonment is non-committing
+- **WHEN** the same prepared or contained launched operation is abandoned more
+  than once
+- **THEN** only the first eligible transition writes terminal state
+- **AND** later abandonment changes no timestamp, health, generation, or raw row
 
 ### Requirement: Codex Owner Replacement and Revocation Precedence
 

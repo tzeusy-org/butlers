@@ -18,6 +18,17 @@ SHALL revoke owner membership, protected-schema `CREATE`, direct relation DML,
 installer/finalizer execution, and every unneeded privilege from the normal
 migration login, runtime roles, connectors, and `PUBLIC`.
 
+Because bootstrap grants broad DML on existing `public` tables, the finalizer
+SHALL repair `public.butler_secrets` after every broad-grant bootstrap rerun. It
+SHALL enable and FORCE row-level security, remove every non-system policy, and
+install exactly a non-reserved-row policy for established callers plus a
+reserved-row policy for the membership-free NOLOGIN definer owner. It SHALL
+revoke table-level SELECT/UPDATE and all direct SELECT/UPDATE privilege on
+`codex_auth_generation_id`, then restore only precise legacy-column privileges
+needed for non-Codex CRUD. No normal role may read the reserved row or its
+generation binding directly. The fixed definer owner alone may cross that RLS
+policy; a migration owner or trigger is not sufficient isolation.
+
 The normal runtime/prewarm/probe prepare operation SHALL have no bootstrap
 parameter. A distinct device-auth bootstrap function SHALL be executable only
 by the dashboard API's no-`SET ROLE` shared-authority path, not any effective
@@ -33,6 +44,14 @@ binding. Existing non-Codex credential storage semantics remain unchanged.
   `butler_secrets` write for a key other than `cli-auth/codex`
 - **THEN** the existing credential-store authorization path remains available
 - **AND** it gains no generation/operation-table write privilege
+
+#### Scenario: Broad bootstrap grants are repaired deterministically
+- **WHEN** privileged bootstrap is rerun and reapplies its historical broad
+  `public` table grants
+- **THEN** the Codex finalizer restores FORCE RLS, the exact reserved/non-
+  reserved policies, and precise legacy-column privileges
+- **AND** an effective runtime role can still perform ordinary non-Codex CRUD
+  but cannot select the reserved row or `codex_auth_generation_id`
 
 #### Scenario: Direct reserved-row mutation cannot forge a current binding
 - **WHEN** an effective runtime role attempts to insert, update, or delete the
@@ -65,6 +84,14 @@ binding. Existing non-Codex credential storage semantics remain unchanged.
 - **AND** after the privileged bootstrap runs, the normal migration can invoke
   the fixed installer and retains no owner membership, protected-schema
   `CREATE`, direct-DML, or installer/finalizer privilege
+
+#### Scenario: Provenance migration downgrade is intentionally irreversible
+- **WHEN** an operator or migration harness invokes the provenance migration's
+  `downgrade()`
+- **THEN** it fails transactionally before issuing schema or ACL DDL
+- **AND** the applied revision, raw row, value-free provenance, FORCE RLS,
+  policies, and privileges remain unchanged
+- **AND** any future removal requires a future independently reviewed migration
 
 ### Requirement: Provenance Expiry and Retention Security
 

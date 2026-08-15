@@ -72,6 +72,13 @@ conditionally complete that same operation and remove its stage. It SHALL not
 use the dashboard session ID, device code, child PID, local file timestamp, or
 staged output identity as authorization.
 
+The prepared sandbox SHALL use the same kernel-enforced per-invocation boundary
+as runtime children: a unique leased outer UID/GID and distinct user, mount,
+PID, IPC, and UTS namespaces with only the owning stage mounted. Stage
+preparation, prelaunch cancellation, failed marking, process-launch failure,
+and contained post-launch failures SHALL call the explicit guarded abandonment
+operation with a closed reason; duplicate abandonment SHALL be non-committing.
+
 #### Scenario: First owner device auth bootstraps one current generation
 - **WHEN** the selected shared Codex authority is explicitly absent with no
   prior generation and the owner completes a valid contained device-auth flow
@@ -93,3 +100,10 @@ staged output identity as authorization.
 - **THEN** the platform launcher creates no device-auth child
 - **AND** the prepared stage and operation are terminalized without exposing
   their contents or identifiers
+
+#### Scenario: Device-auth launch failure uses guarded abandonment
+- **WHEN** a prepared device-auth stage cannot be created, is cancelled before
+  launch, fails conditional marking, or cannot create its sandbox child
+- **THEN** no unauthorized child starts and the exact operation is abandoned
+  with the matching closed reason
+- **AND** no successor, health outcome, peer-stage access, or internal ID is exposed

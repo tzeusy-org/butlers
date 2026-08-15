@@ -8,9 +8,14 @@ an isolated HOME, launching any subprocess attempt, or running speculative or
 on-path prewarm. For each child it SHALL prepare a durable exact-generation
 operation, write the transient `repr`-safe authority document into a distinct
 private stage, conditionally mark that operation launched immediately before
-process creation, and refuse the child when that recheck fails. The child SHALL
-not use a mutable shared canonical `auth.json` as its authority or result
-source.
+process creation, and refuse the child when that recheck fails. Every child
+SHALL also execute inside kernel-enforced per-invocation isolation with a unique
+leased outer UID/GID and distinct user, mount, PID, IPC, and UTS namespaces;
+only its own stage is mounted as HOME. Distinct paths, mode `0600`,
+`no_new_privs`, or a process group alone SHALL NOT satisfy peer isolation. The
+Codex CLI's `--dangerously-bypass-approvals-and-sandbox` flag SHALL remain
+inside this outer boundary. The child SHALL not use a mutable shared canonical
+`auth.json` as its authority or result source.
 
 The adapter SHALL preserve the existing provider execution timeout and use the
 existing bounded setup/finalizer allowance without allowing retries or child
@@ -35,6 +40,8 @@ side effects.
 - **WHEN** two daemons launch Codex operations on the same current generation
 - **THEN** each child receives a distinct private auth stage seeded from that
   generation
+- **AND** behavior-executing peer read and peer write attempts against the
+  other's host stage fail under the kernel boundary
 - **AND** neither child can make the other's local/staged file appear as its
   own successor result
 
@@ -103,6 +110,12 @@ retain existing same-tier failover safety: auth fencing neither fabricates a
 successful runtime result nor causes an operation that might have side effects
 to be replayed.
 
+Before launch, stage preparation, cancellation, marking, or process-creation
+failure SHALL invoke the guarded abandonment operation with a closed reason.
+After launch, cancellation, containment, parsing, or persistence failure SHALL
+invoke that same abandonment operation only after the complete child namespace
+is proven dead. Duplicate abandonment SHALL be non-committing.
+
 #### Scenario: Winning stage creates one conditional successor
 - **WHEN** a completed runtime child has a valid operation-private staged
   result and its launch generation is still current
@@ -124,6 +137,13 @@ to be replayed.
   stage
 - **AND** it does not promote the result, inspect a shared local file, or retry
   the operation as a successor
+
+#### Scenario: Launch failure abandons without an unauthorized child
+- **WHEN** stage preparation, launch marking, or process creation fails before
+  a Codex child is successfully created
+- **THEN** the exact prepared operation is abandoned through the guarded closed-
+  reason path
+- **AND** it writes no successor or health and exposes no peer stage
 
 ### Requirement: Codex Projection Lock Is Not a Fallback Authorization
 

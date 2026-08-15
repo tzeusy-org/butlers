@@ -43,10 +43,15 @@ Ruff, OpenSpec, Docker/CLI-auth sandbox helpers.
   envelopes, and existing non-Codex `butler_secrets` semantics. Do not expose
   generation/operation/lineage data to browser, MCP, command line, logs,
   telemetry, or audit text; the display fingerprint is not provenance.
-- Runtime children use one private stage per operation. Canonical
-  `~/.codex/auth.json` is a database-originated compatibility projection under
-  a cross-process lock and atomic `0600` replacement; lock failure blocks the
-  associated launch rather than allowing an unlocked launch.
+- Runtime children use one private stage per operation inside kernel-enforced
+  per-invocation isolation: a distinct Bubblewrap mount/PID/user namespace and
+  unique leased outer UID/GID for every concurrent child. Stage path separation
+  and mode `0600` are defense in depth, not the peer boundary. The Codex CLI's
+  `--dangerously-bypass-approvals-and-sandbox` flag may disable only its inner
+  policy sandbox; it SHALL remain inside the parent-created kernel boundary.
+  Canonical `~/.codex/auth.json` is a database-originated compatibility
+  projection under a cross-process lock and atomic `0600` replacement; lock
+  failure blocks the associated launch rather than allowing an unlocked launch.
 - Keep the established provider execution timeout and bounded authority
   setup/finalizer allowance. An authority deadline is absolute across setup,
   launch, retries, chunks, and cleanup.
@@ -56,6 +61,10 @@ Ruff, OpenSpec, Docker/CLI-auth sandbox helpers.
 - Terminal operation metadata is retained for at least 90 days. Current,
   referenced, and append-only generation records are never removed by the
   v1 cleanup path.
+- Before the first implementation edit, capture the reviewed packet base with
+  `IMPLEMENTATION_REVIEW_BASE="$(git rev-parse HEAD)"` and retain it in the
+  implementation handoff. Every final diff/static review SHALL inspect
+  `${IMPLEMENTATION_REVIEW_BASE}...HEAD`, including committed changes.
 
 ---
 
@@ -64,10 +73,11 @@ Ruff, OpenSpec, Docker/CLI-auth sandbox helpers.
 | File | Responsibility |
 | --- | --- |
 | `scripts/init-db.sql` | Privileged bootstrap that creates the NOLOGIN provenance owner plus fixed no-argument installer/finalizer before migrations use it. |
-| `alembic/versions/core/core_198_codex_auth_generation_provenance.py` | Catalog-verifies and invokes the trusted bootstrap installer after the live `core_197` head; it does not create or own the protected boundary itself. |
+| `alembic/versions/core/core_199_codex_auth_generation_provenance.py` | Catalog-verifies and invokes the trusted bootstrap installer after the live `core_198` head; it does not create or own the protected boundary itself. |
 | `tests/migrations/test_codex_auth_generation_provenance_migration.py` | Unit checks the migration chain and static schema/DDL invariants. |
 | `tests/config/test_init_db_codex_auth_generation_boundary.py` | Proves bootstrap SQL establishes the intended no-login ownership and privilege shape. |
 | `tests/config/test_codex_auth_generation_acl_integration.py` | Uses real PostgreSQL effective roles to prove guarded access and direct-DML rejection. |
+| `tests/config/test_codex_auth_generation_concurrency_integration.py` | Uses independent real PostgreSQL connections to prove winner/loser serialization and absence of stale health writes. |
 | `src/butlers/credential_store.py` | Defines the typed, value-redacted authority leases/results and executes the guarded DB operations. |
 | `tests/config/test_credential_store.py` | Exercises atomic binding, conditional completion, owner precedence, expiry, redaction, and unavailable outcomes. |
 | `src/butlers/core/runtimes/_codex_auth_sync.py` | Retains strict parsing and safe projection only; removes local digest/cache as successor authority. |
@@ -133,6 +143,17 @@ class CodexAuthHealthOutcome(StrEnum):
     TIMEOUT = "timeout"
     TRANSPORT_UNAVAILABLE = "transport_unavailable"
     UNKNOWN = "unknown"
+
+
+class CodexAuthAbandonReason(StrEnum):
+    STAGE_PREPARE_FAILED = "stage_prepare_failed"
+    PRELAUNCH_CANCELLED = "prelaunch_cancelled"
+    LAUNCH_MARK_FAILED = "launch_mark_failed"
+    LAUNCH_FAILED = "launch_failed"
+    CANCELLED = "cancelled"
+    CONTAINMENT_FAILED = "containment_failed"
+    INVALID_STAGED_OUTPUT = "invalid_staged_output"
+    PERSISTENCE_UNAVAILABLE = "persistence_unavailable"
 
 
 class CodexAuthCompletionDisposition(StrEnum):
@@ -216,6 +237,12 @@ CredentialStore.complete_codex_auth_operation(
     health: CodexAuthHealthOutcome | None,
 ) -> CodexAuthCompletion
 
+CredentialStore.abandon_codex_auth_operation(
+    operation_id: UUID,
+    expected_generation_id: UUID | None,
+    reason: CodexAuthAbandonReason,
+) -> CodexAuthCompletion
+
 CredentialStore.replace_codex_auth_as_owner(value: str) -> None
 
 CredentialStore.revoke_codex_auth_as_owner() -> bool
@@ -233,32 +260,34 @@ creates no operation and authorizes no child.
 
 **Files:**
 
-- Create: `alembic/versions/core/core_198_codex_auth_generation_provenance.py`
+- Create: `alembic/versions/core/core_199_codex_auth_generation_provenance.py`
 - Create: `tests/migrations/test_codex_auth_generation_provenance_migration.py`
 - Create: `tests/config/test_init_db_codex_auth_generation_boundary.py`
 - Create: `tests/config/test_codex_auth_generation_acl_integration.py`
+- Create: `tests/config/test_codex_auth_generation_concurrency_integration.py`
 - Modify: `scripts/init-db.sql`
 - Test: `tests/migrations/test_codex_auth_generation_provenance_migration.py`
 - Test: `tests/config/test_init_db_codex_auth_generation_boundary.py`
 - Test: `tests/config/test_codex_auth_generation_acl_integration.py`
+- Test: `tests/config/test_codex_auth_generation_concurrency_integration.py`
 
-**Consumes:** The existing `core_196` fixed-installer pattern and migration
+**Consumes:** The existing `core_198` fixed-installer/finalizer/rollback pattern and migration
 head, `public.butler_secrets`, and the shared-login/`SET ROLE` runtime model.
 
 **Produces:** A privileged-bootstrap-owned fixed installer/finalizer and a
-`core_198` migration that verifies/invokes it to install guarded database
+`core_199` migration that verifies/invokes it to install guarded database
 operations. No application code or normal migration login may own or update
 the protected boundary with generic DML.
 
 - [ ] **Step 1: Write migration and ACL tests before changing bootstrap SQL or schema**
 
 ```python
-def test_core_198_has_additive_chain_and_value_free_provenance() -> None:
+def test_core_199_has_additive_chain_and_value_free_provenance() -> None:
     module = _load_migration()
     source = _MIGRATION_PATH.read_text()
 
-    assert module.revision == "core_198"
-    assert module.down_revision == "core_197"
+    assert module.revision == "core_199"
+    assert module.down_revision == "core_198"
     assert "public.codex_auth_authority_state" in source
     assert "public.codex_auth_generations" in source
     assert "public.codex_auth_operations" in source
@@ -274,7 +303,7 @@ async def test_runtime_role_cannot_directly_mutate_reserved_codex_row(
     with pytest.raises(asyncpg.InsufficientPrivilegeError):
         await effective_role_connection.execute(
             "UPDATE public.butler_secrets SET updated_at = now() "
-            "WHERE key = 'cli-auth/codex'"
+            "WHERE secret_key = 'cli-auth/codex'"
         )
 
 
@@ -292,7 +321,7 @@ async def test_normal_migration_requires_exact_privileged_installer(
     upgraded_database_without_new_bootstrap: asyncpg.Connection,
 ) -> None:
     with pytest.raises(asyncpg.RaiseError, match="bootstrap installer"):
-        await run_core_198(upgraded_database_without_new_bootstrap)
+        await run_core_199(upgraded_database_without_new_bootstrap)
 
 
 async def test_non_codex_secret_write_retains_established_role_path(
@@ -304,6 +333,26 @@ async def test_non_codex_secret_write_retains_established_role_path(
         "contract-fixture-value",
         category="general",
     )
+
+
+async def test_present_malformed_raw_row_cannot_bootstrap(
+    real_postgres_connection: asyncpg.Connection,
+) -> None:
+    await insert_present_malformed_codex_row(real_postgres_connection)
+
+    result = await prepare_device_bootstrap_as_dashboard(real_postgres_connection)
+
+    assert result.disposition == "unavailable"
+    assert await reserved_row_is_unchanged(real_postgres_connection)
+
+
+async def test_effective_roles_execute_only_their_guarded_operations(
+    effective_role_connections: EffectiveRoleConnections,
+) -> None:
+    await assert_runtime_can_prepare_only_normal_operation(effective_role_connections)
+    await assert_dashboard_can_call_only_documented_owner_operations(effective_role_connections)
+    await assert_connector_and_public_have_no_codex_interface(effective_role_connections)
+    await assert_non_codex_secret_crud_is_unchanged(effective_role_connections)
 ```
 
 - [ ] **Step 2: Run the new tests and confirm the missing migration/boundary fails**
@@ -315,15 +364,16 @@ uv run pytest \
   tests/migrations/test_codex_auth_generation_provenance_migration.py \
   tests/config/test_init_db_codex_auth_generation_boundary.py \
   tests/config/test_codex_auth_generation_acl_integration.py \
+  tests/config/test_codex_auth_generation_concurrency_integration.py \
   -q --override-ini='addopts='
 ```
 
-Expected: failure because `core_198`, the trusted bootstrap installer,
+Expected: failure because `core_199`, the trusted bootstrap installer,
 NOLOGIN interface owner, and guarded operations do not yet exist.
 
-- [ ] **Step 3: Add a privileged installer/finalizer and an additive core_198 invoker**
+- [ ] **Step 3: Add a privileged installer/finalizer and an additive core_199 invoker**
 
-Follow the `core_196` restore-drill boundary rather than letting Alembic create
+Follow the current `core_198` runtime-attention bootstrap boundary rather than letting Alembic create
 objects owned by its ordinary login. Extend `scripts/init-db.sql` with:
 
 - a `codex_auth_provenance_owner` role that is NOLOGIN, NOINHERIT,
@@ -339,7 +389,35 @@ objects owned by its ordinary login. Extend `scripts/init-db.sql` with:
   finalizer revokes together with admin-schema usage, owner membership,
   protected-schema `CREATE`, and direct relation DML.
 
-`core_198` first accepts an already-finalized interface only after proving its
+The installer/finalizer must account for the bootstrap's existing broad
+`public` table grants rather than assuming a new relation or trigger is hidden.
+It SHALL enable and `FORCE ROW LEVEL SECURITY` on `public.butler_secrets`, drop
+all non-system policies on every repair, then recreate exactly two policies:
+`codex_auth_non_reserved_secrets` permits the existing granted roles to access
+only rows whose `secret_key <> 'cli-auth/codex'`, while
+`codex_auth_reserved_owner` permits the membership-free NOLOGIN definer owner
+to access the reserved row. The fixed owner owns every provenance relation and
+definer function; the existing migration role may remain the
+`public.butler_secrets` DDL owner but FORCE RLS gives it no reserved-row data
+bypass during ordinary execution.
+
+After every broad-grant bootstrap rerun, the finalizer SHALL revoke table-level
+`SELECT` and `UPDATE` from the migration login, all runtime roles,
+`connector_writer`, and `PUBLIC`; explicitly
+`REVOKE SELECT (codex_auth_generation_id)` and
+`REVOKE UPDATE (codex_auth_generation_id)`;
+and restore only the precise legacy-column SELECT/INSERT/UPDATE plus row-level
+DELETE privileges needed for non-Codex `CredentialStore` CRUD. The reserved
+owner alone receives the binding-column access needed by fixed definers. Exact
+catalog checks must use `has_column_privilege`, `aclexplode`, `pg_policy`,
+`relrowsecurity`, and `relforcerowsecurity` to reject broad table grants, a
+readable/updatable `codex_auth_generation_id`, unexpected permissive policies,
+or stale owner membership. Effective-role tests must prove that a standard
+column read/write for a non-Codex row still succeeds, the reserved row is
+invisible outside the definer, and a direct binding-column read raises
+`InsufficientPrivilege`.
+
+`core_199` first accepts an already-finalized interface only after proving its
 exact owner, function signatures, search paths, ACLs, and absence of migration-
 owner bypass. Otherwise it proves the exact trusted bootstrap installer and
 invokes it. If `scripts/init-db.sql` has not been rerun on an upgraded database,
@@ -390,8 +468,10 @@ CREATE TABLE public.codex_auth_operations (
     successor_generation_id UUID NULL REFERENCES public.codex_auth_generations(generation_id),
     terminal_reason TEXT NULL CHECK (
         terminal_reason IN ('completed', 'owner_replaced', 'revoked', 'expired',
-                            'malformed_stage', 'containment_failed', 'cancelled',
-                            'timeout', 'authority_unavailable')
+                            'stage_prepare_failed', 'prelaunch_cancelled',
+                            'launch_mark_failed', 'launch_failed', 'cancelled',
+                            'containment_failed', 'invalid_staged_output',
+                            'persistence_unavailable', 'authority_unavailable')
     ),
     CHECK ((state IN ('prepared', 'launched')) = (terminal_at IS NULL)),
     CHECK (
@@ -422,6 +502,11 @@ public.codex_auth_complete_operation(
     successor_document TEXT,
     health_outcome TEXT
 )
+public.codex_auth_abandon_operation(
+    operation_id UUID,
+    expected_generation_id UUID,
+    reason TEXT
+)
 public.codex_auth_replace_as_owner(document TEXT)
 public.codex_auth_revoke_as_owner()
 public.codex_auth_cleanup_operations(retention_days INTEGER)
@@ -435,7 +520,7 @@ The distinct device-auth bootstrap function is granted only to the dashboard
 API's no-`SET ROLE` shared-authority path; a runtime/prewarm prepare role receives
 `InsufficientPrivilege` when invoking it. The bootstrap definer itself checks
 that the locked singleton is absent, `has_ever_initialized = FALSE`, there is
-no generation row, and there is no eligible raw row; only then does it record
+no generation row, and there is no reserved raw row at all; only then does it record
 `bootstrap_absent = TRUE` and open an empty private stage. Any owner replacement or revoke sets
 `has_ever_initialized = TRUE` before releasing the same lock, permanently
 closing this bootstrap route. A bootstrap operation must provide one strictly
@@ -445,6 +530,61 @@ a successor; it first locks the operation and singleton, compares a normal
 operation's generation with the current pointer or rechecks the recorded
 never-initialized absent state, checks `clock_timestamp() < deadline_at`, and
 terminalizes a loser rather than writing a successor or health result.
+
+Any present malformed raw row, including a null/mismatched unbound raw row,
+is an inconsistent authority rather than absence. It cannot be adopted or
+bootstrap a device flow and remains untouched until direct owner replacement.
+The real-database negative test
+`test_present_malformed_raw_row_cannot_bootstrap` must insert such a row, call
+the dashboard bootstrap definer under its effective role, receive only the safe
+unavailable result, and prove the row and provenance catalog are unchanged.
+
+The guarded `codex_auth_abandon_operation` is the sole explicit abandonment
+path for a nonterminal operation. It locks the operation and singleton, checks
+the recorded expected generation or exact bootstrap-absence state, accepts
+only the closed `CodexAuthAbandonReason` vocabulary, writes no successor or
+health, and transitions `prepared` or a fully-contained `launched` operation to
+`discarded`. A prepared-stage failure uses `stage_prepare_failed`; cancellation
+before a child uses `prelaunch_cancelled`; a failed launch recheck uses
+`launch_mark_failed` unless the marking transaction already terminalized the
+operation as superseded/expired; process creation failure after a successful
+mark uses `launch_failed`. Cancellation/containment/parser/persistence failures
+after launch call the same guard only after the whole child domain is proven
+dead. Duplicate abandonment returns the existing terminal disposition and
+does not alter `terminal_at`, health, generations, or the raw row. If database
+unavailability prevents abandonment, the caller removes no still-live stage,
+starts no child, and expiry remains the deterministic terminalizer.
+
+The `core_199` migration is intentionally irreversible. Its `downgrade()`
+raises before issuing DDL; it must not remove RLS, ACLs, bindings, lineage, or
+the reserved-row guard and must leave the Alembic revision applied. The real
+PostgreSQL test
+`test_core_199_downgrade_fails_without_catalog_or_data_change` snapshots the
+catalog and value-free rows, invokes downgrade, and proves the transaction
+failed with the snapshot unchanged. Routine application rollback therefore
+means a fence-aware fail-closed launch posture. Any later removal of this
+boundary requires a future independently reviewed migration with explicit
+exclusive-maintenance preconditions; this packet contains no hidden privileged
+downgrade.
+
+The concurrency suite SHALL execute these named cases against the installed
+functions with independent real PostgreSQL connections and production
+effective roles:
+
+```python
+async def test_two_conditional_successors_have_exactly_one_winner(...): ...
+async def test_owner_replacement_racing_completion_has_no_stale_health_write(...): ...
+async def test_revoke_racing_device_auth_has_no_stale_health_write(...): ...
+async def test_duplicate_completion_commits_exactly_once(...): ...
+async def test_effective_roles_execute_only_their_guarded_operations(...): ...
+```
+
+Each race uses a transaction barrier so both contenders reach the guarded
+operation before either is released. The post-race query must prove exactly one
+winning current generation (or the intentional owner/revoked state), one
+terminal outcome per operation, no stale health write on the winner, no extra
+raw-row mutation, and no orphan pointer. Mocks may supplement but SHALL NOT substitute
+for these real PostgreSQL connections and effective-role calls.
 
 The compatibility guard must reject a direct insert/update/delete of the
 reserved key unless the fixed definer operation establishes an internal,
@@ -466,6 +606,7 @@ uv run pytest \
   tests/migrations/test_codex_auth_generation_provenance_migration.py \
   tests/config/test_init_db_codex_auth_generation_boundary.py \
   tests/config/test_codex_auth_generation_acl_integration.py \
+  tests/config/test_codex_auth_generation_concurrency_integration.py \
   tests/config/test_migration_chain_head.py \
   -q --override-ini='addopts='
 ```
@@ -478,15 +619,21 @@ runtime bootstrap invocation, and `PUBLIC` function invocation fail, while a
 normal guarded runtime call, the dashboard-only bootstrap definer, and an
 established non-Codex write succeed.
 
+The ACL assertions run through the actual shared connecting login followed by
+the production `SET ROLE` paths. They must prove table-level and binding-column
+privileges, reserved-row visibility, fixed function execution, and successful
+non-Codex CRUD; testing as the migration owner alone is insufficient.
+
 - [ ] **Step 5: Commit the schema boundary**
 
 ```bash
 git add \
   scripts/init-db.sql \
-  alembic/versions/core/core_198_codex_auth_generation_provenance.py \
+  alembic/versions/core/core_199_codex_auth_generation_provenance.py \
   tests/migrations/test_codex_auth_generation_provenance_migration.py \
   tests/config/test_init_db_codex_auth_generation_boundary.py \
-  tests/config/test_codex_auth_generation_acl_integration.py
+  tests/config/test_codex_auth_generation_acl_integration.py \
+  tests/config/test_codex_auth_generation_concurrency_integration.py
 git commit -m "feat: add Codex auth generation boundary"
 ```
 
@@ -577,6 +724,30 @@ async def test_expired_or_duplicate_completion_is_non_committing() -> None:
 
     assert first.disposition is CodexAuthCompletionDisposition.EXPIRED
     assert second.disposition is CodexAuthCompletionDisposition.EXPIRED
+
+
+async def test_prepared_stage_failure_is_abandoned_without_health_or_successor() -> None:
+    store, lease = make_prepared_runtime_lease()
+
+    result = await store.abandon_codex_auth_operation(
+        operation_id=lease.operation_id,
+        expected_generation_id=lease.generation_id,
+        reason=CodexAuthAbandonReason.STAGE_PREPARE_FAILED,
+    )
+
+    assert result.disposition is CodexAuthCompletionDisposition.DISCARDED
+    assert_no_successor_or_health_write()
+
+
+async def test_duplicate_abandonment_is_idempotent() -> None:
+    store, lease = make_prepared_runtime_lease()
+
+    first = await abandon_for_prelaunch_cancel(store, lease)
+    second = await abandon_for_prelaunch_cancel(store, lease)
+
+    assert first.disposition is CodexAuthCompletionDisposition.DISCARDED
+    assert second.disposition is CodexAuthCompletionDisposition.DISCARDED
+    assert_terminal_record_was_written_once()
 ```
 
 - [ ] **Step 2: Run the focused tests and confirm the typed methods are absent**
@@ -604,6 +775,15 @@ separately granted dashboard device-auth definer. Add
 `read_current_codex_auth_projection_binding` as a read-only complete-binding
 query for startup compatibility projection; it creates no operation and cannot
 authorize launch or finalization.
+
+`abandon_codex_auth_operation` calls only
+`public.codex_auth_abandon_operation`. It accepts the closed
+`CodexAuthAbandonReason`, never an exception/provider string, and is used for
+prepared-stage failure, cancellation, failed mark, launch failure, and
+post-containment discard. It is not an alias for
+`complete_codex_auth_operation`: abandonment can terminalize `prepared` work,
+whereas completion accepts only one exact launched operation and may be the
+sole successor/health writer.
 
 Use one helper to convert database outcomes to safe Python types:
 
@@ -640,6 +820,8 @@ EXPECTED_DISPOSITIONS = {
     "duplicate_completion": CodexAuthCompletionDisposition.SUPERSEDED,
     "expired": CodexAuthCompletionDisposition.EXPIRED,
     "malformed_or_missing_binding": CodexAuthCompletionDisposition.UNAVAILABLE,
+    "prepared_stage_abandonment": CodexAuthCompletionDisposition.DISCARDED,
+    "duplicate_abandonment": CodexAuthCompletionDisposition.DISCARDED,
 }
 ```
 
@@ -651,9 +833,10 @@ logger argument, or safe result exposes the transient document, operation ID,
 or generation ID. Add a paired test that an absent state after any generated
 or revoked authority returns `UNAVAILABLE` even when the device-auth caller
 uses the bootstrap entry point, an initialized inconsistent binding also
-rejects bootstrap and requires direct owner replacement, and a paired test that an unfinished bootstrap with no
-strictly validated successor terminalizes without attaching health or creating
-a generation.
+rejects bootstrap and requires direct owner replacement, and a paired test that
+an unfinished bootstrap with no strictly validated successor calls guarded
+abandonment with `invalid_staged_output` after containment, without attaching
+health or creating a generation.
 
 - [ ] **Step 5: Run the authority API tests and commit**
 
@@ -773,6 +956,8 @@ project_current_authority_under_lock(
 The stage helper validates that the stage belongs to the exact operation, is
 inside the operation-root directory, is not a symlink, is mode `0600`, and is
 strictly parseable only after the entire child process group has terminated.
+These checks protect parent attribution but do not isolate two children running
+under the same host identity; Task 4 supplies the mandatory kernel boundary.
 For `CodexAuthLaunchLease` it seeds the stage from the transient document; for
 `CodexAuthBootstrapLease` it creates an empty stage and accepts a candidate
 only at the one guarded device-auth completion. On any failure, remove the
@@ -814,9 +999,13 @@ file metadata, a digest, or a process-local cache.
 **Files:**
 
 - Modify: `src/butlers/core/runtimes/codex.py`
+- Modify: `src/butlers/cli_auth/sandbox.py`
+- Modify: `src/butlers/cli_auth/sandbox_platform.py`
 - Modify: `tests/adapters/test_codex_adapter.py`
 - Modify: `tests/adapters/test_codex_auth_sync.py`
+- Modify: `tests/cli/test_runtime_cli_sandbox.py`
 - Test: `tests/adapters/test_codex_adapter.py`
+- Test: `tests/cli/test_runtime_cli_sandbox.py`
 
 **Consumes:** Task 2 lease/completion methods and Task 3 private-stage helpers.
 
@@ -871,6 +1060,21 @@ async def test_authority_deadline_is_not_extended_by_retry_or_chunk() -> None:
     await adapter.invoke(make_request_with_multiple_chunks())
 
     assert all_observed_operation_deadlines() == [deadline]
+
+
+async def test_codex_peer_cannot_read_another_operation_stage(
+    real_bubblewrap_sandbox: RuntimeCLIAuthSandbox,
+) -> None:
+    first, second = await real_bubblewrap_sandbox.launch_two_blocked_codex_peers()
+    assert await first.try_read_host_path(second.stage_host_path) in {"EACCES", "ENOENT"}
+
+
+async def test_codex_peer_cannot_write_another_operation_stage(
+    real_bubblewrap_sandbox: RuntimeCLIAuthSandbox,
+) -> None:
+    first, second = await real_bubblewrap_sandbox.launch_two_blocked_codex_peers()
+    assert await second.try_write_host_path(first.stage_host_path) in {"EACCES", "ENOENT"}
+    assert await first.read_own_stage_sentinel() == "unchanged"
 ```
 
 - [ ] **Step 2: Run adapter tests and confirm they fail before the generation fence exists**
@@ -882,7 +1086,8 @@ uv run pytest tests/adapters/test_codex_adapter.py -q --override-ini='addopts='
 ```
 
 Expected: failure because the adapter currently reconciles a shared canonical
-file and finalizes by raw-value CAS instead of an exact operation.
+file and finalizes by raw-value CAS instead of an exact operation, and its
+ordinary private HOME does not provide behavior-executing peer isolation.
 
 - [ ] **Step 3: Refactor invocation and prewarm through the one exact operation**
 
@@ -891,6 +1096,20 @@ operation lifecycle. `invoke` and `run_codex_pre_warm` must calculate one
 existing absolute authority deadline, prepare the appropriate kind, write a
 private stage, optionally project the canonical file under its required lock,
 conditionally mark launched, and only then create a child.
+
+Generalize the existing root-owned Bubblewrap dashboard launcher into a shared
+`RuntimeCLIAuthSandbox` without weakening its PID1/pidfd containment receipts.
+Every runtime invoke, internal retry, prewarm, and device-auth child leases one
+unique reserved outer UID/GID, enters distinct user/mount/PID/IPC/UTS namespaces,
+and sees only its own stage bind at its HOME plus the reviewed read-only runtime
+inputs. The parent stage root is not mounted, and a peer's host stage path is
+both absent from the mount namespace and inaccessible to the peer's leased
+outer identity. Identity reuse occurs only after namespace PID1 death and stage
+cleanup. This is the kernel-enforced per-invocation isolation boundary; distinct
+paths, mode `0600`, `no_new_privs`, and process groups alone are insufficient.
+The existing `--dangerously-bypass-approvals-and-sandbox` Codex argument remains
+inside this outer Bubblewrap boundary and cannot select an unsandboxed process
+creation path.
 
 Use this sequence without expanding a retry's deadline:
 
@@ -904,11 +1123,10 @@ if not isinstance(lease_or_unavailable, CodexAuthLaunchLease):
 
 stage = await write_private_codex_auth_stage(stage_root, lease=lease_or_unavailable)
 if stage is None:
-    await authority.complete_codex_auth_operation(
+    await authority.abandon_codex_auth_operation(
         operation_id=lease_or_unavailable.operation_id,
         expected_generation_id=lease_or_unavailable.generation_id,
-        validated_successor_document=None,
-        health=None,
+        reason=CodexAuthAbandonReason.STAGE_PREPARE_FAILED,
     )
     return authority_unavailable_result()
 
@@ -917,10 +1135,23 @@ launch = await authority.mark_codex_auth_operation_launched(
     expected_generation_id=lease_or_unavailable.generation_id,
 )
 if launch.disposition is not CodexAuthLaunchDisposition.LAUNCHED:
+    await authority.abandon_codex_auth_operation(
+        operation_id=lease_or_unavailable.operation_id,
+        expected_generation_id=lease_or_unavailable.generation_id,
+        reason=CodexAuthAbandonReason.LAUNCH_MARK_FAILED,
+    )
     discard_private_stage(stage)
     return authority_unavailable_result()
 
-child = await create_child_with_private_stage(stage)
+try:
+    child = await runtime_cli_auth_sandbox.launch_with_private_stage(stage)
+except Exception:
+    await authority.abandon_codex_auth_operation(
+        operation_id=lease_or_unavailable.operation_id,
+        expected_generation_id=lease_or_unavailable.generation_id,
+        reason=CodexAuthAbandonReason.LAUNCH_FAILED,
+    )
+    raise
 ```
 
 After full child/process-group termination, read only that private stage,
@@ -939,6 +1170,14 @@ does not call a successor write; and a failing completion deletes the private
 stage. Include a test that lock contention returns the safe no-launch result
 and never takes the previous "proceed unlocked" path.
 
+The peer-isolation tests must be behavior-executing integration tests against
+the real Bubblewrap launcher, not argv snapshots. Launch two blocked peers at
+once, have each attempt open/read and open/write the other's absolute host
+stage path, assert `EACCES` or `ENOENT`, and prove both own-stage sentinels are
+unchanged. Also execute a child carrying
+`--dangerously-bypass-approvals-and-sandbox` and prove the same denial. Static
+argument tests may supplement these cases but SHALL NOT substitute for them.
+
 - [ ] **Step 5: Run adapter tests and commit**
 
 Run:
@@ -948,11 +1187,15 @@ uv run pytest \
   tests/adapters/test_codex_adapter.py \
   tests/adapters/test_codex_auth_sync.py \
   tests/adapters/test_codex_refresh_lock.py \
+  tests/cli/test_runtime_cli_sandbox.py \
   -q --override-ini='addopts='
 git add \
   src/butlers/core/runtimes/codex.py \
+  src/butlers/cli_auth/sandbox.py \
+  src/butlers/cli_auth/sandbox_platform.py \
   tests/adapters/test_codex_adapter.py \
-  tests/adapters/test_codex_auth_sync.py
+  tests/adapters/test_codex_auth_sync.py \
+  tests/cli/test_runtime_cli_sandbox.py
 git commit -m "feat: fence Codex subprocess authority at launch"
 ```
 
@@ -1110,7 +1353,11 @@ if launch.disposition is CodexAuthLaunchDisposition.LAUNCHED:
     handle = await prepared_sandbox.launch()
 else:
     await prepared_sandbox.discard()
-    await terminalize_without_successor(lease_or_unavailable, launch)
+    await codex_authority.abandon_codex_auth_operation(
+        operation_id=lease_or_unavailable.operation_id,
+        expected_generation_id=expected_generation(lease_or_unavailable),
+        reason=CodexAuthAbandonReason.LAUNCH_MARK_FAILED,
+    )
     raise HTTPException(status_code=503, detail="System-global Codex credential authority unavailable.")
 ```
 
@@ -1134,6 +1381,16 @@ prepared handle proves containment and yields the candidate to
 launch error, containment error, or persistence error terminalizes the
 operation and removes the stage. A missing/ambiguous candidate creates no raw
 write and returns the existing generic session failure message.
+
+Every non-success seam invokes the explicit abandonment method with the closed
+reason matching its stage: `stage_prepare_failed`, `prelaunch_cancelled`,
+`launch_mark_failed`, `launch_failed`, `cancelled`, `containment_failed`,
+`invalid_staged_output`, or `persistence_unavailable`. Prepared-stage failure,
+cancellation before launch, failed marking, process-launch failure, and
+duplicate abandonment each have a named test. For a launched child, containment
+must be proven before abandonment or stage removal; if it cannot be proven, the
+stage and leased identity remain quarantined and database expiry is the only
+terminalizer.
 
 For a Codex health probe, prepare/mark a `HEALTH_PROBE` operation. Its safe
 outcome may be returned in the existing health shape, but stale completion
@@ -1166,6 +1423,9 @@ At the session/sandbox/platform seam, prove normal and bootstrap seeds reach
 only their owning child; a failed mark launches no process; completion after
 containment uses the identical lease; and cancellation, timeout, failed launch,
 or failed finalization removes the stage and terminalizes the operation.
+Add named cases for prepared-stage failure, prelaunch cancellation, failed
+marking, process-launch failure, and duplicate abandonment, asserting each
+writes no successor or health and never starts an unauthorized child.
 
 Add a parent-only health test that races a completed `HEALTH_PROBE` against an
 owner replacement and asserts the probe response remains generic while its
@@ -1568,6 +1828,7 @@ uv run pytest \
   tests/migrations/test_codex_auth_generation_provenance_migration.py \
   tests/config/test_init_db_codex_auth_generation_boundary.py \
   tests/config/test_codex_auth_generation_acl_integration.py \
+  tests/config/test_codex_auth_generation_concurrency_integration.py \
   tests/config/test_credential_store.py \
   tests/adapters/test_codex_auth_sync.py \
   tests/adapters/test_codex_refresh_lock.py \
@@ -1625,6 +1886,7 @@ uv run ruff check \
   tests/migrations/test_codex_auth_generation_provenance_migration.py \
   tests/config/test_init_db_codex_auth_generation_boundary.py \
   tests/config/test_codex_auth_generation_acl_integration.py \
+  tests/config/test_codex_auth_generation_concurrency_integration.py \
   tests/contracts/test_codex_auth_generation_completeness.py
 uv run ruff format --check \
   src/butlers/credential_store.py \
@@ -1649,6 +1911,7 @@ uv run ruff format --check \
   tests/migrations/test_codex_auth_generation_provenance_migration.py \
   tests/config/test_init_db_codex_auth_generation_boundary.py \
   tests/config/test_codex_auth_generation_acl_integration.py \
+  tests/config/test_codex_auth_generation_concurrency_integration.py \
   tests/contracts/test_codex_auth_generation_completeness.py
 openspec validate core-credentials --strict
 openspec validate core-spawner --strict
@@ -1665,9 +1928,12 @@ Run:
 
 ```bash
 make test-qg
-git diff --check
-git diff -- scripts/init-db.sql \
-  alembic/versions/core/core_198_codex_auth_generation_provenance.py \
+test -n "${IMPLEMENTATION_REVIEW_BASE:-}"
+test "$(git merge-base "${IMPLEMENTATION_REVIEW_BASE}" HEAD)" = "${IMPLEMENTATION_REVIEW_BASE}"
+git diff --check "${IMPLEMENTATION_REVIEW_BASE}...HEAD"
+git diff --stat "${IMPLEMENTATION_REVIEW_BASE}...HEAD"
+git diff "${IMPLEMENTATION_REVIEW_BASE}...HEAD" -- scripts/init-db.sql \
+  alembic/versions/core/core_199_codex_auth_generation_provenance.py \
   src/butlers/credential_store.py \
   src/butlers/core/runtimes/_codex_auth_sync.py \
   src/butlers/core/runtimes/codex.py \
@@ -1689,6 +1955,9 @@ git diff -- scripts/init-db.sql \
 
 Expected: the quality gate exits zero and manual diff review confirms:
 
+- the captured reviewed base through `HEAD` was inspected, including all
+  committed implementation rather than only the current worktree delta;
+
 - the migration does not parse, copy, hash, or log legacy raw auth;
 - an uninitialized valid existing authority can be adopted only once via the
   guarded path;
@@ -1706,7 +1975,7 @@ Expected: the quality gate exits zero and manual diff review confirms:
 git status --short
 git add \
   scripts/init-db.sql \
-  alembic/versions/core/core_198_codex_auth_generation_provenance.py \
+  alembic/versions/core/core_199_codex_auth_generation_provenance.py \
   src/butlers/credential_store.py \
   src/butlers/core/runtimes/_codex_auth_sync.py \
   src/butlers/core/runtimes/codex.py \
@@ -1729,6 +1998,7 @@ git add \
   tests/migrations/test_codex_auth_generation_provenance_migration.py \
   tests/config/test_init_db_codex_auth_generation_boundary.py \
   tests/config/test_codex_auth_generation_acl_integration.py \
+  tests/config/test_codex_auth_generation_concurrency_integration.py \
   tests/config/test_credential_store.py \
   tests/adapters/test_codex_auth_sync.py \
   tests/adapters/test_codex_refresh_lock.py \

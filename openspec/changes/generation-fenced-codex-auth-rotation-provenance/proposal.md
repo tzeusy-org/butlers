@@ -32,8 +32,10 @@ contents, process identity, or timestamps.
   boundary through a privileged fixed installer before the normal migration
   may invoke it.
 - Add additive rollout, retirement, and garbage-collection rules for the
-  non-secret provenance records. Rollback removes use of the new fence before
-  any schema removal; it never reconstructs authority from local files.
+  non-secret provenance records. The migration is intentionally irreversible;
+  application rollback is fence-aware fail-closed operation, and any future
+  schema removal requires a separately reviewed migration. No rollback
+  reconstructs authority from local files.
 - Preserve the existing owner-only Codex rotate `{fingerprint, value}`
   raw-value-once response and inventory/detail display fingerprint, while
   adding no credential reveal, generation, operation, lineage, capability,

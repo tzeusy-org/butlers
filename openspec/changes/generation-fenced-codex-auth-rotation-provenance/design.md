@@ -107,8 +107,8 @@ bootstrap route has permanently closed. The only valid current state is either:
 1. a valid `public.butler_secrets` `cli-auth/codex` row whose
    `codex_auth_generation_id` equals the singleton's current generation and
    whose referenced generation exists; or
-2. an explicitly absent state with no current generation and no eligible
-   credential row. A `has_ever_initialized = false` state is eligible only for
+2. an explicitly absent state with no current generation and no reserved raw
+   row at all. A `has_ever_initialized = false` state is eligible only for
    a single explicitly requested device-auth bootstrap; a revoked state keeps
    `has_ever_initialized = true` and is never eligible for bootstrap.
 
@@ -153,7 +153,7 @@ that a later reader has to reconcile by guesswork.
 The migration reserves `cli-auth/codex` from generic direct DML, but the normal
 migration login does not create or own this boundary. A privileged
 `scripts/init-db.sql` step installs a fixed, bootstrap-owned, no-argument
-installer/finalizer patterned after the `core_196` restore-drill boundary. The
+installer/finalizer patterned after the `core_198` runtime-attention boundary. The
 normal migration first catalog-verifies that exact trusted installer and then
 invokes it. The installer creates the protected relations and fixed-search-path
 `SECURITY DEFINER` mutation surface; the finalizer assigns them to a NOLOGIN,
@@ -162,6 +162,18 @@ grants only the role paths required by the dashboard shared-authority service
 and designated Codex runtime callers. It also revokes installer/finalizer
 access, owner membership, protected-schema `CREATE`, and direct relation DML
 from the migration login.
+
+Because `scripts/init-db.sql` historically grants broad DML on existing
+`public` tables, the finalizer treats `public.butler_secrets` as part of the
+protected interface rather than relying on ownership or a trigger alone. It
+enables and forces RLS, replaces all non-system policies with the exact
+`codex_auth_non_reserved_secrets` and `codex_auth_reserved_owner` policies,
+revokes table-level SELECT/UPDATE and binding-column access, then restores only
+explicit legacy-column privileges for non-reserved rows. It repeats that repair
+after every broad-grant bootstrap rerun. Thus existing non-Codex CRUD remains
+available while an effective runtime/connector role cannot select the reserved
+row or read/update `codex_auth_generation_id`; only the fixed NOLOGIN definer
+owner can cross the reserved policy.
 
 A row trigger rejects or marks as unprovable direct mutations of the reserved
 row that do not pass through that surface. It must use an
@@ -262,6 +274,12 @@ CredentialStore.complete_codex_auth_operation(
     validated_successor_document: str | None,
     health: CodexAuthHealthOutcome | None,
 ) -> CodexAuthCompletion
+
+CredentialStore.abandon_codex_auth_operation(
+    operation_id: UUID,
+    expected_generation_id: UUID | None,
+    reason: CodexAuthAbandonReason,
+) -> CodexAuthCompletion
 ```
 
 The normal preparation method has no boolean, mode, or generic kind capable of
@@ -291,6 +309,7 @@ The accepted state machine is:
 stateDiagram-v2
     [*] --> prepared: valid current generation + operation row
     prepared --> launched: exact generation remains current
+    prepared --> discarded: guarded prelaunch abandonment
     prepared --> superseded: owner replacement/revoke wins first
     prepared --> expired: database deadline passes
     launched --> completed_unchanged: exact generation remains current; no successor
@@ -305,8 +324,8 @@ creates a `prepared` operation, and returns the raw document only to the
 existing trusted credential consumer. It does not examine a local file as a
 predecessor and has no bootstrap selector. The separate dashboard-only
 device-auth bootstrap definer obtains the same lock and, only when the singleton
-is absent, `has_ever_initialized = false`, no generation exists, and no eligible
-raw row exists, returns a
+is absent, `has_ever_initialized = false`, no generation exists, and no reserved
+raw row exists at all, returns a
 `CodexAuthBootstrapLease` whose operation records `bootstrap_absent = true`
 and no generation. The database establishes that fact without accepting
 `allow_bootstrap`, a session value, or any caller proof. That lease creates an
@@ -335,15 +354,29 @@ the following are true:
 - no earlier successor/replacement/revoke has made the operation stale.
 
 For no rotation, a normal-generation operation attaches a safe health result
-only under those conditions and marks `completed_unchanged`; a bootstrap
-operation has no current credential to attach and terminalizes without a
-write. For a valid candidate, it creates a new random generation, writes the
+only under those conditions and marks `completed_unchanged`. A bootstrap
+operation has no current credential to attach: without a valid successor the
+contained caller invokes guarded abandonment with
+`invalid_staged_output`, rather than calling completion. For a valid candidate,
+completion creates a new random generation, writes the
 candidate only to the existing secret row, updates both generation pointers,
 sets `has_ever_initialized = true`, clears prior health state, retires the old
 generation when one exists, marks the operation `completed_successor`, and
 commits atomically. The first valid completion wins. A duplicate completion, a
 different candidate after a terminal state, a stale operation, or a mismatched
 generation never retries or overwrites; it returns a safe non-commit result.
+
+`abandon_codex_auth_operation` is a separate guarded transition for work that
+cannot reach ordinary completion. It accepts only closed reasons
+(`stage_prepare_failed`, `prelaunch_cancelled`, `launch_mark_failed`,
+`launch_failed`, `cancelled`, `containment_failed`, `invalid_staged_output`, or
+`persistence_unavailable`), locks the operation and singleton, and moves a
+nonterminal operation to `discarded` without successor or health. It can close
+`prepared` work; `complete_codex_auth_operation` cannot. For launched work the
+caller first proves the full child domain dead. Duplicate abandonment is an
+idempotent safe non-commit result. When persistence is unavailable, no child
+starts (or the child is contained), the stage remains quarantined as needed,
+and deterministic expiry supplies eventual terminalization.
 
 This gives a total order without treating the time at which a child happened to
 exit as an authority proof.  Database timestamps only bound an operation and
@@ -360,8 +393,16 @@ document only through `prepare_codex_auth_operation`.
 
 Every runtime invocation, prewarm, device-auth flow, and dashboard health probe
 gets an operation-specific staged `HOME` containing a private copy of that
-prepared authority.  Runtime children do not write the shared canonical file
-and do not share a mutable stage.  After the sandbox/process tree has been
+prepared authority plus kernel-enforced per-invocation isolation. Each child
+leases a unique outer UID/GID and runs in its own Bubblewrap user, mount, PID,
+IPC, and UTS namespaces with only its own stage bound as HOME. The parent stage
+root is not mounted. Mode `0600`, distinct paths, process groups, and
+`no_new_privs` are defense in depth and do not substitute for the namespace and
+identity boundary. The Codex CLI's
+`--dangerously-bypass-approvals-and-sandbox` disables only its inner policy
+sandbox; it cannot escape the parent-created kernel boundary. Runtime children
+do not write the shared canonical file and do not share a mutable stage. After
+the sandbox/process tree has been
 fully terminated, only the stage belonging to that operation is eligible for
 strict parsing and conditional completion.  A stale or malicious local shared
 file cannot be misattributed to an operation.
@@ -378,8 +419,9 @@ sandbox handle to create its child; a stale/failed mark creates no process.
 The handle retains the same stage through PID-namespace containment and returns
 only its validated bytes to completion with the same lease. Cancellation,
 timeout, mark failure, launch failure, containment failure, and callback failure
-all terminalize safely and remove that stage. No stage or lease may be reused by
-another session or child.
+all invoke guarded abandonment with the matching closed reason, subject to the
+post-launch child-death proof, and remove that stage. No stage or lease may be
+reused by another session or child.
 
 The old canonical file may remain as a DB-originated compatibility projection
 for components that cannot yet consume a private stage.  Its write path holds
@@ -420,6 +462,13 @@ rule:
    committed intentional replacement becomes current.  Two conditional
    successors serialize similarly; exactly one can create the next generation.
 
+Behavior-executing real PostgreSQL races, using independent connections and
+the production effective-role path, prove two conditional successors, owner
+replacement versus completion, revoke versus device auth, and duplicate
+completion. Every test asserts exactly one winner and no stale health write,
+extra generation, raw-row replay, or orphan pointer. Mock tests may supplement
+these cases but cannot substitute for database locking and ACL evidence.
+
 The Codex dashboard API deliberately preserves its existing public contract:
 owner rotate/paste returns `{fingerprint, value}` once, while inventory and
 detail return the on-read display `fingerprint` and never return the raw value.
@@ -454,6 +503,7 @@ health attachment:
 | --- | --- |
 | selected system-global pool unavailable | no operation / no child; safe unavailable result |
 | authority absent before any generation exists | only the explicit device-auth bootstrap may prepare an empty private stage |
+| present malformed or unbound reserved raw row before initialization | no bootstrap or adoption; preserve row and require direct owner replacement |
 | authority absent after revoke or any prior generation | no operation / no child; no automatic bootstrap or local recovery |
 | malformed authority document | no operation / no child; leave local file non-authoritative |
 | state/secret/generation mismatch or missing record | no operation / no child; do not repair from local file |
@@ -509,7 +559,8 @@ The implementation has five ordered additive stages:
    lookalike objects. It does not inspect or change a credential.
 2. **Schema and compatibility guard.** The normal migration catalog-verifies
    and invokes that installer. The installer adds the relations, nullable
-   binding column, narrow functions/ACLs, and reserved-row trigger without
+   binding column, narrow functions/ACLs, FORCE RLS with exact reserved/non-
+   reserved policies, precise legacy-column grants, and a reserved-row trigger without
    deleting or rewriting any existing secret; its finalizer removes migration
    ownership, membership, protected-schema CREATE/DML, and installer access.
    Migration-before-bootstrap fails closed. The migration itself does not parse
@@ -533,11 +584,14 @@ The implementation has five ordered additive stages:
 Routine rollback is a fail-closed operational mode in the fence-aware image:
 it stops new Codex launches and successor promotion while preserving the
 existing raw row and opaque provenance.  It does not re-enable pre-fence
-local-file reconciliation or generic legacy writes.  A schema downgrade or
-deployment of a pre-fence image requires an explicit, exclusive maintenance
-decision after all Codex operations are terminal; it is not an automated
-rollback path.  This preserves the single-authority invariant through a failed
-rollout rather than trading it for availability.
+local-file reconciliation or generic legacy writes. The `core_199` migration
+is intentionally irreversible: `downgrade()` raises before DDL, and a real
+PostgreSQL test proves the catalog, row data, RLS, ACLs, and revision remain
+unchanged after the failed attempt. Deploying a pre-fence image is unsupported.
+Any future schema removal requires a future independently reviewed migration
+with explicit exclusive-maintenance preconditions. This preserves the
+single-authority invariant through a failed rollout rather than trading it for
+availability.
 
 ### D10 — Keep all diagnostics and documentation value-free
 
@@ -595,11 +649,13 @@ state that dashboard fingerprints remain display-only and non-persistent.
    NOLOGIN owner. Add the normal additive core migration that catalog-verifies
    and invokes it to create the nullable binding,
    singleton/generation/operation tables, indexes, constraints,
-   security-definer functions, reserved-row guard, and least-privilege grants.
+   security-definer functions, reserved-row FORCE RLS/policies, precise
+   legacy-column ACLs, reserved-row guard, and least-privilege grants.
    Prove finalization leaves the migration login with no owner membership,
-   protected-schema CREATE, direct DML, or installer/finalizer execution. Keep
-   downgrade a separately authorized privileged-bootstrap operation and never
-   copy a credential out of its existing row.
+   protected-schema CREATE, direct DML, or installer/finalizer execution. Make
+   downgrade intentionally irreversible and prove a refused downgrade leaves
+   catalog/data/ACL state unchanged; never copy a credential out of its
+   existing row.
 3. Implement the typed `CredentialStore` repository and replace Codex-only
    generic load/store/CAS/health calls.  Keep non-Codex `CredentialStore`
    behavior unchanged.
