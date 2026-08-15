@@ -20,9 +20,11 @@ Ruff, OpenSpec, Docker/CLI-auth sandbox helpers.
 
 ## Global Constraints
 
-- The raw `cli-auth/codex` document remains only in the existing Tier 1
-  `public.butler_secrets` row; no new relation, log, response, exception,
-  fixture, or audit projection may contain it.
+- The raw `cli-auth/codex` document remains durably only in the existing Tier
+  1 `public.butler_secrets` row; no new relation, log, exception, fixture, or
+  audit projection may contain it. Preserve the existing owner-only rotate
+  `{fingerprint, value}` raw-value-once response as an explicit compatibility
+  contract, but add no other response reveal.
 - Generation and operation IDs are random database-issued UUIDs. They are not
   credential-derived fingerprints/digests, public identifiers, bearer
   capabilities, PID/session/file identities, or ordering proofs.
@@ -36,9 +38,11 @@ Ruff, OpenSpec, Docker/CLI-auth sandbox helpers.
   mutations. Runtime, prewarm, device-auth, and health are conditional
   operations. The first valid conditional successor may win; a later owner
   replacement is intentionally current.
-- Preserve existing public response envelopes and existing non-Codex
-  `butler_secrets` semantics. Do not expose generation/operation/lineage data
-  to browser, MCP, command line, logs, telemetry, or audit text.
+- Preserve the existing Codex rotate `{fingerprint, value}` response,
+  inventory/detail on-read display fingerprint, other public response
+  envelopes, and existing non-Codex `butler_secrets` semantics. Do not expose
+  generation/operation/lineage data to browser, MCP, command line, logs,
+  telemetry, or audit text; the display fingerprint is not provenance.
 - Runtime children use one private stage per operation. Canonical
   `~/.codex/auth.json` is a database-originated compatibility projection under
   a cross-process lock and atomic `0600` replacement; lock failure blocks the
@@ -59,8 +63,8 @@ Ruff, OpenSpec, Docker/CLI-auth sandbox helpers.
 
 | File | Responsibility |
 | --- | --- |
-| `scripts/init-db.sql` | Creates and isolates the no-login provenance interface owner before migrations use it. |
-| `alembic/versions/core/core_197_codex_auth_generation_provenance.py` | Adds the public schema, guarded mutation functions, compatibility guard, constraints, and ACL finalization. |
+| `scripts/init-db.sql` | Privileged bootstrap that creates the NOLOGIN provenance owner plus fixed no-argument installer/finalizer before migrations use it. |
+| `alembic/versions/core/core_198_codex_auth_generation_provenance.py` | Catalog-verifies and invokes the trusted bootstrap installer after the live `core_197` head; it does not create or own the protected boundary itself. |
 | `tests/migrations/test_codex_auth_generation_provenance_migration.py` | Unit checks the migration chain and static schema/DDL invariants. |
 | `tests/config/test_init_db_codex_auth_generation_boundary.py` | Proves bootstrap SQL establishes the intended no-login ownership and privilege shape. |
 | `tests/config/test_codex_auth_generation_acl_integration.py` | Uses real PostgreSQL effective roles to prove guarded access and direct-DML rejection. |
@@ -76,14 +80,20 @@ Ruff, OpenSpec, Docker/CLI-auth sandbox helpers.
 | `tests/core/test_core_spawner.py` | Proves normal Spawner construction uses the typed authority. |
 | `tests/connectors/test_discretion_dispatcher.py` | Proves direct dispatcher construction uses the typed authority. |
 | `src/butlers/cli_auth/persistence.py` | Converts Codex device-auth persistence to a durable prepare/complete operation. |
+| `src/butlers/cli_auth/session.py` | Retains one redacted lease/stage context from preparation through launch and finalization. |
+| `src/butlers/cli_auth/sandbox.py` | Defines the two-phase prepare-then-launch sandbox protocol and stage seed contract. |
+| `src/butlers/cli_auth/sandbox_platform.py` | Seeds the exact private HOME, starts no child before successful launch marking, and retains the stage through containment. |
 | `src/butlers/cli_auth/health.py` | Converts the parent-only Codex health probe to a lease-bound outcome without local-file authority. |
 | `src/butlers/api/routers/cli_auth.py` | Uses the device-auth/probe operation APIs and retains value-free session/API output. |
 | `src/butlers/api/routers/secrets_v2.py` | Routes Codex owner save/rotate/revoke through serialized authority methods. |
 | `src/butlers/api/app.py`, `src/butlers/api/routers/model_settings.py`, `src/butlers/jobs/model_verify.py` | Preserve explicit shared-authority injection for lifespan, model-setting verification, and model verification callers. |
 | `tests/cli/test_cli_auth.py` | Covers device-auth bootstrap, stale completion, containment failure, and value-free failure output. |
+| `tests/cli/test_runtime_cli_sandbox.py` | Covers private-stage delivery to the owning child, two-phase launch, and cleanup on stale mark/cancel/timeout. |
 | `tests/api/test_secrets_v2_cli_mutations.py` | Covers save/rotate/revoke precedence and no internal provenance response fields. |
 | `tests/api/test_secrets_v2_cli_reauthorize.py` | Covers reauthorization against a current or explicitly absent uninitialized authority. |
 | `tests/api/test_secrets_v2_codex_authority.py` | Covers shared-authority selection and fence-aware API contract. |
+| `frontend/src/api/client.secrets-v2.test.ts` | Locks the existing Codex rotate and display-fingerprint client envelopes without provenance fields. |
+| `frontend/src/components/secrets/passport/PageCli.actions.test.tsx` | Locks the owner copy-once rotate UX while excluding generation/operation state. |
 | `tests/api/test_app_lifespan_supervision.py`, `tests/api/test_model_settings.py`, `tests/jobs/test_model_verify.py` | Cover shared-authority injection through non-request API/model-verify callers. |
 | `src/butlers/jobs/retention.py` | Provides deterministic expiry and terminal-operation pruning without provider work. |
 | `src/butlers/scheduled_jobs.py` | Registers the disabled-by-default deterministic provenance cleanup handler. |
@@ -156,6 +166,12 @@ class CodexAuthBootstrapLease:
 
 
 @dataclass(frozen=True)
+class CodexAuthProjectionBinding:
+    generation_id: UUID = field(repr=False)
+    authority_document: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class CodexAuthUnavailable:
     reason: CodexAuthCompletionDisposition
 
@@ -179,8 +195,14 @@ falling back to a schema-local pool or a local file.
 CredentialStore.prepare_codex_auth_operation(
     kind: CodexAuthOperationKind,
     deadline_at: datetime,
-    permit_uninitialized_device_bootstrap: bool = False,
-) -> CodexAuthLaunchLease | CodexAuthBootstrapLease | CodexAuthUnavailable
+) -> CodexAuthLaunchLease | CodexAuthUnavailable
+
+CredentialStore.prepare_codex_auth_device_bootstrap(
+    deadline_at: datetime,
+) -> CodexAuthBootstrapLease | CodexAuthUnavailable
+
+CredentialStore.read_current_codex_auth_projection_binding(
+) -> CodexAuthProjectionBinding | CodexAuthUnavailable
 
 CredentialStore.mark_codex_auth_operation_launched(
     operation_id: UUID,
@@ -199,11 +221,19 @@ CredentialStore.replace_codex_auth_as_owner(value: str) -> None
 CredentialStore.revoke_codex_auth_as_owner() -> bool
 ```
 
+The normal prepare operation has no caller-controlled bootstrap switch. It
+calls a definer that requires a complete current generation. The separate
+device-auth bootstrap method calls a different definer granted only to the
+dashboard API's no-`SET ROLE` shared-authority path, not any effective runtime
+role; that function derives
+`bootstrap_absent` from locked database state. The read-only projection method
+creates no operation and authorizes no child.
+
 ## Task 1: Establish the Reserved Database Boundary
 
 **Files:**
 
-- Create: `alembic/versions/core/core_197_codex_auth_generation_provenance.py`
+- Create: `alembic/versions/core/core_198_codex_auth_generation_provenance.py`
 - Create: `tests/migrations/test_codex_auth_generation_provenance_migration.py`
 - Create: `tests/config/test_init_db_codex_auth_generation_boundary.py`
 - Create: `tests/config/test_codex_auth_generation_acl_integration.py`
@@ -212,21 +242,23 @@ CredentialStore.revoke_codex_auth_as_owner() -> bool
 - Test: `tests/config/test_init_db_codex_auth_generation_boundary.py`
 - Test: `tests/config/test_codex_auth_generation_acl_integration.py`
 
-**Consumes:** The existing `core_196` migration head, `public.butler_secrets`,
-and the shared-login/`SET ROLE` runtime model.
+**Consumes:** The existing `core_196` fixed-installer pattern and migration
+head, `public.butler_secrets`, and the shared-login/`SET ROLE` runtime model.
 
-**Produces:** The core_197 schema and guarded database operations that Task 2
-calls; no application code may update the reserved row with generic DML.
+**Produces:** A privileged-bootstrap-owned fixed installer/finalizer and a
+`core_198` migration that verifies/invokes it to install guarded database
+operations. No application code or normal migration login may own or update
+the protected boundary with generic DML.
 
 - [ ] **Step 1: Write migration and ACL tests before changing bootstrap SQL or schema**
 
 ```python
-def test_core_197_has_additive_chain_and_value_free_provenance() -> None:
+def test_core_198_has_additive_chain_and_value_free_provenance() -> None:
     module = _load_migration()
     source = _MIGRATION_PATH.read_text()
 
-    assert module.revision == "core_197"
-    assert module.down_revision == "core_196"
+    assert module.revision == "core_198"
+    assert module.down_revision == "core_197"
     assert "public.codex_auth_authority_state" in source
     assert "public.codex_auth_generations" in source
     assert "public.codex_auth_operations" in source
@@ -244,6 +276,23 @@ async def test_runtime_role_cannot_directly_mutate_reserved_codex_row(
             "UPDATE public.butler_secrets SET updated_at = now() "
             "WHERE key = 'cli-auth/codex'"
         )
+
+
+async def test_runtime_prepare_role_cannot_invoke_device_bootstrap(
+    runtime_prepare_connection: asyncpg.Connection,
+) -> None:
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await runtime_prepare_connection.fetchrow(
+            "SELECT * FROM public.codex_auth_prepare_device_bootstrap($1)",
+            deadline_in_future(),
+        )
+
+
+async def test_normal_migration_requires_exact_privileged_installer(
+    upgraded_database_without_new_bootstrap: asyncpg.Connection,
+) -> None:
+    with pytest.raises(asyncpg.RaiseError, match="bootstrap installer"):
+        await run_core_198(upgraded_database_without_new_bootstrap)
 
 
 async def test_non_codex_secret_write_retains_established_role_path(
@@ -269,19 +318,36 @@ uv run pytest \
   -q --override-ini='addopts='
 ```
 
-Expected: failure because `core_197`, the no-login interface owner, and the
-guarded operations do not yet exist.
+Expected: failure because `core_198`, the trusted bootstrap installer,
+NOLOGIN interface owner, and guarded operations do not yet exist.
 
-- [ ] **Step 3: Add bootstrap role ownership and an additive core_197 migration**
+- [ ] **Step 3: Add a privileged installer/finalizer and an additive core_198 invoker**
 
-Extend `scripts/init-db.sql` with a `codex_auth_provenance_owner` NOLOGIN,
-NOINHERIT, non-superuser owner; revoke reciprocal membership and direct schema
-access for all existing runtime roles, `connector_writer`, `PUBLIC`, and the
-shared migration role. Create a private `codex_auth_provenance` schema owned by
-that role, with only its fixed functions exposed in `public` under a
-fixed `search_path = pg_catalog, public, pg_temp`.
+Follow the `core_196` restore-drill boundary rather than letting Alembic create
+objects owned by its ordinary login. Extend `scripts/init-db.sql` with:
 
-The migration must create the following value-free data shape, using
+- a `codex_auth_provenance_owner` role that is NOLOGIN, NOINHERIT,
+  non-superuser, has no memberships, and cannot be assumed by migration or
+  runtime logins;
+- a bootstrap-superuser-owned `codex_auth_provenance_admin` schema containing
+  fixed, no-argument `install_interface()` and `finalize_interface()`
+  `SECURITY DEFINER` functions with fixed search paths and no caller-controlled
+  object names or DDL;
+- exact catalog/ownership checks that reject partial or familiar-looking
+  objects before install/finalize; and
+- temporary installer execution for the configured migration login, which the
+  finalizer revokes together with admin-schema usage, owner membership,
+  protected-schema `CREATE`, and direct relation DML.
+
+`core_198` first accepts an already-finalized interface only after proving its
+exact owner, function signatures, search paths, ACLs, and absence of migration-
+owner bypass. Otherwise it proves the exact trusted bootstrap installer and
+invokes it. If `scripts/init-db.sql` has not been rerun on an upgraded database,
+the migration fails closed with an actionable bootstrap-ordering error and
+creates nothing. The normal migration never creates the protected schema,
+relations, functions, or owner role itself.
+
+The fixed installer creates the following value-free data shape, using
 `gen_random_uuid()` only at the database boundary:
 
 ```sql
@@ -347,7 +413,8 @@ reset inherited health state in the same value-changing transaction. The
 functions must be the only privileged route for:
 
 ```sql
-public.codex_auth_prepare_operation(kind TEXT, deadline_at TIMESTAMPTZ, allow_bootstrap BOOLEAN)
+public.codex_auth_prepare_operation(kind TEXT, deadline_at TIMESTAMPTZ)
+public.codex_auth_prepare_device_bootstrap(deadline_at TIMESTAMPTZ)
 public.codex_auth_mark_operation_launched(operation_id UUID, expected_generation_id UUID)
 public.codex_auth_complete_operation(
     operation_id UUID,
@@ -360,14 +427,16 @@ public.codex_auth_revoke_as_owner()
 public.codex_auth_cleanup_operations(retention_days INTEGER)
 ```
 
-`prepare` must perform one permitted `legacy_adoption` only when there is a
+Normal `prepare` must perform one permitted `legacy_adoption` only when there is a
 valid existing raw row and no prior state/generation. A malformed row, a
 mismatched state, or a post-initialization generic write returns safe
-unavailable. The only null expected generation is a `device_auth` operation
-where the locked singleton is absent, `has_ever_initialized = FALSE`, there is
-no generation row, and there is no eligible raw row; it records
-`bootstrap_absent = TRUE` and opens an empty private stage. It is not a normal
-unbound operation. Any owner replacement or revoke sets
+unavailable. It accepts no bootstrap boolean or equivalent caller selector.
+The distinct device-auth bootstrap function is granted only to the dashboard
+API's no-`SET ROLE` shared-authority path; a runtime/prewarm prepare role receives
+`InsufficientPrivilege` when invoking it. The bootstrap definer itself checks
+that the locked singleton is absent, `has_ever_initialized = FALSE`, there is
+no generation row, and there is no eligible raw row; only then does it record
+`bootstrap_absent = TRUE` and open an empty private stage. Any owner replacement or revoke sets
 `has_ever_initialized = TRUE` before releasing the same lock, permanently
 closing this bootstrap route. A bootstrap operation must provide one strictly
 validated successor; it cannot complete unchanged or attach health to an
@@ -383,7 +452,10 @@ non-caller-controlled transaction context. It must leave non-Codex keys on
 their existing code path. Revoke direct state/generation/operation access from
 runtime roles and `PUBLIC`; grant only named internal dashboard and Codex
 runtime caller roles the minimum function execution rights. Do not grant
-browser-facing roles any read surface for provenance tables.
+browser-facing roles any read surface for provenance tables. The finalizer
+must leave the migration login unable to assume the provenance owner, create in
+the protected/admin schemas, write protected relations, or execute the
+installer/finalizer.
 
 - [ ] **Step 4: Run unit and effective-role database tests and confirm the boundary passes**
 
@@ -398,16 +470,20 @@ uv run pytest \
   -q --override-ini='addopts='
 ```
 
-Expected: PASS. The effective-role test must confirm direct reserved-row DML,
-direct provenance table writes, and `PUBLIC` function invocation fail, while a
-permitted guarded call and an established non-Codex write succeed.
+Expected: PASS. The upgraded-database test must prove migration-before-
+bootstrap fails closed and bootstrap-then-migration succeeds. Effective-role
+tests must confirm direct reserved-row DML, direct provenance table writes,
+owner membership, protected-schema `CREATE`, installer/finalizer execution,
+runtime bootstrap invocation, and `PUBLIC` function invocation fail, while a
+normal guarded runtime call, the dashboard-only bootstrap definer, and an
+established non-Codex write succeed.
 
 - [ ] **Step 5: Commit the schema boundary**
 
 ```bash
 git add \
   scripts/init-db.sql \
-  alembic/versions/core/core_197_codex_auth_generation_provenance.py \
+  alembic/versions/core/core_198_codex_auth_generation_provenance.py \
   tests/migrations/test_codex_auth_generation_provenance_migration.py \
   tests/config/test_init_db_codex_auth_generation_boundary.py \
   tests/config/test_codex_auth_generation_acl_integration.py
@@ -447,14 +523,24 @@ async def test_prepare_returns_one_redacted_lease_for_complete_current_binding()
 async def test_prepare_allows_only_never_initialized_device_bootstrap() -> None:
     store = make_authority_store_with_absent_never_initialized_state()
 
-    result = await store.prepare_codex_auth_operation(
-        kind=CodexAuthOperationKind.DEVICE_AUTH,
+    result = await store.prepare_codex_auth_device_bootstrap(
         deadline_at=deadline_in_future(),
-        permit_uninitialized_device_bootstrap=True,
     )
 
     assert isinstance(result, CodexAuthBootstrapLease)
     assert "generation_id" not in repr(result)
+
+
+async def test_normal_prepare_has_no_bootstrap_selector() -> None:
+    store = make_authority_store_with_absent_never_initialized_state()
+
+    result = await store.prepare_codex_auth_operation(
+        kind=CodexAuthOperationKind.DEVICE_AUTH,
+        deadline_at=deadline_in_future(),
+    )
+
+    assert isinstance(result, CodexAuthUnavailable)
+    assert no_bootstrap_operation_created()
 
 
 async def test_completion_loses_to_owner_replace_without_health_attachment() -> None:
@@ -512,6 +598,13 @@ bounded call against `require_system_global_pool()` and a guarded SQL function;
 never select an arbitrary fallback pool, use an in-process cache as proof, or
 return database UUIDs to an API caller.
 
+The normal `prepare_codex_auth_operation` calls only the normal definer and has
+no bootstrap parameter. `prepare_codex_auth_device_bootstrap` calls only the
+separately granted dashboard device-auth definer. Add
+`read_current_codex_auth_projection_binding` as a read-only complete-binding
+query for startup compatibility projection; it creates no operation and cannot
+authorize launch or finalization.
+
 Use one helper to convert database outcomes to safe Python types:
 
 ```python
@@ -551,12 +644,14 @@ EXPECTED_DISPOSITIONS = {
 ```
 
 Assert an owner replacement clears health with its new generation, a health-only
-completion changes neither raw value nor generation pointer, `allow_bootstrap`
-works only for an absent never-initialized device-auth operation, and no `repr`,
+completion changes neither raw value nor generation pointer, only the distinct
+dashboard bootstrap method works for an absent never-initialized authority,
+normal prepare never selects bootstrap, and no `repr`,
 logger argument, or safe result exposes the transient document, operation ID,
 or generation ID. Add a paired test that an absent state after any generated
 or revoked authority returns `UNAVAILABLE` even when the device-auth caller
-requests bootstrap, and a paired test that an unfinished bootstrap with no
+uses the bootstrap entry point, an initialized inconsistent binding also
+rejects bootstrap and requires direct owner replacement, and a paired test that an unfinished bootstrap with no
 strictly validated successor terminalizes without attaching health or creating
 a generation.
 
@@ -652,7 +747,7 @@ browser, command line, telemetry record, or log:
 ```text
 @dataclass(frozen=True)
 class CodexAuthPrivateStage:
-    operation_id: UUID
+    operation_id: UUID = field(repr=False)
     path: Path = field(repr=False)
 
 write_private_codex_auth_stage(
@@ -869,23 +964,35 @@ refuse unavailable/stale authority before starting a child.
 **Files:**
 
 - Modify: `src/butlers/cli_auth/persistence.py`
+- Modify: `src/butlers/cli_auth/session.py`
+- Modify: `src/butlers/cli_auth/sandbox.py`
+- Modify: `src/butlers/cli_auth/sandbox_platform.py`
 - Modify: `src/butlers/cli_auth/health.py`
 - Modify: `src/butlers/api/routers/cli_auth.py`
 - Modify: `src/butlers/api/routers/secrets_v2.py`
 - Modify: `tests/cli/test_cli_auth.py`
+- Modify: `tests/cli/test_runtime_cli_sandbox.py`
 - Modify: `tests/api/test_secrets_v2_cli_mutations.py`
 - Modify: `tests/api/test_secrets_v2_cli_reauthorize.py`
 - Modify: `tests/api/test_secrets_v2_codex_authority.py`
+- Modify: `frontend/src/api/client.secrets-v2.test.ts`
+- Modify: `frontend/src/components/secrets/passport/PageCli.actions.test.tsx`
 - Test: `tests/cli/test_cli_auth.py`
+- Test: `tests/cli/test_runtime_cli_sandbox.py`
 - Test: `tests/api/test_secrets_v2_cli_mutations.py`
 - Test: `tests/api/test_secrets_v2_cli_reauthorize.py`
 - Test: `tests/api/test_secrets_v2_codex_authority.py`
+- Test: `frontend/src/api/client.secrets-v2.test.ts`
+- Test: `frontend/src/components/secrets/passport/PageCli.actions.test.tsx`
 
 **Consumes:** Task 2's owner mutation and operation interfaces and Task 3's
 strict contained-stage helpers.
 
-**Produces:** The dashboard's existing Codex API surfaces retain their shape,
-but all state mutation has the same precedence and redaction as runtime code.
+**Produces:** The dashboard's existing Codex rotate raw-value-once and
+inventory/detail display-fingerprint surfaces retain their exact shapes, while
+all state mutation has the same precedence and internal-state redaction as
+runtime code. One lease/stage context reaches the actual platform child and
+survives through containment/finalization.
 
 - [ ] **Step 1: Write failing dashboard/device-auth redaction and precedence tests**
 
@@ -898,9 +1005,8 @@ async def test_owner_rotate_supersedes_waiting_device_auth_without_internal_resp
 
     assert response.status_code == 200
     assert completion.is_safe_failure
-    assert "generation" not in response.text.lower()
-    assert "operation" not in response.text.lower()
-    assert "lineage" not in response.text.lower()
+    assert set(response.json()["data"]) == {"fingerprint", "value"}
+    assert_provenance_fields_absent(response.json())
     authority.replace_codex_auth_as_owner.assert_awaited_once()
 
 
@@ -923,6 +1029,25 @@ async def test_probe_loses_replacement_without_attaching_stale_health() -> None:
 
     assert response.is_value_free
     assert_no_health_history_or_audit_attached_to_replacement()
+
+
+async def test_stale_device_auth_mark_starts_no_platform_child() -> None:
+    session, authority, sandbox = make_prepared_codex_device_session()
+    authority.mark_codex_auth_operation_launched.return_value = superseded_launch()
+
+    await session.start()
+
+    sandbox.prepared_handle.launch.assert_not_awaited()
+    assert sandbox.prepared_handle.stage_removed
+
+
+def test_codex_inventory_and_detail_expose_display_fingerprint_only() -> None:
+    inventory, detail = read_codex_inventory_and_detail()
+
+    assert inventory["fingerprint"] and detail["fingerprint"]
+    assert "value" not in inventory and "value" not in detail
+    assert_provenance_fields_absent(inventory)
+    assert_provenance_fields_absent(detail)
 ```
 
 - [ ] **Step 2: Run dashboard and device-auth tests and confirm current raw-baseline flow fails**
@@ -932,10 +1057,14 @@ Run:
 ```bash
 uv run pytest \
   tests/cli/test_cli_auth.py \
+  tests/cli/test_runtime_cli_sandbox.py \
   tests/api/test_secrets_v2_cli_mutations.py \
   tests/api/test_secrets_v2_cli_reauthorize.py \
   tests/api/test_secrets_v2_codex_authority.py \
   -q --override-ini='addopts='
+cd frontend && npm run test -- \
+  src/api/client.secrets-v2.test.ts \
+  src/components/secrets/passport/PageCli.actions.test.tsx
 ```
 
 Expected: failure because device auth captures a raw expected value and owner
@@ -945,10 +1074,14 @@ paths write/delete the Codex row through generic methods.
 
 In `secrets_v2.py`, validate the owner-supplied document with the existing
 strict parser, then invoke only `replace_codex_auth_as_owner`. The `DELETE`
-path invokes only `revoke_codex_auth_as_owner`. Do not include a generation,
-operation, lineage, raw value, digest, provider error, or exception detail in
-the response/audit/log text. Preserve current status codes and documented
-response fields.
+path invokes only `revoke_codex_auth_as_owner`. Deliberately preserve the
+owner-only Codex rotate response as exactly `{fingerprint, value}`, with the raw
+value returned once, and preserve inventory/detail `fingerprint` computed on
+read without raw values. The fingerprint is a display aid, never persisted or
+passed into provenance. Do not include a generation, operation, lineage, new
+credential-derived identifier, provider error, or exception detail in any
+response/audit/log text. Add backend, TypeScript client, and PageCli assertions
+for all three surfaces rather than silently changing the envelope.
 
 In `persistence.py` and `cli_auth.py`, replace
 `capture_device_auth_authority_baseline` and raw expected-value completion with:
@@ -957,36 +1090,50 @@ In `persistence.py` and `cli_auth.py`, replace
 lease_or_unavailable = await codex_authority.prepare_codex_auth_operation(
     kind=CodexAuthOperationKind.DEVICE_AUTH,
     deadline_at=session_deadline_at,
-    permit_uninitialized_device_bootstrap=True,
 )
 if isinstance(lease_or_unavailable, CodexAuthUnavailable):
-    raise HTTPException(
-        status_code=503,
-        detail="System-global Codex credential authority unavailable.",
+    lease_or_unavailable = await codex_authority.prepare_codex_auth_device_bootstrap(
+        deadline_at=session_deadline_at,
     )
+if isinstance(lease_or_unavailable, CodexAuthUnavailable):
+    raise HTTPException(status_code=503, detail="System-global Codex credential authority unavailable.")
 
+prepared_sandbox = await sandbox.prepare_device_auth(
+    provider,
+    authority_seed=stage_seed_from(lease_or_unavailable),
+)
 launch = await codex_authority.mark_codex_auth_operation_launched(
     operation_id=lease_or_unavailable.operation_id,
-    expected_generation_id=(
-        lease_or_unavailable.generation_id
-        if isinstance(lease_or_unavailable, CodexAuthLaunchLease)
-        else None
-    ),
+    expected_generation_id=expected_generation(lease_or_unavailable),
 )
-if launch.disposition is not CodexAuthLaunchDisposition.LAUNCHED:
-    raise HTTPException(
-        status_code=503,
-        detail="System-global Codex credential authority unavailable.",
-    )
+if launch.disposition is CodexAuthLaunchDisposition.LAUNCHED:
+    handle = await prepared_sandbox.launch()
+else:
+    await prepared_sandbox.discard()
+    await terminalize_without_successor(lease_or_unavailable, launch)
+    raise HTTPException(status_code=503, detail="System-global Codex credential authority unavailable.")
 ```
 
-The device-auth sandbox is seeded only from the private operation stage. A
-normal lease stages the transient authority document; a bootstrap lease is
-allowed only for the exact never-initialized absence and starts empty. Once the
-child is fully terminated, strict containment and parsing yield an optional
-candidate; `complete_codex_auth_operation` is called once with the same normal
-generation or `None` bootstrap proof. A missing/ambiguous candidate creates no
-raw write and returns the existing generic session failure message.
+First call normal `prepare_codex_auth_operation(kind=DEVICE_AUTH, ...)`. Only
+the dashboard device-auth service may then try the distinct bootstrap method
+after normal preparation returns unavailable; the bootstrap definer rechecks
+the exact never-initialized absence and returns unavailable for malformed,
+initialized-inconsistent, revoked, or otherwise ineligible state.
+`CLIAuthSession.start()` must no longer accept a preparer returning a
+boolean and then call a one-shot `launch_device_auth(provider)`. Persistence
+returns a redacted preparation context; the session retains it, passes its seed
+to `DashboardCLIAuthSandbox.prepare_device_auth`, marks the same durable
+operation immediately before `PreparedDeviceAuthSandbox.launch()`, and retains
+the context until finalization.
+
+The platform launcher seeds only the prepared private stage. A normal lease
+stages the transient authority document; a bootstrap lease starts empty. A
+failed/stale mark starts no child. Once the child is fully terminated, the same
+prepared handle proves containment and yields the candidate to
+`complete_codex_auth_operation` with the same lease. Cancellation, timeout,
+launch error, containment error, or persistence error terminalizes the
+operation and removes the stage. A missing/ambiguous candidate creates no raw
+write and returns the existing generic session failure message.
 
 For a Codex health probe, prepare/mark a `HEALTH_PROBE` operation. Its safe
 outcome may be returned in the existing health shape, but stale completion
@@ -1006,12 +1153,19 @@ probe rule and generic value-free detail.
 - [ ] **Step 4: Add explicit bootstrap and redaction cases**
 
 Add tests for exactly one uninitialized authority device-auth bootstrap, while
-an absent authority that previously had a generation returns the same safe
-unavailable result. Assert malformed/ambiguous/escaping stage cases leave no
+an absent authority that previously had a generation or an initialized
+inconsistent binding returns the same safe unavailable result and requires
+direct owner replacement. Prove a normal runtime prepare role cannot invoke
+bootstrap. Assert malformed/ambiguous/escaping stage cases leave no
 credential row or provenance value in session output, captured logs, or audit
 notes. Assert concurrent dashboard owner rotate, runtime successor, and device
 success resolve through the shared pointer without a clock, dashboard session,
 device code, PID, or file identity tie-break.
+
+At the session/sandbox/platform seam, prove normal and bootstrap seeds reach
+only their owning child; a failed mark launches no process; completion after
+containment uses the identical lease; and cancellation, timeout, failed launch,
+or failed finalization removes the stage and terminalizes the operation.
 
 Add a parent-only health test that races a completed `HEALTH_PROBE` against an
 owner replacement and asserts the probe response remains generic while its
@@ -1026,19 +1180,29 @@ Run:
 ```bash
 uv run pytest \
   tests/cli/test_cli_auth.py \
+  tests/cli/test_runtime_cli_sandbox.py \
   tests/api/test_secrets_v2_cli_mutations.py \
   tests/api/test_secrets_v2_cli_reauthorize.py \
   tests/api/test_secrets_v2_codex_authority.py \
   -q --override-ini='addopts='
+cd frontend && npm run test -- \
+  src/api/client.secrets-v2.test.ts \
+  src/components/secrets/passport/PageCli.actions.test.tsx
 git add \
   src/butlers/cli_auth/persistence.py \
+  src/butlers/cli_auth/session.py \
+  src/butlers/cli_auth/sandbox.py \
+  src/butlers/cli_auth/sandbox_platform.py \
   src/butlers/cli_auth/health.py \
   src/butlers/api/routers/cli_auth.py \
   src/butlers/api/routers/secrets_v2.py \
   tests/cli/test_cli_auth.py \
+  tests/cli/test_runtime_cli_sandbox.py \
   tests/api/test_secrets_v2_cli_mutations.py \
   tests/api/test_secrets_v2_cli_reauthorize.py \
-  tests/api/test_secrets_v2_codex_authority.py
+  tests/api/test_secrets_v2_codex_authority.py \
+  frontend/src/api/client.secrets-v2.test.ts \
+  frontend/src/components/secrets/passport/PageCli.actions.test.tsx
 git commit -m "feat: serialize dashboard Codex authority changes"
 ```
 
@@ -1084,12 +1248,14 @@ maintenance route that use the current shared binding only.
 ```python
 async def test_fresh_daemon_projects_only_complete_shared_binding() -> None:
     daemon, authority = make_fresh_daemon_with_changed_local_file()
-    authority.prepare_codex_auth_operation.return_value = make_lease()
+    authority.read_current_codex_auth_projection_binding.return_value = make_projection_binding()
 
     await daemon.restore_codex_auth_if_configured()
 
-    assert projection_received(lease_document_from(authority))
+    assert projection_received(binding_document_from(authority))
     assert local_file_was_not_promoted()
+    authority.prepare_codex_auth_operation.assert_not_awaited()
+    assert no_nonterminal_operation_created()
 
 
 async def test_direct_dispatcher_passes_explicit_authority_to_codex_adapter() -> None:
@@ -1142,27 +1308,28 @@ constructor test per path that fails when a Codex adapter/probe receives `None`
 or a non-system-global store, while non-Codex model verification retains its
 current behavior.
 
-Recovery must follow this condition:
+Startup compatibility projection must follow this read-only condition:
 
 ```python
-lease_or_unavailable = await authority.prepare_codex_auth_operation(
-    kind=CodexAuthOperationKind.HEALTH_PROBE,
-    deadline_at=startup_authority_deadline(),
-)
-if isinstance(lease_or_unavailable, CodexAuthLaunchLease):
+binding_or_unavailable = await authority.read_current_codex_auth_projection_binding()
+if isinstance(binding_or_unavailable, CodexAuthProjectionBinding):
     await project_current_authority_under_lock(
         canonical_auth_path,
-        lease=lease_or_unavailable,
-        timeout_s=remaining_setup_allowance(lease_or_unavailable.deadline_at),
+        binding=binding_or_unavailable,
+        timeout_s=startup_projection_timeout_s,
     )
 else:
     record_safe_codex_authority_unavailable()
 ```
 
-This startup projection must never launch a child or complete a successor. It
-must not inspect/overwrite the database from the changed local file. If the
-lease is unavailable or projection fails, leave Codex launches unavailable and
-preserve existing honest health reporting.
+This query validates a complete current binding but creates no durable
+operation, grants no launch authority, and cannot complete a successor or
+health outcome. Startup projection must never launch a child or
+inspect/overwrite the database from the changed local file. If the binding is
+unavailable or projection fails, leave Codex launches unavailable and preserve
+existing honest health reporting. A later child still requires a fresh normal
+operation, so a concurrent replacement cannot turn a startup projection into
+launch authority.
 
 - [ ] **Step 4: Add deterministic cleanup with a bounded, non-provider job**
 
@@ -1204,7 +1371,8 @@ provider command, or dashboard mutation from this job.
 - [ ] **Step 5: Add multidaemon, crash, and retention proof cases**
 
 Extend tests to prove two daemons share the same selected authority but use
-distinct operation stages, a fresh process refuses a changed local file, an
+distinct operation stages, repeated startup projection leaves no prepared or
+launched operation, a fresh process refuses a changed local file, an
 orphaned launched operation cannot be completed after restart, exact 90 days
 is accepted, 89 days raises, dry run does not delete, and cleanup cannot remove
 the current/linked generation or raw row. Test a pre-migration/core-only setup
@@ -1335,10 +1503,17 @@ credential-derived identifier:
 4. `spawner.md`: direct and normal dispatch pass the same authority boundary;
    authority deadline, execution timeout, and side-effect retry posture remain
    distinct.
-5. The five main OpenSpec specs: carry forward the requirements/scenarios from
-   the change delta, then run strict validation. Add stable requirement IDs to
-   every behavior-executing test docstring or test name where the repository's
-   current spec style supports them.
+5. OpenSpec composition: first confirm
+   `harden-runtime-auth-and-breaker-attention` has landed and its still-active
+   `core-credentials` replacement is synced/archived or otherwise establish its
+   exact canonical wording. Rebase before implementing this packet. Then carry
+   forward this change's `core-credentials`, `core-daemon`, `dashboard-api`, and
+   `database-security` additions plus its full `MODIFIED` replacement of
+   canonical `core-spawner` requirement `Pre-Launch and Prewarm Codex Auth
+   Synchronization`. Do not retain the old local-fallback scenarios or create a
+   parallel additive private-stage requirement. Run strict validation and add
+   stable requirement IDs to every behavior-executing test docstring or test
+   name where the repository's current spec style supports them.
 
 - [ ] **Step 4: Run source/doc/spec checks and commit**
 
@@ -1400,6 +1575,7 @@ uv run pytest \
   tests/core/test_core_spawner.py \
   tests/connectors/test_discretion_dispatcher.py \
   tests/cli/test_cli_auth.py \
+  tests/cli/test_runtime_cli_sandbox.py \
   tests/api/test_secrets_v2_cli_mutations.py \
   tests/api/test_secrets_v2_cli_reauthorize.py \
   tests/api/test_secrets_v2_codex_authority.py \
@@ -1411,6 +1587,9 @@ uv run pytest \
   tests/jobs/test_retention_pruners.py \
   tests/contracts/test_codex_auth_generation_completeness.py \
   -q --override-ini='addopts='
+cd frontend && npm run test -- \
+  src/api/client.secrets-v2.test.ts \
+  src/components/secrets/passport/PageCli.actions.test.tsx
 ```
 
 Expected: PASS. If a failure appears, preserve its exact evidence, identify
@@ -1430,6 +1609,9 @@ uv run ruff check \
   src/butlers/core/spawner.py \
   src/butlers/connectors/discretion_dispatcher.py \
   src/butlers/cli_auth/persistence.py \
+  src/butlers/cli_auth/session.py \
+  src/butlers/cli_auth/sandbox.py \
+  src/butlers/cli_auth/sandbox_platform.py \
   src/butlers/cli_auth/health.py \
   src/butlers/api/routers/cli_auth.py \
   src/butlers/api/routers/secrets_v2.py \
@@ -1451,6 +1633,9 @@ uv run ruff format --check \
   src/butlers/core/spawner.py \
   src/butlers/connectors/discretion_dispatcher.py \
   src/butlers/cli_auth/persistence.py \
+  src/butlers/cli_auth/session.py \
+  src/butlers/cli_auth/sandbox.py \
+  src/butlers/cli_auth/sandbox_platform.py \
   src/butlers/cli_auth/health.py \
   src/butlers/api/routers/cli_auth.py \
   src/butlers/api/routers/secrets_v2.py \
@@ -1482,11 +1667,17 @@ Run:
 make test-qg
 git diff --check
 git diff -- scripts/init-db.sql \
-  alembic/versions/core/core_197_codex_auth_generation_provenance.py \
+  alembic/versions/core/core_198_codex_auth_generation_provenance.py \
   src/butlers/credential_store.py \
   src/butlers/core/runtimes/_codex_auth_sync.py \
   src/butlers/core/runtimes/codex.py \
+  src/butlers/core/spawner.py \
+  src/butlers/connectors/discretion_dispatcher.py \
+  src/butlers/cli_auth/persistence.py \
   src/butlers/cli_auth/health.py \
+  src/butlers/cli_auth/session.py \
+  src/butlers/cli_auth/sandbox.py \
+  src/butlers/cli_auth/sandbox_platform.py \
   src/butlers/api/routers/cli_auth.py \
   src/butlers/api/routers/secrets_v2.py \
   src/butlers/api/app.py \
@@ -1515,13 +1706,16 @@ Expected: the quality gate exits zero and manual diff review confirms:
 git status --short
 git add \
   scripts/init-db.sql \
-  alembic/versions/core/core_197_codex_auth_generation_provenance.py \
+  alembic/versions/core/core_198_codex_auth_generation_provenance.py \
   src/butlers/credential_store.py \
   src/butlers/core/runtimes/_codex_auth_sync.py \
   src/butlers/core/runtimes/codex.py \
   src/butlers/core/spawner.py \
   src/butlers/connectors/discretion_dispatcher.py \
   src/butlers/cli_auth/persistence.py \
+  src/butlers/cli_auth/session.py \
+  src/butlers/cli_auth/sandbox.py \
+  src/butlers/cli_auth/sandbox_platform.py \
   src/butlers/cli_auth/health.py \
   src/butlers/api/routers/cli_auth.py \
   src/butlers/api/routers/secrets_v2.py \
@@ -1542,6 +1736,7 @@ git add \
   tests/core/test_core_spawner.py \
   tests/connectors/test_discretion_dispatcher.py \
   tests/cli/test_cli_auth.py \
+  tests/cli/test_runtime_cli_sandbox.py \
   tests/api/test_secrets_v2_cli_mutations.py \
   tests/api/test_secrets_v2_cli_reauthorize.py \
   tests/api/test_secrets_v2_codex_authority.py \
@@ -1551,7 +1746,9 @@ git add \
   tests/daemon/test_startup_coverage_gaps.py \
   tests/connectors/test_connector_codex_auth_restore.py \
   tests/jobs/test_retention_pruners.py \
-  tests/contracts/test_codex_auth_generation_completeness.py
+  tests/contracts/test_codex_auth_generation_completeness.py \
+  frontend/src/api/client.secrets-v2.test.ts \
+  frontend/src/components/secrets/passport/PageCli.actions.test.tsx
 git commit -m "fix: correct Codex auth fence verification defect"
 ```
 
@@ -1572,7 +1769,7 @@ was performed during implementation review.
 | Expiry, Recovery, and Value-Free Codex Provenance | 1, 2, 3, 6, 8 |
 | Fence-Aware Codex Authority Recovery at Startup | 3, 6, 8 |
 | Deterministic Provenance Cleanup Wiring | 1, 6, 8 |
-| Codex Subprocesses Use Exact-Generation Private Stages | 2, 3, 4, 8 |
+| Pre-Launch and Prewarm Codex Auth Synchronization | 2, 3, 4, 8 |
 | Codex Adapter Finalization Uses the Launch Operation | 2, 3, 4, 8 |
 | Codex Projection Lock Is Not a Fallback Authorization | 3, 4, 8 |
 | Dashboard Codex Mutations Use Shared Generation Precedence | 2, 5, 7, 8 |

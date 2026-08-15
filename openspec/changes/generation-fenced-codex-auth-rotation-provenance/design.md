@@ -26,7 +26,7 @@ The affected topology is intentionally narrow:
 | Runtime and prewarm subprocesses | `CodexAdapter` / Spawner / direct dispatcher | One durable operation bound to one exact generation before child launch. |
 | Dashboard owner replacement, revoke, and device auth | Dashboard API and CLI-auth persistence | Same serialized authority mutation boundary as runtime successors. |
 | Local runtime files and sandbox stages | Runtime/deployment volume | Projections or disposable child state only; never an authority source. |
-| API and dashboard evidence | Secrets and CLI-auth routes | Existing value-free surfaces only; no provenance identifier or credential material is exposed. |
+| API and dashboard evidence | Secrets and CLI-auth routes | Preserve the existing owner-only rotate raw-value-once response and display fingerprint; add no provenance identifier or new credential exposure. |
 
 The design must preserve the doctrine that daemon control is deterministic and
 that credentials have one authoritative Tier 1 location.  It also must preserve
@@ -55,8 +55,9 @@ credential store, or a public capability.
 - Make malformed, missing, inconsistent, stale, duplicate, or otherwise
   unprovable evidence fail closed before a new Codex child, successor, or
   health attachment is accepted.
-- Preserve least privilege, safe diagnostics, existing API shapes, and the
-  `butler_secrets` raw-value location.
+- Preserve least privilege, safe diagnostics, the existing owner-only Codex
+  rotate `{fingerprint, value}` raw-value-once response, the inventory/detail
+  display fingerprint, and the `butler_secrets` raw-value location.
 
 **Non-Goals:**
 
@@ -68,7 +69,9 @@ credential store, or a public capability.
   an authority proof.
 - No raw credential, staged credential, local-file content, provider stderr,
   or secret-bearing exception is stored in a new table, log field, audit note,
-  telemetry attribute, API response, or plan fixture.
+  telemetry attribute, new API field, or plan fixture. The already-documented
+  owner-only rotate response remains its sole existing raw-value-once API
+  exception and gains no provenance fields.
 - No public endpoint, dashboard field, audit-history entry, or browser payload
   exposes a generation ID, operation ID, operation state, or successor lineage.
 - No attempt to resurrect a revoked/absent authority from a local runtime file,
@@ -147,17 +150,28 @@ mutation never changes either opaque generation pointer.  This binding is what
 makes a raw row and a generation one authority rather than two mutable records
 that a later reader has to reconcile by guesswork.
 
-The migration reserves `cli-auth/codex` from generic direct DML.  It installs a
-fixed-search-path, `SECURITY DEFINER` mutation surface owned by a no-login core
-role, revokes `EXECUTE` from `PUBLIC`, and grants only the role paths required
-by the dashboard shared-authority service and the designated Codex runtime
-callers.  A row trigger rejects or marks as unprovable direct mutations of the
-reserved row that do not pass through that surface.  It must use an
+The migration reserves `cli-auth/codex` from generic direct DML, but the normal
+migration login does not create or own this boundary. A privileged
+`scripts/init-db.sql` step installs a fixed, bootstrap-owned, no-argument
+installer/finalizer patterned after the `core_196` restore-drill boundary. The
+normal migration first catalog-verifies that exact trusted installer and then
+invokes it. The installer creates the protected relations and fixed-search-path
+`SECURITY DEFINER` mutation surface; the finalizer assigns them to a NOLOGIN,
+non-member `codex_auth_provenance_owner`, revokes `EXECUTE` from `PUBLIC`, and
+grants only the role paths required by the dashboard shared-authority service
+and designated Codex runtime callers. It also revokes installer/finalizer
+access, owner membership, protected-schema `CREATE`, and direct relation DML
+from the migration login.
+
+A row trigger rejects or marks as unprovable direct mutations of the reserved
+row that do not pass through that surface. It must use an
 unforgeable-in-the-application transaction context established by the definer,
-not a caller-controlled SQL setting.  Runtime roles receive no direct write
-grant to the state, generation, or operation tables.  The test suite must prove
-these effective-role boundaries with a real PostgreSQL connection; a mock or
-migration-owner connection is not evidence.
+not a caller-controlled SQL setting. Runtime roles receive no direct write
+grant to the state, generation, or operation tables. A runtime role permitted
+to prepare normal operations is explicitly denied the separate device-auth
+bootstrap function. The test suite must prove these effective-role boundaries
+and upgraded-database bootstrap ordering with a real PostgreSQL connection; a
+mock or migration-owner connection is not evidence.
 
 The repository's shared database login can still assume several runtime roles,
 so this is a least-privilege and correctness boundary, not a claim that an
@@ -217,14 +231,25 @@ class CodexAuthBootstrapLease:
     deadline_at: datetime
 
 @dataclass(frozen=True)
+class CodexAuthProjectionBinding:
+    generation_id: UUID = field(repr=False)
+    authority_document: str = field(repr=False)
+
+@dataclass(frozen=True)
 class CodexAuthLaunchResult:
     disposition: CodexAuthLaunchDisposition
 
 CredentialStore.prepare_codex_auth_operation(
     kind: CodexAuthOperationKind,
     deadline_at: datetime,
-    permit_uninitialized_device_bootstrap: bool = False,
-) -> CodexAuthLaunchLease | CodexAuthBootstrapLease | CodexAuthUnavailable
+) -> CodexAuthLaunchLease | CodexAuthUnavailable
+
+CredentialStore.prepare_codex_auth_device_bootstrap(
+    deadline_at: datetime,
+) -> CodexAuthBootstrapLease | CodexAuthUnavailable
+
+CredentialStore.read_current_codex_auth_projection_binding(
+) -> CodexAuthProjectionBinding | CodexAuthUnavailable
 
 CredentialStore.mark_codex_auth_operation_launched(
     operation_id: UUID,
@@ -238,6 +263,18 @@ CredentialStore.complete_codex_auth_operation(
     health: CodexAuthHealthOutcome | None,
 ) -> CodexAuthCompletion
 ```
+
+The normal preparation method has no boolean, mode, or generic kind capable of
+selecting bootstrap. It calls a normal prepare definer that requires a complete
+current generation. `prepare_codex_auth_device_bootstrap` calls a distinct
+definer granted only to the dashboard API's no-`SET ROLE` shared-authority
+path, not any effective runtime role; that definer
+derives `bootstrap_absent` from the locked never-initialized state and accepts
+no caller-supplied proof. A role granted normal runtime/prewarm preparation
+cannot execute the bootstrap definer even if it calls SQL directly.
+`read_current_codex_auth_projection_binding` is a read-only validated snapshot
+for startup compatibility projection; it creates no operation and authorizes
+no child or completion.
 
 `authority_document` and a validated successor are transient parameters to the
 existing raw credential-store boundary.  They are `repr=False`, never logged,
@@ -263,15 +300,17 @@ stateDiagram-v2
     launched --> expired: database deadline passes
 ```
 
-Prepare obtains the singleton lock, validates the complete current binding,
+Normal prepare obtains the singleton lock, validates the complete current binding,
 creates a `prepared` operation, and returns the raw document only to the
 existing trusted credential consumer. It does not examine a local file as a
-predecessor. The sole exception is an explicitly requested device-auth
-bootstrap: when the singleton is absent, `has_ever_initialized = false`, no
-generation exists, and no eligible raw row exists, it returns a
+predecessor and has no bootstrap selector. The separate dashboard-only
+device-auth bootstrap definer obtains the same lock and, only when the singleton
+is absent, `has_ever_initialized = false`, no generation exists, and no eligible
+raw row exists, returns a
 `CodexAuthBootstrapLease` whose operation records `bootstrap_absent = true`
-and no generation. That lease creates an empty private stage, not a new
-authority document. A revoke or any owner mutation sets
+and no generation. The database establishes that fact without accepting
+`allow_bootstrap`, a session value, or any caller proof. That lease creates an
+empty private stage, not a new authority document. A revoke or any owner mutation sets
 `has_ever_initialized = true`, so a later absent state cannot acquire another
 bootstrap lease.
 
@@ -327,6 +366,21 @@ fully terminated, only the stage belonging to that operation is eligible for
 strict parsing and conditional completion.  A stale or malicious local shared
 file cannot be misattributed to an operation.
 
+Dashboard device auth uses an explicit two-phase launch seam spanning
+`cli_auth/persistence.py`, `CLIAuthSession`, the
+`DashboardCLIAuthSandbox` protocol, and
+`BubblewrapDashboardCLIAuthSandbox`. Persistence preparation returns one
+redacted context containing the durable lease and its normal authority seed or
+empty bootstrap seed. `CLIAuthSession` retains that context, asks the platform
+sandbox to prepare but not start the exact private HOME, then conditionally
+marks the same operation launched. Only a successful mark permits the prepared
+sandbox handle to create its child; a stale/failed mark creates no process.
+The handle retains the same stage through PID-namespace containment and returns
+only its validated bytes to completion with the same lease. Cancellation,
+timeout, mark failure, launch failure, containment failure, and callback failure
+all terminalize safely and remove that stage. No stage or lease may be reused by
+another session or child.
+
 The old canonical file may remain as a DB-originated compatibility projection
 for components that cannot yet consume a private stage.  Its write path holds
 the cross-process file lock and writes atomically with mode `0600`.  A missing
@@ -366,10 +420,15 @@ rule:
    committed intentional replacement becomes current.  Two conditional
    successors serialize similarly; exactly one can create the next generation.
 
-The dashboard mutation response keeps its existing value-free evidence shape.
-It does not reveal a generation, operation, lineage, or internal failure
-reason.  The existing raw-value-once behavior for any documented CLI endpoint
-is not extended by this feature and must not carry provenance fields.
+The Codex dashboard API deliberately preserves its existing public contract:
+owner rotate/paste returns `{fingerprint, value}` once, while inventory and
+detail return the on-read display `fingerprint` and never return the raw value.
+The fingerprint remains an unpersisted display aid, not provenance or
+authority. This feature does not add another reveal path and no response gains
+a generation, operation, lineage, reusable capability, or internal failure
+reason. Backend API, TypeScript client, and PageCli tests cover Codex rotate,
+inventory, and detail separately so an implementation cannot silently remove
+the documented envelope or leak the new internal state through it.
 
 ### D7 — Restart, malformed evidence, and ambiguity fail closed
 
@@ -440,24 +499,32 @@ authority evidence.
 
 ### D9 — Roll out additively; never roll back to an unsafe legacy launch path
 
-The implementation has four additive stages:
+The implementation has five ordered additive stages:
 
-1. **Schema and compatibility guard.**  Add the relations, nullable binding
-   column, narrow functions/ACLs, and reserved-row trigger without deleting or
-   rewriting any existing secret.  New tests cover core-only/fresh schemas and
-   unavailable role states.  The migration itself does not parse or bless a
-   legacy raw row.
-2. **Fence-aware adoption.**  A new `CredentialStore` path strictly parses a
+1. **Privileged installer availability.** Run the cluster-superuser
+   `scripts/init-db.sql` bootstrap before the normal migration on fresh and
+   already-provisioned databases. It installs the fixed no-argument
+   installer/finalizer and NOLOGIN owner, grants the normal migration login
+   only temporary installer execution, and rejects partial or untrusted
+   lookalike objects. It does not inspect or change a credential.
+2. **Schema and compatibility guard.** The normal migration catalog-verifies
+   and invokes that installer. The installer adds the relations, nullable
+   binding column, narrow functions/ACLs, and reserved-row trigger without
+   deleting or rewriting any existing secret; its finalizer removes migration
+   ownership, membership, protected-schema CREATE/DML, and installer access.
+   Migration-before-bootstrap fails closed. The migration itself does not parse
+   or bless a legacy raw row.
+3. **Fence-aware adoption.**  A new `CredentialStore` path strictly parses a
    pre-existing shared row under the state lock.  Only an uninitialized state
    can adopt that valid row once as `legacy_adoption`.  A malformed row remains
    unavailable.  After any generation has existed, a null/mismatched binding
    is unprovable rather than eligible for automatic adoption.
-3. **All producer cutover.**  Route dashboard replacement/revoke, device auth,
+4. **All producer cutover.**  Route dashboard replacement/revoke, device auth,
    runtime invocation/prewarm, health probe, startup restore, model verify,
    direct dispatcher, and connector restoration through the new typed methods.
    Add a source-level completeness test so no Codex call site retains generic
    raw-value CAS or local-file successor flush.
-4. **Activation verification.**  Enable normal launches only after every
+5. **Activation verification.**  Enable normal launches only after every
    in-repository Codex mutation/launch call site is fence-aware and the
    migration/role/concurrency tests pass.  Any old image writing the reserved
    row makes the binding unprovable and stops new fence-aware launches rather
@@ -520,21 +587,28 @@ state that dashboard fingerprints remain display-only and non-persistent.
 ## Migration Plan
 
 1. Write PostgreSQL migration tests first for fresh, upgraded, core-only, and
-   role-enforced databases.  Prove a raw legacy row is untouched by schema
-   creation, an uninitialized valid row can be adopted once, and invalid or
-   inconsistent data fails closed.
-2. Add the nullable binding, singleton/generation/operation tables, indexes,
-   constraints, security-definer functions, reserved-row guard, and least
-   privilege grants in one additive core migration.  Keep downgrade limited to
-   newly introduced objects and never copy a credential out of its existing
-   row.
+   role-enforced databases. Prove migration-before-bootstrap fails closed,
+   bootstrap-then-migration succeeds, a raw legacy row is untouched, an
+   uninitialized valid row can be adopted once, and invalid or inconsistent
+   data fails closed.
+2. Extend the privileged bootstrap with the fixed installer/finalizer and
+   NOLOGIN owner. Add the normal additive core migration that catalog-verifies
+   and invokes it to create the nullable binding,
+   singleton/generation/operation tables, indexes, constraints,
+   security-definer functions, reserved-row guard, and least-privilege grants.
+   Prove finalization leaves the migration login with no owner membership,
+   protected-schema CREATE, direct DML, or installer/finalizer execution. Keep
+   downgrade a separately authorized privileged-bootstrap operation and never
+   copy a credential out of its existing row.
 3. Implement the typed `CredentialStore` repository and replace Codex-only
    generic load/store/CAS/health calls.  Keep non-Codex `CredentialStore`
    behavior unchanged.
-4. Convert staged device auth, runtime invocation, prewarm, health, startup
-   restoration, connector restoration, model verification, and direct
-   dispatcher paths to prepare/launch/complete.  Remove the local-file
-   successor cache/flush route in the same commit.
+4. Convert staged device auth, runtime invocation, prewarm, health, connector
+   restoration, model verification, and direct dispatcher paths to
+   prepare/launch/complete. Convert startup restoration to the separate
+   read-only complete-current-binding projection path so it does not create an
+   operation it will never launch. Remove the local-file successor cache/flush
+   route in the same commit.
 5. Update specs and operator/developer docs, then run focused unit, real
    PostgreSQL migration/ACL/concurrency, adapter, API, lifecycle, and
    source-completeness tests before broader repository gates.
@@ -551,3 +625,15 @@ deadline, bounded prewarm/health deadline, and provider device-auth timeout),
 and the 90-day operation-metadata retention follows the existing secret-probe
 minimum.  No public API, credential location, or owner policy is being invented
 by this packet.
+
+## Composition Dependency
+
+This packet follows the merged implementation change
+`harden-runtime-auth-and-breaker-attention`. That predecessor's still-active
+delta owns the initial `MODIFIED` replacement of `core-credentials` requirement
+`Live Codex Device-Auth Reconciliation`. Before implementing this packet, land
+and sync/archive that predecessor (or otherwise establish its exact canonical
+wording), rebase, and validate composition. This packet supplies a full
+`MODIFIED` replacement of the separate canonical `core-spawner` requirement
+`Pre-Launch and Prewarm Codex Auth Synchronization`; it does not create a
+parallel additive stage requirement or retain the old local-fallback scenarios.

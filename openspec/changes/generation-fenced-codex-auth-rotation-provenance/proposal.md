@@ -27,12 +27,17 @@ contents, process identity, or timestamps.
   unavailable authority/operation evidence, plus crash, restart, and
   multi-daemon interleavings. Existing local files remain non-authoritative
   after an unprovable operation.
+- Separate normal runtime preparation from the privileged first-device-auth
+  bootstrap entry point, and install the protected NOLOGIN-owned database
+  boundary through a privileged fixed installer before the normal migration
+  may invoke it.
 - Add additive rollout, retirement, and garbage-collection rules for the
   non-secret provenance records. Rollback removes use of the new fence before
   any schema removal; it never reconstructs authority from local files.
-- Keep the dashboard contract value-free: this change adds no credential
-  reveal, generation, capability, token fingerprint/digest, raw error, or
-  process-identifying API field.
+- Preserve the existing owner-only Codex rotate `{fingerprint, value}`
+  raw-value-once response and inventory/detail display fingerprint, while
+  adding no credential reveal, generation, operation, lineage, capability,
+  raw error, or process-identifying API field.
 
 ## Capabilities
 
@@ -47,7 +52,8 @@ None.
   launch-operation provenance.
 - `core-spawner`: Codex preflight, prewarm, subprocess launch, and finalization
   bind to an exact durable authority generation and fail closed on unprovable
-  evidence.
+  evidence through a full replacement of the canonical `Pre-Launch and
+  Prewarm Codex Auth Synchronization` requirement.
 - `core-daemon`: startup restoration and restart recovery use the durable
   system-global authority lineage rather than inferring a successor from a
   local runtime file.
@@ -67,3 +73,11 @@ handlers, lifecycle wiring, and focused migration/adapter/API/concurrency
 tests. It also updates the credential-store, CLI-runtime-auth, daemon-lifecycle,
 and spawner documentation. It adds no provider dependency, no public endpoint,
 and no live operational action in this planning change.
+
+This change composes after the merged implementation change
+`harden-runtime-auth-and-breaker-attention`, whose still-active
+`core-credentials` delta owns the initial replacement of `Live Codex
+Device-Auth Reconciliation`. Implementation allocation must first confirm that
+predecessor has been synced/archived or otherwise compose against its exact
+canonical wording; this packet does not add a competing replacement of that
+requirement.

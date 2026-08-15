@@ -9,14 +9,24 @@ an opaque generation binding on the existing credential row.  The new records
 shall contain no raw credential, token-derived fingerprint/digest, secret
 error, PID, file metadata, process/session timestamp heuristic, or capability.
 
-The migration SHALL use fixed-search-path `SECURITY DEFINER` operations owned
-by a no-login core role, revoke execution from `PUBLIC`, and grant only the
-minimum dashboard shared-authority and designated Codex runtime paths.  Runtime
-roles shall not receive direct write access to the state, generation, or
-operation relations.  The reserved-row direct-DML guard SHALL make an attempted
-legacy/raw mutation unprovable or reject it rather than silently retaining a
-stale generation binding.  Existing non-Codex credential storage semantics
-remain unchanged.
+A privileged bootstrap SHALL install a fixed, no-argument installer/finalizer
+owned by a trusted bootstrap principal. The normal migration SHALL catalog-
+verify and invoke that installer rather than create or own the protected
+objects. The installed fixed-search-path `SECURITY DEFINER` operations and
+relations SHALL be owned by a NOLOGIN, non-member core role. The finalizer
+SHALL revoke owner membership, protected-schema `CREATE`, direct relation DML,
+installer/finalizer execution, and every unneeded privilege from the normal
+migration login, runtime roles, connectors, and `PUBLIC`.
+
+The normal runtime/prewarm/probe prepare operation SHALL have no bootstrap
+parameter. A distinct device-auth bootstrap function SHALL be executable only
+by the dashboard API's no-`SET ROLE` shared-authority path, not any effective
+runtime role, and SHALL derive
+`bootstrap_absent` from locked database state. Runtime roles shall not receive
+direct write access to the state, generation, or operation relations. The
+reserved-row direct-DML guard SHALL make an attempted legacy/raw mutation
+unprovable or reject it rather than silently retaining a stale generation
+binding. Existing non-Codex credential storage semantics remain unchanged.
 
 #### Scenario: Non-Codex credential writes remain available
 - **WHEN** an effective runtime role performs an authorized ordinary
@@ -38,6 +48,23 @@ remain unchanged.
   provenance state
 - **AND** unrelated runtime roles, connectors, and `PUBLIC` cannot invoke the
   mutation operation or write provenance state directly
+
+#### Scenario: Runtime preparation cannot invoke device-auth bootstrap
+- **WHEN** an effective role that may prepare normal Codex runtime operations
+  attempts to invoke the protected device-auth bootstrap function
+- **THEN** PostgreSQL rejects the invocation for insufficient privilege
+- **AND** the dashboard API's no-`SET ROLE` shared-authority path can invoke it
+  only through the fixed definer function and still cannot write provenance
+  relations directly
+
+#### Scenario: Upgraded database requires privileged installer ordering
+- **WHEN** an already-provisioned database runs the normal provenance migration
+  before the privileged bootstrap has installed the exact trusted installer
+- **THEN** the migration fails closed without creating or taking ownership of
+  protected objects
+- **AND** after the privileged bootstrap runs, the normal migration can invoke
+  the fixed installer and retains no owner membership, protected-schema
+  `CREATE`, direct-DML, or installer/finalizer privilege
 
 ### Requirement: Provenance Expiry and Retention Security
 

@@ -14,10 +14,12 @@ authority.
 #### Scenario: Fresh daemon restores the current shared generation
 - **WHEN** a daemon starts after another daemon has created a current opaque
   Codex generation
-- **THEN** it restores/stages only the raw value bound to that current
-  system-global generation
+- **THEN** a read-only complete-current-binding query returns only the raw
+  value bound to that current system-global generation
 - **AND** it does not require a process-local rotation cache from the prior
   daemon
+- **AND** startup creates no durable prepared or launched operation unless it
+  is actually going to launch a child
 
 #### Scenario: Fresh daemon finds an orphaned local rotation
 - **WHEN** a daemon starts with a local Codex file that differs from the
@@ -25,6 +27,12 @@ authority.
 - **THEN** the daemon does not promote or attach health to the local file
 - **AND** it uses the shared binding for a later fenced operation or fails
   closed when that binding is unavailable
+
+#### Scenario: Repeated startup projection leaves no operation behind
+- **WHEN** a daemon repeatedly restarts and refreshes the compatibility
+  projection without launching a Codex child
+- **THEN** each refresh uses only a read-only complete current binding
+- **AND** no nonterminal health-probe or other Codex operation is created
 
 #### Scenario: Connector restoration preserves the same boundary
 - **WHEN** a Codex-dependent connector restores CLI auth during startup

@@ -1,29 +1,35 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: Codex Subprocesses Use Exact-Generation Private Stages
+### Requirement: Pre-Launch and Prewarm Codex Auth Synchronization
 
-The adapter SHALL prepare every runtime subprocess attempt and
-speculative/on-path prewarm with a selected system-global authority as a durable
-exact-generation operation before it constructs a child.  The operation's raw
-authority document is transient and `repr`-safe only; the adapter SHALL write
-it into a private operation stage and SHALL not link the child to a mutable
-shared canonical `auth.json` as its result source.  It SHALL conditionally mark
-the operation launched immediately before creating the child, and SHALL refuse
-the child when that recheck fails.
+The Codex adapter SHALL use an explicitly selected system-global credential
+authority for live reconciliation before evaluating token freshness, creating
+an isolated HOME, launching any subprocess attempt, or running speculative or
+on-path prewarm. For each child it SHALL prepare a durable exact-generation
+operation, write the transient `repr`-safe authority document into a distinct
+private stage, conditionally mark that operation launched immediately before
+process creation, and refuse the child when that recheck fails. The child SHALL
+not use a mutable shared canonical `auth.json` as its authority or result
+source.
 
 The adapter SHALL preserve the existing provider execution timeout and use the
 existing bounded setup/finalizer allowance without allowing retries or child
 chunks to extend the operation's one absolute authority deadline.  A missing,
 unprovable, expired, or unavailable authority is a fail-closed launch result,
-not permission to use a local file.
+not permission to use a schema-local credential or local file. It SHALL retain
+the existing environment-isolation, session-recording, and same-tier failover
+safety, including the prohibition on replaying an attempt that may have caused
+side effects.
 
-#### Scenario: Runtime child is fenced immediately before creation
-- **WHEN** a Codex invocation has completed its setup work and is about to
-  create a subprocess
-- **THEN** it conditionally marks the prepared operation launched against the
-  exact current generation before process creation
-- **AND** it refuses the child if replacement, revoke, expiry, or unavailable
-  authority has made that generation non-current
+#### Scenario: Exact-generation reconciliation precedes a Codex subprocess
+- **WHEN** a Codex adapter with an explicit system-global authority invokes a
+  new runtime session and is about to create a subprocess
+- **THEN** it prepares and stages the current exact generation before the child
+  can start
+- **AND** it conditionally marks that operation launched immediately before
+  process creation
+- **AND** replacement, revoke, expiry, or unavailable authority causes a safe
+  no-launch result rather than a schema-local or local-file fallback
 
 #### Scenario: Private stages prevent cross-daemon result attribution
 - **WHEN** two daemons launch Codex operations on the same current generation
@@ -37,6 +43,48 @@ not permission to use a local file.
   generation binding before a Codex subprocess or prewarm
 - **THEN** the adapter creates no Codex child for that operation
 - **AND** it does not use an existing canonical local auth file as fallback
+
+#### Scenario: Bounded auth setup remains outside provider execution time
+- **WHEN** a credential-wired runtime declares a finite setup/finalizer
+  allowance for an invocation
+- **THEN** the Spawner and direct dispatcher guard add that allowance outside
+  the catalog-resolved provider execution timeout
+- **AND** the unmodified catalog timeout still bounds the provider subprocess
+- **AND** prepare, private-stage creation, projection lock acquisition,
+  immediate pre-spawn marking, and finalization share one absolute authority
+  deadline that retries or child chunks cannot extend
+
+#### Scenario: Internal retries receive separate fenced attempts
+- **WHEN** a Codex invocation performs an internal retry before any prohibited
+  side effect
+- **THEN** each subprocess attempt prepares and launches its own exact-
+  generation operation and private stage
+- **AND** each attempt finalizes only its own stage without treating another
+  attempt's result as a successor
+
+#### Scenario: Speculative prewarm is independently fenced
+- **WHEN** the spawner invokes speculative or on-path Codex prewarm
+- **THEN** the prewarm prepares and marks its own exact-generation operation
+  before its status child starts
+- **AND** any prewarm rotation is conditionally finalized through that
+  operation before a later spawn can consume a successor
+
+#### Scenario: Dashboard login prewarm retains the device-auth fence
+- **WHEN** successful dashboard Codex device authentication triggers a
+  post-login prewarm
+- **THEN** the prewarm uses a new current-generation operation rather than the
+  completed device-auth operation or a shared local-file baseline
+- **AND** a concurrent owner replacement remains authoritative
+
+#### Scenario: Auth fencing does not alter failover safety
+- **WHEN** a Codex attempt fails before side effects after exact-generation
+  reconciliation
+- **THEN** the spawner classifies and handles it using the existing model-
+  failover contract
+- **AND** authority finalization failure never authorizes replay of a child
+  that may have caused side effects
+
+## ADDED Requirements
 
 ### Requirement: Codex Adapter Finalization Uses the Launch Operation
 

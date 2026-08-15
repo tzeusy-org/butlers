@@ -43,8 +43,10 @@ timestamp, session identifier, or a matching-looking document.
   inconsistent
 - **THEN** the authority is unprovable rather than eligible for another
   automatic adoption
-- **AND** only an explicit owner replacement or explicit device-auth bootstrap
-  can establish a new current generation
+- **AND** only an explicit direct owner replacement can repair the initialized
+  lineage and establish a new current generation
+- **AND** device authentication cannot use the never-initialized bootstrap
+  path to repair that inconsistent state
 
 ### Requirement: Generation-Fenced Codex Operation Completion
 
@@ -54,9 +56,13 @@ exact current opaque generation.  An operation record SHALL be a server-side
 row identity, not a bearer capability, and SHALL not be exposed through an API,
 MCP surface, browser payload, command line, log, or telemetry attribute.
 
-The only exception to a current-generation binding is an explicitly requested
-first device-auth bootstrap when the guarded singleton is absent, has never
-initialized, has no generation record, and has no eligible credential row. The
+The only exception to a current-generation binding is a first device-auth
+bootstrap prepared through a distinct owner-authorized device-auth entry point
+when the guarded singleton is absent, has never initialized, has no generation
+record, and has no eligible credential row. The general runtime/prewarm/probe
+prepare entry point SHALL NOT accept a bootstrap flag or otherwise select this
+state. The guarded device-auth entry point SHALL establish
+`bootstrap_absent` from locked database state rather than caller input. The
 operation SHALL record that exact never-initialized absence as an internal,
 non-capability bootstrap state; it SHALL not use a null generation, dashboard
 session, device code, local file, or time observation as an authority proof.
@@ -107,6 +113,15 @@ otherwise unprovable operation SHALL not write a successor or health result.
   revoke
 - **THEN** a device-auth prepare request returns a safe unavailable result
 - **AND** it does not create an operation that can recreate authority
+
+#### Scenario: Runtime preparation cannot select bootstrap authority
+- **WHEN** a role authorized to prepare normal runtime or prewarm operations
+  invokes the normal guarded preparation entry point while authority is absent
+  and never initialized
+- **THEN** it receives a safe unavailable result and no bootstrap operation is
+  created
+- **AND** only the separately authorized dashboard device-auth entry point may
+  ask the database to establish never-initialized absence
 
 #### Scenario: Bootstrap has no unchanged health completion
 - **WHEN** an explicitly absent never-initialized device-auth bootstrap is

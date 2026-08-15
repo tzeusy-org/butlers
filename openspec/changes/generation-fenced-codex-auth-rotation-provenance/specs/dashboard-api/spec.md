@@ -9,10 +9,15 @@ and revoke are serialized owner mutations; device-auth and probe completion are
 conditional exact-operation outcomes.  A route SHALL fail closed before child
 launch or mutation when the selected authority is unavailable or unprovable.
 
-The existing API shapes remain value-focused only where already documented.  No
-route shall add a generation ID, operation ID, operation state, lineage,
-credential-derived fingerprint/digest, provider stderr, or secret-bearing error
-to an HTTP response, audit note, browser payload, or log.
+The existing owner-only Codex rotate response SHALL remain the documented
+one-time `{fingerprint, value}` shape, and Codex inventory/detail responses
+SHALL retain their on-read display `fingerprint` without a raw value. The raw
+rotate value SHALL be returned only in that existing one-time response. The
+display fingerprint SHALL remain derived on read and unpersisted; neither field
+is operation provenance or authority. No route SHALL add a generation ID,
+operation ID, operation state, lineage, provider stderr, secret-bearing error,
+or any new credential-derived identifier to an HTTP response, audit note,
+browser payload, or log.
 
 #### Scenario: Dashboard save supersedes an in-flight runtime operation
 - **WHEN** the owner saves a valid Codex replacement while a runtime operation
@@ -20,6 +25,22 @@ to an HTTP response, audit note, browser payload, or log.
 - **THEN** the save atomically creates the new shared generation and
   supersedes the in-flight operation
 - **AND** the API response exposes no internal generation or operation detail
+
+#### Scenario: Codex rotate preserves the existing owner response contract
+- **WHEN** the owner rotates or pastes a valid Codex credential through the
+  existing CLI rotate endpoint
+- **THEN** the response contains exactly the existing one-time raw value and
+  its display-only fingerprint fields
+- **AND** the response contains no generation, operation, lineage, or other
+  provenance field
+
+#### Scenario: Codex inventory and detail remain display-only
+- **WHEN** the owner reads Codex credential inventory or detail after a
+  generation-fenced replacement
+- **THEN** the response may contain the existing on-read display fingerprint
+  and SHALL NOT contain the raw credential value
+- **AND** it contains no generation, operation, lineage, or reusable
+  credential capability
 
 #### Scenario: Dashboard revoke blocks device-auth resurrection
 - **WHEN** the owner revokes Codex auth while a dashboard device-auth session
@@ -39,10 +60,15 @@ to an HTTP response, audit note, browser payload, or log.
 ### Requirement: Dashboard Device Authentication Has a Durable Prelaunch Fence
 
 Before the dashboard's Codex device-auth sandbox starts a child, it SHALL
-prepare a durable device-auth operation against the exact current generation,
-or against an explicitly absent uninitialized authority only for the documented
-owner bootstrap path.  After containment and strict staged-output validation,
-the callback SHALL conditionally complete that same operation.  It SHALL not
+prepare a durable device-auth operation against the exact current generation
+through the normal operation entry point, or call the distinct
+owner-authorized bootstrap entry point for the documented never-initialized
+owner bootstrap path. The session SHALL carry that preparation into a
+two-phase sandbox launch: the platform launcher first creates and seeds only
+that operation's private stage, the operation is conditionally marked launched,
+and only then may the same prepared sandbox create its child. After complete
+containment and strict staged-output validation, the callback SHALL
+conditionally complete that same operation and remove its stage. It SHALL not
 use the dashboard session ID, device code, child PID, local file timestamp, or
 staged output identity as authorization.
 
@@ -59,3 +85,11 @@ staged output identity as authorization.
 - **THEN** the dashboard marks the session failed with a safe generic result
 - **AND** it persists no credential, derived fingerprint/digest, raw parser
   error, or operation detail
+
+#### Scenario: A failed prelaunch mark starts no sandbox child
+- **WHEN** replacement, revoke, expiry, or unavailable authority invalidates a
+  prepared Codex device-auth operation after its private stage is created but
+  before launch marking succeeds
+- **THEN** the platform launcher creates no device-auth child
+- **AND** the prepared stage and operation are terminalized without exposing
+  their contents or identifiers
