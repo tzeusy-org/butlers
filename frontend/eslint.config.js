@@ -708,8 +708,24 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (reflectedTarget) return reflectedTarget
 
           if (node.type === 'MemberExpression') {
+            const property = memberPropertyName(node, resolvingVariables)
+            if (property !== null) {
+              const immutableValue = staticImmutableProperty(
+                node.object,
+                property,
+                resolvingVariables,
+              )
+              if (immutableValue !== null && immutableValue !== undefined) {
+                const immutableTarget = staticResolverTarget(
+                  immutableValue,
+                  resolvingVariables,
+                )
+                if (immutableTarget) return immutableTarget
+              }
+            }
+
             const instanceTarget = INSTANCE_RESOLVER_METHODS[
-              memberPropertyName(node, resolvingVariables)
+              property
             ]
             if (instanceTarget) return instanceTarget
           }
@@ -746,14 +762,14 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (!path.length) return staticResolverTarget(initializer, resolvingVariables)
 
           const [property, ...remaining] = path
-          if (
-            typeof property === 'number' &&
-            initializer.type === 'ArrayExpression' &&
-            initializer.elements[property] &&
-            initializer.elements[property].type !== 'SpreadElement'
-          ) {
+          const immutableValue = staticImmutableProperty(
+            initializer,
+            property,
+            resolvingVariables,
+          )
+          if (immutableValue !== null && immutableValue !== undefined) {
             return destructuredResolverTarget(
-              initializer.elements[property],
+              immutableValue,
               remaining,
               resolvingVariables,
             )
@@ -976,9 +992,15 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return { type: 'Literal', value }
         }
 
-        function staticObjectProperty(node, propertyName, resolvingVariables, localValues) {
+        function staticImmutableProperty(
+          node,
+          propertyName,
+          resolvingVariables = new Set(),
+          localValues = new Map(),
+        ) {
           node = unwrapStaticExpression(node)
           if (node.type === 'ObjectExpression') {
+            let matchingValue
             for (const property of node.properties) {
               if (property.type !== 'Property' || property.kind !== 'init' || property.method) {
                 return null
@@ -987,9 +1009,23 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
                 ? stringConstructionValue(property.key, resolvingVariables, localValues)
                 : memberPropertyName({ computed: false, property: property.key })
               if (key === DYNAMIC_VALUE_MARKER) return null
-              if (key === propertyName) return property.value
+              if (key === propertyName) {
+                if (matchingValue !== undefined) return null
+                matchingValue = property.value
+              }
             }
-            return undefined
+            return matchingValue
+          }
+          if (node.type === 'ArrayExpression') {
+            if (
+              typeof propertyName !== 'number' ||
+              !Number.isInteger(propertyName) ||
+              propertyName < 0 ||
+              node.elements.some((element) => element?.type === 'SpreadElement')
+            ) {
+              return null
+            }
+            return node.elements[propertyName] ?? undefined
           }
           if (node.type !== 'Identifier') return null
 
@@ -997,7 +1033,7 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (!binding || resolvingVariables.has(binding.variable)) return null
 
           resolvingVariables.add(binding.variable)
-          const value = staticObjectProperty(
+          const value = staticImmutableProperty(
             binding.initializer,
             propertyName,
             resolvingVariables,
@@ -1206,7 +1242,7 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (node.type === 'MemberExpression') {
             const property = memberPropertyName(node)
             if (property === null) return null
-            const value = staticObjectProperty(
+            const value = staticImmutableProperty(
               node.object,
               property,
               resolvingVariables,
@@ -1541,7 +1577,12 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (node.type === 'MemberExpression') {
             const property = memberPropertyName(node)
             if (property === null) return DYNAMIC_VALUE_MARKER
-            const value = staticObjectProperty(node.object, property, resolvingVariables, localValues)
+            const value = staticImmutableProperty(
+              node.object,
+              property,
+              resolvingVariables,
+              localValues,
+            )
             return value === null || value === undefined
               ? DYNAMIC_VALUE_MARKER
               : stringConstructionValue(value, resolvingVariables, localValues)

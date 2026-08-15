@@ -578,6 +578,44 @@ const NESTED_DESTRUCTURED_SEMANTIC_ROLE_RESOLVER_SOURCE = [
   'export const throughCall = cssomCall.call(CSSStyleDeclaration.prototype.getPropertyValue, document.documentElement.style, "--green");',
 ].join("\n");
 
+const IMMUTABLE_PROPERTY_PRIVATE_IDENTITY_RESOLVER_SOURCE = [
+  'const { readCssom } = { readCssom: CSSStyleDeclaration.prototype.getPropertyValue } as const;',
+  'export const cssom = readCssom.call(document.documentElement.style, "--category-1");',
+  'const { readTypedOm } = { readTypedOm: StylePropertyMapReadOnly.prototype.get } as const;',
+  'export const typedOm = readTypedOm.call(document.documentElement.computedStyleMap(), "--color-category-12");',
+  'const { joinParts } = { joinParts: Array.prototype.join } as const;',
+  'export const joined = joinParts.call(["var(", "--category-1", ")"], "");',
+  'const { concatParts } = { concatParts: String.prototype.concat } as const;',
+  'export const concatenated = concatParts.call("var(", "--color-category-12", ")");',
+  'const cssomResolvers = [CSSStyleDeclaration.prototype.getPropertyValue] as const;',
+  'export const indexedCssom = cssomResolvers[0].call(document.documentElement.style, "--category-1");',
+  'const typedOmResolvers = [StylePropertyMapReadOnly.prototype.get] as const;',
+  'export const indexedTypedOm = typedOmResolvers[0].call(document.documentElement.computedStyleMap(), "--color-category-12");',
+  'const arrayResolvers = [Array.prototype.join] as const;',
+  'export const indexedJoin = arrayResolvers[0].call(["var(", "--category-1", ")"], "");',
+  'const stringResolvers = [String.prototype.concat] as const;',
+  'export const indexedConcat = stringResolvers[0].call("var(", "--color-category-12", ")");',
+].join("\n");
+
+const IMMUTABLE_PROPERTY_SEMANTIC_ROLE_RESOLVER_SOURCE = [
+  'const { readCssom } = { readCssom: CSSStyleDeclaration.prototype.getPropertyValue } as const;',
+  'export const cssom = readCssom.call(document.documentElement.style, "--categorical-1");',
+  'const { readTypedOm } = { readTypedOm: StylePropertyMapReadOnly.prototype.get } as const;',
+  'export const typedOm = readTypedOm.call(document.documentElement.computedStyleMap(), "--categorical-1");',
+  'const { joinParts } = { joinParts: Array.prototype.join } as const;',
+  'export const joined = joinParts.call(["var(", "--categorical-1", ")"], "");',
+  'const { concatParts } = { concatParts: String.prototype.concat } as const;',
+  'export const concatenated = concatParts.call("var(", "--categorical-1", ")");',
+  'const cssomResolvers = [CSSStyleDeclaration.prototype.getPropertyValue] as const;',
+  'export const indexedCssom = cssomResolvers[0].call(document.documentElement.style, "--categorical-1");',
+  'const typedOmResolvers = [StylePropertyMapReadOnly.prototype.get] as const;',
+  'export const indexedTypedOm = typedOmResolvers[0].call(document.documentElement.computedStyleMap(), "--categorical-1");',
+  'const arrayResolvers = [Array.prototype.join] as const;',
+  'export const indexedJoin = arrayResolvers[0].call(["var(", "--categorical-1", ")"], "");',
+  'const stringResolvers = [String.prototype.concat] as const;',
+  'export const indexedConcat = stringResolvers[0].call("var(", "--categorical-1", ")");',
+].join("\n");
+
 // Static construction needs the same boundary when the resolver function is
 // retrieved or bound indirectly. The lexical forms below still all evaluate
 // to var(--category-N) or a Tailwind arbitrary-value equivalent.
@@ -1062,6 +1100,27 @@ describe("semantic visual-role lint", () => {
     const roleMessages = await visualRoleMessages(
       NESTED_DESTRUCTURED_SEMANTIC_ROLE_RESOLVER_SOURCE,
       "src/components/ui/SemanticNestedDestructuredResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("rejects private resolver aliases selected from immutable object properties and const-array indexes", async () => {
+    const roleMessages = await visualRoleMessages(
+      IMMUTABLE_PROPERTY_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityImmutablePropertyResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(8);
+    expect(roleMessages.map((message) => message.line)).toEqual([
+      2, 4, 6, 8, 10, 12, 14, 16,
+    ]);
+  });
+
+  it("permits semantic-role resolver aliases selected from immutable object properties and const-array indexes", async () => {
+    const roleMessages = await visualRoleMessages(
+      IMMUTABLE_PROPERTY_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticImmutablePropertyResolver.tsx",
     );
 
     expect(roleMessages).toEqual([]);
