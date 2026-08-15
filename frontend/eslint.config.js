@@ -470,6 +470,41 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return { initializer: definition.node.init, variable }
         }
 
+        function constDestructuredProperty(node) {
+          const variable = scopeVariable(node)
+          const [definition] = variable?.defs ?? []
+          if (
+            !variable ||
+            variable.defs.length !== 1 ||
+            definition?.type !== 'Variable' ||
+            definition.parent?.kind !== 'const' ||
+            definition.node.id.type !== 'ObjectPattern' ||
+            !definition.node.init
+          ) {
+            return null
+          }
+
+          for (const property of definition.node.id.properties) {
+            if (property.type !== 'Property' || property.kind !== 'init' || property.method) {
+              continue
+            }
+            const value = unwrapStaticExpression(property.value)
+            const bindingIdentifier =
+              value.type === 'AssignmentPattern' ? unwrapStaticExpression(value.left) : value
+            if (bindingIdentifier.type !== 'Identifier' || bindingIdentifier.name !== node.name) {
+              continue
+            }
+            const propertyName = property.computed
+              ? stringConstructionValue(property.key)
+              : memberPropertyName({ computed: false, property: property.key })
+            return typeof propertyName === 'string'
+              ? { initializer: definition.node.init, propertyName, variable }
+              : null
+          }
+
+          return null
+        }
+
         function memberPropertyName(node, resolvingVariables = new Set(), localValues = new Map()) {
           if (node.computed) {
             if (node.property.type === 'Literal') return node.property.value
@@ -663,6 +698,20 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
 
           if (node.type !== 'Identifier') return null
 
+          const destructured = constDestructuredProperty(node)
+          if (destructured && !resolvingVariables.has(destructured.variable)) {
+            resolvingVariables.add(destructured.variable)
+            const constructorName = prototypeConstructorName(
+              destructured.initializer,
+              resolvingVariables,
+            )
+            resolvingVariables.delete(destructured.variable)
+            const target = constructorName
+              ? resolverMethodKind(constructorName, destructured.propertyName)
+              : null
+            if (target) return target
+          }
+
           const binding = constInitializer(node)
           if (!binding || resolvingVariables.has(binding.variable)) return null
 
@@ -813,10 +862,29 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             }
           }
 
-          const bound = staticBoundResolver(node.callee, resolvingVariables)
-          return bound
-            ? invokeStaticResolver(bound, null, node.arguments, resolvingVariables)
-            : null
+          const callable = staticResolverCallable(node.callee, resolvingVariables)
+          if (!callable) return null
+          if (callable.receiver) {
+            return invokeStaticResolver(callable, null, node.arguments, resolvingVariables)
+          }
+
+          // A directly invoked reflected or descriptor CSSOM method supplies
+          // its receiver as the first argument. Treat that known boundary
+          // conservatively even though arbitrary unbound prototype functions
+          // remain outside the static evaluator.
+          if (
+            (callable.kind === 'cssom' || callable.kind === 'typed-om') &&
+            node.arguments.length >= 2
+          ) {
+            return invokeStaticResolver(
+              callable,
+              node.arguments[0],
+              node.arguments.slice(1),
+              resolvingVariables,
+            )
+          }
+
+          return null
         }
 
         function unwrapStaticExpression(node) {
