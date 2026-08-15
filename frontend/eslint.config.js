@@ -640,16 +640,22 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
 
         const AMBIGUOUS_RESOLVER_TARGET = 'ambiguous-resolver'
 
-        const READ_ONLY_CONTAINER_METHODS = new Set([
+        // These operations neither return element references nor invoke
+        // element callbacks/coercion hooks. Shallow copies, iterators that
+        // expose values, spreads, and callback-bearing operations require a
+        // separate proof that every element is a primitive value.
+        const NON_ALIASING_CONTAINER_METHODS = new Set([
+          'includes',
+          'indexOf',
+          'keys',
+          'lastIndexOf',
+        ])
+
+        const SHALLOW_ALIASING_CONTAINER_METHODS = new Set([
           'at',
           'concat',
           'entries',
           'flat',
-          'includes',
-          'indexOf',
-          'join',
-          'keys',
-          'lastIndexOf',
           'slice',
           'toReversed',
           'toSorted',
@@ -739,7 +745,13 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             return false
           }
 
-          if (parent?.type === 'SpreadElement') return true
+          if (parent?.type === 'SpreadElement') {
+            return referenceReceiverIsDeeplyImmutableArray(
+              identifier,
+              memberPath,
+              resolvingVariables,
+            )
+          }
           if (parent?.type !== 'CallExpression' || parent.callee !== current || !memberPath.length) {
             return memberPath.length > 0 &&
               (parent?.type === 'BinaryExpression' || parent?.type === 'TemplateLiteral')
@@ -749,8 +761,15 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           if (methodName === 'call' || methodName === 'apply' || methodName === 'bind') {
             return memberPath.length > 1
           }
-          return READ_ONLY_CONTAINER_METHODS.has(methodName) &&
-            referenceReceiverIsStaticArray(
+          if (NON_ALIASING_CONTAINER_METHODS.has(methodName)) {
+            return referenceReceiverIsStaticArray(
+              identifier,
+              memberPath.slice(0, -1),
+              resolvingVariables,
+            )
+          }
+          return SHALLOW_ALIASING_CONTAINER_METHODS.has(methodName) &&
+            referenceReceiverIsDeeplyImmutableArray(
               identifier,
               memberPath.slice(0, -1),
               resolvingVariables,
@@ -781,6 +800,60 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             constArrayElements(receiver.value, resolvingVariables, new Map()) !== null
         }
 
+        function immutableArrayElementCannotAliasMutableState(
+          node,
+          resolvingVariables = new Set(),
+        ) {
+          node = unwrapStaticExpression(node)
+          if (node.type === 'Literal') {
+            return node.value === null ||
+              ['string', 'number', 'boolean', 'bigint'].includes(typeof node.value)
+          }
+          if (node.type !== 'Identifier') return false
+
+          const binding = constInitializer(node)
+          if (!binding || resolvingVariables.has(binding.variable)) return false
+          if (!bindingReferencesAreReadOnly(binding.variable, resolvingVariables)) return false
+          resolvingVariables.add(binding.variable)
+          const immutable = immutableArrayElementCannotAliasMutableState(
+            binding.initializer,
+            resolvingVariables,
+          )
+          resolvingVariables.delete(binding.variable)
+          return immutable
+        }
+
+        function referenceReceiverIsDeeplyImmutableArray(
+          identifier,
+          path,
+          resolvingVariables,
+        ) {
+          const binding = constInitializer(identifier)
+          const destructured = binding ? null : constDestructuredBinding(identifier)
+          let value
+          if (binding) {
+            value = resolvedImmutableProperty(binding.initializer)
+          } else if (destructured) {
+            value = staticImmutablePath(
+              destructured.initializer,
+              destructured.path,
+              resolvingVariables,
+              new Map(),
+            )
+          } else {
+            return false
+          }
+          if (value.status !== 'resolved') return false
+          const receiver = path.length
+            ? staticImmutablePath(value.value, path, resolvingVariables, new Map())
+            : value
+          if (receiver.status !== 'resolved') return false
+          const elements = constArrayElements(receiver.value, resolvingVariables, new Map())
+          return elements !== null && elements.every((element) =>
+            immutableArrayElementCannotAliasMutableState(element, resolvingVariables),
+          )
+        }
+
         function resolverContainerExpressionIsReadOnly(node, resolvingVariables = new Set()) {
           node = unwrapStaticExpression(node)
           if (node.type === 'ArrayExpression' || node.type === 'ObjectExpression') return true
@@ -808,8 +881,18 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             return false
           }
           const methodName = memberPropertyName(node.callee)
-          return READ_ONLY_CONTAINER_METHODS.has(methodName) &&
-            resolverContainerExpressionIsReadOnly(node.callee.object, resolvingVariables)
+          if (!SHALLOW_ALIASING_CONTAINER_METHODS.has(methodName)) return false
+          const elements = constArrayElements(
+            node.callee.object,
+            resolvingVariables,
+            new Map(),
+          )
+          return elements !== null && elements.every((element) =>
+            immutableArrayElementCannotAliasMutableState(element, resolvingVariables),
+          ) && resolverContainerExpressionIsReadOnly(
+            node.callee.object,
+            resolvingVariables,
+          )
         }
 
         function resolverMethodKind(constructorName, methodName) {

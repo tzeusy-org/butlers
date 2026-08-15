@@ -781,6 +781,61 @@ const CALLBACK_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE =
 const CALLBACK_MUTATED_SEMANTIC_ROLE_RESOLVER_SOURCE =
   callbackMutatedResolverSource("--categorical-1");
 
+const SHALLOW_ALIAS_CONTAINER_ESCAPES = [
+  (container: string, resolver: string) => `${container}.at(0).resolver = ${resolver};`,
+  (container: string, resolver: string) =>
+    `${container}.concat([])[0].resolver = ${resolver};`,
+  (container: string, resolver: string) =>
+    `${container}.entries().next().value[1].resolver = ${resolver};`,
+  (container: string, resolver: string) => `${container}.flat()[0].resolver = ${resolver};`,
+  (container: string, resolver: string) => `${container}.slice()[0].resolver = ${resolver};`,
+  (container: string, resolver: string) =>
+    `${container}.toReversed()[0].resolver = ${resolver};`,
+  (container: string, resolver: string) =>
+    `${container}.toSorted()[0].resolver = ${resolver};`,
+  (container: string, resolver: string) =>
+    `${container}.toSpliced(1, 0)[0].resolver = ${resolver};`,
+  (container: string, resolver: string) =>
+    `${container}.values().next().value.resolver = ${resolver};`,
+  (container: string, resolver: string) =>
+    `${container}.with(1, { resolver: semanticResolver })[0].resolver = ${resolver};`,
+  (container: string, resolver: string) => `[...${container}][0].resolver = ${resolver};`,
+  (container: string, resolver: string) =>
+    `${container}.slice().forEach((holder) => { holder.resolver = ${resolver}; });`,
+  (container: string, resolver: string) =>
+    `Array.from(${container}.values(), (holder) => { holder.resolver = ${resolver}; return holder; });`,
+] as const;
+
+function shallowAliasMutationResolverSource(tokenName: "category-1" | "categorical-1"): string {
+  const token = `String.fromCodePoint(${[...`--${tokenName}`]
+    .map((character) => character.codePointAt(0))
+    .join(", ")})`;
+  const invoke = {
+    arrayJoin: (resolver: string) => `${resolver}.call(["var(", ${token}, ")"], "")`,
+    cssom: (resolver: string) =>
+      `${resolver}.call(document.documentElement.style, ${token})`,
+    stringConcat: (resolver: string) => `${resolver}.call("var(", ${token}, ")")`,
+    typedOm: (resolver: string) =>
+      `${resolver}.call(document.documentElement.computedStyleMap(), ${token})`,
+  } as const;
+
+  return RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.flatMap(({ name, resolver }) =>
+    SHALLOW_ALIAS_CONTAINER_ESCAPES.flatMap((escape, index) => {
+      const container = `${name}ShallowAlias${index}`;
+      return [
+        `const ${container} = [{ resolver: semanticResolver }, { resolver: semanticResolver }];`,
+        escape(container, resolver),
+        `export const ${container}Result = ${invoke[name](`${container}[0].resolver`)};`,
+      ];
+    }),
+  ).join("\n");
+}
+
+const SHALLOW_ALIAS_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE =
+  shallowAliasMutationResolverSource("category-1");
+const SHALLOW_ALIAS_MUTATED_SEMANTIC_ROLE_RESOLVER_SOURCE =
+  shallowAliasMutationResolverSource("categorical-1");
+
 function ambiguousFactoryResolverSource(factory: "fromCharCode" | "fromCodePoint"): string {
   const token = `String.${factory}(45, 45, 99, 97, 116, 101, 103, 111, 114, 121, 45, 49)`;
   const calls = {
@@ -1449,6 +1504,31 @@ describe("semantic visual-role lint", () => {
     expect(roleMessages).toEqual([]);
   });
 
+  it("fails closed when shallow array aliases mutate resolver-holder objects", async () => {
+    const roleMessages = await visualRoleMessages(
+      SHALLOW_ALIAS_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityShallowAliasMutatedResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(
+      RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.length * SHALLOW_ALIAS_CONTAINER_ESCAPES.length,
+    );
+    expect(roleMessages.map((message) => message.line)).toEqual(
+      SHALLOW_ALIAS_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE.split("\n").flatMap(
+        (line, index) => (line.startsWith("export const") ? [index + 1] : []),
+      ),
+    );
+  });
+
+  it("does not broaden shallow-alias ambiguity to semantic roles", async () => {
+    const roleMessages = await visualRoleMessages(
+      SHALLOW_ALIAS_MUTATED_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticShallowAliasMutatedResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
   it("fails closed for ambiguous resolver families fed private String factory values", async () => {
     const roleMessages = await visualRoleMessages(
       AMBIGUOUS_FACTORY_PRIVATE_IDENTITY_RESOLVER_SOURCE,
@@ -1540,6 +1620,7 @@ describe("semantic visual-role lint", () => {
         DESTRUCTURED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
         RECURSIVE_IMMUTABLE_PRIVATE_IDENTITY_RESOLVER_SOURCE,
         CALLBACK_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+        SHALLOW_ALIAS_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
         AMBIGUOUS_FACTORY_PRIVATE_IDENTITY_RESOLVER_SOURCE,
         WRAPPED_DESCRIPTOR_PRIVATE_IDENTITY_RESOLVER_SOURCE,
         cyclicResolverAliasSource("--category-1"),
