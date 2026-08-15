@@ -16,6 +16,9 @@ Covers:
 - Exhausting every same-tier candidate raises a RuntimeError whose message
   is tagged ``same_tier_failover_exhausted`` so it reads distinctly from a
   single-attempt failure in logs/provenance.
+- A quota-denied catalog entry is a pre-invocation same-tier skip: it never
+  reaches its adapter, consumes the same attempt cap as a runtime failure,
+  and emits bounded non-sensitive operational provenance.
 - DiscretionDispatcher reuses the shared
   ``butlers.core.failover_classifier.classify_failover_eligibility`` — it
   does not fork a second, duplicate classifier.
@@ -36,10 +39,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.connectors import discretion_dispatcher as discretion_dispatcher_module
 from butlers.connectors.discretion import DiscretionEvaluator, discretion_evaluations_total
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.failover_classifier import FailoverDecision
-from butlers.core.model_routing import QuotaStatus
+from butlers.core.model_routing import QuotaStatus, SpendRoutingResult
 
 pytestmark = pytest.mark.unit
 
@@ -48,6 +52,16 @@ _MODULE = "butlers.connectors.discretion_dispatcher"
 
 def _allowed_quota() -> QuotaStatus:
     return QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)
+
+
+def _denied_quota() -> QuotaStatus:
+    return QuotaStatus(
+        allowed=False,
+        usage_24h=100,
+        limit_24h=100,
+        usage_30d=0,
+        limit_30d=None,
+    )
 
 
 def _make_adapter(side_effect: list[object]) -> MagicMock:
@@ -224,6 +238,226 @@ async def test_call_raises_same_tier_failover_exhausted_when_no_candidates_remai
             await dispatcher.call("hi")
 
     mock_record.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Quota denial -> same-tier skip -> candidate transition (bu-x82cy)
+# ---------------------------------------------------------------------------
+
+
+async def test_call_skips_quota_denied_selected_candidate_before_invocation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A selected entry with no quota is a bounded pre-invocation skip.
+
+    The selected entry is checked first, never reaches ``adapter.invoke()``,
+    and transitions only to the next candidate in the effective tier. The
+    skip's operational provenance must not carry caller-controlled text.
+    """
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+    dispatcher._metrics = MagicMock()
+
+    selected_id = uuid.uuid4()
+    fallback_id = uuid.uuid4()
+    selected_model = "selected-" + "x" * 300
+    selected = ("api", selected_model, [], selected_id, 30, "specialty")
+    fallback = ("api", "fallback-model", [], fallback_id, 30)
+    adapter = _make_adapter(side_effect=[("FORWARD", [], {"input_tokens": 1, "output_tokens": 1})])
+    prompt_marker = "prompt-must-not-appear-in-quota-provenance"
+    system_marker = "system-must-not-appear-in-quota-provenance"
+    identity_marker = "identity-must-not-appear-in-quota-provenance"
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=selected)),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=selected[:5])),
+        ),
+        patch(
+            f"{_MODULE}.check_token_quota",
+            AsyncMock(side_effect=[_denied_quota(), _allowed_quota()]),
+        ) as mock_quota,
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as mock_adapter,
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(
+            f"{_MODULE}.next_same_tier_candidate",
+            AsyncMock(return_value=fallback),
+        ) as mock_next,
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        with caplog.at_level(logging.INFO):
+            result = await dispatcher.call(
+                prompt_marker,
+                system_prompt=system_marker,
+                identity=identity_marker,
+            )
+
+    assert result == "FORWARD"
+    assert [call.args[1] for call in mock_quota.await_args_list] == [selected_id, fallback_id]
+    mock_next.assert_awaited_once_with(pool, "__discretion__", "specialty", [selected_id])
+    mock_adapter.assert_called_once_with("api", None)
+    adapter.invoke.assert_awaited_once()
+    assert adapter.invoke.await_args.kwargs["model"] == "fallback-model"
+    dispatcher._metrics.record_failover_attempt.assert_called_once_with(
+        from_model=selected_model[:256],
+        to_model="fallback-model",
+        reason="quota_exhausted",
+    )
+
+    quota_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("DiscretionDispatcher quota skip")
+    ]
+    assert len(quota_messages) == 1
+    assert selected_model[:256] in quota_messages[0]
+    assert selected_model not in quota_messages[0]
+    assert "specialty" in quota_messages[0]
+    assert "attempt=1" in quota_messages[0]
+    assert prompt_marker not in quota_messages[0]
+    assert system_marker not in quota_messages[0]
+    assert identity_marker not in quota_messages[0]
+
+
+async def test_call_exhausts_same_tier_when_all_discretion_candidates_are_quota_denied() -> None:
+    """All denied candidates finish as same-tier exhaustion without invocation."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+
+    first_id = uuid.uuid4()
+    second_id = uuid.uuid4()
+    first = ("api", "first-denied-model", [], first_id, 30, "specialty")
+    second = ("api", "second-denied-model", [], second_id, 30)
+    adapter = _make_adapter(side_effect=[])
+    attempted_id_snapshots: list[list[uuid.UUID]] = []
+
+    async def _next_same_tier(*args: object) -> tuple[str, str, list, uuid.UUID, int] | None:
+        attempted_id_snapshots.append(list(args[3]))
+        return [second, None][len(attempted_id_snapshots) - 1]
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=first)),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=first[:5])),
+        ),
+        patch(
+            f"{_MODULE}.check_token_quota",
+            AsyncMock(side_effect=[_denied_quota(), _denied_quota()]),
+        ),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(
+            f"{_MODULE}.next_same_tier_candidate",
+            side_effect=_next_same_tier,
+        ),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
+            await dispatcher.call("hi")
+
+    adapter.invoke.assert_not_awaited()
+    assert attempted_id_snapshots == [[first_id], [first_id, second_id]]
+
+
+async def test_call_keeps_runtime_failure_and_quota_skip_in_one_same_tier_chain() -> None:
+    """A runtime failure followed by a quota skip remains one exact-tier chain."""
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+
+    first_id = uuid.uuid4()
+    second_id = uuid.uuid4()
+    third_id = uuid.uuid4()
+    first = ("api", "runtime-failure-model", [], first_id, 30, "specialty")
+    second = ("api", "quota-denied-model", [], second_id, 30)
+    third = ("api", "successful-model", [], third_id, 30)
+    adapter = _make_adapter(
+        side_effect=[
+            RuntimeError("Connection error."),
+            ("FORWARD", [], {"input_tokens": 1, "output_tokens": 1}),
+        ]
+    )
+    attempted_id_snapshots: list[list[uuid.UUID]] = []
+
+    async def _next_same_tier(*args: object) -> tuple[str, str, list, uuid.UUID, int]:
+        attempted_id_snapshots.append(list(args[3]))
+        return [second, third][len(attempted_id_snapshots) - 1]
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=first)),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=first[:5])),
+        ),
+        patch(
+            f"{_MODULE}.check_token_quota",
+            AsyncMock(side_effect=[_allowed_quota(), _denied_quota(), _allowed_quota()]),
+        ),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(
+            f"{_MODULE}.classify_failover_eligibility",
+            return_value=FailoverDecision(eligible=True, reason="provider_unavailable:test"),
+        ),
+        patch(
+            f"{_MODULE}.next_same_tier_candidate",
+            side_effect=_next_same_tier,
+        ),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        result = await dispatcher.call("hi")
+
+    assert result == "FORWARD"
+    assert adapter.invoke.await_count == 2
+    assert attempted_id_snapshots == [[first_id], [first_id, second_id]]
+    assert adapter.invoke.await_args.kwargs["model"] == "successful-model"
+
+
+async def test_quota_skips_consume_the_existing_same_tier_attempt_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A denied candidate consumes a cap slot even though no adapter runs."""
+    monkeypatch.setattr(discretion_dispatcher_module, "_MAX_FAILOVER_ATTEMPTS", 2)
+    pool = MagicMock()
+    dispatcher = DiscretionDispatcher(pool=pool)
+
+    first_id = uuid.uuid4()
+    second_id = uuid.uuid4()
+    first = ("api", "first-denied-model", [], first_id, 30, "specialty")
+    second = ("api", "second-denied-model", [], second_id, 30)
+    adapter = _make_adapter(side_effect=[])
+    attempted_id_snapshots: list[list[uuid.UUID]] = []
+
+    async def _next_same_tier(*args: object) -> tuple[str, str, list, uuid.UUID, int]:
+        attempted_id_snapshots.append(list(args[3]))
+        return second
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=first)),
+        patch(
+            f"{_MODULE}.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=first[:5])),
+        ),
+        patch(
+            f"{_MODULE}.check_token_quota",
+            AsyncMock(side_effect=[_denied_quota(), _denied_quota()]),
+        ),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(
+            f"{_MODULE}.next_same_tier_candidate",
+            side_effect=_next_same_tier,
+        ),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        with pytest.raises(
+            RuntimeError, match=r"same_tier_failover_exhausted.*2 attempt\(s\).*safety cap"
+        ):
+            await dispatcher.call("hi")
+
+    adapter.invoke.assert_not_awaited()
+    assert attempted_id_snapshots == [[first_id]]
 
 
 # ---------------------------------------------------------------------------

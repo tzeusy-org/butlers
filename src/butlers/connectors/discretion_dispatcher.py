@@ -38,6 +38,12 @@ Design notes
   ``adapter.last_process_info`` is still passed through, since some gates
   (e.g. OpenCode's pre-tool-call ``APIError`` envelope) key off it rather
   than ``tool_calls``.
+- Per-catalog-entry quota skips (bu-x82cy): a quota-denied candidate is
+  skipped before adapter construction/invocation and advances through the
+  same effective-tier candidate loop. The skip consumes the existing bounded
+  failover-attempt budget and emits only bounded dispatcher log/metric
+  provenance; this session-less path does not import Spawner's session
+  provenance or other pre-spawn gates.
 - Spend routing rules (bu-m95jq): after tier resolution, the resolved model
   is run through :func:`~butlers.core.model_routing.apply_spend_routing_rules`
   with ``trigger_source="discretion"``, the same integration shape
@@ -97,11 +103,17 @@ discretion_auth_failures_total = Counter(
     labelnames=["runtime_type"],
 )
 
-# Hard cap on same-tier failover attempts per call() — a defensive backstop
-# against unbounded looping, mirroring Spawner._run()'s _MAX_FAILOVER_ATTEMPTS.
-# Discretion calls are cheap single-turn screens, but the cap still guards
-# against a pathological catalog (many same-tier entries all failing).
+# Hard cap on same-tier failover slots per call() — each runtime invocation or
+# pre-invocation quota skip consumes one slot. It is a defensive backstop against
+# unbounded looping, mirroring Spawner._run()'s _MAX_FAILOVER_ATTEMPTS. Discretion
+# calls are cheap single-turn screens, but the cap still guards against a
+# pathological catalog (many same-tier entries all failing or quota-denied).
 _MAX_FAILOVER_ATTEMPTS: int = 5
+
+# Quota-skip logs are operational provenance, not a message/session transcript.
+# Bound the catalog-derived fields so a malformed catalog row cannot create an
+# unbounded log event; prompt, system prompt, and caller identity are never logged.
+_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS: int = 256
 
 # Ollama model families that default to thinking mode and need /no_think
 # prepended to the prompt for single-turn classification tasks.
@@ -318,18 +330,17 @@ class DiscretionDispatcher:
         Same-tier failover
         -------------------
         Mirrors ``Spawner._run()``'s same-tier failover loop (bu-8fves): a
-        failed ``adapter.invoke()`` is classified via
+        quota-denied catalog entry is first treated as a pre-invocation skip,
+        then a failed ``adapter.invoke()`` is classified via
         :func:`~butlers.core.failover_classifier.classify_failover_eligibility`.
-        When the classifier judges the failure systemic and pre-invocation
-        (e.g. provider/auth errors, timeouts, connection errors) — the same
-        default-closed allow-list the spawner uses — the call retries against
-        the next same-tier candidate from ``public.model_catalog``
+        Both kinds of transition retry against the next same-tier candidate
+        from ``public.model_catalog``
         (:func:`~butlers.core.model_routing.next_same_tier_candidate`), up to
-        ``_MAX_FAILOVER_ATTEMPTS`` attempts. Non-eligible failures (business
-        errors, or the candidate pool exhausted) re-raise the original
-        exception immediately — same as a single-attempt call previously did.
-        Every attempt/suppression/exhaustion is recorded via the same
-        ``ButlerMetrics`` failover instruments ``Spawner._run()`` uses
+        ``_MAX_FAILOVER_ATTEMPTS`` counted slots. Non-eligible runtime failures
+        (business errors) re-raise the original exception immediately — same as
+        a single-attempt call previously did. Every transition/suppression/
+        exhaustion is recorded via the same ``ButlerMetrics`` failover instruments
+        ``Spawner._run()`` uses
         (``butlers.spawner.failover_*``), keyed by the constructor's
         ``butler_name`` so per-connector ``identity=`` values never inflate
         metric cardinality.
@@ -406,12 +417,12 @@ class DiscretionDispatcher:
             attempt_count += 1
             self._last_runtime_type = runtime_type
 
-            # Pre-call quota check: block if catalog entry token budget is exhausted.
-            # Quota exhaustion is not retried across same-tier candidates here — it
-            # is a hard per-entry block, matching the prior single-attempt behavior.
+            # Pre-call quota check: each catalog entry has its own availability
+            # cap. A denied entry is a pre-invocation same-tier skip, not a
+            # hard block for the logical discretion call.
             quota = await check_token_quota(self._pool, catalog_entry_id)
             if not quota.allowed:
-                windows_exceeded = []
+                windows_exceeded: list[str] = []
                 if quota.limit_24h is not None and quota.usage_24h >= quota.limit_24h:
                     windows_exceeded.append(
                         f"24h (used={quota.usage_24h}, limit={quota.limit_24h})"
@@ -420,10 +431,85 @@ class DiscretionDispatcher:
                     windows_exceeded.append(
                         f"30d (used={quota.usage_30d}, limit={quota.limit_30d})"
                     )
-                raise RuntimeError(
-                    f"Token quota exhausted for catalog entry '{model_id}': "
-                    + "; ".join(windows_exceeded)
+                bounded_model_id = model_id[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS]
+                bounded_effective_tier = effective_tier[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS]
+                bounded_windows = "; ".join(windows_exceeded)[
+                    :_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS
+                ]
+                quota_msg = (
+                    f"Token quota exhausted for catalog entry '{bounded_model_id}': "
+                    f"{bounded_windows}"
                 )
+                # Discretion calls do not own a Spawner session/logical-session
+                # record. Keep skip provenance bounded and operational: catalog
+                # data + stable reason only, never prompt/system/identity content.
+                logger.info(
+                    "DiscretionDispatcher quota skip: model=%s tier=%s attempt=%d "
+                    "reason=quota_exhausted windows=%s",
+                    bounded_model_id,
+                    bounded_effective_tier,
+                    attempt_count,
+                    bounded_windows,
+                )
+                attempted_ids.append(catalog_entry_id)
+
+                if attempt_count >= _MAX_FAILOVER_ATTEMPTS:
+                    logger.warning(
+                        "DiscretionDispatcher same-tier failover: safety cap "
+                        "(_MAX_FAILOVER_ATTEMPTS=%d) reached for tier=%s after quota "
+                        "skip on model=%s",
+                        _MAX_FAILOVER_ATTEMPTS,
+                        bounded_effective_tier,
+                        bounded_model_id,
+                    )
+                    self._metrics.record_failover_exhausted(tier=bounded_effective_tier)
+                    raise RuntimeError(
+                        f"same_tier_failover_exhausted: tier={bounded_effective_tier} after "
+                        f"{attempt_count} attempt(s) (safety cap); last quota skip: {quota_msg}"
+                    )
+
+                next_candidate = await next_same_tier_candidate(
+                    self._pool, self._butler_name, effective_tier, attempted_ids
+                )
+                if next_candidate is None:
+                    logger.warning(
+                        "DiscretionDispatcher same-tier failover exhausted for tier=%s "
+                        "after %d attempt(s); last quota skip on model=%s",
+                        bounded_effective_tier,
+                        attempt_count,
+                        bounded_model_id,
+                    )
+                    self._metrics.record_failover_exhausted(tier=bounded_effective_tier)
+                    raise RuntimeError(
+                        f"same_tier_failover_exhausted: tier={bounded_effective_tier} after "
+                        f"{attempt_count} attempt(s); last quota skip: {quota_msg}"
+                    )
+
+                (
+                    next_runtime_type,
+                    next_model_id,
+                    next_extra_args,
+                    next_catalog_entry_id,
+                    next_session_timeout_s,
+                ) = next_candidate
+                logger.info(
+                    "DiscretionDispatcher same-tier quota failover: %s -> %s "
+                    "(tier=%s, reason=quota_exhausted)",
+                    bounded_model_id,
+                    next_model_id[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS],
+                    bounded_effective_tier,
+                )
+                self._metrics.record_failover_attempt(
+                    from_model=bounded_model_id,
+                    to_model=next_model_id[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS],
+                    reason="quota_exhausted",
+                )
+                runtime_type = next_runtime_type
+                model_id = next_model_id
+                extra_args = next_extra_args
+                catalog_entry_id = next_catalog_entry_id
+                session_timeout_s = next_session_timeout_s
+                continue
 
             # Resolve provider config for models using external providers
             # (e.g. ollama/ prefix needs the base URL from public.provider_config)
