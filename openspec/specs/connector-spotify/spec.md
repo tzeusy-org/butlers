@@ -160,9 +160,10 @@ Tier 1 system credential in `CredentialStore`.
 The three Spotify owner `entity_info` types are a connector-managed Tier 2
 exception to the generic User credential editor in `PassportAddPanel`.
 `PassportAddPanel` SHALL NOT offer those types through `ENTITY_INFO_TYPES`, and
-generic Secrets read and mutation endpoints SHALL exclude them server-side.
-The shared resolver is a connector/runtime read seam, not a generic editing
-surface or a transfer of token authority to `CredentialStore`.
+generic Secrets plus Relationship entity-info read and mutation endpoints
+SHALL exclude them server-side. The shared resolver is a connector/runtime
+read seam, not a generic editing surface or a transfer of token authority to
+`CredentialStore`.
 
 #### Scenario: Passport delegates the production authorization action
 

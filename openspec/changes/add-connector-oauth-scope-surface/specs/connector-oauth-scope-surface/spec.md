@@ -446,6 +446,29 @@ routes SHALL return HTTP 404 with `Credential not found`. The content-blind
 projection SHALL use only Spotify connector endpoints for status and lifecycle
 actions.
 
+The same authority fence extends across the real generic Relationship
+entity-info surfaces in `roster/relationship/api/router.py`:
+
+- `GET /api/relationship/owner/entity-info`
+- `GET /api/relationship/entities/{entity_id}`
+- `POST /api/relationship/entities/{entity_id}/info`
+- `PATCH /api/relationship/entities/{entity_id}/info/{info_id}`
+- `DELETE /api/relationship/entities/{entity_id}/info/{info_id}`
+- `GET /api/relationship/entities/{entity_id}/secrets/{info_id}`
+- `GET /api/relationship/entities/{entity_id}/linked-contacts`
+
+List/detail/contact projections SHALL omit the three Spotify types at the SQL
+boundary, and create SHALL reject their type before database access. For an
+ID-addressed patch, delete, or reveal, the generic route MAY perform only a
+metadata-only type discriminator lookup. It SHALL return the stable
+non-disclosing HTTP 404 detail `Entity info entry not found` for a stored
+Spotify row or an attempted retag to a Spotify type, before selecting or
+revealing `value`, writing audit evidence, or mutating state. The generic
+response SHALL not distinguish that rejection from a missing row. The
+connector callback remains the sole writer; only the content-blind Passport
+projection or connector card may direct interactive work to Spotify connector
+endpoints.
+
 The production flow SHALL begin at
 `POST /api/connectors/spotify/oauth/start` and complete at
 `GET /api/connectors/spotify/oauth/callback`. `connector_registry` MAY hold
@@ -483,6 +506,17 @@ alias, or generic OAuth provider alias.
   OAuth route
 - **AND** the generic Secrets inventory, detail/read, rotate, disconnect,
   probe, and reauthorize surfaces SHALL be unavailable for Spotify server-side
+
+#### Scenario: Generic Relationship entity-info surfaces reject Spotify
+
+- **WHEN** a caller lists generic entity information or linked contacts for an
+  entity with Spotify Tier 2 rows
+- **THEN** those rows and their type metadata SHALL be absent
+- **AND WHEN** a caller attempts a generic create, retag, patch, delete, or
+  reveal for one of those types
+- **THEN** the route SHALL return the stable non-disclosing HTTP 404 before
+  selecting or revealing `value` or changing state
+- **AND** the connector callback remains the sole writer
 
 #### Scenario: Generic OAuth Spotify cleanup contract
 

@@ -547,10 +547,15 @@ the connector endpoints.
 The implementation order is binding: this spec reconciliation merges first;
 `bu-fj7lx` implements the Passport projection plus the server-side generic
 Secrets fence in `secrets_v2.py` across inventory, detail/read, rotate,
-disconnect, probe, and reauthorize; `bu-3ifcj` then removes the
-generic OAuth Spotify registry, route, configuration, UI, documentation, and
-test exemplar. The latter keeps a synthetic generalized-provider fixture and
-no compatibility alias, shim, or production registry entry.
+disconnect, probe, and reauthorize. It also fences every generic Relationship
+entity-info list/detail/create/patch/delete/reveal projection in
+`roster/relationship/api/router.py`: collections omit Spotify types, create
+rejects them before DB access, and ID-addressed operations use only a metadata
+type discriminator before the stable non-disclosing 404. The connector
+callback remains the sole writer. `bu-3ifcj` then removes the generic OAuth
+Spotify registry, route, configuration, UI, documentation, and test exemplar.
+The latter keeps a synthetic generalized-provider fixture and no compatibility
+alias, shim, or production registry entry.
 
 In ordering shorthand, `bu-fj7lx` implements the Passport projection;
 `bu-3ifcj` then removes the generic OAuth Spotify production surface.
@@ -688,9 +693,13 @@ lane, not permission to fold Spotify into the generic endpoint above:
 
 1. `bu-fj7lx` adds the content-blind connector-owned Passport projection and
    routes its actions to the connector PKCE endpoints without a User credential
-   mirror. It also fences every generic Secrets User read/mutation seam
-   server-side and normalizes stored `expired | rotation-needed` to the
-   dashboard's typed `needs_reauth` recovery state while retaining the cause.
+   mirror. It also fences every generic Secrets User read/mutation seam and
+   every generic Relationship entity-info list/detail/create/patch/delete/
+   reveal seam server-side. Collection queries omit Spotify types; create
+   rejects their type before database access; ID-addressed operations perform
+   only a metadata type discriminator before a stable non-disclosing 404. It
+   normalizes stored `expired | rotation-needed` to the dashboard's typed
+   `needs_reauth` recovery state while retaining the cause.
 2. `bu-3ifcj`, after `bu-fj7lx`, removes the generic OAuth Spotify registry,
    route, configuration, UI, documentation, and test exemplar. It replaces the
    second-provider production example with a synthetic generalized-provider

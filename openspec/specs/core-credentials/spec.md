@@ -213,8 +213,9 @@ non-secret connector metadata, but it SHALL NOT become a second token authority.
 `spotify_oauth_expires_at` are a connector-managed Tier 2 exception to
 the generic User credential editor in `PassportAddPanel`. `PassportAddPanel`
 SHALL NOT offer those types through `ENTITY_INFO_TYPES`, and generic Secrets
-read and mutation endpoints SHALL exclude them server-side. That exclusion
-does not transfer token authority to Tier 1 `CredentialStore`.
+plus Relationship entity-info read and mutation endpoints SHALL exclude them
+server-side. That exclusion does not transfer token authority to Tier 1
+`CredentialStore`.
 
 #### Scenario: Store Spotify OAuth tokens
 

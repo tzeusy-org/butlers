@@ -28,7 +28,8 @@ secret authority.
 The three Spotify owner `entity_info` types are a connector-managed Tier 2
 exception to the generic User credential editor in `PassportAddPanel`.
 `PassportAddPanel` SHALL NOT offer those types through `ENTITY_INFO_TYPES`, and
-generic Secrets read and mutation endpoints SHALL exclude them server-side.
+generic Secrets plus Relationship entity-info read and mutation endpoints
+SHALL exclude them server-side.
 `CredentialStore` remains limited to `SPOTIFY_CLIENT_ID`.
 
 #### Scenario: Client ID configuration

@@ -869,8 +869,58 @@ status and lifecycle actions only to Spotify connector endpoints.
 - **AND** no generic `public.entity_info` lookup, update, delete, probe-log
   write, audit mutation, OAuth state creation, or provider network call SHALL
   occur
-- **AND** the response SHALL direct interactive lifecycle work to the Spotify
-  connector endpoints without returning credential material
+- **AND** that response SHALL be indistinguishable from a genuinely absent
+  generic credential and SHALL NOT direct the caller to Spotify-specific
+  recovery or reveal that Spotify is connector-managed
+
+Interactive direction belongs only on the content-blind Passport projection or
+connector card, where the owner already selected Spotify intentionally.
+Those surfaces SHALL route actions to Spotify connector endpoints without
+returning credential material.
+
+### Requirement: Spotify exclusion from generic Relationship entity-info authority
+
+The Spotify connector callback SHALL remain the sole writer of
+`spotify_oauth_access`, `spotify_oauth_refresh`, and
+`spotify_oauth_expires_at`. The generic Relationship API in
+`roster/relationship/api/router.py` SHALL NOT create, list, expose, reveal,
+retag, update, or delete those rows through any entity-info projection or
+mutation.
+
+The following generic Relationship routes SHALL enforce that boundary:
+
+- `GET /api/relationship/owner/entity-info`
+- `GET /api/relationship/entities/{entity_id}`
+- `POST /api/relationship/entities/{entity_id}/info`
+- `PATCH /api/relationship/entities/{entity_id}/info/{info_id}`
+- `DELETE /api/relationship/entities/{entity_id}/info/{info_id}`
+- `GET /api/relationship/entities/{entity_id}/secrets/{info_id}`
+- `GET /api/relationship/entities/{entity_id}/linked-contacts`
+
+Collection and entity-detail queries SHALL omit the three Spotify types at the
+SQL boundary, including the masked metadata projection returned by
+`linked-contacts`. A create request SHALL reject a Spotify type before any
+database access. An ID-addressed patch, delete, or reveal MAY perform only a
+metadata-only type discriminator lookup; when the existing row is a Spotify
+type, or a patch attempts to retag another row to a Spotify type, the route
+SHALL return the stable non-disclosing HTTP 404 detail
+`Entity info entry not found` before selecting or revealing `value`, writing
+an audit record, or performing a mutation. The same response SHALL be used for
+an unknown row so the generic route does not disclose whether connector-owned
+material exists.
+
+#### Scenario: Generic Relationship routes cannot become a second Spotify authority
+
+- **WHEN** a caller lists entity information or linked contacts for an entity
+  that owns Spotify Tier 2 rows
+- **THEN** the generic response SHALL omit those rows and their type metadata
+- **AND WHEN** a caller attempts to create, retag, patch, delete, or reveal one
+  of those types through a generic Relationship route
+- **THEN** the route SHALL return the stable non-disclosing HTTP 404 before
+  selecting or revealing `value` or changing state
+- **AND** the connector callback remains the sole writer and the
+  connector-owned Passport projection remains the only interactive recovery
+  surface
 
 ### Requirement: Secrets Mutation Endpoints
 The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action the passport page can dispatch. Every mutation SHALL write to `public.audit_log` (see `core-credentials` Audit Action Enum requirement) with an appropriate action value.

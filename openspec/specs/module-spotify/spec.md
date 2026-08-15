@@ -38,10 +38,15 @@ identity-bound token material from `CredentialStore` or the environment.
 
 Those three Spotify types are a connector-managed Tier 2 exception to
 the generic User credential editor in `PassportAddPanel`. `PassportAddPanel`
-SHALL NOT offer them through `ENTITY_INFO_TYPES`, and generic Secrets read and
-mutation endpoints SHALL exclude them server-side. Using the shared resolver
-is connector/runtime read access, not an editable surface or Tier 1
-`CredentialStore` authority.
+SHALL NOT offer them through `ENTITY_INFO_TYPES`, and generic Secrets plus
+Relationship entity-info read and mutation endpoints SHALL exclude them
+server-side. Using the shared resolver is connector/runtime read access, not
+an editable surface or Tier 1 `CredentialStore` authority.
+
+Legacy uppercase access/refresh key names such as `SPOTIFY_ACCESS_TOKEN` and
+`SPOTIFY_REFRESH_TOKEN` describe retired environment-style storage. They MUST
+NOT be treated as active non-archive key authority, accepted as a fallback, or
+named as the current missing-credential contract.
 
 #### Scenario: Successful credential resolution at startup
 
@@ -55,7 +60,9 @@ is connector/runtime read access, not an editable surface or Tier 1
 
 #### Scenario: Missing credentials at startup
 
-- **WHEN** `on_startup` is called but `SPOTIFY_ACCESS_TOKEN` or `SPOTIFY_REFRESH_TOKEN` is not found
+- **WHEN** `on_startup` calls `resolve_owner_entity_info()` and either
+  `spotify_oauth_access` or `spotify_oauth_refresh` is absent from the owner's
+  RFC 0006 Tier 2 rows
 - **THEN** the module SHALL log a warning "Spotify module: no credentials found. Connect Spotify via dashboard settings."
 - **AND** all registered tools SHALL return an actionable error when called: "Spotify not connected. Visit dashboard settings to link your Spotify account."
 

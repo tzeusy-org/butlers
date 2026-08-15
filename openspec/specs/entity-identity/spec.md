@@ -620,20 +620,24 @@ This rule does not change their RFC 0006 Tier 2 authority and MUST NOT make
 
 - **WHEN** a backend module calls `resolve_owner_entity_info(pool, 'new_credential_type')` at startup for a user-provisioned dependency
 - **AND** `'new_credential_type'` is NOT in the frontend `ENTITY_INFO_TYPES` array
-- **THEN** users CANNOT configure this credential through the dashboard entity detail page
+- **THEN** users CANNOT configure this credential through the advanced User
+  editor in `PassportAddPanel` at `/secrets`
 - **AND** the module will fail to start or degrade (depending on its error handling)
 - **AND** this is considered a bug — the type MUST be added to the frontend
 
 #### Scenario: All user-provisioned module credential types are present in the dropdown
 
-- **WHEN** a user navigates to the entity detail page for the owner entity
-- **THEN** the type dropdown MUST include all credential types listed in the canonical type registry
+- **WHEN** a user navigates to `/secrets` and opens the advanced User editor in
+  `PassportAddPanel`
+- **THEN** its `ENTITY_INFO_TYPES` dropdown MUST include all user-provisioned
+  credential types listed in the canonical type registry
 - **AND** selecting a secured type MUST use a password input field and auto-set `secured = true`
 
 #### Scenario: Adding a new module with user-provisioned credential dependency
 
 - **WHEN** a developer creates a new module that resolves a user-provisioned credential via `resolve_owner_entity_info()`
-- **THEN** the module's credential types MUST be added to the frontend dropdown before the module is deployed
+- **THEN** the module's credential types MUST be added to the
+  `PassportAddPanel` `ENTITY_INFO_TYPES` dropdown before the module is deployed
 - **AND** the canonical type registry in this spec MUST be updated
 
 #### Scenario: Google OAuth refresh token not editable on owner entity

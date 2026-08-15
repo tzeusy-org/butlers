@@ -155,6 +155,18 @@ controls. `GET /api/secrets/inventory`, `GET /api/secrets/user/{provider}`,
 before any `public.entity_info` lookup or mutation and before any provider
 call. The projection's controls SHALL call only Spotify connector endpoints.
 
+The generic Relationship entity-info API is also outside this authority.
+`GET /api/relationship/owner/entity-info`,
+`GET /api/relationship/entities/{entity_id}`,
+`GET /api/relationship/entities/{entity_id}/linked-contacts`, and their
+generic create, patch, delete, and secured-reveal counterparts SHALL omit or
+reject the three Spotify types server-side. Collection projections SHALL omit
+them at the SQL boundary. ID-addressed mutations or reveal MAY read only a
+metadata-only type discriminator before returning the same non-disclosing 404
+as a missing row; they SHALL NOT select or reveal `value`, write audit
+evidence, or mutate connector-owned rows. The connector callback remains the
+sole writer.
+
 The projection SHALL be content-blind. It may render only a closed connection
 state and the fixed `listening-history` capability evidence
 `capability_categories = ["listening-history"]`; this category is a stable

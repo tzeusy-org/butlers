@@ -67,6 +67,7 @@ _PASSPORT_PAGES = (
     _REPO_ROOT / "frontend" / "src" / "components" / "secrets" / "passport" / "pages.tsx"
 )
 _SECRETS_ROUTER = _REPO_ROOT / "src" / "butlers" / "api" / "routers" / "secrets_v2.py"
+_RELATIONSHIP_ROUTER = _REPO_ROOT / "roster" / "relationship" / "api" / "router.py"
 _CONNECTOR_BASE_DELTA = (
     _REPO_ROOT
     / "openspec"
@@ -95,6 +96,13 @@ def _requirement(document: str, title: str) -> str:
     start = document.index(marker)
     end = document.find("\n### Requirement:", start + len(marker))
     return document[start:] if end == -1 else document[start:end]
+
+
+def _scenario(requirement: str, title: str) -> str:
+    marker = f"#### Scenario: {title}"
+    start = requirement.index(marker)
+    end = requirement.find("\n#### Scenario:", start + len(marker))
+    return requirement[start:] if end == -1 else requirement[start:end]
 
 
 def test_active_carrier_declares_spotify_connector_and_passport_boundaries() -> None:
@@ -323,6 +331,10 @@ def test_spotify_tier2_tokens_are_connector_managed_passport_exceptions() -> Non
         assert f'"{info_type}"' not in dropdown
     assert "`PassportAddPanel`" in entity_registry
     assert "MUST NOT be present in the frontend `ENTITY_INFO_TYPES` dropdown" in entity_registry
+    assert "dashboard entity detail page" not in entity_registry
+    assert "navigates to the entity detail page" not in entity_registry
+    assert "navigates to `/secrets`" in entity_registry
+    assert "`useCreateUserSecret`" in entity_registry
 
     passport_pages = _read(_PASSPORT_PAGES)
     assert "export function PassportAddPanel" in passport_pages
@@ -355,6 +367,21 @@ def test_spotify_tier2_tokens_are_connector_managed_passport_exceptions() -> Non
         assert "connector-managed Tier 2" in section, artifact
         assert "PassportAddPanel" in section, artifact
         assert "CredentialStore" in section, artifact
+        assert "Relationship entity-info" in section, artifact
+
+
+def test_spotify_missing_credentials_use_tier2_names_without_legacy_key_authority() -> None:
+    """Startup recovery must name the real Tier 2 types, not retired env-style keys."""
+    credential_resolution = _requirement(_read(_SPOTIFY_MODULE_SPEC), "Credential Resolution")
+    missing = _scenario(credential_resolution, "Missing credentials at startup")
+
+    assert "`spotify_oauth_access`" in missing
+    assert "`spotify_oauth_refresh`" in missing
+    assert "`resolve_owner_entity_info()`" in missing
+    assert "`SPOTIFY_ACCESS_TOKEN`" not in missing
+    assert "`SPOTIFY_REFRESH_TOKEN`" not in missing
+    assert "active non-archive key authority" in credential_resolution
+    assert "MUST NOT" in _collapse_whitespace(credential_resolution)
 
 
 def test_generic_secrets_api_requires_a_server_side_spotify_fence_at_every_seam() -> None:
@@ -402,6 +429,70 @@ def test_generic_secrets_api_requires_a_server_side_spotify_fence_at_every_seam(
         '"/user/{provider}/reauthorize"',
     ):
         assert route_fragment in router
+
+
+def test_generic_rejection_is_indistinguishable_and_direction_stays_on_projection() -> None:
+    """A generic 404 cannot simultaneously disclose Spotify-specific recovery guidance."""
+    dashboard_api = _requirement(
+        _read(_DASHBOARD_API_SPEC), "Spotify exclusion from generic Secrets authority"
+    )
+    generic_rejection = _scenario(dashboard_api, "Generic Secrets routes cannot address Spotify")
+
+    normalized_rejection = _collapse_whitespace(generic_rejection)
+    assert "indistinguishable from a genuinely absent generic credential" in normalized_rejection
+    assert "SHALL NOT direct the caller" in normalized_rejection
+    assert "Passport projection or connector card" in _collapse_whitespace(dashboard_api)
+    assert "direct interactive lifecycle work" not in generic_rejection
+
+
+def test_generic_relationship_entity_info_surfaces_are_fenced_and_allocated() -> None:
+    """The downstream handoff must fence every real generic Relationship authority seam."""
+    dashboard_api = _requirement(
+        _read(_DASHBOARD_API_SPEC),
+        "Spotify exclusion from generic Relationship entity-info authority",
+    )
+    carrier = _requirement(
+        _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
+    )
+    tasks = _collapse_whitespace(_read(_CARRIER_TASKS))
+
+    generic_relationship_routes = (
+        "GET /api/relationship/owner/entity-info",
+        "GET /api/relationship/entities/{entity_id}",
+        "POST /api/relationship/entities/{entity_id}/info",
+        "PATCH /api/relationship/entities/{entity_id}/info/{info_id}",
+        "DELETE /api/relationship/entities/{entity_id}/info/{info_id}",
+        "GET /api/relationship/entities/{entity_id}/secrets/{info_id}",
+        "GET /api/relationship/entities/{entity_id}/linked-contacts",
+    )
+    for route in generic_relationship_routes:
+        assert f"`{route}`" in dashboard_api
+        assert f"`{route}`" in carrier
+        assert route in tasks
+
+    for section in (dashboard_api, carrier):
+        normalized_section = _collapse_whitespace(section)
+        assert "stable non-disclosing HTTP 404" in section
+        assert "connector callback remains the sole writer" in section
+        assert "metadata-only type discriminator" in section
+        assert "before selecting or revealing `value`" in normalized_section
+
+    assert "`roster/relationship/api/router.py`" in carrier
+    assert "`bu-fj7lx`" in tasks
+    assert "generic Relationship entity-info" in tasks
+
+    # Causally pin the plan to the current implementation seams instead of a
+    # guessed route inventory that can silently drift away from the source.
+    relationship_router = _read(_RELATIONSHIP_ROUTER)
+    for route_fragment in (
+        '"/owner/entity-info"',
+        '"/entities/{entity_id}"',
+        '"/entities/{entity_id}/info"',
+        '"/entities/{entity_id}/info/{info_id}"',
+        '"/entities/{entity_id}/secrets/{info_id}"',
+        '"/entities/{entity_id}/linked-contacts"',
+    ):
+        assert route_fragment in relationship_router
 
 
 def test_scope_status_converges_to_the_canonical_recovery_state_before_ui_resolution() -> None:

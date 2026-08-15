@@ -265,9 +265,13 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     assert access and refresh tokens remain owner-`entity_info`-only via
     `resolve_owner_entity_info()`; and assert the generic OAuth suite uses a
     synthetic generalized-provider fixture rather than Spotify.
-  - Generic Secrets server-fence regression: trace `PassportAddPanel` and all
-    six `secrets_v2.py` User read/mutation seams, proving Spotify is rejected
-    before backing-row or provider access.
+  - Generic authority-fence regression: trace `PassportAddPanel`, every
+    `secrets_v2.py` User read/mutation seam, and the actual generic
+    Relationship entity-info list/detail/create/patch/delete/secured-reveal
+    seams in `roster/relationship/api/router.py`. Prove collections omit the
+    Spotify types, create rejects them before DB access, ID-addressed paths use
+    only a metadata type discriminator before a stable non-disclosing 404, and
+    no generic path reads or mutates connector-owned values.
 
 ## Source References
 

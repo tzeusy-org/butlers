@@ -41,7 +41,19 @@ by the operator AFTER this change ratifies).
       consumes `ENTITY_INFO_TYPES`. `bu-fj7lx` must add a server-side Spotify
       fence in `src/butlers/api/routers/secrets_v2.py` across inventory,
       detail/read, rotate, disconnect, probe, and reauthorize before it may be
-      dispatched as complete. It must also implement the typed
+      dispatched as complete. It must also fence the generic Relationship
+      entity-info authority in `roster/relationship/api/router.py` across
+      `GET /api/relationship/owner/entity-info`,
+      `GET /api/relationship/entities/{entity_id}`,
+      `POST /api/relationship/entities/{entity_id}/info`,
+      `PATCH /api/relationship/entities/{entity_id}/info/{info_id}`,
+      `DELETE /api/relationship/entities/{entity_id}/info/{info_id}`,
+      `GET /api/relationship/entities/{entity_id}/secrets/{info_id}`, and
+      `GET /api/relationship/entities/{entity_id}/linked-contacts`. Lists omit
+      Spotify types at the SQL boundary; create rejects the requested type
+      before database access; ID-addressed mutation/reveal uses only a
+      metadata type discriminator before the stable non-disclosing 404 and
+      never selects or reveals `value`. It must also implement the typed
       `expired | rotation-needed` → `needs_reauth` convergence before the
       dashboard recovery resolver.
 
@@ -165,9 +177,21 @@ by the operator AFTER this change ratifies).
      remains the only writer of the Tier 2 owner `public.entity_info` rows. Its
      required backend/API scope includes the `secrets_v2.py` server-side fence
      for generic inventory, detail/read, rotate, disconnect, probe, and
-     reauthorize, plus the typed `expired | rotation-needed` → `needs_reauth`
-     convergence that preserves generic Google OAuth and unsupported non-OAuth
-     behavior. Frontend omission from `PassportAddPanel` is not sufficient.
+     reauthorize; the generic Relationship entity-info fences at
+     `GET /api/relationship/owner/entity-info`,
+     `GET /api/relationship/entities/{entity_id}`,
+     `POST /api/relationship/entities/{entity_id}/info`,
+     `PATCH /api/relationship/entities/{entity_id}/info/{info_id}`,
+     `DELETE /api/relationship/entities/{entity_id}/info/{info_id}`,
+     `GET /api/relationship/entities/{entity_id}/secrets/{info_id}`, and
+     `GET /api/relationship/entities/{entity_id}/linked-contacts`; and the
+     typed `expired | rotation-needed` → `needs_reauth` convergence that
+     preserves generic Google OAuth and unsupported non-OAuth behavior.
+     Collection queries omit Spotify types; create rejects their type before
+     DB access; ID-addressed operations perform only a metadata discriminator
+     before a stable non-disclosing 404. Frontend omission from
+     `PassportAddPanel` is not sufficient, and the connector callback remains
+     the sole writer.
   2. `bu-3ifcj` follows `bu-fj7lx` and removes the generic OAuth Spotify
      production registry, route, configuration, UI, documentation, and test
      exemplar. It preserves a synthetic generalized-provider fixture only and
