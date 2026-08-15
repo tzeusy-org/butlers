@@ -84,15 +84,17 @@ rg -n "<keyword>|^### Requirement:|^#### Scenario:" openspec/changes
 
 ## OpenSpec Workflow Hand-off
 
-Use the existing OpenSpec workflow skills for the next step:
+Use the OpenSpec workflow commands (installed and kept current by the `openspec` CLI under
+`.claude/commands/opsx/`) for the next step:
 
-- `openspec-explore`: clarify a new capability before writing the change
-- `openspec-new-change`: create a new change with proposal, design, tasks, and delta specs
-- `openspec-continue-change`: continue an in-progress change
-- `openspec-apply-change`: implement an approved change
-- `openspec-verify-change`: verify code matches the change artifacts
-- `openspec-sync-specs`: sync finalized delta specs into main specs
-- `openspec-archive-change`: archive a completed change
+- `/opsx:explore`: clarify a new capability before writing the change
+- `/opsx:new`: create a new change with proposal, design, tasks, and delta specs
+- `/opsx:continue`: continue an in-progress change
+- `/opsx:ff`: fast-forward all artifacts needed to start implementing
+- `/opsx:apply`: implement an approved change
+- `/opsx:verify`: verify code matches the change artifacts
+- `/opsx:sync`: sync finalized delta specs into main specs
+- `/opsx:archive` (`/opsx:bulk-archive`): archive completed change(s)
 
 ## Review and Implementation Expectations
 

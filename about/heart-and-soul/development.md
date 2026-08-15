@@ -135,9 +135,9 @@ purposes.
 
 **Epic-close constraint:** An epic is not closed until its shipped OpenSpec
 change(s) are archived and the affected specs are synced — in the same
-delivery as the close, not a follow-up. Run the change through the
-`openspec-archive-change` skill (`opsx:archive`) before calling `bd close` on
-the epic; the archive step must not lag behind the close. This pairs with the
+delivery as the close, not a follow-up. Run the change through `/opsx:archive`
+before calling `bd close` on the epic; the archive step must not lag behind the
+close. This pairs with the
 [v1-status refresh rule](v1-status.md#refresh-rule): an epic close that touches
 a success criterion should land the OpenSpec archive and the v1-status refresh
 in the same delivery.
