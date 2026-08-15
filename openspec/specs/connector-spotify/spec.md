@@ -113,13 +113,15 @@ The connector SHALL use an async HTTP client to communicate with the Spotify Web
 
 - **WHEN** the connector makes a Spotify API call
 - **THEN** it SHALL include the access token in the `Authorization: Bearer <token>` header
-- **AND** the token SHALL be resolved from `CredentialStore` at startup
+- **AND** the token SHALL be resolved from RFC 0006 Tier 2 owner
+  `public.entity_info` via `resolve_owner_entity_info()` at startup
 
 #### Scenario: Automatic token refresh
 
 - **WHEN** a Spotify API call returns HTTP 401 (Unauthorized)
 - **THEN** the connector SHALL attempt to refresh the access token using the stored refresh token via `POST https://accounts.spotify.com/api/token` with `grant_type=refresh_token`, `refresh_token`, and `client_id`
-- **AND** the new access token (and new refresh token if rotated) SHALL be stored in `CredentialStore`
+- **AND** the new access token (and new refresh token if rotated) SHALL be
+  stored in the secured owner `public.entity_info` Tier 2 authority
 - **AND** the original API call SHALL be retried once with the new token
 
 #### Scenario: Token refresh failure
@@ -140,6 +142,51 @@ The connector SHALL use an async HTTP client to communicate with the Spotify Web
 - **WHEN** the connector knows the access token expiry time (from the OAuth response `expires_in` field)
 - **THEN** it SHALL proactively refresh the token 5 minutes before expiry
 - **AND** this avoids the latency of a failed request + retry cycle
+
+### Requirement: Connector-Owned Production Spotify PKCE
+
+The connector owns the production Spotify PKCE route and SHALL keep it
+connector-owned: `POST /api/connectors/spotify/oauth/start` initiates authorization and
+`GET /api/connectors/spotify/oauth/callback` completes it. The connector
+SHALL use the connector-specific redirect URI (including any
+`SPOTIFY_OAUTH_REDIRECT_URI` configuration) for that flow. A generic OAuth
+Spotify provider registry or `/api/oauth/spotify/*` route SHALL NOT authorize,
+exchange, refresh, or persist Spotify token material. Spotify access and
+refresh tokens are RFC 0006 Tier 2 credentials stored in
+`public.entity_info` on the owner entity and resolved through
+`resolve_owner_entity_info()`. The non-secret OAuth app client ID remains a
+Tier 1 system credential in `CredentialStore`.
+
+The connector-owned Spotify OAuth lifecycle is the sole authority for those
+Tier 2 rows. The callback is the sole initial token-creation writer, connector
+refresh is the only permitted subsequent update, and connector disconnect is
+the only permitted delete.
+
+The three Spotify owner `entity_info` types are a connector-managed Tier 2
+exception to the generic User credential editor in `PassportAddPanel`.
+`PassportAddPanel` SHALL NOT offer those types through `ENTITY_INFO_TYPES`, and
+generic Secrets plus Relationship entity-info read and mutation endpoints
+SHALL exclude them server-side. The shared resolver is a connector/runtime
+read seam, not a generic editing surface or a transfer of token authority to
+`CredentialStore`.
+
+#### Scenario: Passport delegates the production authorization action
+
+- **WHEN** Passport requests Spotify connection or reauthorization
+- **THEN** it SHALL invoke
+  `POST /api/connectors/spotify/oauth/start`
+- **AND** the connector SHALL validate its own PKCE state at
+  `GET /api/connectors/spotify/oauth/callback`
+- **AND** the connector SHALL persist identity-bound access and refresh token
+  material only through the secured owner `public.entity_info` authority
+
+#### Scenario: Generic OAuth has no Spotify production compatibility surface
+
+- **WHEN** generic OAuth provider behavior is implemented or tested
+- **THEN** Spotify SHALL NOT be present as a production provider registry
+  entry, route, configuration path, UI control, or compatibility alias
+- **AND** a generalized-provider test fixture SHALL be synthetic rather than
+  a Spotify compatibility exemplar
 
 ### Requirement: Endpoint Identity Auto-Resolution
 
@@ -164,7 +211,12 @@ The connector SHALL follow the standard connector lifecycle defined in `connecto
 #### Scenario: Startup sequence
 
 - **WHEN** the connector process starts
-- **THEN** it SHALL: resolve credentials from `CredentialStore`, auto-resolve endpoint identity via `GET /me`, load the last checkpoint from `cursor_store`, initialize the source filter gate via `IngestionPolicyEvaluator`, send an initial heartbeat, and begin the polling loop
+- **THEN** it SHALL: resolve the app client ID from `CredentialStore`; resolve
+  personal-account tokens from owner `public.entity_info` through
+  `resolve_owner_entity_info()`; auto-resolve endpoint identity via `GET /me`;
+  load the last checkpoint from `cursor_store`; initialize the source filter
+  gate via `IngestionPolicyEvaluator`; send an initial heartbeat; and begin
+  the polling loop
 
 #### Scenario: Graceful shutdown
 
@@ -206,7 +258,10 @@ The connector SHALL use standard connector environment variables plus Spotify-sp
 
 - **WHEN** the connector starts
 - **THEN** `SWITCHBOARD_MCP_URL` and `CONNECTOR_PROVIDER=spotify` and `CONNECTOR_CHANNEL=spotify` SHALL be set
-- **AND** credentials SHALL be resolved from `CredentialStore` (not from environment variables)
+- **AND** `SPOTIFY_CLIENT_ID` SHALL be resolved from Tier 1 `CredentialStore`
+- **AND** identity-bound access and refresh tokens SHALL be resolved from RFC
+  0006 Tier 2 owner `public.entity_info` via `resolve_owner_entity_info()`
+- **AND** no Spotify credential SHALL be resolved from environment variables
 
 #### Scenario: Optional environment variables
 

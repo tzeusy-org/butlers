@@ -2,7 +2,13 @@
 
 ## Purpose
 
-The Spotify module is an MCP module providing butler tools for bidirectional Spotify interaction: playback control, playlist management, library operations, and catalog search. It follows the standard Module pattern (config schema, `register_tools()`, credential resolution via `CredentialStore`) and reuses the `SpotifyClient` extended with write methods.
+The Spotify module is an MCP module providing butler tools for bidirectional
+Spotify interaction: playback control, playlist management, library
+operations, and catalog search. It follows the standard Module pattern
+(config schema, `register_tools()`), resolves the system-level OAuth app
+client ID via `CredentialStore`, resolves identity-bound personal-account
+tokens via RFC 0006 Tier 2 owner `public.entity_info`, and reuses the
+`SpotifyClient` extended with write methods.
 
 ## Requirements
 
@@ -24,18 +30,39 @@ The Spotify module SHALL implement the `Module` base class with name `"spotify"`
 
 ### Requirement: Credential Resolution
 
-The module SHALL resolve Spotify OAuth credentials from the shared `spotify` category in `CredentialStore`.
+The module SHALL resolve `SPOTIFY_CLIENT_ID` from the shared `spotify`
+category in Tier 1 `CredentialStore`. It SHALL resolve the owner's Spotify
+access token, refresh token, and expiry from RFC 0006 Tier 2
+`public.entity_info` via `resolve_owner_entity_info()`. It SHALL NOT resolve
+identity-bound token material from `CredentialStore` or the environment.
+
+Those three Spotify types are a connector-managed Tier 2 exception to
+the generic User credential editor in `PassportAddPanel`. `PassportAddPanel`
+SHALL NOT offer them through `ENTITY_INFO_TYPES`, and generic Secrets plus
+Relationship entity-info read and mutation endpoints SHALL exclude them
+server-side. Using the shared resolver is connector/runtime read access, not
+an editable surface or Tier 1 `CredentialStore` authority.
+
+Legacy uppercase access/refresh key names such as `SPOTIFY_ACCESS_TOKEN` and
+`SPOTIFY_REFRESH_TOKEN` describe retired environment-style storage. They MUST
+NOT be treated as active non-archive key authority, accepted as a fallback, or
+named as the current missing-credential contract.
 
 #### Scenario: Successful credential resolution at startup
 
 - **WHEN** `on_startup` is called with a `CredentialStore`
-- **THEN** the module SHALL resolve `SPOTIFY_CLIENT_ID`, `SPOTIFY_ACCESS_TOKEN`, `SPOTIFY_REFRESH_TOKEN`, and `SPOTIFY_TOKEN_EXPIRES_AT`
+- **THEN** the module SHALL resolve `SPOTIFY_CLIENT_ID` from `CredentialStore`
+- **AND** it SHALL call `resolve_owner_entity_info()` for
+  `spotify_oauth_access`, `spotify_oauth_refresh`, and
+  `spotify_oauth_expires_at`
 - **AND** it SHALL construct a `SpotifyClient` instance with those credentials
 - **AND** it SHALL call `get_me()` to verify connectivity and cache the user's Spotify profile (including `product` tier)
 
 #### Scenario: Missing credentials at startup
 
-- **WHEN** `on_startup` is called but `SPOTIFY_ACCESS_TOKEN` or `SPOTIFY_REFRESH_TOKEN` is not found
+- **WHEN** `on_startup` calls `resolve_owner_entity_info()` and either
+  `spotify_oauth_access` or `spotify_oauth_refresh` is absent from the owner's
+  RFC 0006 Tier 2 rows
 - **THEN** the module SHALL log a warning "Spotify module: no credentials found. Connect Spotify via dashboard settings."
 - **AND** all registered tools SHALL return an actionable error when called: "Spotify not connected. Visit dashboard settings to link your Spotify account."
 

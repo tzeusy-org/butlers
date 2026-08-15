@@ -337,34 +337,45 @@ OAuth provider identifier, and SHALL NOT be interpolated into an OAuth URL.
 
 The resolver SHALL return exactly one of the following outcomes:
 
-- **OAuth:** `google`, `gmail`, `google_calendar`, `google_drive`, and
-  `google_health` use the registered `google` OAuth provider; `spotify` uses
-  the registered `spotify` OAuth provider. Google Health SHALL include
-  `scope_set=health`.
+- **Generic Google OAuth:** `google`, `gmail`, `google_calendar`,
+  `google_drive`, and `google_health` use the registered `google` OAuth
+  provider. Google Health SHALL include `scope_set=health`.
+- **Connector-owned Passport:** `spotify` navigates in-app to
+  `/secrets?focus=u:spotify`. Its Passport projection owns the connect or
+  reconnect control and delegates that control to the Spotify connector PKCE
+  endpoint; it SHALL NOT construct a generic OAuth URL.
 - **Passport pairing:** `whatsapp` and `whatsapp_user_client` navigate in-app
   to `/secrets?focus=u:whatsapp`; they SHALL NOT construct an OAuth URL.
 - **Unsupported:** every other or unknown connector type renders a clear
   unavailable explanation with no recovery link and no network request.
 
-Only `needs_reauth` SHALL create an interactive recovery control. Other auth
-states remain informational.
+The API SHALL normalize the scope carrier's stored
+`expired | rotation-needed` → `needs_reauth` before this typed recovery
+resolver runs, while preserving the stored cause as `auth.recovery_reason`.
+Only the normalized `needs_reauth` SHALL create an interactive recovery
+control. Generic Google OAuth then follows the registered generic flow;
+Spotify follows its connector-owned Passport/PKCE flow. `unsupported`
+non-OAuth or unknown connector types remain unavailable with no recovery link
+and no network request. Other auth states remain informational.
 
-An OAuth outcome SHALL stamp `page_of_origin=ingestion` in the OAuth state
-token by passing it as a query parameter to the registered begin endpoint
-(`GET /api/oauth/{google|spotify}/start`). It SHALL preserve an available
+A generic Google OAuth outcome SHALL stamp `page_of_origin=ingestion` in the
+OAuth state token by passing it as a query parameter to
+`GET /api/oauth/google/start`. It SHALL preserve an available
 `connector_detail_path`, and it SHALL preserve `force_consent` when the
-initiating surface requests fresh consent.
+initiating surface requests fresh consent. Spotify's connector-owned PKCE
+state and return target are not generic OAuth state.
 
 This requirement is **co-owned** with the in-flight `redesign-secrets-passport` change,
-which defines the `/secrets`-side callback behaviour. This change owns the
-`/ingestion/connectors`-side contract.
+which defines the `/secrets`-side callback behaviour for generic Google OAuth.
+This change owns the `/ingestion/connectors`-side contract.
 
-The generalised OAuth callback handler (specified in `redesign-secrets-passport §dashboard-api
-§OAuth Per-Provider Generalisation`) routes the post-dance redirect based on
-`state.page_of_origin`. For this contract to function:
+The generic Google OAuth callback handler (specified in
+`redesign-secrets-passport §dashboard-api §OAuth Per-Provider Generalisation`)
+routes the post-dance redirect based on `state.page_of_origin`. For this
+Google contract to function:
 
 1. The ingestion reauth initiation MUST pass `page_of_origin=ingestion` as a query
-   parameter to the registered OAuth start endpoint.
+   parameter to `GET /api/oauth/google/start`.
 2. The OAuth state token MUST carry `page_of_origin` through the dance (the
    `redesign-secrets-passport` change extends `_StateEntry` and `_store_state` to
    support this field; this change may not land before that extension is in place).
@@ -372,20 +383,62 @@ The generalised OAuth callback handler (specified in `redesign-secrets-passport 
    is `ingestion` (callback routing table is defined in `redesign-secrets-passport
    §dashboard-api`; no duplication required here).
 
-**Implementation gate:** SATISFIED. The generalised provider start endpoint has landed
-(`src/butlers/api/routers/oauth.py`) and accepts `page_of_origin`. The ingestion
-recovery resolver calls it only for registered `google` and `spotify` providers;
-no connector type is used as an OAuth-provider fallback.
+**Authority boundary:** The generic provider surface is Google-only in
+production. Spotify SHALL NOT be a registered generic OAuth provider, SHALL
+NOT expose `/api/oauth/spotify/*`, and SHALL NOT use generic callback routing.
+The serialized `bu-fj7lx` then `bu-3ifcj` implementation lane reconciles the
+transitional source to this canonical contract; it does not authorize a
+generic Spotify compatibility alias.
 
-#### Scenario: Ingestion reauth stamps page_of_origin
+#### Scenario: Ingestion Google reauth stamps page_of_origin
 
 - **WHEN** the owner clicks the reauthorize action on a connector detail page under
-  `/ingestion/connectors`
-- **THEN** a registered OAuth recovery outcome calls
-  `GET /api/oauth/{google|spotify}/start?...&page_of_origin=ingestion`
+  `/ingestion/connectors` for a Google-backed connector
+- **THEN** the generic Google OAuth recovery outcome calls
+  `GET /api/oauth/google/start?...&page_of_origin=ingestion`
 - **AND** the OAuth state token carries `page_of_origin=ingestion` through the dance
 - **AND** on successful OAuth callback the browser is redirected to `/ingestion/connectors`
   (NOT to `/secrets`)
+
+### Requirement: Connector-owned Spotify recovery
+
+Spotify recovery from `/ingestion/connectors` SHALL open the content-blind,
+connector-owned Passport projection at `/secrets?focus=u:spotify`. The
+projection's action SHALL call `POST /api/connectors/spotify/oauth/start`,
+and the connector callback is `GET /api/connectors/spotify/oauth/callback`.
+This is the sole production Spotify recovery route. Spotify access and refresh
+tokens are identity-bound RFC 0006 Tier 2 credentials: the connector-owned
+callback stores them in `public.entity_info` on the owner entity, and
+connector/runtime reads use `resolve_owner_entity_info()`. The Passport
+projection presents closed recovery state only; it is not a secret authority.
+The connector-owned Spotify OAuth lifecycle is the sole authority for those
+Tier 2 rows: the callback is the sole initial token-creation writer, connector
+refresh is the only permitted subsequent update, and connector disconnect is
+the only permitted delete.
+
+#### Scenario: Spotify recovery enters Passport before PKCE
+
+- **WHEN** the owner clicks a Spotify recovery control from
+  `/ingestion/connectors`
+- **THEN** the dashboard SHALL navigate in-app to `/secrets?focus=u:spotify`
+- **AND** it SHALL NOT invoke or construct `/api/oauth/spotify/start` or any
+  generic OAuth Spotify URL
+- **AND** the Passport projection SHALL render only its content-blind
+  connector-owned state and capability evidence before the owner chooses a
+  connector action
+
+#### Scenario: Passport action delegates to the connector
+
+- **WHEN** the owner chooses the Spotify projection's connect or reconnect
+  action
+- **THEN** the action SHALL call `POST /api/connectors/spotify/oauth/start`
+- **AND** the resulting callback SHALL be handled by
+  `GET /api/connectors/spotify/oauth/callback`
+- **AND** the callback SHALL persist identity-bound access and refresh tokens
+  only to the secured owner `public.entity_info` authority, with subsequent
+  reads through `resolve_owner_entity_info()` rather than `CredentialStore`
+- **AND** neither action SHALL create or use a generic OAuth Spotify state
+  entry, route, or callback
 
 #### Scenario: WhatsApp recovery opens Passport pairing
 
@@ -396,8 +449,8 @@ no connector type is used as an OAuth-provider fallback.
 
 #### Scenario: Unsupported connector recovery is static and truthful
 
-- **WHEN** a `needs_reauth` connector has no registered OAuth or Passport
-  recovery capability
+- **WHEN** a `needs_reauth` connector has no registered generic OAuth,
+  connector-owned Passport, or Passport-pairing recovery capability
 - **THEN** the dashboard SHALL render an unavailable explanation
 - **AND** it SHALL render no recovery link or button
 - **AND** it SHALL issue no recovery network request
@@ -407,9 +460,11 @@ no connector type is used as an OAuth-provider fallback.
 - **WHEN** a connector auth state is not `needs_reauth`
 - **THEN** its roster and detail status remain noninteractive
 
-#### Scenario: Post-reauth connector state reflects new credential
+#### Scenario: Post-recovery connector state reflects new credential
 
-- **WHEN** the OAuth callback redirects back to `/ingestion/connectors`
+- **WHEN** a generic Google OAuth callback redirects back to
+  `/ingestion/connectors`, or the owner later returns there after a successful
+  Spotify connector callback
 - **THEN** the connectors roster and the previously-reauthorizing connector detail
   both reflect the updated auth state within the standard TanStack Query refresh
   interval
@@ -626,5 +681,10 @@ ingestion history still references it) but is separated from the active fleet:
 - `openspec/specs/dashboard-design-language/spec.md`
 - `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/`
 - `openspec/changes/add-connector-oauth-scope-surface/`
-- `openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md` (generalised OAuth callback endpoint and `page_of_origin` routing table)
-- `openspec/changes/redesign-secrets-passport/specs/butler-secrets/spec.md` (Cross-Page Reauth Bookkeeping requirement)
+- `openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md`
+  (generic Google OAuth callback endpoint and `page_of_origin` routing table)
+- `openspec/changes/redesign-secrets-passport/specs/butler-secrets/spec.md`
+  (generic-Google Cross-Page Reauth Bookkeeping requirement)
+- `openspec/specs/dashboard-spotify-setup/spec.md` and
+  `openspec/specs/butler-secrets/spec.md` (connector-owned Spotify Passport
+  recovery and content-blind projection boundary)

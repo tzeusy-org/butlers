@@ -2,13 +2,40 @@
 
 ## Purpose
 
-The Spotify credential card on the Secrets passport (`/secrets?focus=u:spotify`) and its inline drawer, for linking, monitoring, and managing the user's Spotify account. Uses the OAuth 2.0 PKCE flow (no client secret required) for authorization. Modeled after the Google OAuth account management pattern: status row, account linking flow, and disconnect capability.
+The connector-owned Spotify Passport projection at
+`/secrets?focus=u:spotify` and its inline drawer, for linking, monitoring, and
+managing the Spotify connector. It uses the OAuth 2.0 PKCE flow (no client
+secret required) for authorization. The projection is content-blind: it shows
+only connector-derived connection state and the fixed
+`listening-history` capability category, never account/profile content or
+credential material.
 
 ## Requirements
 
-### Requirement: Spotify OAuth 2.0 PKCE Authorization Flow
+### Requirement: Connector-Owned Spotify OAuth 2.0 PKCE Authorization Flow
 
-The dashboard SHALL implement the Spotify OAuth 2.0 Authorization Code with PKCE flow for account linking.
+Spotify connector PKCE is the only production Spotify authorization flow. It SHALL remain so. The
+dashboard SHALL invoke the connector-owned Spotify OAuth 2.0 Authorization
+Code with PKCE flow for account linking. A generic OAuth Spotify provider
+registry or `/api/oauth/spotify/*` route SHALL NOT authorize, exchange,
+refresh, or persist Spotify token material. Spotify access and refresh tokens
+are RFC 0006 Tier 2 credentials stored in `public.entity_info` on the owner
+entity and resolved through `resolve_owner_entity_info()`. The non-secret
+Spotify OAuth app client ID remains a Tier 1 system credential in
+`CredentialStore`. The Passport projection remains content-blind and is not a
+secret authority.
+
+The connector-owned Spotify OAuth lifecycle is the sole authority for those
+Tier 2 rows. The callback is the sole initial token-creation writer, connector
+refresh is the only permitted subsequent update, and connector disconnect is
+the only permitted delete.
+
+The three Spotify owner `entity_info` types are a connector-managed Tier 2
+exception to the generic User credential editor in `PassportAddPanel`.
+`PassportAddPanel` SHALL NOT offer those types through `ENTITY_INFO_TYPES`, and
+generic Secrets plus Relationship entity-info read and mutation endpoints
+SHALL exclude them server-side.
+`CredentialStore` remains limited to `SPOTIFY_CLIENT_ID`.
 
 #### Scenario: Client ID configuration
 
@@ -46,22 +73,36 @@ The dashboard SHALL implement the Spotify OAuth 2.0 Authorization Code with PKCE
   - `client_id` = stored client_id
   - `code_verifier` = the stored code verifier
 - **AND** the response SHALL contain `access_token`, `refresh_token`, `expires_in`, `token_type`, and `scope`
-- **AND** tokens SHALL be stored in `CredentialStore` under keys `SPOTIFY_ACCESS_TOKEN` and `SPOTIFY_REFRESH_TOKEN`
-- **AND** the token expiry time SHALL be stored under key `SPOTIFY_TOKEN_EXPIRES_AT`
-- **AND** when `OAUTH_DASHBOARD_URL` is configured, the user SHALL be redirected back to the Spotify credential card on `/secrets` (`?focus=u:spotify&toast=connected`) — the surface whose drawer starts this dance — using the same transient params the generalized OAuth callback emits, which the Secrets page surfaces as a toast and strips
+- **AND** the access and refresh tokens SHALL be stored as secured owner
+  `public.entity_info` rows with types `spotify_oauth_access` and
+  `spotify_oauth_refresh`
+- **AND** the token expiry time SHALL be stored on the owner entity as
+  `spotify_oauth_expires_at`
+- **AND** connector/runtime reads SHALL use `resolve_owner_entity_info()` for
+  all three Tier 2 values rather than `CredentialStore`
+- **AND** when `OAUTH_DASHBOARD_URL` is configured, the user SHALL be
+  redirected back to the Spotify Passport projection on `/secrets`
+  (`?focus=u:spotify&toast=connected`) — the surface whose drawer starts this
+  connector-owned dance — using connector-owned transient params that the
+  Secrets page surfaces as a toast and strips
 - **AND** when `OAUTH_DASHBOARD_URL` is not configured, the callback SHALL return a JSON success response after storing the tokens
 
 #### Scenario: OAuth error handling
 
 - **WHEN** Spotify redirects back with an `error` parameter (e.g., `access_denied`)
 - **THEN** it SHALL NOT store any tokens
-- **AND** when `OAUTH_DASHBOARD_URL` is configured, the user SHALL be redirected back to the Spotify credential card on `/secrets` (`?focus=u:spotify&oauth_error=<code>`), the shared error param the Secrets page renders and strips
-- **AND** when `OAUTH_DASHBOARD_URL` is not configured, the callback SHALL return HTTP 400 with the authorization error
+- **AND** when `OAUTH_DASHBOARD_URL` is configured, the user SHALL be
+  redirected back to the Spotify Passport projection on `/secrets`
+  (`?focus=u:spotify&toast=connection_failed`) with a fixed local failure
+  marker, never the provider error code or description
+- **AND** when `OAUTH_DASHBOARD_URL` is not configured, the callback SHALL
+  return HTTP 400 with the fixed error code `spotify_authorization_failed`
 
 #### Scenario: CSRF protection
 
 - **WHEN** the OAuth callback is received with a `state` parameter that does not match the stored session value
-- **THEN** the callback SHALL return HTTP 403 and display an error message
+- **THEN** the callback SHALL return HTTP 403 with a fixed local state-error
+  code and the Passport SHALL display fixed local copy
 - **AND** no tokens SHALL be stored
 
 ### Requirement: Required Spotify API Scopes
@@ -91,7 +132,10 @@ The dashboard SHALL detect when existing tokens lack required scopes and prompt 
 
 - **WHEN** the Spotify status endpoint is called
 - **AND** valid tokens exist but were authorized with a subset of the required scopes
-- **THEN** the status response SHALL include `state: "needs_reauth"` and `missing_scopes` listing the scopes not yet granted
+- **THEN** the status response SHALL include only the closed
+  `state: "needs_reauth"` signal for this condition
+- **AND** it SHALL NOT expose `missing_scopes` or any dynamic provider-scope
+  inventory through the content-blind Passport projection
 - **AND** the drawer SHALL expose a `connect via spotify` action that starts a new OAuth PKCE flow
 
 #### Scenario: Re-authorization preserves connection
@@ -101,18 +145,22 @@ The dashboard SHALL detect when existing tokens lack required scopes and prompt 
 - **AND** on successful completion, the new tokens (with expanded scopes) SHALL replace the old tokens
 - **AND** the status SHALL transition to `connected`
 
-### Requirement: Connection Status Drawer
+### Requirement: Content-Blind Connector Status Drawer
 
-The dashboard SHALL display Spotify connection status within its provider configuration drawer.
+The dashboard SHALL display Spotify connection status within its
+connector-owned Passport projection drawer. The drawer is not a profile or
+credential inspector: it SHALL display only a closed connection state and the
+fixed `listening-history` capability category.
 
 #### Scenario: Connected state
 
 - **WHEN** the user has valid Spotify credentials stored
 - **THEN** the drawer SHALL display:
   - A green connection status dot
-  - Spotify display name, or the Spotify user ID when no display name is available
-  - Account type (free/premium)
+  - The fixed capability evidence `listening-history`
   - A `disconnect` action
+- **AND** it SHALL NOT display a Spotify user ID, display name, account type,
+  client ID, token, raw provider response, or raw error text
 
 #### Scenario: Client ID not configured
 
@@ -131,7 +179,8 @@ The dashboard SHALL display Spotify connection status within its provider config
   - A red status dot
   - An error panel headed `Error: re-authorization needed`
   - A `re-connect` action that initiates a fresh OAuth flow
-  - Error description
+- **AND** the panel SHALL use fixed local copy and SHALL NOT display a raw
+  provider error description
 
 ### Requirement: Dashboard API Endpoints
 
@@ -140,7 +189,12 @@ The dashboard SHALL expose REST API endpoints for Spotify account management.
 #### Scenario: Status endpoint
 
 - **WHEN** `GET /api/connectors/spotify/status` is called
-- **THEN** it SHALL return JSON with: `connected` (bool), `state` (connection-state string), `spotify_user_id` (string or null), `display_name` (string or null), `account_type` (string or null), `last_sync_at` (ISO timestamp of the most recent successful Spotify `/me` verification or null), `error` (string or null), `needs_reauth` (bool), and `missing_scopes` (string array)
+- **THEN** it SHALL return JSON with only `connected` (bool), `state` (one of
+  `unconfigured | authorization_needed | connected | needs_reauth | error`),
+  and `capability_categories` (exactly `["listening-history"]`)
+- **AND** it SHALL NOT return a client ID, token, Spotify user ID, display
+  name, account type, raw provider error, raw probe result, audit payload, or
+  free-form provider-derived text
 
 #### Scenario: OAuth start endpoint
 
@@ -152,13 +206,16 @@ The dashboard SHALL expose REST API endpoints for Spotify account management.
 
 - **WHEN** `GET /api/connectors/spotify/oauth/callback` is called with valid `code` and `state` parameters
 - **THEN** it SHALL perform the token exchange
-- **AND** when `OAUTH_DASHBOARD_URL` is configured, it SHALL redirect to the Spotify credential card on `/secrets`
+- **AND** when `OAUTH_DASHBOARD_URL` is configured, it SHALL redirect to the
+  Spotify Passport projection on `/secrets`
 - **AND** when `OAUTH_DASHBOARD_URL` is not configured, it SHALL return a JSON success response
 
 #### Scenario: Disconnect endpoint
 
 - **WHEN** `POST /api/connectors/spotify/disconnect` is called
-- **THEN** it SHALL delete the locally stored `SPOTIFY_ACCESS_TOKEN`, `SPOTIFY_REFRESH_TOKEN`, `SPOTIFY_TOKEN_EXPIRES_AT`, and `SPOTIFY_GRANTED_SCOPES` keys from `CredentialStore`
+- **THEN** it SHALL delete the owner `public.entity_info` rows
+  `spotify_oauth_access`, `spotify_oauth_refresh`, and
+  `spotify_oauth_expires_at`, and clear derived granted-scope metadata
 - **AND** it SHALL retain `SPOTIFY_CLIENT_ID` so the user can reconnect without re-entering it
 - **AND** it SHALL not issue a provider-side authorization-revocation request
 - **AND** it SHALL return `{"disconnected": true}`

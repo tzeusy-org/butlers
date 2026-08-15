@@ -196,37 +196,79 @@ Runtime authentication SHALL use either CLI-level OAuth tokens (device-code flow
 
 ### Requirement: Spotify OAuth Token Storage
 
-The `CredentialStore` SHALL support storing and resolving Spotify OAuth tokens for the Spotify connector.
+Spotify access and refresh tokens SHALL remain RFC 0006 Tier 2 credentials because they
+are bound to the owner's personal Spotify account. Their sole authoritative
+store SHALL be secured rows in `public.entity_info` on the owner entity, read
+through `resolve_owner_entity_info()`. The connector-owned Spotify OAuth
+lifecycle is the sole authority: the callback is the sole initial
+token-creation writer, connector refresh is the only permitted subsequent
+update, and connector disconnect is the only permitted delete. A generic OAuth
+Spotify registry, Passport projection, User credential inventory row,
+`CredentialStore`, or other store
+SHALL NOT duplicate, persist, or mutate Spotify token material.
+
+The Spotify OAuth app client ID is a system-level app credential rather than
+personal-account token material. `SPOTIFY_CLIENT_ID` SHALL remain in Tier 1
+`CredentialStore`. Derived expiry and granted-scope state MAY be retained as
+non-secret connector metadata, but it SHALL NOT become a second token authority.
+
+`spotify_oauth_access`, `spotify_oauth_refresh`, and
+`spotify_oauth_expires_at` are a connector-managed Tier 2 exception to
+the generic User credential editor in `PassportAddPanel`. `PassportAddPanel`
+SHALL NOT offer those types through `ENTITY_INFO_TYPES`, and generic Secrets
+plus Relationship entity-info read and mutation endpoints SHALL exclude them
+server-side. That exclusion does not transfer token authority to Tier 1
+`CredentialStore`.
 
 #### Scenario: Store Spotify OAuth tokens
 
 - **WHEN** the Spotify OAuth flow completes successfully
-- **THEN** the following keys SHALL be stored in `CredentialStore` under category `"spotify"`:
-  - `SPOTIFY_CLIENT_ID` — the Spotify app client ID (entered by user, not sensitive)
-  - `SPOTIFY_ACCESS_TOKEN` — the OAuth access token (sensitive, 1-hour TTL)
-  - `SPOTIFY_REFRESH_TOKEN` — the OAuth refresh token (sensitive, long-lived)
-  - `SPOTIFY_TOKEN_EXPIRES_AT` — the access token expiry as ISO 8601 timestamp (not sensitive)
-- **AND** `SPOTIFY_ACCESS_TOKEN` and `SPOTIFY_REFRESH_TOKEN` SHALL be stored with `is_sensitive=True`
+- **THEN** the access token SHALL be stored as a secured owner
+  `public.entity_info` row with `type = 'spotify_oauth_access'`
+- **AND** the refresh token SHALL be stored as a secured owner
+  `public.entity_info` row with `type = 'spotify_oauth_refresh'`
+- **AND** the access-token expiry SHALL be stored as owner `public.entity_info`
+  with `type = 'spotify_oauth_expires_at'`
+- **AND** `SPOTIFY_CLIENT_ID` SHALL remain in `CredentialStore` under category
+  `"spotify"` and SHALL NOT share the Tier 2 token rows
+
+#### Scenario: Spotify authority has no token mirror
+
+- **WHEN** Spotify authorization, refresh, or disconnect changes token state
+- **THEN** the callback SHALL create the initial secured owner
+  `public.entity_info` token rows, connector refresh alone SHALL update them,
+  and connector disconnect alone SHALL delete them
+- **AND** `connector_registry` MAY contain only derived connection or scope
+  metadata
+- **AND** a Passport projection MAY invoke connector actions but SHALL NOT
+  store or expose a token mirror
 
 #### Scenario: Resolve Spotify credentials for connector
 
-- **WHEN** the Spotify connector calls `store.resolve("SPOTIFY_ACCESS_TOKEN")`
-- **THEN** the access token SHALL be returned from the DB
+- **WHEN** the Spotify connector needs personal-account token material
+- **THEN** it SHALL call
+  `resolve_owner_entity_info(pool, "spotify_oauth_access")` and
+  `resolve_owner_entity_info(pool, "spotify_oauth_refresh")`
+- **AND** the matching secured values SHALL be returned from the owner entity
 - **AND** environment variable fallback SHALL NOT be used (these are not infrastructure bootstrap credentials)
 
 #### Scenario: Token refresh updates stored credentials
 
 - **WHEN** the Spotify connector refreshes the access token
-- **THEN** it SHALL call `store.store("SPOTIFY_ACCESS_TOKEN", new_token, category="spotify", is_sensitive=True)` to update the stored value
-- **AND** if the refresh response includes a new refresh token, it SHALL also update `SPOTIFY_REFRESH_TOKEN`
-- **AND** it SHALL update `SPOTIFY_TOKEN_EXPIRES_AT` with the new expiry time
+- **THEN** the connector-owned flow SHALL update the secured owner
+  `spotify_oauth_access` row
+- **AND** if the refresh response includes a new refresh token, it SHALL update
+  the secured owner `spotify_oauth_refresh` row
+- **AND** it SHALL update the owner `spotify_oauth_expires_at` row with the new
+  expiry time
 
 #### Scenario: Delete Spotify credentials on disconnect
 
 - **WHEN** the user disconnects Spotify via the dashboard
-- **THEN** it SHALL delete the locally stored `SPOTIFY_ACCESS_TOKEN`, `SPOTIFY_REFRESH_TOKEN`, `SPOTIFY_TOKEN_EXPIRES_AT`, and `SPOTIFY_GRANTED_SCOPES` keys from `CredentialStore`
+- **THEN** the connector-owned flow SHALL delete the owner
+  `spotify_oauth_access`, `spotify_oauth_refresh`, and
+  `spotify_oauth_expires_at` rows and clear its derived granted-scope metadata
 - **AND** it SHALL retain `SPOTIFY_CLIENT_ID` so the user can reconnect without re-entering it
-- **AND** `store.delete()` SHALL be called for each of the four local token or scope keys
 - **AND** it SHALL not issue a provider-side authorization-revocation request
 
 <!-- Source: redesign-secrets-passport -->

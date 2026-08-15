@@ -3,26 +3,23 @@
 The dashboard's connector-detail page exposes a `ReauthCallout` for OAuth-bound
 connectors (Spotify, Gmail, Google Calendar, Google Drive, Google Health,
 Discord, etc.) and a `ScopeList` that renders per-scope status with serif notes
-explaining drift. The sibling change `redesign-ingestion-dispatch-console`
-introduces `POST /api/ingestion/connectors/:type/:identity/reauth`, but that
-endpoint is **deliberately bricked with HTTP 503 and no `Retry-After`** because
-the underlying contract — what scopes a connector requires, what scopes are
+explaining drift. The existing ingestion connector surface exposes
+`POST /api/ingestion/connectors/:type/:identity/reauth`, but that endpoint is
+**deliberately bricked with HTTP 503 and no `Retry-After`** because the
+underlying contract — what scopes a connector requires, what scopes are
 currently granted, how drift is detected, how reauth is initiated, what audit
 trail it leaves — does not yet exist as a spec.
 
 See:
 
-- `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4` —
-  "The `reauth` action additionally depends on a future
-  `connector-oauth-scope-surface` capability and is blocked until that spec
-  exists."
-- `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:17` —
-  gate matrix entry: "`reauth` — Approvals-gated; BLOCKED with HTTP 503 until
-  `connector-oauth-scope-surface` spec exists."
-- `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:36-40` —
-  Scenario "Reauth is blocked".
-- `openspec/changes/redesign-ingestion-dispatch-console/tasks.md:45` — Phase 4.6
-  reauth bead (tracked in beads as `bu-1f91v.11`) is BLOCKED on this spec.
+- Historical source of the HTTP 503 gate (context only) —
+  `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40`.
+- Durable dashboard owner —
+  `openspec/specs/dashboard-ingestion-dispatch-console/spec.md:331-454`, whose
+  existing recovery resolver is extended by this change's delta.
+- Archived Phase 4.6 reauth handoff —
+  `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/tasks.md:45`
+  (tracked in beads as `bu-1f91v.11`).
 - `docs/redesigns/ingestion-connector-detail.jsx:70-101,216-245` —
   binding UI ground truth for `ReauthCallout` and `ScopeList`.
 - `docs/redesigns/ingestion-connectors-data.jsx:97-121` — Spotify
@@ -58,44 +55,72 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     beyond required — audit only, not drift), `drift` (granted ⊋ required, at
     least one required scope missing), `expired` (provider rejected the token
     entirely), `unsupported` (non-OAuth connector).
-  - `auth.status` enum on connector aggregates: `ok | degraded | expired |
-    rotation-needed | unsupported | unconfigured`.
+  - Stored `connector_registry.auth_status` enum: `ok | degraded | expired |
+    rotation-needed | unsupported | unconfigured`. The dashboard API maps the
+    two actionable stored causes to public `auth.status = needs_reauth` and
+    retains the cause in `auth.recovery_reason`; public `auth.status` is
+    `ok | degraded | needs_reauth | unsupported | unconfigured`.
   - UI surface contract: `scopes[]` block on the connector-detail API response
     with per-scope `status`, `granted_at?`, `required_since?`, `serif_note?`
     (binding to `ScopeList` in the bundle), plus the `auth.status` field that
     drives `ReauthCallout` rendering.
   - Reauth endpoint contract:
     `POST /api/ingestion/connectors/:type/:identity/reauth` returns
-    `{auth_url, state, expires_in}` for OAuth providers (the auth_url is the
-    provider's authorization URL with the union of currently-granted and
-    required scopes), `{error: "unsupported", reason: "..."}` for non-OAuth
-    providers, and HTTP 409 when the connector is not in a state that warrants
-    reauth.
-  - Reauth callback contract: the existing OAuth callback handlers update
-    `observed_scopes` and append a second audit entry (`connector.reauth.completed`)
-    on success or `connector.reauth.failed` on failure.
-  - Approvals gating: reauth initiation is Approvals-gated (consistent with
-    `connector-lifecycle-ceremony`). Granting an additional `sensitive` scope
-    (e.g. `gmail.modify`, `calendar` write) emits a distinct audit entry with
-    extra context (`scope.elevated_grant` action) on top of the standard reauth
-    audit pair.
+    `{auth_url, state, expires_in}` for generic OAuth providers other than
+    Spotify (the auth_url is the provider's authorization URL with the union
+    of currently-granted and required scopes), `{error: "unsupported",
+    reason: "..."}` for non-OAuth providers, and HTTP 409 when the connector
+    is not in a state that warrants reauth. Spotify instead enters its
+    connector-owned Passport recovery journey.
+  - Reauth callback contract: generic OAuth callbacks update
+    `observed_scopes` and append `connector.reauth.completed` on success or
+    `connector.reauth.failed` on failure. Spotify continues directly from its
+    content-blind Passport projection to the connector-owned PKCE flow. Its
+    connector-owned callback stays outside the generic approval and audit
+    sequence. Non-OAuth reauth is rejected before the Approvals module.
+  - Approval + audit authority: Only generic OAuth reauth is Approvals-gated
+    and emits the generic reauth audit sequence. Granting an additional
+    `sensitive` scope (e.g. `gmail.modify`, `calendar` write) emits a distinct
+    audit entry with extra context (`scope.elevated_grant` action) on top of
+    that generic OAuth sequence.
   - Rotation: when a connector module's declared `required` scopes change
     (operator edit OR provider deprecation), the spec defines how existing
     connectors are flagged `rotation-needed` and how the operator initiates
-    rotation via the same reauth endpoint.
-  - State token contract: reauth state tokens are CSRF-bound, single-use, and
-    idempotent (rapid re-initiation revokes prior state tokens and returns
-    fresh ones without stranding the connection in a half-authorized state).
+    rotation via the declared provider-owned recovery journey.
+  - Generic reauth state token contract: generic OAuth state tokens are
+    CSRF-bound, single-use, and idempotent (rapid re-initiation revokes prior
+    state tokens and returns fresh ones without stranding the connection in a
+    half-authorized state). Spotify PKCE state stays connector-owned.
 
-- **MODIFIED capability** `connector-lifecycle-ceremony` (spec lives in the
-  sibling change `redesign-ingestion-dispatch-console`):
-  - Removes the blocking scenario "Reauth is blocked" once both changes are
-    archived. The lifecycle ceremony spec's reauth row in the gate matrix is
-    updated to read: "Approvals-gated; delegates to
-    `connector-oauth-scope-surface/spec` for behavior contract".
-  - This modification is documented as a `## MODIFIED Requirements` block in
-    this change's spec delta. The owning change (`redesign-ingestion-dispatch-console`)
-    is not edited directly per the constraints.
+- **Spotify authority reconciliation** (spec-only, owner-approved):
+  - Spotify connector PKCE is the only production Spotify authorization flow;
+    `POST /api/connectors/spotify/oauth/start` and
+    `GET /api/connectors/spotify/oauth/callback` are connector-owned.
+  - Spotify access and refresh tokens are RFC 0006 Tier 2 credentials. The
+    connector-owned callback stores them in `public.entity_info` on the owner
+    entity, and connector/runtime reads resolve them through
+    `resolve_owner_entity_info()`. `CredentialStore` remains authoritative only
+    for the system-level Spotify OAuth app client ID; `connector_registry` may
+    retain only derived connection and scope metadata.
+  - `/secrets?focus=u:spotify` is a content-blind, connector-owned Passport
+    projection, not an editable User credential row, credential mirror, or
+    generic OAuth provider alias. It projects closed state from the connector
+    without becoming the Tier 2 secret authority. Its fixed v1 capability
+    evidence is `listening-history`.
+  - The generic OAuth provider surface remains Google-only in production. The
+    later serialized cleanup removes the Spotify registry, route,
+    configuration, UI, documentation, and test exemplar; generalized OAuth
+    tests retain a synthetic generalized-provider fixture only, with no
+    compatibility alias, shim, or production registry entry for Spotify.
+
+- **MODIFIED capability** `dashboard-ingestion-dispatch-console`:
+  - Adds a durable reauth lifecycle-authority requirement to the existing
+    canonical dashboard contract. Generic OAuth is Approvals-gated; Spotify is
+    a connector-owned Passport-to-PKCE journey with RFC 0006 Tier 2 owner
+    `entity_info` token authority; and non-OAuth connectors reject before
+    Approvals.
+  - The active delta targets an existing canonical spec, so archive applies it
+    directly instead of relying on a missing lifecycle-ceremony target.
 
 - **MODIFIED capability** `connector-base-spec`:
   - Adds the `observed_scopes`, `observed_scopes_fetched_at`,
@@ -110,10 +135,12 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 - **NO new database tables.** The contract leans entirely on additive columns
   to `public.connector_registry` and re-uses the existing `public.audit_log`
   for the audit trail. No separate `scope_history` table is needed; audit log
-  retention (indefinite, per `connector-lifecycle-ceremony`) covers it.
+  retention is defined directly by the active carrier's Audit trail
+  requirement.
 
 - **NO new approval primitives.** Re-uses the existing `module-approvals`
-  Approvals module per `connector-lifecycle-ceremony`.
+  Approvals module only for generic OAuth reauth; Spotify stays direct and
+  connector-owned, and non-OAuth reauth rejects before approval.
 
 ## Capabilities
 
@@ -130,24 +157,30 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 - `connector-base-spec` — additive columns on `connector_registry` and
   additive fields on `ConnectorDetail` Pydantic response. No behavior of the
   base spec changes.
-- `connector-lifecycle-ceremony` — the "Reauth is blocked" scenario is
-  superseded; the gate matrix entry's blocker note is removed. This delta is
-  encoded in this change's spec via a `## MODIFIED Requirements` block per
-  OpenSpec convention.
+- `dashboard-ingestion-dispatch-console` — an active `## ADDED Requirements`
+  delta extends the existing canonical recovery resolver with the durable
+  generic-OAuth, Spotify, and non-OAuth authority split.
 
 ## Impact
 
 - **Code (implementation, not in this change)**:
-  - `src/butlers/api/routers/oauth.py` — extend `_probe_google_token`-style
-    introspection to per-connector providers; add Spotify, Discord introspection
-    paths; add the `scopes[]` block to `ConnectorDetail` responses.
+  - `src/butlers/api/routers/oauth.py` — retain generic Google provider
+    behavior and remove the Spotify production registry, route, configuration,
+    UI coupling, and test exemplar in the serialized cleanup lane. Generic
+    provider tests use a synthetic fixture after that cleanup.
+  - `src/butlers/api/routers/spotify.py` — retain connector-owned Spotify
+    PKCE start/callback ownership; move identity-bound access and refresh token
+    handling to owner `public.entity_info` via `resolve_owner_entity_info()`;
+    keep the OAuth app client ID in `CredentialStore`; and add only derived
+    scope or connection metadata where this capability requires it.
   - `src/butlers/api/routers/ingestion_events.py` — replace the HTTP 503 stub
     in the reauth handler with the contract defined here.
   - `src/butlers/migrations/versions/` — Alembic migration adding
     `observed_scopes TEXT[]`, `observed_scopes_fetched_at TIMESTAMPTZ`,
     `required_scopes_version SMALLINT`, `auth_status VARCHAR` columns to
     `public.connector_registry`.
-  - `src/butlers/connectors/spotify/` — periodic re-introspection task.
+  - `src/butlers/connectors/spotify/` — periodic re-introspection task;
+    connector-owned Passport projection data remains content-blind.
   - `frontend/src/components/ingestion/ConnectorDetail.tsx` — wire `scopes[]`
     block; render `ReauthCallout` from `auth.status`; render `ScopeList` from
     `scopes[]` per-row `status` + `serif_note`.
@@ -156,20 +189,26 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - `GET /api/ingestion/connectors/{type}/{identity}` gains a `scopes` block
     and an `auth.status` field. Additive — no existing field changes type.
   - `POST /api/ingestion/connectors/{type}/{identity}/reauth` (currently 503)
-    becomes a working endpoint per this spec.
-  - `GET /api/oauth/{provider}/reauth/callback` is extended to update
-    `observed_scopes` and emit the second audit entry.
+    becomes a working generic-OAuth endpoint per this spec; Spotify recovery
+    remains the connector-owned Passport journey.
+  - Generic Google OAuth callback behavior updates `observed_scopes` and emits
+    the second audit entry. Spotify uses only
+    `GET /api/connectors/spotify/oauth/callback` for its connector-owned
+    callback and never a generic OAuth Spotify callback.
 
 - **Database**: additive columns on `public.connector_registry`. No new tables.
   No data migration required (NULL `observed_scopes` is interpreted as "not yet
   probed").
 
-- **Audit log**: new `action` values: `connector.reauth.submit`,
-  `connector.reauth.approved`, `connector.reauth.denied`,
-  `connector.reauth.completed`, `connector.reauth.failed`,
-  `connector.scope.observed`, `connector.scope.elevated_grant`,
-  `connector.scope.required_changed`. These reuse the existing audit-log
-  infrastructure; no schema change.
+- **Audit log**: generic OAuth reauth, and only generic OAuth reauth, emits
+  `connector.reauth.submit`, `connector.reauth.approved`,
+  `connector.reauth.denied`, `connector.reauth.completed`, and
+  `connector.reauth.failed`. `connector.scope.observed`,
+  `connector.scope.elevated_grant`, and `connector.scope.required_changed`
+  retain their own specified OAuth-connector lifecycle. Spotify's direct
+  connector-owned path does not require the generic submit or approval-
+  resolution records, and non-OAuth reauth attempts reject before approval.
+  These values reuse the existing audit-log infrastructure; no schema change.
 
 - **Doctrine alignment**:
   - **Non-Negotiable Rule 1 (user-federated)**: scope surface is per-instance,
@@ -177,9 +216,9 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - **Security model — credential lifetime**: scopes are NOT credentials. Scope
     strings (e.g. `gmail.readonly`, `user-read-recently-played`) are safe to
     surface. Refresh tokens and access tokens MUST NOT appear in any response
-    body per `connector-lifecycle-ceremony` spec.md:103-109. (See
+    body per the active carrier's response-shape requirements. See
     `about/heart-and-soul/security.md:96-147` for the credential authority
-    model.)
+    model.
   - **v1 scope**: the dashboard's OAuth credential configuration surface is in
     v1 (per `about/heart-and-soul/v1.md:103-110`); this spec strengthens it
     rather than expanding scope.
@@ -189,19 +228,27 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     provider APIs directly. (See `about/heart-and-soul/vision.md:110-115`.)
 
 - **Cross-change coordination**:
-  - This change is **independent** of `redesign-ingestion-dispatch-console`
-    and can land in either order. If this lands first, the reauth bead
-    `bu-1f91v.11` can immediately move from "blocked" to "ready" once the
-    redesign Wave-3 prerequisites are met. If the redesign lands first, the
-    503 brick remains in production until this lands; that is the explicit
-    contract per `connector-lifecycle-ceremony` and is by design.
-  - The MODIFIED requirement on `connector-lifecycle-ceremony` (removing the
-    "Reauth is blocked" scenario) is encoded here as a delta but only takes
-    effect when BOTH changes are archived. If this change archives first, the
-    `connector-lifecycle-ceremony` capability does not yet exist in
-    `openspec/specs/`; the archive process will merge this delta when
-    `redesign-ingestion-dispatch-console` later archives. If the redesign
-    archives first, this change's delta applies cleanly on archive.
+  - The historical lifecycle artifact is already archived and is not a live
+    authority. This change's dashboard-ingestion delta targets the existing
+    canonical spec, so its authority survives this change's own archive with
+    no second-change ordering or no-op fallback.
+  - Once this change ratifies, the reauth bead `bu-1f91v.11` has a durable
+    contract to implement; this planning change does not change its tracker
+    state or authorize source changes.
+  - The owner-approved Spotify reconciliation is serialized and does not
+    authorize source changes in this spec-only amendment: merge this carrier's
+    canonical reconciliation first; then `bu-fj7lx` implements the
+    content-blind connector-owned Passport projection and the server-side
+    generic Secrets fence across inventory, detail/read, rotate, disconnect,
+    probe, and reauthorize; only then `bu-3ifcj`
+    removes the generic OAuth Spotify production exemplar and repository
+    cruft. The cleanup keeps a synthetic generalized-provider fixture and no
+    compatibility alias, shim, or production registry entry.
+  - The carrier's stored `expired` and `rotation-needed` states converge to the
+    canonical dashboard `needs_reauth` state at the API boundary, retaining the
+    stored cause for copy. The typed resolver still routes generic Google OAuth
+    through its generic authority, Spotify through Passport/connector PKCE,
+    and unsupported non-OAuth connectors to no-action guidance.
 
 - **Tests (implementation, not in this change)**:
   - Drift detection unit tests per drift class (`ok`, `extra`, `drift`,
@@ -212,6 +259,19 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - Sensitive-scope grant audit trail.
   - Rotation scenario (operator bumps `required_scopes_version`; existing
     connectors flip to `rotation-needed`).
+  - Spotify authority regression: project RFC 0006 Tier 2 into the active and
+    canonical requirements; assert the Passport projection exposes only its
+    closed connection state and `listening-history` capability evidence;
+    assert access and refresh tokens remain owner-`entity_info`-only via
+    `resolve_owner_entity_info()`; and assert the generic OAuth suite uses a
+    synthetic generalized-provider fixture rather than Spotify.
+  - Generic authority-fence regression: trace `PassportAddPanel`, every
+    `secrets_v2.py` User read/mutation seam, and the actual generic
+    Relationship entity-info list/detail/create/patch/delete/secured-reveal
+    seams in `roster/relationship/api/router.py`. Prove collections omit the
+    Spotify types, create rejects them before DB access, ID-addressed paths use
+    only a metadata type discriminator before a stable non-disclosing 404, and
+    no generic path reads or mutates connector-owned values.
 
 ## Source References
 
@@ -221,12 +281,16 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   `about/heart-and-soul/vision.md:110-115`
 - Security model — credential authority tiers and credential masking —
   `about/heart-and-soul/security.md:96-147`
+- Binding Tier 2 connector credential rule —
+  `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md#credential-store--three-tier-authority-model`
 - v1 scope — dashboard OAuth credential configuration is in v1 —
   `about/heart-and-soul/v1.md:103-110`
-- Blocking dependency declaration —
-  `openspec/changes/redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40`
+- Historical HTTP 503 gate (context only) —
+  `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40`
+- Durable dashboard lifecycle target —
+  `openspec/specs/dashboard-ingestion-dispatch-console/spec.md:331-454`
 - Tracked implementation bead — `bu-1f91v.11`
-  (`openspec/changes/redesign-ingestion-dispatch-console/tasks.md:45`)
+  (`openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/tasks.md:45`)
 - UI ground truth: `ReauthCallout` —
   `docs/redesigns/ingestion-connector-detail.jsx:70-101`
 - UI ground truth: `ScopeList` —
@@ -245,6 +309,9 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   `openspec/specs/connector-spotify/spec.md:229-247`
 - Spotify dashboard's existing `needs_reauth` pattern —
   `openspec/specs/dashboard-spotify-setup/spec.md:86-102`
+- Spotify connector-authority and Passport-projection reconciliation —
+  `openspec/specs/connector-spotify/spec.md`,
+  `openspec/specs/butler-secrets/spec.md`, `bu-fj7lx`, and `bu-3ifcj`
 - Connector base spec (extension target) —
   `openspec/specs/connector-base-spec/spec.md:381-419`
 - Credential masking contract (must not contradict) —
