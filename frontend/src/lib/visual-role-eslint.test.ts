@@ -671,6 +671,80 @@ const RECURSIVE_IMMUTABLE_SEMANTIC_ROLE_RESOLVER_SOURCE = [
   recursiveImmutableResolverSource("--categorical-1"),
 ].join("\n");
 
+function resolverRetrievalSource(token: string): string {
+  return RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.flatMap(({ call, name, resolver }) => [
+    `const ${name}StringIndex = [${resolver}] as const;`,
+    `export const ${name}FromStringIndex = ${call(`${name}StringIndex["0"]`, token)};`,
+    `const ${name}AtZero = [${resolver}] as const;`,
+    `export const ${name}FromAtZero = ${call(`${name}AtZero.at(0)`, token)};`,
+    `const ${name}AtMinusOne = [${resolver}] as const;`,
+    `export const ${name}FromAtMinusOne = ${call(`${name}AtMinusOne.at(-1)`, token)};`,
+    `declare const ${name}DynamicIndex: number;`,
+    `export const ${name}FromDynamicAt = ${call(`${name}AtZero.at(${name}DynamicIndex)`, token)};`,
+    `export const ${name}FromFractionalAt = ${call(`${name}AtZero.at(0.5)`, token)};`,
+  ]).join("\n");
+}
+
+const ARRAY_RETRIEVAL_PRIVATE_IDENTITY_RESOLVER_SOURCE = resolverRetrievalSource("--category-1");
+const ARRAY_RETRIEVAL_SEMANTIC_ROLE_RESOLVER_SOURCE = resolverRetrievalSource("--categorical-1");
+
+function defaultedDestructuringResolverSource(token: string): string {
+  return RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.flatMap(({ call, name, resolver }) => [
+    `const ${name}ObjectDefault = ${resolver};`,
+    `const { resolver: ${name}FromObject = ${name}ObjectDefault } = {};`,
+    `export const ${name}ObjectResult = ${call(`${name}FromObject`, token)};`,
+    `const ${name}ArrayDefault = ${resolver};`,
+    `const [${name}FromArray = ${name}ArrayDefault] = [];`,
+    `export const ${name}ArrayResult = ${call(`${name}FromArray`, token)};`,
+    `const { resolver: ${name}FromUndefinedObject = ${name}ObjectDefault } = { resolver: undefined };`,
+    `export const ${name}UndefinedObjectResult = ${call(`${name}FromUndefinedObject`, token)};`,
+    `const [${name}FromUndefinedArray = ${name}ArrayDefault] = [undefined];`,
+    `export const ${name}UndefinedArrayResult = ${call(`${name}FromUndefinedArray`, token)};`,
+  ]).join("\n");
+}
+
+const DEFAULTED_DESTRUCTURING_PRIVATE_IDENTITY_RESOLVER_SOURCE =
+  defaultedDestructuringResolverSource("--category-1");
+const DEFAULTED_DESTRUCTURING_SEMANTIC_ROLE_RESOLVER_SOURCE =
+  defaultedDestructuringResolverSource("--categorical-1");
+
+const MUTATED_CONTAINER_PRIVATE_IDENTITY_RESOLVER_SOURCE = [
+  'const objectDirect = { resolver: semanticResolver };',
+  'objectDirect.resolver = CSSStyleDeclaration.prototype.getPropertyValue;',
+  'export const objectDirectResult = objectDirect.resolver.call(document.documentElement.style, "--category-1");',
+  'const arrayDirect = [semanticResolver];',
+  'arrayDirect[0] = StylePropertyMapReadOnly.prototype.get;',
+  'export const arrayDirectResult = arrayDirect["0"].call(document.documentElement.computedStyleMap(), "--category-1");',
+  'const pushed = [semanticResolver];',
+  'pushed.push(Array.prototype.join);',
+  'export const pushedResult = pushed.at(-1).call(["var(", "--category-1", ")"], "");',
+  'const spliced = [semanticResolver];',
+  'spliced.splice(0, 1, String.prototype.concat);',
+  'export const splicedResult = spliced.at(0).call("var(", "--category-1", ")");',
+  'const updated = { resolver: semanticResolver };',
+  'updated.resolver++;',
+  'export const updatedResult = updated.resolver.call("var(", "--category-1", ")");',
+  'const deceptiveAt = { resolver: semanticResolver, at() { this.resolver = String.prototype.concat; } };',
+  'deceptiveAt.at();',
+  'export const deceptiveAtResult = deceptiveAt.resolver.call("var(", "--category-1", ")");',
+  'let initiallyUndefined;',
+  'initiallyUndefined = { resolver: CSSStyleDeclaration.prototype.getPropertyValue };',
+  'export const initiallyUndefinedResult = initiallyUndefined.resolver.call(document.documentElement.style, "--category-1");',
+  'let initiallyNull = null;',
+  'initiallyNull = [StylePropertyMapReadOnly.prototype.get];',
+  'export const initiallyNullResult = initiallyNull[0].call(document.documentElement.computedStyleMap(), "--category-1");',
+  'const aliasSource = { resolver: semanticResolver };',
+  'const mutableAlias = aliasSource;',
+  'mutableAlias.resolver = Array.prototype.join;',
+  'export const aliasResult = aliasSource.resolver.call(["var(", "--category-1", ")"], "");',
+  'const unknownMutation = [semanticResolver];',
+  'mutateResolverContainer(unknownMutation, String.prototype.concat);',
+  'export const unknownMutationResult = unknownMutation[0].call("var(", "--category-1", ")");',
+].join("\n");
+
+const MUTATED_CONTAINER_SEMANTIC_ROLE_RESOLVER_SOURCE =
+  MUTATED_CONTAINER_PRIVATE_IDENTITY_RESOLVER_SOURCE.replaceAll("--category-1", "--categorical-1");
+
 function cyclicResolverAliasSource(token: string): string {
   return [
     "const firstResolver = secondResolver;",
@@ -1207,6 +1281,75 @@ describe("semantic visual-role lint", () => {
     const roleMessages = await visualRoleMessages(
       RECURSIVE_IMMUTABLE_SEMANTIC_ROLE_RESOLVER_SOURCE,
       "src/components/ui/SemanticRecursiveImmutableResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("canonicalizes string array indexes and sound at() indexes for every private resolver family", async () => {
+    const roleMessages = await visualRoleMessages(
+      ARRAY_RETRIEVAL_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityArrayRetrievalResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.length * 5);
+    expect(roleMessages.map((message) => message.line)).toEqual(
+      ARRAY_RETRIEVAL_PRIVATE_IDENTITY_RESOLVER_SOURCE.split("\n").flatMap((line, index) =>
+        line.startsWith("export const") ? [index + 1] : [],
+      ),
+    );
+  });
+
+  it("permits semantic roles through string array indexes and sound at() indexes", async () => {
+    const roleMessages = await visualRoleMessages(
+      ARRAY_RETRIEVAL_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticArrayRetrievalResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("preserves object and array destructuring defaults for every private resolver family", async () => {
+    const roleMessages = await visualRoleMessages(
+      DEFAULTED_DESTRUCTURING_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityDefaultedDestructuringResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.length * 4);
+    expect(roleMessages.map((message) => message.line)).toEqual(
+      DEFAULTED_DESTRUCTURING_PRIVATE_IDENTITY_RESOLVER_SOURCE.split("\n").flatMap(
+        (line, index) => (line.startsWith("export const") ? [index + 1] : []),
+      ),
+    );
+  });
+
+  it("permits semantic roles through object and array destructuring defaults", async () => {
+    const roleMessages = await visualRoleMessages(
+      DEFAULTED_DESTRUCTURING_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticDefaultedDestructuringResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("fails closed for directly, indirectly, and opaquely mutated resolver containers", async () => {
+    const roleMessages = await visualRoleMessages(
+      MUTATED_CONTAINER_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityMutatedContainerResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(10);
+    expect(roleMessages.map((message) => message.line)).toEqual(
+      MUTATED_CONTAINER_PRIVATE_IDENTITY_RESOLVER_SOURCE.split("\n").flatMap((line, index) =>
+        line.startsWith("export const") ? [index + 1] : [],
+      ),
+    );
+  });
+
+  it("does not broaden mutated-container ambiguity to semantic roles", async () => {
+    const roleMessages = await visualRoleMessages(
+      MUTATED_CONTAINER_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticMutatedContainerResolver.tsx",
     );
 
     expect(roleMessages).toEqual([]);

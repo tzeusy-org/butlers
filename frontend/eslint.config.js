@@ -473,7 +473,15 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         function destructuringPath(pattern, bindingName, path = []) {
           pattern = unwrapStaticExpression(pattern)
           if (pattern.type === 'AssignmentPattern') {
-            return destructuringPath(pattern.left, bindingName, path)
+            const nested = destructuringPath(pattern.left, bindingName, path)
+            if (!nested?.length) return nested
+            const lastIndex = nested.length - 1
+            const last = nested[lastIndex]
+            nested[lastIndex] = {
+              fallback: pattern.right,
+              property: typeof last === 'object' ? last.property : last,
+            }
+            return nested
           }
           if (pattern.type === 'Identifier') {
             return pattern.name === bindingName ? path : null
@@ -632,6 +640,189 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
 
         const AMBIGUOUS_RESOLVER_TARGET = 'ambiguous-resolver'
 
+        const READ_ONLY_CONTAINER_METHODS = new Set([
+          'at',
+          'concat',
+          'entries',
+          'every',
+          'filter',
+          'find',
+          'findIndex',
+          'findLast',
+          'findLastIndex',
+          'flat',
+          'flatMap',
+          'includes',
+          'indexOf',
+          'join',
+          'keys',
+          'lastIndexOf',
+          'map',
+          'reduce',
+          'reduceRight',
+          'slice',
+          'some',
+          'toReversed',
+          'toSorted',
+          'toSpliced',
+          'values',
+          'with',
+        ])
+
+        const readOnlyBindingCache = new WeakMap()
+
+        function declaredVariables(node) {
+          return context.sourceCode.getDeclaredVariables(node)
+        }
+
+        function transparentParent(node) {
+          let current = node
+          while (
+            current.parent &&
+            (current.parent.type === 'TSAsExpression' ||
+              current.parent.type === 'TSTypeAssertion' ||
+              current.parent.type === 'TSNonNullExpression' ||
+              current.parent.type === 'TSSatisfiesExpression' ||
+              current.parent.type === 'ChainExpression') &&
+            current.parent.expression === current
+          ) {
+            current = current.parent
+          }
+          return current
+        }
+
+        function aliasDeclarationIsReadOnly(valueNode, resolvingVariables) {
+          const value = transparentParent(valueNode)
+          const declarator = value.parent
+          if (
+            declarator?.type !== 'VariableDeclarator' ||
+            declarator.init !== value ||
+            declarator.parent?.kind !== 'const'
+          ) {
+            return null
+          }
+          const aliases = declaredVariables(declarator)
+          return aliases.length > 0 && aliases.every((variable) =>
+            bindingReferencesAreReadOnly(variable, resolvingVariables),
+          )
+        }
+
+        // A const binding freezes only the binding, not the referenced object.
+        // Prove every reachable alias is read-only before interpreting an
+        // object/array initializer as a stable resolver registry. Unknown
+        // escapes fail closed; cycles are rejected by the shared visited set.
+        function bindingReferencesAreReadOnly(variable, resolvingVariables = new Set()) {
+          if (readOnlyBindingCache.has(variable)) return readOnlyBindingCache.get(variable)
+          if (resolvingVariables.has(variable)) return false
+
+          resolvingVariables.add(variable)
+          const readOnly = variable.references.every((reference) => {
+            if (reference.init) return true
+            if (reference.isWrite()) return false
+            if (!reference.isRead()) return true
+            return referenceUseIsReadOnly(reference.identifier, resolvingVariables)
+          })
+          resolvingVariables.delete(variable)
+          readOnlyBindingCache.set(variable, readOnly)
+          return readOnly
+        }
+
+        function referenceUseIsReadOnly(identifier, resolvingVariables) {
+          const directAlias = aliasDeclarationIsReadOnly(identifier, resolvingVariables)
+          if (directAlias !== null) return directAlias
+
+          let current = identifier
+          const memberPath = []
+          while (current.parent?.type === 'MemberExpression' && current.parent.object === current) {
+            current = current.parent
+            memberPath.push(memberPropertyName(current))
+          }
+
+          const alias = aliasDeclarationIsReadOnly(current, resolvingVariables)
+          if (alias !== null) return alias
+
+          const parent = current.parent
+          if (
+            (parent?.type === 'AssignmentExpression' && parent.left === current) ||
+            (parent?.type === 'UpdateExpression' && parent.argument === current) ||
+            (parent?.type === 'UnaryExpression' && parent.operator === 'delete')
+          ) {
+            return false
+          }
+
+          if (parent?.type === 'SpreadElement') return true
+          if (parent?.type !== 'CallExpression' || parent.callee !== current || !memberPath.length) {
+            return memberPath.length > 0 &&
+              (parent?.type === 'BinaryExpression' || parent?.type === 'TemplateLiteral')
+          }
+
+          const methodName = memberPath.at(-1)
+          if (methodName === 'call' || methodName === 'apply' || methodName === 'bind') {
+            return memberPath.length > 1
+          }
+          return READ_ONLY_CONTAINER_METHODS.has(methodName) &&
+            referenceReceiverIsStaticArray(
+              identifier,
+              memberPath.slice(0, -1),
+              resolvingVariables,
+            )
+        }
+
+        function referenceReceiverIsStaticArray(identifier, path, resolvingVariables) {
+          const binding = constInitializer(identifier)
+          const destructured = binding ? null : constDestructuredBinding(identifier)
+          let value
+          if (binding) {
+            value = resolvedImmutableProperty(binding.initializer)
+          } else if (destructured) {
+            value = staticImmutablePath(
+              destructured.initializer,
+              destructured.path,
+              resolvingVariables,
+              new Map(),
+            )
+          } else {
+            return false
+          }
+          if (value.status !== 'resolved') return false
+          const receiver = path.length
+            ? staticImmutablePath(value.value, path, resolvingVariables, new Map())
+            : value
+          return receiver.status === 'resolved' &&
+            constArrayElements(receiver.value, resolvingVariables, new Map()) !== null
+        }
+
+        function resolverContainerExpressionIsReadOnly(node, resolvingVariables = new Set()) {
+          node = unwrapStaticExpression(node)
+          if (node.type === 'ArrayExpression' || node.type === 'ObjectExpression') return true
+          if (node.type === 'Identifier') {
+            const binding = constInitializer(node)
+            if (
+              !binding ||
+              resolvingVariables.has(binding.variable) ||
+              !bindingReferencesAreReadOnly(binding.variable)
+            ) {
+              return false
+            }
+            resolvingVariables.add(binding.variable)
+            const readOnly = resolverContainerExpressionIsReadOnly(
+              binding.initializer,
+              resolvingVariables,
+            )
+            resolvingVariables.delete(binding.variable)
+            return readOnly
+          }
+          if (node.type === 'MemberExpression') {
+            return resolverContainerExpressionIsReadOnly(node.object, resolvingVariables)
+          }
+          if (node.type !== 'CallExpression' || node.callee.type !== 'MemberExpression') {
+            return false
+          }
+          const methodName = memberPropertyName(node.callee)
+          return READ_ONLY_CONTAINER_METHODS.has(methodName) &&
+            resolverContainerExpressionIsReadOnly(node.callee.object, resolvingVariables)
+        }
+
         function resolverMethodKind(constructorName, methodName) {
           return STATIC_RESOLVER_METHODS[constructorName]?.[methodName] ?? null
         }
@@ -703,6 +894,12 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
         function staticResolverTarget(node, resolvingVariables = new Set()) {
           node = unwrapStaticExpression(node)
 
+          const atElement = staticImmutableArrayAtElement(node, resolvingVariables)
+          if (atElement.status === 'resolved') {
+            return staticResolverTarget(atElement.value, resolvingVariables)
+          }
+          if (atElement.status === 'ambiguous') return AMBIGUOUS_RESOLVER_TARGET
+
           const prototypeTarget = directPrototypeResolverTarget(node, resolvingVariables)
           if (prototypeTarget) return prototypeTarget
 
@@ -761,7 +958,8 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           initializer = unwrapStaticExpression(initializer)
           if (!path.length) return staticResolverTarget(initializer, resolvingVariables)
 
-          const [property, ...remaining] = path
+          const [segment, ...remaining] = path
+          const property = typeof segment === 'object' ? segment.property : segment
           if (typeof property === 'string') {
             if (
               property === 'prototype' &&
@@ -795,6 +993,18 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             property,
             resolvingVariables,
           )
+          if (
+            segment?.fallback &&
+            (immutableProperty.status === 'missing' ||
+              (immutableProperty.status === 'resolved' &&
+                isStaticallyUndefined(immutableProperty.value)))
+          ) {
+            return destructuredResolverTarget(
+              segment.fallback,
+              remaining,
+              resolvingVariables,
+            )
+          }
           if (immutableProperty.status === 'resolved') {
             return destructuredResolverTarget(
               immutableProperty.value,
@@ -1005,6 +1215,71 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return { status: 'resolved', value }
         }
 
+        function isStaticallyUndefined(node) {
+          node = unwrapStaticExpression(node)
+          return (
+            isUnshadowedGlobalIdentifier(node, 'undefined') ||
+            (node.type === 'UnaryExpression' && node.operator === 'void')
+          )
+        }
+
+        function canonicalArrayIndex(propertyName) {
+          if (
+            typeof propertyName === 'number' &&
+            Number.isInteger(propertyName) &&
+            propertyName >= 0
+          ) {
+            return propertyName
+          }
+          if (
+            typeof propertyName === 'string' &&
+            /^(?:0|[1-9]\d*)$/.test(propertyName)
+          ) {
+            const index = Number(propertyName)
+            return Number.isSafeInteger(index) ? index : null
+          }
+          return null
+        }
+
+        function staticImmutableArrayAtElement(
+          node,
+          resolvingVariables = new Set(),
+          localValues = new Map(),
+        ) {
+          node = unwrapStaticExpression(node)
+          if (
+            node.type !== 'CallExpression' ||
+            node.callee.type !== 'MemberExpression' ||
+            memberPropertyName(node.callee, resolvingVariables, localValues) !== 'at' ||
+            node.arguments.length !== 1 ||
+            node.arguments[0].type === 'SpreadElement'
+          ) {
+            return IMMUTABLE_PROPERTY_MISSING
+          }
+
+          const receiver = unwrapStaticExpression(node.callee.object)
+          if (!resolverContainerExpressionIsReadOnly(receiver, resolvingVariables)) {
+            return IMMUTABLE_PROPERTY_AMBIGUOUS
+          }
+
+          const elements = constArrayElements(
+            receiver,
+            resolvingVariables,
+            localValues,
+          )
+          const requestedIndex = staticNumberValue(
+            node.arguments[0],
+            resolvingVariables,
+            localValues,
+          )
+          if (!elements || requestedIndex === null) return IMMUTABLE_PROPERTY_AMBIGUOUS
+
+          const index = requestedIndex < 0 ? elements.length + requestedIndex : requestedIndex
+          return index >= 0 && index < elements.length
+            ? resolvedImmutableProperty(elements[index])
+            : IMMUTABLE_PROPERTY_MISSING
+        }
+
         function staticImmutablePath(
           node,
           path,
@@ -1012,14 +1287,22 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           localValues,
         ) {
           let current = resolvedImmutableProperty(node)
-          for (const property of path) {
+          for (const segment of path) {
             if (current.status !== 'resolved') return current
+            const property = typeof segment === 'object' ? segment.property : segment
             current = staticImmutableProperty(
               current.value,
               property,
               resolvingVariables,
               localValues,
             )
+            if (
+              segment?.fallback &&
+              (current.status === 'missing' ||
+                (current.status === 'resolved' && isStaticallyUndefined(current.value)))
+            ) {
+              current = resolvedImmutableProperty(segment.fallback)
+            }
           }
           return current
         }
@@ -1066,21 +1349,16 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           }
 
           if (node.type === 'ArrayExpression') {
-            if (
-              typeof propertyName !== 'number' ||
-              !Number.isInteger(propertyName) ||
-              propertyName < 0
-            ) {
-              return IMMUTABLE_PROPERTY_MISSING
-            }
+            const arrayIndex = canonicalArrayIndex(propertyName)
+            if (arrayIndex === null) return IMMUTABLE_PROPERTY_MISSING
             const elements = constArrayElements(
               node,
               resolvingVariables,
               localValues,
             )
             if (!elements) return IMMUTABLE_PROPERTY_AMBIGUOUS
-            return elements[propertyName]
-              ? resolvedImmutableProperty(elements[propertyName])
+            return elements[arrayIndex]
+              ? resolvedImmutableProperty(elements[arrayIndex])
               : IMMUTABLE_PROPERTY_MISSING
           }
 
@@ -1108,6 +1386,9 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
             const destructured = binding ? null : constDestructuredBinding(node)
             const variable = binding?.variable ?? destructured?.variable
             if (!variable || resolvingVariables.has(variable)) {
+              return IMMUTABLE_PROPERTY_AMBIGUOUS
+            }
+            if (!bindingReferencesAreReadOnly(variable)) {
               return IMMUTABLE_PROPERTY_AMBIGUOUS
             }
 
