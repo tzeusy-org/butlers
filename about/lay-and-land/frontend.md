@@ -1163,26 +1163,45 @@ longer collides). The canonical component is
 `openspec/specs/dashboard-design-language/spec.md` § Requirement: Butler
 Category Hues for the current butler→token mapping.
 
-`ButlerMark` exports:
+`ButlerMark`'s color-role-facing subset of its public surface is intentionally
+small:
 - `<ButlerMark name="..." tone="fill|neutral" />`: 16px squircle with
   butler initial. `fill` = solid hue background + white initial (active
   state). `neutral` = transparent background + hue initial + hairline
   border (default).
-- `butlerHueVar(name)`: returns `var(--category-N)` for chart code
-  (recharts, stripe charts) that needs the raw CSS variable string.
-- `categoryHueVar(name)`: same hash algorithm, no roster-index lookup.
-  Use for non-butler entities (contact labels, tags) where positional
-  slot stability is not required.
 - `KNOWN_BUTLERS`: the canonical roster order that determines permanent
   color slots for known butlers.
 
-All consumers use this module:
-- `frontend/src/components/dashboard/RecentMoments.tsx`: uses `<ButlerMark tone="fill" />`
-- `frontend/src/components/dashboard/SessionStripeChart.tsx`: uses `butlerHueVar()`
-- `frontend/src/components/relationship/ContactTable.tsx`: uses `categoryHueVar()` for label badges
-- `frontend/src/components/relationship/ContactDetailView.tsx`: uses `categoryHueVar()` for label badges
-- `frontend/src/components/costs/CostStripeChart.tsx`: uses `butlerHueVar()`
-- `frontend/src/pages/GroupsPage.tsx`: uses `categoryHueVar()` for label badges
+For the complete public prop contract, see `ButlerMarkProps` in
+`frontend/src/components/ui/ButlerMark.tsx`. Its `size`, `className`,
+`showNameOnHover`, and `type` props shape geometry, caller styling, hover
+labels, and the staffer circle respectively; they do not expand the identity
+color-role surface documented here.
+
+The identity-slot resolver is private to ButlerMark. It is not a public API:
+no chart, tag, badge, or other caller may resolve `--category-N` (or its
+legacy `--color-category-N` alias) directly. The private identity surface is
+enforced by the visual-role guard in `frontend/eslint.config.js` for
+TypeScript/TSX and `frontend/scripts/visual-role-css-guard.mjs` for source
+stylesheets; both gates run through `frontend`'s `npm run lint`.
+
+Non-identity callers choose a typed semantic role instead:
+
+- **Local categories:** `categoricalHueVar` / `categoricalColor` from
+  `frontend/src/lib/visual-token-roles.ts`, which resolve the
+  `--categorical-1..12` ramp.
+- **Chart series:** `chartSeriesColor` / `chartColor` from
+  `frontend/src/lib/chart-colors.ts`, which resolve `--chart-1..5` (the
+  role-explicit `chartSeriesColor` name is preferred for new multi-series
+  code).
+- **Operational state:** `StateDot` / `stateColorVar`, which resolve the
+  state-token registry rather than a categorical or identity hue.
+- **Owner-selected label colors:** `ownerCustomColor`, the explicit custom
+  color boundary for a supplied owner value.
+- **Filled label styles:** `labelFillColors` normalizes supported owner hex
+  (`#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA`) to an opaque fill and chooses a
+  contrast-safe foreground; unsupported input falls back to the typed local
+  categorical ramp and its theme-aware fill foreground.
 
 ### Source files
 

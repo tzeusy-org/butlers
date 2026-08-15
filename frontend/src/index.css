@@ -203,6 +203,13 @@
   --categorical-11: oklch(0.430 0.130 234.0); /* indigo */
   --categorical-12: oklch(0.440 0.135 35.0);  /* coral */
 
+  /* Label-fill foregrounds. The categorical ramp is dark in light mode, so
+   * white clears AA against every slot. Owner hex fills choose one of the
+   * explicit light/dark-background foregrounds in visual-token-roles.ts. */
+  --categorical-fill-foreground: oklch(1 0 0);
+  --label-fill-foreground-on-light: oklch(0 0 0);
+  --label-fill-foreground-on-dark: oklch(1 0 0);
+
   /* ---------------------------------------------------------------------------
    * Role badge tokens
    *
@@ -419,19 +426,7 @@ body {
   --color-permanence-strong:    var(--permanence-strong);
   --color-permanence-permanent: var(--permanence-permanent);
 
-  /* Categorical palette */
-  --color-category-1: var(--category-1);
-  --color-category-2: var(--category-2);
-  --color-category-3: var(--category-3);
-  --color-category-4: var(--category-4);
-  --color-category-5: var(--category-5);
-  --color-category-6: var(--category-6);
-  --color-category-7: var(--category-7);
-  --color-category-8: var(--category-8);
-  --color-category-9:  var(--category-9);
-  --color-category-10: var(--category-10);
-  --color-category-11: var(--category-11);
-  --color-category-12: var(--category-12);
+  /* Butler identity slots intentionally have no public Tailwind aliases. */
 
   /* Non-butler categorical/decorative palette */
   --color-categorical-1:  var(--categorical-1);
@@ -592,6 +587,13 @@ body {
   --categorical-10: oklch(0.740 0.135 346.0); /* raspberry */
   --categorical-11: oklch(0.730 0.125 234.0); /* indigo */
   --categorical-12: oklch(0.750 0.130 35.0);  /* coral */
+
+  /* The categorical ramp is light in dark mode, so its label-fill foreground
+   * switches to the dark surface. Owner foregrounds are selected from the
+   * opaque fill itself and remain identical across themes. */
+  --categorical-fill-foreground: oklch(0.145 0 0);
+  --label-fill-foreground-on-light: oklch(0 0 0);
+  --label-fill-foreground-on-dark: oklch(1 0 0);
 
   /* Role badges — lifted ~0.07 L for legibility on dark card backgrounds */
   --role-owner:   oklch(0.561 0.262 275.1);

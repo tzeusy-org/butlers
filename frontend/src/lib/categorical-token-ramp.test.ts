@@ -6,6 +6,13 @@ import { describe, expect, it } from "vitest";
 const CSS_PATH = fileURLToPath(new URL("../index.css", import.meta.url));
 const CSS_SOURCE = readFileSync(CSS_PATH, "utf-8");
 const SRC_ROOT = fileURLToPath(new URL("../", import.meta.url));
+const DOMAIN_SPEC_PATH = fileURLToPath(
+  new URL(
+    "../../../openspec/specs/dashboard-domain-pages/spec.md",
+    import.meta.url,
+  ),
+);
+const DOMAIN_SPEC = readFileSync(DOMAIN_SPEC_PATH, "utf-8");
 
 const CATEGORICAL_SLOTS = Array.from({ length: 12 }, (_, index) => index + 1);
 
@@ -53,6 +60,15 @@ describe("categorical token ramp", () => {
         ),
       );
     }
+  });
+
+  it("does not publish Butler identity slots as Tailwind color aliases", () => {
+    expect(CSS_SOURCE).not.toMatch(/--color-category-\d+\s*:/);
+  });
+
+  it("keeps the domain spec on the local-category Tailwind alias", () => {
+    expect(DOMAIN_SPEC).toContain("--color-categorical-*");
+    expect(DOMAIN_SPEC).not.toContain("--color-category-*");
   });
 
   it.each(MIGRATED_CONSUMERS)("migrates %s without a palette-rule exemption", (path) => {

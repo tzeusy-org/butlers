@@ -30,7 +30,7 @@ import { Check, Copy, Download, Loader2, RotateCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Time } from '@/components/ui/time'
-import { butlerHueVar } from '@/components/ui/ButlerMark'
+import { categoricalFillForeground, categoricalHueVar } from '@/lib/visual-token-roles'
 import {
   useIngestionEventLineage,
   useIngestionEventReplays,
@@ -249,7 +249,7 @@ function DrawerSessionsTab({
           <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground font-mono">
             {butlers.map((b) => (
               <span key={b} className="flex items-center gap-1">
-                <span className="inline-block size-2.5 rounded-sm" style={{ backgroundColor: butlerHueVar(b) }} />
+                <span className="inline-block size-2.5 rounded-sm" style={{ backgroundColor: categoricalHueVar(b) }} />
                 {b}
               </span>
             ))}
@@ -257,7 +257,7 @@ function DrawerSessionsTab({
           <div className="relative rounded-md border bg-muted/10 overflow-hidden">
             {butlers.map((butler) => {
               const laneSessions = withTimes.filter((s) => s.butler_name === butler)
-              const laneColor = butlerHueVar(butler)
+              const laneColor = categoricalHueVar(butler)
               return (
                 <div key={butler} className="relative h-7 border-b last:border-0">
                   {laneSessions.map((s) => {
@@ -277,7 +277,10 @@ function DrawerSessionsTab({
                           className="absolute top-0.5 bottom-0.5 rounded-sm opacity-80 hover:opacity-100 transition-opacity cursor-pointer"
                           style={{ left: `${left}%`, width: `${width}%`, backgroundColor: laneColor }}
                         >
-                          <span className="px-1 text-[10px] font-medium text-white truncate block leading-6">
+                          <span
+                            className="px-1 text-[10px] font-medium truncate block leading-6"
+                            style={{ color: categoricalFillForeground() }}
+                          >
                             {dur}
                           </span>
                         </Link>
@@ -300,7 +303,7 @@ function DrawerSessionsTab({
           <div className="flex items-center gap-2 flex-wrap">
             <span
               className="inline-block size-3 rounded-sm shrink-0"
-              style={{ backgroundColor: butlerHueVar(s.butler_name) }}
+              style={{ backgroundColor: categoricalHueVar(s.butler_name) }}
             />
             <span className="font-medium text-[14px]">{s.butler_name}</span>
             <span className="text-muted-foreground text-[12px]">
@@ -812,7 +815,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
                   >
                     <span
                       className="inline-block size-2 rounded-sm shrink-0"
-                      style={{ backgroundColor: butlerHueVar(s.butler_name) }}
+                      style={{ backgroundColor: categoricalHueVar(s.butler_name) }}
                     />
                     <span className="truncate">#{i + 1} {s.butler_name}</span>
                   </button>

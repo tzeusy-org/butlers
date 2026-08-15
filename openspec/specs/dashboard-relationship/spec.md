@@ -176,7 +176,7 @@ defined in the `detail-page-archetype` spec.
 
 5. **Token cleanup status.** The hex-literal color palettes previously at
    `ContactDetailView.tsx` lines 53–62 and 69–77 have already been replaced with
-   CSS custom properties (`var(--category-*)` and `var(--role-*)`) as of the migration
+   CSS custom properties (`var(--categorical-*)` and `var(--role-*)`) as of the migration
    in ce185209 (role badge hex → CSS tokens). No token-cleanup prerequisite remains
    for this migration step. Implementers should verify no new hex literals were
    introduced during the archetype migration.
@@ -1145,7 +1145,7 @@ Note: the sixth route in this list replaces the legacy `/butlers/relationship/en
 1. **No new tokens** outside `frontend/src/index.css`. The redesign reuses
    `--bg`, `--bg-elev`, `--bg-deep`, `--fg`, `--mfg`, `--dim`, `--border`,
    `--border-soft`, `--border-strong`, `--red`, `--amber`, `--green`,
-   `--category-1..8` (butler hues, EntityMark glyph only), `--tier-1..6`
+   `--categorical-1..12` (local entity categories, with labels or legends), `--tier-1..6`
    (Dunbar ramp, six layers: 5/15/50/150/500/1500), and `--severity-*` (per
    in-flight `token-system-spec-sync`).
 

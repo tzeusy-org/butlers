@@ -54,8 +54,11 @@ vi.mock("recharts", () => {
     return React.createElement("div", { "data-testid": "recharts-bar-chart" }, children)
   }
 
-  const Bar = ({ dataKey }: { dataKey: string }) =>
-    React.createElement("div", { "data-testid": `recharts-bar-${dataKey}` })
+  const Bar = ({ dataKey, fill }: { dataKey: string; fill?: string }) =>
+    React.createElement("div", {
+      "data-testid": `recharts-bar-${dataKey}`,
+      "data-fill": fill,
+    })
 
   const XAxis = () => null
   const YAxis = () => null
@@ -298,6 +301,26 @@ describe("SessionStripeChart — renders with data", () => {
     })
     expect(html).toContain("recharts-bar-home")
     expect(html).toContain("recharts-bar-email")
+  })
+
+  it("uses chart-series tokens in deterministic bar order", () => {
+    mockUseQuery.mockReturnValue({
+      data: {
+        data: [
+          { id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" },
+          { id: "s2", butler: "email", started_at: "2024-06-15T11:00:00.000Z" },
+        ],
+        meta: { total: 2, offset: 0, limit: 2000, has_more: false },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useQuery>)
+
+    const html = renderChart({
+      butlers: [makeButler("home"), makeButler("email")],
+    })
+    expect(html).toContain('data-testid="recharts-bar-home" data-fill="var(--chart-1)"')
+    expect(html).toContain('data-testid="recharts-bar-email" data-fill="var(--chart-2)"')
   })
 })
 

@@ -19,7 +19,6 @@ interface ButlerNode {
   status: string;
   /** Unused by the graph itself; kept optional for callers that already have it. */
   port?: number;
-  type?: "butler" | "staffer";
   /**
    * Canonical liveness tone from useButlerStatusBoard (bu-86c4c.17) -- the
    * SAME verdict rendered by the roster board and the heartbeat tile. When
@@ -63,41 +62,9 @@ const STATUS_COLORS: Record<string, string> = {
   stale: "var(--amber)",
 };
 
-// Staffers keep a fixed identity blue (--category-1) rather than the
-// per-butler hash used elsewhere, matching the pre-existing convention this
-// map already encoded before bu-86c4c.6 replaced the raw hex. Deliberate,
-// reviewed deviation from the three-status-color rule -- see
-// STAFFER_TONE_COLORS below for the fuller rationale (bu-ep4ks.15).
-const STAFFER_STATUS_COLORS: Record<string, string> = {
-  // eslint-disable-next-line no-restricted-syntax -- see reason above
-  ok: "var(--category-1)",
-  // eslint-disable-next-line no-restricted-syntax -- see reason above
-  online: "var(--category-1)",
-  down: "var(--red)",
-  offline: "var(--red)",
-  degraded: "var(--amber)",
-  stale: "var(--amber)",
-};
-
-// Staffers keep a fixed identity blue (--category-1) for the "green"/healthy
-// tone rather than the roster board's canonical var(--green), to keep the
-// vision's butler/staffer distinction visible -- per the pre-existing
-// STAFFER_STATUS_COLORS convention above. This is a deliberate, reviewed
-// deviation from the dashboard's three-status-color rule (bu-86c4c.6), not
-// an accidental invented color -- a categorical identity hue reused for a
-// "this is healthy" signal, same tradeoff STAFFER_STATUS_COLORS already made.
-const STAFFER_TONE_COLORS: Record<CellTone, string> = {
-  ...TONE_COLORS,
-  // eslint-disable-next-line no-restricted-syntax -- see reason above (bu-ep4ks.15)
-  green: "var(--category-1)",
-};
-
-function getStatusColor(status: string, agentType?: string, tone?: CellTone): string {
+function getStatusColor(status: string, tone?: CellTone): string {
   if (tone) {
-    return agentType === "staffer" ? STAFFER_TONE_COLORS[tone] : TONE_COLORS[tone];
-  }
-  if (agentType === "staffer") {
-    return STAFFER_STATUS_COLORS[status] ?? "var(--dim)";
+    return TONE_COLORS[tone];
   }
   return STATUS_COLORS[status] ?? "var(--dim)";
 }
@@ -127,14 +94,15 @@ function buildNodes(
   const centerY = 250;
 
   if (switchboard) {
+    const stateColor = getStatusColor(switchboard.status, switchboard.tone);
     nodes.push({
       id: switchboard.name,
       position: { x: centerX - 70, y: centerY - 20 },
       data: { label: switchboard.name },
       style: {
-        background: getStatusColor(switchboard.status, switchboard.type, switchboard.tone),
-        color: "white",
-        border: "2px solid var(--bg-deep)",
+        background: "var(--bg-deep)",
+        color: "var(--fg)",
+        border: `2px solid ${stateColor}`,
         borderRadius: "12px",
         padding: "16px 24px",
         fontWeight: 700,
@@ -147,14 +115,15 @@ function buildNodes(
 
   // Heartbeat node: top-right
   if (heartbeat) {
+    const stateColor = getStatusColor(heartbeat.status, heartbeat.tone);
     nodes.push({
       id: heartbeat.name,
       position: { x: 550, y: 50 },
       data: { label: heartbeat.name },
       style: {
-        background: getStatusColor(heartbeat.status, heartbeat.type, heartbeat.tone),
-        color: "white",
-        border: "2px dashed var(--dim)",
+        background: "var(--bg-deep)",
+        color: "var(--fg)",
+        border: `2px dashed ${stateColor}`,
         borderRadius: "50%",
         padding: "12px",
         fontWeight: 600,
@@ -186,8 +155,8 @@ function buildNodes(
       data: { label: butler.name },
       style: {
         background: "var(--bg-deep)",
-        color: "white",
-        border: `2px solid ${getStatusColor(butler.status, butler.type, butler.tone)}`,
+        color: "var(--fg)",
+        border: `2px solid ${getStatusColor(butler.status, butler.tone)}`,
         borderRadius: "8px",
         padding: "10px 16px",
         fontWeight: 500,
@@ -216,7 +185,7 @@ function buildNodes(
       data: { label: connectorLabel(connector) },
       style: {
         background: "var(--bg)",
-        color: "white",
+        color: "var(--fg)",
         border: `2px solid ${getStatusColor(connector.liveness)}`,
         borderRadius: "8px",
         padding: "8px 12px",
@@ -270,8 +239,7 @@ function buildEdges(
         id: `conn-${connId}`,
         source: connId,
         target: "switchboard",
-        // eslint-disable-next-line no-restricted-syntax -- violet for connector edges (categorical, not a status signal)
-        style: { stroke: "var(--category-2)" },
+        style: { stroke: "var(--categorical-2)" },
         animated: connector.liveness === "online",
       });
     }
@@ -380,10 +348,6 @@ export default function TopologyGraph({
           <span className="flex items-center gap-1.5">
             <span className="inline-block size-2 rounded-full" style={{ background: TONE_COLORS.red }} aria-hidden="true" />
             Offline / Quarantined
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block size-2 rounded-full" style={{ background: STAFFER_TONE_COLORS.green }} aria-hidden="true" />
-            Staffer
           </span>
         </div>
         {/* Connectors-source degraded note -- a failed connectors fetch must

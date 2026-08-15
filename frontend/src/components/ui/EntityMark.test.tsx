@@ -10,7 +10,7 @@
 //   - isOwner applies --role-owner border in neutral tone
 //   - isUnidentified applies --amber border + amber text in neutral tone
 //   - ARIA: role="img" + aria-label present
-//   - entityTypeColor returns a --category-N token for known types
+//   - entityTypeColor returns a --categorical-N token for known types
 //   - className forwarding
 //   - size prop scales the element
 // ---------------------------------------------------------------------------
@@ -37,9 +37,9 @@ describe("entityTypeColor: known entity types", () => {
   ] as const
 
   for (const type of KNOWN_TYPES) {
-    it(`${type} maps to a valid --category-N token`, () => {
+    it(`${type} maps to a valid --categorical-N token`, () => {
       const token = entityTypeColor(type)
-      expect(token).toMatch(/^var\(--category-[1-8]\)$/)
+      expect(token).toMatch(/^var\(--categorical-(?:[1-9]|1[0-2])\)$/)
     })
   }
 
@@ -140,16 +140,16 @@ describe("EntityMark: tone=fill", () => {
     const html = renderToStaticMarkup(
       <EntityMark name="Acme" entityType="organization" tone="fill" />,
     )
-    // organization → --category-4 (teal)
-    expect(html).toContain("var(--category-4)")
+    // organization → --categorical-4 (teal)
+    expect(html).toContain("var(--categorical-4)")
     expect(html).toContain("background")
   })
 
-  it("applies white text color", () => {
+  it("applies the theme-aware categorical fill foreground", () => {
     const html = renderToStaticMarkup(
       <EntityMark name="Acme" entityType="organization" tone="fill" />,
     )
-    expect(html).toContain("white")
+    expect(html).toContain("var(--categorical-fill-foreground)")
   })
 
   it("applies transparent border in fill tone", () => {

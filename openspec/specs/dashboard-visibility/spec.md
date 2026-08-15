@@ -353,12 +353,12 @@ The `TopologyGraph` component SHALL render a force-directed graph of butler node
 
 #### Scenario: Health status coloring
 - **WHEN** a butler has status "ok" or "online"
-- **THEN** its node or border is green (`#22c55e`)
+- **THEN** its state border is green (`--green`)
 - **WHEN** status is "down" or "offline"
-- **THEN** its color is red (`#ef4444`)
+- **THEN** its state border is red (`--red`)
 - **WHEN** status is "degraded"
-- **THEN** its color is yellow (`#eab308`)
-- **AND** the Switchboard node's background is the status color; other butlers have dark backgrounds with colored borders
+- **THEN** its state border is amber (`--amber`)
+- **AND** every topology node retains a neutral background and a readable neutral foreground (`var(--fg)`) in both themes, exposing live state only through a state-colored border or compact `StateDot`; the Switchboard and Heartbeat nodes retain neutral backgrounds with state-colored borders, while ordinary Butler and connector nodes do the same on their neutral surface layers
 
 #### Scenario: Edge visualization
 - **WHEN** the Switchboard butler is present

@@ -189,6 +189,19 @@ const CONTACT_TWO: LinkedContactSummary = {
   reachable_channels: [],
 };
 
+const INVALID_COLOR_CONTACT: LinkedContactSummary = {
+  ...CONTACT_TWO,
+  labels: [{ id: "label-invalid", name: "Invalid colour", color: "#1234567" }],
+};
+
+const WHITE_COLOR_CONTACT: LinkedContactSummary = {
+  ...CONTACT_TWO,
+  labels: [
+    // eslint-disable-next-line no-restricted-syntax -- fixture uses an arbitrary owner-selected white label color to exercise contrast selection
+    { id: "label-white", name: "White", color: "#ffffffff" },
+  ],
+};
+
 const SPARSE_CONTACT: LinkedContactSummary = {
   id: "contact-003",
   full_name: "Charlie",
@@ -281,6 +294,24 @@ describe("ContactChannelCard — one linked contact (populated state)", () => {
     setLinkedContacts([CONTACT_ONE]);
     const html = renderCard();
     expect(html).toContain("Friend");
+  });
+
+  it("uses the categorical fallback when a label has an unsupported owner hex length", () => {
+    setLinkedContacts([INVALID_COLOR_CONTACT]);
+    const html = renderCard();
+
+    expect(html).toContain("background-color:var(--categorical-");
+    expect(html).toContain("color:var(--categorical-fill-foreground)");
+    expect(html).not.toContain("#1234567");
+  });
+
+  it("uses a dark foreground for a valid white owner label fill", () => {
+    setLinkedContacts([WHITE_COLOR_CONTACT]);
+    const html = renderCard();
+
+    // eslint-disable-next-line no-restricted-syntax -- regression assertion verifies the exact normalized owner-selected white fill
+    expect(html).toContain("background-color:#ffffff");
+    expect(html).toContain("color:var(--label-fill-foreground-on-light)");
   });
 
   it("renders preferred channel chip when set", () => {

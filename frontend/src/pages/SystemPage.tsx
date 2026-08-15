@@ -105,7 +105,6 @@ function TopologyTile() {
   const butlers = rows.map((row) => ({
     name: row.name,
     status: row.status,
-    type: row.type,
     tone: row.cellTone,
   }));
   const connectors = connectorsResponse?.data ?? [];

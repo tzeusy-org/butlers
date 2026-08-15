@@ -3,14 +3,14 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
 import {
-  butlerHueVar,
-  categoryHueVar,
   chartColor,
+  chartSeriesColor,
   chartColorAlpha,
   NEUTRAL_DENSITY_HIGH,
   NEUTRAL_DENSITY_LOW,
   neutralDensityColor,
 } from "./chart-colors"
+import { categoricalHueVar } from "./visual-token-roles"
 
 describe("chartColor / chartColorAlpha", () => {
   it("cycles through the 5-slot --chart palette and wraps", () => {
@@ -24,12 +24,10 @@ describe("chartColor / chartColorAlpha", () => {
   })
 })
 
-describe("butler-identity / category channel re-exports", () => {
-  it("re-exports the same functions ui/ButlerMark implements (single source of truth)", () => {
-    expect(typeof butlerHueVar).toBe("function")
-    expect(typeof categoryHueVar).toBe("function")
-    expect(butlerHueVar("health")).toMatch(/^var\(--category-\d+\)$/)
-    expect(categoryHueVar("some-tag")).toMatch(/^var\(--category-\d+\)$/)
+describe("typed chart and local-category channels", () => {
+  it("keeps chart series and local category roles separate", () => {
+    expect(chartSeriesColor(0)).toMatch(/^var\(--chart-\d+\)$/)
+    expect(categoricalHueVar("some-tag")).toMatch(/^var\(--categorical-\d+\)$/)
   })
 })
 

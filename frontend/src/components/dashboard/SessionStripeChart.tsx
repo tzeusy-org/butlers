@@ -4,7 +4,7 @@
 // Renders a recharts BarChart with one stacked Bar per butler.
 // X = time bucket (hourly for <= 48h windows, daily otherwise)
 // Y = session count
-// Color: deterministic mapping butler-name -> --category-1..8 CSS tokens
+// Color: deterministic series order -> --chart-1..5 CSS tokens
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react"
@@ -20,7 +20,7 @@ import {
 
 import { ChartSkeleton } from "@/components/skeletons"
 import type { ButlerSummary } from "@/api/types"
-import { butlerHueVar } from "@/components/ui/ButlerMark"
+import { chartSeriesColor } from "@/lib/chart-colors"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import {
   bucketUnit,
@@ -230,12 +230,12 @@ export function SessionStripeChart({
           />
           <Tooltip content={<StripeTooltip unit={unit} />} />
           <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-          {orderedNames.map((name) => (
+          {orderedNames.map((name, index) => (
             <Bar
               key={name}
               dataKey={name}
               stackId="bucket"
-              fill={butlerHueVar(name)}
+              fill={chartSeriesColor(index)}
               isAnimationActive={false}
             />
           ))}

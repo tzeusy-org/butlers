@@ -45,8 +45,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { categoryHueVar } from "@/components/ui/ButlerMark";
-import { ENTITY_BADGE_TEXT } from "@/lib/entity-model";
+import { labelFillColors } from "@/lib/visual-token-roles";
 import { useEntityLinkedContacts, useAddEntityContact, useDeleteEntityContact, useMarkEntityContactVerified, useUpdateEntityContact, useRevealEntityContactSecret, useSetPreferredChannel, useClearPreferredChannel } from "@/hooks/use-entities";
 import { sortChannelsPrimaryFirst } from "./contact-channel-utils";
 
@@ -117,8 +116,8 @@ function sanitizePhoneHref(phone: string): string {
   return phone.replace(/[\s()]/g, "");
 }
 
-function labelStyle(label: Label): string {
-  return label.color ?? categoryHueVar(label.name);
+function labelStyle(label: Label) {
+  return labelFillColors(label.name, label.color);
 }
 
 // ---------------------------------------------------------------------------
@@ -749,10 +748,7 @@ function ContactRow({
             {contact.labels.map((label) => (
               <Badge
                 key={label.id}
-                style={{
-                  backgroundColor: labelStyle(label),
-                  color: ENTITY_BADGE_TEXT,
-                }}
+                style={labelStyle(label)}
                 className="text-[10px] px-1.5 py-0"
               >
                 {label.name}

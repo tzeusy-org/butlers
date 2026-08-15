@@ -56,7 +56,7 @@ describe("ProviderMark: glyph rendering", () => {
 describe("ProviderMark: no colour", () => {
   it("does not use any category hue token", () => {
     const html = renderToStaticMarkup(<ProviderMark glyph="G" label="google" />)
-    expect(html).not.toContain("var(--category-")
+    expect(html).not.toMatch(/var\(--category-/)
   })
 
   it("background is transparent (no fill)", () => {

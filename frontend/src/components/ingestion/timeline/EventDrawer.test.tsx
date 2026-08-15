@@ -245,6 +245,18 @@ describe("EventDrawer — per-session cost column", () => {
     expect(content!.textContent).toContain("atlas");
   });
 
+  it("uses the theme-aware categorical foreground for flamegraph duration text", () => {
+    mockSessions([makeSession()]);
+    renderDrawer();
+
+    const duration = container.querySelector<HTMLSpanElement>(
+      "[data-testid='sessions-tab-content'] a > span",
+    );
+    expect(duration).not.toBeNull();
+    expect(duration!.style.color).toBe("var(--categorical-fill-foreground)");
+    expect(duration!.className).not.toContain("text-white");
+  });
+
   it("shows empty state when no sessions", () => {
     mockSessions([]);
     renderDrawer();

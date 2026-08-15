@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { fireEvent, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -82,6 +83,19 @@ const WORK: Group = {
   labels: [],
   created_at: "2026-02-01T00:00:00Z",
   updated_at: "2026-02-01T00:00:00Z",
+};
+
+const INVALID_COLOR_FAMILY: Group = {
+  ...FAMILY,
+  labels: [{ id: "label-invalid", name: "Invalid colour", color: "#12345" }],
+};
+
+const WHITE_COLOR_FAMILY: Group = {
+  ...FAMILY,
+  labels: [
+    // eslint-disable-next-line no-restricted-syntax -- fixture uses an arbitrary owner-selected white label color to exercise contrast selection
+    { id: "label-white", name: "White", color: "#fff" },
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -161,6 +175,68 @@ describe("CirclesPage — structure", () => {
     expect(container.textContent).toContain("4 members");
     expect(container.textContent).toContain("Work friends");
     expect(container.textContent).toContain("2 members");
+  });
+
+  it("uses the categorical fallback when a label has an unsupported owner hex length", () => {
+    (useGroups as AnyMock).mockReturnValue({
+      data: { groups: [INVALID_COLOR_FAMILY], total: 1 },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    renderPage();
+
+    expect(container.innerHTML).toMatch(/background-color:\s*var\(--categorical-/);
+    expect(container.innerHTML).toMatch(/color:\s*var\(--categorical-fill-foreground\)/);
+    expect(container.innerHTML).not.toContain("#12345");
+  });
+
+  it("uses a dark foreground for a valid white owner label fill", () => {
+    (useGroups as AnyMock).mockReturnValue({
+      data: { groups: [WHITE_COLOR_FAMILY], total: 1 },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    renderPage();
+
+    expect(container.innerHTML).toMatch(/background-color:\s*rgb\(255, 255, 255\)/);
+    expect(container.innerHTML).toMatch(/color:\s*var\(--label-fill-foreground-on-light\)/);
+  });
+});
+
+describe("CirclesPage — assign label dialog", () => {
+  it("exposes each available label as a native button activated by Enter", async () => {
+    const assign = vi.fn();
+    const user = userEvent.setup();
+    (useGroups as AnyMock).mockReturnValue({
+      data: { groups: [WORK], total: 1 },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    (useLabels as AnyMock).mockReturnValue({
+      // eslint-disable-next-line no-restricted-syntax -- Exercises an arbitrary owner-selected color, not a themed UI value.
+      data: [{ id: "label-vip", name: "VIP", color: "#fff" }],
+      isPending: false,
+    });
+    (useAssignGroupLabel as AnyMock).mockReturnValue({ mutate: assign });
+    renderPage();
+
+    await user.click(container.querySelector('button[aria-label="Assign label"]')!);
+    const labelControl = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "VIP",
+    );
+    expect(labelControl).toBeTruthy();
+
+    labelControl!.focus();
+    expect(document.activeElement).toBe(labelControl);
+    await user.type(labelControl!, "{enter}");
+
+    expect(assign).toHaveBeenCalledWith({ groupId: "group-work", labelId: "label-vip" });
   });
 });
 

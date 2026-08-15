@@ -19,8 +19,8 @@
  * destructive-red (matching the hour strip's error-segment color and the
  * row status dot). Butler identity is surfaced in the tick's tooltip
  * instead of via hue, per the bead's own fallback guidance — this
- * deliberately diverges from EventDrawer's flamegraph, which already fills
- * bars with `butlerHueVar()` (a pre-existing, narrower exception scoped to
+ * deliberately diverges from EventDrawer's flamegraph, which fills
+ * bars with the local categorical role (a detail-view differentiation,
  * the drawer's click-gated detail view, not audited here).
  *
  * Data: the `sessions` array is already provided by the events list

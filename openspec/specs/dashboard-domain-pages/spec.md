@@ -19,7 +19,7 @@ Voice briefing plus a KPI strip; the right column is a quiet attention index. On
 the grid MUST collapse to a single column with the attention index below the briefing.
 
 The Overview MUST follow the Dispatch language: Display headline (not bold), the butler hue
-(`--category-4` teal) only on the health letter-mark (`ButlerMark`), surfaces-not-cards, and state
+(`ButlerMark` identity hue) only on the health letter-mark, surfaces-not-cards, and state
 color (`--red`/`--amber`/`--green`) reserved for genuine health signal, never decoration.
 
 The Overview MUST contain, in the left column:
@@ -210,11 +210,11 @@ The page MUST contain:
   named compound exception: it MUST render `systolic` and `diastolic` as two lines. Another
   chart-eligible compound type MAY expose its raw data, but it MUST NOT guess a numeric key or invent
   a line series; it MUST state that no unambiguous series is available instead. The line palette MUST
-  be driven by the health hue token `--category-5` (bridged to a literal color for recharts via a read
-  of the computed CSS variable), not a hardcoded hex. Where two lines are shown
-  (systolic/diastolic), the second line MUST use a distinguishable shade derived from `--category-5`
-  (e.g. a reduced-opacity or lightened variant of the same hue) so the two lines remain visually
-  separable while staying within the single health hue.
+  use the direct chart-series CSS custom-property reference `var(--chart-1)` passed to the Recharts
+  SVG `stroke` prop, not a hardcoded hex or computed-style-derived literal. Chromium resolves that
+  CSS custom property in the SVG presentation attribute at paint time. Where two lines are shown
+  (systolic/diastolic), the second line MUST pass the separate `var(--chart-2)` reference to its
+  SVG stroke so the two lines remain visually separable.
 - The trend rule-list as the primary surface, sourced from `GET /api/health/measurements/trend`
   (the bucketed mean/min/max aggregation). Only scalar types MAY request or render that scalar
   aggregation. `blood_pressure` and other compound types MUST state that trend aggregation is
@@ -271,7 +271,7 @@ The page MUST contain:
 - **WHEN** the user selects `blood_pressure` as the measurement type
 - **AND** there are measurements with `value` containing `systolic` and `diastolic` keys
 - **THEN** the chart MUST render two lines for systolic and diastolic
-- **AND** the two lines MUST use distinguishable shades of `--category-4` (the diastolic line a
+- **AND** the two lines MUST use distinguishable chart-series tokens (the diastolic line a
   reduced-opacity or lightened variant) so they are not the same indistinguishable color
 - **AND** the chart tooltip MUST label them "Systolic" and "Diastolic"
 
@@ -495,7 +495,7 @@ The page MUST contain:
 #### Scenario: Label color determinism
 
 - **WHEN** a label named "family" has no explicit `color` set
-- **THEN** its badge color MUST be deterministically derived from a hash of "family" using the categorical palette: `var(--category-1)` through `var(--category-12)` (see `frontend/src/components/ui/ButlerMark.tsx` `categoryHueVar()`, the single source of truth for this hash pool — bu-86c4c.6 extended it from 8 to 12 slots)
+- **THEN** its badge color MUST be deterministically derived from a hash of "family" using the local categorical palette: `var(--categorical-1)` through `var(--categorical-12)` (see `frontend/src/lib/visual-token-roles.ts` `categoricalHueVar()`)
 - **AND** the same label MUST always render with the same color
 
 #### Scenario: Google sync with mixed results
@@ -1694,9 +1694,9 @@ Scope: v1-mandatory
 ## Source References
 
 - `frontend/src/index.css` — `--severity-low`, `--severity-medium`,
-  `--severity-high` token definitions; `--category-1` through `--category-12`
+  `--severity-high` token definitions; `--categorical-1` through `--categorical-12`
   definitions (extended from 8 slots by bu-86c4c.6). Both sets are also
-  aliased into Tailwind via `--color-severity-*` and `--color-category-*`.
+  aliased into Tailwind via `--color-severity-*` and `--color-categorical-*`.
 - Epic bu-v1tt2 (Vertical C) — token system migration that introduced the named
   CSS tokens; this spec change closes the remaining spec-code drift.
 - `about/heart-and-soul/design-language.md` — token exemption for `--chart-*`
