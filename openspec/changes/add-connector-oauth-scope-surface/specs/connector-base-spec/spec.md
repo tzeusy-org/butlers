@@ -53,7 +53,12 @@ The `ConnectorDetail` Pydantic response model SHALL be extended additively to in
 - **THEN** the payload SHALL include an `auth` field whose shape conforms to
   `connector-oauth-scope-surface/spec` §Dashboard API response shape
 - **AND** the `auth.status` field SHALL be a non-null enum value drawn from
-  `{ok, degraded, expired, rotation-needed, unsupported, unconfigured}`
+  `{ok, degraded, needs_reauth, unsupported, unconfigured}`
+- **AND** the API SHALL apply the documented
+  `expired | rotation-needed` → `needs_reauth` normalization before the
+  typed recovery resolver consumes the response
+- **AND** `auth.recovery_reason` SHALL preserve `expired` or
+  `rotation-needed` when normalization occurred, and otherwise be null
 
 #### Scenario: ConnectorDetail includes scopes block
 
@@ -71,8 +76,11 @@ The `ConnectorDetail` Pydantic response model SHALL be extended additively to in
 - **THEN** the model SHALL NOT be extended with the `auth` or `scopes`
   blocks (those are detail-only to keep list-page payloads small)
 - **AND** the list endpoint MAY include a single `auth_status` enum field on
-  each summary entry for the connector-attention strip — but full scope
-  state is reserved for the detail endpoint
+  each summary entry for the connector-attention strip; despite the legacy
+  field name, this public value SHALL use
+  `{ok, degraded, needs_reauth, unsupported, unconfigured}` and SHALL apply
+  the same stored-cause normalization as `ConnectorDetail.auth.status`
+- **AND** full scope state is reserved for the detail endpoint
 
 ### Requirement: OAuth connector observation responsibility
 

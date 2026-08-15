@@ -250,6 +250,14 @@ The `auth_status` enum on `connector_registry` SHALL be computed
 deterministically from the drift classification, the manifest version
 comparison, and the connector's credential type. Six values are defined.
 
+`connector_registry.auth_status` is the storage/diagnostic vocabulary. Before
+the dashboard's typed recovery resolver consumes it, the API SHALL normalize
+`expired | rotation-needed` → `needs_reauth`. It SHALL preserve the original
+stored value as `auth.recovery_reason` so copy can distinguish an expired
+session from required scope rotation. This is the sole convergence boundary:
+the UI continues to make only `needs_reauth` interactive, rather than learning
+a second recovery state machine.
+
 #### Scenario: `ok` status
 
 - **WHEN** the drift class is `ok` or `extra`
@@ -307,6 +315,19 @@ comparison, and the connector's credential type. Six values are defined.
 - **AND** reads of `connector_registry.auth_status` SHALL trust the stored
   value (no recomputation on read)
 
+#### Scenario: Stored status is normalized for typed recovery
+
+- **WHEN** the stored `auth_status` is `expired` or `rotation-needed`
+- **THEN** `ConnectorDetail.auth.status` and any summary recovery field SHALL
+  be `needs_reauth`
+- **AND** `ConnectorDetail.auth.recovery_reason` SHALL retain the exact stored
+  value
+- **AND** the typed recovery resolver SHALL then select generic Google OAuth,
+  connector-owned Spotify Passport/PKCE, or unsupported behavior by connector
+  type
+- **AND** `unsupported` non-OAuth connectors SHALL remain `unsupported` and
+  SHALL NOT become interactive
+
 ### Requirement: Dashboard API response shape for auth and scopes blocks
 
 The connector-detail API response SHALL include an `auth` block and a `scopes` block under additive fields, with a stable shape across OAuth and non-OAuth connectors. The endpoint is `GET /api/ingestion/connectors/{type}/{identity}`, owned by `connector-base-spec` per spec.md:388-392.
@@ -319,9 +340,10 @@ The connector-detail API response SHALL include an `auth` block and a `scopes` b
   ```json
   {
     "auth": {
-      "status": "ok | degraded | expired | rotation-needed",
+      "status": "ok | degraded | needs_reauth",
       "type": "oauth",
       "note": "<provider-specific summary, e.g. 'oauth refresh · 364d expiry'>",
+      "recovery_reason": "expired | rotation-needed | null",
       "expires_at": "<iso8601 | null>",
       "required_scopes_version": <int>,
       "manifest_version": <int>
@@ -406,10 +428,23 @@ The Passport projection is content-blind and connector-owned. It SHALL remain
 a projection rather than a token authority.
 
 The three Spotify owner `entity_info` types are a connector-managed Tier 2
-exception to EntityDetail's generic user-provisioned credential rule.
-EntityDetail SHALL hide their rows and SHALL NOT offer their types in its Add
-property dropdown. Reading them through `resolve_owner_entity_info()` does not
-make them editable or move token authority to Tier 1 `CredentialStore`.
+exception to the generic User credential editor in `PassportAddPanel` under
+`/secrets`. `PassportAddPanel` SHALL NOT offer their types through
+`ENTITY_INFO_TYPES`. Reading them through `resolve_owner_entity_info()` does
+not make them editable or move token authority to Tier 1 `CredentialStore`.
+
+The authority fence SHALL also be implemented server-side in
+`src/butlers/api/routers/secrets_v2.py`. `GET /api/secrets/inventory`,
+`GET /api/secrets/user/{provider}`,
+`POST /api/secrets/user/{provider}/rotate`,
+`POST /api/secrets/user/{provider}/disconnect`,
+`POST /api/secrets/user/{provider}/probe`, and
+`POST /api/secrets/user/{provider}/reauthorize` SHALL exclude or reject Spotify
+before any `public.entity_info` lookup or mutation and before any provider
+call. Inventory SHALL omit the three backing types; provider-addressed generic
+routes SHALL return HTTP 404 with `Credential not found`. The content-blind
+projection SHALL use only Spotify connector endpoints for status and lifecycle
+actions.
 
 The production flow SHALL begin at
 `POST /api/connectors/spotify/oauth/start` and complete at
@@ -446,6 +481,8 @@ alias, or generic OAuth provider alias.
 - **AND** its configure, connect, reconnect, status, and disconnect controls
   SHALL delegate to the Spotify connector endpoints rather than a generic
   OAuth route
+- **AND** the generic Secrets inventory, detail/read, rotate, disconnect,
+  probe, and reauthorize surfaces SHALL be unavailable for Spotify server-side
 
 #### Scenario: Generic OAuth Spotify cleanup contract
 
@@ -643,7 +680,7 @@ that maps `SourceProvider` enum values (per
 
   | `connector_type` | Credential model | `auth.status` domain | Reauth |
   |------------------|------------------|----------------------|--------|
-  | `spotify` | OAuth 2.0 PKCE (connector-owned) | `ok / degraded / expired / rotation-needed / unconfigured` | Yes — Passport → connector PKCE |
+  | `spotify` | OAuth 2.0 PKCE (connector-owned) | `ok / degraded / needs_reauth / unconfigured` | Yes — Passport → connector PKCE |
   | `gmail` | Google OAuth | same | Yes |
   | `google_calendar` | Google OAuth | same | Yes |
   | `google_drive` | Google OAuth | same | Yes |

@@ -139,11 +139,21 @@ writer. The Passport projection is not a secret authority and SHALL NOT expose
 or mirror the backing Tier 2 rows. `CredentialStore` remains authoritative
 only for the system-level Spotify OAuth app client ID.
 
-The backing Spotify types are a connector-managed Tier 2 exception to
-EntityDetail's generic user-provisioned credential rule. EntityDetail SHALL
-hide their rows and SHALL NOT offer `spotify_oauth_access`,
-`spotify_oauth_refresh`, or `spotify_oauth_expires_at` in its Add property
-dropdown. This does not move token authority to `CredentialStore`.
+The backing Spotify types are a connector-managed Tier 2 exception to the
+generic User credential editor in `PassportAddPanel`. That editor SHALL NOT
+offer `spotify_oauth_access`, `spotify_oauth_refresh`, or
+`spotify_oauth_expires_at` through `ENTITY_INFO_TYPES`, and no generic
+credential page SHALL render an editable row for them. This does not move token
+authority to `CredentialStore`.
+
+The exclusion SHALL be enforced server-side, not only by hiding frontend
+controls. `GET /api/secrets/inventory`, `GET /api/secrets/user/{provider}`,
+`POST /api/secrets/user/{provider}/rotate`,
+`POST /api/secrets/user/{provider}/disconnect`,
+`POST /api/secrets/user/{provider}/probe`, and
+`POST /api/secrets/user/{provider}/reauthorize` SHALL exclude or reject Spotify
+before any `public.entity_info` lookup or mutation and before any provider
+call. The projection's controls SHALL call only Spotify connector endpoints.
 
 The projection SHALL be content-blind. It may render only a closed connection
 state and the fixed `listening-history` capability evidence
@@ -173,6 +183,10 @@ audit payload, or free-form provider-derived text.
   `POST /api/connectors/spotify/oauth/start`
 - **AND** Passport SHALL NOT use a generic OAuth Spotify registry, route, or
   compatibility alias
+- **AND** generic Secrets inventory, detail/read, rotate, disconnect, probe,
+  and reauthorize surfaces SHALL remain unavailable for Spotify server-side
+- **AND** only Spotify connector endpoints SHALL observe or mutate the backing
+  connector-owned Tier 2 lifecycle
 
 ### Requirement: Owner-Default Inventory Surfaces Primary Google Account
 

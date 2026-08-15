@@ -835,6 +835,43 @@ The dashboard API SHALL expose a `/api/secrets/*` namespace that backs the passp
 - **AND** a retained historical `secret_probe_log` row for the prior value
   SHALL NOT be presented as the replacement credential's last test
 
+### Requirement: Spotify exclusion from generic Secrets authority
+
+Spotify's connector-owned RFC 0006 Tier 2 rows SHALL never enter the generic
+Secrets authority. The exclusion SHALL be enforced server-side in
+`src/butlers/api/routers/secrets_v2.py`; hiding `PassportAddPanel` controls is
+defense in depth, not the authorization boundary.
+
+The following generic routes SHALL exclude or reject Spotify:
+
+- `GET /api/secrets/inventory`
+- `GET /api/secrets/user/{provider}`
+- `POST /api/secrets/user/{provider}/rotate`
+- `POST /api/secrets/user/{provider}/disconnect`
+- `POST /api/secrets/user/{provider}/probe`
+- `POST /api/secrets/user/{provider}/reauthorize`
+
+For inventory, the query SHALL exclude `spotify_oauth_access`,
+`spotify_oauth_refresh`, and `spotify_oauth_expires_at` at the SQL boundary so
+those rows never become generic `UserSecret` values, counts, identities, or
+provider projections. Every provider-addressed route SHALL reject the
+`spotify` provider before any `public.entity_info` lookup or mutation and
+before any provider call. The content-blind Passport projection SHALL delegate
+status and lifecycle actions only to Spotify connector endpoints.
+
+#### Scenario: Generic Secrets routes cannot address Spotify
+
+- **WHEN** a caller requests generic Spotify inventory, detail/read, rotate,
+  disconnect, probe, or reauthorize behavior
+- **THEN** inventory SHALL omit all three connector-owned Spotify types and a
+  provider-addressed route SHALL return HTTP 404 with the stable detail
+  `Credential not found`
+- **AND** no generic `public.entity_info` lookup, update, delete, probe-log
+  write, audit mutation, OAuth state creation, or provider network call SHALL
+  occur
+- **AND** the response SHALL direct interactive lifecycle work to the Spotify
+  connector endpoints without returning credential material
+
 ### Requirement: Secrets Mutation Endpoints
 The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action the passport page can dispatch. Every mutation SHALL write to `public.audit_log` (see `core-credentials` Audit Action Enum requirement) with an appropriate action value.
 

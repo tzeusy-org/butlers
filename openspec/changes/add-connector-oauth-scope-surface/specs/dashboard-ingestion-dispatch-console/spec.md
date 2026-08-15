@@ -10,6 +10,13 @@ interaction to the durable authority path defined by
 the Approvals module and emit the generic reauth audit sequence. Spotify and
 non-OAuth recovery SHALL remain outside that generic approval path.
 
+Before the typed recovery resolver runs, the API SHALL normalize stored scope
+status `expired | rotation-needed` → `needs_reauth` and preserve the stored
+cause as `auth.recovery_reason`. The typed recovery resolver therefore retains
+one interactive state: generic OAuth selects the Approvals-gated generic flow,
+Spotify selects its connector-owned Passport/PKCE flow, and `unsupported`
+non-OAuth connectors remain non-interactive.
+
 #### Scenario: Generic OAuth reauth is Approvals-gated
 
 - **WHEN** an owner invokes reauth for a generic OAuth-bound connector other

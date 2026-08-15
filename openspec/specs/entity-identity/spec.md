@@ -549,8 +549,11 @@ The `public.entity_info` table's `UNIQUE(entity_id, type)` constraint SHALL natu
 
 The entity info type registry SHALL distinguish user-provisioned module
 credential dependencies from explicitly connector-managed credentials. The
-entity detail page (`/butlers/entities/:id`) provides an "Add property" form
-with a type dropdown. **This dropdown is the sole UI for user-provisioned
+generic raw credential editor is `PassportAddPanel` under `/secrets`; its
+advanced User flow provides the `ENTITY_INFO_TYPES` type dropdown and writes
+through `useCreateUserSecret`. EntityDetail is a read-oriented identity
+surface and does not own this generic credential editor. **The
+`PassportAddPanel` dropdown is the sole generic raw UI for user-provisioned
 module credential dependencies that backend modules resolve at startup.** If
 such a credential type is missing from the dropdown, users cannot configure it
 through the dashboard.
@@ -596,10 +599,12 @@ The Spotify connector-owned PKCE lifecycle is the sole writer for these owner
 - `spotify_oauth_expires_at`
 
 These types MUST NOT be present in the frontend `ENTITY_INFO_TYPES` dropdown.
-EntityDetail SHALL hide any existing rows of those types and SHALL NOT expose
-add, edit, or delete controls for them. Spotify setup, reauthorization, and
-disconnect remain on the connector-owned Passport/PKCE surface. This hiding
-rule does not change their RFC 0006 Tier 2 authority and MUST NOT make
+`PassportAddPanel` SHALL NOT offer them through its advanced User flow, and no
+generic credential page SHALL render an editable row for them. Spotify setup,
+reauthorization, status, and disconnect remain on the connector-owned
+Passport/PKCE surface. UI omission is defense in depth only: the dashboard API
+must also exclude these types server-side before any generic read or mutation.
+This rule does not change their RFC 0006 Tier 2 authority and MUST NOT make
 `CredentialStore` authoritative for token material; Tier 1 remains limited to
 `SPOTIFY_CLIENT_ID`.
 
@@ -637,12 +642,12 @@ rule does not change their RFC 0006 Tier 2 authority and MUST NOT make
 - **THEN** `google_oauth_refresh` rows SHALL NOT appear (they live on companion entities)
 - **AND** the dashboard SHALL direct users to the Google Accounts management page for OAuth management
 
-#### Scenario: Spotify connector-managed rows are not editable in EntityDetail
+#### Scenario: Spotify connector-managed rows are not editable in Passport
 
 - **WHEN** a user views an entity that has `spotify_oauth_access`,
   `spotify_oauth_refresh`, or `spotify_oauth_expires_at` rows
-- **THEN** EntityDetail SHALL hide those rows and SHALL NOT offer their types in
-  the Add property dropdown
+- **THEN** `PassportAddPanel` SHALL NOT offer their types in its advanced User
+  dropdown and generic credential pages SHALL NOT render editable rows
 - **AND** the connector-owned Spotify PKCE lifecycle SHALL remain their only
   mutation surface
 - **AND** the rows SHALL remain RFC 0006 Tier 2 authority rather than Tier 1

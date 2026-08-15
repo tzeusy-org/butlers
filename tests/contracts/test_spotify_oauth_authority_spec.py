@@ -63,6 +63,19 @@ _CREDENTIALS_SPEC = _REPO_ROOT / "openspec" / "specs" / "core-credentials" / "sp
 _SPOTIFY_MODULE_SPEC = _REPO_ROOT / "openspec" / "specs" / "module-spotify" / "spec.md"
 _ENTITY_IDENTITY_SPEC = _REPO_ROOT / "openspec" / "specs" / "entity-identity" / "spec.md"
 _USER_SECRET_TYPES = _REPO_ROOT / "frontend" / "src" / "lib" / "user-secret-templates.ts"
+_PASSPORT_PAGES = (
+    _REPO_ROOT / "frontend" / "src" / "components" / "secrets" / "passport" / "pages.tsx"
+)
+_SECRETS_ROUTER = _REPO_ROOT / "src" / "butlers" / "api" / "routers" / "secrets_v2.py"
+_CONNECTOR_BASE_DELTA = (
+    _REPO_ROOT
+    / "openspec"
+    / "changes"
+    / "add-connector-oauth-scope-surface"
+    / "specs"
+    / "connector-base-spec"
+    / "spec.md"
+)
 _RFC_0006 = (
     _REPO_ROOT / "about" / "legends-and-lore" / "rfcs" / "0006-database-schema-and-isolation.md"
 )
@@ -288,7 +301,7 @@ def test_rfc_0006_tier2_authority_projects_into_spotify_specs() -> None:
     assert "SHALL NOT duplicate, persist, or mutate Spotify token material" in credential_storage
 
 
-def test_spotify_tier2_tokens_are_connector_managed_entity_detail_exceptions() -> None:
+def test_spotify_tier2_tokens_are_connector_managed_passport_exceptions() -> None:
     """The shared read helper must not imply a generic editable or Tier 1 authority."""
     entity_registry = _requirement(
         _read(_ENTITY_IDENTITY_SPEC), "Entity info type registry (frontend ↔ backend coupling)"
@@ -308,8 +321,13 @@ def test_spotify_tier2_tokens_are_connector_managed_entity_detail_exceptions() -
     ):
         assert f"`{info_type}`" in entity_registry
         assert f'"{info_type}"' not in dropdown
+    assert "`PassportAddPanel`" in entity_registry
     assert "MUST NOT be present in the frontend `ENTITY_INFO_TYPES` dropdown" in entity_registry
-    assert "SHALL hide any existing rows of those types" in entity_registry
+
+    passport_pages = _read(_PASSPORT_PAGES)
+    assert "export function PassportAddPanel" in passport_pages
+    assert "const userMutation = useCreateUserSecret();" in passport_pages
+    assert "{ENTITY_INFO_TYPES.map((t) => (" in passport_pages
 
     spotify_sections = {
         "active OAuth carrier": _requirement(
@@ -335,5 +353,78 @@ def test_spotify_tier2_tokens_are_connector_managed_entity_detail_exceptions() -
 
     for artifact, section in spotify_sections.items():
         assert "connector-managed Tier 2" in section, artifact
-        assert "EntityDetail" in section, artifact
+        assert "PassportAddPanel" in section, artifact
         assert "CredentialStore" in section, artifact
+
+
+def test_generic_secrets_api_requires_a_server_side_spotify_fence_at_every_seam() -> None:
+    """UI omission is not an authority fence; every generic server seam must reject Spotify."""
+    dashboard_api = _requirement(
+        _read(_DASHBOARD_API_SPEC), "Spotify exclusion from generic Secrets authority"
+    )
+    passport = _requirement(_read(_PASSPORT_SPEC), "Connector-owned Passport projections")
+    carrier = _requirement(
+        _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
+    )
+    tasks = _collapse_whitespace(_read(_CARRIER_TASKS))
+
+    expected_generic_routes = (
+        "GET /api/secrets/inventory",
+        "GET /api/secrets/user/{provider}",
+        "POST /api/secrets/user/{provider}/rotate",
+        "POST /api/secrets/user/{provider}/disconnect",
+        "POST /api/secrets/user/{provider}/probe",
+        "POST /api/secrets/user/{provider}/reauthorize",
+    )
+    for route in expected_generic_routes:
+        assert f"`{route}`" in dashboard_api
+        assert f"`{route}`" in carrier
+
+    for section in (dashboard_api, passport, carrier):
+        assert "server-side" in section
+        assert "before any `public.entity_info` lookup or mutation" in section
+        assert "Spotify connector endpoints" in section
+
+    assert "`src/butlers/api/routers/secrets_v2.py`" in carrier
+    assert "`PassportAddPanel`" in carrier
+    assert "bu-fj7lx" in tasks
+    assert "secrets_v2.py" in tasks
+    assert "inventory, detail/read, rotate, disconnect, probe, and reauthorize" in tasks
+
+    # Trace the normative fence to the real generic raw-editor and API seams.
+    router = _read(_SECRETS_ROUTER)
+    for route_fragment in (
+        '"/inventory"',
+        '"/user/{provider}"',
+        '"/user/{provider}/rotate"',
+        '"/user/{provider}/disconnect"',
+        '"/user/{provider}/probe"',
+        '"/user/{provider}/reauthorize"',
+    ):
+        assert route_fragment in router
+
+
+def test_scope_status_converges_to_the_canonical_recovery_state_before_ui_resolution() -> None:
+    """Carrier detail statuses must map into the canonical typed recovery resolver."""
+    carrier = _requirement(_read(_CARRIER_SPEC), "Auth status computation")
+    connector_base = _requirement(
+        _read(_CONNECTOR_BASE_DELTA), "ConnectorDetail Pydantic auth and scopes blocks"
+    )
+    ingestion = _requirement(
+        _read(_INGESTION_SPEC), "Ingestion-Originated OAuth page_of_origin Contract"
+    )
+    lifecycle = _requirement(
+        _read(_DASHBOARD_INGESTION_LIFECYCLE_DELTA), "OAuth reauth lifecycle authority"
+    )
+
+    for section in (carrier, connector_base, ingestion, lifecycle):
+        normalized = _collapse_whitespace(section)
+        assert "`expired | rotation-needed` → `needs_reauth`" in normalized
+        assert "typed recovery resolver" in normalized
+
+    assert "Only the normalized `needs_reauth`" in ingestion
+    assert "generic Google OAuth" in ingestion
+    assert "`unsupported`" in ingestion
+    assert "no recovery link and no network request" in ingestion
+    assert "Spotify" in lifecycle
+    assert "Approvals module" in lifecycle

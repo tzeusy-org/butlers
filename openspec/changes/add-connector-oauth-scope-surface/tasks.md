@@ -36,6 +36,15 @@ by the operator AFTER this change ratifies).
       fixture and leaves no compatibility alias, shim, or production registry
       entry.
 
+- [x] 0.5 Correct the implementation handoff to the real generic raw-editor
+      and backend seams. `PassportAddPanel` under `/secrets`, not EntityDetail,
+      consumes `ENTITY_INFO_TYPES`. `bu-fj7lx` must add a server-side Spotify
+      fence in `src/butlers/api/routers/secrets_v2.py` across inventory,
+      detail/read, rotate, disconnect, probe, and reauthorize before it may be
+      dispatched as complete. It must also implement the typed
+      `expired | rotation-needed` → `needs_reauth` convergence before the
+      dashboard recovery resolver.
+
 ## 1. Spec authoring — core capability
 
 - [x] 1.1 Draft `specs/connector-oauth-scope-surface/spec.md` with the
@@ -153,7 +162,12 @@ by the operator AFTER this change ratifies).
      `/secrets?focus=u:spotify`, with fixed `listening-history` capability
      evidence and connector-endpoint actions only. It must not create a User
      credential editing surface or token mirror; the connector-owned callback
-     remains the only writer of the Tier 2 owner `public.entity_info` rows.
+     remains the only writer of the Tier 2 owner `public.entity_info` rows. Its
+     required backend/API scope includes the `secrets_v2.py` server-side fence
+     for generic inventory, detail/read, rotate, disconnect, probe, and
+     reauthorize, plus the typed `expired | rotation-needed` → `needs_reauth`
+     convergence that preserves generic Google OAuth and unsupported non-OAuth
+     behavior. Frontend omission from `PassportAddPanel` is not sufficient.
   2. `bu-3ifcj` follows `bu-fj7lx` and removes the generic OAuth Spotify
      production registry, route, configuration, UI, documentation, and test
      exemplar. It preserves a synthetic generalized-provider fixture only and

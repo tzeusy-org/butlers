@@ -273,18 +273,23 @@ the serif_note as an elevated permission).
   access to your public Spotify playlists." A future enhancement can split
   the state if v1 use surfaces a need.
 
-### Decision 4 — `auth.status` enum has six values, drives ReauthCallout
+### Decision 4 — stored auth cause converges to the canonical recovery status
 
-**What:** `auth.status ∈ {ok, degraded, expired, rotation-needed, unsupported, unconfigured}`.
+**What:** `connector_registry.auth_status ∈ {ok, degraded, expired,
+rotation-needed, unsupported, unconfigured}` preserves the diagnostic cause.
+The API exposes `auth.status ∈ {ok, degraded, needs_reauth, unsupported,
+unconfigured}` and applies `expired | rotation-needed` → `needs_reauth` before
+the typed recovery resolver. `auth.recovery_reason` preserves which stored
+cause produced `needs_reauth`.
 
-| Value | Condition | ReauthCallout |
-|-------|-----------|---------------|
-| `ok` | All `required` scopes granted; no manifest version drift | Hidden |
-| `degraded` | At least one `optional` scope missing (functionality reduced but not broken) | Hidden — surfaced as eyebrow only |
-| `expired` | Token rejected; reauth required | Visible, red, "session expired" copy |
-| `rotation-needed` | Manifest version > `required_scopes_version` on row OR scope drift detected | Visible, red, "reauth required" copy |
-| `unsupported` | Non-OAuth connector | Hidden; replaced with alt-auth surface (see Decision 6) |
-| `unconfigured` | No credentials stored at all | Hidden on the detail page; surfaced as "Connect" CTA |
+| Stored value | Public `auth.status` | Condition | ReauthCallout |
+|--------------|----------------------|-----------|---------------|
+| `ok` | `ok` | All `required` scopes granted; no manifest version drift | Hidden |
+| `degraded` | `degraded` | At least one `optional` scope missing (functionality reduced but not broken) | Hidden — surfaced as eyebrow only |
+| `expired` | `needs_reauth` | Token rejected; reauth required | Visible, red, "session expired" copy from `recovery_reason` |
+| `rotation-needed` | `needs_reauth` | Manifest version > `required_scopes_version` on row OR scope drift detected | Visible, red, "reauth required" copy from `recovery_reason` |
+| `unsupported` | `unsupported` | Non-OAuth connector | Hidden; replaced with alt-auth surface (see Decision 6) |
+| `unconfigured` | `unconfigured` | No credentials stored at all | Hidden on the detail page; surfaced as "Connect" CTA |
 
 **Why:**
 
@@ -301,10 +306,11 @@ the serif_note as an elevated permission).
 
 **Alternatives considered:**
 
-- **Boolean `needs_reauth`:** insufficient. The bundle's fixture uses
-  `auth.status: 'needs_reauth'` for Spotify and `auth.status: 'expiring'` for
-  Google Calendar (4 days from channel expiry). The enum needs to carry that
-  granularity.
+- **Store only `needs_reauth`:** rejected because it loses the diagnostic
+  distinction between provider rejection and required-scope rotation. The
+  canonical public status remains `needs_reauth`; `auth.recovery_reason`
+  carries the granularity needed for copy without creating a second UI
+  recovery state machine.
 - **`expiring` as a distinct state:** considered. Rejected for OAuth because
   the connector should proactively refresh before expiry (see
   `connector-spotify/spec.md:131-135` for the 5-minutes-before-expiry refresh
@@ -403,7 +409,7 @@ because the underlying credential model has no reauth semantics).
 
 | Connector | Credential type | `auth.status` | Reauth supported? |
 |-----------|----------------|----------------|-------------------|
-| Spotify | Connector-owned OAuth 2.0 PKCE (`dashboard-spotify-setup/spec.md:9-50`) | `ok | degraded | expired | rotation-needed` | Yes — Passport → connector PKCE |
+| Spotify | Connector-owned OAuth 2.0 PKCE (`dashboard-spotify-setup/spec.md:9-50`) | `ok | degraded | needs_reauth | unconfigured` | Yes — Passport → connector PKCE |
 | Gmail | Google OAuth (`connector-gmail/spec.md:9-34`) | same | Yes |
 | Google Calendar | Google OAuth (`connector-google-calendar/spec.md:8-37`) | same | Yes |
 | Google Drive | Google OAuth (referenced in `module-google-drive`) | same | Yes |
@@ -539,10 +545,15 @@ audit payload, or free-form provider-derived text. Its controls delegate to
 the connector endpoints.
 
 The implementation order is binding: this spec reconciliation merges first;
-`bu-fj7lx` implements the Passport projection; `bu-3ifcj` then removes the
+`bu-fj7lx` implements the Passport projection plus the server-side generic
+Secrets fence in `secrets_v2.py` across inventory, detail/read, rotate,
+disconnect, probe, and reauthorize; `bu-3ifcj` then removes the
 generic OAuth Spotify registry, route, configuration, UI, documentation, and
 test exemplar. The latter keeps a synthetic generalized-provider fixture and
 no compatibility alias, shim, or production registry entry.
+
+In ordering shorthand, `bu-fj7lx` implements the Passport projection;
+`bu-3ifcj` then removes the generic OAuth Spotify production surface.
 
 Before that cleanup is dispatched, its coordinator SHALL materialize the
 ordering in Beads with `bd dep add bu-3ifcj bu-fj7lx --type blocks`: the
@@ -677,7 +688,9 @@ lane, not permission to fold Spotify into the generic endpoint above:
 
 1. `bu-fj7lx` adds the content-blind connector-owned Passport projection and
    routes its actions to the connector PKCE endpoints without a User credential
-   mirror.
+   mirror. It also fences every generic Secrets User read/mutation seam
+   server-side and normalizes stored `expired | rotation-needed` to the
+   dashboard's typed `needs_reauth` recovery state while retaining the cause.
 2. `bu-3ifcj`, after `bu-fj7lx`, removes the generic OAuth Spotify registry,
    route, configuration, UI, documentation, and test exemplar. It replaces the
    second-provider production example with a synthetic generalized-provider

@@ -349,8 +349,14 @@ The resolver SHALL return exactly one of the following outcomes:
 - **Unsupported:** every other or unknown connector type renders a clear
   unavailable explanation with no recovery link and no network request.
 
-Only `needs_reauth` SHALL create an interactive recovery control. Other auth
-states remain informational.
+The API SHALL normalize the scope carrier's stored
+`expired | rotation-needed` → `needs_reauth` before this typed recovery
+resolver runs, while preserving the stored cause as `auth.recovery_reason`.
+Only the normalized `needs_reauth` SHALL create an interactive recovery
+control. Generic Google OAuth then follows the registered generic flow;
+Spotify follows its connector-owned Passport/PKCE flow. `unsupported`
+non-OAuth or unknown connector types remain unavailable with no recovery link
+and no network request. Other auth states remain informational.
 
 A generic Google OAuth outcome SHALL stamp `page_of_origin=ingestion` in the
 OAuth state token by passing it as a query parameter to

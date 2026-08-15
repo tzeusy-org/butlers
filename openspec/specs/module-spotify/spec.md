@@ -37,9 +37,10 @@ access token, refresh token, and expiry from RFC 0006 Tier 2
 identity-bound token material from `CredentialStore` or the environment.
 
 Those three Spotify types are a connector-managed Tier 2 exception to
-EntityDetail's generic user-provisioned credential rule. EntityDetail SHALL
-hide their rows and SHALL NOT offer them in its Add property dropdown. Using
-the shared resolver is read access, not an editable surface or Tier 1
+the generic User credential editor in `PassportAddPanel`. `PassportAddPanel`
+SHALL NOT offer them through `ENTITY_INFO_TYPES`, and generic Secrets read and
+mutation endpoints SHALL exclude them server-side. Using the shared resolver
+is connector/runtime read access, not an editable surface or Tier 1
 `CredentialStore` authority.
 
 #### Scenario: Successful credential resolution at startup

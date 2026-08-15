@@ -55,8 +55,11 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     beyond required — audit only, not drift), `drift` (granted ⊋ required, at
     least one required scope missing), `expired` (provider rejected the token
     entirely), `unsupported` (non-OAuth connector).
-  - `auth.status` enum on connector aggregates: `ok | degraded | expired |
-    rotation-needed | unsupported | unconfigured`.
+  - Stored `connector_registry.auth_status` enum: `ok | degraded | expired |
+    rotation-needed | unsupported | unconfigured`. The dashboard API maps the
+    two actionable stored causes to public `auth.status = needs_reauth` and
+    retains the cause in `auth.recovery_reason`; public `auth.status` is
+    `ok | degraded | needs_reauth | unsupported | unconfigured`.
   - UI surface contract: `scopes[]` block on the connector-detail API response
     with per-scope `status`, `granted_at?`, `required_since?`, `serif_note?`
     (binding to `ScopeList` in the bundle), plus the `auth.status` field that
@@ -235,10 +238,17 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - The owner-approved Spotify reconciliation is serialized and does not
     authorize source changes in this spec-only amendment: merge this carrier's
     canonical reconciliation first; then `bu-fj7lx` implements the
-    content-blind connector-owned Passport projection; only then `bu-3ifcj`
+    content-blind connector-owned Passport projection and the server-side
+    generic Secrets fence across inventory, detail/read, rotate, disconnect,
+    probe, and reauthorize; only then `bu-3ifcj`
     removes the generic OAuth Spotify production exemplar and repository
     cruft. The cleanup keeps a synthetic generalized-provider fixture and no
     compatibility alias, shim, or production registry entry.
+  - The carrier's stored `expired` and `rotation-needed` states converge to the
+    canonical dashboard `needs_reauth` state at the API boundary, retaining the
+    stored cause for copy. The typed resolver still routes generic Google OAuth
+    through its generic authority, Spotify through Passport/connector PKCE,
+    and unsupported non-OAuth connectors to no-action guidance.
 
 - **Tests (implementation, not in this change)**:
   - Drift detection unit tests per drift class (`ok`, `extra`, `drift`,
@@ -255,6 +265,9 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     assert access and refresh tokens remain owner-`entity_info`-only via
     `resolve_owner_entity_info()`; and assert the generic OAuth suite uses a
     synthetic generalized-provider fixture rather than Spotify.
+  - Generic Secrets server-fence regression: trace `PassportAddPanel` and all
+    six `secrets_v2.py` User read/mutation seams, proving Spotify is rejected
+    before backing-row or provider access.
 
 ## Source References
 
