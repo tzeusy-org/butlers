@@ -28,8 +28,10 @@ non-OAuth recovery SHALL remain outside that generic approval path.
 - **THEN** it SHALL navigate to `/secrets?focus=u:spotify`
 - **AND** the Passport projection's action SHALL call
   `POST /api/connectors/spotify/oauth/start`
-- **AND** the connector-owned callback SHALL retain Spotify token material in
-  CredentialStore only
+- **AND** Spotify access and refresh tokens SHALL remain RFC 0006 Tier 2
+  credentials stored in `public.entity_info` on the owner entity and resolved
+  via `resolve_owner_entity_info()`; the content-blind Passport projection is
+  not a secret authority
 - **AND** it SHALL NOT submit the recovery to the Approvals module, construct
   a generic OAuth URL, or create a generic OAuth Spotify state or callback
 
@@ -50,4 +52,6 @@ non-OAuth recovery SHALL remain outside that generic approval path.
   `openspec/specs/dashboard-ingestion-dispatch-console/spec.md:331-454`
 - Detailed generic OAuth, Spotify, and unsupported reauth contract —
   `openspec/changes/add-connector-oauth-scope-surface/specs/connector-oauth-scope-surface/spec.md`
+- Binding Tier 2 credential authority —
+  `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md#credential-store--three-tier-authority-model`
 - Spotify token authority — `openspec/specs/core-credentials/spec.md:197-241`

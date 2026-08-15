@@ -18,7 +18,12 @@ Spotify connector PKCE is the only production Spotify authorization flow. It SHA
 dashboard SHALL invoke the connector-owned Spotify OAuth 2.0 Authorization
 Code with PKCE flow for account linking. A generic OAuth Spotify provider
 registry or `/api/oauth/spotify/*` route SHALL NOT authorize, exchange,
-refresh, or persist Spotify token material.
+refresh, or persist Spotify token material. Spotify access and refresh tokens
+are RFC 0006 Tier 2 credentials stored in `public.entity_info` on the owner
+entity and resolved through `resolve_owner_entity_info()`. The non-secret
+Spotify OAuth app client ID remains a Tier 1 system credential in
+`CredentialStore`. The Passport projection remains content-blind and is not a
+secret authority.
 
 #### Scenario: Client ID configuration
 
@@ -56,8 +61,13 @@ refresh, or persist Spotify token material.
   - `client_id` = stored client_id
   - `code_verifier` = the stored code verifier
 - **AND** the response SHALL contain `access_token`, `refresh_token`, `expires_in`, `token_type`, and `scope`
-- **AND** tokens SHALL be stored in `CredentialStore` under keys `SPOTIFY_ACCESS_TOKEN` and `SPOTIFY_REFRESH_TOKEN`
-- **AND** the token expiry time SHALL be stored under key `SPOTIFY_TOKEN_EXPIRES_AT`
+- **AND** the access and refresh tokens SHALL be stored as secured owner
+  `public.entity_info` rows with types `spotify_oauth_access` and
+  `spotify_oauth_refresh`
+- **AND** the token expiry time SHALL be stored on the owner entity as
+  `spotify_oauth_expires_at`
+- **AND** connector/runtime reads SHALL use `resolve_owner_entity_info()` for
+  all three Tier 2 values rather than `CredentialStore`
 - **AND** when `OAUTH_DASHBOARD_URL` is configured, the user SHALL be
   redirected back to the Spotify Passport projection on `/secrets`
   (`?focus=u:spotify&toast=connected`) — the surface whose drawer starts this
@@ -191,7 +201,9 @@ The dashboard SHALL expose REST API endpoints for Spotify account management.
 #### Scenario: Disconnect endpoint
 
 - **WHEN** `POST /api/connectors/spotify/disconnect` is called
-- **THEN** it SHALL delete the locally stored `SPOTIFY_ACCESS_TOKEN`, `SPOTIFY_REFRESH_TOKEN`, `SPOTIFY_TOKEN_EXPIRES_AT`, and `SPOTIFY_GRANTED_SCOPES` keys from `CredentialStore`
+- **THEN** it SHALL delete the owner `public.entity_info` rows
+  `spotify_oauth_access`, `spotify_oauth_refresh`, and
+  `spotify_oauth_expires_at`, and clear derived granted-scope metadata
 - **AND** it SHALL retain `SPOTIFY_CLIENT_ID` so the user can reconnect without re-entering it
 - **AND** it SHALL not issue a provider-side authorization-revocation request
 - **AND** it SHALL return `{"disconnected": true}`

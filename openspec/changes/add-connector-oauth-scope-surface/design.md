@@ -100,9 +100,12 @@ every OAuth-bound connector maintainer.
 - Define the cross-connector applicability matrix so non-OAuth connectors
   return well-formed-but-empty scope surfaces (not `null`, not omitted).
 - Honor existing credential-masking rules: no tokens in any response body.
-- Reconcile Spotify as a connector-owned PKCE flow with CredentialStore as its
-  sole token authority, and define its content-blind Passport projection
-  without treating it as a generic OAuth provider or a User credential row.
+- Reconcile Spotify as a connector-owned PKCE flow whose identity-bound access
+  and refresh tokens use RFC 0006 Tier 2 owner `public.entity_info` via
+  `resolve_owner_entity_info()`, while the system-level OAuth app client ID
+  remains in `CredentialStore`; define its content-blind Passport projection
+  without treating that projection as a generic OAuth provider, editable User
+  credential row, or secret authority.
 
 **Non-Goals:**
 
@@ -324,9 +327,10 @@ the serif_note as an elevated permission).
   state, exchanges the code, updates `observed_scopes` and `auth_status` on the
   matching `connector_registry` row, and consumes the state (one-use).
   Spotify instead owns PKCE state and exchange at
-  `GET /api/connectors/spotify/oauth/callback`; it persists token material
-  only through CredentialStore and may update only derived metadata on
-  `connector_registry`.
+  `GET /api/connectors/spotify/oauth/callback`; it persists identity-bound
+  access and refresh tokens only in owner `public.entity_info`, resolves them
+  through `resolve_owner_entity_info()`, and may update only derived metadata
+  on `connector_registry`.
 - Spotify's direct Passport-to-connector PKCE recovery is not submitted to
   Approvals and does not require generic submit or approval-resolution audit
   records. A non-OAuth target is rejected before any Approvals submission.
@@ -519,17 +523,20 @@ ahead of the row's `required_scopes_version`):
 **What:** Spotify connector PKCE is the only production Spotify authorization
 flow. `POST /api/connectors/spotify/oauth/start` and
 `GET /api/connectors/spotify/oauth/callback` are the connector-owned route
-pair, and CredentialStore is the sole authority for Spotify token material.
-The generic OAuth provider surface is Google-only in production.
+pair. Spotify access and refresh tokens are identity-bound RFC 0006 Tier 2
+credentials stored in `public.entity_info` on the owner entity and resolved
+through `resolve_owner_entity_info()`. `CredentialStore` remains authoritative
+only for the system-level Spotify OAuth app client ID. The generic OAuth
+provider surface is Google-only in production.
 
 `/secrets?focus=u:spotify` is a content-blind connector-owned Passport
-projection, not a User credential identity, `public.entity_info` record,
-credential mirror, or generic OAuth alias. Its stable v1 evidence is a closed
+projection, not an editable User credential identity, credential mirror,
+generic OAuth alias, or secret authority. Its stable v1 evidence is a closed
 connection state plus `capability_categories = ["listening-history"]`. It does
-not display or copy token material, client ID, Spotify user ID, display name,
-account type, raw provider error, raw probe result, audit payload, or
-free-form provider-derived text. Its controls delegate to the connector
-endpoints.
+not display or copy the backing Tier 2 rows, token material, client ID, Spotify
+user ID, display name, account type, raw provider error, raw probe result,
+audit payload, or free-form provider-derived text. Its controls delegate to
+the connector endpoints.
 
 The implementation order is binding: this spec reconciliation merges first;
 `bu-fj7lx` implements the Passport projection; `bu-3ifcj` then removes the
@@ -559,9 +566,11 @@ amendment records that later tracker action; it does not execute it.
 
 - **Keep Spotify in the generic OAuth registry:** rejected. It creates a
   second authorization/token authority beside the connector PKCE lifecycle.
-- **Model `u:spotify` as a User `entity_info` credential:** rejected. It
-  duplicates authority and turns a content-blind recovery projection into a
-  credential mirror.
+- **Model `u:spotify` itself as an editable User `entity_info` credential:**
+  rejected. The secured owner `entity_info` rows are the Tier 2 token
+  authority, but the Passport focus is a content-blind connector projection;
+  making the projection an editable credential record would duplicate and
+  expose that authority.
 - **Preserve a Spotify compatibility alias after cleanup:** rejected. It
   makes a transitional implementation fact a permanent production contract.
 
@@ -707,6 +716,8 @@ populated `auth.status` on first introspection after the deploy.
   `about/heart-and-soul/vision.md:110-115`
 - Security model — credential authority + masking —
   `about/heart-and-soul/security.md:96-147`
+- Binding Tier 2 connector credential rule —
+  `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md#credential-store--three-tier-authority-model`
 - v1 scope — `about/heart-and-soul/v1.md:103-110,154-167`
 - Historical HTTP 503 gate (context only) —
   `openspec/changes/archive/2026-05-19-redesign-ingestion-dispatch-console/specs/connector-lifecycle-ceremony/spec.md:4,17,36-40,91-101`

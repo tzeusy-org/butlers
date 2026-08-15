@@ -400,7 +400,11 @@ Spotify recovery from `/ingestion/connectors` SHALL open the content-blind,
 connector-owned Passport projection at `/secrets?focus=u:spotify`. The
 projection's action SHALL call `POST /api/connectors/spotify/oauth/start`,
 and the connector callback is `GET /api/connectors/spotify/oauth/callback`.
-This is the sole production Spotify recovery route.
+This is the sole production Spotify recovery route. Spotify access and refresh
+tokens are identity-bound RFC 0006 Tier 2 credentials: the connector-owned
+callback stores them in `public.entity_info` on the owner entity, and
+connector/runtime reads use `resolve_owner_entity_info()`. The Passport
+projection presents closed recovery state only; it is not a secret authority.
 
 #### Scenario: Spotify recovery enters Passport before PKCE
 
@@ -420,6 +424,9 @@ This is the sole production Spotify recovery route.
 - **THEN** the action SHALL call `POST /api/connectors/spotify/oauth/start`
 - **AND** the resulting callback SHALL be handled by
   `GET /api/connectors/spotify/oauth/callback`
+- **AND** the callback SHALL persist identity-bound access and refresh tokens
+  only to the secured owner `public.entity_info` authority, with subsequent
+  reads through `resolve_owner_entity_info()` rather than `CredentialStore`
 - **AND** neither action SHALL create or use a generic OAuth Spotify state
   entry, route, or callback
 

@@ -132,8 +132,12 @@ in divergent row chrome.
 `u:spotify` is a connector-owned Passport projection and SHALL remain
 presentation-only, not a User credential row. The `u:` focus namespace is
 presentation routing; it does not assign credential storage authority.
-Spotify's connector PKCE flow and CredentialStore entries remain the only
-authority for Spotify token material.
+Spotify access and refresh tokens are RFC 0006 Tier 2 credentials stored in
+`public.entity_info` on the owner entity and resolved through
+`resolve_owner_entity_info()`. The connector-owned PKCE flow is their only
+writer. The Passport projection is not a secret authority and SHALL NOT expose
+or mirror the backing Tier 2 rows. `CredentialStore` remains authoritative
+only for the system-level Spotify OAuth app client ID.
 
 The projection SHALL be content-blind. It may render only a closed connection
 state and the fixed `listening-history` capability evidence
@@ -150,8 +154,8 @@ audit payload, or free-form provider-derived text.
   not Spotify is currently connected
 - **AND** its visible evidence SHALL be limited to the closed connection state
   and `capability_categories = ["listening-history"]`
-- **AND** it SHALL NOT require, create, or display a User credential inventory
-  row or `public.entity_info` record
+- **AND** it SHALL NOT require, create, or display an editable User credential
+  inventory row or a copy of the secured owner `public.entity_info` token rows
 
 #### Scenario: Spotify projection delegates actions to the connector
 

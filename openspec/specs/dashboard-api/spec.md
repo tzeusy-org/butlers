@@ -853,6 +853,10 @@ The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action 
 - **AND** generic User credential mutations SHALL NOT create, read, write,
   rotate, disconnect, or probe Spotify token material or a Spotify
   `public.entity_info` record
+- **AND** those secured owner `public.entity_info` rows remain RFC 0006 Tier 2
+  authority owned by the connector callback and read through
+  `resolve_owner_entity_info()`; excluding generic mutations does not make the
+  Passport projection or `CredentialStore` a replacement secret authority
 - **AND** the content-blind Spotify Passport projection SHALL delegate its
   connection and reauthorization action only to
   `POST /api/connectors/spotify/oauth/start` (with its connector-owned
@@ -924,6 +928,9 @@ The existing `/api/oauth/*` namespace (currently Google-only per `src/butlers/ap
 - **AND** Spotify authorization SHALL use only
   `POST /api/connectors/spotify/oauth/start` and
   `GET /api/connectors/spotify/oauth/callback`
+- **AND** that connector-owned callback SHALL persist the identity-bound access
+  and refresh tokens to RFC 0006 Tier 2 owner `public.entity_info`, with reads
+  through `resolve_owner_entity_info()`
 
 #### Scenario: Provider scope resolution from butler.toml
 - **WHEN** the OAuth begin endpoint is called for a provider whose scopes are declared in one or more `butler.toml` files

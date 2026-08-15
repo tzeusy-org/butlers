@@ -93,11 +93,16 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - Spotify connector PKCE is the only production Spotify authorization flow;
     `POST /api/connectors/spotify/oauth/start` and
     `GET /api/connectors/spotify/oauth/callback` are connector-owned.
-  - `CredentialStore` is the sole authority for Spotify token material.
-    `connector_registry` may retain only derived connection and scope metadata.
+  - Spotify access and refresh tokens are RFC 0006 Tier 2 credentials. The
+    connector-owned callback stores them in `public.entity_info` on the owner
+    entity, and connector/runtime reads resolve them through
+    `resolve_owner_entity_info()`. `CredentialStore` remains authoritative only
+    for the system-level Spotify OAuth app client ID; `connector_registry` may
+    retain only derived connection and scope metadata.
   - `/secrets?focus=u:spotify` is a content-blind, connector-owned Passport
-    projection, not a User credential row, `public.entity_info` record,
-    credential mirror, or generic OAuth provider alias. Its fixed v1 capability
+    projection, not an editable User credential row, credential mirror, or
+    generic OAuth provider alias. It projects closed state from the connector
+    without becoming the Tier 2 secret authority. Its fixed v1 capability
     evidence is `listening-history`.
   - The generic OAuth provider surface remains Google-only in production. The
     later serialized cleanup removes the Spotify registry, route,
@@ -108,8 +113,9 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
 - **MODIFIED capability** `dashboard-ingestion-dispatch-console`:
   - Adds a durable reauth lifecycle-authority requirement to the existing
     canonical dashboard contract. Generic OAuth is Approvals-gated; Spotify is
-    a connector-owned Passport-to-PKCE journey with CredentialStore-only token
-    authority; and non-OAuth connectors reject before Approvals.
+    a connector-owned Passport-to-PKCE journey with RFC 0006 Tier 2 owner
+    `entity_info` token authority; and non-OAuth connectors reject before
+    Approvals.
   - The active delta targets an existing canonical spec, so archive applies it
     directly instead of relying on a missing lifecycle-ceremony target.
 
@@ -160,8 +166,10 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
     UI coupling, and test exemplar in the serialized cleanup lane. Generic
     provider tests use a synthetic fixture after that cleanup.
   - `src/butlers/api/routers/spotify.py` — retain connector-owned Spotify
-    PKCE start/callback ownership and CredentialStore-only token handling; add
-    only derived scope or connection metadata where this capability requires it.
+    PKCE start/callback ownership; move identity-bound access and refresh token
+    handling to owner `public.entity_info` via `resolve_owner_entity_info()`;
+    keep the OAuth app client ID in `CredentialStore`; and add only derived
+    scope or connection metadata where this capability requires it.
   - `src/butlers/api/routers/ingestion_events.py` — replace the HTTP 503 stub
     in the reauth handler with the contract defined here.
   - `src/butlers/migrations/versions/` — Alembic migration adding
@@ -241,11 +249,12 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   - Sensitive-scope grant audit trail.
   - Rotation scenario (operator bumps `required_scopes_version`; existing
     connectors flip to `rotation-needed`).
-  - Spotify authority regression: assert the Passport projection exposes only
-    its closed connection state and `listening-history` capability evidence;
-    assert token material remains CredentialStore-only; and assert the generic
-    OAuth suite uses a synthetic generalized-provider fixture rather than
-    Spotify.
+  - Spotify authority regression: project RFC 0006 Tier 2 into the active and
+    canonical requirements; assert the Passport projection exposes only its
+    closed connection state and `listening-history` capability evidence;
+    assert access and refresh tokens remain owner-`entity_info`-only via
+    `resolve_owner_entity_info()`; and assert the generic OAuth suite uses a
+    synthetic generalized-provider fixture rather than Spotify.
 
 ## Source References
 
@@ -255,6 +264,8 @@ is a follow-up bead under epic `bu-1f91v` that unblocks `bu-1f91v.11`.
   `about/heart-and-soul/vision.md:110-115`
 - Security model — credential authority tiers and credential masking —
   `about/heart-and-soul/security.md:96-147`
+- Binding Tier 2 connector credential rule —
+  `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md#credential-store--three-tier-authority-model`
 - v1 scope — dashboard OAuth credential configuration is in v1 —
   `about/heart-and-soul/v1.md:103-110`
 - Historical HTTP 503 gate (context only) —

@@ -8,20 +8,25 @@ by the operator AFTER this change ratifies).
 
 - [x] 0.1 Amend the active carrier's proposal, design, tasks, and
       `connector-oauth-scope-surface` delta so they state: connector-owned
-      Spotify PKCE is the only production authorization flow; CredentialStore
-      is the sole Spotify token authority; and Passport is a content-blind,
-      connector-owned projection.
+      Spotify PKCE is the only production authorization flow; identity-bound
+      access and refresh tokens are RFC 0006 Tier 2 owner `public.entity_info`
+      credentials resolved via `resolve_owner_entity_info()`; the system-level
+      app client ID remains Tier 1; and Passport is a content-blind,
+      connector-owned projection rather than a secret authority.
 
 - [x] 0.2 Amend the canonical ingestion, Passport, Spotify setup, Spotify
-      connector, and core-credentials specifications atomically. The canonical
-      contract routes Spotify recovery through `/secrets?focus=u:spotify`,
-      delegates its action to `POST /api/connectors/spotify/oauth/start`, and
-      uses `GET /api/connectors/spotify/oauth/callback`; it creates no User
-      credential or `public.entity_info` mirror.
+      connector/module, and core-credentials specifications atomically. The
+      canonical contract routes Spotify recovery through
+      `/secrets?focus=u:spotify`, delegates its action to
+      `POST /api/connectors/spotify/oauth/start`, and uses
+      `GET /api/connectors/spotify/oauth/callback`; only the connector flow
+      writes the secured owner `public.entity_info` token rows, while the
+      Passport projection creates no editable User credential or token mirror.
 
-- [x] 0.3 Add a documentation-contract regression that fails if the active
-      carrier and canonical specs reintroduce generic OAuth Spotify ownership
-      or omit the serialized downstream plan.
+- [x] 0.3 Add a causal documentation-contract regression that reads RFC 0006
+      first and fails if the active carrier or canonical specs reintroduce
+      Tier 1 Spotify token authority, generic OAuth Spotify ownership, or omit
+      the serialized downstream plan.
 
 - [x] 0.4 Record the binding implementation order without mutating Beads:
       after this reconciliation merges, `bu-fj7lx` implements the
@@ -95,7 +100,7 @@ by the operator AFTER this change ratifies).
     response field exposes a token.
   - `connector-oauth-scope-surface/spec.md` — its response-shape and audit
     requirements keep credentials out of the generic OAuth response while the
-    Spotify path retains CredentialStore-only token authority.
+    Spotify path retains RFC 0006 Tier 2 owner `entity_info` token authority.
   - `google-multi-account-oauth/spec.md:84-145` — scope-set registry.
     Confirm the manifest schema in Decision 1 generalizes the existing
     Google scope-set pattern without conflict.
@@ -105,11 +110,13 @@ by the operator AFTER this change ratifies).
     (account-level vs. connector-instance-level).
   - `dashboard-ingestion-dispatch-console/spec.md`,
     `butler-secrets/spec.md`, `dashboard-spotify-setup/spec.md`,
-    `connector-spotify/spec.md`, and `core-credentials/spec.md` — confirm
-    Spotify is connector-owned PKCE with CredentialStore as sole token
-    authority; `u:spotify` is content-blind presentation only; and no generic
-    OAuth Spotify route, registry, credential mirror, or User `entity_info`
-    authority remains normative.
+    `connector-spotify/spec.md`, `module-spotify/spec.md`, and
+    `core-credentials/spec.md` — confirm
+    Spotify is connector-owned PKCE with access and refresh tokens stored in
+    owner `public.entity_info` and resolved via `resolve_owner_entity_info()`;
+    `u:spotify` is content-blind presentation only; and no generic OAuth
+    Spotify route, registry, credential mirror, or second secret authority
+    remains normative.
 
 - [ ] 4.4 Confirm the per-connector applicability matrix (Decision 6) covers
       every connector type currently in `openspec/specs/connector-*/`:
@@ -145,7 +152,8 @@ by the operator AFTER this change ratifies).
   1. `bu-fj7lx` adds the content-blind connector-owned Passport projection at
      `/secrets?focus=u:spotify`, with fixed `listening-history` capability
      evidence and connector-endpoint actions only. It must not create a User
-     credential, `public.entity_info` row, or token mirror.
+     credential editing surface or token mirror; the connector-owned callback
+     remains the only writer of the Tier 2 owner `public.entity_info` rows.
   2. `bu-3ifcj` follows `bu-fj7lx` and removes the generic OAuth Spotify
      production registry, route, configuration, UI, documentation, and test
      exemplar. It preserves a synthetic generalized-provider fixture only and
@@ -213,7 +221,8 @@ by the operator AFTER this change ratifies).
       comma-separated without spaces).
 
 - [x] 6.8 The active carrier and canonical specs agree that Spotify is
-      connector-owned PKCE with CredentialStore as sole token authority;
+      connector-owned PKCE with RFC 0006 Tier 2 owner `entity_info` access and
+      refresh token authority resolved via `resolve_owner_entity_info()`;
       Passport is content-blind projection-only; and `bu-fj7lx` precedes
       `bu-3ifcj` cleanup with a synthetic generalized-provider fixture and no
       compatibility alias, shim, or production registry entry.

@@ -397,9 +397,13 @@ The connector-detail API response SHALL include an `auth` block and a `scopes` b
 ### Requirement: Spotify connector authority and Passport projection
 
 Spotify connector PKCE is the only production Spotify authorization flow. It SHALL remain so.
-CredentialStore is the sole authority for Spotify token material. It SHALL
-remain so. The Passport projection is content-blind and connector-owned. It
-SHALL remain a projection rather than a token authority.
+Spotify access and refresh tokens are RFC 0006 Tier 2 credentials. The
+connector-owned callback SHALL store them only in `public.entity_info` on the
+owner entity, and connector/runtime reads SHALL resolve them through
+`resolve_owner_entity_info()`, never `CredentialStore`. The non-secret Spotify
+OAuth app client ID remains a Tier 1 system credential in `CredentialStore`.
+The Passport projection is content-blind and connector-owned. It SHALL remain
+a projection rather than a token authority.
 
 The production flow SHALL begin at
 `POST /api/connectors/spotify/oauth/start` and complete at
@@ -431,7 +435,8 @@ alias, or generic OAuth provider alias.
   token, Spotify user ID, display name, account type, raw provider error, raw
   probe result, audit payload, or free-form provider-derived text
 - **AND** it SHALL NOT create or require a User credential inventory row or
-  `public.entity_info` record
+  editable credential surface, copy, or mirror of the secured owner
+  `public.entity_info` rows
 - **AND** its configure, connect, reconnect, status, and disconnect controls
   SHALL delegate to the Spotify connector endpoints rather than a generic
   OAuth route
@@ -537,9 +542,10 @@ token exchange, update `observed_scopes` and `auth_status` on the relevant
 `connector_registry` row, and emit the generic completion audit entries. The
 generic Google callback is `/api/oauth/google/callback`. Spotify uses the
 connector-owned `/api/connectors/spotify/oauth/callback` instead; it stores
-token material only through CredentialStore, may update only derived scope or
-connection metadata on `connector_registry`, and does not enter the generic
-Approvals or state-token journey.
+identity-bound access and refresh tokens only in owner `public.entity_info`,
+resolves them through `resolve_owner_entity_info()`, may update only derived
+scope or connection metadata on `connector_registry`, and does not enter the
+generic Approvals or state-token journey.
 
 #### Scenario: State validation
 
@@ -853,6 +859,8 @@ SHALL be uniform regardless of provider.
   `about/heart-and-soul/vision.md:110-115`
 - Security model — credential authority and credential masking —
   `about/heart-and-soul/security.md:96-147`
+- Binding Tier 2 connector credential rule —
+  `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md#credential-store--three-tier-authority-model`
 - v1 scope — dashboard OAuth credential configuration —
   `about/heart-and-soul/v1.md:103-110`
 - Historical HTTP 503 gate that this capability supersedes (context only) —

@@ -60,6 +60,10 @@ _PASSPORT_SPEC = _REPO_ROOT / "openspec" / "specs" / "butler-secrets" / "spec.md
 _SPOTIFY_SETUP_SPEC = _REPO_ROOT / "openspec" / "specs" / "dashboard-spotify-setup" / "spec.md"
 _SPOTIFY_CONNECTOR_SPEC = _REPO_ROOT / "openspec" / "specs" / "connector-spotify" / "spec.md"
 _CREDENTIALS_SPEC = _REPO_ROOT / "openspec" / "specs" / "core-credentials" / "spec.md"
+_SPOTIFY_MODULE_SPEC = _REPO_ROOT / "openspec" / "specs" / "module-spotify" / "spec.md"
+_RFC_0006 = (
+    _REPO_ROOT / "about" / "legends-and-lore" / "rfcs" / "0006-database-schema-and-isolation.md"
+)
 
 
 def _read(path: Path) -> str:
@@ -84,7 +88,10 @@ def test_active_carrier_declares_spotify_connector_and_passport_boundaries() -> 
 
     assert "### Requirement: Spotify connector authority and Passport projection" in carrier
     assert "Spotify connector PKCE is the only production Spotify authorization flow." in carrier
-    assert "CredentialStore is the sole authority for Spotify token material." in carrier
+    assert "Spotify access and refresh tokens are RFC 0006 Tier 2 credentials." in carrier
+    assert "`public.entity_info`" in carrier
+    assert "owner entity" in carrier
+    assert "`resolve_owner_entity_info()`" in carrier
     assert "The Passport projection is content-blind and connector-owned." in carrier
 
 
@@ -110,9 +117,9 @@ def test_canonical_specs_do_not_route_spotify_through_generic_oauth() -> None:
     assert "it SHALL NOT expose `missing_scopes`" in setup
     assert "The connector owns the production Spotify PKCE route" in connector
     assert (
-        "The Spotify connector PKCE flow and its CredentialStore entries are the only Spotify token authority."
-        in credentials
+        "Spotify access and refresh tokens SHALL remain RFC 0006 Tier 2 credentials" in credentials
     )
+    assert "`resolve_owner_entity_info()`" in credentials
 
 
 def test_dashboard_api_excludes_spotify_from_generic_oauth_and_user_credential_authority() -> None:
@@ -172,7 +179,9 @@ def test_reauth_lifecycle_authority_has_a_live_canonical_archive_target() -> Non
     assert "#### Scenario: Spotify reauth stays connector-owned" in lifecycle
     assert "`/secrets?focus=u:spotify`" in lifecycle
     assert "`POST /api/connectors/spotify/oauth/start`" in lifecycle
-    assert "CredentialStore" in lifecycle
+    assert "RFC 0006 Tier 2" in lifecycle
+    assert "`public.entity_info` on the owner entity" in lifecycle
+    assert "`resolve_owner_entity_info()`" in lifecycle
     assert "SHALL NOT submit the recovery to the Approvals module" in lifecycle
     assert "#### Scenario: Non-OAuth reauth is rejected before approval" in lifecycle
     assert "SHALL NOT pass through the Approvals module" in lifecycle
@@ -214,3 +223,64 @@ def test_active_carrier_limits_generic_approval_and_audit_to_generic_oauth() -> 
         in design
     )
     assert "A non-OAuth target is rejected before any Approvals submission." in design
+
+
+def test_rfc_0006_tier2_authority_projects_into_spotify_specs() -> None:
+    """The higher-layer credential rule must causally bind every Spotify carrier."""
+    rfc = _read(_RFC_0006)
+    assert "#### Tier 2 — User (entity_info on owner entity)" in rfc
+    assert "Identity-bound credentials tied to the owner's personal accounts." in rfc
+    assert "Accessed at runtime via `resolve_owner_entity_info(pool, info_type)`" in rfc
+    assert (
+        "Connectors needing Tier 2 credentials MUST use `resolve_owner_entity_info()`, "
+        "never `CredentialStore`."
+    ) in rfc
+
+    tier2_sections = {
+        "active OAuth carrier": _requirement(
+            _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
+        ),
+        "archive-surviving dashboard delta": _requirement(
+            _read(_DASHBOARD_INGESTION_LIFECYCLE_DELTA), "OAuth reauth lifecycle authority"
+        ),
+        "canonical ingestion recovery": _requirement(
+            _read(_INGESTION_SPEC), "Connector-owned Spotify recovery"
+        ),
+        "canonical credential storage": _requirement(
+            _read(_CREDENTIALS_SPEC), "Spotify OAuth Token Storage"
+        ),
+        "canonical Spotify setup": _requirement(
+            _read(_SPOTIFY_SETUP_SPEC),
+            "Connector-Owned Spotify OAuth 2.0 PKCE Authorization Flow",
+        ),
+        "canonical Spotify connector": _requirement(
+            _read(_SPOTIFY_CONNECTOR_SPEC), "Connector-Owned Production Spotify PKCE"
+        ),
+        "canonical Passport projection": _requirement(
+            _read(_PASSPORT_SPEC), "Connector-owned Passport projections"
+        ),
+        "canonical Spotify module": _requirement(
+            _read(_SPOTIFY_MODULE_SPEC), "Credential Resolution"
+        ),
+    }
+
+    for artifact, section in tier2_sections.items():
+        assert "RFC 0006 Tier 2" in section, artifact
+        assert "public.entity_info" in section, artifact
+        assert "resolve_owner_entity_info" in section, artifact
+        normalized = _collapse_whitespace(section).casefold()
+        for forbidden_tier1_claim in (
+            "credentialstore is the sole authority for spotify token material",
+            "tokens shall be stored in credentialstore",
+            "token shall be resolved from credentialstore",
+            "token material only through credentialstore",
+            "credentialstore entries remain the only authority for spotify token material",
+        ):
+            assert forbidden_tier1_claim not in normalized, artifact
+
+    credential_storage = tier2_sections["canonical credential storage"]
+    assert "`SPOTIFY_CLIENT_ID`" in credential_storage
+    assert "Tier 1" in credential_storage
+    assert "`CredentialStore`" in credential_storage
+    assert "Passport projection" in credential_storage
+    assert "SHALL NOT duplicate, persist, or mutate Spotify token material" in credential_storage
