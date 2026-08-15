@@ -34,6 +34,29 @@ _SESSION_ID = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
 _ATTEMPTS_INSERT = "INSERT INTO public.model_dispatch_attempts"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_atomic_recorder_for_spawner_unit_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mock the recorder seam; this file tests prewarm orchestration only."""
+
+    async def _capture(pool: AsyncMock, **fields: Any) -> None:
+        await pool.execute(
+            _ATTEMPTS_INSERT,
+            fields.get("session_id"),
+            fields["catalog_entry_id"],
+            fields["butler"],
+            fields["outcome"],
+            fields.get("failure_reason"),
+            fields.get("error_code"),
+            fields.get("error_message"),
+            fields.get("tool_call_count"),
+            fields["attempt_index"],
+            fields.get("logical_session_id"),
+            fields.get("duration_ms"),
+        )
+
+    monkeypatch.setattr("butlers.core.spawner.record_dispatch_attempt", _capture)
+
+
 class _MockAdapter(RuntimeAdapter):
     """Minimal mock adapter that also tracks speculative_prewarm() calls."""
 

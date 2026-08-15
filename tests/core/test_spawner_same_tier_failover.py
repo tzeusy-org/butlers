@@ -25,9 +25,8 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -1104,35 +1103,22 @@ class TestFailoverMetricsEmission:
         assert call_kwargs["tier"] == "workhorse"
 
 
-class TestBreakerOpenAttentionWiring:
-    """bu-hmdqz.2: the spawner checks the dispatch-outcome circuit breaker right
-    after writing a runtime_failure provenance row, and pages the owner via
-    maybe_push_breaker_open_attention exactly when the breaker is now open.
-    """
+class TestAtomicBreakerOutcomeWiring:
+    """REQ-model-catalog-001: the spawner delegates failure provenance once."""
 
-    async def test_breaker_open_triggers_attention_push(self, tmp_path: Path) -> None:
+    async def test_runtime_failure_is_delegated_once_to_atomic_recorder(
+        self, tmp_path: Path
+    ) -> None:
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
-
-        def _fetchrow_side_effect(query: str, *args: Any, **kwargs: Any) -> Any:
-            # Only the breaker-attention alias lookup needs a concrete row;
-            # every other fetchrow call in this loop (e.g. check_permission)
-            # is satisfied by AsyncMock's default permissive MagicMock.
-            if "SELECT alias FROM public.model_catalog" in query:
-                return {"alias": "primary-alias"}
-            return MagicMock()
-
-        mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)
 
         adapter = _FailThenSuccessAdapter(
             fail_count=1,
             error=RuntimeError("connection refused: provider unavailable"),
             result_text="fallback-succeeded",
         )
-
-        breaker_state = SimpleNamespace(open=True, consecutive_failures=5)
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
@@ -1159,14 +1145,9 @@ class TestBreakerOpenAttentionWiring:
                 ),
             ),
             patch(
-                "butlers.core.spawner.get_breaker_state",
+                "butlers.core.spawner._write_dispatch_attempt",
                 new_callable=AsyncMock,
-                return_value=breaker_state,
-            ) as mock_get_breaker_state,
-            patch(
-                "butlers.core.spawner.maybe_push_breaker_open_attention",
-                new_callable=AsyncMock,
-            ) as mock_push,
+            ) as mock_write,
         ):
             mock_create.return_value = _SESSION_ID
             result = await Spawner(
@@ -1174,15 +1155,17 @@ class TestBreakerOpenAttentionWiring:
             ).trigger("hello", "tick")
 
         assert result.success is True
-        mock_get_breaker_state.assert_awaited_once_with(mock_pool, _PRIMARY_CATALOG_ID)
-        mock_push.assert_awaited_once()
-        push_kwargs = mock_push.await_args.kwargs
-        assert push_kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
-        assert push_kwargs["alias"] == "primary-alias"
-        assert push_kwargs["model_id"] == "primary-model"
-        assert push_kwargs["consecutive_failures"] == 5
+        failure_calls = [
+            call
+            for call in mock_write.await_args_list
+            if call.kwargs.get("outcome") == "runtime_failure"
+        ]
+        assert len(failure_calls) == 1
+        assert failure_calls[0].kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
 
-    async def test_breaker_closed_does_not_trigger_attention_push(self, tmp_path: Path) -> None:
+    async def test_runtime_failure_delegation_preserves_failover_success(
+        self, tmp_path: Path
+    ) -> None:
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -1193,8 +1176,6 @@ class TestBreakerOpenAttentionWiring:
             error=RuntimeError("connection refused: provider unavailable"),
             result_text="fallback-succeeded",
         )
-
-        breaker_state = SimpleNamespace(open=False, consecutive_failures=1)
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
@@ -1221,14 +1202,9 @@ class TestBreakerOpenAttentionWiring:
                 ),
             ),
             patch(
-                "butlers.core.spawner.get_breaker_state",
+                "butlers.core.spawner._write_dispatch_attempt",
                 new_callable=AsyncMock,
-                return_value=breaker_state,
-            ),
-            patch(
-                "butlers.core.spawner.maybe_push_breaker_open_attention",
-                new_callable=AsyncMock,
-            ) as mock_push,
+            ) as mock_write,
         ):
             mock_create.return_value = _SESSION_ID
             result = await Spawner(
@@ -1236,12 +1212,12 @@ class TestBreakerOpenAttentionWiring:
             ).trigger("hello", "tick")
 
         assert result.success is True
-        mock_push.assert_not_called()
+        assert any(
+            call.kwargs.get("outcome") == "runtime_failure" for call in mock_write.await_args_list
+        )
 
-    async def test_breaker_check_failure_does_not_break_failover(self, tmp_path: Path) -> None:
-        """A raising breaker check must not interrupt the failover loop or the
-        eventual success — it is best-effort, mirroring the other provenance
-        writes in this loop."""
+    async def test_degraded_atomic_recorder_does_not_break_failover(self, tmp_path: Path) -> None:
+        """A degraded recorder cannot interrupt eventual failover success."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -1278,9 +1254,9 @@ class TestBreakerOpenAttentionWiring:
                 ),
             ),
             patch(
-                "butlers.core.spawner.get_breaker_state",
+                "butlers.core.spawner._write_dispatch_attempt",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("breaker check boom"),
+                return_value=None,
             ),
         ):
             mock_create.return_value = _SESSION_ID

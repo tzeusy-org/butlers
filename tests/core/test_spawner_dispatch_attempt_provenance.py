@@ -44,6 +44,37 @@ _QUOTA_DENIED_24H = QuotaStatus(
 
 _ATTEMPTS_INSERT = "INSERT INTO public.model_dispatch_attempts"
 
+
+@pytest.fixture(autouse=True)
+def _isolate_atomic_recorder_for_spawner_unit_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these orchestration tests at the persistence-boundary seam.
+
+    Real transaction/edge behavior is covered by
+    ``tests/integration/test_dispatch_outcome_recorder.py``.
+    """
+
+    async def _capture(pool: AsyncMock, **fields: Any) -> None:
+        try:
+            await pool.execute(
+                _ATTEMPTS_INSERT,
+                fields.get("session_id"),
+                fields["catalog_entry_id"],
+                fields["butler"],
+                fields["outcome"],
+                fields.get("failure_reason"),
+                fields.get("error_code"),
+                fields.get("error_message"),
+                fields.get("tool_call_count"),
+                fields["attempt_index"],
+                fields.get("logical_session_id"),
+                fields.get("duration_ms"),
+            )
+        except Exception:
+            return
+
+    monkeypatch.setattr("butlers.core.spawner.record_dispatch_attempt", _capture)
+
+
 # Same 6-tuple every "primary candidate resolved" mock in this file used before the
 # resolve-CTE quota fold (bu-ep4ks.13 follow-up / bu-k9te9). resolve_model_with_effective_tier
 # is now called with quota_aware=True by the spawner, so a test whose intent is "the primary

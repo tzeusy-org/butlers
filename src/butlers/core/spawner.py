@@ -57,8 +57,8 @@ from butlers.core.dashboard_turns import (
     register_session_and_check_cancel,
     release_invoke,
 )
+from butlers.core.dispatch_outcomes import record_dispatch_attempt
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
-from butlers.core.fleet_halt_attention import maybe_push_fleet_halt_attention
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import (
     canonical_runtime_mcp_url,
@@ -66,7 +66,6 @@ from butlers.core.mcp_urls import (
     runtime_mcp_url,
 )
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.model_breaker_attention import maybe_push_breaker_open_attention
 from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
@@ -76,7 +75,6 @@ from butlers.core.model_routing import (
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
-    get_breaker_state,
     next_same_tier_candidate,
     record_token_usage,
     resolve_model_with_effective_tier,
@@ -334,19 +332,6 @@ def _estimate_worst_case_call_cost(
     return cost
 
 
-# ---------------------------------------------------------------------------
-# Dispatch attempt provenance helper
-# ---------------------------------------------------------------------------
-
-_DISPATCH_ATTEMPTS_INSERT = """
-    INSERT INTO public.model_dispatch_attempts
-        (session_id, catalog_entry_id, butler, outcome,
-         failure_reason, error_code, error_message,
-         tool_call_count, attempt_index, logical_session_id, duration_ms)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-"""
-
-
 async def _write_dispatch_attempt(
     pool: asyncpg.Pool,
     *,
@@ -361,7 +346,8 @@ async def _write_dispatch_attempt(
     tool_call_count: int | None = None,
     logical_session_id: str | None = None,
     duration_ms: int | None = None,
-) -> None:
+    produce_fleet_halt: bool = False,
+) -> int | None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
 
     ``outcome`` must be one of:
@@ -379,33 +365,25 @@ async def _write_dispatch_attempt(
     Consumed by ``model_routing.get_routing_evidence`` for evidence-based
     routing (bu-ep4ks.13).
 
-    Never raises — write failures are logged at DEBUG and silently ignored so
-    the caller session is never disrupted by provenance instrumentation.
+    Qualifying breaker outcomes and fleet-halt denials use the atomic recorder;
+    other outcomes retain lightweight best-effort persistence.  Never raises,
+    so provenance degradation cannot disrupt the caller-visible runtime result.
     """
-    _error_message_trunc = error_message[:4096] if error_message else None
-    try:
-        await pool.execute(
-            _DISPATCH_ATTEMPTS_INSERT,
-            session_id,
-            catalog_entry_id,
-            butler,
-            outcome,
-            failure_reason,
-            error_code,
-            _error_message_trunc,
-            tool_call_count,
-            attempt_index,
-            logical_session_id,
-            duration_ms,
-        )
-    except Exception:
-        logger.debug(
-            "Failed to write dispatch attempt for butler=%s catalog_entry_id=%s outcome=%s",
-            butler,
-            catalog_entry_id,
-            outcome,
-            exc_info=True,
-        )
+    return await record_dispatch_attempt(
+        pool,
+        catalog_entry_id=catalog_entry_id,
+        butler=butler,
+        outcome=outcome,
+        attempt_index=attempt_index,
+        session_id=session_id,
+        failure_reason=failure_reason,
+        error_code=error_code,
+        error_message=error_message,
+        tool_call_count=tool_call_count,
+        logical_session_id=logical_session_id,
+        duration_ms=duration_ms,
+        produce_fleet_halt=produce_fleet_halt,
+    )
 
 
 class Spawner:
@@ -1694,22 +1672,8 @@ class Spawner:
                     failure_reason=ceiling_msg,
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
+                    produce_fleet_halt=True,
                 )
-                # Attention-ledger owner push (bu-7o89u.4): best-effort, debounced
-                # to once per calendar-month halt window inside the helper itself.
-                # Every dispatch denied while the fleet stays halted reaches this
-                # line (possibly dozens/day) -- this call must never raise, block,
-                # or meaningfully delay the deny path it augments, so it is
-                # wrapped here in addition to the helper's own internal
-                # try/except (belt and suspenders on the hottest deny path in
-                # the codebase).
-                try:
-                    await maybe_push_fleet_halt_attention(self._pool)
-                except Exception:
-                    logger.warning(
-                        "fleet_halt_attention: push hook raised; deny path continues",
-                        exc_info=True,
-                    )
                 return await self._dashboard_preflight_failure(
                     dashboard_turn_id=dashboard_turn_id,
                     error=ceiling_msg,
@@ -2430,33 +2394,6 @@ class Spawner:
                         logical_session_id=effective_request_id,
                         duration_ms=_failed_attempt_duration_ms,
                     )
-                    # Circuit breaker (bu-hmdqz.2): check whether this write just
-                    # tripped (or re-tripped, after a failed half-open probe) the
-                    # entry's dispatch-outcome breaker, and page the owner once
-                    # per cooldown. Best-effort — never allowed to disrupt the
-                    # failover loop.
-                    try:
-                        _breaker_state = await get_breaker_state(
-                            self._pool, _failed_catalog_entry_id
-                        )
-                        if _breaker_state.open:
-                            _alias_row = await self._pool.fetchrow(
-                                "SELECT alias FROM public.model_catalog WHERE id = $1",
-                                _failed_catalog_entry_id,
-                            )
-                            await maybe_push_breaker_open_attention(
-                                self._pool,
-                                catalog_entry_id=_failed_catalog_entry_id,
-                                alias=_alias_row["alias"] if _alias_row else model,
-                                model_id=model,
-                                consecutive_failures=_breaker_state.consecutive_failures,
-                            )
-                    except Exception:
-                        logger.debug(
-                            "Breaker-open attention check failed for catalog_entry_id=%s",
-                            _failed_catalog_entry_id,
-                            exc_info=True,
-                        )
 
                 # Attempt next same-tier candidate.
                 if catalog_entry_id is not None:
