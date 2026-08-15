@@ -7,4 +7,5 @@
 - [MCP Tools](mcp-tools.md) — tool registration patterns, naming conventions
 - [Ingestion Envelope](ingestion-envelope.md) — ingest.v1 protocol specification
 - [Dashboard API](dashboard-api.md) — REST API overview, router discovery, SSE events
+- [Response Conventions](response-conventions.md) — mount boundary, cursor pagination, degraded-mode envelopes
 - [Inter-Butler Communication](inter-butler-communication.md) — Switchboard-mediated MCP communication

@@ -34,6 +34,21 @@ The `public.model_catalog` table is the global registry of available models. Eac
 - **`extra_args`** --- JSONB list of CLI token strings passed to the adapter
 - **`created_at`** --- tie-breaker for entries with equal priority (older entries win)
 
+### Field ownership: catalog vs. runtime config
+
+As of migration `core_073`, `model`, `runtime_type`, `args`, and `session_timeout_s` live **on
+`public.model_catalog`** (`session_timeout_s INT NOT NULL DEFAULT 1800`), not on
+`{schema}.runtime_config`. They are resolved per complexity tier by `resolve_model()`, which returns
+the chosen catalog entry id and its `session_timeout_s`, and are edited via the dashboard's **Models
+tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings.py`).
+
+`{schema}.runtime_config` retains only the cold operational fields --- `core_groups`,
+`max_concurrent`, `max_queued` --- which are seeded from `[butler.runtime_seed]` in `butler.toml` on
+first boot, read through the 30s TTL cache in `RuntimeConfigAccessor`
+(`src/butlers/core/runtime_config.py`), edited via `GET/PATCH /api/butlers/{name}/runtime-config`,
+and require a daemon restart to take effect. Do not look for model settings on the runtime-config
+surface, and do not add operational limits to the catalog.
+
 ## Per-Butler Overrides
 
 The `public.butler_model_overrides` table allows per-butler customization without duplicating catalog entries. An override row references a catalog entry and can remap `enabled`, `priority`, and `complexity_tier`. Overrides use `COALESCE` semantics: when an override field is NULL, the catalog value is used.
