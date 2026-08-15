@@ -7,21 +7,6 @@
  * ButlerMark.
  */
 
-const BUTLER_IDENTITY_VALUES = [
-  "var(--category-1)",
-  "var(--category-2)",
-  "var(--category-3)",
-  "var(--category-4)",
-  "var(--category-5)",
-  "var(--category-6)",
-  "var(--category-7)",
-  "var(--category-8)",
-  "var(--category-9)",
-  "var(--category-10)",
-  "var(--category-11)",
-  "var(--category-12)",
-] as const;
-
 const STATE_TOKENS = [
   "--red",
   "--amber",
@@ -59,16 +44,13 @@ const CHART_SERIES_VALUES = [
 
 const LOCAL_CATEGORY_TOKENS = LOCAL_CATEGORY_VALUES.map((value) => value.slice(4, -1));
 const CHART_SERIES_TOKENS = CHART_SERIES_VALUES.map((value) => value.slice(4, -1));
-const BUTLER_IDENTITY_TOKENS = BUTLER_IDENTITY_VALUES.map((value) => value.slice(4, -1));
-
 export const VISUAL_TOKEN_ROLE_REGISTRY = {
   "butler-identity": {
     specRole: "Butler identity",
     resolver: "ButlerMark (private)",
     tokenFamily: "--category-1..12",
     requiredSignal: "letter-mark only",
-    tokens: BUTLER_IDENTITY_TOKENS,
-    values: BUTLER_IDENTITY_VALUES,
+    slotCount: 12,
     legendRequired: false,
   },
   state: {
@@ -141,10 +123,8 @@ export interface LabelFillColors {
 }
 
 const CATEGORICAL_FILL_FOREGROUND = "var(--categorical-fill-foreground)";
-const [LABEL_FILL_FOREGROUND_ON_LIGHT_TOKEN, LABEL_FILL_FOREGROUND_ON_DARK_TOKEN] =
-  VISUAL_TOKEN_ROLE_REGISTRY["owner-custom-color"].foregrounds;
-const LABEL_FILL_FOREGROUND_ON_LIGHT = `var(${LABEL_FILL_FOREGROUND_ON_LIGHT_TOKEN})`;
-const LABEL_FILL_FOREGROUND_ON_DARK = `var(${LABEL_FILL_FOREGROUND_ON_DARK_TOKEN})`;
+const LABEL_FILL_FOREGROUND_ON_LIGHT = "var(--label-fill-foreground-on-light)";
+const LABEL_FILL_FOREGROUND_ON_DARK = "var(--label-fill-foreground-on-dark)";
 
 const STATE_COLORS: Record<StateColorRole, string> = {
   healthy: "var(--green)",

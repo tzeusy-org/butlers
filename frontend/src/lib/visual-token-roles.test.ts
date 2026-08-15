@@ -103,7 +103,15 @@ describe("semantic visual role registry", () => {
         role.requiredSignal,
       ]);
     }
-    expect(VISUAL_TOKEN_ROLE_REGISTRY["butler-identity"].tokens).toHaveLength(12);
+    expect(VISUAL_TOKEN_ROLE_REGISTRY["butler-identity"]).toMatchObject({
+      slotCount: 12,
+    });
+    expect(VISUAL_TOKEN_ROLE_REGISTRY["butler-identity"]).not.toHaveProperty(
+      "tokens",
+    );
+    expect(VISUAL_TOKEN_ROLE_REGISTRY["butler-identity"]).not.toHaveProperty(
+      "values",
+    );
     expect(VISUAL_TOKEN_ROLE_REGISTRY["local-category"].tokens).toHaveLength(
       12,
     );

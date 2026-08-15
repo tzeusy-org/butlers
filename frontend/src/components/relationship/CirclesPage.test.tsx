@@ -219,6 +219,7 @@ describe("CirclesPage — assign label dialog", () => {
       refetch: vi.fn(),
     });
     (useLabels as AnyMock).mockReturnValue({
+      // eslint-disable-next-line no-restricted-syntax -- Exercises an arbitrary owner-selected color, not a themed UI value.
       data: [{ id: "label-vip", name: "VIP", color: "#fff" }],
       isPending: false,
     });
