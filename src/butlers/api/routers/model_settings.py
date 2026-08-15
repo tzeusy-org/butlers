@@ -1013,7 +1013,7 @@ async def get_model_attempts(
 ) -> PaginatedResponse[DispatchAttemptEntry]:
     """Return failover attempt provenance for a model catalog entry.
 
-    Queries ``public.model_dispatch_attempts`` (if present) ordered ``ts DESC``.
+    Queries ``public.model_dispatch_attempts`` (if present) ordered ``ts DESC, id DESC``.
     Each row represents one attempt in a logical session: a quota skip, a runtime
     failure, a suppressed failover, a failover exhaustion marker, or a successful
     fallback.
@@ -1059,7 +1059,7 @@ async def get_model_attempts(
             FROM public.model_dispatch_attempts
             WHERE catalog_entry_id = $1
               AND ts >= $2
-            ORDER BY ts DESC
+            ORDER BY ts DESC, id DESC
             LIMIT $3
             """,
             entry_id,
@@ -1857,7 +1857,7 @@ async def get_dispatch_attempts(
                        tool_call_count, session_id, logical_session_id, duration_ms
                 FROM public.model_dispatch_attempts
                 WHERE {where_sql}
-                ORDER BY ts {order_sql}
+                ORDER BY ts {order_sql}, id {order_sql}
                 LIMIT ${len(params) + 1}
                 """,
                 *params,
@@ -1876,7 +1876,7 @@ async def get_dispatch_attempts(
                 FROM public.model_dispatch_attempts
                 WHERE session_id = $1::uuid
                    OR logical_session_id = $2
-                ORDER BY attempt_index ASC
+                ORDER BY attempt_index ASC, ts ASC, id ASC
                 LIMIT $3
                 """,
                 session_id,
@@ -1897,7 +1897,7 @@ async def get_dispatch_attempts(
                        tool_call_count, session_id, logical_session_id, duration_ms
                 FROM public.model_dispatch_attempts
                 WHERE session_id = $1::uuid
-                ORDER BY attempt_index ASC
+                ORDER BY attempt_index ASC, ts ASC, id ASC
                 LIMIT $2
                 """,
                 session_id,
@@ -1915,7 +1915,7 @@ async def get_dispatch_attempts(
                        tool_call_count, session_id, logical_session_id, duration_ms
                 FROM public.model_dispatch_attempts
                 WHERE logical_session_id = $1
-                ORDER BY attempt_index ASC
+                ORDER BY attempt_index ASC, ts ASC, id ASC
                 LIMIT $2
                 """,
                 logical_session_id,

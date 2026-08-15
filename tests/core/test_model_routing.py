@@ -16,6 +16,7 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
@@ -1838,19 +1839,24 @@ async def _insert_dispatch_attempt(
     outcome: str,
     butler: str = "general",
     duration_ms: int | None = None,
-) -> None:
+    ts: datetime | None = None,
+) -> int:
     """Insert one public.model_dispatch_attempts row for breaker/evidence tests."""
-    await pool.execute(
+    attempt_id = await pool.fetchval(
         """
         INSERT INTO public.model_dispatch_attempts
-            (catalog_entry_id, butler, outcome, attempt_index, duration_ms)
-        VALUES ($1, $2, $3, 0, $4)
+            (catalog_entry_id, butler, outcome, attempt_index, duration_ms, ts)
+        VALUES ($1, $2, $3, 0, $4, COALESCE($5::timestamptz, now()))
+        RETURNING id
         """,
         uuid.UUID(catalog_entry_id),
         butler,
         outcome,
         duration_ms,
+        ts,
     )
+    assert isinstance(attempt_id, int)
+    return attempt_id
 
 
 @pytest.mark.integration
@@ -1880,6 +1886,47 @@ async def test_breaker_opens_after_threshold_consecutive_failures(pool: asyncpg.
     state = await get_breaker_state(pool, uuid.UUID(entry_id))
     assert state.open is True
     assert state.consecutive_failures == _BREAKER_FAILURE_THRESHOLD
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_and_resolver_use_id_for_equal_timestamp_ordering(pool: asyncpg.Pool) -> None:
+    """The newest id wins when same-timestamp attempts race each other.
+
+    A success is written first, followed by the five later-inserted failures at
+    the exact same timestamp.  The trailing deterministic window is therefore
+    five failures, which opens the high-priority entry and makes resolution
+    select the healthy lower-priority candidate.
+    """
+    tripped_id = await _insert_catalog_entry(
+        pool,
+        alias="equal-ts-tripped",
+        model_id="equal-ts-tripped-model",
+        complexity_tier="workhorse",
+        priority=100,
+    )
+    healthy_id = await _insert_catalog_entry(
+        pool,
+        alias="equal-ts-healthy",
+        model_id="equal-ts-healthy-model",
+        complexity_tier="workhorse",
+        priority=10,
+    )
+    tied_ts = datetime.now(UTC)
+    await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="success", ts=tied_ts)
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=tripped_id, outcome="runtime_failure", ts=tied_ts
+        )
+
+    state = await get_breaker_state(pool, uuid.UUID(tripped_id))
+    assert state.open is True
+    resolved = await resolve_model(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert resolved is not None
+    assert str(resolved[3]) == healthy_id
 
 
 @pytest.mark.integration

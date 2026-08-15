@@ -121,6 +121,29 @@ To create a new module migration chain:
 3. Create the first migration with `branch_labels = ("<name>",)` and `down_revision = None`.
 4. Return the branch label from the module's `migration_revisions()` method.
 
+### Database-global protected public boundaries
+
+Core migrations may be replayed once for each target schema even when they
+create a database-global `public` object. Such a migration must be guarded and
+idempotent: the first target installs the object and every later target proves
+the finalized catalog shape before it no-ops. Do not add an accidental
+dependency on a specialist schema merely because a Switchboard consumer will
+arrive later.
+
+When the object needs a constrained `SECURITY DEFINER` interface, keep the
+ordinary migration login out of its ownership. Stage a fixed, privileged
+bootstrap installer in `scripts/init-db.sql`, transfer ownership to a
+membership-free NOLOGIN definer role, pin the function search path, revoke
+`PUBLIC` before specific grants, and verify the final catalog in the migration.
+The bootstrap must also run a post-baseline ACL finalizer on each init-db rerun:
+the repository's legacy broad public-table/default grants otherwise reappear.
+
+Durable evidence is not a disposable fixture. A downgrade may remove a
+protected boundary only when it is empty and has no active consumer; a nonempty
+outbox must refuse rollback with forward-remediation guidance. Avoid foreign
+keys/cascades to mutable source records when the evidence must survive source
+catalog or attempt deletion.
+
 ## Verification
 
 To confirm the migration chain structure described here matches the running system:

@@ -1,18 +1,19 @@
-"""Real-Postgres proof that core_173's ``(outcome, ts DESC)`` index serves the
+"""Real-Postgres proof that the deterministic outcome-order index serves the
 fleet outcome-mode dispatch-attempts query (bu-ij9xl).
 
 PR #3161's ``GET /api/dispatch/attempts`` outcome mode
 (``model_settings.py`` list_dispatch_attempts, the ``outcome is not None``
-branch) runs ``WHERE outcome = $1 [AND ts >= $n] ORDER BY ts <dir> LIMIT $n``
-plus a paired ``COUNT(*) WHERE outcome = $1``. core_104 gave
+branch) runs ``WHERE outcome = $1 [AND ts >= $n] ORDER BY ts <dir>, id <dir>
+LIMIT $n`` plus a paired ``COUNT(*) WHERE outcome = $1``. core_104 gave
 ``model_dispatch_attempts`` no index on ``outcome``, so both full-scanned.
 
-This provisions the core chain (which now includes core_173), seeds a realistic
-row volume, ``ANALYZE``s, and, with ``enable_seqscan`` disabled so the assertion
-is about index *usability* rather than tiny-table cost estimation, asserts the
-planner serves both the ordered LIMIT query and the COUNT from
-``idx_model_dispatch_attempts_outcome_ts``. Drop the index (or the migration)
-and these EXPLAINs fall back to a Seq Scan and the assertions fail.
+core_173 supplied ``(outcome, ts DESC)``. core_198 extends it to
+``(outcome, ts DESC, id DESC)`` so equal timestamps are deterministic for the
+user-visible list. This provisions the core chain, seeds a realistic row
+volume, ``ANALYZE``s, and, with ``enable_seqscan`` disabled so the assertion is
+about index *usability* rather than tiny-table cost estimation, asserts the
+planner serves the ordered LIMIT query from the exact tie-break index. The
+paired count may use either outcome index because it has no ordering contract.
 """
 
 from __future__ import annotations
@@ -31,7 +32,8 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
-_INDEX = "idx_model_dispatch_attempts_outcome_ts"
+_ORDER_INDEX = "idx_model_dispatch_attempts_outcome_ts_id"
+_COUNT_INDEX = "idx_model_dispatch_attempts_outcome_ts"
 _OUTCOMES = ["quota_skip", "runtime_failure", "success"]
 
 
@@ -87,16 +89,16 @@ async def test_outcome_ordered_query_uses_the_index(seeded_pool: asyncpg.Pool) -
         plan = await _plan(
             conn,
             """
-            SELECT ts, butler, outcome, attempt_index
+            SELECT id, ts, butler, outcome, attempt_index
             FROM public.model_dispatch_attempts
             WHERE outcome = $1
-            ORDER BY ts DESC
+            ORDER BY ts DESC, id DESC
             LIMIT 50
             """,
             "runtime_failure",
         )
-    assert _INDEX in plan, f"outcome ORDER BY query did not use {_INDEX}:\n{plan}"
-    # The composite (outcome, ts DESC) satisfies the ORDER BY, so no explicit Sort.
+    assert _ORDER_INDEX in plan, f"outcome ORDER BY query did not use {_ORDER_INDEX}:\n{plan}"
+    # The composite (outcome, ts DESC, id DESC) satisfies the ORDER BY, so no Sort.
     assert "Sort" not in plan, f"unexpected Sort node (index should provide order):\n{plan}"
 
 
@@ -106,15 +108,63 @@ async def test_outcome_windowed_query_uses_the_index(seeded_pool: asyncpg.Pool) 
         plan = await _plan(
             conn,
             """
-            SELECT ts FROM public.model_dispatch_attempts
+            SELECT id, ts FROM public.model_dispatch_attempts
             WHERE outcome = $1 AND ts >= $2
-            ORDER BY ts DESC
+            ORDER BY ts DESC, id DESC
             LIMIT 50
             """,
             "success",
             datetime(2026, 7, 1, 12, tzinfo=UTC),
         )
-    assert _INDEX in plan, f"outcome+ts window query did not use {_INDEX}:\n{plan}"
+    assert _ORDER_INDEX in plan, f"outcome+ts window query did not use {_ORDER_INDEX}:\n{plan}"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_outcome_list_orders_equal_timestamps_by_descending_attempt_id(
+    seeded_pool: asyncpg.Pool,
+) -> None:
+    """The public outcome list has a stable newest-attempt tie-breaker."""
+    catalog_id = await seeded_pool.fetchval(
+        """
+        INSERT INTO public.model_catalog (alias, runtime_type, model_id)
+        VALUES ('bu-ij9xl-equal-ts', 'codex', 'equal-ts-model')
+        RETURNING id
+        """
+    )
+    tied_ts = datetime(2026, 7, 2, tzinfo=UTC)
+    first_id = await seeded_pool.fetchval(
+        """
+        INSERT INTO public.model_dispatch_attempts (catalog_entry_id, ts, butler, outcome)
+        VALUES ($1, $2, 'first-tied-attempt', 'quota_skip')
+        RETURNING id
+        """,
+        catalog_id,
+        tied_ts,
+    )
+    second_id = await seeded_pool.fetchval(
+        """
+        INSERT INTO public.model_dispatch_attempts (catalog_entry_id, ts, butler, outcome)
+        VALUES ($1, $2, 'second-tied-attempt', 'quota_skip')
+        RETURNING id
+        """,
+        catalog_id,
+        tied_ts,
+    )
+
+    rows = await seeded_pool.fetch(
+        """
+        SELECT id, butler
+        FROM public.model_dispatch_attempts
+        WHERE outcome = 'quota_skip' AND id = ANY($1::bigint[])
+        ORDER BY ts DESC, id DESC
+        """,
+        [first_id, second_id],
+    )
+    assert [row["id"] for row in rows] == [second_id, first_id]
+    assert [row["butler"] for row in rows] == [
+        "second-tied-attempt",
+        "first-tied-attempt",
+    ]
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -125,4 +175,4 @@ async def test_outcome_count_uses_the_index(seeded_pool: asyncpg.Pool) -> None:
             "SELECT count(*) FROM public.model_dispatch_attempts WHERE outcome = $1",
             "quota_skip",
         )
-    assert _INDEX in plan, f"outcome COUNT(*) did not use {_INDEX}:\n{plan}"
+    assert _COUNT_INDEX in plan, f"outcome COUNT(*) did not use {_COUNT_INDEX}:\n{plan}"

@@ -851,6 +851,7 @@ async def test_model_attempts_returns_real_rows(app):
     assert rows[0]["logical_session_id"] == "req-abc-123"
     assert rows[0]["tool_call_count"] == 0
     assert rows[0]["session_id"] is None
+    assert "ORDER BY ts DESC, id DESC" in mock_pool.fetch.call_args.args[0]
 
 
 # ---------------------------------------------------------------------------
@@ -911,6 +912,7 @@ async def test_dispatch_attempts_supports_both_session_selectors(app):
     fetch_call = mock_pool.fetch.call_args
     assert "WHERE session_id = $1::uuid" in fetch_call.args[0]
     assert "OR logical_session_id = $2" in fetch_call.args[0]
+    assert "ORDER BY attempt_index ASC, ts ASC, id ASC" in fetch_call.args[0]
     assert fetch_call.args[1:3] == (session_id, logical_session_id)
 
 
@@ -1014,6 +1016,7 @@ async def test_dispatch_attempts_by_session_id(app):
     assert data[1]["outcome"] == "success"
     assert data[1]["attempt_index"] == 1
     assert data[0]["logical_session_id"] == "req-abc-001"
+    assert "ORDER BY attempt_index ASC, ts ASC, id ASC" in mock_pool.fetch.call_args.args[0]
 
 
 async def test_dispatch_attempts_by_logical_session_id(app):
@@ -1067,6 +1070,7 @@ async def test_dispatch_attempts_by_logical_session_id(app):
     sql = fetch_call.args[0]
     assert "WHERE logical_session_id = $1" in sql
     assert "session_id = $1::uuid" not in sql
+    assert "ORDER BY attempt_index ASC, ts ASC, id ASC" in sql
     assert fetch_call.args[1] == logical_id
 
 
@@ -1133,7 +1137,7 @@ async def test_dispatch_attempts_outcome_mode_returns_rows_ordered_desc(app):
     fetch_call = mock_pool.fetch.call_args
     sql = fetch_call.args[0]
     assert "WHERE outcome = $1" in sql
-    assert "ORDER BY ts DESC" in sql
+    assert "ORDER BY ts DESC, id DESC" in sql
     assert fetch_call.args[1] == "quota_skip"
 
 
@@ -1161,7 +1165,7 @@ async def test_dispatch_attempts_outcome_mode_reason_prefix_and_since_filter(app
     sql = fetch_call.args[0]
     assert "left(failure_reason, length($2)) = $2" in sql
     assert "ts >= $3" in sql
-    assert "ORDER BY ts ASC" in sql
+    assert "ORDER BY ts ASC, id ASC" in sql
     assert fetch_call.args[1] == "quota_skip"
     assert fetch_call.args[2] == "Monthly spend ceiling reached"
     # args[3] is the `since` datetime, args[4] is the limit

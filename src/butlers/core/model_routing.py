@@ -411,7 +411,8 @@ _BREAKER_HALF_OPEN_COOLDOWN_MINUTES = 15
 # subquery per catalog entry ("for THIS mc.id, are its most recent
 # _BREAKER_FAILURE_THRESHOLD qualifying attempts all runtime_failure") which
 # Postgres can satisfy with an index-range scan on
-# idx_model_dispatch_attempts_catalog_ts (catalog_entry_id, ts DESC) LIMIT
+# idx_model_dispatch_attempts_catalog_ts_id (catalog_entry_id, ts DESC, id
+# DESC) LIMIT
 # _BREAKER_FAILURE_THRESHOLD, instead of touching the rest of the table.
 # Same trigger condition, same result set -- see
 # tests/core/test_model_routing.py's breaker scenarios, unchanged by this
@@ -427,7 +428,7 @@ breaker_open AS (
             FROM public.model_dispatch_attempts
             WHERE catalog_entry_id = mc.id
               AND outcome IN ('runtime_failure', 'success')
-            ORDER BY ts DESC
+            ORDER BY ts DESC, id DESC
             LIMIT {_BREAKER_FAILURE_THRESHOLD}
         ) br
         HAVING
@@ -500,7 +501,8 @@ def _breaker_recent_cte(*, filter_by_ids: bool) -> str:
 
     ``filter_by_ids`` pushes a ``catalog_entry_id`` predicate into
     ``breaker_recent`` itself so Postgres can use the
-    ``idx_model_dispatch_attempts_catalog_ts (catalog_entry_id, ts DESC)``
+    ``idx_model_dispatch_attempts_catalog_ts_id (catalog_entry_id, ts DESC,
+    id DESC)``
     index instead of windowing the entire ``model_dispatch_attempts`` table
     on every call. Only safe when the caller supplies concrete entry ids
     (single-entry and batch-with-ids callers); ``get_breaker_states(pool)``
@@ -515,7 +517,9 @@ def _breaker_recent_cte(*, filter_by_ids: bool) -> str:
             catalog_entry_id,
             outcome,
             ts,
-            ROW_NUMBER() OVER (PARTITION BY catalog_entry_id ORDER BY ts DESC) AS rn
+            ROW_NUMBER() OVER (
+                PARTITION BY catalog_entry_id ORDER BY ts DESC, id DESC
+            ) AS rn
         FROM public.model_dispatch_attempts
         WHERE outcome IN ('runtime_failure', 'success')
         {id_filter}
@@ -541,7 +545,7 @@ async def get_breaker_state(pool: asyncpg.Pool, catalog_entry_id: uuid.UUID) -> 
     ("excluded by breaker") without duplicating the threshold/cooldown logic
     baked into ``_BREAKER_OPEN_CTE``. Filters ``breaker_recent`` to this one
     entry so the query stays index-bound
-    (``idx_model_dispatch_attempts_catalog_ts``) regardless of dispatch
+    (``idx_model_dispatch_attempts_catalog_ts_id``) regardless of dispatch
     history size.
     """
     cte = _breaker_recent_cte(filter_by_ids=True)
@@ -576,7 +580,7 @@ async def get_breaker_states(
     entry that has any recent (runtime_failure|success) dispatch history
     (unfiltered scan — no concrete id set to push down). When
     ``catalog_entry_ids`` is provided, filters ``breaker_recent`` to those ids
-    so Postgres can use ``idx_model_dispatch_attempts_catalog_ts`` instead of
+    so Postgres can use ``idx_model_dispatch_attempts_catalog_ts_id`` instead of
     windowing the whole table on every Models tab page load.
     """
     cte = _breaker_recent_cte(filter_by_ids=catalog_entry_ids is not None)
@@ -812,7 +816,7 @@ async def get_routing_evidence(
     Mirrors ``get_breaker_states``: when ``catalog_entry_ids`` is provided,
     every id is present in the result (defaulting to zero-sample evidence),
     and the query is bound by the id list so Postgres can use
-    ``idx_model_dispatch_attempts_catalog_ts`` instead of scanning the whole
+    ``idx_model_dispatch_attempts_catalog_ts_id`` instead of scanning the whole
     table. Used by the Models tab (``GET /api/settings/models``) to annotate
     every row's routing score without an N+1 query.
     """

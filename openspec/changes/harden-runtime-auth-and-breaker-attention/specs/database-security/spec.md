@@ -59,6 +59,12 @@ delivery boundary. The dashboard operator surface SHALL receive sanitized read
 data through its API without granting ordinary runtime roles access to other
 producers' episode payloads.
 
+Until the delivery-worker stage is activated, the core migration SHALL keep the
+finite sanitized terminal-error vocabulary and optional scalar notification
+reference nullable and unavailable for runtime-role updates. It SHALL grant no
+cross-schema notification foreign key or broad schema access merely to stage
+that future evidence.
+
 The current shared-login plus `SET ROLE` database topology does not provide an
 unforgeable per-runtime principal, so this requirement SHALL NOT claim database
 enforcement that a caller belongs to a particular butler. Its database boundary
@@ -110,6 +116,15 @@ Scope: v1-mandatory
 - **THEN** it can select and transition public outbox rows required for its
   durable claim and delivery lifecycle
 - **AND** it gains no read or write grant to a producer's private schema
+
+#### Scenario: Dormant terminal evidence cannot activate a delivery worker
+
+- **WHEN** the core-only outbox migration stages sanitized terminal error
+  evidence and an optional notification reference
+- **THEN** producer functions leave those fields `NULL` and the Switchboard
+  runtime role cannot update them
+- **AND** no cross-schema notification reference, worker registration, or
+  external transport action is introduced by the migration
 
 #### Scenario: Unrelated runtime and connector roles cannot inspect episodes
 

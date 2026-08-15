@@ -798,6 +798,7 @@ class TestDetectRuntimeCredentialAlert:
 
         assert alert is not None
         assert "refresh token was revoked" in alert
+        assert "ORDER BY ts DESC, id DESC" in pool.fetch.await_args_list[1].args[0]
 
     async def test_returns_none_when_breaker_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from butlers.api.routers import qa as qa_router

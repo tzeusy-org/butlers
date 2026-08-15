@@ -7,9 +7,12 @@ public runtime-attention episodes. A producer SHALL append an immutable,
 safe-payload episode in the same database transaction that establishes the
 corresponding operational state edge. Each episode SHALL have a stable ID, a
 unique immutable triggering-attempt/edge key, source, lifecycle state,
-timestamps, sanitized error classification, and optional lineage to an
-explicitly reissued episode. It SHALL store neither credential values nor raw
-provider error payloads. The schema SHALL enforce a partial unique
+timestamps, optional terminal delivery evidence, and optional lineage to an
+explicitly reissued episode. Terminal evidence SHALL consist only of a paired,
+finite sanitized error class/detail vocabulary and an optional scalar
+notification reference; it SHALL store neither credential values nor raw
+provider error payloads, and it SHALL NOT impose a cross-schema notification
+foreign key. The schema SHALL enforce a partial unique
 `model_breaker` triggering-dispatch-attempt key and a partial unique
 `fleet_halt` source/month breach key. It SHALL retain the safe source snapshot
 when a catalog entry or dispatch-attempt record is later deleted under its own
@@ -18,6 +21,16 @@ retention policy.
 ID: REQ-runtime-attention-outbox-001
 Source: heart-and-soul/vision.md Rule 3 and Rule 4; RFC 0001; RFC 0011 Amendment 1; design.md Decisions 3-5
 Scope: v1-mandatory
+
+#### Scenario: Core-only staging retains only bounded dormant delivery evidence
+
+- **WHEN** the core migration is applied before a Switchboard delivery worker
+  or notification schema is active
+- **THEN** a terminal episode can retain only an allowlisted error class/detail
+  pair and an optional scalar notification reference
+- **AND** producers leave those fields `NULL`, no runtime role receives an
+  evidence-update grant, and no worker or transport is activated by the
+  migration
 
 #### Scenario: A breaker opening atomically creates one episode
 

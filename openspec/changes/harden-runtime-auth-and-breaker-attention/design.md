@@ -362,11 +362,16 @@ nor episode, and emits safe degraded-provenance evidence for an operator.
 
 The core migration creates `public.runtime_attention_outbox` with a stable
 episode ID, unique triggering-edge key, source (`model_breaker` or
-`fleet_halt`), immutable safe payload, delivery state, timestamps, safe error
-class/detail, optional `switchboard.notifications` reference, optional
-manual-reissue lineage, and a fenced delivery claim (`claim_token`, monotonic
-claim epoch, claimer instance, and claim timestamp). It stores no secret value
-and no raw credential/error payload. Partial unique constraints cover each
+`fleet_halt`), immutable safe payload, delivery state, timestamps, and optional
+terminal delivery evidence. That dormant evidence is a paired, finite
+`delivery_error_class`/`delivery_error_detail` vocabulary plus an optional
+scalar `notification_ref`; it is not raw provider error text and has no
+cross-schema foreign key to `switchboard.notifications`, so a core-only
+database remains installable. It is nullable until a later delivery worker
+records an authorized terminal outcome. It also has optional manual-reissue
+lineage and a fenced delivery claim (`claim_token`, monotonic claim epoch,
+claimer instance, and claim timestamp). It stores no secret value and no raw
+credential/error payload. Partial unique constraints cover each
 `model_breaker` triggering dispatch-attempt ID and each `fleet_halt`
 calendar-month breach key; another partial unique constraint on
 `manual_reissue_of` permits at most one direct successor per original episode.
@@ -400,11 +405,13 @@ snapshot for operator/audit retention.
 
 Runtime roles receive only permission to invoke the narrowly scoped producer
 operation for rows they produce; they do not read, insert directly, claim,
-alter, or send outbox rows. Switchboard has the read/update rights required to
-claim them, and the dashboard's privileged operator read model exposes
-sanitized state. This is a public coordination record analogous to dispatch
-provenance, not direct inter-butler data access; the actual delivery crosses the
-Switchboard/Messenger boundary.
+alter, or send outbox rows. In this inert stage, Switchboard receives no update
+grant for the delivery-evidence fields and no producer or worker writes them;
+their values remain `NULL`. A later worker stage must grant and use only the
+finite terminal vocabulary. The dashboard's privileged operator read model
+exposes sanitized state. This is a public coordination record analogous to
+dispatch provenance, not direct inter-butler data access; the actual delivery
+crosses the Switchboard/Messenger boundary.
 
 The deterministic Switchboard worker first owns one Switchboard delivery-service
 lease, then claims rows with `FOR UPDATE SKIP LOCKED`, records a fresh fenced
@@ -529,8 +536,10 @@ it does not grow a generic alert administration surface.
 1. Merge and adopt the process-bound deployment-control doctrine/source
    correction; keep every implementation lane held until fresh graph GO.
 2. Add the inert attention representation: outbox, claim/reissue constraints,
-   deterministic attempt ordering, validated producer functions, and targeted
-   grants. Do not activate a producer or worker and do not backfill history.
+   deterministic attempt ordering, validated producer functions, targeted
+   grants, and nullable finite terminal delivery-evidence/reference columns.
+   Do not activate a producer or worker, grant evidence updates, or backfill
+   history.
 3. In parallel after the gate, deploy explicit Codex authority and the pure
    canonical-to-execution OpenCode mapper. Do not rewrite catalog, pricing, or
    historical identities.

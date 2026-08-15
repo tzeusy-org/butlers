@@ -173,12 +173,23 @@ applied by the `core_065` migration. All other `public` tables are read-only for
 | `insight_engagement` | INSERT, UPDATE, DELETE | insight engagement tracking |
 | `insight_settings` | INSERT, UPDATE | insight verbosity and budget settings |
 | `model_dispatch_attempts` | SELECT, INSERT | failover provenance (core_104 migration) |
+| `runtime_attention_outbox` | No raw producer DML; producer roles invoke fixed server-derived append functions. `butler_switchboard_rw` receives SELECT plus a narrow lifecycle/claim UPDATE column set. | durable inert runtime-attention representation (core_198) |
+| `runtime_attention_delivery_lease` | `butler_switchboard_rw` SELECT, INSERT, UPDATE only. | future Switchboard delivery-service lease (core_198) |
 
 Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
 explicit grants) are SELECT-only for butler roles. When a new public table is added and butlers
 need write access, a subsequent core migration must add the targeted `GRANT` statements and this
 matrix must be updated. The authoritative runtime specification is in
 `openspec/specs/database-security/spec.md`.
+
+`runtime_attention_outbox` is an exception to the legacy broad-public development grant baseline:
+`scripts/init-db.sql` runs its bootstrap-owned ACL finalizer after that baseline on every rerun.
+The outbox owner is a membership-free NOLOGIN role, its `SECURITY DEFINER` append operations use a
+fixed `pg_catalog, public, pg_temp` search path, and `PUBLIC` execution is revoked before the
+explicit producer grants are restored. Producer and Switchboard access additionally require the
+expected active `SET ROLE`; shared connecting-login membership is an effective-role boundary, not
+an independently authenticated or cryptographic per-butler identity. No worker, transport, API,
+or historic-incident backfill is activated by the representation migration.
 
 `public.approvals_policy` is the single dashboard-managed Owner Attention Policy
 authority. It is evaluated as an end-exclusive IANA-timezone interval and is

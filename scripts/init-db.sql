@@ -2755,3 +2755,1099 @@ END;
 $$;
 
 RESET ROLE;
+
+-- ── Runtime-attention outbox bootstrap boundary ────────────────────────────
+--
+-- Runtime-attention is intentionally inert at this point: this boundary only
+-- represents server-derived, durable episodes.  The later Switchboard worker
+-- owns claiming and delivery.  ``init-db`` gives legacy public tables broad
+-- development grants above, so this finalizer runs *after* that baseline on
+-- every bootstrap/rerun and repairs the exceptional function-only boundary.
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+    v_schema_owner NAME;
+    v_schema_owner_is_superuser BOOLEAN;
+    v_owner OID;
+    v_owner_is_safe BOOLEAN;
+BEGIN
+    IF current_user::name = v_migration_role THEN
+        RAISE EXCEPTION
+            'runtime-attention bootstrap cannot run as the shared migration role';
+    END IF;
+    IF NOT COALESCE(
+        (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
+        false
+    ) THEN
+        RAISE EXCEPTION 'runtime-attention bootstrap requires a cluster superuser';
+    END IF;
+
+    SELECT owner_role.rolname, owner_role.rolsuper
+    INTO v_schema_owner, v_schema_owner_is_superuser
+    FROM pg_namespace AS admin_schema
+    JOIN pg_roles AS owner_role ON owner_role.oid = admin_schema.nspowner
+    WHERE admin_schema.nspname = 'runtime_attention_admin';
+    IF v_schema_owner IS NULL THEN
+        EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %I', 'runtime_attention_admin', current_user);
+    ELSIF NOT COALESCE(v_schema_owner_is_superuser, false) THEN
+        RAISE EXCEPTION
+            'runtime-attention admin schema is not owned by a trusted bootstrap superuser';
+    ELSE
+        -- A different superuser may perform a later rerun, but all retained
+        -- bootstrap objects stay owned by the first proven bootstrap owner.
+        EXECUTE format('SET ROLE %I', v_schema_owner);
+    END IF;
+
+    SELECT oid INTO v_owner
+    FROM pg_roles
+    WHERE rolname = 'runtime_attention_outbox_owner';
+    IF v_owner IS NULL THEN
+        CREATE ROLE runtime_attention_outbox_owner
+            NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS;
+    ELSE
+        SELECT NOT rolcanlogin
+               AND NOT rolinherit
+               AND NOT rolsuper
+               AND NOT rolcreaterole
+               AND NOT rolcreatedb
+               AND NOT rolreplication
+               AND NOT rolbypassrls
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_auth_members
+                    WHERE roleid = v_owner OR member = v_owner
+               )
+        INTO v_owner_is_safe
+        FROM pg_roles
+        WHERE oid = v_owner;
+        IF NOT COALESCE(v_owner_is_safe, false) THEN
+            RAISE EXCEPTION
+                'runtime-attention outbox owner is untrusted or has runtime membership';
+        END IF;
+    END IF;
+END;
+$$;
+
+REVOKE ALL PRIVILEGES ON SCHEMA runtime_attention_admin FROM PUBLIC;
+
+DO $$
+DECLARE
+    v_bootstrap_owner OID;
+    v_existing_owner OID;
+BEGIN
+    SELECT nspowner INTO v_bootstrap_owner
+    FROM pg_namespace
+    WHERE nspname = 'runtime_attention_admin';
+    SELECT relation.relowner INTO v_existing_owner
+    FROM pg_class AS relation
+    JOIN pg_namespace AS admin_schema ON admin_schema.oid = relation.relnamespace
+    WHERE admin_schema.nspname = 'runtime_attention_admin'
+      AND relation.relname = 'bootstrap_configuration'
+      AND relation.relkind = 'r';
+    IF v_existing_owner IS NOT NULL AND v_existing_owner <> v_bootstrap_owner THEN
+        RAISE EXCEPTION
+            'runtime-attention bootstrap configuration is not owned by the bootstrap role';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_proc AS admin_function
+        JOIN pg_namespace AS admin_schema ON admin_schema.oid = admin_function.pronamespace
+        WHERE admin_schema.nspname = 'runtime_attention_admin'
+          AND admin_function.proname IN (
+              'finalize_interface',
+              'install_interface',
+              'rollback_interface'
+          )
+          AND admin_function.pronargs = 0
+          AND admin_function.proowner <> v_bootstrap_owner
+    ) THEN
+        RAISE EXCEPTION
+            'runtime-attention admin interface function is not owned by the bootstrap role';
+    END IF;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS runtime_attention_admin.bootstrap_configuration (
+    singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+    migration_role NAME NOT NULL,
+    bootstrap_role NAME NOT NULL
+);
+REVOKE ALL PRIVILEGES ON TABLE runtime_attention_admin.bootstrap_configuration FROM PUBLIC;
+
+INSERT INTO runtime_attention_admin.bootstrap_configuration (
+    singleton,
+    migration_role,
+    bootstrap_role
+)
+VALUES (
+    true,
+    COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name,
+    (
+        SELECT bootstrap_owner.rolname::name
+        FROM pg_namespace AS admin_schema
+        JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
+        WHERE admin_schema.nspname = 'runtime_attention_admin'
+    )
+)
+ON CONFLICT (singleton) DO UPDATE SET
+    migration_role = EXCLUDED.migration_role,
+    bootstrap_role = EXCLUDED.bootstrap_role;
+
+CREATE OR REPLACE FUNCTION runtime_attention_admin.finalize_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_finalizer$
+DECLARE
+    v_migration_role NAME;
+    v_bootstrap_role NAME;
+    v_runtime_role NAME;
+    v_acl_role NAME;
+    v_policy_name NAME;
+    v_trigger_name NAME;
+    v_outbox_owner OID;
+    v_bootstrap_owner OID;
+BEGIN
+    SELECT migration_role, bootstrap_role
+    INTO v_migration_role, v_bootstrap_role
+    FROM runtime_attention_admin.bootstrap_configuration
+    WHERE singleton;
+    SELECT oid INTO v_outbox_owner
+    FROM pg_roles
+    WHERE rolname = 'runtime_attention_outbox_owner';
+    SELECT nspowner INTO v_bootstrap_owner
+    FROM pg_namespace
+    WHERE nspname = 'runtime_attention_admin';
+    IF v_migration_role IS NULL OR v_bootstrap_role IS NULL OR v_outbox_owner IS NULL
+       OR v_bootstrap_owner IS NULL
+       OR NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = v_bootstrap_role), false) THEN
+        RAISE EXCEPTION 'runtime-attention bootstrap configuration is untrusted';
+    END IF;
+    IF to_regclass('public.runtime_attention_outbox') IS NULL
+       OR to_regclass('public.runtime_attention_delivery_lease') IS NULL
+       OR to_regprocedure('public.append_runtime_attention_model_breaker(bigint)') IS NULL
+       OR to_regprocedure('public.append_runtime_attention_fleet_halt()') IS NULL
+       OR to_regprocedure('public.runtime_attention_active_switchboard_role()') IS NULL
+       OR to_regprocedure('public.runtime_attention_outbox_guard()') IS NULL
+       OR to_regprocedure('public.runtime_attention_delivery_lease_guard()') IS NULL THEN
+        RAISE EXCEPTION 'runtime-attention interface is incomplete';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_class AS relation
+        WHERE relation.oid IN (
+            'public.runtime_attention_outbox'::regclass,
+            'public.runtime_attention_delivery_lease'::regclass
+        )
+          AND relation.relowner NOT IN (v_bootstrap_owner, v_outbox_owner)
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc AS interface_function
+        WHERE interface_function.oid IN (
+            'public.append_runtime_attention_model_breaker(bigint)'::regprocedure,
+            'public.append_runtime_attention_fleet_halt()'::regprocedure,
+            'public.runtime_attention_active_switchboard_role()'::regprocedure,
+            'public.runtime_attention_outbox_guard()'::regprocedure,
+            'public.runtime_attention_delivery_lease_guard()'::regprocedure
+        )
+          AND interface_function.proowner NOT IN (v_bootstrap_owner, v_outbox_owner)
+    ) THEN
+        RAISE EXCEPTION 'runtime-attention interface ownership is untrusted';
+    END IF;
+
+    -- The dedicated owner is deliberately a no-login, membership-free role;
+    -- no shared migration/runtime login owns a SECURITY DEFINER function.
+    EXECUTE 'ALTER TABLE public.runtime_attention_outbox OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER TABLE public.runtime_attention_delivery_lease OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_model_breaker(bigint) OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_fleet_halt() OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_active_switchboard_role() OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_outbox_guard() OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_delivery_lease_guard() OWNER TO runtime_attention_outbox_owner';
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_model_breaker(bigint) SET search_path = pg_catalog, public, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.append_runtime_attention_fleet_halt() SET search_path = pg_catalog, public, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_active_switchboard_role() SET search_path = pg_catalog, public, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_outbox_guard() SET search_path = pg_catalog, public, pg_temp';
+    EXECUTE 'ALTER FUNCTION public.runtime_attention_delivery_lease_guard() SET search_path = pg_catalog, public, pg_temp';
+
+    EXECUTE 'ALTER TABLE public.runtime_attention_outbox ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE public.runtime_attention_outbox FORCE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE public.runtime_attention_delivery_lease ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE public.runtime_attention_delivery_lease FORCE ROW LEVEL SECURITY';
+
+    -- RLS policies compose permissively.  Remove every non-system policy
+    -- before restoring the two fixed policies so an ad-hoc broad policy
+    -- cannot survive an init-db rerun beside the active-role gate.
+    FOR v_policy_name IN
+        SELECT policy.polname::name
+        FROM pg_policy AS policy
+        WHERE policy.polrelid = 'public.runtime_attention_outbox'::regclass
+    LOOP
+        EXECUTE format(
+            'DROP POLICY %I ON public.runtime_attention_outbox', v_policy_name
+        );
+    END LOOP;
+    EXECUTE 'CREATE POLICY runtime_attention_outbox_owner ON public.runtime_attention_outbox '
+        || 'FOR ALL TO runtime_attention_outbox_owner USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY runtime_attention_outbox_switchboard ON public.runtime_attention_outbox '
+        || 'FOR ALL TO butler_switchboard_rw '
+        || 'USING (public.runtime_attention_active_switchboard_role()) '
+        || 'WITH CHECK (public.runtime_attention_active_switchboard_role())';
+
+    FOR v_policy_name IN
+        SELECT policy.polname::name
+        FROM pg_policy AS policy
+        WHERE policy.polrelid = 'public.runtime_attention_delivery_lease'::regclass
+    LOOP
+        EXECUTE format(
+            'DROP POLICY %I ON public.runtime_attention_delivery_lease', v_policy_name
+        );
+    END LOOP;
+    EXECUTE 'CREATE POLICY runtime_attention_delivery_lease_owner ON public.runtime_attention_delivery_lease '
+        || 'FOR ALL TO runtime_attention_outbox_owner USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY runtime_attention_delivery_lease_switchboard ON public.runtime_attention_delivery_lease '
+        || 'FOR ALL TO butler_switchboard_rw '
+        || 'USING (public.runtime_attention_active_switchboard_role()) '
+        || 'WITH CHECK (public.runtime_attention_active_switchboard_role())';
+
+    -- The trigger guards are as authority-bearing as the RLS policies.  Keep
+    -- the relations to exactly the bootstrap-defined guards on every rerun.
+    FOR v_trigger_name IN
+        SELECT trigger_row.tgname::name
+        FROM pg_trigger AS trigger_row
+        WHERE trigger_row.tgrelid = 'public.runtime_attention_outbox'::regclass
+          AND NOT trigger_row.tgisinternal
+    LOOP
+        EXECUTE format(
+            'DROP TRIGGER %I ON public.runtime_attention_outbox', v_trigger_name
+        );
+    END LOOP;
+    FOR v_trigger_name IN
+        SELECT trigger_row.tgname::name
+        FROM pg_trigger AS trigger_row
+        WHERE trigger_row.tgrelid = 'public.runtime_attention_delivery_lease'::regclass
+          AND NOT trigger_row.tgisinternal
+    LOOP
+        EXECUTE format(
+            'DROP TRIGGER %I ON public.runtime_attention_delivery_lease', v_trigger_name
+        );
+    END LOOP;
+    EXECUTE 'CREATE TRIGGER runtime_attention_outbox_guard_trigger '
+        || 'BEFORE UPDATE ON public.runtime_attention_outbox '
+        || 'FOR EACH ROW EXECUTE FUNCTION public.runtime_attention_outbox_guard()';
+    EXECUTE 'CREATE TRIGGER runtime_attention_delivery_lease_guard_trigger '
+        || 'BEFORE INSERT OR UPDATE ON public.runtime_attention_delivery_lease '
+        || 'FOR EACH ROW EXECUTE FUNCTION public.runtime_attention_delivery_lease_guard()';
+
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA public FROM runtime_attention_outbox_owner';
+    EXECUTE 'GRANT USAGE ON SCHEMA public TO runtime_attention_outbox_owner';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.model_catalog FROM runtime_attention_outbox_owner';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.model_dispatch_attempts FROM runtime_attention_outbox_owner';
+    EXECUTE 'GRANT SELECT ON TABLE public.model_catalog TO runtime_attention_outbox_owner';
+    EXECUTE 'GRANT SELECT ON TABLE public.model_dispatch_attempts TO runtime_attention_outbox_owner';
+
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_outbox FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_delivery_lease FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_model_breaker(bigint) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_fleet_halt() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_active_switchboard_role() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_outbox_guard() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_delivery_lease_guard() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SCHEMA runtime_attention_admin FROM PUBLIC';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE runtime_attention_admin.bootstrap_configuration FROM PUBLIC';
+
+    -- Remove stale direct grants to unlisted roles as well as the known
+    -- init-db grants below.  A later bootstrap must not preserve an ad-hoc
+    -- principal merely because it was absent from the historical role list.
+    FOR v_acl_role IN
+        SELECT DISTINCT role_row.rolname::name
+        FROM pg_proc AS interface_function
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(interface_function.proacl, acldefault('f', interface_function.proowner))
+        ) AS acl
+        JOIN pg_roles AS role_row ON role_row.oid = acl.grantee
+        WHERE interface_function.oid IN (
+            'public.append_runtime_attention_model_breaker(bigint)'::regprocedure,
+            'public.append_runtime_attention_fleet_halt()'::regprocedure
+        )
+          AND acl.privilege_type = 'EXECUTE'
+          AND role_row.rolname <> ALL (ARRAY[
+              'runtime_attention_outbox_owner',
+              'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+              'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+              'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+              'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+          ]::name[])
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_model_breaker(bigint) FROM %I',
+            v_acl_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_fleet_halt() FROM %I',
+            v_acl_role
+        );
+    END LOOP;
+    FOR v_acl_role IN
+        SELECT DISTINCT role_row.rolname::name
+        FROM pg_class AS relation
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(relation.relacl, acldefault('r', relation.relowner))
+        ) AS acl
+        JOIN pg_roles AS role_row ON role_row.oid = acl.grantee
+        WHERE relation.oid IN (
+            'public.runtime_attention_outbox'::regclass,
+            'public.runtime_attention_delivery_lease'::regclass
+        )
+          AND role_row.rolname <> ALL (ARRAY[
+              'runtime_attention_outbox_owner', 'butler_switchboard_rw'
+          ]::name[])
+    LOOP
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_outbox FROM %I', v_acl_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_delivery_lease FROM %I',
+            v_acl_role
+        );
+    END LOOP;
+
+    -- Revoke the broad init-db grants from every reachable shared identity,
+    -- then grant the two intentionally disjoint interfaces back.  The SET
+    -- ROLE gates in the functions/policies make inherited membership alone
+    -- insufficient proof of a producer or Switchboard identity.
+    FOREACH v_runtime_role IN ARRAY ARRAY[
+        'butler_chronicler_rw',
+        'butler_education_rw',
+        'butler_finance_rw',
+        'butler_general_rw',
+        'butler_health_rw',
+        'butler_home_rw',
+        'butler_lifestyle_rw',
+        'butler_messenger_rw',
+        'butler_qa_rw',
+        'butler_relationship_rw',
+        'butler_switchboard_rw',
+        'butler_travel_rw',
+        'connector_writer'
+    ]::name[] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
+            EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_outbox FROM %I', v_runtime_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_delivery_lease FROM %I', v_runtime_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_model_breaker(bigint) FROM %I', v_runtime_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_fleet_halt() FROM %I', v_runtime_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_active_switchboard_role() FROM %I', v_runtime_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_outbox_guard() FROM %I', v_runtime_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_delivery_lease_guard() FROM %I', v_runtime_role);
+        END IF;
+    END LOOP;
+    EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_outbox FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.runtime_attention_delivery_lease FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_model_breaker(bigint) FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.append_runtime_attention_fleet_halt() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_active_switchboard_role() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_outbox_guard() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION public.runtime_attention_delivery_lease_guard() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA runtime_attention_admin FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE runtime_attention_admin.bootstrap_configuration FROM %I', v_migration_role);
+    -- The migration login is handed the installer only while the boundary is
+    -- wholly absent.  Once installed, it keeps no access to the admin control
+    -- functions; later core-schema runs prove the finalized catalog and no-op.
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.finalize_interface() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_interface() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.rollback_interface() FROM %I', v_migration_role);
+
+    FOREACH v_runtime_role IN ARRAY ARRAY[
+        'butler_chronicler_rw',
+        'butler_education_rw',
+        'butler_finance_rw',
+        'butler_general_rw',
+        'butler_health_rw',
+        'butler_home_rw',
+        'butler_lifestyle_rw',
+        'butler_messenger_rw',
+        'butler_qa_rw',
+        'butler_relationship_rw',
+        'butler_switchboard_rw',
+        'butler_travel_rw'
+    ]::name[] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
+            RAISE EXCEPTION 'runtime-attention producer role % is missing', v_runtime_role;
+        END IF;
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.append_runtime_attention_model_breaker(bigint) TO %I',
+            v_runtime_role
+        );
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION public.append_runtime_attention_fleet_halt() TO %I',
+            v_runtime_role
+        );
+    END LOOP;
+
+    EXECUTE 'GRANT SELECT, UPDATE (lifecycle_state, claim_token, claim_epoch, delivery_lease_epoch, claimed_by_instance, claimed_at, claim_expires_at, next_attempt_at, delivered_at) '
+        || 'ON TABLE public.runtime_attention_outbox TO butler_switchboard_rw';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.runtime_attention_delivery_lease TO butler_switchboard_rw';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.runtime_attention_active_switchboard_role() TO butler_switchboard_rw';
+
+    -- Only the dedicated definer can make an immutable source snapshot; it is
+    -- not a generic payload sink.  Reassert the post-finalization shape on
+    -- every init-db rerun so broad legacy grants cannot survive bootstrap.
+    IF EXISTS (
+        SELECT 1
+        FROM aclexplode(
+            COALESCE(
+                (SELECT relacl FROM pg_class WHERE oid = 'public.runtime_attention_outbox'::regclass),
+                acldefault('r', v_outbox_owner)
+            )
+        ) AS acl
+        WHERE acl.grantee = 0
+          AND acl.privilege_type IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+    ) THEN
+        RAISE EXCEPTION 'runtime-attention outbox PUBLIC DML ACL repair failed';
+    END IF;
+    EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE runtime_attention_outbox_owner '
+        || 'IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC';
+    EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE runtime_attention_outbox_owner '
+        || 'IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC';
+END;
+$runtime_attention_finalizer$;
+
+CREATE OR REPLACE FUNCTION runtime_attention_admin.install_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_installer$
+DECLARE
+    v_migration_role NAME;
+    v_bootstrap_role NAME;
+BEGIN
+    SELECT migration_role, bootstrap_role
+    INTO v_migration_role, v_bootstrap_role
+    FROM runtime_attention_admin.bootstrap_configuration
+    WHERE singleton;
+    IF v_migration_role IS NULL OR v_bootstrap_role IS NULL THEN
+        RAISE EXCEPTION 'runtime-attention bootstrap configuration is missing';
+    END IF;
+    IF to_regclass('public.runtime_attention_outbox') IS NOT NULL
+       OR to_regclass('public.runtime_attention_delivery_lease') IS NOT NULL
+       OR to_regprocedure('public.append_runtime_attention_model_breaker(bigint)') IS NOT NULL
+       OR to_regprocedure('public.append_runtime_attention_fleet_halt()') IS NOT NULL
+       OR to_regprocedure('public.runtime_attention_active_switchboard_role()') IS NOT NULL
+       OR to_regprocedure('public.runtime_attention_outbox_guard()') IS NOT NULL
+       OR to_regprocedure('public.runtime_attention_delivery_lease_guard()') IS NOT NULL THEN
+        -- The core migration proves a completed final catalog before it can
+        -- no-op.  The installer itself accepts only total absence, never a
+        -- compatible-looking or partial boundary supplied by another owner.
+        RAISE EXCEPTION 'runtime-attention interface must be absent before fixed bootstrap installation';
+    END IF;
+    IF to_regclass('public.model_catalog') IS NULL
+       OR to_regclass('public.model_dispatch_attempts') IS NULL THEN
+        RAISE EXCEPTION 'runtime-attention requires canonical model catalog and dispatch attempts';
+    END IF;
+    IF to_regclass('public.idx_model_dispatch_attempts_catalog_ts_id') IS NOT NULL
+       OR to_regclass('public.idx_model_dispatch_attempts_outcome_ts_id') IS NOT NULL THEN
+        -- These names are rollback-owned only after this installer creates
+        -- them.  Never adopt an operator-created exact match that the bounded
+        -- rollback would later destroy.
+        RAISE EXCEPTION
+            'runtime-attention reserved deterministic index already exists before installation';
+    END IF;
+
+    CREATE TABLE public.runtime_attention_outbox (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        source TEXT NOT NULL CHECK (source IN ('model_breaker', 'fleet_halt')),
+        triggering_attempt_id BIGINT,
+        fleet_halt_month DATE,
+        source_snapshot JSONB NOT NULL CHECK (jsonb_typeof(source_snapshot) = 'object'),
+        payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+        lifecycle_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (lifecycle_state IN ('pending', 'sending', 'sent', 'failed', 'uncertain')),
+        claim_token UUID,
+        claim_epoch BIGINT NOT NULL DEFAULT 0 CHECK (claim_epoch >= 0),
+        delivery_lease_epoch BIGINT,
+        claimed_by_instance TEXT,
+        claimed_at TIMESTAMPTZ,
+        claim_expires_at TIMESTAMPTZ,
+        next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        delivered_at TIMESTAMPTZ,
+        -- Dormant worker-stage evidence: only fixed, non-secret codes can
+        -- ever be persisted.  Core_198 does not grant these fields to any
+        -- runtime role or activate a producer/worker that writes them.
+        delivery_error_class TEXT,
+        delivery_error_detail TEXT,
+        -- Optional scalar linkage only.  Do not add a switchboard-schema FK:
+        -- core-only databases must install this boundary before that schema.
+        notification_ref UUID,
+        retention_until TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '90 days'),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        manual_reissue_of UUID,
+        CONSTRAINT ck_runtime_attention_outbox_source_edge CHECK (
+            (manual_reissue_of IS NULL AND source = 'model_breaker'
+                AND triggering_attempt_id IS NOT NULL AND fleet_halt_month IS NULL)
+            OR (manual_reissue_of IS NULL AND source = 'fleet_halt'
+                AND triggering_attempt_id IS NULL AND fleet_halt_month IS NOT NULL)
+            OR (manual_reissue_of IS NOT NULL
+                AND triggering_attempt_id IS NULL AND fleet_halt_month IS NULL)
+        ),
+        -- Safe episode fields are an explicit fixed projection.  In
+        -- particular, no failure_reason, error_message, provider response, or
+        -- caller-supplied free-form text can enter this durable surface.
+        CONSTRAINT ck_runtime_attention_outbox_snapshot_allowlist CHECK (
+            (manual_reissue_of IS NULL AND source = 'model_breaker'
+                AND source_snapshot ?& ARRAY[
+                    'catalog_entry_id', 'alias', 'model_id',
+                    'triggering_attempt_id', 'consecutive_failures'
+                ]
+                AND source_snapshot - ARRAY[
+                    'catalog_entry_id', 'alias', 'model_id',
+                    'triggering_attempt_id', 'consecutive_failures'
+                ] = '{}'::jsonb)
+            OR (manual_reissue_of IS NULL AND source = 'fleet_halt'
+                AND source_snapshot ?& ARRAY['month', 'denied_count', 'first_denied_at']
+                AND source_snapshot - ARRAY['month', 'denied_count', 'first_denied_at']
+                    = '{}'::jsonb)
+            OR (manual_reissue_of IS NOT NULL
+                AND source_snapshot ? 'reissue_of'
+                AND source_snapshot - ARRAY['reissue_of'] = '{}'::jsonb)
+        ),
+        CONSTRAINT ck_runtime_attention_outbox_payload_allowlist CHECK (
+            (manual_reissue_of IS NULL AND source = 'model_breaker'
+                AND payload ?& ARRAY['classification', 'consecutive_failures', 'door']
+                AND payload - ARRAY['classification', 'consecutive_failures', 'door'] = '{}'::jsonb)
+            OR (manual_reissue_of IS NULL AND source = 'fleet_halt'
+                AND payload ?& ARRAY['classification', 'door']
+                AND payload - ARRAY['classification', 'door'] = '{}'::jsonb)
+            OR (manual_reissue_of IS NOT NULL
+                AND payload ? 'classification'
+                AND payload - ARRAY['classification'] = '{}'::jsonb)
+        ),
+        CONSTRAINT ck_runtime_attention_outbox_retention CHECK (retention_until >= created_at),
+        CONSTRAINT ck_runtime_attention_outbox_claim_shape CHECK (
+            (lifecycle_state = 'pending' AND claim_token IS NULL
+                AND delivery_lease_epoch IS NULL AND claimed_by_instance IS NULL
+                AND claimed_at IS NULL AND claim_expires_at IS NULL)
+            OR (lifecycle_state IN ('sending', 'sent', 'failed', 'uncertain')
+                AND claim_token IS NOT NULL AND delivery_lease_epoch > 0
+                AND claimed_by_instance IS NOT NULL AND claimed_at IS NOT NULL
+                AND claim_expires_at IS NOT NULL)
+        ),
+        CONSTRAINT ck_runtime_attention_outbox_claim_expiry CHECK (
+            claim_expires_at IS NULL
+                OR (claimed_at IS NOT NULL AND claim_expires_at > claimed_at)
+        ),
+        CONSTRAINT ck_runtime_attention_outbox_delivery_shape CHECK (
+            (lifecycle_state = 'sent' AND delivered_at IS NOT NULL)
+            OR (lifecycle_state <> 'sent' AND delivered_at IS NULL)
+        ),
+        CONSTRAINT ck_runtime_attention_outbox_delivery_evidence CHECK (
+            (
+                (
+                    delivery_error_class IS NULL
+                    AND delivery_error_detail IS NULL
+                )
+                OR (
+                    lifecycle_state IN ('failed', 'uncertain')
+                    AND delivery_error_class IS NOT NULL
+                    AND delivery_error_detail IS NOT NULL
+                    AND (delivery_error_class, delivery_error_detail) IN (
+                        ('pre_transport', 'recipient_unavailable'),
+                        ('pre_transport', 'policy_denied'),
+                        ('transport_rejected', 'provider_rejected'),
+                        ('transport_uncertain', 'transport_timeout'),
+                        ('transport_uncertain', 'transport_connection_lost'),
+                        ('transport_uncertain', 'worker_recovery')
+                    )
+                )
+            )
+            AND (
+                notification_ref IS NULL
+                OR lifecycle_state IN ('sent', 'failed', 'uncertain')
+            )
+        )
+    );
+    CREATE TABLE public.runtime_attention_delivery_lease (
+        lease_name TEXT PRIMARY KEY DEFAULT 'runtime_attention_delivery'
+            CHECK (lease_name = 'runtime_attention_delivery'),
+        lease_token UUID,
+        lease_epoch BIGINT NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0),
+        holder_instance TEXT,
+        acquired_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT ck_runtime_attention_delivery_lease_shape CHECK (
+            (lease_token IS NULL AND holder_instance IS NULL AND acquired_at IS NULL AND expires_at IS NULL)
+            OR (lease_token IS NOT NULL AND holder_instance IS NOT NULL
+                AND acquired_at IS NOT NULL AND expires_at > acquired_at)
+        )
+    );
+    CREATE UNIQUE INDEX ux_runtime_attention_outbox_model_breaker_attempt
+        ON public.runtime_attention_outbox (triggering_attempt_id)
+        WHERE source = 'model_breaker' AND triggering_attempt_id IS NOT NULL;
+    CREATE UNIQUE INDEX ux_runtime_attention_outbox_fleet_halt_month
+        ON public.runtime_attention_outbox (fleet_halt_month)
+        WHERE source = 'fleet_halt' AND fleet_halt_month IS NOT NULL;
+    CREATE UNIQUE INDEX ux_runtime_attention_outbox_manual_reissue
+        ON public.runtime_attention_outbox (manual_reissue_of)
+        WHERE manual_reissue_of IS NOT NULL;
+    CREATE INDEX idx_runtime_attention_outbox_pending_order
+        ON public.runtime_attention_outbox (next_attempt_at ASC, created_at ASC, id ASC)
+        WHERE lifecycle_state = 'pending';
+    CREATE INDEX idx_runtime_attention_outbox_retention
+        ON public.runtime_attention_outbox (retention_until ASC, id ASC);
+    CREATE INDEX idx_model_dispatch_attempts_catalog_ts_id
+        ON public.model_dispatch_attempts (catalog_entry_id, ts DESC, id DESC);
+    CREATE INDEX idx_model_dispatch_attempts_outcome_ts_id
+        ON public.model_dispatch_attempts (outcome, ts DESC, id DESC);
+
+    CREATE FUNCTION public.runtime_attention_active_switchboard_role()
+    RETURNS boolean
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_switchboard_role$
+    BEGIN
+        IF current_setting('role', true) IS DISTINCT FROM 'butler_switchboard_rw' THEN
+            RAISE EXCEPTION 'runtime-attention direct access requires SET ROLE butler_switchboard_rw'
+                USING ERRCODE = '42501';
+        END IF;
+        RETURN true;
+    END;
+    $runtime_attention_switchboard_role$;
+
+    CREATE FUNCTION public.runtime_attention_outbox_guard()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_guard$
+    BEGIN
+        IF TG_OP = 'UPDATE' THEN
+            IF NEW.id IS DISTINCT FROM OLD.id
+               OR NEW.source IS DISTINCT FROM OLD.source
+               OR NEW.triggering_attempt_id IS DISTINCT FROM OLD.triggering_attempt_id
+               OR NEW.fleet_halt_month IS DISTINCT FROM OLD.fleet_halt_month
+               OR NEW.source_snapshot IS DISTINCT FROM OLD.source_snapshot
+               OR NEW.payload IS DISTINCT FROM OLD.payload
+               OR NEW.manual_reissue_of IS DISTINCT FROM OLD.manual_reissue_of
+               OR NEW.created_at IS DISTINCT FROM OLD.created_at
+               OR NEW.retention_until IS DISTINCT FROM OLD.retention_until THEN
+                RAISE EXCEPTION 'runtime-attention source snapshots and retention are immutable'
+                    USING ERRCODE = '23514';
+            END IF;
+            IF NEW.claim_epoch < OLD.claim_epoch THEN
+                RAISE EXCEPTION 'runtime-attention claim epoch may not move backwards'
+                    USING ERRCODE = '23514';
+            END IF;
+
+            IF OLD.lifecycle_state = 'pending' THEN
+                IF NEW.lifecycle_state = 'pending' THEN
+                    IF NEW.claim_epoch IS DISTINCT FROM OLD.claim_epoch THEN
+                        RAISE EXCEPTION
+                            'runtime-attention claim epoch may only advance with a fresh sending claim'
+                            USING ERRCODE = '23514';
+                    END IF;
+                ELSIF NEW.lifecycle_state = 'sending' THEN
+                    IF NEW.claim_token IS NULL OR NEW.delivery_lease_epoch IS NULL
+                       OR NEW.delivery_lease_epoch <= 0 OR NEW.claimed_by_instance IS NULL
+                       OR NEW.claimed_at IS NULL OR NEW.claim_expires_at IS NULL
+                       OR NEW.claim_epoch <> OLD.claim_epoch + 1 THEN
+                        RAISE EXCEPTION
+                            'runtime-attention sending transition requires a fresh fenced claim'
+                            USING ERRCODE = '23514';
+                    END IF;
+                ELSE
+                    RAISE EXCEPTION
+                        'runtime-attention terminal transition requires a fenced sending claim'
+                        USING ERRCODE = '23514';
+                END IF;
+            ELSIF OLD.lifecycle_state = 'sending' THEN
+                IF NEW.lifecycle_state = 'pending' THEN
+                    IF NEW.claim_epoch IS DISTINCT FROM OLD.claim_epoch
+                       OR NEW.claim_token IS NOT NULL
+                       OR NEW.delivery_lease_epoch IS NOT NULL
+                       OR NEW.claimed_by_instance IS NOT NULL
+                       OR NEW.claimed_at IS NOT NULL
+                       OR NEW.claim_expires_at IS NOT NULL THEN
+                        RAISE EXCEPTION
+                            'runtime-attention retry must clear, but not replace, its fenced claim'
+                            USING ERRCODE = '23514';
+                    END IF;
+                ELSIF NEW.lifecycle_state IN ('sending', 'sent', 'failed', 'uncertain') THEN
+                    IF NEW.claim_token IS DISTINCT FROM OLD.claim_token
+                       OR NEW.claim_epoch IS DISTINCT FROM OLD.claim_epoch
+                       OR NEW.delivery_lease_epoch IS DISTINCT FROM OLD.delivery_lease_epoch
+                       OR NEW.claimed_by_instance IS DISTINCT FROM OLD.claimed_by_instance
+                       OR NEW.claimed_at IS DISTINCT FROM OLD.claimed_at
+                       OR (
+                           NEW.lifecycle_state <> 'sending'
+                           AND NEW.claim_expires_at IS DISTINCT FROM OLD.claim_expires_at
+                       ) THEN
+                        RAISE EXCEPTION
+                            'runtime-attention fenced claim identity is immutable while sending'
+                            USING ERRCODE = '23514';
+                    END IF;
+                END IF;
+            ELSE
+                IF NEW.lifecycle_state IS DISTINCT FROM OLD.lifecycle_state THEN
+                    RAISE EXCEPTION 'runtime-attention terminal lifecycle state is immutable'
+                        USING ERRCODE = '23514';
+                END IF;
+                IF NEW.claim_token IS DISTINCT FROM OLD.claim_token
+                   OR NEW.claim_epoch IS DISTINCT FROM OLD.claim_epoch
+                   OR NEW.delivery_lease_epoch IS DISTINCT FROM OLD.delivery_lease_epoch
+                   OR NEW.claimed_by_instance IS DISTINCT FROM OLD.claimed_by_instance
+                   OR NEW.claimed_at IS DISTINCT FROM OLD.claimed_at
+                   OR NEW.claim_expires_at IS DISTINCT FROM OLD.claim_expires_at
+                   OR NEW.delivered_at IS DISTINCT FROM OLD.delivered_at
+                   OR NEW.delivery_error_class IS DISTINCT FROM OLD.delivery_error_class
+                   OR NEW.delivery_error_detail IS DISTINCT FROM OLD.delivery_error_detail
+                   OR NEW.notification_ref IS DISTINCT FROM OLD.notification_ref THEN
+                    RAISE EXCEPTION 'runtime-attention terminal fence is immutable'
+                        USING ERRCODE = '23514';
+                END IF;
+            END IF;
+            NEW.updated_at := now();
+        END IF;
+        RETURN NEW;
+    END;
+    $runtime_attention_guard$;
+
+    CREATE FUNCTION public.runtime_attention_delivery_lease_guard()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_lease_guard$
+    BEGIN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.lease_token IS NULL AND NEW.lease_epoch <> 0 THEN
+                RAISE EXCEPTION
+                    'runtime-attention idle delivery lease must begin at epoch zero'
+                    USING ERRCODE = '23514';
+            ELSIF NEW.lease_token IS NOT NULL AND NEW.lease_epoch <> 1 THEN
+                RAISE EXCEPTION
+                    'runtime-attention lease acquisition must advance from epoch zero to one'
+                    USING ERRCODE = '23514';
+            END IF;
+        ELSIF TG_OP = 'UPDATE' THEN
+            IF NEW.lease_name IS DISTINCT FROM OLD.lease_name THEN
+                RAISE EXCEPTION 'runtime-attention delivery lease name is immutable'
+                    USING ERRCODE = '23514';
+            END IF;
+            IF NEW.lease_epoch < OLD.lease_epoch THEN
+                RAISE EXCEPTION 'runtime-attention lease epoch may not move backwards'
+                    USING ERRCODE = '23514';
+            END IF;
+            IF OLD.lease_token IS NULL THEN
+                IF NEW.lease_token IS NULL AND NEW.lease_epoch <> OLD.lease_epoch THEN
+                    RAISE EXCEPTION
+                        'runtime-attention idle delivery lease epoch may not advance'
+                        USING ERRCODE = '23514';
+                ELSIF NEW.lease_token IS NOT NULL
+                   AND NEW.lease_epoch <> OLD.lease_epoch + 1 THEN
+                    RAISE EXCEPTION
+                        'runtime-attention lease acquisition must advance exactly one epoch'
+                        USING ERRCODE = '23514';
+                END IF;
+            ELSIF NEW.lease_token IS NULL THEN
+                IF NEW.lease_epoch <> OLD.lease_epoch THEN
+                    RAISE EXCEPTION
+                        'runtime-attention delivery lease release must preserve its fence epoch'
+                        USING ERRCODE = '23514';
+                END IF;
+            ELSIF NEW.lease_token IS DISTINCT FROM OLD.lease_token THEN
+                IF NEW.lease_epoch <> OLD.lease_epoch + 1 THEN
+                    RAISE EXCEPTION
+                        'runtime-attention lease acquisition must advance exactly one epoch'
+                        USING ERRCODE = '23514';
+                END IF;
+            ELSIF NEW.lease_epoch IS DISTINCT FROM OLD.lease_epoch
+               OR NEW.holder_instance IS DISTINCT FROM OLD.holder_instance
+               OR NEW.acquired_at IS DISTINCT FROM OLD.acquired_at THEN
+                RAISE EXCEPTION
+                    'runtime-attention active delivery lease identity is immutable'
+                    USING ERRCODE = '23514';
+            END IF;
+            NEW.updated_at := now();
+        END IF;
+        RETURN NEW;
+    END;
+    $runtime_attention_lease_guard$;
+
+    CREATE FUNCTION public.append_runtime_attention_model_breaker(p_triggering_attempt_id BIGINT)
+    RETURNS UUID
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_model_breaker$
+    DECLARE
+        v_catalog_entry_id UUID;
+        v_alias TEXT;
+        v_model_id TEXT;
+        v_trigger_ts TIMESTAMPTZ;
+        v_count INTEGER;
+        v_all_failures BOOLEAN;
+        v_latest_ts TIMESTAMPTZ;
+        v_before_count INTEGER;
+        v_before_all_failures BOOLEAN;
+        v_before_latest_ts TIMESTAMPTZ;
+        v_episode_id UUID;
+    BEGIN
+        IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
+            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+        ]) THEN
+            RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
+                USING ERRCODE = '42501';
+        END IF;
+
+        SELECT attempt.catalog_entry_id, catalog.alias, catalog.model_id, attempt.ts
+        INTO v_catalog_entry_id, v_alias, v_model_id, v_trigger_ts
+        FROM public.model_dispatch_attempts AS attempt
+        JOIN public.model_catalog AS catalog ON catalog.id = attempt.catalog_entry_id
+        WHERE attempt.id = p_triggering_attempt_id
+          AND attempt.outcome = 'runtime_failure';
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'runtime-attention model-breaker trigger must be a catalog-backed runtime failure'
+                USING ERRCODE = '23514';
+        END IF;
+        PERFORM pg_advisory_xact_lock(hashtextextended(v_catalog_entry_id::text, 0));
+
+        -- Derive the transition at this exact (ts, id) edge, rather than
+        -- requiring it to remain the latest row at call time.  That makes
+        -- concurrent half-open failures deterministic: the lowest ordered
+        -- newly-open edge records once; later same-timestamp rows observe it
+        -- as already open and cannot manufacture another episode.
+        SELECT count(*)::integer, bool_and(outcome = 'runtime_failure'), max(ts)
+        INTO v_count, v_all_failures, v_latest_ts
+        FROM (
+            SELECT outcome, ts
+            FROM public.model_dispatch_attempts
+            WHERE catalog_entry_id = v_catalog_entry_id
+              AND outcome IN ('runtime_failure', 'success')
+              AND (ts, id) <= (v_trigger_ts, p_triggering_attempt_id)
+            ORDER BY ts DESC, id DESC
+            LIMIT 5
+        ) AS recent;
+        IF v_count < 5 OR NOT COALESCE(v_all_failures, false)
+           OR now() - v_latest_ts >= interval '15 minutes' THEN
+            RAISE EXCEPTION 'runtime-attention model-breaker trigger is not an open breaker edge'
+                USING ERRCODE = '23514';
+        END IF;
+
+        SELECT count(*)::integer, bool_and(outcome = 'runtime_failure'), max(ts)
+        INTO v_before_count, v_before_all_failures, v_before_latest_ts
+        FROM (
+            SELECT outcome, ts
+            FROM public.model_dispatch_attempts
+            WHERE catalog_entry_id = v_catalog_entry_id
+              AND outcome IN ('runtime_failure', 'success')
+              AND (ts, id) < (v_trigger_ts, p_triggering_attempt_id)
+            ORDER BY ts DESC, id DESC
+            LIMIT 5
+        ) AS preceding;
+        IF v_before_count >= 5 AND COALESCE(v_before_all_failures, false)
+           AND now() - v_before_latest_ts < interval '15 minutes' THEN
+            RAISE EXCEPTION 'runtime-attention model-breaker edge was already open'
+                USING ERRCODE = '23514';
+        END IF;
+
+        INSERT INTO public.runtime_attention_outbox (
+            source, triggering_attempt_id, source_snapshot, payload
+        )
+        VALUES (
+            'model_breaker',
+            p_triggering_attempt_id,
+            jsonb_build_object(
+                'catalog_entry_id', v_catalog_entry_id::text,
+                'alias', v_alias,
+                'model_id', v_model_id,
+                'triggering_attempt_id', p_triggering_attempt_id,
+                'consecutive_failures', 5
+            ),
+            jsonb_build_object(
+                'classification', 'model_breaker_open',
+                'consecutive_failures', 5,
+                'door', '/settings/models?highlight=' || v_catalog_entry_id::text
+            )
+        )
+        ON CONFLICT (triggering_attempt_id)
+            WHERE source = 'model_breaker' AND triggering_attempt_id IS NOT NULL
+            DO NOTHING
+        RETURNING id INTO v_episode_id;
+        IF v_episode_id IS NULL THEN
+            SELECT id INTO v_episode_id
+            FROM public.runtime_attention_outbox
+            WHERE source = 'model_breaker'
+              AND triggering_attempt_id = p_triggering_attempt_id;
+        END IF;
+        RETURN v_episode_id;
+    END;
+    $runtime_attention_model_breaker$;
+
+    CREATE FUNCTION public.append_runtime_attention_fleet_halt()
+    RETURNS UUID
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_fleet_halt$
+    DECLARE
+        v_month DATE := date_trunc('month', now() AT TIME ZONE 'UTC')::date;
+        v_denied_count INTEGER;
+        v_first_denied_at TIMESTAMPTZ;
+        v_episode_id UUID;
+    BEGIN
+        IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
+            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+        ]) THEN
+            RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
+                USING ERRCODE = '42501';
+        END IF;
+        SELECT count(*)::integer, min(ts)
+        INTO v_denied_count, v_first_denied_at
+        FROM public.model_dispatch_attempts
+        WHERE outcome = 'quota_skip'
+          AND left(COALESCE(failure_reason, ''), length('Monthly spend ceiling reached'))
+                = 'Monthly spend ceiling reached'
+          AND date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month;
+        IF v_denied_count < 1 THEN
+            RAISE EXCEPTION 'runtime-attention fleet-halt trigger lacks current-month ceiling evidence'
+                USING ERRCODE = '23514';
+        END IF;
+        PERFORM pg_advisory_xact_lock(hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0));
+        INSERT INTO public.runtime_attention_outbox (
+            source, fleet_halt_month, source_snapshot, payload
+        )
+        VALUES (
+            'fleet_halt',
+            v_month,
+            jsonb_build_object(
+                'month', v_month::text,
+                'denied_count', v_denied_count,
+                'first_denied_at', v_first_denied_at
+            ),
+            jsonb_build_object(
+                'classification', 'monthly_spend_ceiling',
+                'door', '/spend?outcome=quota_skip'
+            )
+        )
+        ON CONFLICT (fleet_halt_month)
+            WHERE source = 'fleet_halt' AND fleet_halt_month IS NOT NULL
+            DO NOTHING
+        RETURNING id INTO v_episode_id;
+        IF v_episode_id IS NULL THEN
+            SELECT id INTO v_episode_id
+            FROM public.runtime_attention_outbox
+            WHERE source = 'fleet_halt' AND fleet_halt_month = v_month;
+        END IF;
+        RETURN v_episode_id;
+    END;
+    $runtime_attention_fleet_halt$;
+
+    PERFORM runtime_attention_admin.finalize_interface();
+END;
+$runtime_attention_installer$;
+
+CREATE OR REPLACE FUNCTION runtime_attention_admin.rollback_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_rollback$
+DECLARE
+    v_migration_role NAME;
+    v_session_is_superuser BOOLEAN;
+BEGIN
+    SELECT rolsuper INTO v_session_is_superuser
+    FROM pg_roles
+    WHERE rolname = session_user;
+    IF NOT COALESCE(v_session_is_superuser, false) THEN
+        RAISE EXCEPTION 'core_198 downgrade requires the managed privileged bootstrap owner';
+    END IF;
+    SELECT migration_role INTO v_migration_role
+    FROM runtime_attention_admin.bootstrap_configuration
+    WHERE singleton;
+    IF v_migration_role IS NULL
+       OR to_regclass('public.runtime_attention_outbox') IS NULL
+       OR to_regclass('public.runtime_attention_delivery_lease') IS NULL THEN
+        RAISE EXCEPTION 'core_198 rollback requires the complete trusted outbox interface';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.runtime_attention_outbox)
+       OR EXISTS (SELECT 1 FROM public.runtime_attention_delivery_lease) THEN
+        RAISE EXCEPTION
+            'core_198 rollback refuses durable runtime-attention evidence; use forward remediation';
+    END IF;
+    -- The representation has no active consumer in core_198.  An empty
+    -- relation is therefore the only consumer-disabled reversible state.
+    LOCK TABLE public.runtime_attention_outbox, public.runtime_attention_delivery_lease IN ACCESS EXCLUSIVE MODE;
+    IF EXISTS (SELECT 1 FROM public.runtime_attention_outbox)
+       OR EXISTS (SELECT 1 FROM public.runtime_attention_delivery_lease) THEN
+        RAISE EXCEPTION
+            'core_198 rollback refuses durable runtime-attention evidence; use forward remediation';
+    END IF;
+    DROP TABLE public.runtime_attention_delivery_lease;
+    DROP TABLE public.runtime_attention_outbox;
+    DROP FUNCTION public.append_runtime_attention_model_breaker(bigint);
+    DROP FUNCTION public.append_runtime_attention_fleet_halt();
+    DROP FUNCTION public.runtime_attention_active_switchboard_role();
+    DROP FUNCTION public.runtime_attention_outbox_guard();
+    DROP FUNCTION public.runtime_attention_delivery_lease_guard();
+    DROP INDEX IF EXISTS public.idx_model_dispatch_attempts_catalog_ts_id;
+    DROP INDEX IF EXISTS public.idx_model_dispatch_attempts_outcome_ts_id;
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA runtime_attention_admin FROM %I', v_migration_role);
+    EXECUTE format('GRANT USAGE ON SCHEMA runtime_attention_admin TO %I', v_migration_role);
+    EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION runtime_attention_admin.install_interface() TO %I',
+        v_migration_role
+    );
+END;
+$runtime_attention_rollback$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.finalize_interface() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_interface() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.rollback_interface() FROM PUBLIC;
+
+DO $$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''),
+        'butlers'
+    )::name;
+BEGIN
+    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA runtime_attention_admin FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE runtime_attention_admin.bootstrap_configuration FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.finalize_interface() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_interface() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.rollback_interface() FROM %I', v_migration_role);
+
+    IF to_regclass('public.runtime_attention_outbox') IS NOT NULL
+       OR to_regclass('public.runtime_attention_delivery_lease') IS NOT NULL
+       OR to_regprocedure('public.append_runtime_attention_model_breaker(bigint)') IS NOT NULL
+       OR to_regprocedure('public.append_runtime_attention_fleet_halt()') IS NOT NULL
+       OR to_regprocedure('public.runtime_attention_active_switchboard_role()') IS NOT NULL
+       OR to_regprocedure('public.runtime_attention_outbox_guard()') IS NOT NULL
+       OR to_regprocedure('public.runtime_attention_delivery_lease_guard()') IS NOT NULL THEN
+        PERFORM runtime_attention_admin.finalize_interface();
+    ELSE
+        EXECUTE format('GRANT USAGE ON SCHEMA runtime_attention_admin TO %I', v_migration_role);
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION runtime_attention_admin.install_interface() TO %I',
+            v_migration_role
+        );
+    END IF;
+END;
+$$;
+
+RESET ROLE;

@@ -1420,7 +1420,7 @@ async def _detect_runtime_credential_alert(pool: asyncpg.Pool) -> str | None:
                     error_message,
                     failure_reason,
                     ROW_NUMBER() OVER (
-                        PARTITION BY catalog_entry_id ORDER BY ts DESC
+                        PARTITION BY catalog_entry_id ORDER BY ts DESC, id DESC
                     ) AS rn
                 FROM public.model_dispatch_attempts
                 WHERE catalog_entry_id = ANY($1)
